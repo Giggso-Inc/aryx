@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 
 from falkordb import FalkorDB
 
+from aryx.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,7 @@ class GraphReader:
         Args:
             ontology_type: Exact ontology type to match, or None for any.
             name: Substring matched case-insensitively against the name, or None.
-            limit: Maximum rows to return (coerced to int, capped at 500).
+            limit: Maximum rows to return (coerced to int, capped at ARYX_GRAPH_QUERY_LIMIT).
 
         Returns:
             A list of {id, type, name} dicts.
@@ -60,7 +62,7 @@ class GraphReader:
             clauses.append("toLower(e.name) CONTAINS toLower($name)")
             params["name"] = name
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
-        capped = max(1, min(int(limit), 500))
+        capped = max(1, min(int(limit), get_settings().graph_query_limit))
         rows = self._graph.query(
             f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name LIMIT {capped}",
             params,

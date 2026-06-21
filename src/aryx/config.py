@@ -25,6 +25,26 @@ class Settings(BaseSettings):
     embed_dim: int = Field(default=768, description="Expected embedding dim; startup check fails on mismatch.")
     chunk_size: int = Field(default=1000, description="Target chunk size in characters.")
     chunk_overlap: int = Field(default=100, description="Overlap in characters between adjacent chunks.")
+    max_block_size: int = Field(
+        default=5000,
+        description="Max records per blocking group in resolution. Groups over this size are logged and skipped.",
+    )
+    graph_query_limit: int = Field(
+        default=500,
+        description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
+    )
+    max_relate_pairs: int = Field(
+        default=50,
+        description="Max entity pairs evaluated for relationship inference per pipeline run.",
+    )
+    transitive_max_depth: int = Field(
+        default=4,
+        description="Max hops for transitive closure computation in edge axioms.",
+    )
+    worker_threads: int = Field(
+        default=4,
+        description="Number of concurrent pipeline workers (ThreadPoolExecutor).",
+    )
 
 
 @lru_cache(maxsize=1)

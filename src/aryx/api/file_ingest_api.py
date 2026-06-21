@@ -13,7 +13,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from concurrent.futures import ThreadPoolExecutor
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
@@ -26,6 +28,16 @@ from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
+
+_executor: ThreadPoolExecutor | None = None
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _executor
+    if _executor is None:
+        _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
+    return _executor
+
 
 _DATA_EXTS = {".json", ".csv"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
@@ -97,7 +109,6 @@ def file_ingest_router() -> APIRouter:
 
     @router.post("/ingest/file")
     async def ingest_file(
-        background_tasks: BackgroundTasks,
         files: list[UploadFile] = File(...),
         ontology_type: str = Form(...),
         match_keys: str = Form(...),
@@ -129,7 +140,7 @@ def file_ingest_router() -> APIRouter:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
         links = json.loads(fk_links) if fk_links else []
-        background_tasks.add_task(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+        _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 

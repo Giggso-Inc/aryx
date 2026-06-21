@@ -103,10 +103,6 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
     if not rules:
         return {"rules_evaluated": 0, "total_fires": 0, "per_rule": {}}
     estore = EntityStore(settings.rdb_dsn, workspace_id)
-    try:
-        ents = estore.list_entities()
-    finally:
-        estore.close()
     graph = FalkorStore(settings.graph_url, ws_graph(workspace_id))
     per_rule: dict[str, int] = {}
     total = 0
@@ -119,8 +115,10 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
                 # Edge-scoped axiom (inverse_of / symmetric / transitive).
                 fires = _apply_edge_axiom(graph, str(when["edge"]), then)
             else:
+                # SQL pushdown: fetch only entities matching type + attr key.
+                # op/value comparison remains in _match() for edge-case safety.
                 fires = 0
-                for ent in ents:
+                for ent in estore.match_entities(when):
                     if _match(ent, when):
                         fires += _fire(graph, ent, then)
             per_rule[rule["name"]] = fires
@@ -129,6 +127,7 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
                 bumps.bump(workspace_id, rule["name"], fires)
     finally:
         bumps.close()
+        estore.close()
     logger.info("evaluator ws=%s fires=%d rules=%d",
                 workspace_id, total, len(rules))
     return {"rules_evaluated": len(rules), "total_fires": total,
