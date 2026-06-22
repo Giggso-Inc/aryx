@@ -34,6 +34,7 @@ _executor_lock = threading.Lock()
 
 
 def _get_executor() -> ThreadPoolExecutor:
+    """Return the module-level ingest executor, creating it on first call."""
     global _executor
     with _executor_lock:
         if _executor is None:

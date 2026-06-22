@@ -1,10 +1,13 @@
 """Application configuration loaded from the environment (12-factor)."""
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_log = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -127,6 +130,25 @@ class Settings(BaseSettings):
         default="",
         description="OCI Data Flow application OCID. Required when worker_backend='oci_dataflow'.",
     )
+
+    # ── Phase 2 backend guard ─────────────────────────────────────────────────
+    @model_validator(mode="after")
+    def _warn_phase2_backends(self) -> "Settings":
+        """Warn once at startup if Phase 2 backend vars are set but unimplemented."""
+        _PHASE2 = {
+            "ARYX_DB_BACKEND": self.db_backend,
+            "ARYX_WORKER_BACKEND": self.worker_backend,
+            "ARYX_GRAPH_BACKEND": self.graph_backend,
+        }
+        _PHASE2_NOOP = {"", "local", "falkordb"}
+        for var, val in _PHASE2.items():
+            if val and val not in _PHASE2_NOOP:
+                _log.warning(
+                    "%s=%r is set but Phase 2 backends are not yet implemented "
+                    "— this setting has no effect. See docs/OCI_BACKEND_TOGGLE.md.",
+                    var, val,
+                )
+        return self
 
     # ── Backend resolution helpers ────────────────────────────────────────────
     def _resolve(self, per_service: str, phase2_default: str = "local") -> str:

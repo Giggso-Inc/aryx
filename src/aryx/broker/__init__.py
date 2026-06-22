@@ -93,8 +93,16 @@ class Broker:
         """Return every registered model (for the setup UI roll-call)."""
         return self._registry.all()
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str],
+              input_type: str = "SEARCH_DOCUMENT") -> list[list[float]]:
         """Embed texts via the configured backend (Ollama local or OCI GenAI).
+
+        Args:
+            texts: Texts to embed.
+            input_type: Cohere input type hint for the OCI path.
+                Use "SEARCH_DOCUMENT" when indexing (default) and
+                "SEARCH_QUERY" when embedding a search query at retrieval time.
+                Ignored on the local Ollama path.
 
         Returns an empty list if no embed model is configured, so callers can
         gracefully fall back to string-only similarity.
@@ -102,7 +110,7 @@ class Broker:
         from aryx.config import get_settings
         settings = get_settings()
         if settings.effective_embed_backend() == "oci":
-            return self._oci_embed(texts, settings)
+            return self._oci_embed(texts, settings, input_type=input_type)
         return self._ollama_embed(texts)
 
     def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
@@ -118,7 +126,8 @@ class Broker:
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("embeddings", [])
 
-    def _oci_embed(self, texts: list[str], settings: object) -> list[list[float]]:
+    def _oci_embed(self, texts: list[str], settings: object,
+                  input_type: str = "SEARCH_DOCUMENT") -> list[list[float]]:
         """Embed via OCI Generative AI (Cohere Embed v3)."""
         import oci  # noqa: PLC0415
         from aryx.oci_client import get_genai_client
@@ -139,7 +148,7 @@ class Broker:
                 model_id=model_id
             ),
             compartment_id=compartment_id,
-            input_type="SEARCH_DOCUMENT",
+            input_type=input_type,
         )
         response = client.embed_text(embed_text_details=request)
         return response.data.embeddings
