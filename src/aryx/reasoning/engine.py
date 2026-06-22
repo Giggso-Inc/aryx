@@ -127,11 +127,15 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
                 fires = _apply_edge_axiom(graph, str(when["edge"]), then)
             else:
                 fires = 0
-                # _match() returns False when attr is absent; skip the DB fetch entirely.
                 if when.get("attr"):
                     for ent in estore.match_entities(when):
                         if _match(ent, when):
                             fires += _fire(graph, ent, then)
+                else:
+                    logger.warning(
+                        "rule %r skipped — no 'attr' and no 'edge' in when-clause",
+                        rule.get("name"),
+                    )
             per_rule[rule["name"]] = fires
             total += fires
             if fires:

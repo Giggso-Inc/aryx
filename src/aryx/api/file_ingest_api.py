@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
-
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
@@ -100,8 +99,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
                 fk_links=fk_links, workspace_id=workspace_id,
             )
-        if jobs is not None:
-            jobs.finish(job_id, run_id=None, status="complete")
+        jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc)
         if jobs is not None:

@@ -31,10 +31,12 @@ def get_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> ConnectionPool:
 
 def close_all() -> None:
     """Close every cached pool and clear the registry (call at shutdown)."""
-    for pool in list(_pools.values()):
+    with _pool_lock:
+        pools = list(_pools.values())
+        _pools.clear()
+    for pool in pools:
         try:
             pool.close()
         except Exception:  # noqa: BLE001
             pass
-    _pools.clear()
     logger.info("pool: all pools closed")
