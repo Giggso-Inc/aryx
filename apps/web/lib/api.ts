@@ -26,7 +26,7 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listWorkspaces: () =>
-    fetchJSON<Workspace[]>("/admin/workspaces?workspace_id=1"),
+    fetchJSON<Workspace[]>("/admin/workspaces"),
 
   createWorkspace: (name: string, description = "", context = "") =>
     fetchJSON<Workspace>("/admin/workspaces", {

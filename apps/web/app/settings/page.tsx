@@ -55,10 +55,14 @@ function McpTab() {
   const [error, setError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<number | null>(null);
 
-  // Build the MCP endpoint URL for copy-paste snippets
-  const mcpUrl = typeof window !== "undefined"
-    ? `${window.location.protocol}//${window.location.hostname}:${window.location.port || "8000"}/mcp`
-    : "http://localhost:8000/mcp";
+  // Build the MCP endpoint URL for copy-paste snippets.
+  // Use NEXT_PUBLIC_MCP_URL set at build time for production deployments.
+  // window.location.port is empty on standard ports (80/443), so never
+  // derive the MCP port from it — use the known default (8765) instead.
+  const mcpUrl = process.env.NEXT_PUBLIC_MCP_URL
+    ?? (typeof window !== "undefined"
+      ? `${window.location.protocol}//${window.location.hostname}:8765/mcp`
+      : "http://localhost:8765/mcp");
 
   const load = useCallback(async () => {
     try {
@@ -99,6 +103,8 @@ function McpTab() {
     }
   };
 
+  // Tokens are passed via Authorization header, not URL query params.
+  // URL query params appear in server logs, browser history, and Referer headers.
   const SNIPPETS: Array<{ label: string; lang: string; code: (tok: string) => string }> = [
     {
       label: "Claude Desktop (claude_desktop_config.json)",
@@ -106,8 +112,9 @@ function McpTab() {
       code: (tok) => JSON.stringify({
         mcpServers: {
           aryx: {
-            command: "npx",
-            args: ["-y", "@modelcontextprotocol/server-sse", `${mcpUrl}?token=${tok}`],
+            type: "sse",
+            url: mcpUrl,
+            headers: { "Authorization": `Bearer ${tok}` },
           },
         },
       }, null, 2),
@@ -119,7 +126,8 @@ function McpTab() {
         mcpServers: {
           aryx: {
             type: "sse",
-            url: `${mcpUrl}?token=${tok}`,
+            url: mcpUrl,
+            headers: { "Authorization": `Bearer ${tok}` },
           },
         },
       }, null, 2),
@@ -130,7 +138,7 @@ function McpTab() {
       code: (tok) => JSON.stringify({
         mcpServers: {
           aryx: {
-            url: `${mcpUrl}?token=${tok}`,
+            url: mcpUrl,
             apiKey: tok,
           },
         },
@@ -250,6 +258,12 @@ function McpTab() {
 
 // ── LLM Tab ──────────────────────────────────────────────────────────────────
 
+const LLM_CONFIG_ALLOWLIST = new Set([
+  "ARYX_LLM_MENIAL_MODEL", "ARYX_LLM_REASON_MODEL",
+  "ARYX_LLM_ENDPOINT", "ARYX_LLM_TIMEOUT",
+  "ARYX_PER_DOC_TIMEOUT", "ARYX_DOC_WORKERS", "ARYX_LLM_PROVIDER",
+]);
+
 function LlmTab() {
   const { workspaceId } = useWorkspace();
   const [config, setConfig] = useState<Record<string, string>>({});
@@ -257,7 +271,11 @@ function LlmTab() {
 
   useEffect(() => {
     api.getObservability(workspaceId).then((d) => {
-      setConfig(d.model_config as Record<string, string> ?? {});
+      const raw = d.model_config as Record<string, string> ?? {};
+      const filtered = Object.fromEntries(
+        Object.entries(raw).filter(([k]) => LLM_CONFIG_ALLOWLIST.has(k)),
+      );
+      setConfig(filtered);
     }).catch(() => {}).finally(() => setLoading(false));
   }, [workspaceId]);
 
@@ -297,11 +315,7 @@ function LlmTab() {
         <div className="mt-4 rounded-lg border border-navy-100 bg-navy-50/40 p-3">
           <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-navy-500">Supported Env Vars</div>
           <div className="grid grid-cols-1 gap-1 text-[11px] font-mono text-navy-700 sm:grid-cols-2">
-            {[
-              "ARYX_LLM_MENIAL_MODEL", "ARYX_LLM_REASON_MODEL",
-              "ARYX_LLM_ENDPOINT", "ARYX_LLM_TIMEOUT",
-              "ARYX_PER_DOC_TIMEOUT", "ARYX_DOC_WORKERS",
-            ].map((k) => <div key={k}>{k}</div>)}
+            {[...LLM_CONFIG_ALLOWLIST].map((k) => <div key={k}>{k}</div>)}
           </div>
         </div>
       </Section>

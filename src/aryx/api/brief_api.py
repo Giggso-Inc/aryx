@@ -6,7 +6,6 @@ The UI polls /admin/jobs/{job_id} and retrieves the brief when done.
 """
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from collections import OrderedDict
@@ -24,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 _BRIEFS_MAX = 200
 
-# In-memory brief results keyed by job_id. Capped at _BRIEFS_MAX entries;
-# oldest entries are evicted first so long-running processes don't leak.
-_BRIEFS: OrderedDict[str, dict[str, Any]] = OrderedDict()
+# In-memory brief results keyed by (workspace_id, job_id) to prevent
+# cross-workspace data leakage. Capped at _BRIEFS_MAX entries; oldest
+# entry evicted via popitem(last=False) on every write past the cap.
+_BRIEFS: OrderedDict[tuple[int, str], dict[str, Any]] = OrderedDict()
 
 
 class DraftBriefRequest(BaseModel):
@@ -45,7 +45,7 @@ def _run_draft(job_id: str, workspace_id: int,
         jobs = JobStore(settings.rdb_dsn)
         jobs.update_stage(job_id, "Drafting", 50, "Calling language model…")
         brief = draft_from_text(_local_broker(), seed, doc_text)
-        _BRIEFS[job_id] = brief
+        _BRIEFS[(workspace_id, job_id)] = brief
         if len(_BRIEFS) > _BRIEFS_MAX:
             _BRIEFS.popitem(last=False)
         jobs.finish(job_id, run_id=None, status="complete")
@@ -82,7 +82,7 @@ def brief_router() -> APIRouter:
     @router.get("/{workspace_id}/brief-result/{job_id}")
     def brief_result(workspace_id: int, job_id: str) -> dict[str, Any]:
         """Retrieve a completed brief draft. 404 while still processing."""
-        brief = _BRIEFS.get(job_id)
+        brief = _BRIEFS.get((workspace_id, job_id))
         if brief is None:
             raise HTTPException(404, "brief not ready or unknown job")
         return {"workspace_id": workspace_id, "brief": brief}

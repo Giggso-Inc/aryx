@@ -159,7 +159,7 @@ async def ingest_documents_parallel(
     chunk_size: int = 1000, chunk_overlap: int = 100,
     expected_embed_dim: int = 768, run_pii: bool = True,
 ) -> list[RawRecord]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     tasks = [
         loop.run_in_executor(
             None, lambda p=path: ingest_document(

@@ -114,6 +114,8 @@ class WorkspaceStore:
             for row in self._conn.execute(
                     load("select_partition_children"),
                     {"parent": base}).fetchall():
+                # row[0] sourced from pg_inherits catalog — trusted system data,
+                # not user input. sql.Identifier quotes it safely regardless.
                 self._conn.execute(
                     sql.SQL("TRUNCATE {} CASCADE").format(
                         sql.Identifier(row[0])))

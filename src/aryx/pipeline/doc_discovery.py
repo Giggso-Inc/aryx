@@ -38,6 +38,15 @@ _GENERIC = {"table", "row", "record", "data", "file", "entity", "item", "object"
             "output", "input", "sample", "test"}
 
 
+def _singular(word: str) -> str:
+    """Naive singularisation for FK pattern matching (Customers→Customer, etc.)."""
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 2 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 def _stem_type(filename: str) -> str:
     """Derive a PascalCase singular type name from the filename stem.
 
@@ -63,6 +72,8 @@ def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
     try:
         txt = llm_runtime.chat("menial", sys, user)[0]
         s, e = txt.find("{"), txt.rfind("}")
+        if s == -1 or e <= s:
+            raise ValueError("LLM response contained no JSON object")
         d = json.loads(txt[s:e + 1])
         # Trust the filename-derived type; only fall back to LLM when filename
         # is too generic (e.g. data.csv, export.csv).
@@ -100,15 +111,6 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     files = [{"filename": p["filename"], "ontology_type": p["ontology_type"]} for p in tab_plans]
     return {"mentions": mentions, "tabular": tab_plans,
             "summary": {"types": types, "files": files}}
-
-
-def _singular(word: str) -> str:
-    """Naive singularisation for FK pattern matching (Customers→Customer, etc.)."""
-    if word.endswith("ies"):
-        return word[:-3] + "y"
-    if len(word) > 2 and word.endswith("s") and not word.endswith("ss"):
-        return word[:-1]
-    return word
 
 
 def _detect_fk_links(plans: list[dict]) -> list[dict]:
@@ -203,18 +205,24 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         fname = plan["filename"]
         step += 1
         jobs.update_stage(job_id, f"{step}/{total}", int(step * 90 / total), f"Adding {fname}")
+        tmp_path: Path | None = None
         if Path(fname).suffix.lower() == ".json":
             tmp = NamedTemporaryFile(suffix=".json", delete=False)
             tmp.write(plan["data"])
             tmp.close()
-            conn = JsonConnector(Path(tmp.name), system="json")
+            tmp_path = Path(tmp.name)
+            conn = JsonConnector(tmp_path, system="json")
         else:
             conn = CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
         # FK links are passed only on the last file: by that point all prior
         # entities are in Postgres so link_by_attribute can match across CSVs.
         is_last = (idx == len(valid_plans) - 1)
-        run_pipeline(connector=conn, dsn=settings.rdb_dsn,
-                     system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
-                     ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
-                     graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
-                     fk_links=auto_fk if is_last else None)
+        try:
+            run_pipeline(connector=conn, dsn=settings.rdb_dsn,
+                         system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
+                         ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
+                         graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
+                         fk_links=auto_fk if is_last else None)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
