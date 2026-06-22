@@ -102,12 +102,14 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
         rules_store.close()
     if not rules:
         return {"rules_evaluated": 0, "total_fires": 0, "per_rule": {}}
-    estore = EntityStore(settings.rdb_dsn, workspace_id)
-    graph = FalkorStore(settings.graph_url, ws_graph(workspace_id))
-    per_rule: dict[str, int] = {}
-    total = 0
-    bumps = RuleStore(settings.rdb_dsn)
+    estore = None
+    bumps = None
     try:
+        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        graph = FalkorStore(settings.graph_url, ws_graph(workspace_id))
+        per_rule: dict[str, int] = {}
+        total = 0
+        bumps = RuleStore(settings.rdb_dsn)
         for rule in rules:
             when = rule.get("when") or {}
             then = rule.get("then") or {}
@@ -126,8 +128,10 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
             if fires:
                 bumps.bump(workspace_id, rule["name"], fires)
     finally:
-        bumps.close()
-        estore.close()
+        if bumps is not None:
+            bumps.close()
+        if estore is not None:
+            estore.close()
     logger.info("evaluator ws=%s fires=%d rules=%d",
                 workspace_id, total, len(rules))
     return {"rules_evaluated": len(rules), "total_fires": total,

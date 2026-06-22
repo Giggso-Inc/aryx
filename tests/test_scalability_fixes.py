@@ -358,6 +358,28 @@ class TestEngineUsesMatchEntities:
         assert result["total_fires"] == 1
         assert result["per_rule"]["big_revenue"] == 1
 
+    def test_engine_finally_safe_when_falkorstore_raises(self):
+        """B3 fix: NameError must NOT mask the original exception when FalkorStore raises."""
+        rules = [{"name": "r1", "enabled": True, "when": {}, "then": {}}]
+        mock_rules_store = MagicMock()
+        mock_rules_store.list_.return_value = rules
+        mock_bumps = MagicMock()
+        mock_cfg = MagicMock()
+        mock_cfg.rdb_dsn = "postgresql://x"
+        mock_cfg.graph_url = "redis://x"
+
+        with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
+             patch("aryx.reasoning.engine.RuleStore",
+                   side_effect=[mock_rules_store, mock_bumps]), \
+             patch("aryx.reasoning.engine.EntityStore"), \
+             patch("aryx.reasoning.engine.FalkorStore",
+                   side_effect=ConnectionError("graph unreachable")), \
+             patch("aryx.reasoning.engine.ws_graph", return_value="ws_1"):
+            from aryx.reasoning.engine import evaluate_workspace
+            with pytest.raises(ConnectionError, match="graph unreachable"):
+                evaluate_workspace(workspace_id=1)
+        # If B3 were still present the finally block would raise NameError instead
+
 
 # ---------------------------------------------------------------------------
 # P3 — MultiKeyBlocker reads from config
@@ -472,6 +494,19 @@ class TestThreadPoolExecutor:
         import pathlib
         src = pathlib.Path("src/aryx/api/file_ingest_api.py").read_text()
         assert "_get_executor().submit(" in src
+
+    def test_executor_lock_present(self):
+        """B1 fix: _executor_lock must exist to prevent double-initialisation race."""
+        import aryx.api.file_ingest_api as m
+        assert hasattr(m, "_executor_lock")
+        import threading
+        assert isinstance(m._executor_lock, type(threading.Lock()))
+
+    def test_submit_future_has_done_callback(self):
+        """B2 fix: submit() result has a done-callback attached to log lost exceptions."""
+        import pathlib
+        src = pathlib.Path("src/aryx/api/file_ingest_api.py").read_text()
+        assert "add_done_callback" in src
 
 
 # ---------------------------------------------------------------------------

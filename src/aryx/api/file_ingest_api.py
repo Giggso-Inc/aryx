@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -30,12 +31,14 @@ from aryx.store.migrate import apply_migrations
 logger = logging.getLogger(__name__)
 
 _executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
 
 
 def _get_executor() -> ThreadPoolExecutor:
     global _executor
-    if _executor is None:
-        _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
     return _executor
 
 
@@ -140,7 +143,12 @@ def file_ingest_router() -> APIRouter:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
         links = json.loads(fk_links) if fk_links else []
-        _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+        future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+        future.add_done_callback(
+            lambda f: f.exception() and logger.error(
+                "ingest job=%s raised unhandled exception: %s", job_id, f.exception()
+            )
+        )
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 
