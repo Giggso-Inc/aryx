@@ -1,10 +1,13 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 
 export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void) {
   const [stage, setStage] = useState<string | null>(null);
   const [pct, setPct] = useState<number | null>(null);
+  const onDoneRef = useRef(onDone);
+
+  useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -15,14 +18,14 @@ export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void
         if (dead) return;
         setStage(j.stage);
         setPct(j.pct);
-        if (j.status === "complete") { onDone(true); return; }
-        if (j.status === "failed") { onDone(false); return; }
+        if (j.status === "complete") { onDoneRef.current(true); return; }
+        if (j.status === "failed") { onDoneRef.current(false); return; }
       } catch { /* ignore transient network errors */ }
       if (!dead) setTimeout(tick, 1500);
     };
     tick();
     return () => { dead = true; };
-  }, [jobId, onDone]);
+  }, [jobId]); // onDone intentionally excluded — kept current via ref to avoid poll restart
 
   return { stage, pct };
 }

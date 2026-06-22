@@ -106,6 +106,12 @@
   ],
   "changelog": [
     {
+      "version": "1.0.3",
+      "date": "2026-06-22T18:00:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Confirm manifest gap intent vs dev baseline: (1) guard.infra.terraform_state and guard.firewall.open_world omitted — project has no Terraform and ports are bound by Docker not app code, so these guards are not applicable. (2) allowed_tools.web.blocked_url_patterns omitted — project uses Ollama exclusively, not OpenAI; no direct OpenAI call risk from skill code. (3) project_rules.commit_convention omitted — conventional commits are followed by convention, not enforced via manifest pre-commit hook in this branch. (4) pool-fitter, auth-warden, block-smith, survivor-smith added to approved_skills — these are registered gap-closure skills in the org skill registry."
+    },
+    {
       "version": "1.0.2",
       "date": "2026-06-22T14:00:00Z",
       "changed_by": "g.sivasankari@giggso.com",
