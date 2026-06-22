@@ -126,12 +126,12 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
                 # Edge-scoped axiom (inverse_of / symmetric / transitive).
                 fires = _apply_edge_axiom(graph, str(when["edge"]), then)
             else:
-                # SQL pushdown: fetch only entities matching type + attr key.
-                # op/value comparison remains in _match() for edge-case safety.
                 fires = 0
-                for ent in estore.match_entities(when):
-                    if _match(ent, when):
-                        fires += _fire(graph, ent, then)
+                # _match() returns False when attr is absent; skip the DB fetch entirely.
+                if when.get("attr"):
+                    for ent in estore.match_entities(when):
+                        if _match(ent, when):
+                            fires += _fire(graph, ent, then)
             per_rule[rule["name"]] = fires
             total += fires
             if fires:

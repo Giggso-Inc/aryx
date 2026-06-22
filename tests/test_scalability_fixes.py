@@ -576,10 +576,47 @@ class TestThreadPoolExecutor:
         assert isinstance(m._executor_lock, type(threading.Lock()))
 
     def test_submit_future_has_done_callback(self):
-        """B2 fix: submit() result has a done-callback attached to log lost exceptions."""
-        import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "src/aryx/api/file_ingest_api.py").read_text()
-        assert "add_done_callback" in src
+        """B2 fix: endpoint wires add_done_callback to the future returned by submit()."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from fastapi import UploadFile
+
+        mock_future = MagicMock()
+        mock_executor = MagicMock()
+        mock_executor.submit.return_value = mock_future
+
+        mock_file = MagicMock(spec=UploadFile)
+        mock_file.filename = "data.csv"
+        mock_file.read = AsyncMock(return_value=b"id,name\n1,Alice")
+
+        with patch("aryx.api.file_ingest_api._get_executor", return_value=mock_executor), \
+             patch("aryx.api.file_ingest_api.get_settings") as mock_cfg, \
+             patch("aryx.api.file_ingest_api.apply_migrations"), \
+             patch("aryx.api.file_ingest_api.JobStore"):
+            mock_cfg.return_value.rdb_dsn = "postgresql://x"
+            from aryx.api.file_ingest_api import file_ingest_router
+            router = file_ingest_router()
+            handler = next(r for r in router.routes if "POST" in r.methods).endpoint
+            asyncio.run(handler(
+                files=[mock_file],
+                ontology_type="Company",
+                match_keys="name",
+                fk_links="[]",
+                workspace_id=1,
+            ))
+
+        mock_future.add_done_callback.assert_called_once()
+
+    def test_run_files_jobstore_raises_no_nameerror(self):
+        """B4 fix: JobStore() raising must not cause NameError in except/finally."""
+        with patch("aryx.api.file_ingest_api.get_settings") as mock_cfg, \
+             patch("aryx.api.file_ingest_api.JobStore",
+                   side_effect=RuntimeError("DB down")):
+            mock_cfg.return_value.rdb_dsn = "postgresql://x"
+            from aryx.api.file_ingest_api import _run_files
+            # Pre-fix: NameError from jobs.finish/jobs.close in except/finally.
+            # Post-fix: logs warning and returns cleanly.
+            _run_files([], "Company", [], [], "test-job-id", 1)
 
 
 # ---------------------------------------------------------------------------
