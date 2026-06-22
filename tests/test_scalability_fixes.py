@@ -437,6 +437,56 @@ class TestEngineUsesMatchEntities:
             _apply_edge(mock_graph, 1, "part_of", "Group", "HQ")  # lower → upper normalised
         assert mock_graph.run.call_count == 2
 
+    def test_invalid_relationship_name_skips_rule_not_evaluation(self):
+        """ValueError from invalid relationship name must not abort remaining rules.
+
+        A rule with then.add_relationship='reports-to' (hyphen) raises ValueError
+        from _apply_edge. The rule loop must catch it, log a warning, record
+        fires=0 for that rule, and continue evaluating subsequent rules.
+        """
+        rules = [
+            {
+                "name": "bad_rel", "enabled": True,
+                "when": {"type": "Person", "attr": "dept", "op": "==", "value": "eng"},
+                "then": {"add_relationship": "reports-to"},  # hyphen → ValueError
+            },
+            {
+                "name": "good_label", "enabled": True,
+                "when": {"type": "Customer", "attr": "tier", "op": "==", "value": "gold"},
+                "then": {"set_label": "Gold"},
+            },
+        ]
+        mock_rules_store = MagicMock()
+        mock_rules_store.list_.return_value = rules
+
+        mock_estore = MagicMock()
+        mock_estore.match_entities.side_effect = lambda when: (
+            [{"id": 1, "type": "Person", "attributes": {"dept": "eng"}}]
+            if when.get("type") == "Person"
+            else [{"id": 2, "type": "Customer", "attributes": {"tier": "gold"}}]
+        )
+
+        mock_bumps = MagicMock()
+        mock_graph = MagicMock()
+        mock_cfg = MagicMock()
+        mock_cfg.rdb_dsn = "postgresql://x"
+        mock_cfg.graph_url = "redis://x"
+
+        with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
+             patch("aryx.reasoning.engine.RuleStore",
+                   side_effect=[mock_rules_store, mock_bumps]), \
+             patch("aryx.reasoning.engine.EntityStore", return_value=mock_estore), \
+             patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph), \
+             patch("aryx.reasoning.engine.ws_graph", return_value="ws_1"):
+            from aryx.reasoning.engine import evaluate_workspace
+            result = evaluate_workspace(workspace_id=1)
+
+        # bad_rel caught as ValueError → fires=0; good_label continues → fires=1
+        assert result["per_rule"]["bad_rel"] == 0
+        assert result["per_rule"]["good_label"] == 1
+        assert result["total_fires"] == 1
+        assert result["rules_evaluated"] == 2
+
 
 # ---------------------------------------------------------------------------
 # P3 — MultiKeyBlocker reads from config

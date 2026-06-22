@@ -122,20 +122,26 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
         for rule in rules:
             when = rule.get("when") or {}
             then = rule.get("then") or {}
-            if "edge" in when:
-                # Edge-scoped axiom (inverse_of / symmetric / transitive).
-                fires = _apply_edge_axiom(graph, str(when["edge"]), then)
-            else:
-                fires = 0
-                if when.get("attr"):
-                    for ent in estore.match_entities(when):
-                        if _match(ent, when):
-                            fires += _fire(graph, ent, then)
+            fires = 0
+            try:
+                if "edge" in when:
+                    # Edge-scoped axiom (inverse_of / symmetric / transitive).
+                    fires = _apply_edge_axiom(graph, str(when["edge"]), then)
                 else:
-                    logger.warning(
-                        "rule %r skipped — no 'attr' and no 'edge' in when-clause",
-                        rule.get("name"),
-                    )
+                    if when.get("attr"):
+                        for ent in estore.match_entities(when):
+                            if _match(ent, when):
+                                fires += _fire(graph, ent, then)
+                    else:
+                        logger.warning(
+                            "rule %r skipped — no 'attr' and no 'edge' in when-clause",
+                            rule.get("name"),
+                        )
+            except ValueError as exc:
+                logger.warning(
+                    "rule %r skipped — invalid value in then-clause: %s",
+                    rule.get("name"), exc,
+                )
             per_rule[rule["name"]] = fires
             total += fires
             if fires:
