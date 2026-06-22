@@ -146,7 +146,13 @@ def oci_genai_json(
             if not line.startswith("```")
         ).strip()
 
-    data = json.loads(generated)
+    try:
+        data = json.loads(generated)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"OCI GenAI returned non-JSON output (model={spec.name!r}): "
+            f"{generated[:200]!r}"
+        ) from exc
     # OCI GenAI does not expose per-call token counts in the current SDK;
     # estimate from prompt length to keep the governor roughly accurate.
     in_tok = len(full_prompt) // 4

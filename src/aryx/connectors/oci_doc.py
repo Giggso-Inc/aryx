@@ -20,8 +20,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# OCI Document Understanding feature types included in every request.
-_FEATURES = ["TEXT_DETECTION", "TABLE_DETECTION"]
+# OCI Document Understanding inline document size limit (~20 MB base64 → ~15 MB raw).
+# Files over this must use Object Storage upload instead of inline submission.
+_OCI_INLINE_MAX_BYTES = 15 * 1024 * 1024
 
 
 class OciDocConnector:
@@ -44,6 +45,12 @@ class OciDocConnector:
 
         client = get_doc_client()
         raw = self._path.read_bytes()
+        if len(raw) > _OCI_INLINE_MAX_BYTES:
+            raise ValueError(
+                f"{self._path.name!r} is {len(raw) // (1024 * 1024)} MB — "
+                f"OCI Document Understanding inline limit is ~15 MB. "
+                f"Use Object Storage upload for large files."
+            )
         doc_b64 = base64.b64encode(raw).decode("utf-8")
 
         features = [
