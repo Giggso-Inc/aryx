@@ -706,6 +706,25 @@ class TestThreadPoolExecutor:
 
         mock_future.add_done_callback.assert_called_once()
 
+    def test_shutdown_executor_drains_and_resets(self):
+        """shutdown_executor() calls shutdown(wait=True) and resets singleton to None."""
+        mock_exc = MagicMock(spec=["shutdown"])
+        import aryx.api.file_ingest_api as m
+        m._executor = mock_exc
+
+        from aryx.api.file_ingest_api import shutdown_executor
+        shutdown_executor()
+
+        mock_exc.shutdown.assert_called_once_with(wait=True)
+        assert m._executor is None
+
+    def test_shutdown_executor_noop_when_not_initialised(self):
+        """shutdown_executor() is a no-op when the executor was never created."""
+        import aryx.api.file_ingest_api as m
+        m._executor = None
+        from aryx.api.file_ingest_api import shutdown_executor
+        shutdown_executor()   # must not raise
+
     def test_run_files_jobstore_raises_no_nameerror(self):
         """B4 fix: JobStore() raising must not cause NameError in except/finally."""
         with patch("aryx.api.file_ingest_api.get_settings") as mock_cfg, \

@@ -41,6 +41,19 @@ def _get_executor() -> ThreadPoolExecutor:
     return _executor
 
 
+def shutdown_executor() -> None:
+    """Drain the ingest executor — call from the app lifespan on shutdown.
+
+    Waits for all in-flight ingest jobs to complete before the process exits
+    so that job records are not left in a partial state.
+    """
+    global _executor
+    with _executor_lock:
+        if _executor is not None:
+            _executor.shutdown(wait=True)
+            _executor = None
+
+
 _DATA_EXTS = {".json", ".csv"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
