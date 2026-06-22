@@ -5,7 +5,7 @@
   "user_email": "g.sivasankari@giggso.com",
   "hub_url": "https://ravenhub.giggso.com",
   "version": "1.0.1",
-  "raven_version": "3.0.0",
+  "raven_version": "3.3.0",
   "work_type": "full-stack-data-platform",
   "stack": {
     "language": ["python", "typescript"],
@@ -105,6 +105,12 @@
     "survivor-smith"
   ],
   "changelog": [
+    {
+      "version": "1.0.2",
+      "date": "2026-06-22T14:00:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Bump raven_version to 3.3.0 to match main — was regressed to 3.0.0 by auto-init"
+    },
     {
       "version": "1.0.1",
       "date": "2026-06-22T13:30:00Z",

@@ -191,22 +191,27 @@ export const api = {
   // ── Wizard / guided setup (Slice W3) ─────────────────────────────────
   // draft-brief runs as a background job to avoid ECONNRESET on long LLM
   // calls through the Next.js proxy (Docker WSL2 drops idle connections).
-  draftBrief: async (workspaceId: number, seed: string, docText = "") => {
+  draftBrief: async (workspaceId: number, seed: string, docText = "", signal?: AbortSignal) => {
     // 1. Start the background job — returns immediately.
     const { job_id } = await fetchJSON<{ job_id: string }>(
       `/admin/workspaces/${workspaceId}/draft-brief`,
       {
         method: "POST",
         body: JSON.stringify({ seed, doc_text: docText, workspace_id: workspaceId }),
+        signal,
       },
     );
     // 2. Poll until done (up to ~3 minutes, 1.5 s interval).
-    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const delay = (ms: number) => new Promise<void>((r) => {
+      const t = setTimeout(r, ms);
+      signal?.addEventListener("abort", () => clearTimeout(t), { once: true });
+    });
     for (let i = 0; i < 120; i++) {
       await delay(1500);
+      if (signal?.aborted) throw new DOMException("Brief drafting cancelled", "AbortError");
       const j = await fetchJSON<{
         status: string; error: string | null;
-      }>(`/admin/jobs/${job_id}`);
+      }>(`/admin/jobs/${job_id}`, { signal });
       if (j.status === "failed") {
         throw new Error(`Brief drafting failed: ${j.error ?? "unknown"}`);
       }
@@ -214,6 +219,7 @@ export const api = {
         // 3. Retrieve the brief from the in-process result store.
         return fetchJSON<{ workspace_id: number; brief: Brief }>(
           `/admin/workspaces/${workspaceId}/brief-result/${job_id}`,
+          { signal },
         );
       }
     }
