@@ -41,8 +41,13 @@ def _content_hash(path: Path) -> str:
 def _connector_for(path: Path):
     from aryx.config import get_settings
     if get_settings().effective_parse_backend() == "oci":
-        from aryx.connectors.oci_doc import OciDocConnector  # noqa: PLC0415
-        return OciDocConnector(path)
+        # OCI Document Understanding supports documents and images only.
+        # Data files (.csv, .json, etc.) are not supported — fall through to
+        # the local connector so structured data is never sent to the API.
+        if path.suffix.lower() in _EXT_MAP:
+            from aryx.connectors.oci_doc import OciDocConnector  # noqa: PLC0415
+            return OciDocConnector(path)
+        # Unsupported by OCI — fall through to local connector below.
     cls = _EXT_MAP.get(path.suffix.lower())
     if cls is None:
         raise ValueError(f"unsupported document type: {path.suffix!r}")

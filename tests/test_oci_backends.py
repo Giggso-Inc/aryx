@@ -328,5 +328,126 @@ class TestEmbedRouting(unittest.TestCase):
                 mock_oci.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# G1 fix — complete_text() OCI short-circuit
+# ---------------------------------------------------------------------------
+
+class TestCompleteTextOciPath(unittest.TestCase):
+    """complete_text() must short-circuit to OCI when backend=oci."""
+
+    def setUp(self) -> None:
+        sys.modules["oci"] = _make_oci_stub()
+        from aryx.oci_client import reset_clients
+        reset_clients()
+
+    def tearDown(self) -> None:
+        from aryx.oci_client import reset_clients
+        reset_clients()
+
+    def test_complete_text_uses_oci_when_backend_oci(self) -> None:
+        from aryx.llm import complete_text
+        from aryx.broker import Broker
+        from aryx.broker.registry import Registry
+        from aryx.broker.governor import TokenGovernor
+        from aryx.config import Settings
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        # Empty registry — broker.choose() would raise LookupError without fix
+        broker = Broker(Registry(), TokenGovernor({}))
+
+        mock_client = MagicMock()
+        mock_client.generate_text.return_value.data.inference_response \
+            .generated_texts = [MagicMock(text='"hello from OCI"')]
+
+        with patch("aryx.oci_client.get_genai_client", return_value=mock_client), \
+             patch.object(cfg_mod, "get_settings",
+                          return_value=Settings(_env_file=None,
+                                                llm_cheap_backend="oci",
+                                                oci_compartment_id="ocid1.test")):
+            text, in_tok, out_tok = complete_text(broker, "cheap", "system", "user")
+
+        assert isinstance(text, str)
+        assert in_tok > 0
+        mock_client.generate_text.assert_called_once()
+
+    def test_complete_text_local_mode_uses_broker(self) -> None:
+        """Local mode must still call broker.choose(), not OCI."""
+        from aryx.llm import complete_text
+        from aryx.broker import Broker
+        from aryx.broker.registry import Registry
+        from aryx.broker.governor import TokenGovernor
+        from aryx.config import Settings
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        broker = Broker(Registry(), TokenGovernor({}))
+
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=Settings(_env_file=None)):
+            # No local models → LookupError — proves broker.choose() was called
+            with self.assertRaises(LookupError):
+                complete_text(broker, "cheap", "system", "user")
+
+
+# ---------------------------------------------------------------------------
+# G2 fix — _connector_for() extension guard for OCI
+# ---------------------------------------------------------------------------
+
+class TestConnectorForOciExtensionGuard(unittest.TestCase):
+    """_connector_for() must not route data files (.csv/.json) to OCI."""
+
+    def test_csv_uses_local_connector_even_in_oci_mode(self) -> None:
+        from aryx.connectors.doc_router import _connector_for
+        from aryx.config import Settings
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=Settings(_env_file=None,
+                                                parse_backend="oci")):
+            # .csv is not in _EXT_MAP — should raise ValueError (unsupported),
+            # NOT route to OCI Doc Understanding
+            with self.assertRaises(ValueError, msg="unsupported document type"):
+                _connector_for(Path("data.csv"))
+
+    def test_json_uses_local_connector_even_in_oci_mode(self) -> None:
+        from aryx.connectors.doc_router import _connector_for
+        from aryx.config import Settings
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=Settings(_env_file=None,
+                                                parse_backend="oci")):
+            with self.assertRaises(ValueError, msg="unsupported document type"):
+                _connector_for(Path("records.json"))
+
+    def test_pdf_routes_to_oci_in_oci_mode(self) -> None:
+        from aryx.connectors.doc_router import _connector_for
+        from aryx.connectors.oci_doc import OciDocConnector
+        from aryx.config import Settings
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=Settings(_env_file=None,
+                                                parse_backend="oci")):
+            conn = _connector_for(Path("report.pdf"))
+        assert isinstance(conn, OciDocConnector)
+
+    def test_pdf_routes_to_pdf_connector_in_local_mode(self) -> None:
+        from aryx.connectors.doc_router import _connector_for
+        from aryx.connectors.pdf import PdfConnector
+        from aryx.config import Settings
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=Settings(_env_file=None)):
+            conn = _connector_for(Path("report.pdf"))
+        assert isinstance(conn, PdfConnector)
+
+
 if __name__ == "__main__":
     unittest.main()

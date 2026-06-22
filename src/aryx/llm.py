@@ -43,8 +43,25 @@ def complete_text(
 
     `think` toggles hybrid-model reasoning on the Ollama path (False keeps fast
     models off thinking for menial work). Token counts let callers meter usage.
+
+    When ARYX_LLM_*_BACKEND=oci the OCI path short-circuits before the broker
+    registry is consulted — no local models need to be registered.
     """
     import json
+    if _use_oci_for(tier):
+        model_name = _oci_model_for(tier)
+        spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        # OCI GenAI has no plain-text mode; request JSON and unwrap the text value.
+        data, in_tok, out_tok = oci_genai_json(
+            spec, system, user + "\n\nRespond with plain text only, not JSON."
+        )
+        broker.charge(tier, in_tok + out_tok)
+        logger.info("complete_text tier=%s provider=oci model=%s tokens=%d",
+                    tier, model_name, in_tok + out_tok)
+        # oci_genai_json parses JSON; unwrap if model wrapped response, else str()
+        text = data if isinstance(data, str) else str(data)
+        return text.strip(), in_tok, out_tok
+
     spec = broker.choose(tier)
     key = broker.secrets.get(spec.api_key_ref) if spec.api_key_ref else None
     msgs = [{"role": "system", "content": system},
