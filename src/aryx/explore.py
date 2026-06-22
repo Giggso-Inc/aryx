@@ -39,9 +39,10 @@ def _prov_by_entity(provenance: list[tuple[int, str, str, str]]) -> dict[int, li
     return out
 
 
-def summarize(entities: list[tuple[int, str, dict]],
-              provenance: list[tuple[int, str, str, str]]) -> dict[str, Any]:
+def summarize(entities, provenance) -> dict[str, Any]:
     """Workspace-level counts: per-type, per-source, and the dedup story."""
+    entities = list(entities)
+    provenance = list(provenance)
     type_counts = Counter(t for _, t, _ in entities)
     src_counts: Counter = Counter(
         f"{system}.{dataset}" for _, system, dataset, _ in provenance)
@@ -86,13 +87,14 @@ def entities_view(entities: list[tuple[int, str, dict]],
             "offset": start, "limit": capped, "items": items}
 
 
-def graph_view(entities: list[tuple[int, str, dict]],
-               relationships: list[tuple[int, int, str]]) -> dict[str, Any]:
+def graph_view(entities, relationships) -> dict[str, Any]:
     """Type-level knowledge map: nodes per type, edges aggregated by relation.
 
     Renders the *shape* of the graph (Customer -HAS_SITE(22)-> Site ...) rather
     than every node — legible at any scale, the query-don't-render rule.
     """
+    entities = list(entities)
+    relationships = list(relationships)
     id_type = {eid: etype for eid, etype, _ in entities}
     type_counts = Counter(etype for _, etype, _ in entities)
     edge_agg: Counter = Counter()

@@ -10,6 +10,7 @@ import logging
 import re
 from collections import defaultdict
 
+from aryx.config import get_settings
 from aryx.models import ResolutionRecord
 
 logger = logging.getLogger(__name__)
@@ -75,8 +76,8 @@ class MultiKeyBlocker:
         max_block_size: Blocks with more members than this are dropped.
     """
 
-    def __init__(self, max_block_size: int = 5000) -> None:
-        self.max_block_size = max_block_size
+    def __init__(self, max_block_size: int | None = None) -> None:
+        self.max_block_size = max_block_size if max_block_size is not None else get_settings().max_block_size
 
     def block(
         self, records: list[ResolutionRecord]

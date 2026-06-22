@@ -12,9 +12,8 @@ prevent runaway on cyclic graphs.
 """
 from __future__ import annotations
 
+from aryx.config import get_settings
 from aryx.graph.falkor_store import FalkorStore
-
-_TRANSITIVE_MAX = 4
 
 
 def apply_inverse(graph: FalkorStore, edge: str, inverse: str) -> None:
@@ -38,8 +37,8 @@ def apply_symmetric(graph: FalkorStore, edge: str) -> None:
 
 
 def apply_transitive(graph: FalkorStore, edge: str, depth: int) -> None:
-    """Close ``edge`` transitively up to ``depth`` hops (capped at _TRANSITIVE_MAX)."""
-    d = max(2, min(int(depth), _TRANSITIVE_MAX))
+    """Close ``edge`` transitively up to ``depth`` hops (capped at ARYX_TRANSITIVE_MAX_DEPTH)."""
+    d = max(2, min(int(depth), get_settings().transitive_max_depth))
     for hop in range(2, d + 1):
         graph.run(
             f"MATCH (a)-[:REL*{hop}..{hop} {{name: $name}}]->(b) "
@@ -62,6 +61,6 @@ def apply_edge_axiom(graph: FalkorStore, edge: str, then: dict) -> int:
         apply_symmetric(graph, edge)
         fired = 1
     if then.get("transitive"):
-        apply_transitive(graph, edge, int(then.get("max_depth", _TRANSITIVE_MAX)))
+        apply_transitive(graph, edge, int(then.get("max_depth", get_settings().transitive_max_depth)))
         fired = 1
     return fired

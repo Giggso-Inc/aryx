@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
 from aryx.graph import FalkorStore
@@ -47,7 +48,7 @@ def run_pipeline(
     broker: Broker,
     tag: bool = False,
     relate: bool = False,
-    max_pairs: int = 50,
+    max_pairs: int | None = None,
     on_progress: Progress | None = None,
     fk_links: list[dict] | None = None,
     workspace_id: int = 1,
@@ -66,13 +67,14 @@ def run_pipeline(
         broker: Model broker (required by resolution; LLM only on opt-in stages).
         tag: Run cheap-tier field tagging during discovery.
         relate: Infer relationships between resolved entities (frontier tier).
-        max_pairs: Cap on candidate pairs when relate is enabled.
+        max_pairs: Cap on candidate pairs when relate is enabled (default: ARYX_MAX_RELATE_PAIRS).
         resume_run_id: Resume a crashed run — done stages skip, the landed
             data of that run is reused (no re-extract).
 
     Returns:
         Summary of {run_id, entities, relationships} plus graph projection counts.
     """
+    _max_pairs = max_pairs if max_pairs is not None else get_settings().max_relate_pairs
     if resume_run_id is not None:
         run_id = resume_run_id
         runner = StageRunner(dsn, run_id, resume=True)
@@ -101,7 +103,7 @@ def run_pipeline(
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
             with runner.stage("relate"):
-                relationships = _relate(estore, broker, max_pairs)
+                relationships = _relate(estore, broker, _max_pairs)
         if fk_links and not runner.skip("fk_link"):
             _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
             with runner.stage("fk_link"):

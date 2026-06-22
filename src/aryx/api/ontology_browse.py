@@ -144,5 +144,5 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
     return {
         "types": type_rows,
         "relationships": [{"name": k, "count": v} for k, v in rel_types.items()],
-        "entity_count": len(ents),
+        "entity_count": sum(per_type.values()),
     }

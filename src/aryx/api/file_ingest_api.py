@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
@@ -26,6 +28,31 @@ from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
+
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
+    return _executor
+
+
+def shutdown_executor() -> None:
+    """Drain the ingest executor — call from the app lifespan on shutdown.
+
+    Waits for all in-flight ingest jobs to complete before the process exits
+    so that job records are not left in a partial state.
+    """
+    global _executor
+    with _executor_lock:
+        if _executor is not None:
+            _executor.shutdown(wait=True)
+            _executor = None
+
 
 _DATA_EXTS = {".json", ".csv"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
@@ -47,9 +74,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
-    broker = _local_broker()
+    jobs = None
     try:
+        jobs = JobStore(settings.rdb_dsn)
+        broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
         for data, name in data_files:
@@ -87,9 +115,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc)
-        jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
+        if jobs is not None:
+            jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
-        jobs.close()
+        if jobs is not None:
+            jobs.close()
 
 
 def file_ingest_router() -> APIRouter:
@@ -97,7 +127,6 @@ def file_ingest_router() -> APIRouter:
 
     @router.post("/ingest/file")
     async def ingest_file(
-        background_tasks: BackgroundTasks,
         files: list[UploadFile] = File(...),
         ontology_type: str = Form(...),
         match_keys: str = Form(...),
@@ -129,7 +158,12 @@ def file_ingest_router() -> APIRouter:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
         links = json.loads(fk_links) if fk_links else []
-        background_tasks.add_task(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+        future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+        future.add_done_callback(
+            lambda f: (exc := f.exception()) and logger.error(
+                "ingest job=%s raised unhandled exception: %s", job_id, exc
+            )
+        )
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 
