@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -21,10 +22,11 @@ from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
 
-# In-memory brief results keyed by job_id.
-# Process-local only — sufficient because the UI fetches immediately after
-# polling the job to completion within the same session.
-_BRIEFS: dict[str, dict[str, Any]] = {}
+_BRIEFS_MAX = 200
+
+# In-memory brief results keyed by job_id. Capped at _BRIEFS_MAX entries;
+# oldest entries are evicted first so long-running processes don't leak.
+_BRIEFS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 class DraftBriefRequest(BaseModel):
@@ -38,18 +40,23 @@ class DraftBriefRequest(BaseModel):
 def _run_draft(job_id: str, workspace_id: int,
                seed: str, doc_text: str) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
+    jobs = None
     try:
+        jobs = JobStore(settings.rdb_dsn)
         jobs.update_stage(job_id, "Drafting", 50, "Calling language model…")
         brief = draft_from_text(_local_broker(), seed, doc_text)
         _BRIEFS[job_id] = brief
+        if len(_BRIEFS) > _BRIEFS_MAX:
+            _BRIEFS.popitem(last=False)
         jobs.finish(job_id, run_id=None, status="complete")
         logger.info("brief drafted job=%s ws=%s", job_id, workspace_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("brief draft failed job=%s: %s", job_id, exc)
-        jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
+        if jobs is not None:
+            jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
-        jobs.close()
+        if jobs is not None:
+            jobs.close()
 
 
 def brief_router() -> APIRouter:

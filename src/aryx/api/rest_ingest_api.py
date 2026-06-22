@@ -67,8 +67,9 @@ def _run_rest(url: str, headers: dict, record_path: str, page_param: str,
               next_page_path: str, max_pages: int, ontology_type: str,
               match_keys: list[str], job_id: str, workspace_id: int) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
+    jobs = None
     try:
+        jobs = JobStore(settings.rdb_dsn)
         jobs.update_stage(job_id, "Fetch", 10, f"Fetching from {url}")
         connector = RestApiConnector(
             url=url, headers=headers, record_path=record_path,
@@ -86,9 +87,11 @@ def _run_rest(url: str, headers: dict, record_path: str, page_param: str,
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
         logger.warning("rest ingest failed job=%s: %s", job_id, exc)
-        jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
+        if jobs is not None:
+            jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
-        jobs.close()
+        if jobs is not None:
+            jobs.close()
 
 
 def rest_ingest_router() -> APIRouter:
