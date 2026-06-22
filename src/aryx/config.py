@@ -45,6 +45,14 @@ class Settings(BaseSettings):
         default=4,
         description="Number of concurrent pipeline workers (ThreadPoolExecutor).",
     )
+    rules_db_warn_threshold: int = Field(
+        default=20,
+        description=(
+            "Warn when a workspace has more enabled rules than this. "
+            "Each rule issues one DB round-trip in evaluate_workspace(); "
+            "high counts saturate the connection pool under concurrent load."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)

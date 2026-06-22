@@ -114,6 +114,14 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
         rules_store.close()
     if not rules:
         return {"rules_evaluated": 0, "total_fires": 0, "per_rule": {}}
+    threshold = settings.rules_db_warn_threshold
+    if len(rules) > threshold:
+        logger.warning(
+            "evaluate_workspace ws=%s rules=%d exceeds threshold=%d — "
+            "each rule issues one DB round-trip; revisit batching or "
+            "set ARYX_RULES_DB_WARN_THRESHOLD to suppress",
+            workspace_id, len(rules), threshold,
+        )
     estore = None
     bumps = None
     try:

@@ -94,6 +94,7 @@ class TestConfigNewFields:
         assert "max_relate_pairs" in fields
         assert "transitive_max_depth" in fields
         assert "worker_threads" in fields
+        assert "rules_db_warn_threshold" in fields
 
     def test_default_values(self):
         from aryx.config import Settings
@@ -103,6 +104,7 @@ class TestConfigNewFields:
         assert fields["max_relate_pairs"].default == 50
         assert fields["transitive_max_depth"].default == 4
         assert fields["worker_threads"].default == 4
+        assert fields["rules_db_warn_threshold"].default == 20
 
     def test_env_override_max_block_size(self, monkeypatch: pytest.MonkeyPatch):
         from aryx.config import Settings
@@ -369,6 +371,7 @@ class TestEngineUsesMatchEntities:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
 
         with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
              patch("aryx.reasoning.engine.RuleStore",
@@ -405,6 +408,7 @@ class TestEngineUsesMatchEntities:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
 
         with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
              patch("aryx.reasoning.engine.RuleStore",
@@ -427,6 +431,7 @@ class TestEngineUsesMatchEntities:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
 
         with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
              patch("aryx.reasoning.engine.RuleStore",
@@ -493,6 +498,7 @@ class TestEngineUsesMatchEntities:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
 
         with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
              patch("aryx.reasoning.engine.RuleStore",
@@ -542,6 +548,7 @@ class TestEngineUsesMatchEntities:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
 
         with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
              patch("aryx.reasoning.engine.RuleStore",
@@ -557,6 +564,110 @@ class TestEngineUsesMatchEntities:
         assert result["per_rule"]["good_label"] == 1
         assert result["total_fires"] == 1
         assert result["rules_evaluated"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Fix #5 — N DB queries per evaluate_workspace: warn when rule count is high
+# ---------------------------------------------------------------------------
+
+class TestRulesDbWarnThreshold:
+    """Fix #5: evaluate_workspace logs a warning when rule count exceeds threshold."""
+
+    def _make_cfg(self, threshold=20):
+        cfg = MagicMock()
+        cfg.rdb_dsn = "postgresql://x"
+        cfg.graph_url = "redis://x"
+        cfg.rules_db_warn_threshold = threshold
+        return cfg
+
+    def _make_rules(self, n):
+        return [
+            {"name": f"rule_{i}", "enabled": True,
+             "when": {"type": "T"}, "then": {"set_label": "L"}}
+            for i in range(n)
+        ]
+
+    def test_no_warning_below_threshold(self):
+        """No warning emitted when rule count is at or below threshold."""
+        mock_rules_store = MagicMock()
+        mock_rules_store.list_.return_value = self._make_rules(3)
+        mock_estore = MagicMock()
+        mock_estore.match_entities.return_value = []
+        mock_bumps = MagicMock()
+        mock_graph = MagicMock()
+
+        with patch("aryx.reasoning.engine.get_settings",
+                   return_value=self._make_cfg(threshold=20)), \
+             patch("aryx.reasoning.engine.RuleStore",
+                   side_effect=[mock_rules_store, mock_bumps]), \
+             patch("aryx.reasoning.engine.EntityStore", return_value=mock_estore), \
+             patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph), \
+             patch("aryx.reasoning.engine.ws_graph", return_value="ws_1"), \
+             patch("aryx.reasoning.engine.logger") as mock_log:
+            from aryx.reasoning.engine import evaluate_workspace
+            evaluate_workspace(workspace_id=1)
+
+        for call_args in mock_log.warning.call_args_list:
+            assert "exceeds threshold" not in str(call_args)
+
+    def test_warning_emitted_above_threshold(self):
+        """Warning is logged when rule count exceeds rules_db_warn_threshold."""
+        mock_rules_store = MagicMock()
+        mock_rules_store.list_.return_value = self._make_rules(5)
+        mock_estore = MagicMock()
+        mock_estore.match_entities.return_value = []
+        mock_bumps = MagicMock()
+        mock_graph = MagicMock()
+
+        with patch("aryx.reasoning.engine.get_settings",
+                   return_value=self._make_cfg(threshold=3)), \
+             patch("aryx.reasoning.engine.RuleStore",
+                   side_effect=[mock_rules_store, mock_bumps]), \
+             patch("aryx.reasoning.engine.EntityStore", return_value=mock_estore), \
+             patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph), \
+             patch("aryx.reasoning.engine.ws_graph", return_value="ws_1"), \
+             patch("aryx.reasoning.engine.logger") as mock_log:
+            from aryx.reasoning.engine import evaluate_workspace
+            evaluate_workspace(workspace_id=1)
+
+        warning_msgs = [str(c) for c in mock_log.warning.call_args_list]
+        assert any("exceeds threshold" in m for m in warning_msgs)
+
+    def test_warning_includes_workspace_rule_count_and_threshold(self):
+        """Warning message carries workspace_id, rule count, and threshold."""
+        mock_rules_store = MagicMock()
+        mock_rules_store.list_.return_value = self._make_rules(25)
+        mock_estore = MagicMock()
+        mock_estore.match_entities.return_value = []
+        mock_bumps = MagicMock()
+        mock_graph = MagicMock()
+
+        with patch("aryx.reasoning.engine.get_settings",
+                   return_value=self._make_cfg(threshold=20)), \
+             patch("aryx.reasoning.engine.RuleStore",
+                   side_effect=[mock_rules_store, mock_bumps]), \
+             patch("aryx.reasoning.engine.EntityStore", return_value=mock_estore), \
+             patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph), \
+             patch("aryx.reasoning.engine.ws_graph", return_value="ws_1"), \
+             patch("aryx.reasoning.engine.logger") as mock_log:
+            from aryx.reasoning.engine import evaluate_workspace
+            evaluate_workspace(workspace_id=42)
+
+        # Pick apart the warning call args (format string + positional args)
+        warning_calls = mock_log.warning.call_args_list
+        threshold_warnings = [c for c in warning_calls
+                              if "exceeds threshold" in str(c)]
+        assert threshold_warnings, "expected a threshold warning"
+        args = threshold_warnings[0][0]  # positional args tuple
+        assert 42 in args   # workspace_id
+        assert 25 in args   # rule count
+        assert 20 in args   # threshold
+
+    def test_env_override_rules_db_warn_threshold(self, monkeypatch):
+        from aryx.config import Settings
+        monkeypatch.setenv("ARYX_RULES_DB_WARN_THRESHOLD", "5")
+        s = Settings(_env_file=None)
+        assert s.rules_db_warn_threshold == 5
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +946,7 @@ class TestOrchestratePairs:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
         mock_cfg.max_relate_pairs = 25
         mock_runner = self._make_runner()
 
@@ -873,6 +985,7 @@ class TestOrchestratePairs:
         mock_cfg = MagicMock()
         mock_cfg.rdb_dsn = "postgresql://x"
         mock_cfg.graph_url = "redis://x"
+        mock_cfg.rules_db_warn_threshold = 20
         mock_cfg.max_relate_pairs = 25
         mock_runner = self._make_runner()
 
