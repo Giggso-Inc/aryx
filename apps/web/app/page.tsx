@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Clock, Download, X } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
@@ -10,7 +11,7 @@ import { WorkspacePeek } from "@/components/ask/WorkspacePeek";
 import { api } from "@/lib/api";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
-import type { ChatTurn, Citation } from "@/lib/types";
+import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
 
 // Starters tuned for the demo workspace (Customer · Site · Device · Agent · Ticket).
 // Each names a specific kind of record or a known field so term extraction
@@ -32,20 +33,103 @@ function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+function HistoryDrawer({
+  workspaceId,
+  onClose,
+  onReplay,
+}: {
+  workspaceId: number;
+  onClose: () => void;
+  onReplay: (q: string) => void;
+}) {
+  const [history, setHistory] = useState<AskHistoryTurn[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getAskHistory(workspaceId, 50)
+      .then(setHistory)
+      .catch(() => setHistory([]))
+      .finally(() => setLoading(false));
+  }, [workspaceId]);
+
+  const downloadCsv = () => {
+    const rows = [["question", "answer", "ts"], ...history.map((h) => [
+      `"${h.question.replace(/"/g, '""')}"`,
+      `"${h.answer.replace(/"/g, '""')}"`,
+      h.ts,
+    ])];
+    const blob = new Blob([rows.map((r) => r.join(",")).join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `aryx-history-ws${workspaceId}.csv`;
+    a.click();
+  };
+
+  const downloadJson = () => {
+    const blob = new Blob([JSON.stringify(history, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `aryx-history-ws${workspaceId}.json`;
+    a.click();
+  };
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-30 flex w-96 flex-col border-l border-navy-100 bg-white shadow-soft animate-rise">
+      <div className="flex items-center justify-between border-b border-navy-100 px-4 py-3">
+        <h2 className="font-semibold text-navy-900">Ask History</h2>
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={downloadCsv}
+            className="focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-navy-600 hover:bg-navy-50">
+            <Download size={11} /> CSV
+          </button>
+          <button type="button" onClick={downloadJson}
+            className="focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-navy-600 hover:bg-navy-50">
+            <Download size={11} /> JSON
+          </button>
+          <button type="button" onClick={onClose}
+            className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-2">
+        {loading ? (
+          <div className="py-8 text-center text-[12px] text-subtle">Loading…</div>
+        ) : history.length === 0 ? (
+          <div className="py-8 text-center text-[12px] text-subtle italic">No history yet</div>
+        ) : (
+          <ul className="space-y-2">
+            {history.map((h) => (
+              <li key={h.id}
+                className="cursor-pointer rounded-xl border border-navy-100 p-3 hover:bg-navy-50"
+                onClick={() => { onReplay(h.question); onClose(); }}>
+                <p className="text-[12px] font-medium text-navy-800 line-clamp-2">{h.question}</p>
+                <p className="mt-1 text-[11px] text-subtle line-clamp-2">{h.answer}</p>
+                <p className="mt-1 text-[10px] text-subtle">{new Date(h.ts).toLocaleString()}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function HomePage() {
   const router = useRouter();
   const { workspaceId } = useWorkspace();
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   // First-run redirect: empty workspace → guided setup. "Empty" means
   // zero records, regardless of whether stub types exist.
   const [isEmptyWorkspace, setIsEmptyWorkspace] =
     useState<boolean | null>(null);
   useEffect(() => {
-    api.getOntology(workspaceId).then((d) => {
-      const isEmpty = (d.entity_count || 0) === 0;
+    api.getEntityGraph(workspaceId).then((d) => {
+      const isEmpty = (d.entities || []).length === 0;
       setIsEmptyWorkspace(isEmpty);
       if (isEmpty && turns.length === 0) router.replace("/start");
     }).catch(() => setIsEmptyWorkspace(false));
@@ -123,8 +207,26 @@ export default function HomePage() {
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
+      {showHistory && (
+        <HistoryDrawer
+          workspaceId={workspaceId}
+          onClose={() => setShowHistory(false)}
+          onReplay={(q) => { setInput(q); }}
+        />
+      )}
 
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 py-10">
+        {!empty && (
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowHistory((v) => !v)}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+            >
+              <Clock size={12} /> History
+            </button>
+          </div>
+        )}
         {empty ? (
           <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
             <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">

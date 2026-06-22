@@ -1,4 +1,4 @@
-"""Ingest tab — REST / API source. Posts a job to the backend for ingestion."""
+"""Ingest tab — REST / API source. Preview then ingest to graph."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ from aryx.ui import api, ingest_client
 
 
 def render(workspace_context: str = "") -> None:
-    """REST API form: URL + auth + record path + pagination → ingest job."""
+    """REST API form: URL + auth + record path + entity config → ingest job."""
     if workspace_context.strip():
         st.markdown(
             f'<div class="aryx-ws-summary">📝 <b>Workspace context:</b> '
@@ -42,10 +42,10 @@ def render(workspace_context: str = "") -> None:
         headers["Authorization"] = f"Bearer {auth_value}"
     elif auth_kind == "API-Key header" and auth_value:
         headers[api_key_name] = auth_value
-    st.caption("Connect & ingest will run a discovery job (entities are "
-               "auto-typed) using your workspace's business context.")
-    if st.button("Preview fetch", type="primary",
-                 disabled=not url.strip()):
+
+    st.divider()
+
+    if st.button("🔍 Preview fetch", type="secondary", disabled=not url.strip()):
         try:
             payload = {
                 "workspace_id": api.current_workspace(),
@@ -54,14 +54,61 @@ def render(workspace_context: str = "") -> None:
                 "page_param": page_param, "next_page_path": next_path,
                 "context": workspace_context,
             }
-            resp = ingest_client.api._post("/ingest/rest/preview", payload,
-                                           timeout=60)
-            st.success(f"Fetched {resp.get('count', 0)} record(s).")
-            st.info(resp.get("message", ""))
-            if resp.get("sample"):
-                st.json(resp["sample"])
+            resp = api._post("/ingest/rest/preview", payload, timeout=60)
+            st.session_state["rest_preview"] = resp
+            st.session_state["rest_url"] = url
+            st.session_state["rest_headers"] = headers
+            st.session_state["rest_record_path"] = record_path
+            st.session_state["rest_page_param"] = page_param
+            st.session_state["rest_next_path"] = next_path
         except Exception as exc:
             st.error(f"Fetch failed: {exc}")
+
+    prev = st.session_state.get("rest_preview")
+    if prev and st.session_state.get("rest_url") == url:
+        st.success(f"Fetched {prev.get('count', 0)} record(s).")
+        with st.expander("Sample records", expanded=False):
+            st.json(prev.get("sample", [])[:5])
+
+        st.markdown("**Configure entity type before ingesting:**")
+        c1, c2 = st.columns(2)
+        otype = c1.text_input(
+            "Entity type (PascalCase)",
+            value=prev.get("inferred_type", "Entity"),
+            key="rest_otype",
+        )
+        match_keys_raw = c2.text_input(
+            "Match key(s) — comma separated",
+            value=prev.get("suggested_match_key", "id"),
+            key="rest_mk",
+        )
+        max_pages = st.number_input("Max pages to fetch", min_value=1,
+                                    max_value=1000, value=20, key="rest_maxpages")
+        st.caption("Connect & ingest will run the full pipeline: "
+                   "extract → resolve → project to graph.")
+        if st.button("🚀 Ingest to graph", type="primary", disabled=not otype.strip()):
+            try:
+                keys = [k.strip() for k in match_keys_raw.split(",") if k.strip()]
+                payload = {
+                    "workspace_id": api.current_workspace(),
+                    "url": st.session_state["rest_url"],
+                    "headers": st.session_state["rest_headers"],
+                    "record_path": st.session_state["rest_record_path"],
+                    "page_param": st.session_state["rest_page_param"],
+                    "next_page_path": st.session_state["rest_next_path"],
+                    "max_pages": int(max_pages),
+                    "ontology_type": otype.strip(),
+                    "match_keys": keys or ["id"],
+                    "context": workspace_context,
+                }
+                resp = api._post("/ingest/rest/ingest", payload, timeout=30)
+                st.session_state["active_job"] = resp.get("job_id")
+                st.session_state.pop("rest_preview", None)
+                st.success(f"Ingest queued — entity type: **{resp.get('ontology_type')}**")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Ingest failed: {exc}")
+
     with st.expander("Preview the request"):
         st.code(json.dumps({"url": url, "headers": headers,
                             "record_path": record_path}, indent=2),

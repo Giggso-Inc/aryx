@@ -1,141 +1,31 @@
 {
-  "project": "Aryx",
-  "version": "1.0",
-  "mode": "solo",
-  "github_id": "",
-  "audit_tag": "Aryx",
+  "project": "aryx",
+  "org": "giggso",
+  "owner": "g.sivasankari@giggso.com",
+  "user_email": "g.sivasankari@giggso.com",
+  "hub_url": "https://ravenhub.giggso.com",
+  "version": "1.0.0",
+  "raven_version": "3.0.0",
   "stack": {
-    "work_type": "mixed",
-    "language": [
-      "python3.13",
-      "typescript",
-      "yaml",
-      "sql"
-    ],
-    "db": {
-      "primary": [
-        "postgresql"
-      ],
-      "nosql": [],
-      "streaming": [],
-      "warehouse": [],
-      "cache": [],
-      "vector": [],
-      "graph": [
-        "falkordb"
-      ],
-      "blob": []
-    },
-    "cloud": [
-      "aws"
-    ],
-    "apps": [
-      "google-drive",
-      "salesforce",
-      "odoo"
-    ],
-    "libraries": [
-      "anthropic~",
-      "boto3~",
-      "falkordb~",
-      "fastapi~",
-      "psycopg",
-      "pydantic-settings~",
-      "pydantic~",
-      "uvicorn~",
-      "python-multipart~",
-      "SQLAlchemy~",
-      "PyMySQL~",
-      "oracledb~",
-      "pymupdf~",
-      "python-pptx~",
-      "python-docx~",
-      "striprtf~",
-      "pytesseract~",
-      "Pillow~",
-      "presidio-analyzer~",
-      "presidio-anonymizer~",
-      "spacy~",
-      "pgvector~",
-      "mcp~",
-      "streamlit~",
-      "rdflib~"
-    ]
+    "language": [],
+    "frontend": [],
+    "data": [],
+    "db": [],
+    "infra": [],
+    "cloud": "none",
+    "libraries": []
   },
-  "raven_version": "3.3.0",
-  "standards": "raven-v3.0",
-  "approval_mode": "auto",
+  "standards": "raven-v1",
   "guard": {
     "enabled": true,
-    "db": {
-      "mass_deletion_threshold": 100
-    },
-    "git": {
-      "force_push": "hard_block"
-    },
-    "infra": {
-      "terraform_state": "hard_block"
-    },
-    "firewall": {
-      "open_world": "hard_block"
-    }
-  },
-  "style": {
-    "max_lines_per_file": 150,
-    "require_type_hints": true,
-    "require_docstrings": true,
-    "forbid_print_statements": true
-  },
-  "allowed_tools": {
-    "default_policy": "warn",
-    "mcps": [],
-    "apis": [],
-    "web": {
-      "blocked_url_patterns": [
-        "api.openai.com",
-        "platform.openai.com"
-      ]
-    }
-  },
-  "approved_skills": {
-    "giggso": [
-      "raven-core",
-      "raven-expert",
-      "raven-plan",
-      "raven-review",
-      "raven-security",
-      "raven-refactor",
-      "raven-test",
-      "raven-document",
-      "andie"
-    ],
-    "anthropic": [
-      "debug",
-      "batch",
-      "review",
-      "security-review",
-      "init"
-    ],
-    "community": []
-  },
-  "project_rules": {
-    "forbidden_frameworks": [],
-    "forbidden_file_extensions": [],
-    "license": "",
-    "commit_convention": "conventional",
-    "require_approval_gates": false,
-    "ui_framework": "",
-    "phase_gated": false
+    "version": "1.0"
   },
   "changelog": [
     {
-      "version": "1.0",
-      "changed_by": "rv@giggso.com",
-      "github_id": "",
-      "audit_tag": "Aryx",
-      "changed_at": "2026-05-25T17:31:25Z",
-      "changes": "Init: mode=solo work_type=mixed platform=Codex",
-      "pr": "pending"
+      "version": "1.0.0",
+      "date": "2026-06-18T09:19:49Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Raven project auto-initialised by session-start.py"
     }
   ]
 }

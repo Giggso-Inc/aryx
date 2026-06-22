@@ -79,7 +79,7 @@ def _hero() -> None:
 def _readiness() -> None:
     """Thin depth meter — Generic NER → Grounded → Sharp → Expert."""
     filled = sum(bool(st.session_state.get(k, "").strip()) for k in _KEYS)
-    labels = ["Generic NER", "Grounded", "Grounded", "Sharp", "Expert"]
+    labels = ["Generic NER", "Grounded", "Grounded", "Sharp", "Expert", "Expert"]
     st.progress(filled / 5, text=f"Brief depth: {labels[filled]}")
 
 

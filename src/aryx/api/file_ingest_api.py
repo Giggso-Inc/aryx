@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _DATA_EXTS = {".json", ".csv"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
+             ".xml", ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
 _MAX_FILE = 2 * 1024 * 1024

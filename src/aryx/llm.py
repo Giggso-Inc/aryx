@@ -91,7 +91,7 @@ def complete_json(
     if spec.provider == "anthropic":
         data, in_tok, out_tok = anthropic_json(spec, system, user, schema, key)
     elif spec.provider == "ollama":
-        data, in_tok, out_tok = ollama_json(spec, system, user)
+        data, in_tok, out_tok = ollama_json(spec, system, user, schema)
     else:
         data, in_tok, out_tok = openai_json(spec, system, user, key)
     broker.charge(tier, in_tok + out_tok)
