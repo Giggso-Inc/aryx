@@ -109,7 +109,7 @@ class EntityStore:
         batch_size = get_settings().batch_size
         rows: list[tuple[int, str, dict]] = []
         with self._pool.connection() as conn:
-            with conn.cursor("list_entities_cur") as cur:
+            with conn.cursor(f"list_entities_cur_{self._ws}") as cur:
                 cur.execute(load("select_entities"), (self._ws,))
                 while batch := cur.fetchmany(batch_size):
                     rows.extend((r[0], r[1], r[2]) for r in batch)
@@ -120,7 +120,7 @@ class EntityStore:
         batch_size = get_settings().batch_size
         rows: list[tuple[int, str, str, str]] = []
         with self._pool.connection() as conn:
-            with conn.cursor("list_provenance_cur") as cur:
+            with conn.cursor(f"list_provenance_cur_{self._ws}") as cur:
                 cur.execute(load("select_members_provenance"), (self._ws,))
                 while batch := cur.fetchmany(batch_size):
                     rows.extend((r[0], r[1], r[2], r[3]) for r in batch)
@@ -131,7 +131,7 @@ class EntityStore:
         batch_size = get_settings().batch_size
         rows: list[tuple[int, int, str]] = []
         with self._pool.connection() as conn:
-            with conn.cursor("list_relationships_cur") as cur:
+            with conn.cursor(f"list_relationships_cur_{self._ws}") as cur:
                 cur.execute(load("select_relationships"), (self._ws,))
                 while batch := cur.fetchmany(batch_size):
                     rows.extend((r[0], r[1], r[2]) for r in batch)
@@ -147,16 +147,20 @@ class EntityStore:
         """
         entity_type = when.get("type") or None
         attr = when.get("attr") or None
+        batch_size = get_settings().batch_size
+        rows: list[dict[str, Any]] = []
         with self._pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(f"match_entities_cur_{self._ws}") as cur:
                 cur.execute(
                     load("select_entities_matching"),
                     (self._ws, entity_type, entity_type, attr, attr),
                 )
-                return [
-                    {"id": r[0], "type": r[1], "attributes": r[2]}
-                    for r in cur.fetchall()
-                ]
+                while batch := cur.fetchmany(batch_size):
+                    rows.extend(
+                        {"id": r[0], "type": r[1], "attributes": r[2]}
+                        for r in batch
+                    )
+        return rows
 
     def clear_relationships(self) -> int:
         """Delete all relationships for this workspace; return rows removed.

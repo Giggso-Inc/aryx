@@ -235,11 +235,17 @@ class TestEntityStoreStreaming:
 class TestMatchEntities:
     """P2: match_entities returns dicts; filters pushed to SQL."""
 
+    def _match_pool(self, rows=None):
+        """Helper: pool mock with fetchmany_batches for match_entities."""
+        batches = ([rows, []] if rows else [[]])
+        pool, _, cur = _make_db_mock(fetchmany_batches=batches)
+        return pool, cur
+
     def test_match_entities_returns_dicts(self):
-        pool, _, cur = _make_db_mock(
-            fetchall_rows=[(1, "Customer", {"revenue": 5_000_000})]
-        )
-        with patch("aryx.store.entity_store.get_pool", return_value=pool):
+        pool, cur = self._match_pool([(1, "Customer", {"revenue": 5_000_000})])
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
             result = EntityStore("dsn", 1).match_entities(
                 {"type": "Customer", "attr": "revenue", "op": ">", "value": 1_000_000}
@@ -248,9 +254,37 @@ class TestMatchEntities:
         assert result == [{"id": 1, "type": "Customer",
                            "attributes": {"revenue": 5_000_000}}]
 
+    def test_match_entities_uses_fetchmany_not_fetchall(self):
+        """W4 fix: match_entities must stream via fetchmany, not fetchall."""
+        pool, cur = self._match_pool()
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
+            from aryx.store.entity_store import EntityStore
+            EntityStore("dsn", 1).match_entities({"type": "X"})
+
+        cur.fetchmany.assert_called()
+        cur.fetchall.assert_not_called()
+
+    def test_match_entities_cursor_name_includes_workspace(self):
+        """W3 fix: cursor name is workspace-scoped to prevent collisions."""
+        pool, _, cur = _make_db_mock(fetchmany_batches=[[]])
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
+            from aryx.store.entity_store import EntityStore
+            EntityStore("dsn", workspace_id=7).match_entities({})
+
+        # conn.cursor("match_entities_cur_7") must have been called
+        _, conn, _ = pool, None, None
+        cursor_name = pool.connection.return_value.__enter__.return_value.cursor.call_args[0][0]
+        assert "7" in cursor_name
+
     def test_match_entities_passes_type_and_attr_to_sql(self):
-        pool, _, cur = _make_db_mock(fetchall_rows=[])
-        with patch("aryx.store.entity_store.get_pool", return_value=pool):
+        pool, cur = self._match_pool()
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
             EntityStore("dsn", 1).match_entities(
                 {"type": "Vendor", "attr": "country"}
@@ -264,8 +298,10 @@ class TestMatchEntities:
 
     def test_match_entities_passes_null_when_no_type(self):
         """When when-clause has no type, None is passed so SQL skips the filter."""
-        pool, _, cur = _make_db_mock(fetchall_rows=[])
-        with patch("aryx.store.entity_store.get_pool", return_value=pool):
+        pool, cur = self._match_pool()
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
             EntityStore("dsn", 1).match_entities(
                 {"attr": "status", "op": "==", "value": "active"}
@@ -276,8 +312,10 @@ class TestMatchEntities:
 
     def test_match_entities_empty_when_returns_all_workspace(self):
         """Empty when-clause passes None for both type and attr (no filters)."""
-        pool, _, cur = _make_db_mock(fetchall_rows=[])
-        with patch("aryx.store.entity_store.get_pool", return_value=pool):
+        pool, cur = self._match_pool()
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
             EntityStore("dsn", 1).match_entities({})
 
@@ -380,6 +418,25 @@ class TestEngineUsesMatchEntities:
                 evaluate_workspace(workspace_id=1)
         # If B3 were still present the finally block would raise NameError instead
 
+    def test_apply_edge_rejects_invalid_relationship_name(self):
+        """W5 fix: _apply_edge raises ValueError on names that would inject Cypher."""
+        mock_graph = MagicMock()
+        with patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph):
+            from aryx.reasoning.engine import _apply_edge
+            with pytest.raises(ValueError, match=r"\[A-Z0-9_\]\+"):
+                _apply_edge(mock_graph, 1, "bad-name]MATCH", "T", "n")
+            with pytest.raises(ValueError):
+                _apply_edge(mock_graph, 1, "has space", "T", "n")
+
+    def test_apply_edge_accepts_valid_relationship_name(self):
+        """Valid uppercase identifiers must not be rejected."""
+        mock_graph = MagicMock()
+        with patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph):
+            from aryx.reasoning.engine import _apply_edge
+            _apply_edge(mock_graph, 1, "TIER_MEMBER", "Tier", "Gold")
+            _apply_edge(mock_graph, 1, "part_of", "Group", "HQ")  # lower → upper normalised
+        assert mock_graph.run.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # P3 — MultiKeyBlocker reads from config
@@ -415,8 +472,8 @@ class TestBlockerConfig:
         b = MultiKeyBlocker(max_block_size=2)
         result = b.block(recs)
 
-        # All key families produce blocks of size 3 which exceeds cap of 2
-        assert all(len(v) <= 2 for v in result.values())
+        # All key families produce blocks of size 3 which exceeds cap of 2 → all dropped
+        assert len(result) == 0, "every block should be dropped when over cap"
 
     def test_block_keeps_block_within_limit(self):
         """Blocks at or below max_block_size are kept."""
@@ -436,6 +493,22 @@ class TestBlockerConfig:
         all_members = {m.record_id for v in result.values() for m in v}
         assert 1 in all_members
         assert 2 in all_members
+
+    def test_block_cap_equals_size_keeps_block(self):
+        """W1 complement: a block of exactly cap=3 is NOT dropped."""
+        from aryx.models import ResolutionRecord
+        from aryx.resolution.blocking import MultiKeyBlocker
+
+        recs = [
+            ResolutionRecord(record_id=i, text="john smith",
+                             payload={"name": "john smith"})
+            for i in range(3)
+        ]
+        b = MultiKeyBlocker(max_block_size=3)  # cap == block size → keep
+        result = b.block(recs)
+
+        all_members = {m.record_id for v in result.values() for m in v}
+        assert len(all_members) == 3, "all records should appear when block size == cap"
 
     def test_classical_block_shim_passes_none_to_multi_key_blocker(self):
         """classical.block() with default None delegates to MultiKeyBlocker."""
@@ -486,13 +559,13 @@ class TestThreadPoolExecutor:
     def test_background_tasks_not_imported(self):
         """BackgroundTasks must no longer appear in file_ingest_api."""
         import pathlib
-        src = pathlib.Path("src/aryx/api/file_ingest_api.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "src/aryx/api/file_ingest_api.py").read_text()
         assert "BackgroundTasks" not in src
 
     def test_executor_submit_not_add_task(self):
         """The endpoint submits work via executor.submit(), not BackgroundTasks."""
         import pathlib
-        src = pathlib.Path("src/aryx/api/file_ingest_api.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "src/aryx/api/file_ingest_api.py").read_text()
         assert "_get_executor().submit(" in src
 
     def test_executor_lock_present(self):
@@ -505,7 +578,7 @@ class TestThreadPoolExecutor:
     def test_submit_future_has_done_callback(self):
         """B2 fix: submit() result has a done-callback attached to log lost exceptions."""
         import pathlib
-        src = pathlib.Path("src/aryx/api/file_ingest_api.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "src/aryx/api/file_ingest_api.py").read_text()
         assert "add_done_callback" in src
 
 

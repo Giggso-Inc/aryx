@@ -13,7 +13,11 @@ is idempotent — re-running over the same data produces the same graph.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
+
+# Relationship names interpolated into Cypher must be safe identifiers.
+_REL_NAME_RE = re.compile(r"^[A-Z0-9_]+$")
 
 from aryx.config import get_settings
 from aryx.graph.falkor_store import FalkorStore
@@ -62,7 +66,12 @@ def _apply_label(graph: FalkorStore, entity_id: int, label: str) -> None:
 def _apply_edge(graph: FalkorStore, source_id: int, name: str,
                 target_type: str, target_name: str) -> None:
     """Create an INF_-prefixed edge to a target entity (matched by type+name)."""
-    rel = f"INF_{name.upper()}"
+    safe = name.upper()
+    if not _REL_NAME_RE.match(safe):
+        raise ValueError(
+            f"Invalid relationship name {name!r}: must match [A-Z0-9_]+"
+        )
+    rel = f"INF_{safe}"
     graph.run(
         "MATCH (s {id: $sid}), (t {ontology_type: $ttype, name: $tname}) "
         f"MERGE (s)-[r:{rel} {{inferred: true}}]->(t)",
