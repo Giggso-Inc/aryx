@@ -49,24 +49,27 @@ def project_graph(
         Counts of {entities, provenance, relationships} written.
     """
     graph.clear()
-    entities = store.list_entities()
     ancestors_for = type_ancestors or {}
-    for entity_id, ontology_type, attributes in entities:
+    n_entities = 0
+    for entity_id, ontology_type, attributes in store.list_entities():
         labels = ancestors_for.get(ontology_type, [])
         iri = _entity_iri(base_uri, workspace_id, entity_id)
         graph.add_entity(entity_id, ontology_type, attributes,
                          labels=labels, iri=iri)
+        n_entities += 1
 
-    provenance = store.list_members_provenance()
-    for entity_id, system, dataset, record_id in provenance:
+    n_provenance = 0
+    for entity_id, system, dataset, record_id in store.list_members_provenance():
         graph.add_provenance(entity_id, system, dataset, record_id)
+        n_provenance += 1
 
-    relationships = store.list_relationships()
-    for source_id, target_id, name in relationships:
+    n_relationships = 0
+    for source_id, target_id, name in store.list_relationships():
         graph.add_relationship(source_id, target_id, name)
+        n_relationships += 1
 
-    counts = {"entities": len(entities), "provenance": len(provenance),
-              "relationships": len(relationships)}
+    counts = {"entities": n_entities, "provenance": n_provenance,
+              "relationships": n_relationships}
     logger.info("graph projected %s labels_used=%d",
                 counts, sum(1 for v in ancestors_for.values() if v))
     return counts

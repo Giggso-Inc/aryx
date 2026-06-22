@@ -153,7 +153,7 @@ class TestEntityStoreStreaming:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            result = EntityStore("dsn", 1).list_entities()
+            result = list(EntityStore("dsn", 1).list_entities())
 
         cur.fetchmany.assert_called()
         cur.fetchall.assert_not_called()
@@ -170,7 +170,7 @@ class TestEntityStoreStreaming:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            result = EntityStore("dsn", 1).list_entities()
+            result = list(EntityStore("dsn", 1).list_entities())
 
         assert len(result) == 2
         assert result[0] == (10, "Vendor", {"city": "NYC"})
@@ -186,7 +186,7 @@ class TestEntityStoreStreaming:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            result = EntityStore("dsn", 1).list_members_provenance()
+            result = list(EntityStore("dsn", 1).list_members_provenance())
 
         cur.fetchmany.assert_called()
         cur.fetchall.assert_not_called()
@@ -203,7 +203,7 @@ class TestEntityStoreStreaming:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            result = EntityStore("dsn", 1).list_relationships()
+            result = list(EntityStore("dsn", 1).list_relationships())
 
         cur.fetchmany.assert_called()
         cur.fetchall.assert_not_called()
@@ -222,10 +222,33 @@ class TestEntityStoreStreaming:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 2
             from aryx.store.entity_store import EntityStore
-            result = EntityStore("dsn", 1).list_entities()
+            result = list(EntityStore("dsn", 1).list_entities())
 
         assert cur.fetchmany.call_count == 3
         assert len(result) == 3
+
+    def test_list_entities_returns_iterator_not_list(self):
+        """list_entities() is a generator — callers that need len/index must materialise."""
+        pool, _, _ = _make_db_mock(fetchmany_batches=[[]])
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
+            from aryx.store.entity_store import EntityStore
+            result = EntityStore("dsn", 1).list_entities()
+        import types
+        assert isinstance(result, types.GeneratorType), (
+            "list_entities() must return a generator, not a list"
+        )
+
+    def test_list_entities_lazy_no_fetchmany_before_iteration(self):
+        """fetchmany is NOT called until the generator is iterated — confirms lazy pull."""
+        pool, _, cur = _make_db_mock(fetchmany_batches=[[]])
+        with patch("aryx.store.entity_store.get_pool", return_value=pool), \
+             patch("aryx.store.entity_store.get_settings") as mock_cfg:
+            mock_cfg.return_value.batch_size = 500
+            from aryx.store.entity_store import EntityStore
+            _gen = EntityStore("dsn", 1).list_entities()
+            cur.fetchmany.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +270,9 @@ class TestMatchEntities:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            result = EntityStore("dsn", 1).match_entities(
+            result = list(EntityStore("dsn", 1).match_entities(
                 {"type": "Customer", "attr": "revenue", "op": ">", "value": 1_000_000}
-            )
+            ))
 
         assert result == [{"id": 1, "type": "Customer",
                            "attributes": {"revenue": 5_000_000}}]
@@ -261,7 +284,7 @@ class TestMatchEntities:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            EntityStore("dsn", 1).match_entities({"type": "X"})
+            list(EntityStore("dsn", 1).match_entities({"type": "X"}))
 
         cur.fetchmany.assert_called()
         cur.fetchall.assert_not_called()
@@ -273,10 +296,9 @@ class TestMatchEntities:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            EntityStore("dsn", workspace_id=7).match_entities({})
+            list(EntityStore("dsn", workspace_id=7).match_entities({}))
 
         # conn.cursor("match_entities_cur_7") must have been called
-        _, conn, _ = pool, None, None
         cursor_name = pool.connection.return_value.__enter__.return_value.cursor.call_args[0][0]
         assert "7" in cursor_name
 
@@ -286,9 +308,9 @@ class TestMatchEntities:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            EntityStore("dsn", 1).match_entities(
+            list(EntityStore("dsn", 1).match_entities(
                 {"type": "Vendor", "attr": "country"}
-            )
+            ))
 
         execute_call = cur.execute.call_args
         params = execute_call[0][1]  # positional: (sql, params)
@@ -303,9 +325,9 @@ class TestMatchEntities:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            EntityStore("dsn", 1).match_entities(
+            list(EntityStore("dsn", 1).match_entities(
                 {"attr": "status", "op": "==", "value": "active"}
-            )
+            ))
 
         params = cur.execute.call_args[0][1]
         assert None in params  # type placeholder is NULL
@@ -317,7 +339,7 @@ class TestMatchEntities:
              patch("aryx.store.entity_store.get_settings") as mock_cfg:
             mock_cfg.return_value.batch_size = 500
             from aryx.store.entity_store import EntityStore
-            EntityStore("dsn", 1).match_entities({})
+            list(EntityStore("dsn", 1).match_entities({}))
 
         params = cur.execute.call_args[0][1]
         assert params.count(None) >= 2  # both type and attr are NULL

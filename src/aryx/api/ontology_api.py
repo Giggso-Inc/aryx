@@ -40,10 +40,10 @@ def _load_bundle(workspace_id: int, include_provenance: bool) -> GraphBundle:
     settings = get_settings()
     store = EntityStore(settings.rdb_dsn, workspace_id)
     try:
-        provenance = store.list_members_provenance() if include_provenance else []
+        provenance = list(store.list_members_provenance()) if include_provenance else []
         bundle = GraphBundle(
-            entities=store.list_entities(),
-            relationships=store.list_relationships(),
+            entities=list(store.list_entities()),
+            relationships=list(store.list_relationships()),
             provenance=provenance,
         )
     finally:
