@@ -43,8 +43,11 @@ def _match(entity: dict, when: dict) -> bool:
     if when.get("type") and entity.get("type") != when["type"]:
         return False
     attr = when.get("attr")
+    if not attr:
+        # type-only rule: SQL already filtered by type, no attribute condition
+        return True
     op = _OPS.get(when.get("op", "=="))
-    if not attr or op is None:
+    if op is None:
         return False
     val = (entity.get("attributes") or {}).get(attr)
     if val is None:
@@ -128,13 +131,13 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
                     # Edge-scoped axiom (inverse_of / symmetric / transitive).
                     fires = _apply_edge_axiom(graph, str(when["edge"]), then)
                 else:
-                    if when.get("attr"):
+                    if when.get("type") or when.get("attr"):
                         for ent in estore.match_entities(when):
                             if _match(ent, when):
                                 fires += _fire(graph, ent, then)
                     else:
                         logger.warning(
-                            "rule %r skipped — no 'attr' and no 'edge' in when-clause",
+                            "rule %r skipped — when-clause has no 'type', 'attr', or 'edge'",
                             rule.get("name"),
                         )
             except ValueError as exc:

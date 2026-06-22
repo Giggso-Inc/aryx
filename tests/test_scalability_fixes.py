@@ -437,6 +437,55 @@ class TestEngineUsesMatchEntities:
             _apply_edge(mock_graph, 1, "part_of", "Group", "HQ")  # lower → upper normalised
         assert mock_graph.run.call_count == 2
 
+    def test_match_returns_true_for_type_only_rule(self):
+        """_match() must return True when when has type but no attr (type-only rule)."""
+        from aryx.reasoning.engine import _match
+        entity = {"id": 1, "type": "Customer", "attributes": {"revenue": 500}}
+        # type matches, no attr condition → True
+        assert _match(entity, {"type": "Customer"}) is True
+        # type mismatch → False
+        assert _match(entity, {"type": "Vendor"}) is False
+        # empty when → True (no conditions at all)
+        assert _match(entity, {}) is True
+
+    def test_type_only_rule_fires_label(self):
+        """A rule with when={type: X} and no attr must fire set_label for all matching entities."""
+        rules = [
+            {
+                "name": "all_customers_gold", "enabled": True,
+                "when": {"type": "Customer"},
+                "then": {"set_label": "Gold"},
+            }
+        ]
+        mock_rules_store = MagicMock()
+        mock_rules_store.list_.return_value = rules
+
+        mock_estore = MagicMock()
+        mock_estore.match_entities.return_value = [
+            {"id": 1, "type": "Customer", "attributes": {}},
+            {"id": 2, "type": "Customer", "attributes": {}},
+        ]
+
+        mock_bumps = MagicMock()
+        mock_graph = MagicMock()
+        mock_cfg = MagicMock()
+        mock_cfg.rdb_dsn = "postgresql://x"
+        mock_cfg.graph_url = "redis://x"
+
+        with patch("aryx.reasoning.engine.get_settings", return_value=mock_cfg), \
+             patch("aryx.reasoning.engine.RuleStore",
+                   side_effect=[mock_rules_store, mock_bumps]), \
+             patch("aryx.reasoning.engine.EntityStore", return_value=mock_estore), \
+             patch("aryx.reasoning.engine.FalkorStore", return_value=mock_graph), \
+             patch("aryx.reasoning.engine.ws_graph", return_value="ws_1"):
+            from aryx.reasoning.engine import evaluate_workspace
+            result = evaluate_workspace(workspace_id=1)
+
+        assert result["per_rule"]["all_customers_gold"] == 2
+        assert result["total_fires"] == 2
+        # match_entities called with the type-only when-clause
+        mock_estore.match_entities.assert_called_once_with({"type": "Customer"})
+
     def test_invalid_relationship_name_skips_rule_not_evaluation(self):
         """ValueError from invalid relationship name must not abort remaining rules.
 
