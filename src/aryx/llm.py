@@ -1,9 +1,14 @@
 """Unified model completion: route a tiered request to the chosen provider.
 
-The Broker decides which model serves a tier; this calls it. Three wire paths:
+The Broker decides which model serves a tier; this calls it. Four wire paths:
 - 'anthropic'  -> Claude SDK (structured outputs)
 - 'ollama'     -> native Ollama JSON mode
+- 'oci'        -> OCI Generative AI (Cohere Command R / R+) — active when
+                  ARYX_LLM_CHEAP_BACKEND=oci or ARYX_LLM_FRONTIER_BACKEND=oci
 - anything else-> OpenAI-compatible /chat/completions (Grok, Gemini, vLLM, ...)
+
+OCI path short-circuits before broker.choose() so it does not require local
+models to be registered in the broker catalog.
 
 Token usage is charged back to the governor so budgets actually bite.
 """
@@ -15,10 +20,10 @@ import urllib.request
 from typing import Any
 
 from aryx.broker import Broker
-from aryx.broker.specs import Tier
+from aryx.broker.specs import ModelSpec, Tier
 from aryx.llm_normalize import normalize as _normalize_json
 from aryx.llm_providers import (
-    anthropic_json, ollama_json, openai_json, post_json,
+    anthropic_json, oci_genai_json, ollama_json, openai_json, post_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +82,26 @@ def complete_text(
     return text.strip(), in_tok, out_tok
 
 
+def _oci_model_for(tier: Tier) -> str:
+    """Return the OCI GenAI model ID for the given tier, respecting overrides."""
+    from aryx.config import get_settings
+    settings = get_settings()
+    if tier == "cheap":
+        return settings.llm_cheap_model_override or "cohere.command-r-16k"
+    return settings.llm_frontier_model_override or "cohere.command-r-plus"
+
+
+def _use_oci_for(tier: Tier) -> bool:
+    """Return True if the given tier is configured to use OCI GenAI."""
+    from aryx.config import get_settings
+    settings = get_settings()
+    if tier == "cheap":
+        return settings.effective_llm_cheap_backend() == "oci"
+    if tier == "frontier":
+        return settings.effective_llm_frontier_backend() == "oci"
+    return False
+
+
 def complete_json(
     broker: Broker, tier: Tier, system: str, user: str,
     schema: dict[str, Any],
@@ -85,7 +110,19 @@ def complete_json(
 
     Returns the parsed JSON object the model produced, normalized to the
     schema shape (envelope coercion + synonym renaming via llm_normalize).
+
+    When ARYX_LLM_*_BACKEND=oci the OCI path short-circuits before the broker
+    registry is consulted — no local models need to be registered.
     """
+    if _use_oci_for(tier):
+        model_name = _oci_model_for(tier)
+        spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        data, in_tok, out_tok = oci_genai_json(spec, system, user)
+        broker.charge(tier, in_tok + out_tok)
+        logger.info("complete tier=%s provider=oci model=%s tokens=%d",
+                    tier, model_name, in_tok + out_tok)
+        return _normalize_json(data, schema)
+
     spec = broker.choose(tier)
     key = broker.secrets.get(spec.api_key_ref) if spec.api_key_ref else None
     if spec.provider == "anthropic":

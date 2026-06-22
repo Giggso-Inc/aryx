@@ -94,11 +94,19 @@ class Broker:
         return self._registry.all()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts on the configured local model (Ollama /api/embed).
+        """Embed texts via the configured backend (Ollama local or OCI GenAI).
 
         Returns an empty list if no embed model is configured, so callers can
         gracefully fall back to string-only similarity.
         """
+        from aryx.config import get_settings
+        settings = get_settings()
+        if settings.effective_embed_backend() == "oci":
+            return self._oci_embed(texts, settings)
+        return self._ollama_embed(texts)
+
+    def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed via local Ollama /api/embed endpoint."""
         if not self._embed.get("model") or not self._embed.get("endpoint"):
             return []
         body = json.dumps({"model": self._embed["model"], "input": texts}).encode("utf-8")
@@ -109,6 +117,32 @@ class Broker:
         with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("embeddings", [])
+
+    def _oci_embed(self, texts: list[str], settings: object) -> list[list[float]]:
+        """Embed via OCI Generative AI (Cohere Embed v3)."""
+        import oci  # noqa: PLC0415
+        from aryx.oci_client import get_genai_client
+
+        model_id = (
+            getattr(settings, "embed_model_override", "") or
+            "cohere.embed-multilingual-v3.0"
+        )
+        compartment_id = getattr(settings, "oci_compartment_id", "")
+        if not compartment_id:
+            raise RuntimeError(
+                "ARYX_OCI_COMPARTMENT_ID must be set when ARYX_EMBED_BACKEND=oci"
+            )
+        client = get_genai_client()
+        request = oci.generative_ai_inference.models.EmbedTextDetails(
+            inputs=texts,
+            serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
+                model_id=model_id
+            ),
+            compartment_id=compartment_id,
+            input_type="SEARCH_DOCUMENT",
+        )
+        response = client.embed_text(embed_text_details=request)
+        return response.data.embeddings
 
 
 def default_broker() -> Broker:

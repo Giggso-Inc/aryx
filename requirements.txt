@@ -42,3 +42,6 @@ starlette~=0.41
 rdflib~=7.0
 # Datasource credential encryption (Slice 2): Fernet symmetric encryption.
 cryptography~=43.0
+
+# OCI SDK — used when any ARYX_*_BACKEND=oci. Not required for local-only deployments.
+oci~=2.130

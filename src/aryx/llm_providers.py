@@ -97,3 +97,58 @@ def openai_json(
     data = json.loads(out["choices"][0]["message"]["content"])
     usage = out.get("usage", {})
     return data, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
+
+
+def oci_genai_json(
+    spec: ModelSpec, system: str, user: str,
+) -> tuple[dict[str, Any], int, int]:
+    """Call an OCI Generative AI model (Cohere Command R / R+) for JSON output.
+
+    OCI GenAI does not have a native JSON-mode flag for Cohere models; we
+    instruct the model via the system prompt and parse the response manually.
+    """
+    import oci  # noqa: PLC0415
+    from aryx.config import get_settings
+    from aryx.oci_client import get_genai_client
+
+    settings = get_settings()
+    compartment_id = settings.oci_compartment_id
+    if not compartment_id:
+        raise RuntimeError(
+            "ARYX_OCI_COMPARTMENT_ID must be set when using OCI GenAI LLM backend"
+        )
+
+    client = get_genai_client()
+    full_prompt = f"{system}\n\n{user}\n\nRespond with valid JSON only."
+
+    request = oci.generative_ai_inference.models.GenerateTextDetails(
+        prompts=[full_prompt],
+        serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
+            model_id=spec.name
+        ),
+        compartment_id=compartment_id,
+        inference_request=oci.generative_ai_inference.models.CohereLlmInferenceRequest(
+            prompt=full_prompt,
+            max_tokens=2048,
+            temperature=0.2,
+            return_likelihoods="NONE",
+        ),
+    )
+
+    response = client.generate_text(generate_text_details=request)
+    generated = response.data.inference_response.generated_texts[0].text.strip()
+
+    # Strip markdown code fences if the model wraps the JSON
+    if generated.startswith("```"):
+        lines = generated.splitlines()
+        generated = "\n".join(
+            line for line in lines
+            if not line.startswith("```")
+        ).strip()
+
+    data = json.loads(generated)
+    # OCI GenAI does not expose per-call token counts in the current SDK;
+    # estimate from prompt length to keep the governor roughly accurate.
+    in_tok = len(full_prompt) // 4
+    out_tok = len(generated) // 4
+    return data, in_tok, out_tok

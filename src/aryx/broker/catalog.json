@@ -1,5 +1,6 @@
 {
   "models": [],
+  "_note": "OCI GenAI models are NOT registered here — they are routed directly in llm.py when ARYX_LLM_*_BACKEND=oci, bypassing the broker registry. Add Ollama/Anthropic/OpenAI-compatible models here for the local path.",
   "budgets": {
     "frontier": 2000000,
     "mid": 10000000,
