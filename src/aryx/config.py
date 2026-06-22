@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     embed_dim: int = Field(default=768, description="Expected embedding dim; startup check fails on mismatch.")
     chunk_size: int = Field(default=1000, description="Target chunk size in characters.")
     chunk_overlap: int = Field(default=100, description="Overlap in characters between adjacent chunks.")
+    worker_threads: int = Field(default=4, description="Concurrent ingest workers (ThreadPoolExecutor).")
 
 
 @lru_cache(maxsize=1)
