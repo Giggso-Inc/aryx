@@ -16,6 +16,18 @@ logger = logging.getLogger(__name__)
 _PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx_relationship"]
 
 
+def make_workspace_store(dsn: str) -> "WorkspaceStore":
+    """Return the appropriate WorkspaceStore for the configured DB backend."""
+    try:
+        from aryx.config import get_settings
+        if get_settings().effective_db_backend() == "oci":
+            from aryx.store.oracle_workspace import OracleWorkspaceStore
+            return OracleWorkspaceStore(dsn)  # type: ignore[return-value]
+    except Exception:  # noqa: BLE001
+        pass
+    return WorkspaceStore(dsn)
+
+
 class WorkspaceStore:
     """CRUD + purge/nuke over workspaces and their table partitions."""
 

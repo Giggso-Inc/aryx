@@ -158,17 +158,70 @@ in `embed.py` will fail fast with a clear error on mismatch.
 
 ---
 
-## Phase 2 — Database + Worker + Graph (deferred)
+## Phase 2 — Database + Worker + Graph ✅ Implemented
 
-Phase 2 implements the three remaining backend vars. Each maps to a new adapter
-that satisfies the existing store interface — no pipeline code changes needed:
+Phase 2 adds Oracle ADB, OCI Functions, and Oracle Property Graph as additive
+backend options. All existing local paths remain unchanged — OCI paths activate
+only when the corresponding env var is set.
 
-| Backend var | New adapter | Replaces |
+### Phase 2 new files
+
+| File | Purpose |
+|---|---|
+| `src/aryx/store/oracle_pool.py` | psycopg3→oracledb translation layer (pool + cursor wrappers) |
+| `src/aryx/store/oracle_migrate.py` | `apply_oracle_migrations(dsn)` — runs Oracle DDL files |
+| `src/aryx/store/oracle_workspace.py` | `OracleWorkspaceStore` — avoids psycopg direct calls |
+| `src/aryx/store/migrations_oracle/` | 27 Oracle DDL files + `graph_schema.sql` |
+| `src/aryx/queries/oracle/adjudication_stats.sql` | Oracle rewrite (no `FILTER` clause) |
+| `src/aryx/graph/oracle_graph_store.py` | `OracleGraphStore` — MERGE INTO backing tables |
+| `src/aryx/graph/oracle_graph_reader.py` | `OracleGraphReader` — SQL/PGQ traversals |
+| `src/aryx/worker/__init__.py` | Worker package init |
+| `src/aryx/worker/oci_functions_worker.py` | `submit_to_oci_function()` — per-doc fire-and-forget |
+| `src/aryx/worker/oci_dataflow_worker.py` | `submit_to_dataflow()` — Spark batch scaffold |
+
+### Phase 2 routing points
+
+| Backend var | Value | Routing file |
 |---|---|---|
-| `ARYX_DB_BACKEND=oci` | `OracleAdbStore` (python-oracledb) | psycopg3 Postgres stores |
-| `ARYX_WORKER_BACKEND=oci_functions` | OCI Functions SDK trigger in `file_ingest_api.py` | ThreadPoolExecutor |
-| `ARYX_WORKER_BACKEND=oci_dataflow` | OCI Data Flow SDK job submit | ThreadPoolExecutor |
-| `ARYX_GRAPH_BACKEND=oci_graph` | `OracleGraphStore` (Graph Studio REST) | `falkor_store.py` |
+| `ARYX_DB_BACKEND` | `oci` | `store/pool.py` + `store/migrate.py` + `workspaces.py` |
+| `ARYX_WORKER_BACKEND` | `oci_functions` | `api/file_ingest_api.py` — per-file OCI Function dispatch |
+| `ARYX_WORKER_BACKEND` | `oci_dataflow` | `api/file_ingest_api.py` — single Data Flow job per request |
+| `ARYX_GRAPH_BACKEND` | `oci_graph` | `ports/container.py` + `pipeline/orchestrate.py` |
+
+### Oracle ADB setup checklist
+
+1. Provision Oracle Autonomous Database 23ai in your compartment
+2. Download wallet and set `TNS_ADMIN` to the wallet directory
+3. Create application user with `DWROLE` grant
+4. Set `ARYX_OCI_ADB_DSN=aryx_high` (or your service name from `tnsnames.ora`)
+5. Run migrations once: `ARYX_DB_BACKEND=oci python -m aryx.store.migrate`
+
+### Oracle Property Graph setup
+
+Property Graph backing tables are created by `graph_schema.sql` (run separately
+after migrations complete). The `CREATE PROPERTY GRAPH` DDL requires Oracle
+Database 23ai — confirm your ADB version supports SQL/PGQ before enabling.
+
+### OCI Data Flow note
+
+`oci_dataflow` requires a pre-deployed PySpark application with OCID set in
+`ARYX_OCI_DATAFLOW_APP_ID`. The scaffold in `oci_dataflow_worker.py` is
+functional but the PySpark app must be built and deployed separately.
+
+### Example: full Phase 2 OCI config
+
+```bash
+ARYX_OCI_MODE=true
+ARYX_OCI_COMPARTMENT_ID=ocid1.compartment.oc1..xxxx
+ARYX_OCI_REGION=us-chicago-1
+
+# Phase 2
+ARYX_DB_BACKEND=oci
+ARYX_OCI_ADB_DSN=aryx_high
+ARYX_GRAPH_BACKEND=oci_graph
+ARYX_WORKER_BACKEND=oci_functions
+ARYX_OCI_INGEST_FN_ID=ocid1.fnfunc.oc1.us-chicago-1.xxxx
+```
 
 ---
 

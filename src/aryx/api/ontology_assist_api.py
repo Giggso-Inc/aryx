@@ -16,7 +16,7 @@ from aryx.api.admin_api import _local_broker
 from aryx.brief import serialize as serialize_brief
 from aryx.config import get_settings
 from aryx.ontology_assist import suggest_attrs
-from aryx.workspaces import WorkspaceStore
+from aryx.workspaces import make_workspace_store
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def ontology_assist_router() -> APIRouter:
     @router.post("/suggest-attrs")
     def suggest_attrs_endpoint(req: SuggestAttrsRequest) -> dict[str, Any]:
         """Return AI-proposed attribute names for an entity type."""
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             workspaces = store.list_all()
         finally:

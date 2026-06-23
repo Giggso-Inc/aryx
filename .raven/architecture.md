@@ -1,4 +1,4 @@
-## Version: 1.2
+## Version: 1.3
 ## Last Updated: 2026-06-22
 ## Project: Aryx
 
@@ -36,9 +36,22 @@ stages so the model only touches the hard ~1–5% of decisions.
   closure + golden record); `run.resolve` wires them into entities + members.
 - **Relationships** (`relationships.py`) — infers entity→entity edges from foreign
   keys and co-occurrence (deterministic) plus LLM for implied links.
-- **Graph projection** (`graph/falkor_store.py`) — wipe-and-rebuild projection of
-  ontology/entities/relationships into FalkorDB with provenance threads.
+- **Graph projection** (`graph/`) — wipe-and-rebuild projection of
+  ontology/entities/relationships. Local: `falkor_store.py` → FalkorDB with
+  Cypher/provenance threads. OCI: `oracle_graph_store.py` + `oracle_graph_reader.py`
+  → ADB 23ai backing tables (`aryx_graph_vertex/edge/source/provenance`) with
+  `CREATE PROPERTY GRAPH` DDL and SQL/PGQ traversals; activated by
+  `ARYX_GRAPH_BACKEND=oci_graph`. Container and pipeline routing points updated
+  transparently in `ports/container.py` and `pipeline/orchestrate.py`.
+- **Worker** (`worker/`) — async document dispatch. Local: `ThreadPoolExecutor`
+  in `api/file_ingest_api.py`. OCI Functions: `worker/oci_functions_worker.py`
+  fires one `invoke_function(invoke_type="detached")` per file (base64 payload,
+  202-detached). OCI Data Flow: `worker/oci_dataflow_worker.py` submits a
+  `create_run()` for a pre-deployed PySpark application. Routing in
+  `file_ingest_api.py` keyed on `effective_worker_backend()`.
 - **Queries** (`queries/`) — SQL-file loader keeping SQL out of Python (DB-Guard).
+  Oracle overrides in `queries/oracle/` (e.g. `adjudication_stats.sql` replaces
+  `COUNT(*) FILTER` with `COUNT(CASE WHEN ...)`).
 - **Config / logging** (`config.py`, `logging_setup.py`) — 12-factor settings from
   `ARYX_`-prefixed env vars; credentials never logged. Scalability caps:
   `ARYX_MAX_BLOCK_SIZE` (5000), `ARYX_GRAPH_QUERY_LIMIT` (500),
@@ -46,9 +59,8 @@ stages so the model only touches the hard ~1–5% of decisions.
   `ARYX_WORKER_THREADS` (4), `ARYX_RULES_DB_WARN_THRESHOLD` (20).
   OCI backend selectors: `ARYX_OCI_MODE` (convenience flag), plus per-service
   overrides `ARYX_PARSE_BACKEND`, `ARYX_EMBED_BACKEND`, `ARYX_LLM_CHEAP_BACKEND`,
-  `ARYX_LLM_FRONTIER_BACKEND`. Phase 2 vars (`ARYX_DB_BACKEND`,
-  `ARYX_WORKER_BACKEND`, `ARYX_GRAPH_BACKEND`) are defined but not yet wired;
-  a `model_validator` warns at startup if they are set to non-default values.
+  `ARYX_LLM_FRONTIER_BACKEND`, `ARYX_DB_BACKEND`, `ARYX_WORKER_BACKEND`,
+  `ARYX_GRAPH_BACKEND`. All Phase 2 vars are fully wired (Phase 2 complete).
 
 ### Data Flow
 ```
@@ -70,8 +82,9 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
   IAM instance principal auth)
 - Compute: containerized 12-factor `worker`; production orchestrator (ECS/EKS/OCI)
   decided at rollout — not yet fixed
-- Database: PostgreSQL 16 (source of truth); Oracle ADB 23ai (Phase 2, `ARYX_DB_BACKEND=oci`)
-- Graph: FalkorDB (rebuildable projection); Oracle Graph Studio (Phase 2, `ARYX_GRAPH_BACKEND=oci_graph`)
+- Database: PostgreSQL 16 (source of truth) OR Oracle ADB 23ai (`ARYX_DB_BACKEND=oci`; 27 Oracle migrations, oracledb wrapper pool, dialect-aware query loader)
+- Graph: FalkorDB (rebuildable projection) OR Oracle Property Graph (`ARYX_GRAPH_BACKEND=oci_graph`; backing relational tables + `CREATE PROPERTY GRAPH` + SQL/PGQ)
+- Worker: ThreadPoolExecutor (local) OR OCI Functions (`ARYX_WORKER_BACKEND=oci_functions`, per-doc detached invoke) OR OCI Data Flow (`oci_dataflow`, batch Spark)
 - Local dev: `docker-compose` — `postgres` (host port 55432), `falkordb` (6379),
   `worker` (built from `Dockerfile`); worker waits on a healthy Postgres
 
@@ -96,5 +109,7 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
 | OCI backend toggle via env vars | Per-service opt-in to OCI managed services without code changes; local default preserves existing deployments | 2026-06-22 |
 | Lazy OCI SDK imports (inside function bodies) | `oci` package never imported at module level — local deployments work without it installed | 2026-06-22 |
 | OCI auth singleton with instance-principal fallback | Single `oci_client.py` factory covers all OCI services; uses IAM instance principal on OCI Compute, falls back to `~/.oci/config` for local dev | 2026-06-22 |
-| Phase 2 backend vars defined but not wired | Env vars stable across phases; `model_validator` warns operators who set them before implementation ships | 2026-06-22 |
 | `input_type` on `Broker.embed()` | Cohere Embed v3 accuracy depends on whether the text is a document being indexed or a query at retrieval time; callers explicitly pass the type | 2026-06-22 |
+| Oracle pool wrapper (oracle_pool.py) translates psycopg3 → oracledb | All 19 store classes work unchanged; translation (param style, RETURNING, Json unwrap) happens in wrapper — no store edits needed | 2026-06-22 |
+| Oracle Property Graph uses relational backing tables | Vertex/edge/source/provenance stored as plain Oracle tables; `CREATE PROPERTY GRAPH` maps them for SQL/PGQ traversals — rebuildable same as FalkorDB path | 2026-06-22 |
+| OCI Functions worker uses `invoke_type="detached"` | Fire-and-forget (HTTP 202) — function runs async; ingest API returns immediately; job progress written from inside the function via DSN in payload | 2026-06-22 |

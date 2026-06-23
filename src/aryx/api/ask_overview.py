@@ -13,7 +13,7 @@ from typing import Any
 from aryx.config import get_settings
 from aryx.graph import GraphReader
 from aryx.store.relationship_type_store import RelationshipTypeStore
-from aryx.workspaces import WorkspaceStore
+from aryx.workspaces import make_workspace_store
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _relationships(workspace_id: int) -> list[str]:
 def _aim(workspace_id: int) -> list[str]:
     """Pull the aim line from the workspace brief, if set."""
     try:
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             for w in store.list_all():
                 if int(w.get("id", 0)) == int(workspace_id):

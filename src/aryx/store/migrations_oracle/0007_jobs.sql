@@ -1,0 +1,65 @@
+-- Oracle ADB 23ai: ingestion job tracking.
+
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE TABLE aryx_job (
+    job_id         VARCHAR2(255) PRIMARY KEY,
+    source_system  VARCHAR2(4000) NOT NULL,
+    source_dataset VARCHAR2(4000) NOT NULL,
+    status         VARCHAR2(100) DEFAULT ''queued'' NOT NULL,
+    stage          VARCHAR2(4000) DEFAULT ''queued'' NOT NULL,
+    pct            NUMBER(3) DEFAULT 0 NOT NULL,
+    detail         VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    run_id         NUMBER(19),
+    workspace_id   NUMBER(19) DEFAULT 1 NOT NULL,
+    error          CLOB,
+    started_at     TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    updated_at     TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    finished_at    TIMESTAMP WITH TIME ZONE
+  )';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE TABLE aryx_job_event (
+    id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    job_id  VARCHAR2(255) NOT NULL,
+    stage   VARCHAR2(4000) NOT NULL,
+    pct     NUMBER(3) DEFAULT 0 NOT NULL,
+    detail  VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    ts      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
+  )';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE TABLE aryx_job_archive (
+    job_id         VARCHAR2(255) PRIMARY KEY,
+    source_system  VARCHAR2(4000) NOT NULL,
+    source_dataset VARCHAR2(4000) NOT NULL,
+    status         VARCHAR2(100) NOT NULL,
+    stage          VARCHAR2(4000),
+    pct            NUMBER(3),
+    detail         VARCHAR2(4000),
+    run_id         NUMBER(19),
+    error          CLOB,
+    started_at     TIMESTAMP WITH TIME ZONE,
+    updated_at     TIMESTAMP WITH TIME ZONE,
+    finished_at    TIMESTAMP WITH TIME ZONE,
+    archived_at    TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
+  )';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE INDEX idx_job_event_job ON aryx_job_event (job_id)';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'CREATE INDEX idx_job_finished ON aryx_job (finished_at)';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
+END;

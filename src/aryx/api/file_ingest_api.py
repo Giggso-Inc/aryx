@@ -159,12 +159,41 @@ def file_ingest_router() -> APIRouter:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
         links = json.loads(fk_links) if fk_links else []
-        future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
-        future.add_done_callback(
-            lambda f: (exc := f.exception()) and logger.error(
-                "ingest job=%s raised unhandled exception: %s", job_id, exc
+        worker_backend = settings.effective_worker_backend()
+        if worker_backend == "oci_functions":
+            import base64
+            from aryx.worker.oci_functions_worker import submit_to_oci_function
+            for file_bytes, filename in items:
+                payload = {
+                    "job_id": job_id,
+                    "workspace_id": workspace_id,
+                    "ontology_type": ontology_type,
+                    "match_keys": keys,
+                    "fk_links": links,
+                    "filename": filename,
+                    "file_b64": base64.b64encode(file_bytes).decode(),
+                    "dsn": settings.rdb_dsn,
+                    "graph_url": settings.graph_url,
+                    "chunk_size": settings.chunk_size,
+                    "chunk_overlap": settings.chunk_overlap,
+                    "embed_dim": settings.embed_dim,
+                }
+                submit_to_oci_function(settings.oci_ingest_fn_id, payload)
+        elif worker_backend == "oci_dataflow":
+            from aryx.worker.oci_dataflow_worker import submit_to_dataflow
+            submit_to_dataflow(
+                settings.oci_dataflow_app_id,
+                args=["--job-id", job_id, "--workspace-id", str(workspace_id),
+                      "--ontology-type", ontology_type],
+                display_name=f"aryx-ingest-{job_id[:8]}",
             )
-        )
+        else:
+            future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+            future.add_done_callback(
+                lambda f: (exc := f.exception()) and logger.error(
+                    "ingest job=%s raised unhandled exception: %s", job_id, exc
+                )
+            )
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 

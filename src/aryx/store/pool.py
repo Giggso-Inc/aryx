@@ -13,12 +13,23 @@ _pool_lock = threading.Lock()
 
 
 def get_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> ConnectionPool:
-    """Return a cached ConnectionPool for the given DSN.
+    """Return a cached connection pool for the given DSN.
+
+    When ARYX_DB_BACKEND=oci the pool is an OraclePool (oracledb-backed) whose
+    interface matches psycopg_pool.ConnectionPool so all store classes stay
+    unchanged.  The local default uses psycopg_pool as before.
 
     Creates a new pool on first call for a given DSN; subsequent calls for the
     same DSN return the cached instance. Double-checked locking guards against
-    concurrent creation — ConnectionPool() releases the GIL during connect.
+    concurrent creation.
     """
+    try:
+        from aryx.config import get_settings
+        if get_settings().effective_db_backend() == "oci":
+            from aryx.store.oracle_pool import get_oracle_pool  # lazy OCI import
+            return get_oracle_pool(dsn, min_size=min_size, max_size=max_size)  # type: ignore[return-value]
+    except Exception:  # noqa: BLE001
+        pass
     if dsn not in _pools:
         with _pool_lock:
             if dsn not in _pools:

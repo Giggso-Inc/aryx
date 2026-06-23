@@ -1,0 +1,328 @@
+"""Unit tests for oracle_pool.py — no live Oracle DB required.
+
+All oracledb calls are stubbed so these tests run in CI without an ADB wallet.
+"""
+from __future__ import annotations
+
+import sys
+import types
+import unittest
+from unittest.mock import MagicMock, patch
+
+
+# ── Stub oracledb before importing oracle_pool ────────────────────────────────
+
+def _stub_oracledb() -> None:
+    """Install a minimal oracledb stub into sys.modules."""
+    if "oracledb" in sys.modules:
+        return
+    mod = types.ModuleType("oracledb")
+    mod.STRING = "STRING"
+
+    class _IntegrityError(Exception):
+        pass
+
+    class _Error(Exception):
+        pass
+
+    mod.IntegrityError = _IntegrityError
+    mod.Error = _Error
+
+    def _var(typ: str) -> MagicMock:
+        v = MagicMock()
+        v.getvalue.return_value = [None]
+        return v
+
+    # Fake cursor
+    class _Cursor:
+        def __init__(self) -> None:
+            self.arraysize = 100
+            self.rowcount = 0
+            self._rows: list = []
+
+        def var(self, typ: str) -> MagicMock:
+            return _var(typ)
+
+        def execute(self, sql: str, params: object = None) -> None:
+            pass
+
+        def executemany(self, sql: str, seq: object) -> None:
+            pass
+
+        def fetchone(self) -> tuple | None:
+            return self._rows[0] if self._rows else None
+
+        def fetchall(self) -> list:
+            return list(self._rows)
+
+        def fetchmany(self, size: int | None = None) -> list:
+            return list(self._rows)
+
+        def close(self) -> None:
+            pass
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    mod._Cursor = _Cursor
+
+    # Fake connection
+    class _Conn:
+        def cursor(self) -> _Cursor:
+            return _Cursor()
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            pass
+
+    mod._Conn = _Conn
+
+    # Fake pool
+    class _Pool:
+        def acquire(self) -> _Conn:
+            return _Conn()
+
+        def release(self, conn: object) -> None:
+            pass
+
+    def create_pool(**kwargs: object) -> _Pool:
+        return _Pool()
+
+    mod.create_pool = create_pool
+    sys.modules["oracledb"] = mod
+
+
+def _stub_psycopg() -> None:
+    """Stub psycopg so store/__init__.py import chain doesn't fail without it installed."""
+    if "psycopg" in sys.modules:
+        return
+    psycopg = types.ModuleType("psycopg")
+    psycopg.connect = MagicMock()
+    psycopg.Connection = MagicMock()
+    psycopg.Cursor = MagicMock()
+    psycopg_sql = types.ModuleType("psycopg.sql")
+    psycopg_sql.SQL = MagicMock()
+    psycopg_sql.Identifier = MagicMock()
+    psycopg.sql = psycopg_sql
+    psycopg_types = types.ModuleType("psycopg.types")
+    psycopg_types_json = types.ModuleType("psycopg.types.json")
+    psycopg_types_json.Json = MagicMock()
+    psycopg_types.json = psycopg_types_json
+    psycopg.types = psycopg_types
+    sys.modules.update({
+        "psycopg": psycopg, "psycopg.sql": psycopg_sql,
+        "psycopg.types": psycopg_types, "psycopg.types.json": psycopg_types_json,
+    })
+    psycopg_pool = types.ModuleType("psycopg_pool")
+    psycopg_pool.ConnectionPool = MagicMock()
+    sys.modules["psycopg_pool"] = psycopg_pool
+
+
+_stub_psycopg()
+_stub_oracledb()
+
+from aryx.store.oracle_pool import (  # noqa: E402
+    OracleCursorWrapper,
+    _translate_sql,
+    _unwrap_params,
+)
+from aryx.store.oracle_migrate import _split_blocks  # noqa: E402
+
+
+# ── _split_blocks tests ───────────────────────────────────────────────────────
+
+class TestSplitBlocks(unittest.TestCase):
+    """Tests for the PL/SQL block splitter used by oracle_migrate."""
+
+    def test_single_plsql_block(self) -> None:
+        sql = "BEGIN\n  EXECUTE IMMEDIATE 'CREATE TABLE t (id NUMBER)';\nEXCEPTION WHEN OTHERS THEN NULL;\nEND;\n/"
+        blocks = _split_blocks(sql)
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("BEGIN", blocks[0])
+        self.assertIn("END", blocks[0])
+
+    def test_multiple_plsql_blocks(self) -> None:
+        sql = "BEGIN\n  NULL;\nEND;\n/\nBEGIN\n  NULL;\nEND;\n/"
+        blocks = _split_blocks(sql)
+        self.assertEqual(len(blocks), 2)
+
+    def test_trailing_plain_sql_after_slash(self) -> None:
+        """Plain ALTER TABLE after the last '/' is split on ';'."""
+        sql = "BEGIN\n  NULL;\nEND;\n/\nALTER TABLE t ADD (col VARCHAR2(100));"
+        blocks = _split_blocks(sql)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("ALTER TABLE", blocks[1])
+
+    def test_empty_sql(self) -> None:
+        self.assertEqual(_split_blocks(""), [])
+
+    def test_comment_only_lines_stripped_from_trailing(self) -> None:
+        sql = "BEGIN\n  NULL;\nEND;\n/\n-- just a comment\n"
+        blocks = _split_blocks(sql)
+        self.assertEqual(len(blocks), 1)
+
+    def test_noop_migration(self) -> None:
+        """Migrations like 0010 contain only a comment and SELECT 1 FROM dual."""
+        sql = "-- no-op\nSELECT 1 FROM dual"
+        blocks = _split_blocks(sql)
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("SELECT 1", blocks[0])
+
+
+# ── _translate_sql tests ──────────────────────────────────────────────────────
+
+def _make_cursor() -> OracleCursorWrapper:
+    """Return a cursor wrapper backed by the stubbed oracledb cursor."""
+    import oracledb
+    raw = oracledb._Cursor()
+    return OracleCursorWrapper(raw)
+
+
+class TestTranslateSql(unittest.TestCase):
+    """Tests for psycopg3 → oracledb SQL translation."""
+
+    def test_named_params(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT * FROM t WHERE id = %(wid)s", cur)
+        self.assertEqual(result, "SELECT * FROM t WHERE id = :wid")
+
+    def test_positional_params(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("INSERT INTO t VALUES (%s, %s, %s)", cur)
+        self.assertEqual(result, "INSERT INTO t VALUES (:1, :2, :3)")
+
+    def test_type_cast_stripped(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT data::jsonb FROM t", cur)
+        self.assertNotIn("::", result)
+        self.assertNotIn("jsonb", result)
+
+    def test_multiple_cast_types(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT a::text, b::int, c::bigint FROM t", cur)
+        self.assertNotIn("::", result)
+
+    def test_on_conflict_do_nothing_stripped(self) -> None:
+        cur = _make_cursor()
+        sql = "INSERT INTO t (id, v) VALUES (%s, %s) ON CONFLICT DO NOTHING"
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("ON CONFLICT", result)
+        self.assertTrue(cur._conflict_ignore)
+
+    def test_no_conflict_flag_when_no_conflict_clause(self) -> None:
+        cur = _make_cursor()
+        _translate_sql("SELECT 1 FROM dual", cur)
+        self.assertFalse(cur._conflict_ignore)
+
+    def test_returning_rewritten_with_into(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("INSERT INTO t (name) VALUES (%s) RETURNING id", cur)
+        self.assertIn("RETURNING id INTO :r0", result)
+        self.assertEqual(len(cur._out_vars), 1)
+
+    def test_returning_multi_column(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql(
+            "INSERT INTO t (a, b) VALUES (%s, %s) RETURNING id, name", cur
+        )
+        self.assertIn("RETURNING id, name INTO :r0, :r1", result)
+        self.assertEqual(len(cur._out_vars), 2)
+
+    def test_returning_not_doubled_when_into_present(self) -> None:
+        """SQL already containing RETURNING...INTO must not get a second INTO appended."""
+        cur = _make_cursor()
+        sql = "INSERT INTO t VALUES (:1) RETURNING id INTO :r0"
+        result = _translate_sql(sql, cur)
+        # "INSERT INTO" + "RETURNING id INTO" = exactly 2 occurrences; no third added.
+        self.assertEqual(result.count("INTO"), 2)
+        # RETURNING clause must appear exactly once (not doubled).
+        self.assertEqual(result.count("RETURNING"), 1)
+        self.assertEqual(len(cur._out_vars), 0)  # no new out_vars allocated
+
+
+# ── _unwrap_params tests ──────────────────────────────────────────────────────
+
+class TestUnwrapParams(unittest.TestCase):
+    """Tests for psycopg Json() duck-type unwrapping."""
+
+    def test_none_passthrough(self) -> None:
+        self.assertIsNone(_unwrap_params(None))
+
+    def test_plain_string_passthrough(self) -> None:
+        self.assertEqual(_unwrap_params("hello"), "hello")
+
+    def test_list_recursed(self) -> None:
+        result = _unwrap_params([1, "two", 3])
+        self.assertEqual(result, [1, "two", 3])
+
+    def test_dict_recursed(self) -> None:
+        result = _unwrap_params({"a": 1, "b": 2})
+        self.assertEqual(result, {"a": 1, "b": 2})
+
+    def test_psycopg_json_unwrapped(self) -> None:
+        fake_json = MagicMock()
+        fake_json.obj = {"key": "value"}
+        fake_json.dumps = MagicMock()
+        result = _unwrap_params(fake_json)
+        self.assertEqual(result, {"key": "value"})
+
+    def test_nested_json_in_list(self) -> None:
+        fake_json = MagicMock()
+        fake_json.obj = [1, 2, 3]
+        fake_json.dumps = MagicMock()
+        result = _unwrap_params([fake_json, "plain"])
+        self.assertEqual(result, [[1, 2, 3], "plain"])
+
+
+# ── ORA-00001 conflict-ignore tests ──────────────────────────────────────────
+
+class TestConflictIgnore(unittest.TestCase):
+    """ORA-00001 is swallowed when ON CONFLICT DO NOTHING was stripped."""
+
+    def test_integrity_error_swallowed_when_conflict_ignore(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+
+        err = oracledb.IntegrityError("ORA-00001: unique constraint violated")
+        err.args = ("ORA-00001: unique constraint violated",)
+
+        with patch.object(raw, "execute", side_effect=err):
+            # ON CONFLICT DO NOTHING triggers _conflict_ignore via _translate_sql.
+            try:
+                cur.execute(
+                    "INSERT INTO t (id) VALUES (%s) ON CONFLICT DO NOTHING", (1,)
+                )
+            except oracledb.IntegrityError:
+                self.fail("IntegrityError should have been swallowed")
+
+    def test_integrity_error_raised_when_no_conflict_ignore(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+
+        err = oracledb.IntegrityError("ORA-00001: unique constraint violated")
+        err.args = ("ORA-00001: unique constraint violated",)
+
+        with patch.object(raw, "execute", side_effect=err):
+            with self.assertRaises(oracledb.IntegrityError):
+                cur.execute("INSERT INTO t VALUES (:1)", (1,))
+
+    def test_other_integrity_error_always_raised(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+        cur._conflict_ignore = True
+
+        err = oracledb.IntegrityError("ORA-02292: integrity constraint violated")
+        err.args = ("ORA-02292: integrity constraint violated",)
+
+        with patch.object(raw, "execute", side_effect=err):
+            with self.assertRaises(oracledb.IntegrityError):
+                cur.execute("DELETE FROM t WHERE id = :1", (1,))
+
+
+if __name__ == "__main__":
+    unittest.main()

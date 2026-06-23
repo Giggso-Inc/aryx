@@ -115,8 +115,14 @@ def run_pipeline(
         _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
         with runner.stage("project"):
             type_ancestors = _build_type_ancestors(dsn)
+            settings = get_settings()
+            if settings.effective_graph_backend() == "oci_graph":
+                from aryx.graph.oracle_graph_store import OracleGraphStore
+                graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
+            else:
+                graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
             counts = project_graph(
-                estore, FalkorStore(graph_url, ws_graph(workspace_id)),
+                estore, graph_inst,
                 type_ancestors=type_ancestors, workspace_id=workspace_id,
             )
     finally:
