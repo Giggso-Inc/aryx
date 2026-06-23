@@ -26,6 +26,30 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1000, description="Target chunk size in characters.")
     chunk_overlap: int = Field(default=100, description="Overlap in characters between adjacent chunks.")
     worker_threads: int = Field(default=4, description="Concurrent ingest workers (ThreadPoolExecutor).")
+    max_block_size: int = Field(
+        default=5000,
+        description="Max records per blocking group in resolution. Groups over this size are logged and skipped.",
+    )
+    graph_query_limit: int = Field(
+        default=500,
+        description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
+    )
+    max_relate_pairs: int = Field(
+        default=50,
+        description="Max entity pairs evaluated for relationship inference per pipeline run.",
+    )
+    transitive_max_depth: int = Field(
+        default=4,
+        description="Max hops for transitive closure computation in edge axioms.",
+    )
+    rules_db_warn_threshold: int = Field(
+        default=20,
+        description=(
+            "Warn when a workspace has more enabled rules than this. "
+            "Each rule issues one DB round-trip in evaluate_workspace(); "
+            "high counts saturate the connection pool under concurrent load."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)
