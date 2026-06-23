@@ -1,6 +1,5 @@
 # aryx OCI Functions image — ARM64 (A1.Flex).
 # Build context: repo root (aryx/).
-# No wallet needed — ADB uses TLS (one-way) mode. Credentials via OCI Console env vars.
 #
 # Build:
 #   docker build --platform linux/arm64 \

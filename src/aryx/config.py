@@ -121,11 +121,11 @@ class Settings(BaseSettings):
     )
     db_user: str = Field(
         default="",
-        description="Oracle ADB username. Required when db_backend='oci' in TLS (no-wallet) mode.",
+        description="Oracle ADB username. Required when db_backend='oci'.",
     )
     db_password: str = Field(
         default="",
-        description="Oracle ADB password. Required when db_backend='oci' in TLS (no-wallet) mode.",
+        description="Oracle ADB password. Required when db_backend='oci'.",
     )
     oci_ingest_fn_id: str = Field(
         default="",

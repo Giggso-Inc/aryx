@@ -1,7 +1,7 @@
 # aryx OCI deployment stack — runs on OCI A1.Flex VM (4 OCPU / 24 GB ARM).
 #
 # What this replaces vs docker-compose.yml (local dev):
-#   postgres    → Oracle ADB 23ai       (managed, wallet auth)
+#   postgres    → Oracle ADB 23ai       (managed, TLS)
 #   falkordb    → Oracle Graph / PGX    (pgx-server container + ADB SQL/PGQ)
 #   ollama      → OCI GenAI API         (Cohere Embed v3, Command R / R+)
 #   worker      → OCI Functions         (per-doc async, fire-and-forget)
@@ -9,9 +9,6 @@
 # Prerequisites on the VM before first start:
 #   1. Copy .env with all ARYX_OCI_* vars filled (see docs/OCI_DEPLOYMENT_PLAN.md)
 #   2. docker login container-registry.oracle.com  (for pgx image)
-#
-# No wallet needed — ADB is configured for TLS (one-way) mode.
-# DevOps: disable mTLS in OCI Console → ADB → DB Connection → Edit.
 #
 # Usage:
 #   docker compose -f docker-compose-oci.yml up -d
@@ -62,7 +59,7 @@ services:
       - ARYX_OCI_MODE=true
       - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
       - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
-      # DB → Oracle ADB 23ai (TLS mode — no wallet)
+      # DB → Oracle ADB 23ai
       - ARYX_DB_BACKEND=oci
       - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
       - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
