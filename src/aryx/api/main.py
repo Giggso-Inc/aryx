@@ -89,7 +89,9 @@ async def _lifespan(app: FastAPI):
     yield
     shutdown_executor()
     from aryx.store.pool import close_all
+    from aryx.api.file_ingest_api import shutdown_executor
     close_all()
+    shutdown_executor()
 
 
 def create_app() -> FastAPI:

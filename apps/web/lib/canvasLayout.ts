@@ -1,8 +1,8 @@
 import dagre from "dagre";
 import type { Edge, Node } from "@xyflow/react";
 
-const NODE_W = 240;
-const NODE_H = 120;
+const NODE_W = 160;
+const NODE_H = 60;
 
 /**
  * Auto-layout nodes + edges with dagre. Stable: same input → same output.
@@ -16,7 +16,7 @@ export function autoLayout(
 ): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: direction, nodesep: 60, ranksep: 100 });
+  g.setGraph({ rankdir: direction, nodesep: 40, ranksep: 120 });
   for (const n of nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H });
   for (const e of edges) g.setEdge(e.source, e.target);
   dagre.layout(g);

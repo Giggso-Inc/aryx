@@ -56,6 +56,7 @@ def shutdown_executor() -> None:
 
 _DATA_EXTS = {".json", ".csv"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
+             ".xml", ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
 _MAX_FILE = 2 * 1024 * 1024
@@ -70,11 +71,15 @@ def _save_tmp(data: bytes, suffix: str) -> Path:
     return Path(tmp.name)
 
 
+_FK_REQUIRED_KEYS = frozenset({"source_type", "target_type", "source_attr", "target_attr"})
+
+
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
     settings = get_settings()
-    jobs = None
+    jobs: JobStore | None = None
+    tmp_paths: list[Path] = []
     try:
         jobs = JobStore(settings.rdb_dsn)
         broker = _local_broker()
@@ -83,7 +88,9 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
             if suffix == ".json":
-                connector = JsonConnector(_save_tmp(data, ".json"), system="json")
+                tmp = _save_tmp(data, ".json")
+                tmp_paths.append(tmp)
+                connector = JsonConnector(tmp, system="json")
             else:
                 connector = CsvConnector(data, system="csv", dataset=Path(name).stem)
             jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
@@ -97,10 +104,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
-            paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
+            doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
+            tmp_paths.extend(doc_paths)
             chunk_store = ChunkStore(settings.rdb_dsn)
             connector = DocumentRouterConnector(
-                paths=paths, system="document", broker=broker,
+                paths=doc_paths, system="document", broker=broker,
                 chunk_store=chunk_store, chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
             )
@@ -120,6 +128,8 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     finally:
         if jobs is not None:
             jobs.close()
+        for p in tmp_paths:
+            p.unlink(missing_ok=True)
 
 
 def file_ingest_router() -> APIRouter:
@@ -157,7 +167,14 @@ def file_ingest_router() -> APIRouter:
         finally:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
-        links = json.loads(fk_links) if fk_links else []
+        try:
+            links = json.loads(fk_links) if fk_links else []
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, f"fk_links is not valid JSON: {exc}") from exc
+        for i, lnk in enumerate(links):
+            if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
+                raise HTTPException(400,
+                    f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
         future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
         future.add_done_callback(
             lambda f: (exc := f.exception()) and logger.error(
