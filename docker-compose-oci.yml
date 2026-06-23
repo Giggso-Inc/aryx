@@ -7,9 +7,11 @@
 #   worker      → OCI Functions         (per-doc async, fire-and-forget)
 #
 # Prerequisites on the VM before first start:
-#   1. Unzip ADB wallet: unzip wallet.zip -d /opt/oracle/wallet/aryx/
-#   2. Copy .env with all ARYX_OCI_* vars filled
-#   3. docker login container-registry.oracle.com  (for pgx image)
+#   1. Copy .env with all ARYX_OCI_* vars filled (see docs/OCI_DEPLOYMENT_PLAN.md)
+#   2. docker login container-registry.oracle.com  (for pgx image)
+#
+# No wallet needed — ADB is configured for TLS (one-way) mode.
+# DevOps: disable mTLS in OCI Console → ADB → DB Connection → Edit.
 #
 # Usage:
 #   docker compose -f docker-compose-oci.yml up -d
@@ -61,14 +63,12 @@ services:
       - ARYX_OCI_MODE=true
       - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
       - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
-      # DB → Oracle ADB 23ai
+      # DB → Oracle ADB 23ai (TLS mode — no wallet)
       - ARYX_DB_BACKEND=oci
       - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
       - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
       - ARYX_DB_USER=${ARYX_DB_USER}
       - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
-      - ARYX_DB_WALLET_PASSWORD=${ARYX_DB_WALLET_PASSWORD}
-      - TNS_ADMIN=/opt/oracle/wallet/aryx
       # Graph → Oracle Graph (ADB SQL/PGQ) + PGX for analytics/reasoning
       - ARYX_GRAPH_BACKEND=oci_graph
       - PGX_SERVER_URL=http://pgx-server:7007
@@ -85,8 +85,6 @@ services:
       # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)
       - ARYX_LLM_CHEAP_BACKEND=oci
       - ARYX_LLM_FRONTIER_BACKEND=oci
-    volumes:
-      - /opt/oracle/wallet/aryx:/opt/oracle/wallet/aryx:ro
     ports:
       - "8088:8000"
     networks:
@@ -113,12 +111,8 @@ services:
       - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
       - ARYX_DB_USER=${ARYX_DB_USER}
       - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
-      - ARYX_DB_WALLET_PASSWORD=${ARYX_DB_WALLET_PASSWORD}
-      - TNS_ADMIN=/opt/oracle/wallet/aryx
       - ARYX_GRAPH_BACKEND=oci_graph
       - PGX_SERVER_URL=http://pgx-server:7007
-    volumes:
-      - /opt/oracle/wallet/aryx:/opt/oracle/wallet/aryx:ro
     ports:
       - "8765:8765"
     networks:

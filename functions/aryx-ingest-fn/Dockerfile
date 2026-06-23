@@ -1,8 +1,6 @@
 # aryx OCI Functions image — ARM64 (A1.Flex).
 # Build context: repo root (aryx/).
-#
-# Before building, unzip the ADB wallet into this directory:
-#   unzip wallet.zip -d functions/aryx-ingest-fn/wallet/
+# No wallet needed — ADB uses TLS (one-way) mode. Credentials via OCI Console env vars.
 #
 # Build:
 #   docker build --platform linux/arm64 \
@@ -28,12 +26,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir fdk -r requirements.txt
 
 COPY src/ ./src/
-
-# ADB wallet — must be present at build time.
-# DevOps unzips wallet.zip into functions/aryx-ingest-fn/wallet/ before docker build.
-# The wallet directory is gitignored — never committed.
-COPY functions/aryx-ingest-fn/wallet/ /opt/oracle/wallet/aryx/
-ENV TNS_ADMIN=/opt/oracle/wallet/aryx
 
 # OCI Functions runtime invokes the handler via the fdk CLI
 CMD ["fdk", "aryx.worker.fn_handler:handler"]

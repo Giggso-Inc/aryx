@@ -119,6 +119,14 @@ class Settings(BaseSettings):
         default="",
         description="Oracle ADB connection string. Required when db_backend='oci'.",
     )
+    db_user: str = Field(
+        default="",
+        description="Oracle ADB username. Required when db_backend='oci' in TLS (no-wallet) mode.",
+    )
+    db_password: str = Field(
+        default="",
+        description="Oracle ADB password. Required when db_backend='oci' in TLS (no-wallet) mode.",
+    )
     oci_ingest_fn_id: str = Field(
         default="",
         description="OCI Function OCID for per-doc ingestion. Required when worker_backend='oci_functions'.",
