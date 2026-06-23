@@ -1,6 +1,7 @@
 """Combined Aryx API: graph queries + admin/ingestion + MCP /mcp endpoint."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -84,12 +85,32 @@ def _mount_mcp(app: FastAPI) -> None:
         logger.warning("MCP mount failed: %s", exc)
 
 
+async def _stale_job_sweep() -> None:
+    timeout_min = int(os.environ.get("ARYX_JOB_TIMEOUT_MINUTES", "10"))
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from aryx.config import get_settings
+            from aryx.store.job_store import JobStore
+            JobStore(get_settings().rdb_dsn).sweep_stale(timeout_min)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stale-job sweep error: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    yield
-    shutdown_executor()
-    from aryx.store.pool import close_all
-    close_all()
+    _task = asyncio.ensure_future(_stale_job_sweep())
+    try:
+        yield
+    finally:
+        _task.cancel()
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        shutdown_executor()
+        from aryx.store.pool import close_all
+        close_all()
 
 
 def create_app() -> FastAPI:

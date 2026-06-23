@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 *.pem
+# ADB wallet — must never be committed; unzip into this path before docker build
+functions/aryx-ingest-fn/wallet/
 *.key
 *.p12
 *.pfx

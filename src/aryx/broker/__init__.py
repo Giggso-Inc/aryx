@@ -1,8 +1,9 @@
 """Model Broker: roll-call, tier association, token rationing, and embeddings.
 
-Provider-agnostic selection layer (Anthropic + Ollama + any OpenAI-compatible
-endpoint). It decides which model serves a tier and enforces budgets; actual
-chat invocation lives in aryx/llm.py. Embeddings run on a local model (free).
+Provider-agnostic selection layer (Anthropic + Ollama + OCI GenAI + any
+OpenAI-compatible endpoint). It decides which model serves a tier and enforces
+budgets; actual chat invocation lives in aryx/llm.py. Embeddings run via Ollama
+(local dev) or OCI GenAI Cohere Embed v3 (OCI deployment).
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 _CATALOG = Path(__file__).parent / "catalog.json"
 
-__all__ = ["Broker", "default_broker", "ModelSpec", "Registry", "TokenGovernor"]
+__all__ = ["Broker", "default_broker", "ModelSpec", "oci_broker", "Registry", "TokenGovernor"]
 
 
 class Broker:
@@ -164,3 +165,26 @@ def default_broker() -> Broker:
         registry.add(spec)
     return Broker(registry, TokenGovernor(data.get("budgets", {})),
                   embed_config=data.get("embed", {}))
+
+
+def oci_broker() -> Broker:
+    """Build a Broker with OCI GenAI models for use inside OCI Functions."""
+    from aryx.config import get_settings
+    settings = get_settings()
+    registry = Registry()
+    registry.add(ModelSpec(
+        name=settings.llm_cheap_model_override or "cohere.command-r-08-2024",
+        provider="oci", tier="cheap", local=False, endpoint="",
+    ))
+    registry.add(ModelSpec(
+        name=settings.llm_frontier_model_override or "cohere.command-r-plus-08-2024",
+        provider="oci", tier="frontier", local=False, endpoint="",
+    ))
+    return Broker(
+        registry,
+        TokenGovernor({}),
+        embed_config={
+            "provider": "oci",
+            "model": settings.embed_model_override or "cohere.embed-multilingual-v3.0",
+        },
+    )

@@ -172,11 +172,6 @@ def file_ingest_router() -> APIRouter:
                     "fk_links": links,
                     "filename": filename,
                     "file_b64": base64.b64encode(file_bytes).decode(),
-                    "dsn": settings.rdb_dsn,
-                    "graph_url": settings.graph_url,
-                    "chunk_size": settings.chunk_size,
-                    "chunk_overlap": settings.chunk_overlap,
-                    "embed_dim": settings.embed_dim,
                 }
                 submit_to_oci_function(settings.oci_ingest_fn_id, payload)
         elif worker_backend == "oci_dataflow":

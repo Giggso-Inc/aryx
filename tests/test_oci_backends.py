@@ -449,5 +449,137 @@ class TestConnectorForOciExtensionGuard(unittest.TestCase):
         assert isinstance(conn, PdfConnector)
 
 
+# ---------------------------------------------------------------------------
+# oci_broker() factory
+# ---------------------------------------------------------------------------
+
+class TestOciBroker(unittest.TestCase):
+    """oci_broker() must return a Broker seeded with OCI GenAI Cohere models."""
+
+    def _settings(self, **kw):
+        from aryx.config import Settings
+        return Settings(_env_file=None, **kw)
+
+    def test_returns_broker_instance(self) -> None:
+        from aryx.broker import Broker, oci_broker
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._settings(oci_mode=True)):
+            b = oci_broker()
+        assert isinstance(b, Broker)
+
+    def test_has_cheap_and_frontier_models(self) -> None:
+        from aryx.broker import oci_broker
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._settings(oci_mode=True)):
+            b = oci_broker()
+        tiers = {m.tier for m in b.models()}
+        assert "cheap" in tiers
+        assert "frontier" in tiers
+
+    def test_all_models_have_oci_provider(self) -> None:
+        from aryx.broker import oci_broker
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._settings(oci_mode=True)):
+            b = oci_broker()
+        assert all(m.provider == "oci" for m in b.models())
+
+    def test_default_cheap_model_is_command_r(self) -> None:
+        from aryx.broker import oci_broker
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._settings(oci_mode=True)):
+            b = oci_broker()
+        cheap = next(m for m in b.models() if m.tier == "cheap")
+        assert "command-r" in cheap.name
+
+    def test_model_override_is_respected(self) -> None:
+        from aryx.broker import oci_broker
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._settings(
+                              oci_mode=True,
+                              llm_cheap_model_override="cohere.custom-cheap",
+                          )):
+            b = oci_broker()
+        cheap = next(m for m in b.models() if m.tier == "cheap")
+        assert cheap.name == "cohere.custom-cheap"
+
+    def test_no_ollama_models_in_oci_broker(self) -> None:
+        from aryx.broker import oci_broker
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._settings(oci_mode=True)):
+            b = oci_broker()
+        assert not any(m.provider == "ollama" for m in b.models())
+
+
+# ---------------------------------------------------------------------------
+# JobStore.sweep_stale()
+# ---------------------------------------------------------------------------
+
+class TestSweepStaleJobs(unittest.TestCase):
+    """sweep_stale() must UPDATE stale rows and return the affected count."""
+
+    def _make_store_with_mock_pool(self, rowcount: int = 0):
+        """Return a JobStore whose pool is fully mocked."""
+        from aryx.store.job_store import JobStore
+
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_cur.rowcount = rowcount
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+
+        mock_pool = MagicMock()
+        mock_pool.connection.return_value = mock_conn
+
+        store = JobStore.__new__(JobStore)
+        store._pool = mock_pool
+        return store, mock_cur
+
+    def test_returns_zero_when_no_stale_jobs(self) -> None:
+        store, _ = self._make_store_with_mock_pool(rowcount=0)
+        assert store.sweep_stale(10) == 0
+
+    def test_returns_count_of_swept_jobs(self) -> None:
+        store, _ = self._make_store_with_mock_pool(rowcount=3)
+        assert store.sweep_stale(10) == 3
+
+    def test_executes_with_timeout_parameter(self) -> None:
+        store, mock_cur = self._make_store_with_mock_pool(rowcount=1)
+        store.sweep_stale(15)
+        call_args = mock_cur.execute.call_args
+        # Second positional arg is the params tuple — must contain the timeout value
+        params = call_args[0][1]
+        assert params == (15,)
+
+    def test_logs_warning_when_rows_swept(self) -> None:
+        import logging
+        store, _ = self._make_store_with_mock_pool(rowcount=2)
+        with self.assertLogs("aryx.store.job_store", level=logging.WARNING):
+            store.sweep_stale(10)
+
+    def test_no_log_when_zero_rows(self) -> None:
+        import logging as _logging
+        store, _ = self._make_store_with_mock_pool(rowcount=0)
+        # assertLogs raises AssertionError if no logs emitted — that's the pass condition
+        with self.assertRaises(AssertionError):
+            with self.assertLogs("aryx.store.job_store", level=_logging.WARNING):
+                store.sweep_stale(10)
+
+
 if __name__ == "__main__":
     unittest.main()
