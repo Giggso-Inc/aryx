@@ -13,7 +13,11 @@ is idempotent — re-running over the same data produces the same graph.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
+
+# Relationship names interpolated into Cypher must be safe identifiers.
+_REL_NAME_RE = re.compile(r"^[A-Z0-9_]+$")
 
 from aryx.config import get_settings
 from aryx.graph.falkor_store import FalkorStore
@@ -39,8 +43,11 @@ def _match(entity: dict, when: dict) -> bool:
     if when.get("type") and entity.get("type") != when["type"]:
         return False
     attr = when.get("attr")
+    if not attr:
+        # type-only rule: SQL already filtered by type, no attribute condition
+        return True
     op = _OPS.get(when.get("op", "=="))
-    if not attr or op is None:
+    if op is None:
         return False
     val = (entity.get("attributes") or {}).get(attr)
     if val is None:
@@ -62,7 +69,12 @@ def _apply_label(graph: FalkorStore, entity_id: int, label: str) -> None:
 def _apply_edge(graph: FalkorStore, source_id: int, name: str,
                 target_type: str, target_name: str) -> None:
     """Create an INF_-prefixed edge to a target entity (matched by type+name)."""
-    rel = f"INF_{name.upper()}"
+    safe = name.upper()
+    if not _REL_NAME_RE.match(safe):
+        raise ValueError(
+            f"Invalid relationship name {name!r}: must match [A-Z0-9_]+"
+        )
+    rel = f"INF_{safe}"
     graph.run(
         "MATCH (s {id: $sid}), (t {ontology_type: $ttype, name: $tname}) "
         f"MERGE (s)-[r:{rel} {{inferred: true}}]->(t)",
@@ -102,33 +114,54 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
         rules_store.close()
     if not rules:
         return {"rules_evaluated": 0, "total_fires": 0, "per_rule": {}}
-    estore = EntityStore(settings.rdb_dsn, workspace_id)
+    threshold = settings.rules_db_warn_threshold
+    if len(rules) > threshold:
+        logger.warning(
+            "evaluate_workspace ws=%s rules=%d exceeds threshold=%d — "
+            "each rule issues one DB round-trip; revisit batching or "
+            "set ARYX_RULES_DB_WARN_THRESHOLD to suppress",
+            workspace_id, len(rules), threshold,
+        )
+    estore = None
+    bumps = None
     try:
-        ents = estore.list_entities()
-    finally:
-        estore.close()
-    graph = FalkorStore(settings.graph_url, ws_graph(workspace_id))
-    per_rule: dict[str, int] = {}
-    total = 0
-    bumps = RuleStore(settings.rdb_dsn)
-    try:
+        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        graph = FalkorStore(settings.graph_url, ws_graph(workspace_id))
+        per_rule: dict[str, int] = {}
+        total = 0
+        bumps = RuleStore(settings.rdb_dsn)
         for rule in rules:
             when = rule.get("when") or {}
             then = rule.get("then") or {}
-            if "edge" in when:
-                # Edge-scoped axiom (inverse_of / symmetric / transitive).
-                fires = _apply_edge_axiom(graph, str(when["edge"]), then)
-            else:
-                fires = 0
-                for ent in ents:
-                    if _match(ent, when):
-                        fires += _fire(graph, ent, then)
+            fires = 0
+            try:
+                if "edge" in when:
+                    # Edge-scoped axiom (inverse_of / symmetric / transitive).
+                    fires = _apply_edge_axiom(graph, str(when["edge"]), then)
+                else:
+                    if when.get("type") or when.get("attr"):
+                        for ent in estore.match_entities(when):
+                            if _match(ent, when):
+                                fires += _fire(graph, ent, then)
+                    else:
+                        logger.warning(
+                            "rule %r skipped — when-clause has no 'type', 'attr', or 'edge'",
+                            rule.get("name"),
+                        )
+            except ValueError as exc:
+                logger.warning(
+                    "rule %r skipped — invalid value in then-clause: %s",
+                    rule.get("name"), exc,
+                )
             per_rule[rule["name"]] = fires
             total += fires
             if fires:
                 bumps.bump(workspace_id, rule["name"], fires)
     finally:
-        bumps.close()
+        if bumps is not None:
+            bumps.close()
+        if estore is not None:
+            estore.close()
     logger.info("evaluator ws=%s fires=%d rules=%d",
                 workspace_id, total, len(rules))
     return {"rules_evaluated": len(rules), "total_fires": total,

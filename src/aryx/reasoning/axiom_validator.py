@@ -93,15 +93,12 @@ def validate_workspace(workspace_id: int, dsn: str,
     finally:
         onto.close()
     estore = EntityStore(dsn, workspace_id)
-    try:
-        entities = estore.list_entities()
-    finally:
-        estore.close()
-
     recorder = AxiomStore(dsn) if record else None
     violations = 0
+    entities_scanned = 0
     try:
-        for entity_id, ontology_type, attributes in entities:
+        for entity_id, ontology_type, attributes in estore.list_entities():
+            entities_scanned += 1
             for ax in cardinality_by_type.get(ontology_type, []):
                 violated, count = _violates_cardinality_max(
                     attributes or {}, ax["payload"])
@@ -126,12 +123,13 @@ def validate_workspace(workspace_id: int, dsn: str,
                             workspace_id, int(entity_id), int(ax["id"]), reason)
                     violations += 1
     finally:
+        estore.close()
         if recorder:
             recorder.close()
     summary = {
         "axioms_checked": (sum(len(v) for v in cardinality_by_type.values())
                            + len(domain_axioms)),
-        "entities_scanned": len(entities), "violations": violations,
+        "entities_scanned": entities_scanned, "violations": violations,
     }
     logger.info("axiom validation ws=%s %s", workspace_id, summary)
     return summary

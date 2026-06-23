@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from collections.abc import Iterator
+from typing import Any
 
 from psycopg.types.json import Json
 
@@ -16,6 +19,7 @@ from aryx.models import (
     ResolutionRecord,
     ResolvedEntity,
 )
+from aryx.config import get_settings
 from aryx.queries import load
 from aryx.store.pool import get_pool
 
@@ -102,26 +106,68 @@ class EntityStore:
                       r.name, r.confidence) for r in relationships],
                 )
 
-    def list_entities(self) -> list[tuple[int, str, dict]]:
-        """Return (id, ontology_type, attributes) for graph projection."""
+    def list_entities(self) -> Iterator[tuple[int, str, dict]]:
+        """Yield (id, ontology_type, attributes) for graph projection.
+
+        Server-side named cursor + generator: only one batch is held in Python
+        memory at a time. Callers that need full-list semantics (len, indexing,
+        multiple passes) must materialise explicitly: list(store.list_entities()).
+        """
+        batch_size = get_settings().batch_size
         with self._pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(f"list_entities_cur_{self._ws}_{uuid.uuid4().hex[:8]}") as cur:
                 cur.execute(load("select_entities"), (self._ws,))
-                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+                while batch := cur.fetchmany(batch_size):
+                    yield from ((r[0], r[1], r[2]) for r in batch)
 
-    def list_members_provenance(self) -> list[tuple[int, str, str, str]]:
-        """Return (entity_id, system, dataset, record_id) provenance edges."""
+    def list_members_provenance(self) -> Iterator[tuple[int, str, str, str]]:
+        """Yield (entity_id, system, dataset, record_id) provenance edges.
+
+        See list_entities() for the streaming / materialise contract.
+        """
+        batch_size = get_settings().batch_size
         with self._pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(f"list_provenance_cur_{self._ws}_{uuid.uuid4().hex[:8]}") as cur:
                 cur.execute(load("select_members_provenance"), (self._ws,))
-                return [(r[0], r[1], r[2], r[3]) for r in cur.fetchall()]
+                while batch := cur.fetchmany(batch_size):
+                    yield from ((r[0], r[1], r[2], r[3]) for r in batch)
 
-    def list_relationships(self) -> list[tuple[int, int, str]]:
-        """Return (source_entity_id, target_entity_id, name) edges."""
+    def list_relationships(self) -> Iterator[tuple[int, int, str]]:
+        """Yield (source_entity_id, target_entity_id, name) edges.
+
+        See list_entities() for the streaming / materialise contract.
+        """
+        batch_size = get_settings().batch_size
         with self._pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(f"list_relationships_cur_{self._ws}_{uuid.uuid4().hex[:8]}") as cur:
                 cur.execute(load("select_relationships"), (self._ws,))
-                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+                while batch := cur.fetchmany(batch_size):
+                    yield from ((r[0], r[1], r[2]) for r in batch)
+
+    def match_entities(self, when: dict) -> Iterator[dict[str, Any]]:
+        """Yield entities matching a rule when-clause, pushes type+attr into SQL.
+
+        Filters by ontology_type equality and attribute-key existence in the
+        database so only candidate rows reach Python. The op/value comparison
+        runs in the caller (_match) to preserve edge-case handling (TypeError,
+        None values). Yields dicts with keys: id, type, attributes.
+
+        See list_entities() for the streaming / materialise contract.
+        """
+        entity_type = when.get("type") or None
+        attr = when.get("attr") or None
+        batch_size = get_settings().batch_size
+        with self._pool.connection() as conn:
+            with conn.cursor(f"match_entities_cur_{self._ws}_{uuid.uuid4().hex[:8]}") as cur:
+                cur.execute(
+                    load("select_entities_matching"),
+                    (self._ws, entity_type, entity_type, attr, attr),
+                )
+                while batch := cur.fetchmany(batch_size):
+                    yield from (
+                        {"id": r[0], "type": r[1], "attributes": r[2]}
+                        for r in batch
+                    )
 
     def clear_relationships(self) -> int:
         """Delete all relationships for this workspace; return rows removed.

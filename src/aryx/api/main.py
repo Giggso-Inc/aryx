@@ -20,7 +20,7 @@ from aryx.api.data_api import data_router
 from aryx.api.datasource_api import datasource_router
 from aryx.api.demo_ingest_api import demo_ingest_router
 from aryx.api.doc_discover_api import doc_discover_router
-from aryx.api.file_ingest_api import file_ingest_router
+from aryx.api.file_ingest_api import file_ingest_router, shutdown_executor
 from aryx.api.graph_api import graph_router
 from aryx.api.ingest_question_api import ingest_question_router
 from aryx.api.jobs_api import jobs_router
@@ -87,6 +87,7 @@ def _mount_mcp(app: FastAPI) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     yield
+    shutdown_executor()
     from aryx.store.pool import close_all
     from aryx.api.file_ingest_api import shutdown_executor
     close_all()

@@ -35,7 +35,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     A naive all-pairs candidate strategy capped at max_pairs; deterministic
     FK/co-occurrence pair selection is a later increment.
     """
-    entities = store.list_entities()
+    entities = list(store.list_entities())
     rels: list[Relationship] = []
     pairs = 0
     for i in range(len(entities)):
