@@ -38,7 +38,6 @@ services:
       - PGX_HEAP_SIZE=8g
     volumes:
       - pgx-data:/pgx/data
-      - /opt/oracle/wallet/aryx:/opt/oracle/wallet/aryx:ro
     ports:
       # Port 7007 is internal-only — never expose to 0.0.0.0.
       # Security list restricts 7007 to VCN CIDR (10.0.0.0/16) only.

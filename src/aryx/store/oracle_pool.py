@@ -219,16 +219,20 @@ class OraclePool:
     def __init__(self, dsn: str, min_size: int = 2, max_size: int = 10) -> None:
         import oracledb  # noqa: PLC0415
         from aryx.config import get_settings  # noqa: PLC0415
-        logger.info("oracle_pool: creating min=%d max=%d dsn=***", min_size, max_size)
         settings = get_settings()
-        kwargs: dict = dict(dsn=dsn, min=min_size, max=max_size, increment=1)
-        # TLS (no-wallet) mode: pass explicit credentials.
-        # mTLS (wallet) mode: leave empty — cwallet.sso provides SSO auth.
-        if settings.db_user:
-            kwargs["user"] = settings.db_user
-        if settings.db_password:
-            kwargs["password"] = settings.db_password
-        self._pool = oracledb.create_pool(**kwargs)
+        if not settings.db_user or not settings.db_password:
+            raise RuntimeError(
+                "ARYX_DB_USER and ARYX_DB_PASSWORD must be set when ARYX_DB_BACKEND=oci"
+            )
+        logger.info("oracle_pool: creating min=%d max=%d dsn=***", min_size, max_size)
+        self._pool = oracledb.create_pool(
+            user=settings.db_user,
+            password=settings.db_password,
+            dsn=dsn,
+            min=min_size,
+            max=max_size,
+            increment=1,
+        )
 
     @contextmanager
     def connection(self) -> Iterator[OracleConnectionWrapper]:
