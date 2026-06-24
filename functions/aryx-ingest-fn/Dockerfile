@@ -22,7 +22,7 @@ WORKDIR /app
 
 COPY functions/aryx-ingest-fn/requirements_oci.txt .
 # fdk is OCI Functions Python runtime — not in main requirements (local dev doesn't need it)
-RUN pip install --no-cache-dir fdk -r requirements_oci.txt
+RUN pip install --no-cache-dir click fdk -r requirements_oci.txt
 RUN python -m spacy download en_core_web_sm
 
 COPY src/ ./src/
