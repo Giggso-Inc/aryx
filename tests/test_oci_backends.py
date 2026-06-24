@@ -93,20 +93,19 @@ def _make_oci_stub() -> types.ModuleType:
     oci.functions = fn_mod
 
     # register all sub-modules so `import oci.x` resolves
-    for name in [
-        "oci.auth", "oci.auth.signers", "oci.config",
-        "oci.ai_document", "oci.ai_document.models",
-        "oci.generative_ai_inference", "oci.generative_ai_inference.models",
-        "oci.functions", "oci.functions.models",
-    ]:
-        sys.modules[name] = eval(name.replace("oci.", "").replace(".", "_"),  # noqa: S307
-                                 {"auth": auth, "auth_signers": signers,
-                                  "config": cfg, "ai_document": ai_doc,
-                                  "ai_document_models": ai_doc_models,
-                                  "generative_ai_inference": genai,
-                                  "generative_ai_inference_models": genai_models,
-                                  "functions": fn_mod,
-                                  "functions_models": fn_models})
+    _sub = {
+        "oci.auth": auth,
+        "oci.auth.signers": signers,
+        "oci.config": cfg,
+        "oci.ai_document": ai_doc,
+        "oci.ai_document.models": ai_doc_models,
+        "oci.generative_ai_inference": genai,
+        "oci.generative_ai_inference.models": genai_models,
+        "oci.functions": fn_mod,
+        "oci.functions.models": fn_models,
+    }
+    for name, mod in _sub.items():
+        sys.modules[name] = mod
     return oci
 
 
