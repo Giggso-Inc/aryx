@@ -959,9 +959,9 @@ class TestOrchestratePairs:
              patch("aryx.pipeline.orchestrate.StageTracker"), \
              patch("aryx.pipeline.orchestrate.PostgresStore"), \
              patch("aryx.pipeline.orchestrate.EntityStore"), \
-             patch("aryx.pipeline.orchestrate.FalkorStore"), \
+             patch("aryx.graph.FalkorStore"), \
              patch("aryx.pipeline.orchestrate._build_type_ancestors", return_value={}), \
-             patch("aryx.pipeline.orchestrate.ws_graph", return_value="ws_1"):
+             patch("aryx.workspaces.ws_graph", return_value="ws_1"):
             from aryx.pipeline.orchestrate import run_pipeline
             run_pipeline(
                 connector=MagicMock(), dsn="postgresql://x",
@@ -998,9 +998,9 @@ class TestOrchestratePairs:
              patch("aryx.pipeline.orchestrate.StageTracker"), \
              patch("aryx.pipeline.orchestrate.PostgresStore"), \
              patch("aryx.pipeline.orchestrate.EntityStore"), \
-             patch("aryx.pipeline.orchestrate.FalkorStore"), \
+             patch("aryx.graph.FalkorStore"), \
              patch("aryx.pipeline.orchestrate._build_type_ancestors", return_value={}), \
-             patch("aryx.pipeline.orchestrate.ws_graph", return_value="ws_1"):
+             patch("aryx.workspaces.ws_graph", return_value="ws_1"):
             from aryx.pipeline.orchestrate import run_pipeline
             run_pipeline(
                 connector=MagicMock(), dsn="postgresql://x",

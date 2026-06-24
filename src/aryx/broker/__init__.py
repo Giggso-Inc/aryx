@@ -1,8 +1,9 @@
 """Model Broker: roll-call, tier association, token rationing, and embeddings.
 
-Provider-agnostic selection layer (Anthropic + Ollama + any OpenAI-compatible
-endpoint). It decides which model serves a tier and enforces budgets; actual
-chat invocation lives in aryx/llm.py. Embeddings run on a local model (free).
+Provider-agnostic selection layer (Anthropic + Ollama + OCI GenAI + any
+OpenAI-compatible endpoint). It decides which model serves a tier and enforces
+budgets; actual chat invocation lives in aryx/llm.py. Embeddings run via Ollama
+(local dev) or OCI GenAI Cohere Embed v3 (OCI deployment).
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 _CATALOG = Path(__file__).parent / "catalog.json"
 
-__all__ = ["Broker", "default_broker", "ModelSpec", "Registry", "TokenGovernor"]
+__all__ = ["Broker", "default_broker", "ModelSpec", "oci_broker", "Registry", "TokenGovernor"]
 
 
 class Broker:
@@ -93,22 +94,68 @@ class Broker:
         """Return every registered model (for the setup UI roll-call)."""
         return self._registry.all()
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts on the configured local model (Ollama /api/embed).
+    def embed(self, texts: list[str],
+              input_type: str = "SEARCH_DOCUMENT") -> list[list[float]]:
+        """Embed texts via the configured backend (Ollama local or OCI GenAI).
+
+        Args:
+            texts: Texts to embed.
+            input_type: Cohere input type hint for the OCI path.
+                Use "SEARCH_DOCUMENT" when indexing (default) and
+                "SEARCH_QUERY" when embedding a search query at retrieval time.
+                Ignored on the local Ollama path.
 
         Returns an empty list if no embed model is configured, so callers can
         gracefully fall back to string-only similarity.
         """
-        if not self._embed.get("model") or not self._embed.get("endpoint"):
+        from aryx.config import get_settings
+        settings = get_settings()
+        if settings.effective_embed_backend() == "oci":
+            return self._oci_embed(texts, settings, input_type=input_type)
+        return self._ollama_embed(texts)
+
+    def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed via local Ollama /api/embed endpoint."""
+        endpoint = self._embed.get("endpoint", "")
+        if not self._embed.get("model") or not endpoint:
             return []
+        if not endpoint.startswith(("http://", "https://")):
+            raise ValueError(f"broker: Ollama endpoint must be http(s)://: {endpoint!r}")
         body = json.dumps({"model": self._embed["model"], "input": texts}).encode("utf-8")
         req = urllib.request.Request(
-            self._embed["endpoint"].rstrip("/") + "/api/embed",
+            endpoint.rstrip("/") + "/api/embed",
             data=body, headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("embeddings", [])
+
+    def _oci_embed(self, texts: list[str], settings: object,
+                  input_type: str = "SEARCH_DOCUMENT") -> list[list[float]]:
+        """Embed via OCI Generative AI (Cohere Embed v3)."""
+        import oci  # noqa: PLC0415
+        from aryx.oci_client import get_genai_client
+
+        model_id = (
+            getattr(settings, "embed_model_override", "") or
+            "cohere.embed-multilingual-v3.0"
+        )
+        compartment_id = getattr(settings, "oci_compartment_id", "")
+        if not compartment_id:
+            raise RuntimeError(
+                "ARYX_OCI_COMPARTMENT_ID must be set when ARYX_EMBED_BACKEND=oci"
+            )
+        client = get_genai_client()
+        request = oci.generative_ai_inference.models.EmbedTextDetails(
+            inputs=texts,
+            serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
+                model_id=model_id
+            ),
+            compartment_id=compartment_id,
+            input_type=input_type,
+        )
+        response = client.embed_text(embed_text_details=request)
+        return response.data.embeddings
 
 
 def default_broker() -> Broker:
@@ -121,3 +168,26 @@ def default_broker() -> Broker:
         registry.add(spec)
     return Broker(registry, TokenGovernor(data.get("budgets", {})),
                   embed_config=data.get("embed", {}))
+
+
+def oci_broker() -> Broker:
+    """Build a Broker with OCI GenAI models for use inside OCI Functions."""
+    from aryx.config import get_settings
+    settings = get_settings()
+    registry = Registry()
+    registry.add(ModelSpec(
+        name=settings.llm_cheap_model_override or "cohere.command-r-08-2024",
+        provider="oci", tier="cheap", local=False, endpoint="",
+    ))
+    registry.add(ModelSpec(
+        name=settings.llm_frontier_model_override or "cohere.command-r-plus-08-2024",
+        provider="oci", tier="frontier", local=False, endpoint="",
+    ))
+    return Broker(
+        registry,
+        TokenGovernor({}),
+        embed_config={
+            "provider": "oci",
+            "model": settings.embed_model_override or "cohere.embed-multilingual-v3.0",
+        },
+    )

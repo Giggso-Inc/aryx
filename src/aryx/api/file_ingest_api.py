@@ -34,6 +34,7 @@ _executor_lock = threading.Lock()
 
 
 def _get_executor() -> ThreadPoolExecutor:
+    """Return the module-level ingest executor, creating it on first call."""
     global _executor
     with _executor_lock:
         if _executor is None:
@@ -167,20 +168,45 @@ def file_ingest_router() -> APIRouter:
         finally:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
+
         try:
             links = json.loads(fk_links) if fk_links else []
         except json.JSONDecodeError as exc:
             raise HTTPException(400, f"fk_links is not valid JSON: {exc}") from exc
-        for i, lnk in enumerate(links):
-            if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
-                raise HTTPException(400,
-                    f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
-        future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
-        future.add_done_callback(
-            lambda f: (exc := f.exception()) and logger.error(
-                "ingest job=%s raised unhandled exception: %s", job_id, exc
+        worker_backend = settings.effective_worker_backend()
+        if worker_backend == "oci_functions":
+            import base64
+            from aryx.worker.oci_functions_worker import submit_to_oci_function
+            for file_bytes, filename in items:
+                payload = {
+                    "job_id": job_id,
+                    "workspace_id": workspace_id,
+                    "ontology_type": ontology_type,
+                    "match_keys": keys,
+                    "fk_links": links,
+                    "filename": filename,
+                    "file_b64": base64.b64encode(file_bytes).decode(),
+                }
+                submit_to_oci_function(settings.oci_ingest_fn_id, payload)
+        elif worker_backend == "oci_dataflow":
+            from aryx.worker.oci_dataflow_worker import submit_to_dataflow
+            submit_to_dataflow(
+                settings.oci_dataflow_app_id,
+                args=["--job-id", job_id, "--workspace-id", str(workspace_id),
+                      "--ontology-type", ontology_type],
+                display_name=f"aryx-ingest-{job_id[:8]}",
             )
-        )
+        else:
+            for i, lnk in enumerate(links):
+                if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
+                    raise HTTPException(400,
+                        f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
+            future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+            future.add_done_callback(
+                lambda f: (exc := f.exception()) and logger.error(
+                    "ingest job=%s raised unhandled exception: %s", job_id, exc
+
+            )
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 

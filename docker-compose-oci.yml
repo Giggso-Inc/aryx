@@ -1,0 +1,143 @@
+# aryx OCI deployment stack — runs on OCI A1.Flex VM (4 OCPU / 24 GB ARM).
+#
+# What this replaces vs docker-compose.yml (local dev):
+#   postgres    → Oracle ADB 23ai       (managed, TLS)
+#   falkordb    → Oracle Graph / PGX    (pgx-server container + ADB SQL/PGQ)
+#   ollama      → OCI GenAI API         (Cohere Embed v3, Command R / R+)
+#   worker      → OCI Functions         (per-doc async, fire-and-forget)
+#
+# Prerequisites on the VM before first start:
+#   1. Copy .env with all ARYX_OCI_* vars filled (see docs/OCI_DEPLOYMENT_PLAN.md)
+#   2. docker login container-registry.oracle.com  (for pgx image)
+#
+# Usage:
+#   docker compose -f docker-compose-oci.yml up -d
+#
+# Memory budget (24 GB total):
+#   pgx-server   8 GB  (graph in-memory)
+#   api          3 GB
+#   mcp          1 GB
+#   web          1 GB
+#   OS + Docker  4 GB
+#   Buffer       7 GB
+
+services:
+
+  # ── Oracle PGX — in-memory graph analytics + OWL 2 RL reasoning ─────────────
+  # Optional: start with --profile pgx when OWL 2 RL reasoning is needed.
+  # Core stack (api/mcp/ui/web) boots without PGX.
+  pgx-server:
+    image: container-registry.oracle.com/database/pgx:latest
+    container_name: pgx-server
+    profiles: ["pgx"]
+    environment:
+      - PGX_HEAP_SIZE=8g
+    volumes:
+      - pgx-data:/pgx/data
+    ports:
+      # Port 7007 is internal-only — never expose to 0.0.0.0.
+      # Security list restricts 7007 to VCN CIDR (10.0.0.0/16) only.
+      - "127.0.0.1:7007:7007"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 9g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7007/version || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  # ── FastAPI — REST API + ingest dispatcher ───────────────────────────────────
+  # OCI Security List: port 8000 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
+  api:
+    build: .
+    env_file: .env
+    command: ["uvicorn", "aryx.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      # OCI global toggle — flips all unset backends to oci
+      - ARYX_OCI_MODE=true
+      - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
+      - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
+      # DB → Oracle ADB 23ai
+      - ARYX_DB_BACKEND=oci
+      - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_DB_USER=${ARYX_DB_USER}
+      - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
+      # Graph → Oracle Graph (ADB SQL/PGQ) + PGX for analytics/reasoning
+      - ARYX_GRAPH_BACKEND=oci_graph
+      - PGX_SERVER_URL=http://pgx-server:7007
+      # Worker → OCI Functions (per-doc async ingest)
+      - ARYX_WORKER_BACKEND=oci_functions
+      - ARYX_OCI_INGEST_FN_ID=${ARYX_OCI_INGEST_FN_ID}
+      # Parse → OCI Document Understanding
+      - ARYX_PARSE_BACKEND=oci
+      # Object Storage — required for large-doc (>15 MB) Document Understanding path
+      - ARYX_OCI_OBJECT_STORAGE_NAMESPACE=${ARYX_OCI_OBJECT_STORAGE_NAMESPACE}
+      - ARYX_OCI_DOCUMENT_BUCKET=${ARYX_OCI_DOCUMENT_BUCKET:-aryx-documents}
+      # Embed → OCI GenAI Cohere Embed v3
+      - ARYX_EMBED_BACKEND=oci
+      # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)
+      - ARYX_LLM_CHEAP_BACKEND=oci
+      - ARYX_LLM_FRONTIER_BACKEND=oci
+    ports:
+      - "8088:8000"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── MCP server — Model Context Protocol SSE endpoint ────────────────────────
+  # OCI Security List: port 8765 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
+  mcp:
+    build: .
+    env_file: .env
+    command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
+    environment:
+      - ARYX_OCI_MODE=true
+      - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
+      - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
+      - ARYX_DB_BACKEND=oci
+      - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_DB_USER=${ARYX_DB_USER}
+      - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
+      - ARYX_GRAPH_BACKEND=oci_graph
+      - PGX_SERVER_URL=http://pgx-server:7007
+    ports:
+      - "8765:8765"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+
+  # ── Next.js web UI ───────────────────────────────────────────────────────────
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - NODE_ENV=production
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+
+networks:
+  aryx-net:
+    driver: bridge
+
+volumes:
+  pgx-data:

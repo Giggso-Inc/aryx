@@ -36,11 +36,7 @@ services:
       falkordb:
         condition: service_started
 
-  # Read-only HTTP API over the FalkorDB projection (Increment 6). Reuses the
-  # worker image, overriding the command to serve uvicorn. Bound to all
-  # interfaces so a published port is reachable; restrict exposure at the
-  # security-group / firewall layer.
-  # Local LLM runtime (Increment: Ask). CPU inference is fine for sub-2B models.
+  # Local LLM runtime — CPU inference for sub-2B models.
   # Models persist in the ollama_models volume so they download only once.
   ollama:
     image: ollama/ollama
@@ -69,9 +65,8 @@ services:
     build: .
     env_file: .env
     command: ["uvicorn", "aryx.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    # ARYX_LLM_* vars come from .env so the doc ingest + Ask API can be
-    # pointed at any provider (Ollama / Gemini / Anthropic) without editing
-    # this file. Defaults to local Ollama if the .env doesn't set them.
+    # Ollama service URL uses the docker-network hostname — must be set here.
+    # All other ARYX_* vars are read from env_file: .env (pydantic-settings).
     environment:
       - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
       - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
