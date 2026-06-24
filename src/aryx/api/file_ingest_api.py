@@ -205,7 +205,7 @@ def file_ingest_router() -> APIRouter:
             future.add_done_callback(
                 lambda f: (exc := f.exception()) and logger.error(
                     "ingest job=%s raised unhandled exception: %s", job_id, exc
-
+                )
             )
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
