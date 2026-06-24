@@ -14,7 +14,6 @@ don't have oracledb installed never hit this module.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import threading

@@ -133,8 +133,12 @@ class Settings(BaseSettings):
         description="OCI Object Storage namespace. Required for large-doc (>15 MB) Document Understanding path.",
     )
     oci_document_bucket: str = Field(
-        default="aryx-documents",
+        default="aryx-doc-output",
         description="OCI Object Storage bucket for Document Understanding output.",
+    )
+    oci_rdf_bucket: str = Field(
+        default="aryx-rdf-exports",
+        description="OCI Object Storage bucket for RDF/OWL ontology exports (versioning enabled).",
     )
     oci_document_features: str = Field(
         default="TEXT_DETECTION,TABLE_DETECTION,KEY_VALUE_DETECTION",

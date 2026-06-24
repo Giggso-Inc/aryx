@@ -17,12 +17,32 @@ import base64
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # OCI Document Understanding inline document size limit (~20 MB base64 → ~15 MB raw).
 # Files over this must use Object Storage upload instead of inline submission.
 _OCI_INLINE_MAX_BYTES = 15 * 1024 * 1024
+
+
+def _parse_oci_response(result: Any) -> dict[int, list[str]]:
+    """Extract per-page text lines from an OCI Document Understanding result."""
+    pages_text: dict[int, list[str]] = {}
+    for block in (result.pages or []):
+        page_num = block.page_number or 1
+        lines = pages_text.setdefault(page_num, [])
+        for line in (block.lines or []):
+            if line.text:
+                lines.append(line.text)
+    for table in (result.detected_tables or []):
+        page_num = getattr(table, "page_number", 1) or 1
+        lines = pages_text.setdefault(page_num, [])
+        for row in (table.rows or []):
+            row_parts = [cell.text.strip() for cell in (row.cells or []) if cell.text]
+            if row_parts:
+                lines.append(" | ".join(row_parts))
+    return pages_text
 
 
 class OciDocConnector:
@@ -66,29 +86,7 @@ class OciDocConnector:
         )
 
         response = client.analyze_document(analyze_document_details=request)
-        result = response.data
-
-        pages_text: dict[int, list[str]] = {}
-
-        # Extract text blocks per page
-        for block in (result.pages or []):
-            page_num = block.page_number or 1
-            lines = pages_text.setdefault(page_num, [])
-            for line in (block.lines or []):
-                if line.text:
-                    lines.append(line.text)
-
-        # Extract table cell text per page
-        for table in (result.detected_tables or []):
-            page_num = getattr(table, "page_number", 1) or 1
-            lines = pages_text.setdefault(page_num, [])
-            for row in (table.rows or []):
-                row_parts = []
-                for cell in (row.cells or []):
-                    if cell.text:
-                        row_parts.append(cell.text.strip())
-                if row_parts:
-                    lines.append(" | ".join(row_parts))
+        pages_text = _parse_oci_response(response.data)
 
         if not pages_text:
             # Fall back to top-level text if no per-page structure returned
