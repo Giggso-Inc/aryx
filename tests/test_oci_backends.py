@@ -81,18 +81,32 @@ def _make_oci_stub() -> types.ModuleType:
     genai.GenerativeAiInferenceClient = MagicMock
     oci.generative_ai_inference = genai
 
+    # ── functions ─────────────────────────────────────────────────────────────
+    fn_mod = types.ModuleType("oci.functions")
+    fn_models = types.ModuleType("oci.functions.models")
+    fn_models.CreateApplicationDetails = MagicMock
+    fn_models.CreateFunctionDetails = MagicMock
+    fn_models.UpdateFunctionDetails = MagicMock
+    fn_mod.models = fn_models
+    fn_mod.FunctionsManagementClient = MagicMock
+    fn_mod.FunctionsInvokeClient = MagicMock
+    oci.functions = fn_mod
+
     # register all sub-modules so `import oci.x` resolves
     for name in [
         "oci.auth", "oci.auth.signers", "oci.config",
         "oci.ai_document", "oci.ai_document.models",
         "oci.generative_ai_inference", "oci.generative_ai_inference.models",
+        "oci.functions", "oci.functions.models",
     ]:
         sys.modules[name] = eval(name.replace("oci.", "").replace(".", "_"),  # noqa: S307
                                  {"auth": auth, "auth_signers": signers,
                                   "config": cfg, "ai_document": ai_doc,
                                   "ai_document_models": ai_doc_models,
                                   "generative_ai_inference": genai,
-                                  "generative_ai_inference_models": genai_models})
+                                  "generative_ai_inference_models": genai_models,
+                                  "functions": fn_mod,
+                                  "functions_models": fn_models})
     return oci
 
 
@@ -579,6 +593,146 @@ class TestSweepStaleJobs(unittest.TestCase):
         with self.assertRaises(AssertionError):
             with self.assertLogs("aryx.store.job_store", level=_logging.WARNING):
                 store.sweep_stale(10)
+
+
+# ---------------------------------------------------------------------------
+# OCI Functions provisioner
+# ---------------------------------------------------------------------------
+
+class TestOciFunctionsProvisioner(unittest.TestCase):
+    """provision_ingest_function() must create or update the OCI Function."""
+
+    def setUp(self) -> None:
+        sys.modules["oci"] = _make_oci_stub()
+        from aryx.oci_client import reset_clients
+        reset_clients()
+
+    def tearDown(self) -> None:
+        from aryx.oci_client import reset_clients
+        reset_clients()
+
+    def _settings(self, **kw):
+        from aryx.config import Settings
+        return Settings(
+            _env_file=None,
+            oci_mode=True,
+            oci_compartment_id="ocid1.compartment.oc1..test",
+            oci_region="us-chicago-1",
+            oci_adb_dsn="tcps://adb.test.oraclecloud.com:1522/test_high",
+            db_user="aryx_user",
+            db_password="secret123",
+            **kw,
+        )
+
+    def _make_mgmt_mock(self, has_app: bool = False, has_fn: bool = False) -> MagicMock:
+        mock_mgmt = MagicMock()
+
+        existing_app = MagicMock()
+        existing_app.id = "ocid1.fnapp.oc1..existing"
+        mock_mgmt.list_applications.return_value.data = [existing_app] if has_app else []
+
+        created_app = MagicMock()
+        created_app.id = "ocid1.fnapp.oc1..created"
+        mock_mgmt.create_application.return_value.data = created_app
+
+        existing_fn = MagicMock()
+        existing_fn.id = "ocid1.fnfunc.oc1..existing"
+        mock_mgmt.list_functions.return_value.data = [existing_fn] if has_fn else []
+
+        created_fn = MagicMock()
+        created_fn.id = "ocid1.fnfunc.oc1..created"
+        mock_mgmt.create_function.return_value.data = created_fn
+
+        return mock_mgmt
+
+    def test_creates_app_and_function_when_neither_exists(self) -> None:
+        from aryx.worker.oci_functions_provisioner import provision_ingest_function
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        mock_mgmt = self._make_mgmt_mock(has_app=False, has_fn=False)
+        with (
+            patch.object(cfg_mod, "get_settings", return_value=self._settings()),
+            patch("aryx.oci_client.get_fn_mgmt_client", return_value=mock_mgmt),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            fn_id = provision_ingest_function(
+                subnet_id="ocid1.subnet.oc1..test",
+                image_uri="us-chicago-1.ocir.io/ns/aryx/aryx-ingest-fn:latest",
+            )
+
+        assert fn_id == "ocid1.fnfunc.oc1..created"
+        mock_mgmt.create_application.assert_called_once()
+        mock_mgmt.create_function.assert_called_once()
+
+    def test_skips_app_creation_when_app_exists(self) -> None:
+        from aryx.worker.oci_functions_provisioner import provision_ingest_function
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        mock_mgmt = self._make_mgmt_mock(has_app=True, has_fn=False)
+        with (
+            patch.object(cfg_mod, "get_settings", return_value=self._settings()),
+            patch("aryx.oci_client.get_fn_mgmt_client", return_value=mock_mgmt),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            fn_id = provision_ingest_function(
+                subnet_id="ocid1.subnet.oc1..test",
+                image_uri="us-chicago-1.ocir.io/ns/aryx/aryx-ingest-fn:latest",
+            )
+
+        mock_mgmt.create_application.assert_not_called()
+        assert fn_id == "ocid1.fnfunc.oc1..created"
+
+    def test_updates_function_when_fn_exists(self) -> None:
+        from aryx.worker.oci_functions_provisioner import provision_ingest_function
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+
+        mock_mgmt = self._make_mgmt_mock(has_app=True, has_fn=True)
+        with (
+            patch.object(cfg_mod, "get_settings", return_value=self._settings()),
+            patch("aryx.oci_client.get_fn_mgmt_client", return_value=mock_mgmt),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            fn_id = provision_ingest_function(
+                subnet_id="ocid1.subnet.oc1..test",
+                image_uri="us-chicago-1.ocir.io/ns/aryx/aryx-ingest-fn:latest",
+            )
+
+        assert fn_id == "ocid1.fnfunc.oc1..existing"
+        mock_mgmt.update_function.assert_called_once()
+        mock_mgmt.create_function.assert_not_called()
+
+    def test_build_fn_config_contains_required_keys(self) -> None:
+        from aryx.worker.oci_functions_provisioner import _build_fn_config
+
+        cfg = _build_fn_config(self._settings())
+
+        required = {
+            "ARYX_DB_BACKEND", "ARYX_OCI_ADB_DSN", "ARYX_RDB_DSN",
+            "ARYX_DB_USER", "ARYX_DB_PASSWORD", "ARYX_OCI_MODE",
+            "ARYX_OCI_REGION", "ARYX_OCI_COMPARTMENT_ID",
+            "ARYX_EMBED_BACKEND", "ARYX_LLM_CHEAP_BACKEND", "ARYX_LLM_FRONTIER_BACKEND",
+            "ARYX_PARSE_BACKEND", "ARYX_GRAPH_BACKEND",
+        }
+        missing = required - cfg.keys()
+        assert not missing, f"fn config missing keys: {missing}"
+
+    def test_build_fn_config_excludes_empty_values(self) -> None:
+        from aryx.worker.oci_functions_provisioner import _build_fn_config
+        cfg = _build_fn_config(self._settings())
+        assert all(v for v in cfg.values()), "config contains empty values"
+
+    def test_build_fn_config_model_override_included_when_set(self) -> None:
+        from aryx.worker.oci_functions_provisioner import _build_fn_config
+        cfg = _build_fn_config(self._settings(llm_cheap_model_override="cohere.custom"))
+        assert cfg.get("ARYX_LLM_CHEAP_MODEL_OVERRIDE") == "cohere.custom"
+
+    def test_build_fn_config_model_override_absent_when_empty(self) -> None:
+        from aryx.worker.oci_functions_provisioner import _build_fn_config
+        cfg = _build_fn_config(self._settings())
+        assert "ARYX_LLM_CHEAP_MODEL_OVERRIDE" not in cfg
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _doc_client: Any = None
 _genai_client: Any = None
+_fn_mgmt_client: Any = None
 _signer: Any = None
 
 
@@ -80,9 +81,28 @@ def get_genai_client() -> Any:
     return _genai_client
 
 
+def get_fn_mgmt_client() -> Any:
+    """Return a cached OCI Functions Management client."""
+    global _fn_mgmt_client
+    if _fn_mgmt_client is None:
+        import oci  # noqa: PLC0415
+        from aryx.config import get_settings
+        auth = _get_auth()
+        if isinstance(auth, dict):
+            _fn_mgmt_client = oci.functions.FunctionsManagementClient(config=auth)
+        else:
+            _fn_mgmt_client = oci.functions.FunctionsManagementClient(
+                config={}, signer=auth
+            )
+        logger.info("oci_client: Functions Management client ready (region=%s)",
+                    get_settings().oci_region)
+    return _fn_mgmt_client
+
+
 def reset_clients() -> None:
     """Reset cached clients — used in tests to inject fresh mocks."""
-    global _doc_client, _genai_client, _signer
+    global _doc_client, _genai_client, _fn_mgmt_client, _signer
     _doc_client = None
     _genai_client = None
+    _fn_mgmt_client = None
     _signer = None
