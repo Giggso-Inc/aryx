@@ -20,3 +20,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_version_ws ON aryx_ontology_version (workspace_id, version_no DESC)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

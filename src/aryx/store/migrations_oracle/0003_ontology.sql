@@ -32,3 +32,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_mapping_run ON aryx_schema_mapping (run_id)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

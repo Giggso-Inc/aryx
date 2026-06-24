@@ -47,7 +47,7 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE TABLE aryx_run_stage (
     run_id      NUMBER(19) NOT NULL,
     stage       VARCHAR2(4000) NOT NULL,
-    status      VARCHAR2(100) NOT NULL DEFAULT ''running'',
+    status      VARCHAR2(100) DEFAULT ''running'' NOT NULL,
     started_at  TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     finished_at TIMESTAMP WITH TIME ZONE,
     detail      JSON DEFAULT ''{}'',
@@ -55,3 +55,5 @@ BEGIN
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;
+
+/

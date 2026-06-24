@@ -19,3 +19,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_mcp_token_hash ON aryx_mcp_token (token_hash)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

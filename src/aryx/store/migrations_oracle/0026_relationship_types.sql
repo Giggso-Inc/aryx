@@ -19,3 +19,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX aryx_relationship_type_ws_idx ON aryx_relationship_type (workspace_id)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

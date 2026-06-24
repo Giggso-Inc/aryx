@@ -29,3 +29,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX aryx_ingest_question_job_idx ON aryx_ingest_question (job_id)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

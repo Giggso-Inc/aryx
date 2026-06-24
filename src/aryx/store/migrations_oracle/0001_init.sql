@@ -6,8 +6,8 @@ BEGIN
     run_id         NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_system  VARCHAR2(4000) NOT NULL,
     source_dataset VARCHAR2(4000) NOT NULL,
-    status         VARCHAR2(100) NOT NULL DEFAULT ''running'',
-    record_count   NUMBER(10) NOT NULL DEFAULT 0,
+    status         VARCHAR2(100) DEFAULT ''running'' NOT NULL,
+    record_count   NUMBER(10)    DEFAULT 0           NOT NULL,
     started_at     TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     finished_at    TIMESTAMP WITH TIME ZONE
   )';
@@ -53,3 +53,5 @@ BEGIN
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;
+
+/

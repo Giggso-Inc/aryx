@@ -34,6 +34,7 @@ END;
 
 -- Add workspace_id (backfill existing rows to workspace 1)
 ALTER TABLE aryx_ontology_type ADD (workspace_id NUMBER(19) DEFAULT 1 NOT NULL);
+/
 
 BEGIN
   EXECUTE IMMEDIATE 'ALTER TABLE aryx_ontology_type ADD CONSTRAINT aryx_ontology_type_ws_name_key UNIQUE (workspace_id, name)';
@@ -45,3 +46,4 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_ontology_type_ws ON aryx_ontology_type (workspace_id)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+/

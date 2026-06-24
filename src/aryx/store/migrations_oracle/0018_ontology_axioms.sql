@@ -38,3 +38,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_violation_ws_entity ON aryx_axiom_violation (workspace_id, entity_id)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/
