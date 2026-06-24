@@ -163,8 +163,9 @@ def _build_fn_config(settings: Any) -> dict[str, str]:
         "OCI_DOCUMENT_NAMESPACE": settings.oci_object_storage_namespace,
         "OCI_DOCUMENT_BUCKET": settings.oci_document_bucket,
         "OCI_DOCUMENT_FEATURES": settings.oci_document_features,
-        # ── Object Storage (large-doc >15 MB upload path) ─────────────────────
+        # ── Object Storage (large-doc >15 MB upload path + RDF exports) ────────
         "OCI_OBJECT_STORAGE_NAMESPACE": settings.oci_object_storage_namespace,
+        "OCI_RDF_BUCKET": settings.oci_rdf_bucket,
         # ── Graph (Oracle Graph / ADB SQL-PGQ) ───────────────────────────────
         "ARYX_GRAPH_BACKEND": "oci_graph",
     }
