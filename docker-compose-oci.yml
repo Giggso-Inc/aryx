@@ -73,9 +73,10 @@ services:
       - ARYX_OCI_INGEST_FN_ID=${ARYX_OCI_INGEST_FN_ID}
       # Parse → OCI Document Understanding
       - ARYX_PARSE_BACKEND=oci
-      # Object Storage — required for large-doc (>15 MB) Document Understanding path
+      # Object Storage — Document Understanding output + RDF/OWL exports
       - ARYX_OCI_OBJECT_STORAGE_NAMESPACE=${ARYX_OCI_OBJECT_STORAGE_NAMESPACE}
-      - ARYX_OCI_DOCUMENT_BUCKET=${ARYX_OCI_DOCUMENT_BUCKET:-aryx-documents}
+      - ARYX_OCI_DOCUMENT_BUCKET=${ARYX_OCI_DOCUMENT_BUCKET:-aryx-doc-output}
+      - ARYX_OCI_RDF_BUCKET=${ARYX_OCI_RDF_BUCKET:-aryx-rdf-exports}
       # Embed → OCI GenAI Cohere Embed v3
       - ARYX_EMBED_BACKEND=oci
       # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)
