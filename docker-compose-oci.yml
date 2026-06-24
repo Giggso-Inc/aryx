@@ -73,8 +73,8 @@ services:
       # Parse → OCI Document Understanding
       - ARYX_PARSE_BACKEND=oci
       # Object Storage — required for large-doc (>15 MB) Document Understanding path
-      - OCI_OBJECT_STORAGE_NAMESPACE=${OCI_OBJECT_STORAGE_NAMESPACE}
-      - OCI_DOCUMENT_BUCKET=${OCI_DOCUMENT_BUCKET:-aryx-documents}
+      - ARYX_OCI_OBJECT_STORAGE_NAMESPACE=${ARYX_OCI_OBJECT_STORAGE_NAMESPACE}
+      - ARYX_OCI_DOCUMENT_BUCKET=${ARYX_OCI_DOCUMENT_BUCKET:-aryx-documents}
       # Embed → OCI GenAI Cohere Embed v3
       - ARYX_EMBED_BACKEND=oci
       # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)

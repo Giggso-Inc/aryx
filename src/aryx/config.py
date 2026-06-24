@@ -131,6 +131,18 @@ class Settings(BaseSettings):
         default="",
         description="OCI Function OCID for per-doc ingestion. Required when worker_backend='oci_functions'.",
     )
+    oci_object_storage_namespace: str = Field(
+        default="",
+        description="OCI Object Storage namespace. Required for large-doc (>15 MB) Document Understanding path.",
+    )
+    oci_document_bucket: str = Field(
+        default="aryx-documents",
+        description="OCI Object Storage bucket for Document Understanding output.",
+    )
+    oci_document_features: str = Field(
+        default="TEXT_DETECTION,TABLE_DETECTION,KEY_VALUE_DETECTION",
+        description="Comma-separated OCI Document Understanding feature list.",
+    )
     oci_dataflow_app_id: str = Field(
         default="",
         description="OCI Data Flow application OCID. Required when worker_backend='oci_dataflow'.",

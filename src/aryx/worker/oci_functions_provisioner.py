@@ -20,7 +20,6 @@ Auth is resolved by ``aryx.oci_client._get_auth()``:
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -161,16 +160,11 @@ def _build_fn_config(settings: Any) -> dict[str, str]:
         # ── Document Understanding ────────────────────────────────────────────
         "ARYX_PARSE_BACKEND": "oci",
         "OCI_DOCUMENT_COMPARTMENT_ID": settings.oci_compartment_id,
-        "OCI_DOCUMENT_NAMESPACE": os.environ.get("OCI_OBJECT_STORAGE_NAMESPACE", ""),
-        "OCI_DOCUMENT_BUCKET": os.environ.get("OCI_DOCUMENT_BUCKET", "aryx-documents"),
-        "OCI_DOCUMENT_FEATURES": os.environ.get(
-            "OCI_DOCUMENT_FEATURES",
-            "TEXT_DETECTION,TABLE_DETECTION,KEY_VALUE_DETECTION",
-        ),
+        "OCI_DOCUMENT_NAMESPACE": settings.oci_object_storage_namespace,
+        "OCI_DOCUMENT_BUCKET": settings.oci_document_bucket,
+        "OCI_DOCUMENT_FEATURES": settings.oci_document_features,
         # ── Object Storage (large-doc >15 MB upload path) ─────────────────────
-        "OCI_OBJECT_STORAGE_NAMESPACE": os.environ.get(
-            "OCI_OBJECT_STORAGE_NAMESPACE", ""
-        ),
+        "OCI_OBJECT_STORAGE_NAMESPACE": settings.oci_object_storage_namespace,
         # ── Graph (Oracle Graph / ADB SQL-PGQ) ───────────────────────────────
         "ARYX_GRAPH_BACKEND": "oci_graph",
     }
