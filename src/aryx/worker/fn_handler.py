@@ -28,7 +28,7 @@ def handler(ctx: Any, data: io.BytesIO = None) -> Any:
     """OCI Functions entry point — invoked per document, runs full aryx pipeline."""
     from fdk import response as fdk_response  # noqa: PLC0415 — lazy: not installed locally
 
-    from aryx.broker import oci_broker
+    from aryx.broker import default_broker, oci_broker
     from aryx.config import get_settings
     from aryx.connectors.csv_source import CsvConnector
     from aryx.connectors.doc_router import DocumentRouterConnector
@@ -48,7 +48,7 @@ def handler(ctx: Any, data: io.BytesIO = None) -> Any:
 
     # All connectivity from env vars set in OCI Console — never from payload
     settings = get_settings()
-    broker   = oci_broker()
+    broker   = oci_broker() if settings.effective_llm_cheap_backend() == "oci" else default_broker()
     jobs     = JobStore(settings.rdb_dsn)
     tmp_path: Path | None = None
 

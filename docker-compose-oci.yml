@@ -17,10 +17,9 @@
 #   pgx-server   8 GB  (graph in-memory)
 #   api          3 GB
 #   mcp          1 GB
-#   ui           1 GB
 #   web          1 GB
 #   OS + Docker  4 GB
-#   Buffer       6 GB
+#   Buffer       7 GB
 
 services:
 
@@ -111,23 +110,6 @@ services:
       - PGX_SERVER_URL=http://pgx-server:7007
     ports:
       - "8765:8765"
-    networks:
-      - aryx-net
-    restart: unless-stopped
-    mem_limit: 1g
-
-  # ── Streamlit UI ─────────────────────────────────────────────────────────────
-  ui:
-    build: .
-    env_file: .env
-    command: ["streamlit", "run", "src/aryx/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
-    environment:
-      - ARYX_API_URL=http://api:8000
-    ports:
-      - "8501:8501"
-    depends_on:
-      api:
-        condition: service_healthy
     networks:
       - aryx-net
     restart: unless-stopped

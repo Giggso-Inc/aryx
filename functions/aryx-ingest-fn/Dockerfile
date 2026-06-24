@@ -15,14 +15,14 @@ ENV PYTHONUNBUFFERED=1 \
 # System deps required by aryx document processing libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    libmupdf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY functions/aryx-ingest-fn/requirements_oci.txt .
 # fdk is OCI Functions Python runtime — not in main requirements (local dev doesn't need it)
-RUN pip install --no-cache-dir fdk -r requirements.txt
+RUN pip install --no-cache-dir fdk -r requirements_oci.txt
+RUN python -m spacy download en_core_web_sm
 
 COPY src/ ./src/
 

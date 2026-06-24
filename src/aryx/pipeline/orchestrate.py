@@ -15,7 +15,6 @@ from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
-from aryx.graph import FalkorStore
 from aryx.pipeline.enrich import _build_type_ancestors, _relate
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
@@ -24,7 +23,6 @@ from aryx.project import project_graph
 from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
 from aryx.store.postgres_store import PostgresStore
-from aryx.workspaces import ws_graph
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +118,8 @@ def run_pipeline(
                 from aryx.graph.oracle_graph_store import OracleGraphStore
                 graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
             else:
+                from aryx.graph import FalkorStore  # noqa: PLC0415
+                from aryx.workspaces import ws_graph  # noqa: PLC0415
                 graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
             counts = project_graph(
                 estore, graph_inst,
