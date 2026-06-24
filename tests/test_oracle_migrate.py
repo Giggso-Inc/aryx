@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _stub_psycopg() -> None:
@@ -121,6 +121,70 @@ class TestSplitBlocksIntegration(unittest.TestCase):
 
     def test_single_slash_only(self) -> None:
         self.assertEqual(_split_blocks("/"), [])
+
+
+# ── apply_oracle_migrations — connect path ────────────────────────────────────
+
+class TestApplyOracleMigrationsConnect(unittest.TestCase):
+    """apply_oracle_migrations() credential validation and connect error handling."""
+
+    def _patch_settings(self, db_user: str = "aryx_user",
+                        db_password: str = "secret") -> object:
+        from aryx.config import Settings
+        return Settings(
+            _env_file=None,
+            oci_adb_dsn="tcps://adb.test.oraclecloud.com:1522/db_high",
+            db_user=db_user,
+            db_password=db_password,
+        )
+
+    def test_raises_when_db_user_missing(self) -> None:
+        from aryx.store.oracle_migrate import apply_oracle_migrations
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._patch_settings(db_user="")):
+            with self.assertRaises(RuntimeError, msg="ARYX_DB_USER"):
+                apply_oracle_migrations("tcps://adb.test:1522/db_high")
+
+    def test_raises_when_db_password_missing(self) -> None:
+        from aryx.store.oracle_migrate import apply_oracle_migrations
+        import aryx.config as cfg_mod
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._patch_settings(db_password="")):
+            with self.assertRaises(RuntimeError, msg="ARYX_DB_PASSWORD"):
+                apply_oracle_migrations("tcps://adb.test:1522/db_high")
+
+    def test_raises_on_connect_failure(self) -> None:
+        from aryx.store.oracle_migrate import apply_oracle_migrations
+        import aryx.config as cfg_mod
+        import oracledb
+        cfg_mod.get_settings.cache_clear()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._patch_settings()), \
+             patch.object(oracledb, "connect",
+                          side_effect=Exception("ORA-12541: TNS no listener")):
+            with self.assertRaises(RuntimeError, msg="connection failed"):
+                apply_oracle_migrations("tcps://adb.test:1522/db_high")
+
+    def test_connect_called_with_user_password_dsn(self) -> None:
+        from aryx.store.oracle_migrate import apply_oracle_migrations
+        import aryx.config as cfg_mod
+        import oracledb
+        cfg_mod.get_settings.cache_clear()
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = MagicMock()
+        with patch.object(cfg_mod, "get_settings",
+                          return_value=self._patch_settings()), \
+             patch.object(oracledb, "connect", return_value=mock_conn) as mock_connect:
+            apply_oracle_migrations("tcps://adb.test:1522/db_high")
+
+        mock_connect.assert_called_once_with(
+            user="aryx_user", password="secret",
+            dsn="tcps://adb.test:1522/db_high",
+        )
 
 
 if __name__ == "__main__":

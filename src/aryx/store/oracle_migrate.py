@@ -50,7 +50,8 @@ def apply_oracle_migrations(dsn: str) -> None:
     style mirrors the Postgres migrate.py behaviour.
 
     Args:
-        dsn: Oracle ADB connection string (e.g. user/password@host:port/service).
+        dsn: Oracle ADB connection string (e.g. tcps://host:port/service_name).
+            User and password are read from ARYX_DB_USER / ARYX_DB_PASSWORD.
     """
     import oracledb  # noqa: PLC0415
     from aryx.config import get_settings  # noqa: PLC0415
@@ -103,6 +104,6 @@ if __name__ == "__main__":
     s = get_settings()
     if not s.oci_adb_dsn:
         sys.exit("ARYX_OCI_ADB_DSN is not set — check your .env file")
-    print(f"oracle_migrate: connecting  user={s.db_user}  dsn=***")
+    logger.info("oracle_migrate: connecting  user=%s  dsn=***", s.db_user)
     apply_oracle_migrations(s.oci_adb_dsn)
-    print("oracle_migrate: done — all migrations applied.")
+    logger.info("oracle_migrate: done — all migrations applied.")
