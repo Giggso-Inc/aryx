@@ -41,7 +41,7 @@ export default function StartWizard() {
 
   return (
     <>
-      {step === "intro" && <Intro onStart={() => setStep("goals")} />}
+      {step === "intro" && <Intro onStart={() => router.push("/brief")} />}
 
       {step === "goals" && (
         <Goals

@@ -4,27 +4,129 @@
   "owner": "m.munir@giggso.com",
   "user_email": "m.munir@giggso.com",
   "hub_url": "https://ravenhub.giggso.com",
-  "version": "1.0.0",
-  "raven_version": "3.0.0",
+  "version": "1.0.1",
+  "raven_version": "3.3.0",
+  "work_type": "full-stack-data-platform",
   "stack": {
-    "language": [],
-    "frontend": [],
-    "data": [],
-    "db": [],
-    "infra": [],
+    "language": ["python", "typescript"],
+    "frontend": ["next.js", "react", "tailwindcss"],
+    "data": ["falkordb", "pgvector", "postgresql"],
+    "db": ["postgresql", "falkordb"],
+    "infra": ["docker", "docker-compose"],
     "cloud": "none",
-    "libraries": []
+    "libraries": [
+      "anthropic",
+      "boto3",
+      "cryptography",
+      "falkordb",
+      "fastapi",
+      "mcp",
+      "oracledb",
+      "pgvector",
+      "pillow",
+      "presidio-analyzer",
+      "presidio-anonymizer",
+      "psycopg",
+      "pydantic",
+      "pydantic-settings",
+      "pymupdf",
+      "pymysql",
+      "python-docx",
+      "python-multipart",
+      "python-pptx",
+      "pytesseract",
+      "rdflib",
+      "spacy",
+      "sqlalchemy",
+      "sse-starlette",
+      "starlette",
+      "streamlit",
+      "streamlit-agraph",
+      "striprtf",
+      "uvicorn"
+    ],
+    "js_libraries": [
+      "@xyflow/react",
+      "clsx",
+      "dagre",
+      "framer-motion",
+      "lucide-react",
+      "next",
+      "react",
+      "react-dom",
+      "react-markdown",
+      "remark-gfm",
+      "tailwind-merge"
+    ]
   },
   "standards": "raven-v1",
   "guard": {
     "enabled": true,
-    "version": "1.0"
+    "version": "1.0",
+    "thresholds": {
+      "secrets_in_staged": "hard_block",
+      "cve_critical_cvss_gt_7": "hard_block",
+      "force_push": "hard_block",
+      "rows_deleted_gt": 100,
+      "rows_deleted_action": "approval_flow",
+      "schema_drop": "hard_block_escalate",
+      "port_0000_opened": "hard_block_escalate",
+      "truncation_detected": "hard_block_escalate"
+    }
   },
+  "style": {
+    "max_file_lines": 400,
+    "max_function_lines": 60,
+    "require_type_hints": true,
+    "require_docstrings": false,
+    "require_logging": true,
+    "naming": {
+      "python": "snake_case",
+      "typescript": "camelCase",
+      "components": "PascalCase"
+    },
+    "enforce_at": "commit"
+  },
+  "approved_skills": [
+    "andie-jr",
+    "andie",
+    "manifest-checker",
+    "stack-validator",
+    "style-enforcer",
+    "architecture-guard",
+    "secret-guard",
+    "db-guard",
+    "guard-git-watch",
+    "skill-guard",
+    "mcp-guard",
+    "pool-fitter",
+    "auth-warden",
+    "block-smith",
+    "survivor-smith"
+  ],
   "changelog": [
     {
+      "version": "1.0.3",
+      "date": "2026-06-22T18:00:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Confirm manifest gap intent vs dev baseline: (1) guard.infra.terraform_state and guard.firewall.open_world omitted — project has no Terraform and ports are bound by Docker not app code, so these guards are not applicable. (2) allowed_tools.web.blocked_url_patterns omitted — project uses Ollama exclusively, not OpenAI; no direct OpenAI call risk from skill code. (3) project_rules.commit_convention omitted — conventional commits are followed by convention, not enforced via manifest pre-commit hook in this branch. (4) pool-fitter, auth-warden, block-smith, survivor-smith added to approved_skills — these are registered gap-closure skills in the org skill registry."
+    },
+    {
+      "version": "1.0.2",
+      "date": "2026-06-22T14:00:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Bump raven_version to 3.3.0 to match main — was regressed to 3.0.0 by auto-init"
+    },
+    {
+      "version": "1.0.1",
+      "date": "2026-06-22T13:30:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Restored guard thresholds, style rules, approved_skills, full library list, and work_type — all stripped in v1.0.0 auto-init"
+    },
+    {
       "version": "1.0.0",
-      "date": "2026-06-18T04:29:48Z",
-      "changed_by": "m.munir@giggso.com",
+      "date": "2026-06-18T09:19:49Z",
+      "changed_by": "g.sivasankari@giggso.com",
       "summary": "Raven project auto-initialised by session-start.py"
     }
   ]

@@ -108,16 +108,13 @@ class WorkspaceStore:
             try:
                 self._conn.execute(
                     sql.SQL("TRUNCATE {} CASCADE").format(sql.Identifier(child)))
-            except psycopg.errors.UndefinedTable:
-                self._conn.rollback()
+            except (psycopg.errors.UndefinedTable, psycopg.errors.InFailedSqlTransaction):
+                pass  # partition doesn't exist yet — skip silently (autocommit mode)
         stmts = load("purge_workspace_data")
         for stmt in stmts.split(";"):
             stmt = stmt.strip()
             if stmt and not stmt.startswith("--"):
                 self._conn.execute(stmt, {"wid": wid})
-        with self._conn.cursor() as cur:
-            cur.execute(load("delete_profiles_by_workspace"), (wid,))
-            cur.execute(load("delete_tags_by_workspace"), (wid,))
         self._conn.execute(load("reset_workspace_context"), {"wid": wid})
         logger.info("workspace purged id=%s", wid)
         return {"status": "purged", "workspace_id": wid}
@@ -129,6 +126,8 @@ class WorkspaceStore:
             for row in self._conn.execute(
                     load("select_partition_children"),
                     {"parent": base}).fetchall():
+                # row[0] sourced from pg_inherits catalog — trusted system data,
+                # not user input. sql.Identifier quotes it safely regardless.
                 self._conn.execute(
                     sql.SQL("TRUNCATE {} CASCADE").format(
                         sql.Identifier(row[0])))

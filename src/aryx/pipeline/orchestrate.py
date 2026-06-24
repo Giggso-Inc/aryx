@@ -22,6 +22,7 @@ from aryx.store.checkpoint_store import StageTracker
 from aryx.project import project_graph
 from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
+from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,19 @@ def run_pipeline(
             with runner.stage("resolve_cluster"):
                 entities = resolve_run(run_id, ontology_type, match_keys,
                                        estore, broker)
+        # Register the type in OntologyStore so the schema diagram populates.
+        # seed_types is idempotent (ON CONFLICT DO NOTHING).
+        try:
+            onto = OntologyStore(dsn, workspace_id)
+            try:
+                onto.seed_types([OntologyType(
+                    name=ontology_type, attributes=list(match_keys),
+                    status="approved", source="pipeline",
+                )])
+            finally:
+                onto.close()
+        except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
+            logger.warning("ontology type seed failed for %s", ontology_type)
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
             with runner.stage("relate"):
