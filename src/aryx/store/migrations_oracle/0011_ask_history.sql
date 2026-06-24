@@ -22,3 +22,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_ask_history_ws_time ON aryx_ask_history (workspace_id, asked_at DESC)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

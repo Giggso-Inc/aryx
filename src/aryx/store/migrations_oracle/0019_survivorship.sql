@@ -20,3 +20,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_conflict_entity ON aryx_attribute_conflict (workspace_id, entity_id)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

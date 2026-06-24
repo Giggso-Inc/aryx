@@ -44,3 +44,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_action_exec_pending ON aryx_action_execution (workspace_id, status)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

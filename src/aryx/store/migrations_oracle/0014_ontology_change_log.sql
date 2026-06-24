@@ -20,3 +20,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_change_log_ws_time ON aryx_ontology_change_log (workspace_id, changed_at DESC)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/

@@ -21,3 +21,5 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE INDEX idx_rule_ws_enabled ON aryx_ontology_rule (workspace_id, enabled)';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
+
+/
