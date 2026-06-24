@@ -38,10 +38,17 @@ def handler(ctx: Any, data: io.BytesIO = None) -> Any:
     from aryx.store.job_store import JobStore
 
     payload: dict[str, Any] = json.loads(data.getvalue())
+    _required = {"job_id", "filename", "file_b64", "ontology_type"}
+    missing = _required - payload.keys()
+    if missing:
+        raise ValueError(f"fn_handler: missing required payload fields: {sorted(missing)}")
     job_id        = payload["job_id"]
     workspace_id  = int(payload.get("workspace_id", 1))
     filename      = payload["filename"]
-    file_bytes    = base64.b64decode(payload["file_b64"])
+    encoded_b64   = payload["file_b64"]
+    if len(encoded_b64) > 70 * 1024 * 1024:  # ~52 MB decoded ceiling
+        raise ValueError(f"fn_handler: file_b64 exceeds size limit ({len(encoded_b64)} bytes encoded)")
+    file_bytes    = base64.b64decode(encoded_b64)
     ontology_type = payload["ontology_type"]
     match_keys    = payload.get("match_keys", [])
     fk_links      = payload.get("fk_links", [])

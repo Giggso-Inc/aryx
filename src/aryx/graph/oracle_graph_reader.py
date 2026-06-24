@@ -49,7 +49,7 @@ class OracleGraphReader:
             with conn.cursor() as cur:
                 cur.execute(
                     f"SELECT entity_id, type, name FROM aryx_graph_vertex "
-                    f"WHERE {where} FETCH FIRST {capped} ROWS ONLY",
+                    f"WHERE {where} FETCH FIRST {capped} ROWS ONLY",  # nosec S608 — capped is a validated int
                     params,
                 )
                 rows = cur.fetchall()
@@ -124,7 +124,7 @@ class OracleGraphReader:
                 aryx_knowledge_graph
                 MATCH SHORTEST (
                   (a IS aryx_graph_vertex WHERE a.entity_id = :src)
-                  -[r IS aryx_graph_edge]->{{1,{hops}}}
+                  -[r IS aryx_graph_edge]->{{1,{hops}}}  # nosec S608 — hops is a validated int
                   (b IS aryx_graph_vertex WHERE b.entity_id = :dst)
                 )
                 ONE ROW PER STEP (a, r, b)

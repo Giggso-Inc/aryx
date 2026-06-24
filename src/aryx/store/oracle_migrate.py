@@ -59,7 +59,13 @@ def apply_oracle_migrations(dsn: str) -> None:
         logger.warning("oracle_migrate: no migration files found in %s", _ORACLE_MIGRATIONS_DIR)
         return
 
-    conn = oracledb.connect(dsn)
+    try:
+        conn = oracledb.connect(dsn)
+    except Exception as exc:
+        raise RuntimeError(
+            "oracle_migrate: connection failed — dsn=*** "
+            "(check ARYX_OCI_ADB_DSN, ARYX_DB_USER, ARYX_DB_PASSWORD)"
+        ) from exc
     conn.autocommit = True
     try:
         cur = conn.cursor()

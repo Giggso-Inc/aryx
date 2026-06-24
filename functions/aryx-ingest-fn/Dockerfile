@@ -5,7 +5,8 @@
 #   docker build --platform linux/arm64 \
 #     -t <registry>/aryx/aryx-ingest-fn:latest \
 #     -f functions/aryx-ingest-fn/Dockerfile .
-FROM python:3.13-slim
+# Pinned ARM64 digest — update with: docker manifest inspect python:3.13-slim
+FROM python:3.13-slim@sha256:2a0c4c36359b0ab47018161d37b2ce2d9c5bd9c3c60879b747559cd4275d9332
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

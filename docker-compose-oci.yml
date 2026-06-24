@@ -49,6 +49,7 @@ services:
       retries: 5
 
   # ── FastAPI — REST API + ingest dispatcher ───────────────────────────────────
+  # OCI Security List: port 8000 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
   api:
     build: .
     env_file: .env
@@ -93,6 +94,7 @@ services:
       retries: 3
 
   # ── MCP server — Model Context Protocol SSE endpoint ────────────────────────
+  # OCI Security List: port 8765 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
   mcp:
     build: .
     env_file: .env

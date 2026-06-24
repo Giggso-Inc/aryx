@@ -187,7 +187,7 @@ class TestOciDocConnector(unittest.TestCase):
             with self.assertRaises(RuntimeError, msg="ARYX_OCI_COMPARTMENT_ID"):
                 list(conn.extract_pages())
 
-    def test_raises_on_oversized_file(self, tmp_path=None) -> None:
+    def test_raises_on_oversized_file(self) -> None:
         import tempfile, os
         from aryx.connectors.oci_doc import OciDocConnector, _OCI_INLINE_MAX_BYTES
         from aryx.config import Settings

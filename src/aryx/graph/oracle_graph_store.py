@@ -12,6 +12,7 @@ _NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
 
 
 def _display_name(attributes: dict[str, Any]) -> str:
+    """Extract a human-readable display name from entity attributes."""
     for key in _NAME_KEYS:
         value = attributes.get(key)
         if value:
@@ -26,6 +27,7 @@ class OracleGraphStore:
     """Writes entity / provenance / relationship data to Oracle ADB 23ai backing tables."""
 
     def __init__(self, dsn: str, workspace_id: int) -> None:
+        """Connect to Oracle pool and scope all writes to workspace_id."""
         from aryx.store.oracle_pool import get_oracle_pool
         self._pool = get_oracle_pool(dsn)
         self._workspace_id = workspace_id

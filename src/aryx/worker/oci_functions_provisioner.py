@@ -148,7 +148,7 @@ def _build_fn_config(settings: Any) -> dict[str, str]:
         "ARYX_OCI_ADB_DSN": settings.oci_adb_dsn,
         "ARYX_RDB_DSN": settings.oci_adb_dsn,
         "ARYX_DB_USER": settings.db_user,
-        "ARYX_DB_PASSWORD": settings.db_password,
+        "ARYX_DB_PASSWORD": settings.db_password,  # nosec S106 — intentional: OCI Fn env config
         # ── OCI core ──────────────────────────────────────────────────────────
         "ARYX_OCI_MODE": "true",
         "ARYX_OCI_REGION": settings.oci_region,

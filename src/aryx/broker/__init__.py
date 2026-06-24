@@ -116,11 +116,14 @@ class Broker:
 
     def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
         """Embed via local Ollama /api/embed endpoint."""
-        if not self._embed.get("model") or not self._embed.get("endpoint"):
+        endpoint = self._embed.get("endpoint", "")
+        if not self._embed.get("model") or not endpoint:
             return []
+        if not endpoint.startswith(("http://", "https://")):
+            raise ValueError(f"broker: Ollama endpoint must be http(s)://: {endpoint!r}")
         body = json.dumps({"model": self._embed["model"], "input": texts}).encode("utf-8")
         req = urllib.request.Request(
-            self._embed["endpoint"].rstrip("/") + "/api/embed",
+            endpoint.rstrip("/") + "/api/embed",
             data=body, headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310

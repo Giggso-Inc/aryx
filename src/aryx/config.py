@@ -153,24 +153,31 @@ class Settings(BaseSettings):
         return "oci" if self.oci_mode else phase2_default
 
     def effective_parse_backend(self) -> str:
+        """Return the resolved parse backend (oci or local)."""
         return self._resolve(self.parse_backend)
 
     def effective_embed_backend(self) -> str:
+        """Return the resolved embedding backend (oci or ollama)."""
         return self._resolve(self.embed_backend)
 
     def effective_llm_cheap_backend(self) -> str:
+        """Return the resolved cheap-LLM backend (oci or ollama)."""
         return self._resolve(self.llm_cheap_backend)
 
     def effective_llm_frontier_backend(self) -> str:
+        """Return the resolved frontier-LLM backend (oci or ollama)."""
         return self._resolve(self.llm_frontier_backend)
 
     def effective_db_backend(self) -> str:
+        """Return the resolved database backend (oci or postgres)."""
         return self._resolve(self.db_backend)
 
     def effective_worker_backend(self) -> str:
+        """Return the resolved worker backend (oci_functions or local)."""
         return self._resolve(self.worker_backend)
 
     def effective_graph_backend(self) -> str:
+        """Return the resolved graph backend (oci_graph or falkordb)."""
         return self._resolve(self.graph_backend, phase2_default="falkordb")
 
 
