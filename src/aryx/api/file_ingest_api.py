@@ -78,6 +78,7 @@ _FK_REQUIRED_KEYS = frozenset({"source_type", "target_type", "source_attr", "tar
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
+    """Run the ingest pipeline for a batch of files in a background thread."""
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []

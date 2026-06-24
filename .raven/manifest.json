@@ -43,7 +43,8 @@
       "streamlit",
       "streamlit-agraph",
       "striprtf",
-      "uvicorn"
+      "uvicorn",
+      "fdk"
     ],
     "js_libraries": [
       "@xyflow/react",
@@ -105,6 +106,12 @@
     "survivor-smith"
   ],
   "changelog": [
+    {
+      "version": "1.0.4",
+      "date": "2026-06-24T00:00:00Z",
+      "changed_by": "m.munir@giggso.com",
+      "summary": "Add fdk to approved libraries — OCI Functions Python runtime, installed only inside the aryx-ingest-fn Docker image (functions/aryx-ingest-fn/Dockerfile). Never installed in local dev or main requirements.txt. Approved by Raven review PR #6."
+    },
     {
       "version": "1.0.3",
       "date": "2026-06-22T18:00:00Z",
