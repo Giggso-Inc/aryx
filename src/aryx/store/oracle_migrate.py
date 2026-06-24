@@ -53,6 +53,13 @@ def apply_oracle_migrations(dsn: str) -> None:
         dsn: Oracle ADB connection string (e.g. user/password@host:port/service).
     """
     import oracledb  # noqa: PLC0415
+    from aryx.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    if not settings.db_user or not settings.db_password:
+        raise RuntimeError(
+            "oracle_migrate: ARYX_DB_USER and ARYX_DB_PASSWORD must be set"
+        )
 
     files = sorted(_ORACLE_MIGRATIONS_DIR.glob("*.sql"))
     if not files:
@@ -60,7 +67,9 @@ def apply_oracle_migrations(dsn: str) -> None:
         return
 
     try:
-        conn = oracledb.connect(dsn)
+        conn = oracledb.connect(
+            user=settings.db_user, password=settings.db_password, dsn=dsn
+        )
     except Exception as exc:
         raise RuntimeError(
             "oracle_migrate: connection failed — dsn=*** "
@@ -84,3 +93,16 @@ def apply_oracle_migrations(dsn: str) -> None:
                         path.name, len(blocks))
     finally:
         conn.close()
+
+
+if __name__ == "__main__":
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s",
+                        stream=sys.stdout)
+    from aryx.config import get_settings  # noqa: PLC0415
+    s = get_settings()
+    if not s.oci_adb_dsn:
+        sys.exit("ARYX_OCI_ADB_DSN is not set — check your .env file")
+    print(f"oracle_migrate: connecting  user={s.db_user}  dsn=***")
+    apply_oracle_migrations(s.oci_adb_dsn)
+    print("oracle_migrate: done — all migrations applied.")
