@@ -135,8 +135,6 @@ def _unwrap_params(params: Any) -> Any:
         return _json.dumps([_unwrap_params(p) for p in params])
     if isinstance(params, dict):
         return {k: _unwrap_params(v) for k, v in params.items()}
-    if isinstance(params, dict):
-        return {k: _unwrap_params(v) for k, v in params.items()}
     # Duck-type psycopg Json wrapper — serialize to JSON string so Oracle CLOB
     # receives a str, not a Python dict that oracledb cannot bind.
     if hasattr(params, "obj") and hasattr(params, "dumps"):

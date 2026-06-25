@@ -41,7 +41,7 @@ BEGIN
     chunk_id    NUMBER NOT NULL REFERENCES aryx_chunk (id),
     model_id    VARCHAR2(4000) NOT NULL,
     dim         NUMBER(10) NOT NULL,
-    embedding   VECTOR(768, FLOAT32),
+    embedding   VECTOR(*, FLOAT32),
     embedded_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     UNIQUE (chunk_id, model_id)
   )';

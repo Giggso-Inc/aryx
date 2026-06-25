@@ -28,8 +28,8 @@ def get_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> ConnectionPool:
         if get_settings().effective_db_backend() == "oci":
             from aryx.store.oracle_pool import get_oracle_pool  # lazy OCI import
             return get_oracle_pool(dsn, min_size=min_size, max_size=max_size)  # type: ignore[return-value]
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("oracle_pool init failed, falling back to psycopg: %s", exc)
     if dsn not in _pools:
         with _pool_lock:
             if dsn not in _pools:

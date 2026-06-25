@@ -1,8 +1,9 @@
 -- Oracle ADB 23ai: upsert projection state.
--- Replaces: INSERT ... ON CONFLICT (workspace_id) DO UPDATE SET last_projected_at = now()
+-- Uses USING DUAL ON (...) so oracledb thin mode parses :1 bind var.
+-- USING (SELECT :1 FROM DUAL) is NOT used — thin mode misses binds in subqueries.
+-- Params: :1=workspace_id
 MERGE INTO aryx_projection_state t
-USING (SELECT :1 AS workspace_id FROM DUAL) s
-ON (t.workspace_id = s.workspace_id)
+USING DUAL ON (t.workspace_id = :1)
 WHEN MATCHED THEN UPDATE SET t.last_projected_at = CURRENT_TIMESTAMP
 WHEN NOT MATCHED THEN INSERT (workspace_id, last_projected_at)
-    VALUES (s.workspace_id, CURRENT_TIMESTAMP)
+    VALUES (:1, CURRENT_TIMESTAMP)
