@@ -36,6 +36,10 @@ from aryx.api.rules_api import rules_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
