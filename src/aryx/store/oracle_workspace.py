@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 # workspace_id as an indexed column — no partition DDL needed.
 _PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx_relationship"]
 
+# Pre-built at module load time from the constant above.
+# Oracle identifiers (table names) cannot be passed as bind variables, so
+# interpolation is unavoidable — building here keeps f-strings away from execute().
+_DELETE_PARTITION_SQLS = {t: f"DELETE FROM {t} WHERE workspace_id = :1" for t in _PARTITIONED}
+_TRUNCATE_SQLS = {t: f"DELETE FROM {t}" for t in _PARTITIONED}
+
 
 class OracleWorkspaceStore:
     """WorkspaceStore backed by Oracle ADB 23ai via oracledb.
@@ -41,7 +47,7 @@ class OracleWorkspaceStore:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 for table in _PARTITIONED:
-                    cur.execute(f"DELETE FROM {table} WHERE workspace_id = :1", (wid,))
+                    cur.execute(_DELETE_PARTITION_SQLS[table], (wid,))
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
     def create(self, name: str, description: str = "", context: str = "",
@@ -115,7 +121,8 @@ class OracleWorkspaceStore:
                 for stmt in stmts.split(";"):
                     stmt = stmt.strip()
                     if stmt and not stmt.startswith("--"):
-                        # Replace %(wid)s with :wid for Oracle
+                        # purge_workspace_data.sql uses %(wid)s params and is split on ";"
+                        # before reaching _translate_sql, so manual replacement is needed.
                         cur.execute(stmt.replace("%(wid)s", ":wid"), {"wid": wid})
                 cur.execute(load("delete_profiles_by_workspace"), (wid,))
                 cur.execute(load("delete_tags_by_workspace"), (wid,))
@@ -129,7 +136,7 @@ class OracleWorkspaceStore:
             with conn.cursor() as cur:
                 cur.execute(load("nuke_system"))
                 for table in _PARTITIONED:
-                    cur.execute(f"DELETE FROM {table}")
+                    cur.execute(_TRUNCATE_SQLS[table])
                 cur.execute(load("select_non_default_workspace_ids"))
                 non_default = cur.fetchall()
                 for (wid,) in non_default:
