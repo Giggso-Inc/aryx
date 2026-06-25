@@ -42,3 +42,5 @@ starlette~=0.41
 rdflib~=7.0
 # Datasource credential encryption (Slice 2): Fernet symmetric encryption.
 cryptography~=43.0
+# Safe XML parsing — prevents billion-laughs / quadratic-blowup XML bomb attacks.
+defusedxml~=0.7

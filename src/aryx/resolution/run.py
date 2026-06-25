@@ -137,7 +137,7 @@ def resolve(
     # The pair loop visits records in order and stops at max_pairs_per_block.
     # Embedding records beyond what the loop can reach is pure waste: cap at
     # the number of records n where n*(n-1)/2 ≤ max_pairs_per_block.
-    _embed_cap = int((2 * max_pairs_per_block) ** 0.5) + 2
+    _embed_cap = int((2 * max_pairs_per_block) ** 0.5) + 2  # n where n*(n-1)/2 ≤ max_pairs_per_block; +2 guards rounding
     for group in block(records).values():
         embeddings = _block_embeddings(group[:_embed_cap], broker)
         pairs_evaluated = 0

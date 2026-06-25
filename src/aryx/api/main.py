@@ -87,6 +87,9 @@ def _mount_mcp(app: FastAPI) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     yield
+    # shutdown_executor MUST run before close_all — in-flight ingest threads
+    # need the connection pool until they finish; reversing the order caused
+    # pool-closed errors mid-job during container restarts.
     from aryx.api.file_ingest_api import shutdown_executor
     from aryx.store.pool import close_all
     shutdown_executor()

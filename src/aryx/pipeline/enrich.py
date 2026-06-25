@@ -7,17 +7,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import islice
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.models import Relationship
 from aryx.relationships import infer_relationship
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
-
-# Max concurrent LLM calls in _relate(). Matches OLLAMA_NUM_PARALLEL so
-# the Ollama queue stays full without unbounded memory use.
-_RELATE_WORKERS = 4
-# Max attributes per entity sent to the LLM. Large payloads slow inference;
-# keep the first N most-informative fields (including _element_type).
-_MAX_ATTRS = 15
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +39,10 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     Cross-type pairs are evaluated first so the max_pairs budget is spent on
     the most informative edges; same-type pairs fill any remaining budget.
     """
+    cfg = get_settings()
+    relate_workers = cfg.relate_workers
+    max_attrs = cfg.relate_max_attrs
+
     # Only load enough entities to fill max_pairs — fetching all workspace
     # entities is O(n_total) but we only need O(sqrt(max_pairs)) entities.
     # 10× headroom handles multi-type spread without pulling tens of thousands.
@@ -93,7 +91,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
                 break
 
     def _trim(attrs: dict) -> dict:
-        """Keep _element_type + first _MAX_ATTRS keys to limit LLM prompt size."""
+        """Keep _element_type + first max_attrs keys to limit LLM prompt size."""
         out: dict = {}
         if "_element_type" in attrs:
             out["_element_type"] = attrs["_element_type"]
@@ -101,7 +99,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
             if k == "_element_type":
                 continue
             out[k] = v
-            if len(out) >= _MAX_ATTRS:
+            if len(out) >= max_attrs:
                 break
         return out
 
@@ -110,7 +108,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
         return left[0], right[0], name, conf
 
     rels: list[Relationship] = []
-    with ThreadPoolExecutor(max_workers=_RELATE_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=relate_workers) as pool:
         futures = {
             pool.submit(_infer, left, right): (left[0], right[0])
             for left, right in candidates[:max_pairs]

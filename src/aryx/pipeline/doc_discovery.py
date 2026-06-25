@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as defused_ET
 from collections import Counter
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -88,12 +89,6 @@ def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
         return {"ontology_type": fallback, "match_keys": ["name"]}
 
 
-def _xml_to_csv_bytes(data: bytes) -> bytes:
-    """Single-type XML → CSV (kept for file_ingest_api backward compat)."""
-    results = _xml_to_csvs(data, "data")
-    return results[0][0] if results else data
-
-
 def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
     """Parse XML and emit one CSV per top-3 most-frequent element type.
 
@@ -107,7 +102,7 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
         return tag.split("}")[-1] if "}" in tag else tag
 
     try:
-        root = ET.fromstring(data)
+        root = defused_ET.fromstring(data)
     except ET.ParseError:
         return [(data, stem + ".csv")]
 

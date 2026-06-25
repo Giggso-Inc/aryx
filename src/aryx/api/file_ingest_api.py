@@ -83,6 +83,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     tmp_paths: list[Path] = []
     try:
         jobs = JobStore(settings.rdb_dsn)
+        on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
@@ -123,7 +124,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
+                        on_progress=on_prog,
                         fk_links=auto_fk if is_last else [],
                         workspace_id=workspace_id,
                         relate=True,
@@ -137,7 +138,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 system=suffix.lstrip("."), dataset=Path(name).stem,
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
-                on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
+                on_progress=on_prog,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )
@@ -156,7 +157,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 system="document", dataset="upload",
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
-                on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
+                on_progress=on_prog,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )

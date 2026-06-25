@@ -64,6 +64,22 @@ class Settings(BaseSettings):
             "cannot reach further before hitting this cap."
         ),
     )
+    relate_workers: int = Field(
+        default=4,
+        description=(
+            "Concurrent LLM calls in the relate stage (ThreadPoolExecutor). "
+            "Should match OLLAMA_NUM_PARALLEL so the Ollama queue stays full "
+            "without unbounded memory use. Override with ARYX_RELATE_WORKERS."
+        ),
+    )
+    relate_max_attrs: int = Field(
+        default=15,
+        description=(
+            "Max entity attributes sent to the LLM per relate call. "
+            "Large payloads slow inference; the first N fields are kept, "
+            "with _element_type always included. Override with ARYX_RELATE_MAX_ATTRS."
+        ),
+    )
 
     # ── Entity resolution thresholds ─────────────────────────────────────────
     er_auto_merge: float = Field(

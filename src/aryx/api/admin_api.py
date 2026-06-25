@@ -8,7 +8,7 @@ from typing import Any
 import os
 
 import psycopg
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 
 from aryx import llm_runtime
@@ -23,6 +23,7 @@ from aryx.store.entity_store import EntityStore
 from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
 from aryx.workspaces import ws_graph
+from aryx.api.security import require_api_key
 
 
 def _local_broker() -> Broker:
@@ -122,7 +123,7 @@ def admin_router() -> APIRouter:
         return {"status": "queued", "job_id": job_id, "table": req.table}
 
     @router.post("/graph/rebuild")
-    def rebuild_graph(workspace_id: int = 1) -> dict[str, Any]:
+    def rebuild_graph(workspace_id: int = 1, _: str = Depends(require_api_key)) -> dict[str, Any]:
         """Rebuild the FalkorDB projection from Postgres (source of truth).
 
         Safe to call at any time — it overwrites the graph with the current
