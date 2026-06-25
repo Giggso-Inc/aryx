@@ -125,6 +125,7 @@ _stub_oracledb()
 
 from aryx.store.oracle_pool import (  # noqa: E402
     OracleCursorWrapper,
+    _read_lob,
     _translate_sql,
     _unwrap_params,
 )
@@ -322,6 +323,180 @@ class TestConflictIgnore(unittest.TestCase):
         with patch.object(raw, "execute", side_effect=err):
             with self.assertRaises(oracledb.IntegrityError):
                 cur.execute("DELETE FROM t WHERE id = :1", (1,))
+
+
+# ── _read_lob tests ───────────────────────────────────────────────────────────
+
+class TestReadLob(unittest.TestCase):
+    """_read_lob() calls .read() on LOB objects; passes everything else through."""
+
+    def test_none_returns_none(self) -> None:
+        self.assertIsNone(_read_lob(None))
+
+    def test_plain_string_passthrough(self) -> None:
+        self.assertEqual(_read_lob("hello"), "hello")
+
+    def test_int_passthrough(self) -> None:
+        self.assertEqual(_read_lob(42), 42)
+
+    def test_dict_passthrough(self) -> None:
+        d = {"a": 1}
+        self.assertIs(_read_lob(d), d)
+
+    def test_lob_read_called_and_result_returned(self) -> None:
+        lob = MagicMock()
+        lob.read.return_value = "clob content"
+        self.assertEqual(_read_lob(lob), "clob content")
+        lob.read.assert_called_once_with()
+
+    def test_non_callable_read_attribute_not_invoked(self) -> None:
+        class _FakeHasRead:
+            read = "not callable"
+        obj = _FakeHasRead()
+        self.assertIs(_read_lob(obj), obj)
+
+
+# ── Additional _translate_sql tests ──────────────────────────────────────────
+
+class TestTranslateSqlExtensions(unittest.TestCase):
+    """NOW(), LIMIT, LIMIT+OFFSET, and ORACLE:RETURNING hint translations."""
+
+    def test_now_replaced_with_current_timestamp(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT NOW()", cur)
+        self.assertIn("CURRENT_TIMESTAMP", result)
+        self.assertNotIn("NOW()", result)
+
+    def test_now_case_insensitive(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT now() FROM dual", cur)
+        self.assertIn("CURRENT_TIMESTAMP", result)
+
+    def test_limit_n_becomes_fetch_first(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT * FROM t LIMIT 10", cur)
+        self.assertIn("FETCH FIRST 10 ROWS ONLY", result)
+        self.assertNotIn("LIMIT", result)
+
+    def test_limit_n_offset_m_becomes_offset_fetch(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT * FROM t LIMIT 10 OFFSET 5", cur)
+        self.assertIn("OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY", result)
+        self.assertNotIn("LIMIT", result)
+
+    def test_oracle_returning_hint_sets_out_vars(self) -> None:
+        cur = _make_cursor()
+        sql = "-- ORACLE:RETURNING id\nINSERT INTO t (v) VALUES (:1) RETURNING id INTO :r0"
+        _translate_sql(sql, cur)
+        self.assertEqual(len(cur._out_vars), 1)
+
+    def test_oracle_returning_hint_removed_from_sql(self) -> None:
+        cur = _make_cursor()
+        sql = "-- ORACLE:RETURNING id\nINSERT INTO t (v) VALUES (:1) RETURNING id INTO :r0"
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("ORACLE:RETURNING", result)
+
+    def test_oracle_returning_hint_multi_column(self) -> None:
+        cur = _make_cursor()
+        sql = "-- ORACLE:RETURNING id, name, ts\nINSERT INTO t (v) VALUES (:1) RETURNING id, name, ts INTO :r0, :r1, :r2"
+        _translate_sql(sql, cur)
+        self.assertEqual(len(cur._out_vars), 3)
+
+    def test_vector_cast_preserved(self) -> None:
+        """TO_VECTOR() in oracle override SQL must pass through unchanged."""
+        cur = _make_cursor()
+        sql = "INSERT INTO t (embedding) VALUES (TO_VECTOR(:1))"
+        result = _translate_sql(sql, cur)
+        self.assertIn("TO_VECTOR(:1)", result)
+
+    def test_json_mergepatch_preserved(self) -> None:
+        """JSON_MERGEPATCH() in oracle override SQL must pass through unchanged."""
+        cur = _make_cursor()
+        sql = "UPDATE t SET attrs = JSON_MERGEPATCH(attrs, :1) WHERE id = :2"
+        result = _translate_sql(sql, cur)
+        self.assertIn("JSON_MERGEPATCH", result)
+
+    def test_sysdate_arithmetic_preserved(self) -> None:
+        """SYSDATE - :1 date arithmetic must not be rewritten."""
+        cur = _make_cursor()
+        sql = "DELETE FROM aryx_job WHERE finished_at < SYSDATE - :1"
+        result = _translate_sql(sql, cur)
+        self.assertIn("SYSDATE - :1", result)
+
+
+# ── Additional _unwrap_params tests ──────────────────────────────────────────
+
+class TestUnwrapParamsExtensions(unittest.TestCase):
+    """Empty strings are replaced with a single space (Oracle VARCHAR2 semantics)."""
+
+    def test_empty_string_becomes_single_space(self) -> None:
+        self.assertEqual(_unwrap_params(""), " ")
+
+    def test_empty_string_in_tuple_replaced(self) -> None:
+        result = _unwrap_params(("name", ""))
+        self.assertEqual(result, ("name", " "))
+
+    def test_empty_string_in_list_replaced(self) -> None:
+        result = _unwrap_params(["a", "", "b"])
+        self.assertEqual(result, ["a", " ", "b"])
+
+    def test_non_empty_string_unchanged(self) -> None:
+        self.assertEqual(_unwrap_params("hello"), "hello")
+
+
+# ── fetchone / fetchall LOB-read integration ──────────────────────────────────
+
+class TestFetchWithLob(unittest.TestCase):
+    """OracleCursorWrapper.fetchone/fetchall call _read_lob on every column."""
+
+    def _lob(self, value: str) -> MagicMock:
+        lob = MagicMock()
+        lob.read.return_value = value
+        return lob
+
+    def test_fetchone_reads_lob_value(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        raw._rows = [(1, self._lob("some clob text"), "other")]
+        cur = OracleCursorWrapper(raw)
+        row = cur.fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[1], "some clob text")
+        self.assertEqual(row[2], "other")
+
+    def test_fetchall_reads_lob_in_all_rows(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        raw._rows = [
+            (1, self._lob("text1")),
+            (2, self._lob("text2")),
+        ]
+        cur = OracleCursorWrapper(raw)
+        rows = cur.fetchall()
+        self.assertEqual(rows[0][1], "text1")
+        self.assertEqual(rows[1][1], "text2")
+
+    def test_fetchone_non_lob_values_passthrough(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        raw._rows = [(1, "plain string", 42, None)]
+        cur = OracleCursorWrapper(raw)
+        row = cur.fetchone()
+        self.assertEqual(row, (1, "plain string", 42, None))
+
+    def test_fetchone_returns_none_when_no_rows(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        raw._rows = []
+        cur = OracleCursorWrapper(raw)
+        self.assertIsNone(cur.fetchone())
+
+    def test_fetchall_returns_empty_list_when_no_rows(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        raw._rows = []
+        cur = OracleCursorWrapper(raw)
+        self.assertEqual(cur.fetchall(), [])
 
 
 if __name__ == "__main__":
