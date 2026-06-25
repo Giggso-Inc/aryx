@@ -93,25 +93,28 @@ def ingest_document(
     doc_id = _content_hash(path)
     source = SourceRef(system=system, dataset=path.stem, record_id=doc_id)
     pages = list(_connector_for(path).extract_pages())
-    logger.info("ingest: path=%s pages=%d", path.name, len(pages))
+    logger.info("[step 1/8] pages=%d  path=%s", len(pages), path.name)
     chunks = chunk_pages(pages, source=source, doc_id=doc_id,
                          chunk_size=chunk_size, overlap=chunk_overlap)
-    logger.info("ingest: chunks=%d doc_id=%s", len(chunks), doc_id[:8])
+    logger.info("[step 2/8] chunks=%d  doc_id=%s", len(chunks), doc_id[:8])
     if run_pii:
+        logger.info("[step 3/8] pii screening  chunks=%d", len(chunks))
         chunks = screen_chunks(chunks)
     doc_db_id = chunk_store.upsert_document(
         content_hash=doc_id, file_name=path.name,
         source_type=path.suffix.lstrip(".").lower(),
         byte_count=path.stat().st_size,
     )
+    logger.info("[step 4/8] doc saved  doc_db_id=%d", doc_db_id)
     chunk_db_ids = chunk_store.save_chunks(doc_db_id, chunks)
-    logger.info("ingest: chunk_db_ids=%d doc_db_id=%d", len(chunk_db_ids), doc_db_id)
+    logger.info("[step 5/8] chunks saved  ids=%d", len(chunk_db_ids))
     embeddings = embed_chunks(chunks, broker, expected_dim=expected_embed_dim)
-    logger.info("ingest: embeddings=%d", len(embeddings))
+    logger.info("[step 7/8] embeddings=%d  saving to db", len(embeddings))
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
+    logger.info("[step 8/8] extracting mentions  chunks=%d", len(chunks))
     records = extract_mentions(chunks, broker, context=context)
-    logger.info("ingest_document path=%s doc_id=%s chunks=%d mentions=%d",
-                path.name, doc_id[:8], len(chunks), len(records))
+    logger.info("[ingest done] path=%s  chunks=%d  mentions=%d  doc_id=%s",
+                path.name, len(chunks), len(records), doc_id[:8])
     return records
 
 
