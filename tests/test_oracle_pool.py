@@ -262,19 +262,19 @@ class TestUnwrapParams(unittest.TestCase):
         result = _unwrap_params({"a": 1, "b": 2})
         self.assertEqual(result, {"a": 1, "b": 2})
 
-    def test_psycopg_json_unwrapped(self) -> None:
+    def test_psycopg_json_serialized_to_string(self) -> None:
         fake_json = MagicMock()
         fake_json.obj = {"key": "value"}
-        fake_json.dumps = MagicMock()
+        fake_json.dumps = lambda o: '{"key": "value"}'
         result = _unwrap_params(fake_json)
-        self.assertEqual(result, {"key": "value"})
+        self.assertEqual(result, '{"key": "value"}')
 
-    def test_nested_json_in_list(self) -> None:
+    def test_nested_json_in_list_serialized(self) -> None:
         fake_json = MagicMock()
         fake_json.obj = [1, 2, 3]
-        fake_json.dumps = MagicMock()
+        fake_json.dumps = lambda o: "[1, 2, 3]"
         result = _unwrap_params([fake_json, "plain"])
-        self.assertEqual(result, [[1, 2, 3], "plain"])
+        self.assertEqual(result, ["[1, 2, 3]", "plain"])
 
 
 # ── ORA-00001 conflict-ignore tests ──────────────────────────────────────────

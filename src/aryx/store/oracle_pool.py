@@ -124,9 +124,10 @@ def _unwrap_params(params: Any) -> Any:
         return type(params)(unwrapped)
     if isinstance(params, dict):
         return {k: _unwrap_params(v) for k, v in params.items()}
-    # Duck-type psycopg Json wrapper
+    # Duck-type psycopg Json wrapper — serialize to JSON string so Oracle CLOB
+    # receives a str, not a Python dict that oracledb cannot bind.
     if hasattr(params, "obj") and hasattr(params, "dumps"):
-        return params.obj
+        return params.dumps(params.obj)
     # Oracle treats '' as NULL — substitute a space for empty strings so NOT
     # NULL constraints on optional text columns (description, context, …) are
     # satisfied.  The space is invisible in practice and harmless for LIKE/=.
