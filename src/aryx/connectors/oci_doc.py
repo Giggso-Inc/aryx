@@ -9,7 +9,7 @@ OCI Document Understanding advantages over local parsers:
   - Native scanned-PDF OCR without a local Tesseract install
   - Supports PDF, DOCX, XLSX, PPTX, images (PNG, JPG, TIFF, BMP, GIF)
 
-Requires: oci~=2.130, ARYX_OCI_COMPARTMENT_ID set.
+Requires: oci~=2.140, ARYX_OCI_COMPARTMENT_ID set.
 """
 from __future__ import annotations
 
@@ -74,8 +74,8 @@ class OciDocConnector:
         doc_b64 = base64.b64encode(raw).decode("utf-8")
 
         features = [
-            oci.ai_document.models.DocumentTextDetectionFeature(),
-            oci.ai_document.models.DocumentTableDetectionFeature(),
+            oci.ai_document.models.DocumentTextExtractionFeature(),
+            oci.ai_document.models.DocumentTableExtractionFeature(),
         ]
 
         inline_doc = oci.ai_document.models.InlineDocumentDetails(data=doc_b64)
@@ -90,7 +90,7 @@ class OciDocConnector:
 
         if not pages_text:
             # Fall back to top-level text if no per-page structure returned
-            top_text = getattr(result, "text", "") or ""
+            top_text = getattr(response.data, "text", "") or ""
             if top_text:
                 yield 1, top_text
             return

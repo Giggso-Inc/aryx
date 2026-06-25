@@ -82,6 +82,11 @@ services:
       # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)
       - ARYX_LLM_CHEAP_BACKEND=oci
       - ARYX_LLM_FRONTIER_BACKEND=oci
+      # OCI API auth — env-var mode (no ~/.oci/config mount needed)
+      - ARYX_OCI_USER_OCID=${ARYX_OCI_USER_OCID}
+      - ARYX_OCI_TENANCY_OCID=${ARYX_OCI_TENANCY_OCID}
+      - ARYX_OCI_FINGERPRINT=${ARYX_OCI_FINGERPRINT}
+      - ARYX_OCI_PRIVATE_KEY_CONTENT=${ARYX_OCI_PRIVATE_KEY_CONTENT}
     ports:
       - "8088:8000"
     networks:
@@ -111,6 +116,11 @@ services:
       - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
       - ARYX_GRAPH_BACKEND=oci_graph
       - PGX_SERVER_URL=http://pgx-server:7007
+      # OCI API auth — env-var mode (no ~/.oci/config mount needed)
+      - ARYX_OCI_USER_OCID=${ARYX_OCI_USER_OCID}
+      - ARYX_OCI_TENANCY_OCID=${ARYX_OCI_TENANCY_OCID}
+      - ARYX_OCI_FINGERPRINT=${ARYX_OCI_FINGERPRINT}
+      - ARYX_OCI_PRIVATE_KEY_CONTENT=${ARYX_OCI_PRIVATE_KEY_CONTENT}
     ports:
       - "8765:8765"
     networks:
