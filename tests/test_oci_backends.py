@@ -823,6 +823,18 @@ class TestGetAuth(unittest.TestCase):
             result = _get_auth()
         self.assertIs(result, fake_signer)
 
+    def test_raises_environment_error_when_partial_env_vars_set(self) -> None:
+        # ARYX_OCI_USER_OCID set but the other three missing → clear EnvironmentError
+        env = {"ARYX_OCI_USER_OCID": "ocid1.user.oc1..aaa"}
+        with patch.dict("os.environ", env, clear=True):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            with self.assertRaises(EnvironmentError) as ctx:
+                _get_auth()
+        self.assertIn("ARYX_OCI_TENANCY_OCID", str(ctx.exception))
+        self.assertIn("ARYX_OCI_FINGERPRINT", str(ctx.exception))
+        self.assertIn("ARYX_OCI_PRIVATE_KEY_CONTENT", str(ctx.exception))
+
     def test_auth_result_cached_after_first_call(self) -> None:
         env = {
             "ARYX_OCI_USER_OCID": "ocid1.user.oc1..aaa",

@@ -41,11 +41,23 @@ def _get_auth() -> Any:
     except Exception:
         import oci  # noqa: PLC0415
         if os.environ.get("ARYX_OCI_USER_OCID"):
+            _required = [
+                "ARYX_OCI_USER_OCID", "ARYX_OCI_TENANCY_OCID",
+                "ARYX_OCI_FINGERPRINT", "ARYX_OCI_PRIVATE_KEY_CONTENT",
+            ]
+            _missing = [k for k in _required if not os.environ.get(k)]
+            if _missing:
+                raise EnvironmentError(
+                    f"ARYX_OCI_USER_OCID is set but the following required vars are missing: "
+                    f"{', '.join(_missing)}"
+                )
             config = {
                 "user": os.environ["ARYX_OCI_USER_OCID"],
                 "tenancy": os.environ["ARYX_OCI_TENANCY_OCID"],
                 "fingerprint": os.environ["ARYX_OCI_FINGERPRINT"],
                 "key_content": os.environ["ARYX_OCI_PRIVATE_KEY_CONTENT"],
+                # OCI_REGION is the OCI SDK's own convention and takes priority;
+                # fall back to ARYX_OCI_REGION (our setting) then the default.
                 "region": os.environ.get("OCI_REGION", os.environ.get("ARYX_OCI_REGION", "us-chicago-1")),
             }
             oci.config.validate_config(config)
