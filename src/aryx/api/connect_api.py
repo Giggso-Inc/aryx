@@ -84,6 +84,7 @@ def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
                 graph_url=settings.graph_url, broker=broker,
                 workspace_id=workspace_id,
                 fk_links=edges if i == total - 1 else [],
+                relate=True,
             )
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001

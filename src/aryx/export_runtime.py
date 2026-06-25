@@ -6,24 +6,24 @@ Settings panel, never written to disk. Ontology export/import is opt-in
 """
 from __future__ import annotations
 
-import os
-
+from aryx.config import get_settings
 from aryx.ontology.rdf.model import FORMATS
 
 _DEFAULT_FORMATS = ["turtle", "json-ld"]
 
 
 def _initial_formats() -> list[str]:
-    """Read the startup format selection from the environment, or default."""
-    raw = os.environ.get("ARYX_ONTOLOGY_FORMATS", "")
+    """Read the startup format selection from Settings, or default."""
+    raw = get_settings().ontology_formats
     picked = [f.strip() for f in raw.split(",") if f.strip() in FORMATS]
     return picked or list(_DEFAULT_FORMATS)
 
 
+_cfg = get_settings()
 _state: dict[str, object] = {
-    "enabled": os.environ.get("ARYX_ONTOLOGY_ENABLED", "").lower() in {"1", "true", "yes"},
+    "enabled": _cfg.ontology_enabled,
     "formats": _initial_formats(),
-    "base_uri": os.environ.get("ARYX_ONTOLOGY_BASE_URI", "https://aryx.local/"),
+    "base_uri": _cfg.ontology_base_uri,
     "include_provenance": True,
 }
 

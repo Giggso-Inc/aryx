@@ -22,6 +22,7 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
+from aryx.pipeline.doc_discovery import _detect_fk_links, _xml_to_csvs
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
@@ -54,13 +55,13 @@ def shutdown_executor() -> None:
             _executor = None
 
 
-_DATA_EXTS = {".json", ".csv"}
+_DATA_EXTS = {".json", ".csv", ".xml"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
-             ".xml", ".html", ".htm",
+             ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
-_MAX_FILE = 2 * 1024 * 1024
-_MAX_TOTAL = 50 * 1024 * 1024
+_MAX_FILE = 50 * 1024 * 1024
+_MAX_TOTAL = 500 * 1024 * 1024
 _MAX_FILES = 50
 
 
@@ -82,6 +83,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     tmp_paths: list[Path] = []
     try:
         jobs = JobStore(settings.rdb_dsn)
+        on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
@@ -91,6 +93,43 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 tmp = _save_tmp(data, ".json")
                 tmp_paths.append(tmp)
                 connector = JsonConnector(tmp, system="json")
+            elif suffix == ".xml":
+                # Expand XML into one connector per top-3 element type.
+                # Each CSV gets its own ontology_type derived from the element
+                # tag so that cross-type pairs are generated for relate/fk_link.
+                orig_stem = Path(name).stem
+                xml_csvs = _xml_to_csvs(data, orig_stem)
+                xml_plans = []
+                for csv_data, csv_name in xml_csvs:
+                    csv_stem = Path(csv_name).stem
+                    # csv_name == "{orig_stem}_{tag}.csv" — strip the prefix to get the tag.
+                    tag = csv_stem[len(orig_stem) + 1:] if csv_stem.startswith(orig_stem + "_") else csv_stem
+                    derived_type = "".join(w.title() for w in tag.split("_") if w) or ontology_type
+                    xml_plans.append((csv_data, csv_name, derived_type))
+                # Auto-detect FK links now that all element types are known.
+                fk_plan_dicts = [
+                    {"data": d, "filename": n, "ontology_type": t, "match_keys": match_keys or ["name"]}
+                    for d, n, t in xml_plans
+                ]
+                auto_fk = _detect_fk_links(fk_plan_dicts)
+                if auto_fk:
+                    logger.info("XML auto-detected %d fk-link spec(s): %s", len(auto_fk), auto_fk)
+                for idx, (csv_data, csv_name, derived_type) in enumerate(xml_plans):
+                    is_last = (idx == len(xml_plans) - 1)
+                    jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
+                    run_pipeline(
+                        connector=CsvConnector(csv_data, system="csv",
+                                               dataset=Path(csv_name).stem),
+                        dsn=settings.rdb_dsn,
+                        system="csv", dataset=Path(csv_name).stem,
+                        ontology_type=derived_type, match_keys=match_keys,
+                        graph_url=settings.graph_url, broker=broker,
+                        on_progress=on_prog,
+                        fk_links=auto_fk if is_last else [],
+                        workspace_id=workspace_id,
+                        relate=True,
+                    )
+                continue
             else:
                 connector = CsvConnector(data, system="csv", dataset=Path(name).stem)
             jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
@@ -99,8 +138,9 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 system=suffix.lstrip("."), dataset=Path(name).stem,
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
-                on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
+                on_progress=on_prog,
                 fk_links=fk_links, workspace_id=workspace_id,
+                relate=True,
             )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
@@ -117,8 +157,9 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 system="document", dataset="upload",
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
-                on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
+                on_progress=on_prog,
                 fk_links=fk_links, workspace_id=workspace_id,
+                relate=True,
             )
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
@@ -150,10 +191,10 @@ def file_ingest_router() -> APIRouter:
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
-                raise HTTPException(400, f"{f.filename}: exceeds 2 MB limit")
+                raise HTTPException(400, f"{f.filename}: exceeds 50 MB limit")
             total += len(data)
             if total > _MAX_TOTAL:
-                raise HTTPException(400, f"Total upload exceeds 50 MB limit")
+                raise HTTPException(400, f"Total upload exceeds 500 MB limit")
             suffix = Path(f.filename or "").suffix.lower()
             if suffix not in _ALL:
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
@@ -187,6 +228,6 @@ def file_ingest_router() -> APIRouter:
     @router.get("/ingest/supported")
     def supported_types() -> dict[str, Any]:
         return {"file_types": sorted(_ALL), "max_files": _MAX_FILES,
-                "max_file_mb": 2, "max_total_mb": 50}
+                "max_file_mb": 50, "max_total_mb": 500}
 
     return router
