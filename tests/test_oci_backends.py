@@ -734,5 +734,111 @@ class TestOciFunctionsProvisioner(unittest.TestCase):
         assert "ARYX_LLM_CHEAP_MODEL_OVERRIDE" not in cfg
 
 
+class TestGetAuth(unittest.TestCase):
+    """_get_auth() env-var auth path — no real OCI credentials needed."""
+
+    def setUp(self) -> None:
+        oci_mod = _make_oci_stub()
+        sys.modules["oci"] = oci_mod
+        self._oci = oci_mod
+        from aryx.oci_client import reset_clients
+        reset_clients()
+
+    def tearDown(self) -> None:
+        from aryx.oci_client import reset_clients
+        reset_clients()
+
+    def test_env_var_auth_used_when_oci_user_ocid_set(self) -> None:
+        env = {
+            "OCI_USER_OCID": "ocid1.user.oc1..aaa",
+            "OCI_TENANCY_OCID": "ocid1.tenancy.oc1..bbb",
+            "OCI_FINGERPRINT": "aa:bb:cc:dd",
+            "OCI_PRIVATE_KEY_CONTENT": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----",
+            "ARYX_OCI_REGION": "us-chicago-1",
+        }
+        self._oci.config.validate_config = MagicMock()
+        with patch.dict("os.environ", env, clear=False):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            result = _get_auth()
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["user"], "ocid1.user.oc1..aaa")
+        self.assertEqual(result["tenancy"], "ocid1.tenancy.oc1..bbb")
+        self.assertEqual(result["fingerprint"], "aa:bb:cc:dd")
+
+    def test_env_var_auth_calls_validate_config(self) -> None:
+        env = {
+            "OCI_USER_OCID": "ocid1.user.oc1..aaa",
+            "OCI_TENANCY_OCID": "ocid1.tenancy.oc1..bbb",
+            "OCI_FINGERPRINT": "aa:bb:cc:dd",
+            "OCI_PRIVATE_KEY_CONTENT": "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----",
+        }
+        self._oci.config.validate_config = MagicMock()
+        with patch.dict("os.environ", env, clear=False):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            _get_auth()
+        self._oci.config.validate_config.assert_called_once()
+
+    def test_env_var_region_from_oci_region(self) -> None:
+        env = {
+            "OCI_USER_OCID": "ocid1.user.oc1..aaa",
+            "OCI_TENANCY_OCID": "ocid1.tenancy.oc1..bbb",
+            "OCI_FINGERPRINT": "aa:bb:cc:dd",
+            "OCI_PRIVATE_KEY_CONTENT": "key",
+            "OCI_REGION": "eu-frankfurt-1",
+        }
+        self._oci.config.validate_config = MagicMock()
+        with patch.dict("os.environ", env, clear=False):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            result = _get_auth()
+        self.assertEqual(result["region"], "eu-frankfurt-1")
+
+    def test_config_file_fallback_when_no_env_vars(self) -> None:
+        self._oci.config.from_file = MagicMock(return_value={"region": "us-chicago-1"})
+        # Ensure OCI_USER_OCID is absent
+        env_without = {k: v for k, v in __import__("os").environ.items() if k != "OCI_USER_OCID"}
+        with patch.dict("os.environ", env_without, clear=True):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            result = _get_auth()
+        self._oci.config.from_file.assert_called_once()
+        self.assertEqual(result["region"], "us-chicago-1")
+
+    def test_instance_principal_takes_priority_over_env_vars(self) -> None:
+        fake_signer = MagicMock()
+        self._oci.auth.signers.InstancePrincipalsSecurityTokenSigner = MagicMock(
+            return_value=fake_signer
+        )
+        env = {
+            "OCI_USER_OCID": "ocid1.user.oc1..aaa",
+            "OCI_TENANCY_OCID": "ocid1.tenancy.oc1..bbb",
+            "OCI_FINGERPRINT": "aa:bb:cc:dd",
+            "OCI_PRIVATE_KEY_CONTENT": "key",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            result = _get_auth()
+        self.assertIs(result, fake_signer)
+
+    def test_auth_result_cached_after_first_call(self) -> None:
+        env = {
+            "OCI_USER_OCID": "ocid1.user.oc1..aaa",
+            "OCI_TENANCY_OCID": "ocid1.tenancy.oc1..bbb",
+            "OCI_FINGERPRINT": "aa:bb:cc:dd",
+            "OCI_PRIVATE_KEY_CONTENT": "key",
+        }
+        self._oci.config.validate_config = MagicMock()
+        with patch.dict("os.environ", env, clear=False):
+            from aryx.oci_client import _get_auth, reset_clients
+            reset_clients()
+            r1 = _get_auth()
+            r2 = _get_auth()
+        self.assertIs(r1, r2)
+        self._oci.config.validate_config.assert_called_once()  # not twice
+
+
 if __name__ == "__main__":
     unittest.main()
