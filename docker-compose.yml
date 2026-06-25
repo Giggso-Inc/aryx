@@ -46,6 +46,8 @@ services:
     image: ollama/ollama
     volumes:
       - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=4
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]

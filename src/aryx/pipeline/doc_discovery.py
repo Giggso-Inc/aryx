@@ -11,6 +11,8 @@ import csv
 import io
 import json
 import logging
+import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -28,9 +30,9 @@ from aryx.store.chunk_store import ChunkStore
 logger = logging.getLogger(__name__)
 
 DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
-            ".xml", ".html", ".htm",
+            ".html", ".htm",
             ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-DATA_EXTS = {".json", ".csv"}
+DATA_EXTS = {".json", ".csv", ".xml"}
 
 
 _GENERIC = {"table", "row", "record", "data", "file", "entity", "item", "object",
@@ -86,6 +88,109 @@ def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
         return {"ontology_type": fallback, "match_keys": ["name"]}
 
 
+def _xml_to_csv_bytes(data: bytes) -> bytes:
+    """Single-type XML → CSV (kept for file_ingest_api backward compat)."""
+    results = _xml_to_csvs(data, "data")
+    return results[0][0] if results else data
+
+
+def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
+    """Parse XML and emit one CSV per top-3 most-frequent element type.
+
+    Each CSV gets a ``{parent_tag}_id`` column so that _detect_fk_links can
+    wire parent→child relationships deterministically, and each entity carries
+    its element tag name as ``_element_type`` so the LLM has semantic context
+    for relationship inference.  Falls back to a single CSV when the XML has
+    fewer than two distinct repeating element types.
+    """
+    def _strip_ns(tag: str) -> str:
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return [(data, stem + ".csv")]
+
+    counts: Counter = Counter()
+
+    def _walk(elem: ET.Element) -> None:
+        for child in elem:
+            counts[_strip_ns(child.tag)] += 1
+            _walk(child)
+
+    _walk(root)
+    if not counts:
+        return [(data, stem + ".csv")]
+
+    # Pick up to 3 tags that appear at least twice — enough for cross-type links.
+    top_tags = [tag for tag, cnt in counts.most_common(5) if cnt >= 2][:3]
+    if not top_tags:
+        return [(data, stem + ".csv")]
+
+    def _collect_tag(
+        elem: ET.Element, tag: str,
+        parent_tag: str, parent_attribs: dict,
+    ) -> list[dict]:
+        """Recursively collect all elements matching *tag*, embedding parent FK.
+
+        The injected column is always named ``{parent_tag}_id`` regardless of
+        which parent attribute supplies the value — this guarantees that
+        ``_detect_fk_links`` can find the FK by the ``{type}_id`` pattern.
+        """
+        records: list[dict] = []
+        for child in elem:
+            ctag = _strip_ns(child.tag)
+            if ctag == tag:
+                row: dict = {"_element_type": tag}
+                # Resolve the best FK value from parent (standard keys first,
+                # then fall back to the first available attribute so that XML
+                # elements with arbitrary attribute names still get linked).
+                fk_val = None
+                for pk in ("id", "name", "key", "code"):
+                    pv = parent_attribs.get(pk)
+                    if pv is not None:
+                        fk_val = pv
+                        break
+                if fk_val is None and parent_attribs:
+                    fk_val = next(iter(parent_attribs.values()))
+                if fk_val is not None:
+                    # Always use {parent_tag}_id so _detect_fk_links matches it.
+                    row[f"{parent_tag}_id"] = fk_val
+                for k, v in child.attrib.items():
+                    row[_strip_ns(k)] = v
+                if child.text and child.text.strip():
+                    row["_text"] = child.text.strip()
+                if len(row) > 1:
+                    records.append(row)
+            child_attribs = {_strip_ns(k): v for k, v in child.attrib.items()}
+            records.extend(_collect_tag(child, tag, _strip_ns(child.tag), child_attribs))
+        return records
+
+    root_attribs = {_strip_ns(k): v for k, v in root.attrib.items()}
+    root_tag = _strip_ns(root.tag)
+
+    results: list[tuple[bytes, str]] = []
+    for target_tag in top_tags:
+        records = _collect_tag(root, target_tag, root_tag, root_attribs)
+        if not records:
+            continue
+        all_keys: list[str] = []
+        seen_keys: set[str] = set()
+        for rec in records:
+            for k in rec:
+                if k not in seen_keys:
+                    all_keys.append(k)
+                    seen_keys.add(k)
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=all_keys, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(records)
+        csv_name = f"{stem}_{target_tag}.csv"
+        results.append((buf.getvalue().encode("utf-8"), csv_name))
+
+    return results if results else [(data, stem + ".csv")]
+
+
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
                broker: Broker, context: str) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing."""
@@ -99,9 +204,19 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             context=context)
         mentions = list(connector.extract())
 
+    # XML files: expand into one CSV per top-3 element type so that
+    # _detect_fk_links can wire cross-type relationships automatically.
+    converted_tabular = []
+    for d, n in tabular:
+        if Path(n).suffix.lower() == ".xml":
+            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
+                converted_tabular.append((csv_bytes, csv_name))
+        else:
+            converted_tabular.append((d, n))
+
     tab_plans = [{"filename": n, "data": d,
                   **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
-                 for d, n in tabular]
+                 for d, n in converted_tabular]
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
@@ -163,12 +278,14 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     continue
                 seen.add(pair_key)
                 src_upper = plan_a["ontology_type"].upper()
+                # Edge direction in link_by_attribute: target_type → source_type
+                # (parent has-child semantics). Name reflects that direction.
                 links.append({
                     "source_type": plan_a["ontology_type"],
                     "source_attr": col,
                     "target_type": type_b,
                     "target_attr": target_attr,
-                    "name": f"{src_upper}_HAS_{type_b.upper()}",
+                    "name": f"{type_b.upper()}_HAS_{src_upper}",
                 })
                 break
 
@@ -190,7 +307,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             run_pipeline(connector=RecordsConnector(recs), dsn=settings.rdb_dsn,
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
-                         workspace_id=workspace_id)
+                         workspace_id=workspace_id, relate=True)
 
     # Collect valid plans in approval order so FK detection sees the full picture.
     valid_plans = [p for p in
@@ -222,7 +339,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
-                         fk_links=auto_fk if is_last else None)
+                         fk_links=auto_fk if is_last else None, relate=True)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)

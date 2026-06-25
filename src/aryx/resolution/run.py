@@ -13,9 +13,9 @@ A later human approval unions the entities via apply_decision (G10).
 from __future__ import annotations
 
 import logging
-import os
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
 from aryx.resolution.adjudicate import adjudicate
 from aryx.resolution.classical import block, score_pair
@@ -28,32 +28,39 @@ from aryx.resolution.survivorship import SurvivorshipPolicy
 logger = logging.getLogger(__name__)
 
 
-def _threshold(env: str, default: float) -> float:
-    """Read one tunable threshold from the environment."""
-    try:
-        return float(os.environ.get(env, default))
-    except ValueError:
-        return default
-
-
 def _block_embeddings(
     records: list[ResolutionRecord], broker: Broker
 ) -> dict[int, list[float]]:
-    """Embed a block's texts locally; empty dict if embeddings unavailable."""
-    try:
-        vectors = broker.embed([r.text for r in records])
-    except Exception:  # embeddings are optional — fall back to string-only  # noqa: BLE001
-        vectors = []
-    return {r.record_id: v for r, v in zip(records, vectors)} if vectors else {}
+    """Embed a block's texts in small batches; empty dict if unavailable.
+
+    Short-circuits when both auto-merge and adjudicate thresholds are 1.0 —
+    in that mode only exact duplicates can merge, and string scoring detects
+    those without needing vectors.
+    """
+    cfg = get_settings()
+    if cfg.er_auto_merge >= 1.0 and cfg.er_adjudicate >= 1.0:
+        return {}
+    out: dict[int, list[float]] = {}
+    for start in range(0, len(records), cfg.embed_batch_size):
+        batch = records[start : start + cfg.embed_batch_size]
+        try:
+            vectors = broker.embed([r.text for r in batch])
+            if vectors:
+                for r, v in zip(batch, vectors):
+                    out[r.record_id] = v
+        except Exception:  # noqa: BLE001
+            pass  # fall back to string-only for this batch
+    return out
 
 
 def _route_pair(left: ResolutionRecord, right: ResolutionRecord, score: float,
                 broker: Broker, union: UnionFind,
                 review: ReviewSink | None) -> None:
     """Apply the four-way threshold routing to one scored pair."""
-    auto = _threshold("ARYX_ER_AUTO_MERGE", 0.92)
-    adj = _threshold("ARYX_ER_ADJUDICATE", 0.90)
-    rev = _threshold("ARYX_ER_REVIEW", 0.75)
+    cfg = get_settings()
+    auto = cfg.er_auto_merge
+    adj = cfg.er_adjudicate
+    rev = cfg.er_review
     if score >= auto:
         union.union(left.record_id, right.record_id)
         return
@@ -93,8 +100,7 @@ def _materialize(member_ids: list[int], by_id: dict[int, ResolutionRecord],
             [r.payload for r in records_in], member_ids, pair_scores)
         provenance = merged.pop("_provenance", None)
         conflicts = None
-    edges = cluster_edges(member_ids, pair_scores,
-                          _threshold("ARYX_ER_ADJUDICATE", 0.90))
+    edges = cluster_edges(member_ids, pair_scores, get_settings().er_adjudicate)
     return ResolvedEntity(
         ontology_type=ontology_type, attributes=merged,
         confidence=cluster_confidence(edges, len(member_ids)),
@@ -127,16 +133,29 @@ def resolve(
     for record in records:
         union.add(record.record_id)
 
+    max_pairs_per_block = get_settings().max_pairs_per_block
+    # The pair loop visits records in order and stops at max_pairs_per_block.
+    # Embedding records beyond what the loop can reach is pure waste: cap at
+    # the number of records n where n*(n-1)/2 ≤ max_pairs_per_block.
+    _embed_cap = int((2 * max_pairs_per_block) ** 0.5) + 2
     for group in block(records).values():
-        embeddings = _block_embeddings(group, broker)
+        embeddings = _block_embeddings(group[:_embed_cap], broker)
+        pairs_evaluated = 0
+        done = False
         for i in range(len(group)):
+            if done:
+                break
             for j in range(i + 1, len(group)):
+                if pairs_evaluated >= max_pairs_per_block:
+                    done = True
+                    break
                 left, right = group[i], group[j]
                 score = score_pair(left.text, right.text,
                                    embeddings.get(left.record_id),
                                    embeddings.get(right.record_id))
                 pair_scores[(left.record_id, right.record_id)] = score
                 _route_pair(left, right, score, broker, union, review)
+                pairs_evaluated += 1
 
     results = [
         (_materialize(member_ids, by_id, pair_scores, ontology_type, policy),

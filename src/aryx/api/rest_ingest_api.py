@@ -152,6 +152,7 @@ def _run_rest(url: str, headers: dict, record_path: str, page_param: str,
             graph_url=settings.graph_url, broker=_local_broker(),
             on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
             workspace_id=workspace_id,
+            relate=True,
         )
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
