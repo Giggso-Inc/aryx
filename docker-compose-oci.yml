@@ -126,6 +126,7 @@ services:
     environment:
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
       - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
     ports:
       - "3000:3000"
     depends_on:

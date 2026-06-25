@@ -89,6 +89,7 @@ def _get_or_create_application(
             compartment_id=compartment_id,
             display_name=app_name,
             subnet_ids=[subnet_id],
+            shape="GENERIC_ARM",
         )
     ).data
     logger.info("created functions application: %s → %s", app_name, app.id)
