@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -102,7 +103,10 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
 
     from aryx.broker import default_broker, oci_broker  # noqa: PLC0415
     from aryx.config import get_settings  # noqa: PLC0415
+    from aryx.logging_setup import configure_logging  # noqa: PLC0415
     from aryx.store.job_store import JobStore  # noqa: PLC0415
+
+    configure_logging(os.environ.get("ARYX_LOG_LEVEL", "INFO"))
 
     payload: dict[str, Any] = json.loads(data.getvalue())
     _required = {"job_id", "filename", "file_b64", "ontology_type"}
@@ -125,6 +129,9 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
     broker   = oci_broker() if settings.effective_llm_cheap_backend() == "oci" else default_broker()
     jobs     = JobStore(settings.rdb_dsn)
 
+    logger.info("aryx-ingest-fn: received job_id=%s filename=%s workspace_id=%s",
+                job_id, filename, workspace_id)
+
     try:
         suffix = Path(filename).suffix.lower()
         jobs.update_stage(job_id, "Ingest", 10, f"Starting {filename}")
@@ -141,6 +148,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
             workspace_id=workspace_id,
         )
         jobs.finish(job_id, run_id=None, status="complete")
+        logger.info("aryx-ingest-fn: completed job_id=%s filename=%s", job_id, filename)
         return fdk_response.Response(
             ctx,
             response_data=json.dumps({"status": "ok", "job_id": job_id}),
