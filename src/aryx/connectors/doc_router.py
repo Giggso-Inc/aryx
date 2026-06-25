@@ -38,16 +38,23 @@ def _content_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# OCI Document Understanding supported types (PDF, Office docs, images).
+# Markup types (.xml, .html, .htm) are NOT supported — handled locally.
+_OCI_DOC_EXTS = {
+    ".pdf",
+    ".docx", ".doc", ".rtf",
+    ".pptx", ".ppt",
+    *IMAGE_EXTS,
+}
+
+
 def _connector_for(path: Path):
     from aryx.config import get_settings
     if get_settings().effective_parse_backend() == "oci":
-        # OCI Document Understanding supports documents and images only.
-        # Data files (.csv, .json, etc.) are not supported — fall through to
-        # the local connector so structured data is never sent to the API.
-        if path.suffix.lower() in _EXT_MAP:
+        if path.suffix.lower() in _OCI_DOC_EXTS:
             from aryx.connectors.oci_doc import OciDocConnector  # noqa: PLC0415
             return OciDocConnector(path)
-        # Unsupported by OCI — fall through to local connector below.
+        # .xml / .html / .htm not supported by OCI DU — fall through to local connector.
     cls = _EXT_MAP.get(path.suffix.lower())
     if cls is None:
         raise ValueError(f"unsupported document type: {path.suffix!r}")
