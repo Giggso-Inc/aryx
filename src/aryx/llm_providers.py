@@ -164,7 +164,7 @@ def _oci_chat_raw(
         ),
         chat_request=oci.generative_ai_inference.models.CohereChatRequest(
             message=user,
-            preamble=system,
+            preamble_override=system,
             max_tokens=max_tokens,
             temperature=0.2,
         ),
