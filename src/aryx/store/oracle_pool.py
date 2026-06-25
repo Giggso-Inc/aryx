@@ -206,10 +206,12 @@ class OracleCursorWrapper:
     def fetchone(self) -> tuple | None:
         """Return one row; drains RETURNING output vars when present."""
         if self._out_vars:
-            vals = tuple(
-                v.getvalue()[0] if isinstance(v.getvalue(), list) else v.getvalue()
-                for v in self._out_vars
-            )
+            def _drain(v: Any) -> Any:
+                raw = v.getvalue()
+                if isinstance(raw, list):
+                    return raw[0] if raw else None
+                return raw
+            vals = tuple(_drain(v) for v in self._out_vars)
             self._out_vars = []
             return vals if any(v is not None for v in vals) else None
         row = self._cur.fetchone()

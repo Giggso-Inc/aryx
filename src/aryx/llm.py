@@ -22,6 +22,7 @@ from typing import Any
 from aryx.broker import Broker
 from aryx.broker.specs import ModelSpec, Tier
 from aryx.llm_normalize import normalize as _normalize_json
+import aryx.llm_providers as oci_providers
 from aryx.llm_providers import (
     anthropic_json, oci_genai_json, ollama_json, openai_json, post_json,
 )
@@ -51,15 +52,10 @@ def complete_text(
     if _use_oci_for(tier):
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
-        # OCI GenAI has no plain-text mode; request JSON and unwrap the text value.
-        data, in_tok, out_tok = oci_genai_json(
-            spec, system, user + "\n\nRespond with plain text only, not JSON."
-        )
+        text, in_tok, out_tok = oci_providers.oci_genai_text(spec, system, user)
         broker.charge(tier, in_tok + out_tok)
         logger.info("complete_text tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
-        # oci_genai_json parses JSON; unwrap if model wrapped response, else str()
-        text = data if isinstance(data, str) else str(data)
         return text.strip(), in_tok, out_tok
 
     spec = broker.choose(tier)
@@ -103,8 +99,8 @@ def _oci_model_for(tier: Tier) -> str:
     from aryx.config import get_settings
     settings = get_settings()
     if tier == "cheap":
-        return settings.llm_cheap_model_override or "cohere.command-r-16k"
-    return settings.llm_frontier_model_override or "cohere.command-r-plus"
+        return settings.llm_cheap_model_override or "cohere.command-r-08-2024"
+    return settings.llm_frontier_model_override or "cohere.command-r-plus-08-2024"
 
 
 def _use_oci_for(tier: Tier) -> bool:
