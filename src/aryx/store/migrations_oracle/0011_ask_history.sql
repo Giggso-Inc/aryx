@@ -12,7 +12,7 @@ BEGIN
     prompt_tokens     NUMBER(10) DEFAULT 0 NOT NULL,
     completion_tokens NUMBER(10) DEFAULT 0 NOT NULL,
     latency_ms        NUMBER(10) DEFAULT 0 NOT NULL,
-    answer_model      VARCHAR2(4000) DEFAULT '''' NOT NULL
+    answer_model      VARCHAR2(4000) DEFAULT '' '' NOT NULL
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;

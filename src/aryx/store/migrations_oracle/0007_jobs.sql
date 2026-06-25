@@ -8,7 +8,7 @@ BEGIN
     status         VARCHAR2(100) DEFAULT ''queued'' NOT NULL,
     stage          VARCHAR2(4000) DEFAULT ''queued'' NOT NULL,
     pct            NUMBER(3) DEFAULT 0 NOT NULL,
-    detail         VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    detail         VARCHAR2(4000) DEFAULT '' '' NOT NULL,
     run_id         NUMBER(19),
     workspace_id   NUMBER(19) DEFAULT 1 NOT NULL,
     error          CLOB,
@@ -26,7 +26,7 @@ BEGIN
     job_id  VARCHAR2(255) NOT NULL,
     stage   VARCHAR2(4000) NOT NULL,
     pct     NUMBER(3) DEFAULT 0 NOT NULL,
-    detail  VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    detail  VARCHAR2(4000) DEFAULT '' '' NOT NULL,
     ts      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;

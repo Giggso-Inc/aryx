@@ -7,8 +7,8 @@ BEGIN
     name          VARCHAR2(4000) NOT NULL,
     kind          VARCHAR2(4000) NOT NULL,
     config_json   JSON DEFAULT ''{}'',
-    secret_cipher VARCHAR2(4000) DEFAULT '''' NOT NULL,
-    secret_mask   VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    secret_cipher VARCHAR2(4000) DEFAULT '' '' NOT NULL,
+    secret_mask   VARCHAR2(4000) DEFAULT '' '' NOT NULL,
     created_at    TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     UNIQUE (workspace_id, name)
   )';
