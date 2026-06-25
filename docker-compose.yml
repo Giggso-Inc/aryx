@@ -49,6 +49,8 @@ services:
     environment:
       - OLLAMA_NUM_PARALLEL=4
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 15s
