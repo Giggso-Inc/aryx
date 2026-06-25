@@ -15,6 +15,8 @@ Token usage is charged back to the governor so budgets actually bite.
 from __future__ import annotations
 
 import logging
+import os
+import time as _time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -28,6 +30,24 @@ from aryx.llm_providers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_llm_call(tier: str, model: str, provider: str,
+                  in_tok: int, out_tok: int, ms: int) -> None:
+    """Best-effort persist to aryx_llm_call; no-op if DB unavailable."""
+    dsn = os.environ.get("ARYX_RDB_DSN", "")
+    if not dsn:
+        return
+    try:
+        from aryx.queries import load           # noqa: PLC0415
+        from aryx.store.pool import get_pool    # noqa: PLC0415
+        with get_pool(dsn).connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("insert_llm_call"),
+                            (tier, model, provider, in_tok, out_tok, ms, "pipeline", None))
+    except Exception:  # noqa: BLE001
+        logger.debug("llm call log write failed", exc_info=True)
+
 
 # Re-export so legacy callers keep working.
 _post_json = post_json
@@ -52,10 +72,13 @@ def complete_text(
     if _use_oci_for(tier):
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        _t0 = _time.monotonic()
         text, in_tok, out_tok = oci_providers.oci_genai_text(spec, system, user)
+        _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
         logger.info("complete_text tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
+        _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
         return text.strip(), in_tok, out_tok
 
     spec = broker.choose(tier)
@@ -129,10 +152,13 @@ def complete_json(
     if _use_oci_for(tier):
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        _t0 = _time.monotonic()
         data, in_tok, out_tok = oci_genai_json(spec, system, user)
+        _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
         logger.info("complete tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
+        _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
         return _normalize_json(data, schema)
 
     spec = broker.choose(tier)
