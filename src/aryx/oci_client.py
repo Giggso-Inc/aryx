@@ -27,7 +27,7 @@ def _get_auth() -> Any:
 
     Auth resolution order:
       1. Instance principal  — running inside OCI (Compute, Functions, Data Flow)
-      2. Env-var config      — OCI_USER_OCID set; key content in OCI_PRIVATE_KEY_CONTENT
+      2. Env-var config      — ARYX_OCI_USER_OCID set; key content in ARYX_OCI_PRIVATE_KEY_CONTENT
       3. ~/.oci/config       — local dev fallback; profile from OCI_CONFIG_PROFILE
     """
     global _signer
@@ -40,16 +40,16 @@ def _get_auth() -> Any:
         _signer = signer
     except Exception:
         import oci  # noqa: PLC0415
-        if os.environ.get("OCI_USER_OCID"):
+        if os.environ.get("ARYX_OCI_USER_OCID"):
             config = {
-                "user": os.environ["OCI_USER_OCID"],
-                "tenancy": os.environ["OCI_TENANCY_OCID"],
-                "fingerprint": os.environ["OCI_FINGERPRINT"],
-                "key_content": os.environ["OCI_PRIVATE_KEY_CONTENT"],
+                "user": os.environ["ARYX_OCI_USER_OCID"],
+                "tenancy": os.environ["ARYX_OCI_TENANCY_OCID"],
+                "fingerprint": os.environ["ARYX_OCI_FINGERPRINT"],
+                "key_content": os.environ["ARYX_OCI_PRIVATE_KEY_CONTENT"],
                 "region": os.environ.get("OCI_REGION", os.environ.get("ARYX_OCI_REGION", "us-chicago-1")),
             }
             oci.config.validate_config(config)
-            logger.info("oci_client: using env-var auth user=%s", os.environ["OCI_USER_OCID"])
+            logger.info("oci_client: using env-var auth user=%s", os.environ["ARYX_OCI_USER_OCID"])
             _signer = config
         else:
             profile = os.environ.get("OCI_CONFIG_PROFILE", "DEFAULT")
