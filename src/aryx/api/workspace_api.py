@@ -9,7 +9,6 @@ from pydantic import BaseModel
 
 from aryx.config import get_settings
 from aryx.graph import FalkorStore
-from aryx.store.migrate import apply_migrations
 from aryx.workspaces import WorkspaceStore, make_workspace_store, ws_graph
 
 logger = logging.getLogger(__name__)
@@ -40,7 +39,6 @@ def workspace_router() -> APIRouter:
 
     @router.get("")
     def list_workspaces() -> list[dict[str, Any]]:
-        apply_migrations(get_settings().rdb_dsn)
         store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.list_all()
@@ -49,7 +47,6 @@ def workspace_router() -> APIRouter:
 
     @router.post("")
     def create_workspace(req: WorkspaceRequest) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
         store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.create(req.name, req.description, req.context)

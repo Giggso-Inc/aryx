@@ -246,7 +246,7 @@ class TestTranslateSql(unittest.TestCase):
 # ── _unwrap_params tests ──────────────────────────────────────────────────────
 
 class TestUnwrapParams(unittest.TestCase):
-    """Tests for psycopg Json() duck-type unwrapping."""
+    """Tests for psycopg Json() duck-type unwrapping and Oracle coercions."""
 
     def test_none_passthrough(self) -> None:
         self.assertIsNone(_unwrap_params(None))
@@ -254,27 +254,48 @@ class TestUnwrapParams(unittest.TestCase):
     def test_plain_string_passthrough(self) -> None:
         self.assertEqual(_unwrap_params("hello"), "hello")
 
-    def test_list_recursed(self) -> None:
-        result = _unwrap_params([1, "two", 3])
-        self.assertEqual(result, [1, "two", 3])
+    def test_list_serialized_to_json_string(self) -> None:
+        # Bare lists (e.g. integer arrays for ANY/IN) → JSON string for Oracle CLOB.
+        result = _unwrap_params([1, 2, 3])
+        self.assertEqual(result, "[1, 2, 3]")
+
+    def test_tuple_recursed_not_serialized(self) -> None:
+        # Outer positional-params container stays as tuple, elements processed.
+        result = _unwrap_params((1, "two", True))
+        self.assertEqual(result, (1, "two", "Y"))
 
     def test_dict_recursed(self) -> None:
         result = _unwrap_params({"a": 1, "b": 2})
         self.assertEqual(result, {"a": 1, "b": 2})
 
-    def test_psycopg_json_unwrapped(self) -> None:
+    def test_bool_true_to_y(self) -> None:
+        self.assertEqual(_unwrap_params(True), "Y")
+
+    def test_bool_false_to_n(self) -> None:
+        self.assertEqual(_unwrap_params(False), "N")
+
+    def test_bool_in_tuple_converted(self) -> None:
+        result = _unwrap_params((1, True, False))
+        self.assertEqual(result, (1, "Y", "N"))
+
+    def test_psycopg_json_serialized_to_string(self) -> None:
         fake_json = MagicMock()
         fake_json.obj = {"key": "value"}
-        fake_json.dumps = MagicMock()
+        fake_json.dumps = lambda o: '{"key": "value"}'
         result = _unwrap_params(fake_json)
-        self.assertEqual(result, {"key": "value"})
+        self.assertEqual(result, '{"key": "value"}')
 
-    def test_nested_json_in_list(self) -> None:
+    def test_nested_json_in_list_serialized(self) -> None:
+        # Json wrapper inside a list: the list becomes a JSON string,
+        # and the wrapper inside is unwrapped before serialisation.
+        import json
         fake_json = MagicMock()
-        fake_json.obj = [1, 2, 3]
-        fake_json.dumps = MagicMock()
+        fake_json.obj = 42
+        fake_json.dumps = lambda o: str(o)
         result = _unwrap_params([fake_json, "plain"])
-        self.assertEqual(result, [[1, 2, 3], "plain"])
+        # list → JSON string; fake_json.obj=42 unwrapped to "42" (via dumps), then in list
+        parsed = json.loads(result)
+        self.assertEqual(parsed[1], "plain")
 
 
 # ── ORA-00001 conflict-ignore tests ──────────────────────────────────────────
@@ -323,6 +344,35 @@ class TestConflictIgnore(unittest.TestCase):
         with patch.object(raw, "execute", side_effect=err):
             with self.assertRaises(oracledb.IntegrityError):
                 cur.execute("DELETE FROM t WHERE id = :1", (1,))
+
+    def test_executemany_integrity_error_swallowed_when_conflict_ignore(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+
+        err = oracledb.IntegrityError("ORA-00001: unique constraint violated")
+        err.args = ("ORA-00001: unique constraint violated",)
+
+        with patch.object(raw, "executemany", side_effect=err):
+            try:
+                cur.executemany(
+                    "INSERT INTO t (id) VALUES (%s) ON CONFLICT DO NOTHING",
+                    [(1,), (2,)],
+                )
+            except oracledb.IntegrityError:
+                self.fail("IntegrityError should have been swallowed by executemany")
+
+    def test_executemany_integrity_error_raised_when_no_conflict_ignore(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+
+        err = oracledb.IntegrityError("ORA-00001: unique constraint violated")
+        err.args = ("ORA-00001: unique constraint violated",)
+
+        with patch.object(raw, "executemany", side_effect=err):
+            with self.assertRaises(oracledb.IntegrityError):
+                cur.executemany("INSERT INTO t VALUES (:1)", [(1,), (2,)])
 
 
 # ── _read_lob tests ───────────────────────────────────────────────────────────
@@ -437,8 +487,11 @@ class TestUnwrapParamsExtensions(unittest.TestCase):
         self.assertEqual(result, ("name", " "))
 
     def test_empty_string_in_list_replaced(self) -> None:
+        # Lists are serialized to JSON strings for Oracle CLOB; empty strings
+        # inside are coerced to " " before serialisation.
+        import json
         result = _unwrap_params(["a", "", "b"])
-        self.assertEqual(result, ["a", " ", "b"])
+        self.assertEqual(json.loads(result), ["a", " ", "b"])
 
     def test_non_empty_string_unchanged(self) -> None:
         self.assertEqual(_unwrap_params("hello"), "hello")

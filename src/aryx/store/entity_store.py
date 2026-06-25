@@ -55,6 +55,8 @@ class EntityStore:
                 rows = cur.fetchall()
         records = []
         for record_id, payload, source_system, cleaned_at in rows:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
             text = " ".join(str(payload.get(a, "")) for a in key_attrs).strip()
             records.append(ResolutionRecord(
                 record_id=record_id, text=text, payload=payload,

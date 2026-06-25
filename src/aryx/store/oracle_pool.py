@@ -111,22 +111,34 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
 def _unwrap_params(params: Any) -> Any:
     """Recursively unwrap psycopg Json() wrappers to native Python objects.
 
-    Also converts empty strings to a single space — Oracle treats '' as NULL,
-    which violates NOT NULL constraints on optional text columns.
+    Also handles Oracle-specific type coercions:
+    - Empty strings → single space (Oracle treats '' as NULL)
+    - Python bool → 'Y'/'N' (all Oracle boolean columns use CHAR(1) convention)
+    - psycopg Json wrappers → serialized JSON string for CLOB columns
 
     Duck-typed detection: any object with both .obj and .dumps attributes is
     treated as a psycopg Json wrapper.  Works even if psycopg is not installed.
     """
     if params is None:
         return None
-    if isinstance(params, (list, tuple)):
-        unwrapped = [_unwrap_params(p) for p in params]
-        return type(params)(unwrapped)
+    if isinstance(params, bool):
+        # Oracle has no BOOLEAN DDL type; all boolean columns use CHAR(1) 'Y'/'N'.
+        return "Y" if params else "N"
+    if isinstance(params, tuple):
+        # Outer positional-params container — recurse into each value.
+        return tuple(_unwrap_params(p) for p in params)
+    if isinstance(params, list):
+        # Inner list value (e.g. integer array for ANY/IN) — serialize to JSON
+        # string so Oracle CLOB/VARCHAR2 receives a valid JSON array.
+        # Oracle override SQLs use JSON_TABLE to unpack these back to rows.
+        import json as _json  # noqa: PLC0415
+        return _json.dumps([_unwrap_params(p) for p in params])
     if isinstance(params, dict):
         return {k: _unwrap_params(v) for k, v in params.items()}
-    # Duck-type psycopg Json wrapper
+    # Duck-type psycopg Json wrapper — serialize to JSON string so Oracle CLOB
+    # receives a str, not a Python dict that oracledb cannot bind.
     if hasattr(params, "obj") and hasattr(params, "dumps"):
-        return params.obj
+        return params.dumps(params.obj)
     # Oracle treats '' as NULL — substitute a space for empty strings so NOT
     # NULL constraints on optional text columns (description, context, …) are
     # satisfied.  The space is invisible in practice and harmless for LIKE/=.
@@ -186,18 +198,27 @@ class OracleCursorWrapper:
 
     def executemany(self, sql: str, seq: Any) -> None:
         """Execute SQL for a sequence of parameter sets."""
+        import oracledb  # noqa: PLC0415
         self._out_vars = []
+        self._conflict_ignore = False
         oracle_sql = _translate_sql(sql, self)
         oracle_seq = [_unwrap_params(p) for p in seq]
-        self._cur.executemany(oracle_sql, oracle_seq)
+        try:
+            self._cur.executemany(oracle_sql, oracle_seq)
+        except oracledb.IntegrityError as exc:
+            if self._conflict_ignore and getattr(exc, "args", (None,))[0] and "ORA-00001" in str(exc.args[0]):
+                return
+            raise
 
     def fetchone(self) -> tuple | None:
         """Return one row; drains RETURNING output vars when present."""
         if self._out_vars:
-            vals = tuple(
-                v.getvalue()[0] if isinstance(v.getvalue(), list) else v.getvalue()
-                for v in self._out_vars
-            )
+            def _drain(v: Any) -> Any:
+                raw = v.getvalue()
+                if isinstance(raw, list):
+                    return raw[0] if raw else None
+                return raw
+            vals = tuple(_drain(v) for v in self._out_vars)
             self._out_vars = []
             return vals if any(v is not None for v in vals) else None
         row = self._cur.fetchone()

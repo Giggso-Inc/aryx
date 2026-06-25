@@ -23,13 +23,10 @@ def get_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> ConnectionPool:
     same DSN return the cached instance. Double-checked locking guards against
     concurrent creation.
     """
-    try:
-        from aryx.config import get_settings
-        if get_settings().effective_db_backend() == "oci":
-            from aryx.store.oracle_pool import get_oracle_pool  # lazy OCI import
-            return get_oracle_pool(dsn, min_size=min_size, max_size=max_size)  # type: ignore[return-value]
-    except Exception:  # noqa: BLE001
-        pass
+    from aryx.config import get_settings
+    if get_settings().effective_db_backend() == "oci":
+        from aryx.store.oracle_pool import get_oracle_pool  # lazy OCI import
+        return get_oracle_pool(dsn, min_size=min_size, max_size=max_size)  # type: ignore[return-value]
     if dsn not in _pools:
         with _pool_lock:
             if dsn not in _pools:

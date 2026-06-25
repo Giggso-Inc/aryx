@@ -35,13 +35,12 @@ def _parse_oci_response(result: Any) -> dict[int, list[str]]:
         for line in (block.lines or []):
             if line.text:
                 lines.append(line.text)
-    for table in (result.detected_tables or []):
-        page_num = getattr(table, "page_number", 1) or 1
-        lines = pages_text.setdefault(page_num, [])
-        for row in (table.rows or []):
-            row_parts = [cell.text.strip() for cell in (row.cells or []) if cell.text]
-            if row_parts:
-                lines.append(" | ".join(row_parts))
+        # Tables are per-page in the OCI SDK (page.tables), not top-level.
+        for table in (getattr(block, "tables", None) or []):
+            for row in (table.rows or []):
+                row_parts = [cell.text.strip() for cell in (row.cells or []) if cell.text]
+                if row_parts:
+                    lines.append(" | ".join(row_parts))
     return pages_text
 
 
@@ -86,6 +85,9 @@ class OciDocConnector:
         )
 
         response = client.analyze_document(analyze_document_details=request)
+        if not response.data:
+            logger.warning("oci_doc: empty response for %s", self._path.name)
+            return
         pages_text = _parse_oci_response(response.data)
 
         if not pages_text:

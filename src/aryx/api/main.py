@@ -36,6 +36,13 @@ from aryx.api.rules_api import rules_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
+# Scope log level to aryx.* only — avoids flooding production logs from
+# third-party libraries (oracledb, oci, httpx, …) and is a no-op when the
+# host (uvicorn/gunicorn) has already configured the root logger.
+# Set ARYX_LOG_LEVEL or pass --log-level to uvicorn to change verbosity.
+logging.getLogger("aryx").setLevel(
+    getattr(logging, os.environ.get("ARYX_LOG_LEVEL", "INFO").upper(), logging.INFO)
+)
 logger = logging.getLogger(__name__)
 
 
@@ -99,6 +106,9 @@ async def _stale_job_sweep() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    from aryx.config import get_settings
+    from aryx.store.migrate import apply_migrations
+    apply_migrations(get_settings().rdb_dsn)
     _task = asyncio.ensure_future(_stale_job_sweep())
     try:
         yield

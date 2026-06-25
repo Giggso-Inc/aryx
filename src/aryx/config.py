@@ -182,7 +182,9 @@ class Settings(BaseSettings):
 
     def effective_graph_backend(self) -> str:
         """Return the resolved graph backend (oci_graph or falkordb)."""
-        return self._resolve(self.graph_backend, phase2_default="falkordb")
+        if self.graph_backend:
+            return self.graph_backend
+        return "oci_graph" if self.oci_mode else "falkordb"
 
 
 @lru_cache(maxsize=1)

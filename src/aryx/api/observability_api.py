@@ -7,20 +7,16 @@ from __future__ import annotations
 
 from typing import Any
 
-import psycopg
 from fastapi import APIRouter
 
 from aryx import llm_runtime
 from aryx.config import get_settings
 from aryx.ports import ports
 from aryx.queries import load
+from aryx.store.pool import get_pool
 
 
-def _db() -> psycopg.Connection:
-    return psycopg.connect(get_settings().rdb_dsn, autocommit=True)
-
-
-def _job_summary(conn: psycopg.Connection, workspace_id: int) -> dict[str, Any]:
+def _job_summary(conn: Any, workspace_id: int) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(load("select_job_summary"), (workspace_id,))
         by_status = {r[0]: r[1] for r in cur.fetchall()}
@@ -29,7 +25,7 @@ def _job_summary(conn: psycopg.Connection, workspace_id: int) -> dict[str, Any]:
     return {"total": total, **by_status}
 
 
-def _llm_stats(conn: psycopg.Connection) -> dict[str, Any]:
+def _llm_stats(conn: Any) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(load("select_llm_stats"))
         row = cur.fetchone()
@@ -40,7 +36,7 @@ def _llm_stats(conn: psycopg.Connection) -> dict[str, Any]:
             "completion_tokens": row[4]}
 
 
-def _recent_llm(conn: psycopg.Connection) -> list[dict[str, Any]]:
+def _recent_llm(conn: Any) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(load("select_recent_llm_calls"))
         cols = ["role", "model", "prompt_tokens", "completion_tokens",
@@ -62,8 +58,7 @@ def observability_router() -> APIRouter:
 
     @router.get("/observability")
     def observability(workspace_id: int = 1) -> dict[str, Any]:
-        conn = _db()
-        try:
+        with get_pool(get_settings().rdb_dsn).connection() as conn:
             return {
                 "jobs": _job_summary(conn, workspace_id),
                 "llm": _llm_stats(conn),
@@ -72,7 +67,5 @@ def observability_router() -> APIRouter:
                 "model_config": llm_runtime.status(),
                 "platform": ports().describe(),
             }
-        finally:
-            conn.close()
 
     return router

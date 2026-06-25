@@ -15,6 +15,8 @@ Token usage is charged back to the governor so budgets actually bite.
 from __future__ import annotations
 
 import logging
+import os
+import time as _time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -22,11 +24,30 @@ from typing import Any
 from aryx.broker import Broker
 from aryx.broker.specs import ModelSpec, Tier
 from aryx.llm_normalize import normalize as _normalize_json
+import aryx.llm_providers as oci_providers
 from aryx.llm_providers import (
     anthropic_json, oci_genai_json, ollama_json, openai_json, post_json,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_llm_call(tier: str, model: str, provider: str,
+                  in_tok: int, out_tok: int, ms: int) -> None:
+    """Best-effort persist to aryx_llm_call; no-op if DB unavailable."""
+    dsn = os.environ.get("ARYX_RDB_DSN", "")
+    if not dsn:
+        return
+    try:
+        from aryx.queries import load           # noqa: PLC0415
+        from aryx.store.pool import get_pool    # noqa: PLC0415
+        with get_pool(dsn).connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("insert_llm_call"),
+                            (tier, model, provider, in_tok, out_tok, ms, "pipeline", None))
+    except Exception:  # noqa: BLE001
+        logger.debug("llm call log write failed", exc_info=True)
+
 
 # Re-export so legacy callers keep working.
 _post_json = post_json
@@ -51,15 +72,13 @@ def complete_text(
     if _use_oci_for(tier):
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
-        # OCI GenAI has no plain-text mode; request JSON and unwrap the text value.
-        data, in_tok, out_tok = oci_genai_json(
-            spec, system, user + "\n\nRespond with plain text only, not JSON."
-        )
+        _t0 = _time.monotonic()
+        text, in_tok, out_tok = oci_providers.oci_genai_text(spec, system, user)
+        _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
         logger.info("complete_text tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
-        # oci_genai_json parses JSON; unwrap if model wrapped response, else str()
-        text = data if isinstance(data, str) else str(data)
+        _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
         return text.strip(), in_tok, out_tok
 
     spec = broker.choose(tier)
@@ -103,8 +122,8 @@ def _oci_model_for(tier: Tier) -> str:
     from aryx.config import get_settings
     settings = get_settings()
     if tier == "cheap":
-        return settings.llm_cheap_model_override or "cohere.command-r-16k"
-    return settings.llm_frontier_model_override or "cohere.command-r-plus"
+        return settings.llm_cheap_model_override or "cohere.command-r-08-2024"
+    return settings.llm_frontier_model_override or "cohere.command-r-plus-08-2024"
 
 
 def _use_oci_for(tier: Tier) -> bool:
@@ -133,10 +152,13 @@ def complete_json(
     if _use_oci_for(tier):
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        _t0 = _time.monotonic()
         data, in_tok, out_tok = oci_genai_json(spec, system, user)
+        _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
         logger.info("complete tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
+        _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
         return _normalize_json(data, schema)
 
     spec = broker.choose(tier)

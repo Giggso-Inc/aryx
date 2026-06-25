@@ -135,13 +135,14 @@ def openai_json(
     return data, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
 
 
-def oci_genai_json(
-    spec: ModelSpec, system: str, user: str,
-) -> tuple[dict[str, Any], int, int]:
-    """Call an OCI Generative AI model (Cohere Command R / R+) for JSON output.
+def _oci_chat_raw(
+    spec: ModelSpec, system: str, user: str, max_tokens: int = 2048,
+) -> tuple[str, int, int]:
+    """Call OCI GenAI Chat API (Cohere Command R / R+) and return raw text.
 
-    OCI GenAI does not have a native JSON-mode flag for Cohere models; we
-    instruct the model via the system prompt and parse the response manually.
+    Uses the Chat API endpoint which is the correct path for Command R 08-2024
+    and Command R+ 08-2024 models. The older GenerateText endpoint is NOT used
+    as it is not supported by these model versions.
     """
     import oci  # noqa: PLC0415
     from aryx.config import get_settings
@@ -155,26 +156,48 @@ def oci_genai_json(
         )
 
     client = get_genai_client()
-    full_prompt = f"{system}\n\n{user}\n\nRespond with valid JSON only."
-
-    request = oci.generative_ai_inference.models.GenerateTextDetails(
-        prompts=[full_prompt],
-        serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
-            model_id=spec.name
-        ),
+    logger.info("oci_chat model=%s prompt_chars=%d", spec.name, len(system) + len(user))
+    request = oci.generative_ai_inference.models.ChatDetails(
         compartment_id=compartment_id,
-        inference_request=oci.generative_ai_inference.models.CohereLlmInferenceRequest(
-            prompt=full_prompt,
-            max_tokens=2048,
+        serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
+            model_id=spec.name,
+        ),
+        chat_request=oci.generative_ai_inference.models.CohereChatRequest(
+            message=user,
+            preamble_override=system,
+            max_tokens=max_tokens,
             temperature=0.2,
-            return_likelihoods="NONE",
         ),
     )
+    response = client.chat(chat_details=request)
+    text = response.data.chat_response.text.strip()
+    in_tok = (len(system) + len(user)) // 4
+    out_tok = len(text) // 4
+    logger.info("oci_chat ok model=%s response_chars=%d in_tok=%d out_tok=%d", spec.name, len(text), in_tok, out_tok)
+    return text, in_tok, out_tok
 
-    response = client.generate_text(generate_text_details=request)
-    generated = response.data.inference_response.generated_texts[0].text.strip()
 
-    # Strip markdown code fences if the model wraps the JSON
+def oci_genai_text(
+    spec: ModelSpec, system: str, user: str,
+) -> tuple[str, int, int]:
+    """Call OCI GenAI Chat API for plain-text output (used by complete_text)."""
+    return _oci_chat_raw(spec, system, user, max_tokens=1024)
+
+
+def oci_genai_json(
+    spec: ModelSpec, system: str, user: str,
+) -> tuple[dict[str, Any], int, int]:
+    """Call OCI GenAI Chat API (Cohere Command R / R+) for structured JSON output.
+
+    Command R 08-2024 and later require the Chat API, not the older
+    GenerateText endpoint. JSON mode is enforced via the user prompt instruction.
+    """
+    json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
+    generated, in_tok, out_tok = _oci_chat_raw(
+        spec, system, user + json_instruction, max_tokens=2048
+    )
+
+    # Strip markdown code fences if the model ignores the instruction
     if generated.startswith("```"):
         lines = generated.splitlines()
         generated = "\n".join(
@@ -189,8 +212,4 @@ def oci_genai_json(
             f"OCI GenAI returned non-JSON output (model={spec.name!r}): "
             f"{generated[:200]!r}"
         ) from exc
-    # OCI GenAI does not expose per-call token counts in the current SDK;
-    # estimate from prompt length to keep the governor roughly accurate.
-    in_tok = len(full_prompt) // 4
-    out_tok = len(generated) // 4
     return data, in_tok, out_tok

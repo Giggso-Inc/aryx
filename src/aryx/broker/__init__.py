@@ -146,6 +146,7 @@ class Broker:
                 "ARYX_OCI_COMPARTMENT_ID must be set when ARYX_EMBED_BACKEND=oci"
             )
         client = get_genai_client()
+        logger.info("[step 6/8] oci_embed  model=%s texts=%d", model_id, len(texts))
         request = oci.generative_ai_inference.models.EmbedTextDetails(
             inputs=texts,
             serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
@@ -155,7 +156,10 @@ class Broker:
             input_type=input_type,
         )
         response = client.embed_text(embed_text_details=request)
-        return response.data.embeddings
+        embeddings = response.data.embeddings
+        dim = len(embeddings[0]) if embeddings else 0
+        logger.info("[step 6/8] oci_embed ok  vectors=%d dim=%d", len(embeddings), dim)
+        return embeddings
 
 
 def default_broker() -> Broker:

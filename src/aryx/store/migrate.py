@@ -66,13 +66,11 @@ def apply_migrations(dsn: str) -> None:
     Args:
         dsn: Database connection string (Postgres DSN or Oracle ADB DSN).
     """
-    try:
-        from aryx.config import get_settings
-        if get_settings().effective_db_backend() == "oci":
-            from aryx.store.oracle_migrate import apply_oracle_migrations
-            return apply_oracle_migrations(dsn)
-    except Exception:  # noqa: BLE001
-        pass
+    from aryx.config import get_settings
+    if get_settings().effective_db_backend() == "oci":
+        from aryx.store.oracle_migrate import apply_oracle_migrations
+        apply_oracle_migrations(dsn)
+        return
     files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
     with psycopg.connect(dsn, autocommit=True) as conn:
         for path in files:
