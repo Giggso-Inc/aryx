@@ -111,17 +111,30 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
 def _unwrap_params(params: Any) -> Any:
     """Recursively unwrap psycopg Json() wrappers to native Python objects.
 
-    Also converts empty strings to a single space — Oracle treats '' as NULL,
-    which violates NOT NULL constraints on optional text columns.
+    Also handles Oracle-specific type coercions:
+    - Empty strings → single space (Oracle treats '' as NULL)
+    - Python bool → 'Y'/'N' (all Oracle boolean columns use CHAR(1) convention)
+    - psycopg Json wrappers → serialized JSON string for CLOB columns
 
     Duck-typed detection: any object with both .obj and .dumps attributes is
     treated as a psycopg Json wrapper.  Works even if psycopg is not installed.
     """
     if params is None:
         return None
-    if isinstance(params, (list, tuple)):
-        unwrapped = [_unwrap_params(p) for p in params]
-        return type(params)(unwrapped)
+    if isinstance(params, bool):
+        # Oracle has no BOOLEAN DDL type; all boolean columns use CHAR(1) 'Y'/'N'.
+        return "Y" if params else "N"
+    if isinstance(params, tuple):
+        # Outer positional-params container — recurse into each value.
+        return tuple(_unwrap_params(p) for p in params)
+    if isinstance(params, list):
+        # Inner list value (e.g. integer array for ANY/IN) — serialize to JSON
+        # string so Oracle CLOB/VARCHAR2 receives a valid JSON array.
+        # Oracle override SQLs use JSON_TABLE to unpack these back to rows.
+        import json as _json  # noqa: PLC0415
+        return _json.dumps([_unwrap_params(p) for p in params])
+    if isinstance(params, dict):
+        return {k: _unwrap_params(v) for k, v in params.items()}
     if isinstance(params, dict):
         return {k: _unwrap_params(v) for k, v in params.items()}
     # Duck-type psycopg Json wrapper — serialize to JSON string so Oracle CLOB

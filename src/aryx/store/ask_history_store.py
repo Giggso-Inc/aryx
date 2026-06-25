@@ -1,6 +1,7 @@
 """Ask history store — persist every Q/A turn for cross-session recall + audit."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -10,6 +11,13 @@ from aryx.queries import load
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+
+def _to_list(v: Any) -> list:
+    """Parse JSON string to list when Oracle returns CLOB as str."""
+    if isinstance(v, str):
+        return json.loads(v)
+    return list(v) if v is not None else []
 
 
 class AskHistoryStore:
@@ -28,7 +36,7 @@ class AskHistoryStore:
                 cur.execute(load("insert_ask_history"), (
                     int(workspace_id), question, answer,
                     Json(tools_called or []),
-                    [int(x) for x in (entity_ids or [])],
+                    Json([int(x) for x in (entity_ids or [])]),
                     int(usage.get("prompt_tokens", 0)),
                     int(usage.get("completion_tokens", 0)),
                     int(usage.get("latency_ms", 0)),
@@ -46,8 +54,9 @@ class AskHistoryStore:
                 rows = cur.fetchall()
         return [{
             "id": r[0], "workspace_id": r[1], "asked_at": r[2],
-            "question": r[3], "answer": r[4], "tools_called": r[5],
-            "entity_ids": list(r[6] or []),
+            "question": r[3], "answer": r[4],
+            "tools_called": _to_list(r[5]),
+            "entity_ids": _to_list(r[6]),
             "prompt_tokens": r[7], "completion_tokens": r[8],
             "latency_ms": r[9], "answer_model": r[10],
         } for r in rows]
