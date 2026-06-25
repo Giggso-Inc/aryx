@@ -86,7 +86,7 @@ class ProjectionStore:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("select_relationships_for_entities"),
-                            (self._ws, entity_ids, entity_ids))
+                            (self._ws, entity_ids))
                 return cur.fetchall()
 
     def close(self) -> None:
