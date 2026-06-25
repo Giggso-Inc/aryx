@@ -33,6 +33,8 @@ _POS_PARAM_RE = re.compile(r"%s")
 _CAST_RE = re.compile(r"::(jsonb|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
 _CONFLICT_NOTHING_RE = re.compile(r"\s+ON CONFLICT[^;]*DO NOTHING", re.IGNORECASE)
+_LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(\d+)\s+OFFSET\s+(\d+)\b", re.IGNORECASE)
+_LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
 
 
 def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
@@ -58,13 +60,21 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
     # 3. Strip Postgres type casts (::jsonb, ::text, etc.)
     sql = _CAST_RE.sub("", sql)
 
-    # 4. ON CONFLICT DO NOTHING → strip clause, mark cursor so ORA-00001 is swallowed.
+    # 4. LIMIT n OFFSET m → OFFSET m ROWS FETCH NEXT n ROWS ONLY
+    #    LIMIT n          → FETCH FIRST n ROWS ONLY
+    #    Must run before RETURNING translation (order matters for regex anchors).
+    sql = _LIMIT_OFFSET_RE.sub(
+        lambda m: f"OFFSET {m.group(2)} ROWS FETCH NEXT {m.group(1)} ROWS ONLY", sql
+    )
+    sql = _LIMIT_RE.sub(lambda m: f"FETCH FIRST {m.group(1)} ROWS ONLY", sql)
+
+    # 5. ON CONFLICT DO NOTHING → strip clause, mark cursor so ORA-00001 is swallowed.
     new_sql = _CONFLICT_NOTHING_RE.sub("", sql)
     if new_sql != sql:
         cursor._conflict_ignore = True
     sql = new_sql
 
-    # 5. RETURNING col1, col2 → RETURNING col1, col2 INTO :r0, :r1
+    # 6. RETURNING col1, col2 → RETURNING col1, col2 INTO :r0, :r1
     #    Allocate cursor.var() for each output column.
     #    Guard: check for "INTO" *after* the RETURNING keyword only —
     #    "INSERT INTO" would otherwise falsely match " INTO " in the full string.
