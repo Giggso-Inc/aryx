@@ -5,8 +5,8 @@ BEGIN
   EXECUTE IMMEDIATE 'CREATE TABLE aryx_workspace (
     id          NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name        VARCHAR2(4000) NOT NULL UNIQUE,
-    description VARCHAR2(4000) DEFAULT '''' NOT NULL,
-    context     VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    description VARCHAR2(4000) DEFAULT '' '' NOT NULL,
+    context     VARCHAR2(4000) DEFAULT '' '' NOT NULL,
     brief       JSON DEFAULT ''{}'',
     survivorship JSON DEFAULT ''{}'',
     created_at  TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
