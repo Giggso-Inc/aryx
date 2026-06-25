@@ -93,8 +93,10 @@ def ingest_document(
     doc_id = _content_hash(path)
     source = SourceRef(system=system, dataset=path.stem, record_id=doc_id)
     pages = list(_connector_for(path).extract_pages())
+    logger.info("ingest: path=%s pages=%d", path.name, len(pages))
     chunks = chunk_pages(pages, source=source, doc_id=doc_id,
                          chunk_size=chunk_size, overlap=chunk_overlap)
+    logger.info("ingest: chunks=%d doc_id=%s", len(chunks), doc_id[:8])
     if run_pii:
         chunks = screen_chunks(chunks)
     doc_db_id = chunk_store.upsert_document(
@@ -103,7 +105,9 @@ def ingest_document(
         byte_count=path.stat().st_size,
     )
     chunk_db_ids = chunk_store.save_chunks(doc_db_id, chunks)
+    logger.info("ingest: chunk_db_ids=%d doc_db_id=%d", len(chunk_db_ids), doc_db_id)
     embeddings = embed_chunks(chunks, broker, expected_dim=expected_embed_dim)
+    logger.info("ingest: embeddings=%d", len(embeddings))
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
     records = extract_mentions(chunks, broker, context=context)
     logger.info("ingest_document path=%s doc_id=%s chunks=%d mentions=%d",
