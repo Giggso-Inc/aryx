@@ -20,7 +20,6 @@ from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.pipeline.doc_discovery import DATA_EXTS, DOC_EXTS, ingest_confirmed, read_files
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 _MAX_FILE = 2 * 1024 * 1024
@@ -84,7 +83,6 @@ def doc_discover_router() -> APIRouter:
                    files: list[UploadFile] = File(...), context: str = Form(""),
                    workspace_id: int = Form(1)) -> dict[str, Any]:
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         items: list[tuple[bytes, str]] = []
         for f in files:
             data = await f.read()

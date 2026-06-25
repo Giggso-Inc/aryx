@@ -21,7 +21,6 @@ from aryx.connectors.sql_source import SqlConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.pipeline.schema_agent import discover_mappings
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +119,6 @@ def connect_router() -> APIRouter:
         if not url:
             raise HTTPException(404, "unknown connection")
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)
         try:

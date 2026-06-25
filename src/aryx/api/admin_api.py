@@ -17,7 +17,6 @@ from aryx.config import get_settings
 from aryx.connectors.postgres import PostgresConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 
 def _local_broker() -> Broker:
@@ -104,7 +103,6 @@ def admin_router() -> APIRouter:
     @router.post("/ingest/db")
     def ingest_db(req: IngestDbRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         jobs = JobStore(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         try:

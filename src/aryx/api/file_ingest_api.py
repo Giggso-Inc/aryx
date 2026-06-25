@@ -25,7 +25,6 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +160,6 @@ def file_ingest_router() -> APIRouter:
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
             items.append((data, f.filename or f"upload{suffix}"))
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)
         try:

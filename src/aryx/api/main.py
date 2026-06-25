@@ -103,6 +103,9 @@ async def _stale_job_sweep() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    from aryx.config import get_settings
+    from aryx.store.migrate import apply_migrations
+    apply_migrations(get_settings().rdb_dsn)
     _task = asyncio.ensure_future(_stale_job_sweep())
     try:
         yield
