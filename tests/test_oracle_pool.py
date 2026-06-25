@@ -345,6 +345,35 @@ class TestConflictIgnore(unittest.TestCase):
             with self.assertRaises(oracledb.IntegrityError):
                 cur.execute("DELETE FROM t WHERE id = :1", (1,))
 
+    def test_executemany_integrity_error_swallowed_when_conflict_ignore(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+
+        err = oracledb.IntegrityError("ORA-00001: unique constraint violated")
+        err.args = ("ORA-00001: unique constraint violated",)
+
+        with patch.object(raw, "executemany", side_effect=err):
+            try:
+                cur.executemany(
+                    "INSERT INTO t (id) VALUES (%s) ON CONFLICT DO NOTHING",
+                    [(1,), (2,)],
+                )
+            except oracledb.IntegrityError:
+                self.fail("IntegrityError should have been swallowed by executemany")
+
+    def test_executemany_integrity_error_raised_when_no_conflict_ignore(self) -> None:
+        import oracledb
+        raw = oracledb._Cursor()
+        cur = OracleCursorWrapper(raw)
+
+        err = oracledb.IntegrityError("ORA-00001: unique constraint violated")
+        err.args = ("ORA-00001: unique constraint violated",)
+
+        with patch.object(raw, "executemany", side_effect=err):
+            with self.assertRaises(oracledb.IntegrityError):
+                cur.executemany("INSERT INTO t VALUES (:1)", [(1,), (2,)])
+
 
 # ── _read_lob tests ───────────────────────────────────────────────────────────
 
