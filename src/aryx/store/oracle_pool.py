@@ -33,6 +33,14 @@ _POS_PARAM_RE = re.compile(r"%s")
 _CAST_RE = re.compile(r"::(jsonb|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
 _CONFLICT_NOTHING_RE = re.compile(r"\s+ON CONFLICT[^;]*DO NOTHING", re.IGNORECASE)
+_LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(\d+)\s+OFFSET\s+(\d+)\b", re.IGNORECASE)
+_LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
+_NOW_RE = re.compile(r"\bNOW\(\)", re.IGNORECASE)
+# Oracle override SQL files may carry "-- ORACLE:RETURNING col1, col2" to set up
+# out-vars for PL/SQL blocks where RETURNING ... INTO already appears in the SQL
+# (Oracle does not support RETURNING INTO on MERGE, so override files use the
+# INSERT/exception-handler pattern and carry the hint instead).
+_ORACLE_RETURNING_HINT_RE = re.compile(r"--\s*ORACLE:RETURNING\s+(.+)\n", re.IGNORECASE)
 
 
 def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
@@ -41,6 +49,15 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
     Mutates cursor._out_vars when RETURNING columns are detected.
     """
     import oracledb  # noqa: PLC0415
+
+    # 0. Oracle override hint: "-- ORACLE:RETURNING col1, col2"
+    #    Sets up out_vars for PL/SQL blocks that already contain RETURNING ... INTO.
+    #    The step-6 guard below then skips the normal RETURNING rewrite.
+    hint_m = _ORACLE_RETURNING_HINT_RE.search(sql)
+    if hint_m:
+        cols = [c.strip() for c in hint_m.group(1).split(",")]
+        cursor._out_vars = [cursor._cur.var(oracledb.STRING) for _ in cols]
+        sql = _ORACLE_RETURNING_HINT_RE.sub("", sql, count=1)
 
     # 1. Named params %(name)s → :name
     sql = _NAMED_PARAM_RE.sub(r":\1", sql)
@@ -58,13 +75,24 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
     # 3. Strip Postgres type casts (::jsonb, ::text, etc.)
     sql = _CAST_RE.sub("", sql)
 
-    # 4. ON CONFLICT DO NOTHING → strip clause, mark cursor so ORA-00001 is swallowed.
+    # 4. NOW() → CURRENT_TIMESTAMP
+    sql = _NOW_RE.sub("CURRENT_TIMESTAMP", sql)
+
+    # 5. LIMIT n OFFSET m → OFFSET m ROWS FETCH NEXT n ROWS ONLY
+    #    LIMIT n          → FETCH FIRST n ROWS ONLY
+    #    Must run before RETURNING translation (order matters for regex anchors).
+    sql = _LIMIT_OFFSET_RE.sub(
+        lambda m: f"OFFSET {m.group(2)} ROWS FETCH NEXT {m.group(1)} ROWS ONLY", sql
+    )
+    sql = _LIMIT_RE.sub(lambda m: f"FETCH FIRST {m.group(1)} ROWS ONLY", sql)
+
+    # 5. ON CONFLICT DO NOTHING → strip clause, mark cursor so ORA-00001 is swallowed.
     new_sql = _CONFLICT_NOTHING_RE.sub("", sql)
     if new_sql != sql:
         cursor._conflict_ignore = True
     sql = new_sql
 
-    # 5. RETURNING col1, col2 → RETURNING col1, col2 INTO :r0, :r1
+    # 6. RETURNING col1, col2 → RETURNING col1, col2 INTO :r0, :r1
     #    Allocate cursor.var() for each output column.
     #    Guard: check for "INTO" *after* the RETURNING keyword only —
     #    "INSERT INTO" would otherwise falsely match " INTO " in the full string.
@@ -83,6 +111,9 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
 def _unwrap_params(params: Any) -> Any:
     """Recursively unwrap psycopg Json() wrappers to native Python objects.
 
+    Also converts empty strings to a single space — Oracle treats '' as NULL,
+    which violates NOT NULL constraints on optional text columns.
+
     Duck-typed detection: any object with both .obj and .dumps attributes is
     treated as a psycopg Json wrapper.  Works even if psycopg is not installed.
     """
@@ -96,7 +127,24 @@ def _unwrap_params(params: Any) -> Any:
     # Duck-type psycopg Json wrapper
     if hasattr(params, "obj") and hasattr(params, "dumps"):
         return params.obj
+    # Oracle treats '' as NULL — substitute a space for empty strings so NOT
+    # NULL constraints on optional text columns (description, context, …) are
+    # satisfied.  The space is invisible in practice and harmless for LIKE/=.
+    if params == "":
+        return " "
     return params
+
+
+def _read_lob(v: Any) -> Any:
+    """Read oracledb LOB objects to plain Python strings on fetch.
+
+    Oracle returns CLOB/BLOB columns as oracledb.LOB handles; Pydantic cannot
+    serialize them. Duck-typed check: LOBs have a callable .read(), regular
+    str/int/dict/None do not.
+    """
+    if v is not None and hasattr(v, "read") and callable(v.read):
+        return v.read()
+    return v
 
 
 # ── Cursor wrapper ────────────────────────────────────────────────────────────
@@ -117,9 +165,13 @@ class OracleCursorWrapper:
         oracle_sql = _translate_sql(sql, self)
         oracle_params = _unwrap_params(params)
         if self._out_vars and oracle_params is not None:
-            # Append out_vars to the params tuple/list
             if isinstance(oracle_params, (list, tuple)):
                 oracle_params = list(oracle_params) + self._out_vars
+            elif isinstance(oracle_params, dict):
+                # Named-param queries: inject out_vars as :r0, :r1, … into the dict
+                oracle_params = dict(oracle_params)
+                for i, v in enumerate(self._out_vars):
+                    oracle_params[f"r{i}"] = v
             else:
                 oracle_params = [oracle_params] + self._out_vars
         elif self._out_vars:
@@ -148,17 +200,17 @@ class OracleCursorWrapper:
             )
             self._out_vars = []
             return vals if any(v is not None for v in vals) else None
-        return self._cur.fetchone()
+        row = self._cur.fetchone()
+        return tuple(_read_lob(v) for v in row) if row else None
 
     def fetchall(self) -> list[tuple]:
-        """Return all remaining rows."""
-        return self._cur.fetchall()
+        """Return all remaining rows, reading any LOB columns to strings."""
+        return [tuple(_read_lob(v) for v in row) for row in self._cur.fetchall()]
 
     def fetchmany(self, size: int | None = None) -> list[tuple]:
-        """Return up to size rows."""
-        if size is None:
-            return self._cur.fetchmany()
-        return self._cur.fetchmany(size)
+        """Return up to size rows, reading any LOB columns to strings."""
+        rows = self._cur.fetchmany() if size is None else self._cur.fetchmany(size)
+        return [tuple(_read_lob(v) for v in row) for row in rows]
 
     @property
     def rowcount(self) -> int:
@@ -235,10 +287,18 @@ class OraclePool:
 
     @contextmanager
     def connection(self) -> Iterator[OracleConnectionWrapper]:
-        """Acquire a connection from the pool as a context manager."""
+        """Acquire a connection from the pool as a context manager.
+
+        Commits on clean exit, rolls back on exception — matches the
+        psycopg_pool behaviour that store classes rely on.
+        """
         raw = self._pool.acquire()
         try:
             yield OracleConnectionWrapper(raw)
+            raw.commit()
+        except Exception:
+            raw.rollback()
+            raise
         finally:
             self._pool.release(raw)
 

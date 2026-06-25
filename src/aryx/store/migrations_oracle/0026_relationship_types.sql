@@ -7,7 +7,7 @@ BEGIN
     name         VARCHAR2(4000) NOT NULL,
     source_type  VARCHAR2(4000) NOT NULL,
     target_type  VARCHAR2(4000) NOT NULL,
-    description  VARCHAR2(4000) DEFAULT '''' NOT NULL,
+    description  VARCHAR2(4000) DEFAULT '' '' NOT NULL,
     created_at   TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     UNIQUE (workspace_id, source_type, name, target_type)
   )';
