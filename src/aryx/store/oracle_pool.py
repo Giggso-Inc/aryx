@@ -198,10 +198,17 @@ class OracleCursorWrapper:
 
     def executemany(self, sql: str, seq: Any) -> None:
         """Execute SQL for a sequence of parameter sets."""
+        import oracledb  # noqa: PLC0415
         self._out_vars = []
+        self._conflict_ignore = False
         oracle_sql = _translate_sql(sql, self)
         oracle_seq = [_unwrap_params(p) for p in seq]
-        self._cur.executemany(oracle_sql, oracle_seq)
+        try:
+            self._cur.executemany(oracle_sql, oracle_seq)
+        except oracledb.IntegrityError as exc:
+            if self._conflict_ignore and getattr(exc, "args", (None,))[0] and "ORA-00001" in str(exc.args[0]):
+                return
+            raise
 
     def fetchone(self) -> tuple | None:
         """Return one row; drains RETURNING output vars when present."""
