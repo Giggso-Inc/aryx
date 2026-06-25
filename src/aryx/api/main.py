@@ -36,9 +36,12 @@ from aryx.api.rules_api import rules_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+# Scope log level to aryx.* only — avoids flooding production logs from
+# third-party libraries (oracledb, oci, httpx, …) and is a no-op when the
+# host (uvicorn/gunicorn) has already configured the root logger.
+# Set ARYX_LOG_LEVEL or pass --log-level to uvicorn to change verbosity.
+logging.getLogger("aryx").setLevel(
+    getattr(logging, os.environ.get("ARYX_LOG_LEVEL", "INFO").upper(), logging.INFO)
 )
 logger = logging.getLogger(__name__)
 
