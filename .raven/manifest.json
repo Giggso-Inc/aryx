@@ -4,16 +4,16 @@
   "owner": "m.munir@giggso.com",
   "user_email": "m.munir@giggso.com",
   "hub_url": "https://ravenhub.giggso.com",
-  "version": "1.0.1",
+  "version": "1.0.5",
   "raven_version": "3.3.0",
   "work_type": "full-stack-data-platform",
   "stack": {
     "language": ["python", "typescript"],
     "frontend": ["next.js", "react", "tailwindcss"],
-    "data": ["falkordb", "pgvector", "postgresql"],
-    "db": ["postgresql", "falkordb"],
+    "data": ["falkordb", "pgvector", "postgresql", "oracle-adb-23ai"],
+    "db": ["postgresql", "falkordb", "oracle-adb-23ai"],
     "infra": ["docker", "docker-compose"],
-    "cloud": "none",
+    "cloud": "oci",
     "libraries": [
       "anthropic",
       "boto3",
@@ -21,6 +21,8 @@
       "falkordb",
       "fastapi",
       "mcp",
+      "defusedxml",
+      "oci",
       "oracledb",
       "pgvector",
       "pillow",
@@ -106,6 +108,12 @@
     "survivor-smith"
   ],
   "changelog": [
+    {
+      "version": "1.0.5",
+      "date": "2026-06-26T00:00:00Z",
+      "changed_by": "m.munir@giggso.com",
+      "summary": "Add oci (OCI SDK) and defusedxml to approved libraries — oci is used throughout the OCI backend (oci_client.py, oci_doc.py, llm_providers.py); defusedxml added in PR #12 for secure XML parsing. Update cloud from 'none' to 'oci' and add oracle-adb-23ai to data and db arrays to reflect the Oracle ADB 23ai backend introduced in the oci-backend-toggle feature."
+    },
     {
       "version": "1.0.4",
       "date": "2026-06-24T00:00:00Z",
