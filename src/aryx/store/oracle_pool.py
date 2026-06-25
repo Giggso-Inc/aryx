@@ -135,6 +135,18 @@ def _unwrap_params(params: Any) -> Any:
     return params
 
 
+def _read_lob(v: Any) -> Any:
+    """Read oracledb LOB objects to plain Python strings on fetch.
+
+    Oracle returns CLOB/BLOB columns as oracledb.LOB handles; Pydantic cannot
+    serialize them. Duck-typed check: LOBs have a callable .read(), regular
+    str/int/dict/None do not.
+    """
+    if v is not None and hasattr(v, "read") and callable(v.read):
+        return v.read()
+    return v
+
+
 # ── Cursor wrapper ────────────────────────────────────────────────────────────
 
 class OracleCursorWrapper:
@@ -188,17 +200,17 @@ class OracleCursorWrapper:
             )
             self._out_vars = []
             return vals if any(v is not None for v in vals) else None
-        return self._cur.fetchone()
+        row = self._cur.fetchone()
+        return tuple(_read_lob(v) for v in row) if row else None
 
     def fetchall(self) -> list[tuple]:
-        """Return all remaining rows."""
-        return self._cur.fetchall()
+        """Return all remaining rows, reading any LOB columns to strings."""
+        return [tuple(_read_lob(v) for v in row) for row in self._cur.fetchall()]
 
     def fetchmany(self, size: int | None = None) -> list[tuple]:
-        """Return up to size rows."""
-        if size is None:
-            return self._cur.fetchmany()
-        return self._cur.fetchmany(size)
+        """Return up to size rows, reading any LOB columns to strings."""
+        rows = self._cur.fetchmany() if size is None else self._cur.fetchmany(size)
+        return [tuple(_read_lob(v) for v in row) for row in rows]
 
     @property
     def rowcount(self) -> int:
