@@ -179,5 +179,61 @@ class EntityStore:
                 cur.execute(load("delete_relationships"), (self._ws,))
                 return cur.rowcount
 
+    def get_entity(self, entity_id: int) -> tuple[int, str, dict] | None:
+        """Return (id, ontology_type, attributes) for one entity, or None."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_entity_by_id"), (entity_id, self._ws))
+                row = cur.fetchone()
+        return (int(row[0]), str(row[1]), row[2]) if row else None
+
+    def create_entity(self, ontology_type: str, attributes: dict,
+                      confidence: float = 1.0) -> int:
+        """Insert a single entity and return its new id."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    load("insert_entity"),
+                    (self._ws, ontology_type, Json(attributes, dumps=_dumps), confidence),
+                )
+                row = cur.fetchone()
+        entity_id = int(row[0]) if row else 0
+        logger.info("entity created ws=%s id=%s type=%s", self._ws, entity_id, ontology_type)
+        return entity_id
+
+    def update_entity(self, entity_id: int,
+                      attributes: dict) -> tuple[str, dict] | None:
+        """Replace attributes for one entity; return (ontology_type, attributes) or None."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    load("update_entity_attributes"),
+                    (Json(attributes, dumps=_dumps), entity_id, self._ws),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        logger.info("entity updated ws=%s id=%s", self._ws, entity_id)
+        return (str(row[1]), attributes)
+
+    def delete_entity(self, entity_id: int) -> bool:
+        """Delete one entity; return True if a row was removed."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("delete_entity_row"), (entity_id, self._ws))
+                removed = cur.rowcount > 0
+        if removed:
+            logger.info("entity deleted ws=%s id=%s", self._ws, entity_id)
+        return removed
+
+    def delete_entities_by_type(self, ontology_type: str) -> list[int]:
+        """Delete all entities of a type; return the list of deleted ids."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("delete_entities_by_type"), (self._ws, ontology_type))
+                ids = [int(r[0]) for r in cur.fetchall()]
+        logger.info("entities deleted ws=%s type=%s count=%d", self._ws, ontology_type, len(ids))
+        return ids
+
     def close(self) -> None:
         """No-op: connections are managed by the shared pool (G12)."""

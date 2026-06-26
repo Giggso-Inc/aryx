@@ -81,6 +81,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    csv_chunk_rows: int = Field(
+        default=0,
+        description=(
+            "Split CSV files into chunks of this many data rows before ingesting "
+            "(0 = no chunking). Useful for large CSVs where a full-file relate pass "
+            "would exceed max_relate_pairs or exhaust LLM quota. "
+            "Override with ARYX_CSV_CHUNK_ROWS."
+        ),
+    )
+
     # ── Entity resolution thresholds ─────────────────────────────────────────
     er_auto_merge: float = Field(
         default=0.92,
