@@ -6,6 +6,7 @@ workspace_id so DEMO's types never bleed into Default.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from psycopg.types.json import Json
@@ -59,9 +60,19 @@ class OntologyStore:
                 cur.execute(load("select_ontology_types"),
                             (self._workspace_id,))
                 rows = cur.fetchall()
+        def _parse_schema(v: object) -> dict:
+            if isinstance(v, dict):
+                return v
+            if isinstance(v, str) and v.strip():
+                try:
+                    return json.loads(v)
+                except (ValueError, TypeError):
+                    pass
+            return {}
+
         return [
             OntologyType(name=r[0], attributes=r[1], status=r[2], source=r[3],
-                         parent_type=r[4], attribute_schema=r[5] or {})
+                         parent_type=r[4], attribute_schema=_parse_schema(r[5]))
             for r in rows
         ]
 
