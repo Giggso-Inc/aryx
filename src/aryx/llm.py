@@ -15,7 +15,6 @@ Token usage is charged back to the governor so budgets actually bite.
 from __future__ import annotations
 
 import logging
-import os
 import time as _time
 import urllib.error
 import urllib.request
@@ -35,12 +34,11 @@ logger = logging.getLogger(__name__)
 def _log_llm_call(tier: str, model: str, provider: str,
                   in_tok: int, out_tok: int, ms: int) -> None:
     """Best-effort persist to aryx_llm_call; no-op if DB unavailable."""
-    dsn = os.environ.get("ARYX_RDB_DSN", "")
-    if not dsn:
-        return
     try:
+        from aryx.config import get_settings    # noqa: PLC0415
         from aryx.queries import load           # noqa: PLC0415
         from aryx.store.pool import get_pool    # noqa: PLC0415
+        dsn = get_settings().effective_dsn()
         with get_pool(dsn).connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("insert_llm_call"),
