@@ -170,9 +170,15 @@ def _oci_chat_raw(
         ),
     )
     response = client.chat(chat_details=request)
-    text = response.data.chat_response.text.strip()
-    in_tok = (len(system) + len(user)) // 4
-    out_tok = len(text) // 4
+    chat_response = response.data.chat_response
+    text = chat_response.text.strip()
+    token_count = getattr(chat_response, "token_count", None)
+    if token_count is not None:
+        in_tok = int(getattr(token_count, "prompt_tokens", 0) or 0)
+        out_tok = int(getattr(token_count, "completion_tokens", 0) or 0)
+    else:
+        in_tok = (len(system) + len(user)) // 4
+        out_tok = len(text) // 4
     logger.info("oci_chat ok model=%s response_chars=%d in_tok=%d out_tok=%d", spec.name, len(text), in_tok, out_tok)
     return text, in_tok, out_tok
 
