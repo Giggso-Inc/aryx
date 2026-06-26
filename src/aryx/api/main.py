@@ -55,7 +55,7 @@ def _bearer_ok(request) -> bool:
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         tokens = store.list_()
         if not any(not t.get("revoked_at") for t in tokens):
             return True
@@ -99,7 +99,7 @@ async def _stale_job_sweep() -> None:
         try:
             from aryx.config import get_settings
             from aryx.store.job_store import JobStore
-            JobStore(get_settings().rdb_dsn).sweep_stale(timeout_min)
+            JobStore(get_settings().effective_dsn()).sweep_stale(timeout_min)
         except Exception as exc:  # noqa: BLE001
             logger.warning("stale-job sweep error: %s", exc)
 
@@ -108,7 +108,7 @@ async def _stale_job_sweep() -> None:
 async def _lifespan(app: FastAPI):
     from aryx.config import get_settings
     from aryx.store.migrate import apply_migrations
-    apply_migrations(get_settings().rdb_dsn)
+    apply_migrations(get_settings().effective_dsn())
     _task = asyncio.ensure_future(_stale_job_sweep())
     try:
         yield

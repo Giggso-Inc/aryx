@@ -186,6 +186,21 @@ class Settings(BaseSettings):
             return self.graph_backend
         return "oci_graph" if self.oci_mode else "falkordb"
 
+    def effective_dsn(self) -> str:
+        """Return the canonical DB connection string for the active backend.
+
+        OCI deployments set ARYX_OCI_ADB_DSN but may leave ARYX_RDB_DSN at
+        its Postgres default. This method resolves the right DSN so callers
+        don't need to branch on the backend themselves.
+        """
+        if self.effective_db_backend() == "oci":
+            if not self.oci_adb_dsn:
+                raise RuntimeError(
+                    "ARYX_OCI_ADB_DSN must be set when ARYX_DB_BACKEND=oci"
+                )
+            return self.oci_adb_dsn
+        return self.rdb_dsn
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
