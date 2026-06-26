@@ -212,6 +212,25 @@ class TestTranslateSql(unittest.TestCase):
         self.assertNotIn("ON CONFLICT", result)
         self.assertTrue(cur._conflict_ignore)
 
+    def test_on_conflict_do_update_stripped(self) -> None:
+        # ON CONFLICT DO UPDATE SET … spans multiple lines; the full clause
+        # including the SET body must be removed so Oracle gets a plain INSERT.
+        cur = _make_cursor()
+        sql = (
+            "INSERT INTO aryx_ontology_type (workspace_id, name, attributes, status, source) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (workspace_id, name) DO UPDATE "
+            "SET attributes = EXCLUDED.attributes, "
+            "    status = EXCLUDED.status, "
+            "    source = EXCLUDED.source"
+        )
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("ON CONFLICT", result)
+        self.assertNotIn("DO UPDATE", result)
+        self.assertNotIn("EXCLUDED", result)
+        self.assertTrue(cur._conflict_ignore)
+        self.assertIn("VALUES (:1, :2, :3, :4, :5)", result)
+
     def test_no_conflict_flag_when_no_conflict_clause(self) -> None:
         cur = _make_cursor()
         _translate_sql("SELECT 1 FROM dual", cur)
@@ -284,6 +303,17 @@ class TestUnwrapParams(unittest.TestCase):
         fake_json.dumps = lambda o: '{"key": "value"}'
         result = _unwrap_params(fake_json)
         self.assertEqual(result, '{"key": "value"}')
+
+    def test_psycopg_json_dumps_none_falls_back_to_stdlib(self) -> None:
+        # psycopg Json(obj) without a custom serializer stores dumps=None in
+        # __slots__. hasattr() returns True but calling None() throws TypeError.
+        # The fix checks callable(dumps_fn) and falls back to json.dumps.
+        import json
+        fake_json = MagicMock()
+        fake_json.obj = ["_text"]
+        fake_json.dumps = None  # simulates psycopg Json(["_text"]) — no custom dumps
+        result = _unwrap_params(fake_json)
+        self.assertEqual(result, json.dumps(["_text"]))
 
     def test_nested_json_in_list_serialized(self) -> None:
         # Json wrapper inside a list: the list becomes a JSON string,

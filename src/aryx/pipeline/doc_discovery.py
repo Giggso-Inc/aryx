@@ -11,6 +11,7 @@ import csv
 import io
 import json
 import logging
+import re
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as defused_ET
 from collections import Counter
@@ -27,6 +28,7 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
+from aryx.store.ontology_store import OntologyStore
 
 logger = logging.getLogger(__name__)
 
@@ -201,17 +203,24 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
 
     # XML files: expand into one CSV per top-3 element type so that
     # _detect_fk_links can wire cross-type relationships automatically.
-    converted_tabular = []
+    converted_tabular: list[tuple[bytes, str, bool]] = []
     for d, n in tabular:
         if Path(n).suffix.lower() == ".xml":
             for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
-                converted_tabular.append((csv_bytes, csv_name))
+                converted_tabular.append((csv_bytes, csv_name, True))
         else:
-            converted_tabular.append((d, n))
+            converted_tabular.append((d, n, False))
 
-    tab_plans = [{"filename": n, "data": d,
-                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
-                 for d, n in converted_tabular]
+    tab_plans = []
+    for d, n, is_xml in converted_tabular:
+        plan = {"filename": n, "data": d,
+                **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
+        if is_xml:
+            # XML-derived CSVs have no "name" column; _text holds the entity value.
+            # Force _text as the match key so blocking produces unique keys per entity
+            # instead of collapsing all records (empty text) into one block.
+            plan["match_keys"] = ["_text"]
+        tab_plans.append(plan)
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
@@ -255,6 +264,9 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
             type_b = plan_b["ontology_type"]
             type_b_l = type_b.lower()
             singular_b = _singular(type_b_l)
+            _words = re.findall(r'[A-Z][a-z0-9]*', type_b)
+            tag_word = _words[-1].lower() if _words else type_b_l
+            tag_singular = _singular(tag_word)
             headers_b = plan_headers[j]
             id_col = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
             name_col = next((c for c in headers_b if c.lower() in ("name", "full_name", "title")), None)
@@ -263,9 +275,11 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
             for col in plan_headers[i]:
                 col_l = col.lower()
                 target_attr: str | None = None
-                if col_l in (f"{type_b_l}_id", f"{singular_b}_id"):
+                if col_l in (f"{type_b_l}_id", f"{singular_b}_id",
+                             f"{tag_word}_id", f"{tag_singular}_id"):
                     target_attr = id_col or mk0
-                elif col_l in (f"{type_b_l}_name", f"{singular_b}_name"):
+                elif col_l in (f"{type_b_l}_name", f"{singular_b}_name",
+                               f"{tag_word}_name", f"{tag_singular}_name"):
                     target_attr = name_col or mk0
                 elif col_l in (type_b_l, singular_b) and (id_col or name_col):
                     target_attr = id_col or name_col
@@ -329,12 +343,27 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         # FK links are passed only on the last file: by that point all prior
         # entities are in Postgres so link_by_attribute can match across CSVs.
         is_last = (idx == len(valid_plans) - 1)
+        summary: dict = {}
         try:
-            run_pipeline(connector=conn, dsn=settings.rdb_dsn,
-                         system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
-                         ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
-                         graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
-                         fk_links=auto_fk if is_last else None, relate=True)
+            summary = run_pipeline(connector=conn, dsn=settings.rdb_dsn,
+                                   system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
+                                   ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
+                                   graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
+                                   fk_links=auto_fk if is_last else None, relate=True)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
+        # Wire tag_fields output → OntologyType.attribute_schema (zero LLM cost).
+        # run_pipeline returns summary["run_id"] from which tag_fields were written.
+        try:
+            run_id = summary.get("run_id")
+            if run_id:
+                onto = OntologyStore(dsn=settings.rdb_dsn, workspace_id=workspace_id)
+                try:
+                    field_tags = onto.get_field_tags(run_id)
+                    if field_tags:
+                        onto.update_schema(plan["ontology_type"], {"columns": field_tags})
+                finally:
+                    onto.close()
+        except Exception:  # noqa: BLE001 — non-critical, don't fail the job
+            logger.warning("attribute_schema wire-back failed for %s", fname)

@@ -16,7 +16,7 @@ from falkordb import FalkorDB
 logger = logging.getLogger(__name__)
 
 _NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
-              "sku", "code", "email", "username")
+              "sku", "code", "email", "username", "_text")
 
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_LABELS = 6  # cap to avoid label-bloat on deep hierarchies
@@ -54,7 +54,9 @@ def _display_name(attributes: dict[str, Any]) -> str:
         value = attributes.get(key)
         if value:
             return str(value)
-    for value in attributes.values():
+    for key, value in attributes.items():
+        if key.startswith("_"):
+            continue
         if isinstance(value, str) and 0 < len(value) <= 80:
             return value
     return ""
