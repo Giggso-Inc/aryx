@@ -108,6 +108,7 @@ def ingest_document(
     logger.info("[step 4/8] doc saved  doc_db_id=%d", doc_db_id)
     chunk_db_ids = chunk_store.save_chunks(doc_db_id, chunks)
     logger.info("[step 5/8] chunks saved  ids=%d", len(chunk_db_ids))
+    logger.info("[step 6/8] embedding  chunks=%d", len(chunks))
     embeddings = embed_chunks(chunks, broker, expected_dim=expected_embed_dim)
     logger.info("[step 7/8] embeddings=%d  saving to db", len(embeddings))
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
