@@ -140,8 +140,14 @@ def _unwrap_params(params: Any) -> Any:
         return {k: _unwrap_params(v) for k, v in params.items()}
     # Duck-type psycopg Json wrapper — serialize to JSON string so Oracle CLOB
     # receives a str, not a Python dict that oracledb cannot bind.
+    # Json.__slots__ always has "dumps" (hasattr=True), but it stores None when no
+    # custom serializer was passed — check callable before invoking.
     if hasattr(params, "obj") and hasattr(params, "dumps"):
-        return params.dumps(params.obj)
+        import json as _json  # noqa: PLC0415
+        dumps_fn = params.dumps
+        if callable(dumps_fn):
+            return dumps_fn(params.obj)
+        return _json.dumps(params.obj)
     # Oracle treats '' as NULL — substitute a space for empty strings so NOT
     # NULL constraints on optional text columns (description, context, …) are
     # satisfied.  The space is invisible in practice and harmless for LIKE/=.
