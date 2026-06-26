@@ -203,17 +203,24 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
 
     # XML files: expand into one CSV per top-3 element type so that
     # _detect_fk_links can wire cross-type relationships automatically.
-    converted_tabular = []
+    converted_tabular: list[tuple[bytes, str, bool]] = []
     for d, n in tabular:
         if Path(n).suffix.lower() == ".xml":
             for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
-                converted_tabular.append((csv_bytes, csv_name))
+                converted_tabular.append((csv_bytes, csv_name, True))
         else:
-            converted_tabular.append((d, n))
+            converted_tabular.append((d, n, False))
 
-    tab_plans = [{"filename": n, "data": d,
-                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
-                 for d, n in converted_tabular]
+    tab_plans = []
+    for d, n, is_xml in converted_tabular:
+        plan = {"filename": n, "data": d,
+                **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
+        if is_xml:
+            # XML-derived CSVs have no "name" column; _text holds the entity value.
+            # Force _text as the match key so blocking produces unique keys per entity
+            # instead of collapsing all records (empty text) into one block.
+            plan["match_keys"] = ["_text"]
+        tab_plans.append(plan)
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
