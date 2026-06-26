@@ -8,15 +8,22 @@ from typing import Any
 import os
 
 import psycopg
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 
 from aryx import llm_runtime
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
 from aryx.connectors.postgres import PostgresConnector
+from aryx.graph import FalkorStore
+from aryx.pipeline.enrich import _build_type_ancestors
 from aryx.pipeline.orchestrate import run_pipeline
+from aryx.project import project_graph
+from aryx.store.entity_store import EntityStore
 from aryx.store.job_store import JobStore
+from aryx.store.migrate import apply_migrations
+from aryx.workspaces import ws_graph
+from aryx.api.security import require_api_key
 
 
 def _local_broker() -> Broker:
@@ -88,6 +95,7 @@ def _run_db(req: IngestDbRequest, job_id: str) -> None:
             on_progress=lambda stage, pct, detail: jobs.update_stage(job_id, stage, pct, detail),
             fk_links=[link.model_dump() for link in req.fk_links],
             workspace_id=req.workspace_id,
+            relate=True,
         )
         jobs.finish(job_id, run_id=summary.get("run_id"), status="complete")
     except Exception as exc:  # noqa: BLE001 — record failure for the dashboard
@@ -112,6 +120,29 @@ def admin_router() -> APIRouter:
             jobs.close()
         background_tasks.add_task(_run_db, req, job_id)
         return {"status": "queued", "job_id": job_id, "table": req.table}
+
+    @router.post("/graph/rebuild")
+    def rebuild_graph(workspace_id: int = 1, _: str = Depends(require_api_key)) -> dict[str, Any]:
+        """Rebuild the FalkorDB projection from Postgres (source of truth).
+
+        Safe to call at any time — it overwrites the graph with the current
+        Postgres state. Use after a container restart kills an in-flight
+        project stage, or to resync after manual DB edits.
+        """
+        settings = get_settings()
+        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        try:
+            type_ancestors = _build_type_ancestors(settings.rdb_dsn, workspace_id)
+            counts = project_graph(
+                estore,
+                FalkorStore(settings.graph_url, ws_graph(workspace_id)),
+                type_ancestors=type_ancestors,
+                workspace_id=workspace_id,
+            )
+        finally:
+            estore.close()
+        logger.info("manual graph rebuild workspace=%s counts=%s", workspace_id, counts)
+        return {"status": "ok", "workspace_id": workspace_id, **counts}
 
     @router.get("/runs")
     def list_runs() -> list[dict[str, Any]]:
