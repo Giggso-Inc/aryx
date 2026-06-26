@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv as _csv
 import io
+import itertools
 import json
 import logging
 import threading
@@ -78,21 +79,25 @@ _FK_REQUIRED_KEYS = frozenset({"source_type", "target_type", "source_attr", "tar
 
 
 def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
-    """Split CSV bytes into chunks of at most chunk_rows data rows, repeating the header."""
+    """Split CSV bytes into chunks of at most chunk_rows data rows, repeating the header.
+
+    Streams rows via itertools.islice so the full file is never materialised
+    into a list — only one batch is held in memory at a time.
+    """
     reader = _csv.reader(io.StringIO(data.decode("utf-8")))
     try:
         header = next(reader)
     except StopIteration:
         return [data]
-    all_rows = list(reader)
-    if not all_rows:
-        return [data]
     chunks: list[bytes] = []
-    for start in range(0, len(all_rows), chunk_rows):
+    while True:
+        batch = list(itertools.islice(reader, chunk_rows))
+        if not batch:
+            break
         buf = io.StringIO()
         writer = _csv.writer(buf)
         writer.writerow(header)
-        writer.writerows(all_rows[start:start + chunk_rows])
+        writer.writerows(batch)
         chunks.append(buf.getvalue().encode("utf-8"))
     return chunks or [data]
 

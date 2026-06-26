@@ -53,7 +53,8 @@ def detail(entities: list[dict], entity_id: int) -> None:
         try:
             pg = api.get_entity_pg(int(entity_id))
             current_attrs = pg.get("attributes", {})
-        except Exception:
+        except Exception as exc:
+            st.warning(f"Could not load attributes: {exc}")
             current_attrs = {}
         attrs_text = st.text_area(
             "Edit as JSON",

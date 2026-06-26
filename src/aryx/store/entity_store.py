@@ -197,13 +197,15 @@ class EntityStore:
                     (self._ws, ontology_type, Json(attributes, dumps=_dumps), confidence),
                 )
                 row = cur.fetchone()
-        entity_id = int(row[0]) if row else 0
+        if not row:
+            raise RuntimeError(f"insert_entity returned no row — workspace {self._ws}")
+        entity_id = int(row[0])
         logger.info("entity created ws=%s id=%s type=%s", self._ws, entity_id, ontology_type)
         return entity_id
 
     def update_entity(self, entity_id: int,
                       attributes: dict) -> tuple[str, dict] | None:
-        """Replace attributes for one entity; return (ontology_type, attributes) or None."""
+        """Replace attributes for one entity; return (ontology_type, stored_attributes) or None."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -214,7 +216,8 @@ class EntityStore:
         if not row:
             return None
         logger.info("entity updated ws=%s id=%s", self._ws, entity_id)
-        return (str(row[1]), attributes)
+        # row: (id, ontology_type, attributes) — use stored value, not the input dict
+        return (str(row[1]), row[2])
 
     def delete_entity(self, entity_id: int) -> bool:
         """Delete one entity; return True if a row was removed."""

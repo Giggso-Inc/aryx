@@ -24,7 +24,7 @@ from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
 from aryx.store.ontology_store import OntologyStore
 from aryx.workspaces import ws_graph
-from aryx.api.security import require_api_key
+from aryx.api.security import require_api_key, write_api_key
 
 
 def _local_broker() -> Broker:
@@ -63,12 +63,12 @@ logger = logging.getLogger(__name__)
 
 class EntityCreateRequest(BaseModel):
     ontology_type: str
-    attributes: dict = {}
+    attributes: dict[str, Any] = {}
     workspace_id: int = 1
 
 
 class EntityUpdateRequest(BaseModel):
-    attributes: dict
+    attributes: dict[str, Any]
 
 
 class FkLink(BaseModel):
@@ -133,7 +133,8 @@ def admin_router() -> APIRouter:
         return {"id": row[0], "ontology_type": row[1], "attributes": row[2]}
 
     @router.post("/entities")
-    def create_entity(req: EntityCreateRequest) -> dict[str, Any]:
+    def create_entity(req: EntityCreateRequest,
+                      _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Create a new entity in Postgres and project it into FalkorDB."""
         settings = get_settings()
         estore = EntityStore(settings.rdb_dsn, req.workspace_id)
@@ -151,7 +152,8 @@ def admin_router() -> APIRouter:
 
     @router.put("/entities/{entity_id}")
     def update_entity(entity_id: int, req: EntityUpdateRequest,
-                      workspace_id: int = 1) -> dict[str, Any]:
+                      workspace_id: int = 1,
+                      _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Replace an entity's attributes in Postgres and resync the FalkorDB node."""
         settings = get_settings()
         estore = EntityStore(settings.rdb_dsn, workspace_id)
@@ -170,7 +172,8 @@ def admin_router() -> APIRouter:
         return {"status": "ok", "entity_id": entity_id, "ontology_type": ontology_type}
 
     @router.delete("/entities/{entity_id}")
-    def delete_entity(entity_id: int, workspace_id: int = 1) -> dict[str, Any]:
+    def delete_entity(entity_id: int, workspace_id: int = 1,
+                      _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Delete an entity from Postgres and remove the node from FalkorDB."""
         settings = get_settings()
         estore = EntityStore(settings.rdb_dsn, workspace_id)
@@ -182,28 +185,6 @@ def admin_router() -> APIRouter:
             raise HTTPException(404, f"entity {entity_id} not found in workspace {workspace_id}")
         FalkorStore(settings.graph_url, ws_graph(workspace_id)).remove_entity(entity_id)
         return {"status": "ok", "entity_id": entity_id, "deleted": True}
-
-    @router.delete("/ontology/types/{type_name}")
-    def delete_type_cascade(type_name: str, workspace_id: int = 1,
-                            _: str = Depends(require_api_key)) -> dict[str, Any]:
-        """Delete an ontology type and all its entities from Postgres and FalkorDB."""
-        settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
-        try:
-            deleted_ids = estore.delete_entities_by_type(type_name)
-        finally:
-            estore.close()
-        fstore = FalkorStore(settings.graph_url, ws_graph(workspace_id))
-        fstore.remove_entities_by_type(type_name)
-        onto = OntologyStore(settings.rdb_dsn, workspace_id)
-        try:
-            onto.delete_type(type_name)
-        finally:
-            onto.close()
-        logger.info("type cascade-deleted ws=%s type=%s entities=%d",
-                    workspace_id, type_name, len(deleted_ids))
-        return {"status": "ok", "type": type_name,
-                "entities_deleted": len(deleted_ids), "workspace_id": workspace_id}
 
     @router.post("/ingest/db")
     def ingest_db(req: IngestDbRequest, background_tasks: BackgroundTasks) -> dict[str, str]:

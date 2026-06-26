@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from aryx import export_runtime
 from aryx.api import ontology_browse as _ob
+from aryx.api.security import write_api_key
 from aryx.config import get_settings
 from aryx.graph import FalkorStore
 from aryx.ontology.rdf import GraphBundle, available_formats, serialize
@@ -109,7 +110,8 @@ def ontology_router() -> APIRouter:
                             workspace_id=int(body.get("workspace_id", 1)))
 
     @router.delete("/types/{name}")
-    def delete_type(name: str, workspace_id: int = 1) -> dict:
+    def delete_type(name: str, workspace_id: int = 1,
+                    _: str | None = Depends(write_api_key)) -> dict:
         """Remove a type and cascade: delete all its entity instances from
         Postgres and remove their nodes from FalkorDB, then drop the type."""
         settings = get_settings()
