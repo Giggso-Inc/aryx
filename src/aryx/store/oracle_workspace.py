@@ -121,9 +121,7 @@ class OracleWorkspaceStore:
                 for stmt in stmts.split(";"):
                     stmt = stmt.strip()
                     if stmt and not stmt.startswith("--"):
-                        # purge_workspace_data.sql uses %(wid)s params and is split on ";"
-                        # before reaching _translate_sql, so manual replacement is needed.
-                        cur.execute(stmt.replace("%(wid)s", ":wid"), {"wid": wid})
+                        cur.execute(stmt, {"wid": wid})
                 cur.execute(load("delete_profiles_by_workspace"), (wid,))
                 cur.execute(load("delete_tags_by_workspace"), (wid,))
                 cur.execute(load("reset_workspace_context"), {"wid": wid})
