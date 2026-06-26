@@ -100,6 +100,8 @@ class EntityStore:
 
     def save_relationships(self, relationships: list[Relationship]) -> None:
         """Persist inferred relationships between entities (stage 8)."""
+        if not relationships:
+            return
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.executemany(

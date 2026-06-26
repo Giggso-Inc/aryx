@@ -35,6 +35,23 @@ class OntologyStore:
                       t.status, t.source) for t in types],
                 )
 
+    def update_schema(self, name: str, schema: dict) -> None:
+        """Persist tag_fields-derived attribute_schema for an existing type."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("update_ontology_schema"),
+                            (Json(schema), self._workspace_id, name))
+        logger.info("schema updated ws=%s type=%s cols=%d",
+                    self._workspace_id, name, len(schema.get("columns", {})))
+
+    def get_field_tags(self, run_id: int) -> dict:
+        """Return aryx_field_tag rows for a run as {field: {semantic_type, is_pii}}."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_field_tags_for_run"), (run_id,))
+                rows = cur.fetchall()
+        return {r[0]: {"semantic_type": r[1], "is_pii": r[2]} for r in rows}
+
     def list_types(self) -> list[OntologyType]:
         """Return ontology types for the bound workspace."""
         with self._pool.connection() as conn:
@@ -44,7 +61,7 @@ class OntologyStore:
                 rows = cur.fetchall()
         return [
             OntologyType(name=r[0], attributes=r[1], status=r[2], source=r[3],
-                         parent_type=r[4])
+                         parent_type=r[4], attribute_schema=r[5] or {})
             for r in rows
         ]
 

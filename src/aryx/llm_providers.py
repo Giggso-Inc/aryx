@@ -190,13 +190,22 @@ def oci_genai_text(
 
 def oci_genai_json(
     spec: ModelSpec, system: str, user: str,
+    schema: "dict[str, Any] | None" = None,
 ) -> tuple[dict[str, Any], int, int]:
     """Call OCI GenAI Chat API (Cohere Command R / R+) for structured JSON output.
 
     Command R 08-2024 and later require the Chat API, not the older
     GenerateText endpoint. JSON mode is enforced via the user prompt instruction.
     """
-    json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
+    if schema and schema.get("properties"):
+        required = schema.get("required", list(schema["properties"].keys()))
+        fields_str = ", ".join(f'"{f}"' for f in required)
+        json_instruction = (
+            f"\n\nRespond with valid JSON only using exactly these fields: {fields_str}."
+            " Do not wrap in markdown code fences."
+        )
+    else:
+        json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
     generated, in_tok, out_tok = _oci_chat_raw(
         spec, system, user + json_instruction, max_tokens=2048
     )

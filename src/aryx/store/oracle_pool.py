@@ -32,7 +32,9 @@ _NAMED_PARAM_RE = re.compile(r"%\((\w+)\)s")
 _POS_PARAM_RE = re.compile(r"%s")
 _CAST_RE = re.compile(r"::(jsonb|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
-_CONFLICT_NOTHING_RE = re.compile(r"\s+ON CONFLICT[^;]*DO NOTHING", re.IGNORECASE)
+# Matches both ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE SET …
+# The DO UPDATE clause can span multiple lines, hence re.DOTALL.
+_CONFLICT_RE = re.compile(r"\s+ON CONFLICT\b[^;]*", re.IGNORECASE | re.DOTALL)
 _LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(\d+)\s+OFFSET\s+(\d+)\b", re.IGNORECASE)
 _LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
 _NOW_RE = re.compile(r"\bNOW\(\)", re.IGNORECASE)
@@ -86,8 +88,9 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
     )
     sql = _LIMIT_RE.sub(lambda m: f"FETCH FIRST {m.group(1)} ROWS ONLY", sql)
 
-    # 5. ON CONFLICT DO NOTHING → strip clause, mark cursor so ORA-00001 is swallowed.
-    new_sql = _CONFLICT_NOTHING_RE.sub("", sql)
+    # 5. ON CONFLICT DO NOTHING / DO UPDATE → strip clause, mark cursor so ORA-00001 is swallowed.
+    #    Oracle does not support ON CONFLICT syntax; duplicates are handled via ORA-00001.
+    new_sql = _CONFLICT_RE.sub("", sql)
     if new_sql != sql:
         cursor._conflict_ignore = True
     sql = new_sql
@@ -188,12 +191,16 @@ class OracleCursorWrapper:
                 oracle_params = [oracle_params] + self._out_vars
         elif self._out_vars:
             oracle_params = self._out_vars
+        logger.debug("execute sql=%s params=%s", oracle_sql[:120], oracle_params)
         try:
             self._cur.execute(oracle_sql, oracle_params)
         except oracledb.IntegrityError as exc:
             # ORA-00001: unique constraint violated — treat as DO NOTHING when flagged
             if self._conflict_ignore and getattr(exc, "args", (None,))[0] and "ORA-00001" in str(exc.args[0]):
                 return
+            raise
+        except Exception as exc:
+            logger.error("execute failed sql=%r params=%r error=%s", oracle_sql, oracle_params, exc)
             raise
 
     def executemany(self, sql: str, seq: Any) -> None:
@@ -203,11 +210,18 @@ class OracleCursorWrapper:
         self._conflict_ignore = False
         oracle_sql = _translate_sql(sql, self)
         oracle_seq = [_unwrap_params(p) for p in seq]
+        if not oracle_seq:
+            return
+        logger.debug("executemany sql=%s rows=%d", oracle_sql[:120], len(oracle_seq))
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
         except oracledb.IntegrityError as exc:
             if self._conflict_ignore and getattr(exc, "args", (None,))[0] and "ORA-00001" in str(exc.args[0]):
                 return
+            raise
+        except Exception as exc:
+            sample = oracle_seq[0] if oracle_seq else None
+            logger.error("executemany failed sql=%r row0=%r error=%s", oracle_sql, sample, exc)
             raise
 
     def fetchone(self) -> tuple | None:

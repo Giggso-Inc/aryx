@@ -151,7 +151,7 @@ def complete_json(
         model_name = _oci_model_for(tier)
         spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
         _t0 = _time.monotonic()
-        data, in_tok, out_tok = oci_genai_json(spec, system, user)
+        data, in_tok, out_tok = oci_genai_json(spec, system, user, schema)
         _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
         logger.info("complete tier=%s provider=oci model=%s tokens=%d",

@@ -36,13 +36,20 @@ from aryx.api.rules_api import rules_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
-# Scope log level to aryx.* only — avoids flooding production logs from
-# third-party libraries (oracledb, oci, httpx, …) and is a no-op when the
-# host (uvicorn/gunicorn) has already configured the root logger.
-# Set ARYX_LOG_LEVEL or pass --log-level to uvicorn to change verbosity.
-logging.getLogger("aryx").setLevel(
-    getattr(logging, os.environ.get("ARYX_LOG_LEVEL", "INFO").upper(), logging.INFO)
-)
+# Attach a StreamHandler directly to the aryx logger so INFO output always
+# reaches stdout regardless of whether uvicorn was started with --log-level.
+# Without this, messages propagate to the root logger which uvicorn leaves at
+# WARNING by default, silently dropping aryx INFO logs.
+# propagate=False prevents double-printing when the caller ALSO configures root.
+_log_level = getattr(logging, os.environ.get("ARYX_LOG_LEVEL", "INFO").upper(), logging.INFO)
+_aryx_logger = logging.getLogger("aryx")
+_aryx_logger.setLevel(_log_level)
+if not _aryx_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setLevel(_log_level)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    _aryx_logger.addHandler(_h)
+    _aryx_logger.propagate = False
 logger = logging.getLogger(__name__)
 
 
