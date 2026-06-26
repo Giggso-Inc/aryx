@@ -35,8 +35,8 @@ _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
 # Matches both ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE SET …
 # The DO UPDATE clause can span multiple lines, hence re.DOTALL.
 _CONFLICT_RE = re.compile(r"\s+ON CONFLICT\b[^;]*", re.IGNORECASE | re.DOTALL)
-_LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(\d+)\s+OFFSET\s+(\d+)\b", re.IGNORECASE)
-_LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
+_LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\s+OFFSET\s+(:\w+|\d+)\b", re.IGNORECASE)
+_LIMIT_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\b", re.IGNORECASE)
 _NOW_RE = re.compile(r"\bNOW\(\)", re.IGNORECASE)
 # Oracle override SQL files may carry "-- ORACLE:RETURNING col1, col2" to set up
 # out-vars for PL/SQL blocks where RETURNING ... INTO already appears in the SQL
