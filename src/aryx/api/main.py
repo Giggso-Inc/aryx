@@ -1,6 +1,7 @@
 """Combined Aryx API: graph queries + admin/ingestion + MCP /mcp endpoint."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -35,6 +36,13 @@ from aryx.api.rules_api import rules_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
+# Scope log level to aryx.* only — avoids flooding production logs from
+# third-party libraries (oracledb, oci, httpx, …) and is a no-op when the
+# host (uvicorn/gunicorn) has already configured the root logger.
+# Set ARYX_LOG_LEVEL or pass --log-level to uvicorn to change verbosity.
+logging.getLogger("aryx").setLevel(
+    getattr(logging, os.environ.get("ARYX_LOG_LEVEL", "INFO").upper(), logging.INFO)
+)
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +55,7 @@ def _bearer_ok(request) -> bool:
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         tokens = store.list_()
         if not any(not t.get("revoked_at") for t in tokens):
             return True
@@ -84,16 +92,36 @@ def _mount_mcp(app: FastAPI) -> None:
         logger.warning("MCP mount failed: %s", exc)
 
 
+async def _stale_job_sweep() -> None:
+    timeout_min = int(os.environ.get("ARYX_JOB_TIMEOUT_MINUTES", "10"))
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from aryx.config import get_settings
+            from aryx.store.job_store import JobStore
+            JobStore(get_settings().effective_dsn()).sweep_stale(timeout_min)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stale-job sweep error: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    yield
-    # shutdown_executor MUST run before close_all — in-flight ingest threads
-    # need the connection pool until they finish; reversing the order caused
-    # pool-closed errors mid-job during container restarts.
+    from aryx.config import get_settings
+    from aryx.store.migrate import apply_migrations
     from aryx.api.file_ingest_api import shutdown_executor
-    from aryx.store.pool import close_all
-    shutdown_executor()
-    close_all()
+    apply_migrations(get_settings().rdb_dsn)
+    _task = asyncio.ensure_future(_stale_job_sweep())
+    try:
+        yield
+    finally:
+        _task.cancel()
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        shutdown_executor()
+        from aryx.store.pool import close_all
+        close_all()
 
 
 def create_app() -> FastAPI:

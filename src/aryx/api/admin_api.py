@@ -111,7 +111,6 @@ def admin_router() -> APIRouter:
     @router.post("/ingest/db")
     def ingest_db(req: IngestDbRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         jobs = JobStore(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         try:

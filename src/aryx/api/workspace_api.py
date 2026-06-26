@@ -9,8 +9,7 @@ from pydantic import BaseModel
 
 from aryx.config import get_settings
 from aryx.graph import FalkorStore
-from aryx.store.migrate import apply_migrations
-from aryx.workspaces import WorkspaceStore, ws_graph
+from aryx.workspaces import WorkspaceStore, make_workspace_store, ws_graph
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +39,7 @@ def workspace_router() -> APIRouter:
 
     @router.get("")
     def list_workspaces() -> list[dict[str, Any]]:
-        apply_migrations(get_settings().rdb_dsn)
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.list_all()
         finally:
@@ -49,8 +47,7 @@ def workspace_router() -> APIRouter:
 
     @router.post("")
     def create_workspace(req: WorkspaceRequest) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.create(req.name, req.description, req.context)
         except Exception as exc:  # noqa: BLE001 — duplicate name, etc.
@@ -60,7 +57,7 @@ def workspace_router() -> APIRouter:
 
     @router.patch("/{workspace_id}/context")
     def set_context(workspace_id: int, req: ContextRequest) -> dict[str, Any]:
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.set_context(workspace_id, req.context)
         finally:
@@ -69,7 +66,7 @@ def workspace_router() -> APIRouter:
     @router.get("/{workspace_id}/survivorship")
     def get_survivorship(workspace_id: int) -> dict[str, Any]:
         """Return the workspace survivorship policy (G3)."""
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return {"workspace_id": workspace_id,
                     "survivorship": store.get_survivorship(workspace_id)}
@@ -80,7 +77,7 @@ def workspace_router() -> APIRouter:
     def set_survivorship(workspace_id: int,
                          policy: dict[str, Any]) -> dict[str, Any]:
         """Replace the workspace survivorship policy (G3, skill hook)."""
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.set_survivorship(workspace_id, policy)
         finally:
@@ -88,7 +85,7 @@ def workspace_router() -> APIRouter:
 
     @router.patch("/{workspace_id}/brief")
     def set_brief(workspace_id: int, req: BriefRequest) -> dict[str, Any]:
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             return store.set_brief(workspace_id, req.model_dump())
         finally:
@@ -97,7 +94,7 @@ def workspace_router() -> APIRouter:
     @router.post("/nuke")
     def nuke_system() -> dict[str, Any]:
         """Factory reset: truncate all data, drop non-Default workspaces."""
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             result = store.nuke()
         finally:
@@ -113,7 +110,7 @@ def workspace_router() -> APIRouter:
     @router.post("/{workspace_id}/purge")
     def purge_workspace(workspace_id: int) -> dict[str, Any]:
         """Delete all data in a workspace but keep the workspace itself."""
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             result = store.purge_data(workspace_id)
         finally:
@@ -127,7 +124,7 @@ def workspace_router() -> APIRouter:
 
     @router.delete("/{workspace_id}")
     def delete_workspace(workspace_id: int) -> dict[str, Any]:
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().rdb_dsn)
         try:
             store.delete(workspace_id)
         except ValueError as exc:

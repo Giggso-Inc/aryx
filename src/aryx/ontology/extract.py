@@ -104,6 +104,8 @@ def extract_mentions(chunks: list[DocumentChunk], broker: Broker,
         user = json.dumps({"chunk_index": chunk.chunk_index, "text": chunk.text})
         try:
             result = complete_json(broker, "cheap", system_prompt, user, _SCHEMA)
+            logger.info("[step 8/8] extract  chunk=%d mentions=%d  doc=%s",
+                        chunk.chunk_index, len(result.get("mentions", [])), chunk.doc_id[:8])
         except Exception as exc:
             logger.warning("extraction failed chunk=%d doc=%s error=%s",
                            chunk.chunk_index, chunk.doc_id[:8], exc)

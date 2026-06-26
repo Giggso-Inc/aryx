@@ -15,8 +15,6 @@ from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
-from aryx.graph import FalkorStore
-from aryx.models import OntologyType
 from aryx.pipeline.enrich import _build_type_ancestors, _relate
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
@@ -26,7 +24,6 @@ from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
-from aryx.workspaces import ws_graph
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +127,16 @@ def run_pipeline(
         _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
         with runner.stage("project"):
             type_ancestors = _build_type_ancestors(dsn)
+            settings = get_settings()
+            if settings.effective_graph_backend() == "oci_graph":
+                from aryx.graph.oracle_graph_store import OracleGraphStore
+                graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
+            else:
+                from aryx.graph import FalkorStore  # noqa: PLC0415
+                from aryx.workspaces import ws_graph  # noqa: PLC0415
+                graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
             counts = project_graph(
-                estore, FalkorStore(graph_url, ws_graph(workspace_id)),
+                estore, graph_inst,
                 type_ancestors=type_ancestors, workspace_id=workspace_id,
             )
     finally:

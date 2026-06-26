@@ -1,0 +1,691 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>aryx Pipeline Flow — With & Without OCI</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 32px 24px 64px;
+  }
+
+  /* ── Header ── */
+  .page-title {
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  .page-title h1 {
+    font-size: 26px;
+    font-weight: 700;
+    color: #f8fafc;
+    letter-spacing: -0.3px;
+  }
+  .page-title p {
+    font-size: 13px;
+    color: #64748b;
+    margin-top: 6px;
+  }
+
+  /* ── Two-column layout ── */
+  .columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+    max-width: 1280px;
+    margin: 36px auto 0;
+  }
+
+  .col-header {
+    text-align: center;
+    padding: 12px 16px;
+    border-radius: 10px 10px 0 0;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .col-header.current { background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-bottom: none; }
+  .col-header.oci     { background: #0c2a4a; color: #60b0ff; border: 1px solid #1d4ed8; border-bottom: none; }
+
+  .col-body {
+    padding: 20px 16px;
+    border-radius: 0 0 10px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .col-body.current { background: #141922; border: 1px solid #334155; border-top: none; }
+  .col-body.oci     { background: #0b1929; border: 1px solid #1d4ed8; border-top: none; }
+
+  /* ── Stage boxes ── */
+  .stage {
+    width: 100%;
+    border-radius: 8px;
+    padding: 10px 14px;
+    position: relative;
+  }
+  .stage-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 3px;
+  }
+  .stage-detail {
+    font-size: 11.5px;
+    color: #94a3b8;
+    line-height: 1.5;
+  }
+  .stage-detail code {
+    font-family: 'Menlo', 'Consolas', monospace;
+    font-size: 10.5px;
+    background: rgba(255,255,255,0.06);
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #f1a1b0;
+  }
+  .stage-detail .oci-svc {
+    color: #60b0ff;
+    font-weight: 600;
+  }
+
+  /* colour themes per stage type */
+  .s-input    { background: #1e293b; border: 1px solid #475569; }
+  .s-input .stage-title { color: #cbd5e1; }
+
+  .s-process  { background: #1a2535; border: 1px solid #334155; }
+  .s-process .stage-title { color: #7dd3fc; }
+
+  .s-bottleneck { background: #2d1515; border: 1px solid #7f1d1d; }
+  .s-bottleneck .stage-title { color: #fca5a5; }
+
+  .s-store    { background: #172033; border: 1px solid #1e3a5f; }
+  .s-store .stage-title { color: #93c5fd; }
+
+  .s-query    { background: #1a2530; border: 1px solid #0e4a6e; }
+  .s-query .stage-title { color: #38bdf8; }
+
+  .s-oci      { background: #0c2240; border: 1px solid #2563eb; }
+  .s-oci .stage-title { color: #60b0ff; }
+
+  .s-oci-store { background: #0b1f3a; border: 1px solid #1d4ed8; }
+  .s-oci-store .stage-title { color: #93c5fd; }
+
+  .s-oci-query { background: #091829; border: 1px solid #1d4ed8; }
+  .s-oci-query .stage-title { color: #38bdf8; }
+
+  .s-unchanged { background: #151f2d; border: 1px dashed #334155; }
+  .s-unchanged .stage-title { color: #64748b; }
+  .s-unchanged .stage-detail { color: #4b5563; }
+
+  /* badge */
+  .badge {
+    display: inline-block;
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .b-bottleneck { background: #7f1d1d; color: #fca5a5; }
+  .b-oci        { background: #1d4ed8; color: #bfdbfe; }
+  .b-same       { background: #1e293b; color: #64748b; }
+  .b-new        { background: #065f46; color: #6ee7b7; }
+
+  /* ── Arrow ── */
+  .arrow {
+    width: 2px;
+    height: 18px;
+    background: linear-gradient(to bottom, #334155, #475569);
+    margin: 0 auto;
+    position: relative;
+  }
+  .arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -5px;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid #475569;
+  }
+  .arrow.oci-arrow {
+    background: linear-gradient(to bottom, #1d4ed8, #2563eb);
+  }
+  .arrow.oci-arrow::after {
+    border-top-color: #2563eb;
+  }
+
+  /* ── Section divider inside column ── */
+  .section-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #475569;
+    text-align: center;
+    margin: 6px 0 4px;
+    width: 100%;
+  }
+
+  /* ── Bottom comparison table ── */
+  .comparison {
+    max-width: 1280px;
+    margin: 40px auto 0;
+  }
+  .comparison h2 {
+    font-size: 16px;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  thead th {
+    background: #1e293b;
+    color: #94a3b8;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 2px solid #334155;
+  }
+  thead th:first-child { color: #e2e8f0; }
+  tbody tr:nth-child(even) { background: #141922; }
+  tbody tr:nth-child(odd)  { background: #0f1117; }
+  tbody td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #1e293b;
+    vertical-align: top;
+    line-height: 1.5;
+  }
+  tbody td:first-child { color: #7dd3fc; font-weight: 600; white-space: nowrap; }
+  tbody td:nth-child(2) { color: #94a3b8; }
+  tbody td:nth-child(3) { color: #6ee7b7; }
+  tbody td code { font-family: monospace; font-size: 10.5px; background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 3px; color: #f1a1b0; }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 24px auto 0;
+    max-width: 1280px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    color: #94a3b8;
+  }
+  .legend-dot {
+    width: 12px; height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+</style>
+
+<div class="page-title">
+  <h1>aryx Pipeline Flow</h1>
+  <p>Side-by-side comparison — current aryx stack vs aryx-o with Oracle/OCI services</p>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#7f1d1d;border:1px solid #fca5a5"></div>Scalability bottleneck</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1d4ed8;border:1px solid #60b0ff"></div>OCI service (replaces aryx component)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1e293b;border:1px dashed #334155"></div>Unchanged — same in both paths</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#065f46;border:1px solid #6ee7b7"></div>New capability (not in aryx today)</div>
+</div>
+
+<div class="columns">
+
+  <!-- ════════════════════════════════════════════════════
+       LEFT — aryx Today (no OCI)
+       ════════════════════════════════════════════════════ -->
+  <div>
+    <div class="col-header current">aryx Today — No OCI</div>
+    <div class="col-body current">
+
+      <!-- INPUT -->
+      <div class="stage s-input">
+        <div class="stage-title">Input — File Upload</div>
+        <div class="stage-detail">PDF · DOCX · PPTX · CSV · JSON · images</div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- DOCUMENT PARSE -->
+      <div class="stage s-bottleneck">
+        <div class="stage-title">Document Parse <span class="badge b-bottleneck">CPU</span></div>
+        <div class="stage-detail">
+          <code>PdfConnector</code> — pymupdf extracts raw text flow<br>
+          <code>pytesseract</code> — OCR for embedded images<br>
+          No layout awareness — tables become flat text
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- CHUNK -->
+      <div class="stage s-process">
+        <div class="stage-title">Chunk + PII Screen</div>
+        <div class="stage-detail">
+          <code>chunk_pages()</code> — sliding window, overlap<br>
+          <code>presidio</code> — PII entity masking<br>
+          Chunks saved to <code>aryx_chunk</code> (Postgres)
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- EMBED -->
+      <div class="stage s-process">
+        <div class="stage-title">Embed</div>
+        <div class="stage-detail">
+          <code>nomic-embed-text</code> via Ollama — 768-dim vectors<br>
+          Stored in <code>aryx_chunk_embedding</code> (pgvector)
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- EXTRACT -->
+      <div class="stage s-process">
+        <div class="stage-title">Entity Extraction</div>
+        <div class="stage-detail">
+          <code>extract_mentions()</code> — LLM at menial tier<br>
+          Returns: type, name, attributes, verbatim span<br>
+          Verbatim-span gate rejects hallucinated names<br>
+          <strong style="color:#fca5a5">Entities only — no relationships at this stage</strong>
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- DISCOVER STORE -->
+      <div class="stage s-store">
+        <div class="stage-title">Land to Postgres</div>
+        <div class="stage-detail">
+          Raw records → <code>aryx_raw_record</code><br>
+          Source of truth — never overwritten
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- RESOLVE -->
+      <div class="stage s-bottleneck">
+        <div class="stage-title">Resolution <span class="badge b-bottleneck">P3</span></div>
+        <div class="stage-detail">
+          <code>MultiKeyBlocker</code> — prefix + token-set + Soundex<br>
+          Block size cap: 5,000 — blocks larger than this are<br>
+          <strong style="color:#fca5a5">silently dropped with a WARNING log</strong><br>
+          Score → Route (≥0.92 auto / 0.90–0.92 LLM / &lt;0.75 reject)<br>
+          UnionFind cluster → golden record weighted merge<br>
+          → <code>aryx_entity</code>, <code>aryx_cluster_member</code>
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- RELATE -->
+      <div class="stage s-bottleneck">
+        <div class="stage-title">Relationship Inference <span class="badge b-bottleneck">P6 · Cost</span></div>
+        <div class="stage-detail">
+          <code>run_pipeline(relate=True)</code> — opt-in only<br>
+          LLM evaluates entity pairs — <strong style="color:#fca5a5">capped at 50 pairs</strong><br>
+          At 1,000 entities: 499,500 possible pairs → 50 evaluated (0.01%)<br>
+          FK-link inference available but separate<br>
+          → <code>aryx_relationship</code>
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- PROJECT -->
+      <div class="stage s-bottleneck">
+        <div class="stage-title">Graph Projection <span class="badge b-bottleneck">P1 · RAM</span></div>
+        <div class="stage-detail">
+          <code>project_graph()</code> — copies Postgres → FalkorDB<br>
+          <code>list_entities()</code> fetchall → entire table into Python RAM<br>
+          500K entities: ~250 MB spike · 1M: ~500 MB · 5M: OOM crash<br>
+          Rule evaluation here: <strong style="color:#fca5a5">P2 — O(rules × entities) Python loop</strong>
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- FALKORDB -->
+      <div class="stage s-store">
+        <div class="stage-title">FalkorDB — Graph Store</div>
+        <div class="stage-detail">
+          Nodes: <code>Entity</code> with type, name, attributes<br>
+          Edges: <code>REL</code>, <code>INF_*</code> (inferred), <code>PROV</code><br>
+          Transitive closure: max 4 hops (<code>_TRANSITIVE_MAX=4</code>)
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- QUERY -->
+      <div class="stage s-bottleneck">
+        <div class="stage-title">Graph Query <span class="badge b-bottleneck">P5 · Cap</span></div>
+        <div class="stage-detail">
+          <code>GraphReader.find_entities()</code> — Cypher MATCH<br>
+          Hard cap: <code>max(1, min(limit, 500))</code> — <strong style="color:#fca5a5">never returns &gt;500</strong><br>
+          No reasoning at query time — what's in graph is what you get<br>
+          <code>shortest_path()</code> — max 6 hops
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- ASK -->
+      <div class="stage s-query">
+        <div class="stage-title">Ask Flow — NL Query</div>
+        <div class="stage-detail">
+          User question → LLM converts to Cypher → FalkorDB executes<br>
+          LLM may hallucinate property/label names<br>
+          Answer synthesised from ≤500 entities<br>
+          History stored in <code>aryx_ask_history</code>
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- REASONING -->
+      <div class="stage s-bottleneck">
+        <div class="stage-title">Reasoning Engine <span class="badge b-bottleneck">P2 · CPU</span></div>
+        <div class="stage-detail">
+          <code>engine.py</code> — loads all entities then Python loop<br>
+          10 rules × 1M entities = 10M iterations in Python<br>
+          Manual JSON DSL rules only — no OWL axiom derivation<br>
+          <code>edge_axioms.py</code>: inverse, symmetric, transitive (4-hop cap)
+        </div>
+      </div>
+      <div class="arrow"></div>
+
+      <!-- RDF EXPORT -->
+      <div class="stage s-process">
+        <div class="stage-title">RDF/OWL Export (on-demand)</div>
+        <div class="stage-detail">
+          <code>rdf/exporter.py</code> → Turtle / JSON-LD / RDF-XML<br>
+          owl:Class · owl:ObjectProperty · owl:NamedIndividual<br>
+          rdfs:subClassOf from type hierarchy<br>
+          No SPARQL endpoint — export only
+        </div>
+      </div>
+
+    </div><!-- /col-body current -->
+  </div>
+
+  <!-- ════════════════════════════════════════════════════
+       RIGHT — aryx-o with OCI
+       ════════════════════════════════════════════════════ -->
+  <div>
+    <div class="col-header oci">aryx-o — With OCI Services</div>
+    <div class="col-body oci">
+
+      <!-- INPUT -->
+      <div class="stage s-input">
+        <div class="stage-title">Input — File Upload <span class="badge b-same">same</span></div>
+        <div class="stage-detail">PDF · DOCX · PPTX · CSV · JSON · images</div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- OCI DOCUMENT UNDERSTANDING -->
+      <div class="stage s-oci">
+        <div class="stage-title">Document Parse <span class="badge b-oci">OCI Doc Understanding</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">OCI Document Understanding</span> replaces pymupdf + tesseract<br>
+          Deep layout analysis: tables → structured rows, forms → key-value pairs<br>
+          Confidence scores per text block — low-confidence blocks flagged<br>
+          Output: structured JSON/Markdown with layout context preserved<br>
+          <em>Adapter: <code>OciDocumentConnector</code> replaces <code>PdfConnector</code></em>
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- CHUNK — SAME -->
+      <div class="stage s-unchanged">
+        <div class="stage-title">Chunk + PII Screen <span class="badge b-same">unchanged</span></div>
+        <div class="stage-detail">
+          Same <code>chunk_pages()</code> + <code>presidio</code> PII screening<br>
+          Richer input text means better chunk boundaries
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- EMBED — OCI -->
+      <div class="stage s-oci">
+        <div class="stage-title">Embed <span class="badge b-oci">OCI Embed Model</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">OCI Generative AI embed model</span> replaces nomic-embed-text<br>
+          Vectors stored in Oracle ADB vector store (same <code>VectorPort</code> contract)<br>
+          Data stays inside OCI tenancy — no external API call
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- LLMGRAPHTRANSFORMER — KEY CHANGE -->
+      <div class="stage s-oci">
+        <div class="stage-title">Entity + Relationship Extraction <span class="badge b-oci">OCI GenAI</span> <span class="badge b-new">new</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">LangChain LLMGraphTransformer</span> + OCI GenAI (Cohere Command R+ / Llama 3)<br>
+          Extracts <strong style="color:#6ee7b7">(entity, relationship, entity) triples</strong> — not just entities<br>
+          Replaces <code>extract_mentions()</code> for aryx-o edition<br>
+          Verbatim-span gate still applied — hallucinated names rejected<br>
+          <strong style="color:#6ee7b7">Eliminates the separate 50-pair relate stage entirely</strong>
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- LAND — SAME -->
+      <div class="stage s-unchanged">
+        <div class="stage-title">Land to Oracle ADB <span class="badge b-same">schema unchanged</span></div>
+        <div class="stage-detail">
+          Same tables: <code>aryx_raw_record</code>, <code>aryx_entity</code>, <code>aryx_relationship</code><br>
+          Oracle ADB 23ai is a drop-in for Postgres at this level
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- RESOLVE — SAME -->
+      <div class="stage s-unchanged">
+        <div class="stage-title">Resolution <span class="badge b-same">unchanged</span></div>
+        <div class="stage-detail">
+          Same <code>MultiKeyBlocker</code> + scoring + UnionFind logic<br>
+          Block-size cap fix applies independently of OCI<br>
+          Oracle Data Flow (Spark) available via <code>ComputePort</code> for scale
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- NO PROJECT STAGE — KEY ELIMINATION -->
+      <div class="stage s-oci">
+        <div class="stage-title">SQL:2023 Property Graph <span class="badge b-oci">Oracle ADB 23ai</span> <span class="badge b-new">replaces projection</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">Oracle Autonomous Database 23ai</span><br>
+          <code>CREATE PROPERTY GRAPH aryx_ws1 VERTEX TABLES (aryx_entity) EDGE TABLES (aryx_relationship)</code><br>
+          <strong style="color:#6ee7b7">No FalkorDB projection stage needed</strong> — <code>aryx_entity</code> and<br>
+          <code>aryx_relationship</code> ARE the graph, queried directly via SQL:2023 graph syntax<br>
+          Eliminates <strong>P1</strong> (fetchall RAM spike) — streaming ADB queries<br>
+          Eliminates <strong>P2</strong> (Python rule loop) — SQL-pushdown rule evaluation
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- ORACLE GRAPH STUDIO -->
+      <div class="stage s-oci-store">
+        <div class="stage-title">Oracle Graph Studio — Semantic Store <span class="badge b-oci">Service 1</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">Oracle Graph Studio + RDF Semantic Graph</span><br>
+          Loads aryx RDF/Turtle export (same <code>rdf/exporter.py</code> — unchanged)<br>
+          owl:Class · owl:ObjectProperty · owl:NamedIndividual stored natively<br>
+          No result cap — full graph traversal via PGQL / SPARQL<br>
+          Built-in SPARQL REST endpoint — external AI pipelines connect directly
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- QUERY — SELECT AI -->
+      <div class="stage s-oci-query">
+        <div class="stage-title">Graph Query — Select AI <span class="badge b-oci">Oracle ADB 23ai</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">DBMS_CLOUD_AI</span> — NL → SQL/PGQL inside the database<br>
+          Uses real schema metadata — no hallucinated column names<br>
+          Executes and returns rows without leaving Oracle ADB<br>
+          No 500-result cap — full PGQL result sets with native pagination<br>
+          <em>Also exposes SPARQL endpoint for external consumers</em>
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- ASK -->
+      <div class="stage s-oci-query">
+        <div class="stage-title">Ask Flow <span class="badge b-same">same API surface</span></div>
+        <div class="stage-detail">
+          Same <code>/ask</code> endpoint — user experience unchanged<br>
+          LLM for final answer synthesis routes to <span class="oci-svc">OCI GenAI</span><br>
+          Query execution via Select AI — schema-grounded, no hallucination<br>
+          Full dataset visible to answer synthesis (no 500-entity ceiling)
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- PGX REASONING -->
+      <div class="stage s-oci">
+        <div class="stage-title">OWL 2 RL Reasoning <span class="badge b-oci">Oracle PGX</span> <span class="badge b-new">new</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">Oracle Graph Server (PGX)</span> via <code>ReasonerPort</code> adapter<br>
+          RDFS++ + OWL 2 RL rules applied inside graph engine — zero Python iterations<br>
+          <code>rdfs:subClassOf</code> inference · <code>owl:sameAs</code> · <code>owl:equivalentClass</code><br>
+          <code>owl:FunctionalProperty</code> · backward chaining · auto-derives from axioms<br>
+          Transitive closure: <strong style="color:#6ee7b7">unbounded</strong> (owl:TransitiveProperty + cycle detection)
+        </div>
+      </div>
+      <div class="arrow oci-arrow"></div>
+
+      <!-- CQ TESTING — NEW -->
+      <div class="stage s-oci">
+        <div class="stage-title">Competency Question Testing <span class="badge b-new">new capability</span></div>
+        <div class="stage-detail">
+          <span class="oci-svc">Oracle SEM_MATCH</span> — SPARQL CQ execution with RDFS++ inference<br>
+          Select AI drafts CQs from Brief in natural language<br>
+          Each CQ executed as SPARQL SELECT — pass/fail scored<br>
+          PGX validates ontology path exists before querying data<br>
+          Coverage score: passed / total surfaced in Brief depth meter
+        </div>
+      </div>
+
+    </div><!-- /col-body oci -->
+  </div>
+
+</div><!-- /columns -->
+
+<!-- ── Comparison table ── -->
+<div class="comparison">
+  <h2>Component-by-Component Change Summary</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Pipeline Stage</th>
+        <th>aryx Today</th>
+        <th>aryx-o with OCI</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Document Parse</td>
+        <td>pymupdf + pytesseract — raw text, no layout (<code>PdfConnector</code>)</td>
+        <td>OCI Document Understanding — layout-aware JSON, table structure, KV pairs, confidence scores</td>
+      </tr>
+      <tr>
+        <td>Embedding</td>
+        <td>nomic-embed-text via local Ollama — 768-dim, pgvector</td>
+        <td>OCI GenAI embed model — stored in Oracle ADB vector store, zero data egress</td>
+      </tr>
+      <tr>
+        <td>Entity Extraction</td>
+        <td><code>extract_mentions()</code> — entities only, aryx LLM broker</td>
+        <td>LangChain LLMGraphTransformer + OCI GenAI — entity + relationship triples at extraction time</td>
+      </tr>
+      <tr>
+        <td>Relationship Inference</td>
+        <td><code>relate=True</code> stage — LLM, 50-pair hard cap, 0.01% coverage at scale</td>
+        <td>Extracted at doc parse time (LLMGraphTransformer) + PGX OWL property axioms — no cap</td>
+      </tr>
+      <tr>
+        <td>Graph Projection</td>
+        <td><code>project_graph()</code> — fetchall RAM spike, copies Postgres→FalkorDB</td>
+        <td>Eliminated — SQL:2023 Property Graphs query <code>aryx_entity</code> directly</td>
+      </tr>
+      <tr>
+        <td>Graph Store</td>
+        <td>FalkorDB — 500-result cap, Cypher only, no reasoning at query time</td>
+        <td>Oracle Graph Studio — PGQL + SPARQL, OWL 2 RL inference at query time, no result cap</td>
+      </tr>
+      <tr>
+        <td>NL Query (Ask)</td>
+        <td>LLM → Cypher → FalkorDB — may hallucinate label/property names</td>
+        <td>Select AI (DBMS_CLOUD_AI) — NL→SQL/PGQL inside Oracle ADB, schema-grounded, no hallucination</td>
+      </tr>
+      <tr>
+        <td>Reasoning Engine</td>
+        <td>Python rule loop — O(rules × entities), 10M iterations at 1M entities</td>
+        <td>Oracle PGX OWL 2 RL — runs inside graph engine, zero Python iterations, unbounded</td>
+      </tr>
+      <tr>
+        <td>Transitive Closure</td>
+        <td>4-hop hard cap — org charts &gt;4 levels deep produce wrong answers</td>
+        <td>Unbounded via <code>owl:TransitiveProperty</code> — PGX handles cycle detection internally</td>
+      </tr>
+      <tr>
+        <td>Competency Questions</td>
+        <td>Not supported — Brief is intent-setting only, not testable</td>
+        <td>SEM_MATCH SPARQL execution + Select AI NL-to-SPARQL + PGX path validation + coverage score</td>
+      </tr>
+      <tr>
+        <td>RDF Export</td>
+        <td><code>rdf/exporter.py</code> — Turtle/JSON-LD/RDF-XML, no SPARQL endpoint</td>
+        <td>Same exporter (unchanged) — Oracle Graph Studio loads it and auto-exposes SPARQL REST endpoint</td>
+      </tr>
+      <tr>
+        <td>Data Boundary</td>
+        <td>Self-hosted — data stays on-prem or in customer's own infra</td>
+        <td>Inside OCI tenancy — data never sent to external LLM providers</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── Adapter env vars ── -->
+<div class="comparison" style="margin-top:32px">
+  <h2>Env Vars to Activate aryx-o</h2>
+  <div style="background:#0b1929;border:1px solid #1d4ed8;border-radius:8px;padding:18px 20px;font-family:'Menlo','Consolas',monospace;font-size:12px;line-height:2;max-width:900px;margin:0 auto;">
+    <span style="color:#64748b"># Edition flag</span><br>
+    <span style="color:#7dd3fc">ARYX_EDITION</span>=<span style="color:#6ee7b7">aryx-o</span><br><br>
+    <span style="color:#64748b"># Service 1 — Oracle Graph Studio (replaces FalkorDB)</span><br>
+    <span style="color:#7dd3fc">ARYX_ADAPTER_GRAPH_READER</span>=<span style="color:#6ee7b7">aryx.adapters.oracle.graph:OracleGraphReader</span><br>
+    <span style="color:#7dd3fc">ARYX_ADAPTER_GRAPH_STORE</span>=<span style="color:#6ee7b7">aryx.adapters.oracle.graph:OracleGraphStore</span><br><br>
+    <span style="color:#64748b"># Service 2 — Oracle ADB 23ai (replaces Postgres + Select AI for Ask)</span><br>
+    <span style="color:#7dd3fc">ARYX_ADAPTER_RELATIONAL</span>=<span style="color:#6ee7b7">aryx.adapters.oracle.rdb:OracleRelationalAdapter</span><br><br>
+    <span style="color:#64748b"># Service 3 — OCI GenAI (replaces Ollama/Anthropic/OpenAI)</span><br>
+    <span style="color:#7dd3fc">ARYX_ADAPTER_LLM</span>=<span style="color:#6ee7b7">aryx.adapters.oracle.genai:OracleGenAiLlm</span><br><br>
+    <span style="color:#64748b"># OCI Document Understanding (replaces pymupdf + tesseract)</span><br>
+    <span style="color:#7dd3fc">ARYX_DOCUMENT_CONNECTOR</span>=<span style="color:#6ee7b7">oci</span><br><br>
+    <span style="color:#64748b"># ReasonerPort — Oracle PGX OWL 2 RL (replaces Python rule loop)</span><br>
+    <span style="color:#7dd3fc">ARYX_ADAPTER_REASONER</span>=<span style="color:#6ee7b7">aryx.adapters.oracle.pgx:OraclePgxReasoner</span><br><br>
+    <span style="color:#64748b"># ⚠  All six adapter classes above are the implementation gap —</span><br>
+    <span style="color:#64748b">#    port contracts exist in ports/protocols.py, swap wiring exists</span><br>
+    <span style="color:#64748b">#    in ports/config.py. The adapter classes need to be built.</span>
+  </div>
+</div>
+
+<div style="text-align:center;margin-top:40px;font-size:11px;color:#334155">
+  aryx project · giggso · 2026-06-19 ·
+  Source: src/aryx/ports/protocols.py · ports/config.py · connectors/pdf.py ·
+  ontology/extract.py · ontology/rdf/exporter.py · pipeline/orchestrate.py
+</div>

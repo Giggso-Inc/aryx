@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from aryx.graph import FalkorStore
+if TYPE_CHECKING:
+    from aryx.graph import FalkorStore
+
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)

@@ -24,7 +24,7 @@ def _row(values: tuple) -> dict[str, Any]:
 
 
 class JobStore:
-    """Persists ingestion jobs and their per-stage progress to Postgres."""
+    """Persists ingestion jobs and their per-stage progress (Postgres + Oracle ADB)."""
 
     def __init__(self, dsn: str) -> None:
         """Acquire the shared connection pool for this DSN."""
@@ -86,6 +86,16 @@ class JobStore:
                 cur.execute(load("delete_old_job_events"), (days,))
         logger.info("archived/purged jobs older than %d days: %d", days, deleted)
         return deleted
+
+    def sweep_stale(self, timeout_minutes: int) -> int:
+        """Mark jobs that haven't updated within timeout_minutes as failed."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("sweep_stale_jobs"), (timeout_minutes,))
+                count = cur.rowcount
+        if count:
+            logger.warning("swept %d stale jobs (timeout=%d min)", count, timeout_minutes)
+        return count
 
     def close(self) -> None:
         """No-op: connections are managed by the shared pool (G12)."""
