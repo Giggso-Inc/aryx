@@ -222,8 +222,12 @@ class OracleCursorWrapper:
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
         except oracledb.IntegrityError as exc:
-            if self._conflict_ignore and getattr(exc, "args", (None,))[0] and "ORA-00001" in str(exc.args[0]):
+            _args0 = getattr(exc, "args", (None,))
+            _val = _args0[0] if _args0 else None
+            if self._conflict_ignore and _val and "ORA-00001" in str(_val):
                 return
+            logger.warning("executemany IntegrityError (not swallowed) sql=%r conflict_ignore=%s exc=%s args=%r",
+                           oracle_sql[:120], self._conflict_ignore, exc, exc.args)
             raise
         except Exception as exc:
             sample = oracle_seq[0] if oracle_seq else None
