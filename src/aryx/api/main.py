@@ -108,6 +108,7 @@ async def _stale_job_sweep() -> None:
 async def _lifespan(app: FastAPI):
     from aryx.config import get_settings
     from aryx.store.migrate import apply_migrations
+    from aryx.api.file_ingest_api import shutdown_executor
     apply_migrations(get_settings().rdb_dsn)
     _task = asyncio.ensure_future(_stale_job_sweep())
     try:

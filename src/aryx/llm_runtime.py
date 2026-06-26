@@ -11,6 +11,7 @@ import logging
 import os
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
+from aryx.config import get_settings
 from aryx.llm import complete_text
 from aryx.queries import load
 from aryx.store.pool import get_pool
@@ -19,12 +20,13 @@ logger = logging.getLogger(__name__)
 
 _KEY_REF = "ARYX_RUNTIME_KEY"
 
+_cfg = get_settings()
 _state: dict[str, str] = {
-    "provider": os.environ.get("ARYX_LLM_PROVIDER", "ollama"),
-    "menial_model": os.environ.get("ARYX_LLM_MENIAL_MODEL", "llama3.2:3b"),
-    "answer_model": os.environ.get("ARYX_LLM_REASON_MODEL", "llama3.2:3b"),
-    "endpoint": os.environ.get("ARYX_LLM_BASE_URL", "http://ollama:11434"),
-    "api_key": os.environ.get("ARYX_LLM_API_KEY", ""),
+    "provider": _cfg.llm_provider,
+    "menial_model": _cfg.llm_menial_model,
+    "answer_model": _cfg.llm_reason_model,
+    "endpoint": _cfg.llm_base_url,
+    "api_key": _cfg.llm_api_key,
 }
 
 

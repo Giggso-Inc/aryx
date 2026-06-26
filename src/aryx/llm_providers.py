@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 import urllib.error
@@ -16,13 +15,12 @@ import urllib.request
 from typing import Any
 
 from aryx.broker.specs import ModelSpec
+from aryx.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Per-call LLM timeout. Default 120s — long enough for a slow local model,
-# short enough that one frozen call recovers instead of wedging the job for
-# 10 minutes. Override with ARYX_LLM_TIMEOUT.
-_DEFAULT_TIMEOUT = float(os.environ.get("ARYX_LLM_TIMEOUT", "120"))
+# Per-call LLM timeout sourced from Settings (ARYX_LLM_TIMEOUT, default 120 s).
+_DEFAULT_TIMEOUT = get_settings().llm_timeout
 
 
 def post_json(url: str, body: dict[str, Any], headers: dict[str, str],

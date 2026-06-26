@@ -45,3 +45,5 @@ cryptography~=43.0
 
 # OCI SDK — used when any ARYX_*_BACKEND=oci. Not required for local-only deployments.
 oci~=2.157
+# Safe XML parsing — prevents billion-laughs / quadratic-blowup XML bomb attacks.
+defusedxml~=0.7
