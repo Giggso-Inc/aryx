@@ -175,12 +175,14 @@ function buildGraph(
   nameFilter: string,
   pathIds: Set<number>,
   typeIndex: Map<string, number>,
+  schemaOnlyTypes: string[],
 ): { nodes: Node[]; edges: Edge[] } {
   const shown = entities.filter((e) =>
     (typeSet.size === 0 || typeSet.has(e.type)) &&
     (nameFilter === "" || e.name.toLowerCase().includes(nameFilter.toLowerCase())),
   );
   const shownIds = new Set(shown.map((e) => e.id));
+  const instanceTypeNames = new Set(entities.map((e) => e.type));
 
   const nodes: Node[] = shown.map((e) => {
     const idx = typeIndex.get(e.type) ?? 0;
@@ -214,6 +216,41 @@ function buildGraph(
       },
     };
   });
+
+  // Add schema-only type nodes for ontology types that have no entity instances
+  for (const typeName of schemaOnlyTypes) {
+    if (instanceTypeNames.has(typeName)) continue;
+    if (typeSet.size > 0 && !typeSet.has(typeName)) continue;
+    if (nameFilter !== "" && !typeName.toLowerCase().includes(nameFilter.toLowerCase())) continue;
+    const idx = typeIndex.get(typeName) ?? 0;
+    const color = typeColor(idx);
+    nodes.push({
+      id: `schema::${typeName}`,
+      type: "default",
+      data: {
+        label: (
+          <div style={{ textAlign: "center", lineHeight: 1.3 }}>
+            <div style={{ fontWeight: 500, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>
+              {typeName}
+            </div>
+            <div style={{ fontSize: 9, color, marginTop: 1, opacity: 0.7 }}>
+              no instances yet
+            </div>
+          </div>
+        ),
+      },
+      position: { x: 0, y: 0 },
+      style: {
+        background: "#f8fafc",
+        border: `2px dashed ${color}`,
+        borderRadius: 8,
+        padding: "6px 10px",
+        width: 160,
+        boxShadow: "none",
+        opacity: 0.75,
+      },
+    });
+  }
 
   const edges: Edge[] = rels
     .filter((r) => shownIds.has(r.source) && shownIds.has(r.target))
@@ -251,6 +288,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const [allEntities, setAllEntities] = useState<EntityNode[]>([]);
   const [allRels, setAllRels] = useState<EntityRel[]>([]);
+  const [schemaTypes, setSchemaTypes] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
@@ -261,10 +299,14 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
+  // allTypes includes both entity instance types AND schema-only types
   const allTypes = useMemo(() => {
-    const s = new Set(allEntities.map((e) => e.type));
+    const s = new Set([
+      ...allEntities.map((e) => e.type),
+      ...schemaTypes,
+    ]);
     return [...s].sort();
-  }, [allEntities]);
+  }, [allEntities, schemaTypes]);
 
   const typeIndex = useMemo(() => {
     const m = new Map<string, number>();
@@ -275,9 +317,17 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const g = await api.getEntityGraph(workspaceId);
+      const [g, onto] = await Promise.all([
+        api.getEntityGraph(workspaceId),
+        api.getOntology(workspaceId).catch(() => ({ types: [], relationships: [] })),
+      ]);
       setAllEntities(g.entities);
       setAllRels(g.relationships);
+      // Collect approved ontology type names to show as schema nodes when no instances exist
+      const approvedNames = (onto.types ?? [])
+        .filter((t) => !t.status || t.status === "approved")
+        .map((t) => t.name);
+      setSchemaTypes(approvedNames);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load graph");
     } finally {
@@ -289,9 +339,14 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
 
   // Rebuild graph whenever filters or data changes, then fit view
   useEffect(() => {
-    if (loading || !allEntities.length) return;
+    if (loading) return;
+    const hasContent = allEntities.length > 0 || schemaTypes.length > 0;
+    if (!hasContent) return;
+    const schemaOnly = schemaTypes.filter(
+      (t) => !allEntities.some((e) => e.type === t),
+    );
     const { nodes: n, edges: e } = buildGraph(
-      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex,
+      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, schemaOnly,
     );
     setNodes(n);
     setEdges(e);
@@ -299,9 +354,11 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     setTimeout(() => {
       rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
     }, 80);
-  }, [allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, loading, setNodes, setEdges]);
+  }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, loading, setNodes, setEdges]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
+    // schema:: nodes are type placeholders — not selectable entity instances
+    if (node.id.startsWith("schema::")) return;
     const entity = allEntities.find((e) => String(e.id) === node.id);
     if (entity) { setSelected(entity); setPathIds(new Set()); }
   }, [allEntities]);
@@ -334,7 +391,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     </div>
   );
 
-  if (allEntities.length === 0) return (
+  if (allEntities.length === 0 && schemaTypes.length === 0) return (
     <div className="flex flex-1 items-center justify-center text-[13px] text-subtle">
       No entities in this workspace yet. Ingest some data first.
     </div>
@@ -364,21 +421,24 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
         {/* Type filter */}
         <div className="rounded-xl border border-navy-100 bg-white/90 p-2 shadow-soft backdrop-blur-sm max-h-52 overflow-y-auto">
           <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-navy-500">Filter by type</div>
-          {allTypes.map((t, i) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => toggleType(t)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors",
-                typeFilter.size > 0 && !typeFilter.has(t) ? "text-subtle" : "text-navy-800",
-              )}
-            >
-              <span className="size-2.5 rounded-full shrink-0"
-                style={{ background: typeColor(i) }} />
-              {t}
-            </button>
-          ))}
+          {allTypes.map((t, i) => {
+            const isSchemaOnly = !allEntities.some((e) => e.type === t);
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => toggleType(t)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors",
+                  typeFilter.size > 0 && !typeFilter.has(t) ? "text-subtle" : "text-navy-800",
+                )}
+              >
+                <span className="size-2.5 rounded-full shrink-0"
+                  style={{ background: isSchemaOnly ? "transparent" : typeColor(i), border: `2px ${isSchemaOnly ? "dashed" : "solid"} ${typeColor(i)}` }} />
+                <span className={isSchemaOnly ? "italic text-subtle" : ""}>{t}</span>
+              </button>
+            );
+          })}
           {typeFilter.size > 0 && (
             <button type="button" onClick={() => setTypeFilter(new Set())}
               className="mt-1 w-full rounded-lg px-2 py-1 text-[10px] text-steel-600 hover:bg-steel-50">
@@ -451,7 +511,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           <MiniMap
             nodeColor={(n) => {
               const borderStyle = n.style?.border as string | undefined;
-              return borderStyle?.replace("2px solid ", "") || "#4068A8";
+              return borderStyle?.replace("2px solid ", "")?.replace("2px dashed ", "") || "#4068A8";
             }}
             maskColor="rgba(248,249,252,0.8)"
             className="!bottom-3 !right-3"

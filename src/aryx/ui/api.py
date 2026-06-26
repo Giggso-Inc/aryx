@@ -54,6 +54,16 @@ def _delete(path: str) -> Any:
         return json.loads(r.read())
 
 
+def _put(path: str, body: dict) -> Any:
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{_BASE}{path}", data=data,
+        headers={"Content-Type": "application/json"}, method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310
+        return json.loads(r.read())
+
+
 def list_workspaces() -> list[dict]:
     return _get("/admin/workspaces")
 
@@ -93,6 +103,22 @@ def set_workspace_brief(workspace_id: int, brief: dict) -> dict:
     )
     with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310
         return json.loads(r.read())
+
+
+def get_entity_pg(entity_id: int) -> dict[str, Any]:
+    """Fetch full entity record (id, ontology_type, attributes) from Postgres."""
+    return _get(f"/admin/entities/{entity_id}")
+
+
+def delete_entity(entity_id: int) -> dict[str, Any]:
+    """Delete entity from Postgres + FalkorDB."""
+    return _delete(f"/admin/entities/{entity_id}?workspace_id={_WS['id']}")
+
+
+def update_entity(entity_id: int, attributes: dict) -> dict[str, Any]:
+    """Replace entity attributes in Postgres and resync FalkorDB node."""
+    return _put(f"/admin/entities/{entity_id}?workspace_id={_WS['id']}",
+                {"attributes": attributes})
 
 
 def full_graph() -> dict[str, Any]:

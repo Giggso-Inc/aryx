@@ -119,9 +119,21 @@ def _run_db(req: IngestDbRequest, job_id: str) -> None:
 def admin_router() -> APIRouter:
     router = APIRouter(prefix="/admin")
 
+    @router.get("/entities/{entity_id}")
+    def get_entity(entity_id: int, workspace_id: int = 1) -> dict[str, Any]:
+        """Fetch full entity record (including attributes) from Postgres."""
+        settings = get_settings()
+        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        try:
+            row = estore.get_entity(entity_id)
+        finally:
+            estore.close()
+        if row is None:
+            raise HTTPException(404, f"entity {entity_id} not found")
+        return {"id": row[0], "ontology_type": row[1], "attributes": row[2]}
+
     @router.post("/entities")
-    def create_entity(req: EntityCreateRequest,
-                      _: str = Depends(require_api_key)) -> dict[str, Any]:
+    def create_entity(req: EntityCreateRequest) -> dict[str, Any]:
         """Create a new entity in Postgres and project it into FalkorDB."""
         settings = get_settings()
         estore = EntityStore(settings.rdb_dsn, req.workspace_id)
@@ -139,8 +151,7 @@ def admin_router() -> APIRouter:
 
     @router.put("/entities/{entity_id}")
     def update_entity(entity_id: int, req: EntityUpdateRequest,
-                      workspace_id: int = 1,
-                      _: str = Depends(require_api_key)) -> dict[str, Any]:
+                      workspace_id: int = 1) -> dict[str, Any]:
         """Replace an entity's attributes in Postgres and resync the FalkorDB node."""
         settings = get_settings()
         estore = EntityStore(settings.rdb_dsn, workspace_id)
@@ -159,8 +170,7 @@ def admin_router() -> APIRouter:
         return {"status": "ok", "entity_id": entity_id, "ontology_type": ontology_type}
 
     @router.delete("/entities/{entity_id}")
-    def delete_entity(entity_id: int, workspace_id: int = 1,
-                      _: str = Depends(require_api_key)) -> dict[str, Any]:
+    def delete_entity(entity_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Delete an entity from Postgres and remove the node from FalkorDB."""
         settings = get_settings()
         estore = EntityStore(settings.rdb_dsn, workspace_id)

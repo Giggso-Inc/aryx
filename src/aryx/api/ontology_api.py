@@ -9,10 +9,12 @@ from pydantic import BaseModel
 from aryx import export_runtime
 from aryx.api import ontology_browse as _ob
 from aryx.config import get_settings
+from aryx.graph import FalkorStore
 from aryx.ontology.rdf import GraphBundle, available_formats, serialize
 from aryx.store.axiom_store import AxiomStore
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
+from aryx.workspaces import ws_graph
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +110,18 @@ def ontology_router() -> APIRouter:
 
     @router.delete("/types/{name}")
     def delete_type(name: str, workspace_id: int = 1) -> dict:
-        """Remove a type from one workspace (schema-level only)."""
-        return _ob.delete_type(name, workspace_id)
+        """Remove a type and cascade: delete all its entity instances from
+        Postgres and remove their nodes from FalkorDB, then drop the type."""
+        settings = get_settings()
+        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        try:
+            deleted_ids = estore.delete_entities_by_type(name)
+        finally:
+            estore.close()
+        FalkorStore(settings.graph_url, ws_graph(workspace_id)).remove_entities_by_type(name)
+        logger.info("type delete cascade ws=%s type=%s entities=%d",
+                    workspace_id, name, len(deleted_ids))
+        return {**_ob.delete_type(name, workspace_id), "entities_deleted": len(deleted_ids)}
 
     @router.get("/export")
     def export_graph(workspace_id: int = 1, format: str = "turtle") -> Response:
