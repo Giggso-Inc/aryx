@@ -328,6 +328,11 @@ class OraclePool:
             min=min_size,
             max=max_size,
             increment=1,
+            # POOL_GETMODE_TIMEDWAIT prevents the thin pool's IndexError when all
+            # connections are busy — instead of crashing, acquire() raises a proper
+            # PoolTimeout after wait_timeout milliseconds.
+            getmode=oracledb.POOL_GETMODE_TIMEDWAIT,
+            wait_timeout=30000,  # 30 s
         )
 
     @contextmanager
@@ -337,7 +342,14 @@ class OraclePool:
         Commits on clean exit, rolls back on exception — matches the
         psycopg_pool behaviour that store classes rely on.
         """
-        raw = self._pool.acquire()
+        try:
+            raw = self._pool.acquire()
+        except IndexError as exc:
+            # oracledb thin pool bug: raises IndexError instead of a pool
+            # timeout when all connections are in use and TIMEDWAIT is not set.
+            raise RuntimeError(
+                "oracle_pool: connection acquire failed (pool exhausted)"
+            ) from exc
         try:
             yield OracleConnectionWrapper(raw)
             raw.commit()
