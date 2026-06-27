@@ -66,7 +66,8 @@ def _get_auth() -> Any:
             signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
             logger.info("oci_client: using instance principal auth")
             _signer = signer
-        except Exception:
+        except Exception as exc:
+            logger.warning("oci_client: instance principal unavailable (%s), falling back to ~/.oci/config", exc)
             profile = os.environ.get("OCI_CONFIG_PROFILE", "DEFAULT")
             _signer = oci.config.from_file(profile_name=profile)
             logger.info("oci_client: using ~/.oci/config profile=%s", profile)
