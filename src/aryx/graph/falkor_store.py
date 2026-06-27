@@ -131,6 +131,13 @@ class FalkorStore:
             "MATCH (e:Entity {id: $id}) DETACH DELETE e", {"id": entity_id},
         )
 
+    def remove_entities_by_type(self, ontology_type: str) -> None:
+        """Delete all entity nodes of a given type and their edges."""
+        self._graph.query(
+            "MATCH (e:Entity {type: $type}) DETACH DELETE e",
+            {"type": ontology_type},
+        )
+
     def add_relationship(self, source_id: int, target_id: int, name: str) -> None:
         """Create a typed edge between two entities."""
         self._graph.query(

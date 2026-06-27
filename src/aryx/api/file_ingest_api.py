@@ -6,6 +6,9 @@ Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→enti
 """
 from __future__ import annotations
 
+import csv as _csv
+import io
+import itertools
 import json
 import logging
 import threading
@@ -75,6 +78,30 @@ def _save_tmp(data: bytes, suffix: str) -> Path:
 _FK_REQUIRED_KEYS = frozenset({"source_type", "target_type", "source_attr", "target_attr"})
 
 
+def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
+    """Split CSV bytes into chunks of at most chunk_rows data rows, repeating the header.
+
+    Streams rows via itertools.islice so the full file is never materialised
+    into a list — only one batch is held in memory at a time.
+    """
+    reader = _csv.reader(io.StringIO(data.decode("utf-8")))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return [data]
+    chunks: list[bytes] = []
+    while True:
+        batch = list(itertools.islice(reader, chunk_rows))
+        if not batch:
+            break
+        buf = io.StringIO()
+        writer = _csv.writer(buf)
+        writer.writerow(header)
+        writer.writerows(batch)
+        chunks.append(buf.getvalue().encode("utf-8"))
+    return chunks or [data]
+
+
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
@@ -92,7 +119,17 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             if suffix == ".json":
                 tmp = _save_tmp(data, ".json")
                 tmp_paths.append(tmp)
-                connector = JsonConnector(tmp, system="json")
+                jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
+                run_pipeline(
+                    connector=JsonConnector(tmp, system="json"),
+                    dsn=settings.rdb_dsn,
+                    system="json", dataset=Path(name).stem,
+                    ontology_type=ontology_type, match_keys=match_keys,
+                    graph_url=settings.graph_url, broker=broker,
+                    on_progress=on_prog,
+                    fk_links=fk_links, workspace_id=workspace_id,
+                    relate=True,
+                )
             elif suffix == ".xml":
                 # Expand XML into one connector per top-3 element type.
                 # Each CSV gets its own ontology_type derived from the element
@@ -131,17 +168,26 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     )
                 continue
             else:
-                connector = CsvConnector(data, system="csv", dataset=Path(name).stem)
-            jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
-            run_pipeline(
-                connector=connector, dsn=settings.rdb_dsn,
-                system=suffix.lstrip("."), dataset=Path(name).stem,
-                ontology_type=ontology_type, match_keys=match_keys,
-                graph_url=settings.graph_url, broker=broker,
-                on_progress=on_prog,
-                fk_links=fk_links, workspace_id=workspace_id,
-                relate=True,
-            )
+                chunk_rows = settings.csv_chunk_rows
+                csv_chunks = _chunk_csv_bytes(data, chunk_rows) if chunk_rows > 0 else [data]
+                stem = Path(name).stem
+                total_chunks = len(csv_chunks)
+                for chunk_idx, chunk_data in enumerate(csv_chunks):
+                    dataset = f"{stem}_c{chunk_idx:04d}" if total_chunks > 1 else stem
+                    jobs.update_stage(
+                        job_id, "Ingest", 20,
+                        f"Processing {name}" + (f" chunk {chunk_idx + 1}/{total_chunks}" if total_chunks > 1 else ""),
+                    )
+                    run_pipeline(
+                        connector=CsvConnector(chunk_data, system="csv", dataset=dataset),
+                        dsn=settings.rdb_dsn,
+                        system="csv", dataset=dataset,
+                        ontology_type=ontology_type, match_keys=match_keys,
+                        graph_url=settings.graph_url, broker=broker,
+                        on_progress=on_prog,
+                        fk_links=fk_links, workspace_id=workspace_id,
+                        relate=True,
+                    )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
