@@ -35,8 +35,8 @@ _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
 # Matches both ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE SET …
 # The DO UPDATE clause can span multiple lines, hence re.DOTALL.
 _CONFLICT_RE = re.compile(r"\s+ON CONFLICT\b[^;]*", re.IGNORECASE | re.DOTALL)
-_LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(\d+)\s+OFFSET\s+(\d+)\b", re.IGNORECASE)
-_LIMIT_RE = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
+_LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\s+OFFSET\s+(:\w+|\d+)\b", re.IGNORECASE)
+_LIMIT_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\b", re.IGNORECASE)
 _NOW_RE = re.compile(r"\bNOW\(\)", re.IGNORECASE)
 # Oracle override SQL files may carry "-- ORACLE:RETURNING col1, col2" to set up
 # out-vars for PL/SQL blocks where RETURNING ... INTO already appears in the SQL
@@ -328,6 +328,11 @@ class OraclePool:
             min=min_size,
             max=max_size,
             increment=1,
+            # POOL_GETMODE_TIMEDWAIT prevents the thin pool's IndexError when all
+            # connections are busy — instead of crashing, acquire() raises a proper
+            # PoolTimeout after wait_timeout milliseconds.
+            getmode=oracledb.POOL_GETMODE_TIMEDWAIT,
+            wait_timeout=30000,  # 30 s
         )
 
     @contextmanager
@@ -337,7 +342,14 @@ class OraclePool:
         Commits on clean exit, rolls back on exception — matches the
         psycopg_pool behaviour that store classes rely on.
         """
-        raw = self._pool.acquire()
+        try:
+            raw = self._pool.acquire()
+        except IndexError as exc:
+            # oracledb thin pool bug: raises IndexError instead of a pool
+            # timeout when all connections are in use and TIMEDWAIT is not set.
+            raise RuntimeError(
+                "oracle_pool: connection acquire failed (pool exhausted)"
+            ) from exc
         try:
             yield OracleConnectionWrapper(raw)
             raw.commit()

@@ -69,7 +69,7 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str) -> N
                          data.get("workspace_id", 1))
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("doc confirm failed job=%s: %s", job_id, exc)
+        logger.warning("doc confirm failed job=%s: %s", job_id, exc, exc_info=True)
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()

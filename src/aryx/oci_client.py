@@ -26,44 +26,48 @@ def _get_auth() -> Any:
     """Return a config dict or signer; cached after first call.
 
     Auth resolution order:
-      1. Instance principal  — running inside OCI (Compute, Functions, Data Flow)
-      2. Env-var config      — ARYX_OCI_USER_OCID set; key content in ARYX_OCI_PRIVATE_KEY_CONTENT
+      1. Env-var config      — ARYX_OCI_USER_OCID set (explicit creds always win)
+      2. Instance principal  — running inside OCI with no explicit creds configured
       3. ~/.oci/config       — local dev fallback; profile from OCI_CONFIG_PROFILE
+
+    Explicit env-var credentials take priority over instance principal so that
+    containerised deployments on OCI hosts use the configured API key rather than
+    the host's instance principal (which typically lacks GenAI policies).
     """
     global _signer
     if _signer is not None:
         return _signer
-    try:
-        import oci  # noqa: PLC0415
-        signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
-        logger.info("oci_client: using instance principal auth")
-        _signer = signer
-    except Exception:
-        import oci  # noqa: PLC0415
-        if os.environ.get("ARYX_OCI_USER_OCID"):
-            _required = [
-                "ARYX_OCI_USER_OCID", "ARYX_OCI_TENANCY_OCID",
-                "ARYX_OCI_FINGERPRINT", "ARYX_OCI_PRIVATE_KEY_CONTENT",
-            ]
-            _missing = [k for k in _required if not os.environ.get(k)]
-            if _missing:
-                raise EnvironmentError(
-                    f"ARYX_OCI_USER_OCID is set but the following required vars are missing: "
-                    f"{', '.join(_missing)}"
-                )
-            config = {
-                "user": os.environ["ARYX_OCI_USER_OCID"],
-                "tenancy": os.environ["ARYX_OCI_TENANCY_OCID"],
-                "fingerprint": os.environ["ARYX_OCI_FINGERPRINT"],
-                "key_content": os.environ["ARYX_OCI_PRIVATE_KEY_CONTENT"],
-                # OCI_REGION is the OCI SDK's own convention and takes priority;
-                # fall back to ARYX_OCI_REGION (our setting) then the default.
-                "region": os.environ.get("OCI_REGION", os.environ.get("ARYX_OCI_REGION", "us-chicago-1")),
-            }
-            oci.config.validate_config(config)
-            logger.info("oci_client: using env-var auth user=%s", os.environ["ARYX_OCI_USER_OCID"])
-            _signer = config
-        else:
+    import oci  # noqa: PLC0415
+    if os.environ.get("ARYX_OCI_USER_OCID"):
+        _required = [
+            "ARYX_OCI_USER_OCID", "ARYX_OCI_TENANCY_OCID",
+            "ARYX_OCI_FINGERPRINT", "ARYX_OCI_PRIVATE_KEY_CONTENT",
+        ]
+        _missing = [k for k in _required if not os.environ.get(k)]
+        if _missing:
+            raise EnvironmentError(
+                f"ARYX_OCI_USER_OCID is set but the following required vars are missing: "
+                f"{', '.join(_missing)}"
+            )
+        config = {
+            "user": os.environ["ARYX_OCI_USER_OCID"],
+            "tenancy": os.environ["ARYX_OCI_TENANCY_OCID"],
+            "fingerprint": os.environ["ARYX_OCI_FINGERPRINT"],
+            "key_content": os.environ["ARYX_OCI_PRIVATE_KEY_CONTENT"],
+            # OCI_REGION is the OCI SDK's own convention and takes priority;
+            # fall back to ARYX_OCI_REGION (our setting) then the default.
+            "region": os.environ.get("OCI_REGION", os.environ.get("ARYX_OCI_REGION", "us-chicago-1")),
+        }
+        oci.config.validate_config(config)
+        logger.info("oci_client: using env-var auth user=%s", os.environ["ARYX_OCI_USER_OCID"])
+        _signer = config
+    else:
+        try:
+            signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+            logger.info("oci_client: using instance principal auth")
+            _signer = signer
+        except Exception as exc:
+            logger.warning("oci_client: instance principal unavailable (%s), falling back to ~/.oci/config", exc)
             profile = os.environ.get("OCI_CONFIG_PROFILE", "DEFAULT")
             _signer = oci.config.from_file(profile_name=profile)
             logger.info("oci_client: using ~/.oci/config profile=%s", profile)

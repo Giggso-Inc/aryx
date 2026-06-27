@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from psycopg.types.json import Json
 
@@ -36,7 +37,7 @@ class OntologyStore:
                       t.status, t.source) for t in types],
                 )
 
-    def update_schema(self, name: str, schema: dict) -> None:
+    def update_schema(self, name: str, schema: dict[str, Any]) -> None:
         """Persist tag_fields-derived attribute_schema for an existing type."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
@@ -45,7 +46,7 @@ class OntologyStore:
         logger.info("schema updated ws=%s type=%s cols=%d",
                     self._workspace_id, name, len(schema.get("columns", {})))
 
-    def get_field_tags(self, run_id: int) -> dict:
+    def get_field_tags(self, run_id: int) -> dict[str, dict[str, Any]]:
         """Return aryx_field_tag rows for a run as {field: {semantic_type, is_pii}}."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
@@ -60,7 +61,7 @@ class OntologyStore:
                 cur.execute(load("select_ontology_types"),
                             (self._workspace_id,))
                 rows = cur.fetchall()
-        def _parse_schema(v: object) -> dict:
+        def _parse_schema(v: object) -> dict[str, Any]:
             if isinstance(v, dict):
                 return v
             if isinstance(v, str) and v.strip():

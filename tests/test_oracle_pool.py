@@ -582,5 +582,47 @@ class TestFetchWithLob(unittest.TestCase):
         self.assertEqual(cur.fetchall(), [])
 
 
+# ── LIMIT / OFFSET translation tests ─────────────────────────────────────────
+
+class TestLimitTranslation(unittest.TestCase):
+    """LIMIT / OFFSET → Oracle FETCH FIRST / OFFSET ROWS FETCH NEXT."""
+
+    def test_limit_literal_translated(self) -> None:
+        cur = _make_cursor()
+        result = _translate_sql("SELECT * FROM t ORDER BY id LIMIT 50", cur)
+        self.assertNotIn("LIMIT", result)
+        self.assertIn("FETCH FIRST 50 ROWS ONLY", result)
+
+    def test_limit_positional_param_translated(self) -> None:
+        # After %s → :N substitution, LIMIT %s becomes LIMIT :1
+        cur = _make_cursor()
+        sql = "SELECT * FROM t WHERE workspace_id = :1 ORDER BY id LIMIT :2"
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("LIMIT", result)
+        self.assertIn("FETCH FIRST :2 ROWS ONLY", result)
+
+    def test_limit_named_param_translated(self) -> None:
+        # After %(limit)s → :limit substitution
+        cur = _make_cursor()
+        sql = "SELECT * FROM t ORDER BY created_at DESC LIMIT :limit"
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("LIMIT", result)
+        self.assertIn("FETCH FIRST :limit ROWS ONLY", result)
+
+    def test_limit_offset_literal_translated(self) -> None:
+        cur = _make_cursor()
+        sql = "SELECT * FROM t ORDER BY id LIMIT 20 OFFSET 40"
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("LIMIT", result)
+        self.assertIn("OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY", result)
+
+    def test_limit_offset_positional_params_translated(self) -> None:
+        cur = _make_cursor()
+        sql = "SELECT * FROM t WHERE ws = :1 ORDER BY id LIMIT :2 OFFSET :3"
+        result = _translate_sql(sql, cur)
+        self.assertNotIn("LIMIT", result)
+        self.assertIn("OFFSET :3 ROWS FETCH NEXT :2 ROWS ONLY", result)
+
+
 if __name__ == "__main__":
     unittest.main()
