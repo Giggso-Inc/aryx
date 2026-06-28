@@ -87,12 +87,54 @@ class GraphReader:
         ).result_set
         return [{**_entity(r), "relationship": r[3], "direction": r[4]} for r in rows]
 
-    def all_relationships(self) -> list[dict[str, Any]]:
-        """Return every relationship edge in the graph."""
+    def all_relationships(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return relationship edges in the graph, optionally capped."""
+        cap = f" LIMIT {max(1, int(limit))}" if limit else ""
         rows = self._graph.query(
-            "MATCH (a:Entity)-[r:REL]->(b:Entity) RETURN a.id, b.id, r.name"
+            f"MATCH (a:Entity)-[r:REL]->(b:Entity) RETURN a.id, b.id, r.name{cap}"
         ).result_set
         return [{"source": r[0], "target": r[1], "name": r[2]} for r in rows]
+
+    def subgraph(self, rel_limit: int = 500) -> dict[str, Any]:
+        """Return a connected subgraph suitable for graph-canvas rendering.
+
+        Samples proportionally from every edge type so all relationship kinds
+        appear in the canvas — not just whichever type FalkorDB happens to
+        return first.  For N edge types the per-type cap is rel_limit // N
+        (minimum 1), so the total edge count stays near rel_limit regardless
+        of how many types exist.  Every returned entity has at least one edge.
+        """
+        capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
+
+        # Discover the distinct relationship types present in this graph.
+        type_rows = self._graph.query(
+            "MATCH ()-[r:REL]->() RETURN DISTINCT r.name AS t"
+        ).result_set
+        rel_types = [r[0] for r in type_rows if r[0]]
+
+        entity_map: dict[int, dict[str, Any]] = {}
+        rels: list[dict[str, Any]] = []
+
+        if not rel_types:
+            return {"entities": [], "relationships": []}
+
+        per_type = max(1, capped // len(rel_types))
+
+        for rtype in rel_types:
+            rows = self._graph.query(
+                "MATCH (a:Entity)-[r:REL]->(b:Entity) "
+                "WHERE r.name = $rname "
+                "RETURN a.id, a.type, a.name, b.id, b.type, b.name, r.name "
+                f"LIMIT {per_type}",
+                {"rname": rtype},
+            ).result_set
+            for row in rows:
+                aid, atype, aname, bid, btype, bname, rname = row
+                entity_map[aid] = {"id": aid, "type": atype, "name": aname}
+                entity_map[bid] = {"id": bid, "type": btype, "name": bname}
+                rels.append({"source": aid, "target": bid, "name": rname})
+
+        return {"entities": list(entity_map.values()), "relationships": rels}
 
     def provenance(self, entity_id: int) -> list[dict[str, Any]]:
         """Return the source records an entity was projected from."""

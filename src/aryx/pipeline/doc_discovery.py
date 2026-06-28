@@ -84,6 +84,28 @@ def _guess_key_col(sample: str) -> str:
         return "name"
 
 
+def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
+    """Promote an explicit 'id'/'uuid'/'guid' column to primary match_key.
+
+    When a CSV has an explicit PK column the LLM sometimes picks a FK column
+    (e.g. bm_config_rule_id) instead.  In Pass 2 FK detection that causes
+    sibling entities sharing the same parent FK to appear as parent-child pairs,
+    creating thousands of false edges.  Returning 'id' early avoids this because
+    short keys like 'id' have mk_stem length < 3 and are skipped by Pass 2.
+    """
+    if mk and mk[0].lower() in ("id", "uuid", "guid"):
+        return mk
+    try:
+        hdr_line = sample.split("\n")[0]
+        hdrs = next(csv.reader(io.StringIO(hdr_line)), [])
+        id_hdr = next((h for h in hdrs[:8] if h.lower() in ("id", "uuid", "guid")), None)
+        if id_hdr:
+            return [id_hdr]
+    except Exception:  # noqa: BLE001
+        pass
+    return mk
+
+
 def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
     # Filename is a reliable signal for the entity type; use it unless it's generic.
     stype = _stem_type(filename)
@@ -111,9 +133,10 @@ def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
         mk = d.get("match_keys")
         if not mk:
             mk = [_guess_key_col(sample)]
-        return {"ontology_type": otype, "match_keys": mk}
+        return {"ontology_type": otype, "match_keys": _id_priority_mk(sample, mk)}
     except Exception:  # noqa: BLE001
-        return {"ontology_type": fallback, "match_keys": [_guess_key_col(sample)]}
+        return {"ontology_type": fallback,
+                "match_keys": _id_priority_mk(sample, [_guess_key_col(sample)])}
 
 
 def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
@@ -476,6 +499,28 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
         except Exception:  # noqa: BLE001
             return []
 
+    def _col_is_varying(data: bytes, headers: list[str], col: str,
+                        sample: int = 20) -> bool:
+        """Return True if *col* has at least 2 distinct non-empty values in the
+        first *sample* data rows.  Columns with a single constant value (e.g.
+        company_id = "4118171" for every row) are organisational context fields,
+        not FK references — linking on them creates cartesian-product false edges."""
+        try:
+            idx = headers.index(col)
+            lines = data.split(b"\n")[1: sample + 1]
+            seen_vals: set[str] = set()
+            for line in lines:
+                row = next(csv.reader(io.StringIO(line.decode("utf-8", "ignore"))), None)
+                if row and idx < len(row):
+                    v = row[idx].strip()
+                    if v:
+                        seen_vals.add(v)
+                        if len(seen_vals) >= 2:
+                            return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False  # 0 or 1 distinct value → constant field, skip
+
     plan_headers = [_headers(p["data"]) for p in plans]
     seen: set[tuple[str, str]] = set()
     links: list[dict] = []
@@ -557,9 +602,13 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     continue
                 src_upper = plan_a["ontology_type"].upper()
                 # Rule A: column exactly equals B's match key and looks like a code
-                # column — catches CAGE_CODE in A referencing CAGE_CODE in B
-                if (col_l == mk_b_l
-                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)):
+                # column — catches CAGE_CODE in A referencing CAGE_CODE in B.
+                # Guards:
+                #   own_mk_l — skip when both A and B are siblings sharing a parent FK
+                #   _col_is_varying — skip single-value context fields (company_id, etc.)
+                if (col_l == mk_b_l and col_l != own_mk_l
+                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
+                        and _col_is_varying(plan_a["data"], plan_headers[i], col)):
                     seen2.add(col2_key)
                     links.append({
                         "source_type": plan_a["ontology_type"],
@@ -572,7 +621,9 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 # Rule B: column contains B's match-key stem as a fragment AND has
                 # a key suffix — catches PARENT_CAGE → CAGE_CODE (stem "cage")
                 if (mk_stem in col_l and col_l != mk_b_l
-                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)):
+                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
+                        and _col_is_varying(plan_a["data"], plan_headers[i], col)
+                        and _col_is_varying(plan_b["data"], plan_headers[j], mk_b)):
                     seen2.add(col2_key)
                     links.append({
                         "source_type": plan_a["ontology_type"],
@@ -583,11 +634,16 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     })
                     continue
                 # Rule C: same key-suffix — RPLM_CODE and CAGE_CODE both end in
-                # _CODE, signalling a replacement / alternate-entity reference
+                # _CODE, signalling a replacement / alternate-entity reference.
+                # Target cardinality guard: if the join target column has only one
+                # distinct value (e.g. company_id = constant) it cannot produce
+                # meaningful per-row joins — only false cartesian-product edges.
                 col_sfx = next((s for s in _KEY_SUFFIXES if col_l.endswith(s)), None)
                 mk_sfx = next((s for s in _KEY_SUFFIXES if mk_b_l.endswith(s)), None)
                 if (col_sfx and mk_sfx and col_sfx == mk_sfx
-                        and col_l != mk_b_l and col_l != own_mk_l):
+                        and col_l != mk_b_l and col_l != own_mk_l
+                        and _col_is_varying(plan_a["data"], plan_headers[i], col)
+                        and _col_is_varying(plan_b["data"], plan_headers[j], mk_b)):
                     seen2.add(col2_key)
                     links.append({
                         "source_type": plan_a["ontology_type"],
@@ -706,12 +762,16 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         try:
             # relate=False: FK detection gives structural edges for tabular data;
             # LLM relate hangs on large payloads (e.g. CPQ function bodies).
+            # skip_graph=True for non-last plans: project_graph calls graph.clear()
+            # then rebuilds the entire workspace graph — concurrent calls race and
+            # corrupt each other.  Only the final serial plan projects to FalkorDB;
+            # it calls estore.list_entities() which covers ALL workspace entities.
             run_pipeline(connector=conn, dsn=settings.rdb_dsn,
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=False)
+                         relate=False, skip_graph=not is_last)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
