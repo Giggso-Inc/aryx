@@ -15,8 +15,20 @@ from falkordb import FalkorDB
 
 logger = logging.getLogger(__name__)
 
-_NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
-              "sku", "code", "email", "username")
+_NAME_KEYS = (
+    # Standard identifier fields
+    "name", "full_name", "title", "label", "ticket_ref", "ref",
+    "sku", "code", "email", "username",
+    # Defense / government data (CAGE, supplier, procurement)
+    "COMPANY", "COMPANY_NAME", "company", "company_name",
+    "CAGE_CODE", "cage_code",
+    # XML / CPQ config domain fields
+    "variable_name", "var_name", "bm_variable_name",
+    "item_text", "item_value",
+    "prop_value", "property_value", "prop_type",
+    "bm_name", "func_name", "rule_name",
+    "java_class_name", "file_name", "relative_path",
+)
 
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_LABELS = 6  # cap to avoid label-bloat on deep hierarchies
@@ -54,6 +66,10 @@ def _display_name(attributes: dict[str, Any]) -> str:
         value = attributes.get(key)
         if value:
             return str(value)
+    # Prefer non-numeric strings so numeric IDs don't leak as display labels.
+    for value in attributes.values():
+        if isinstance(value, str) and 0 < len(value) <= 80 and not value.isdigit():
+            return value
     for value in attributes.values():
         if isinstance(value, str) and 0 < len(value) <= 80:
             return value
