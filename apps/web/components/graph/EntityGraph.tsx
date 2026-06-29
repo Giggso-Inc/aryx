@@ -299,11 +299,13 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // allTypes includes both entity instance types AND schema-only types
+  // allTypes includes entity instance types; schema-only types are included
+  // only when the workspace has at least one ingested entity so that a fresh
+  // empty workspace shows nothing instead of ontology placeholder nodes.
   const allTypes = useMemo(() => {
     const s = new Set([
       ...allEntities.map((e) => e.type),
-      ...schemaTypes,
+      ...(allEntities.length > 0 ? schemaTypes : []),
     ]);
     return [...s].sort();
   }, [allEntities, schemaTypes]);
@@ -340,8 +342,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   // Rebuild graph whenever filters or data changes, then fit view
   useEffect(() => {
     if (loading) return;
-    const hasContent = allEntities.length > 0 || schemaTypes.length > 0;
-    if (!hasContent) return;
+    if (allEntities.length === 0) return;
     const schemaOnly = schemaTypes.filter(
       (t) => !allEntities.some((e) => e.type === t),
     );
@@ -391,7 +392,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     </div>
   );
 
-  if (allEntities.length === 0 && schemaTypes.length === 0) return (
+  if (allEntities.length === 0) return (
     <div className="flex flex-1 items-center justify-center text-[13px] text-subtle">
       No entities in this workspace yet. Ingest some data first.
     </div>
