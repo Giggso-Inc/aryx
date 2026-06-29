@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
     )
     max_relate_pairs: int = Field(
-        default=25,
+        default=10,
         description=(
             "Max entity pairs evaluated for relationship inference per pipeline run. "
             "Each pair costs one LLM call (~10-40s on Ollama). "
@@ -121,13 +121,13 @@ class Settings(BaseSettings):
         description="API key for cloud LLM providers (OpenAI, Anthropic, Gemini).",
     )
     llm_timeout: float = Field(
-        default=120.0,
+        default=900.0,
         description="Per-call HTTP timeout in seconds for LLM requests.",
     )
 
     # ── Document processing ───────────────────────────────────────────────────
     per_doc_timeout: float = Field(
-        default=300.0,
+        default=7200.0,
         description="Wall-clock budget in seconds for a single document extraction.",
     )
     doc_workers: int = Field(
