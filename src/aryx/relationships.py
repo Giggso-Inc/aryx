@@ -17,8 +17,18 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM = (
     "You decide whether two entities are related and, if so, name the directed "
-    "relationship from A to B in lowercase snake_case (e.g. places, works_for, "
-    "located_in). If unrelated, set related=false."
+    "relationship from A to B in lowercase snake_case "
+    "(e.g. contains, part_of, belongs_to, connected_to, has_component, references, "
+    "has_status, replaces, has_parent). "
+    "Use '_ontology_type' and '_element_type' fields to understand each entity's domain. "
+    "STRUCTURAL RULES — return related=true with confidence >= 0.9 when: "
+    "(1) entity B has an attribute like '{TypeA}_id' whose value matches entity A's 'id'; "
+    "(2) both entities share a common code/key attribute (e.g. CAGE_CODE, SUPPLIER_CODE, "
+    "PART_NO) with the same value — they describe the same real-world object from "
+    "different angles; "
+    "(3) entity A has a reference column (e.g. PARENT_CAGE, RPLM_CODE, ASSOC_CODE) "
+    "whose value matches entity B's primary code attribute. "
+    "Set related=false only when the entities are clearly from unrelated domains."
 )
 
 _SCHEMA = {

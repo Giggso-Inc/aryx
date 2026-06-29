@@ -244,3 +244,71 @@ export interface Datasource {
   mask: string;
   ready: boolean;
 }
+
+// ── Observability ────────────────────────────────────────────────────────────
+
+export interface ObservabilityData {
+  jobs: { total: number; complete?: number; running?: number; failed?: number };
+  llm: {
+    total_calls?: number; total_tokens?: number; avg_latency_ms?: number;
+    prompt_tokens?: number; completion_tokens?: number;
+  };
+  llm_recent: Array<{
+    role: string; model: string; prompt_tokens: number;
+    completion_tokens: number; latency_ms: number; source: string;
+    error?: string; ts: string;
+  }>;
+  graph: { entities: number; relationships: number };
+  model_config: Record<string, unknown>;
+  platform: Record<string, unknown>;
+}
+
+// ── Ask history ──────────────────────────────────────────────────────────────
+
+export interface AskHistoryTurn {
+  id: number;
+  workspace_id: number;
+  question: string;
+  answer: string;
+  model?: string;
+  latency_ms?: number;
+  ts: string;
+}
+
+// ── Document discovery ───────────────────────────────────────────────────────
+
+export interface DiscoverySummary {
+  types: Array<{ type: string; count: number; examples: string[] }>;
+  /** Tabular (CSV/JSON) files the read step identified. */
+  files: Array<{ filename: string; ontology_type: string }>;
+}
+
+// ── MCP tokens ───────────────────────────────────────────────────────────────
+
+export interface McpToken {
+  id: number;
+  label: string;
+  prefix: string;
+  created_at: string;
+  revoked_at?: string | null;
+}
+
+export interface McpTokenIssued extends McpToken {
+  token: string;
+}
+
+// ── Ontology versions ────────────────────────────────────────────────────────
+
+export interface OntologyVersion {
+  id: number;
+  workspace_id: number;
+  label?: string;
+  snapshot: unknown;
+  created_at: string;
+}
+
+export interface OntologyChange {
+  ts: string;
+  kind: string;
+  detail: string;
+}

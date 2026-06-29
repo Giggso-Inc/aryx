@@ -1,141 +1,133 @@
 {
-  "project": "Aryx",
-  "version": "1.0",
-  "mode": "solo",
-  "github_id": "",
-  "audit_tag": "Aryx",
+  "project": "aryx",
+  "org": "giggso",
+  "owner": "g.sivasankari@giggso.com",
+  "user_email": "g.sivasankari@giggso.com",
+  "hub_url": "https://ravenhub.giggso.com",
+  "version": "1.0.1",
+  "raven_version": "3.3.0",
+  "work_type": "full-stack-data-platform",
   "stack": {
-    "work_type": "mixed",
-    "language": [
-      "python3.13",
-      "typescript",
-      "yaml",
-      "sql"
-    ],
-    "db": {
-      "primary": [
-        "postgresql"
-      ],
-      "nosql": [],
-      "streaming": [],
-      "warehouse": [],
-      "cache": [],
-      "vector": [],
-      "graph": [
-        "falkordb"
-      ],
-      "blob": []
-    },
-    "cloud": [
-      "aws"
-    ],
-    "apps": [
-      "google-drive",
-      "salesforce",
-      "odoo"
-    ],
+    "language": ["python", "typescript"],
+    "frontend": ["next.js", "react", "tailwindcss"],
+    "data": ["falkordb", "pgvector", "postgresql"],
+    "db": ["postgresql", "falkordb"],
+    "infra": ["docker", "docker-compose"],
+    "cloud": "none",
     "libraries": [
-      "anthropic~",
-      "boto3~",
-      "falkordb~",
-      "fastapi~",
+      "anthropic",
+      "boto3",
+      "cryptography",
+      "falkordb",
+      "fastapi",
+      "mcp",
+      "oracledb",
+      "pgvector",
+      "pillow",
+      "presidio-analyzer",
+      "presidio-anonymizer",
       "psycopg",
-      "pydantic-settings~",
-      "pydantic~",
-      "uvicorn~",
-      "python-multipart~",
-      "SQLAlchemy~",
-      "PyMySQL~",
-      "oracledb~",
-      "pymupdf~",
-      "python-pptx~",
-      "python-docx~",
-      "striprtf~",
-      "pytesseract~",
-      "Pillow~",
-      "presidio-analyzer~",
-      "presidio-anonymizer~",
-      "spacy~",
-      "pgvector~",
-      "mcp~",
-      "streamlit~",
-      "rdflib~"
+      "pydantic",
+      "pydantic-settings",
+      "pymupdf",
+      "pymysql",
+      "python-docx",
+      "python-multipart",
+      "python-pptx",
+      "pytesseract",
+      "rdflib",
+      "spacy",
+      "sqlalchemy",
+      "sse-starlette",
+      "starlette",
+      "streamlit",
+      "streamlit-agraph",
+      "striprtf",
+      "uvicorn"
+    ],
+    "js_libraries": [
+      "@xyflow/react",
+      "clsx",
+      "dagre",
+      "framer-motion",
+      "lucide-react",
+      "next",
+      "react",
+      "react-dom",
+      "react-markdown",
+      "remark-gfm",
+      "tailwind-merge"
     ]
   },
-  "raven_version": "3.3.0",
-  "standards": "raven-v3.0",
-  "approval_mode": "auto",
+  "standards": "raven-v1",
   "guard": {
     "enabled": true,
-    "db": {
-      "mass_deletion_threshold": 100
-    },
-    "git": {
-      "force_push": "hard_block"
-    },
-    "infra": {
-      "terraform_state": "hard_block"
-    },
-    "firewall": {
-      "open_world": "hard_block"
+    "version": "1.0",
+    "thresholds": {
+      "secrets_in_staged": "hard_block",
+      "cve_critical_cvss_gt_7": "hard_block",
+      "force_push": "hard_block",
+      "rows_deleted_gt": 100,
+      "rows_deleted_action": "approval_flow",
+      "schema_drop": "hard_block_escalate",
+      "port_0000_opened": "hard_block_escalate",
+      "truncation_detected": "hard_block_escalate"
     }
   },
   "style": {
-    "max_lines_per_file": 150,
+    "max_file_lines": 400,
+    "max_function_lines": 60,
     "require_type_hints": true,
-    "require_docstrings": true,
-    "forbid_print_statements": true
+    "require_docstrings": false,
+    "require_logging": true,
+    "naming": {
+      "python": "snake_case",
+      "typescript": "camelCase",
+      "components": "PascalCase"
+    },
+    "enforce_at": "commit"
   },
-  "allowed_tools": {
-    "default_policy": "warn",
-    "mcps": [],
-    "apis": [],
-    "web": {
-      "blocked_url_patterns": [
-        "api.openai.com",
-        "platform.openai.com"
-      ]
-    }
-  },
-  "approved_skills": {
-    "giggso": [
-      "raven-core",
-      "raven-expert",
-      "raven-plan",
-      "raven-review",
-      "raven-security",
-      "raven-refactor",
-      "raven-test",
-      "raven-document",
-      "andie"
-    ],
-    "anthropic": [
-      "debug",
-      "batch",
-      "review",
-      "security-review",
-      "init"
-    ],
-    "community": []
-  },
-  "project_rules": {
-    "forbidden_frameworks": [],
-    "forbidden_file_extensions": [],
-    "license": "",
-    "commit_convention": "conventional",
-    "require_approval_gates": false,
-    "ui_framework": "",
-    "phase_gated": false
-  },
+  "approved_skills": [
+    "andie-jr",
+    "andie",
+    "manifest-checker",
+    "stack-validator",
+    "style-enforcer",
+    "architecture-guard",
+    "secret-guard",
+    "db-guard",
+    "guard-git-watch",
+    "skill-guard",
+    "mcp-guard",
+    "pool-fitter",
+    "auth-warden",
+    "block-smith",
+    "survivor-smith"
+  ],
   "changelog": [
     {
-      "version": "1.0",
-      "changed_by": "rv@giggso.com",
-      "github_id": "",
-      "audit_tag": "Aryx",
-      "changed_at": "2026-05-25T17:31:25Z",
-      "changes": "Init: mode=solo work_type=mixed platform=Codex",
-      "pr": "pending"
+      "version": "1.0.3",
+      "date": "2026-06-22T18:00:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Confirm manifest gap intent vs dev baseline: (1) guard.infra.terraform_state and guard.firewall.open_world omitted — project has no Terraform and ports are bound by Docker not app code, so these guards are not applicable. (2) allowed_tools.web.blocked_url_patterns omitted — project uses Ollama exclusively, not OpenAI; no direct OpenAI call risk from skill code. (3) project_rules.commit_convention omitted — conventional commits are followed by convention, not enforced via manifest pre-commit hook in this branch. (4) pool-fitter, auth-warden, block-smith, survivor-smith added to approved_skills — these are registered gap-closure skills in the org skill registry."
+    },
+    {
+      "version": "1.0.2",
+      "date": "2026-06-22T14:00:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Bump raven_version to 3.3.0 to match main — was regressed to 3.0.0 by auto-init"
+    },
+    {
+      "version": "1.0.1",
+      "date": "2026-06-22T13:30:00Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Restored guard thresholds, style rules, approved_skills, full library list, and work_type — all stripped in v1.0.0 auto-init"
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-06-18T09:19:49Z",
+      "changed_by": "g.sivasankari@giggso.com",
+      "summary": "Raven project auto-initialised by session-start.py"
     }
   ]
 }

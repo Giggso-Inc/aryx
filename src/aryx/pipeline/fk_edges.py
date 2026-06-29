@@ -40,7 +40,7 @@ def link_by_attribute(
     Returns:
         Number of relationships saved (existing edges are not deduped here).
     """
-    entities = estore.list_entities()
+    entities = list(estore.list_entities())
     targets: dict[str, list[int]] = {}
     for tid, ttype, payload in entities:
         if ttype != target_type:

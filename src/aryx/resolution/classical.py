@@ -20,7 +20,7 @@ def block_key(text: str) -> str:
     return normalize(text)[:4]
 
 
-def block(records: list[ResolutionRecord], max_block_size: int = 5000) -> dict[str, list[ResolutionRecord]]:
+def block(records: list[ResolutionRecord], max_block_size: int | None = None) -> dict[str, list[ResolutionRecord]]:
     """Group records into candidate blocks (shim for MultiKeyBlocker).
 
     Delegates to MultiKeyBlocker so all three key families (prefix, token-set,

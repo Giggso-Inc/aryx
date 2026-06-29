@@ -1,0 +1,32 @@
+{
+  "mode": "shadow",
+  "default": "shadow",
+  "allowed": [
+    {
+      "name": "github",
+      "tools": "*",
+      "source": "registered"
+    },
+    {
+      "name": "filesystem",
+      "tools": [
+        "read_file",
+        "write_file",
+        "list_directory"
+      ],
+      "source": "registered"
+    },
+    {
+      "name": "web_search",
+      "tools": "*",
+      "source": "registered"
+    }
+  ],
+  "blocked": [
+    "browser_control",
+    "system_exec"
+  ],
+  "_synced_at": "2026-06-25T14:52:47.295850+00:00",
+  "_synced_from": "hub",
+  "_version": 1
+}

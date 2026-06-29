@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 
+from fastapi import Header, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -47,6 +48,44 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if mode == "optional" and not valid:
             response.headers["X-Aryx-Auth-Warning"] = "api-key-not-verified"
         return response
+
+
+def require_api_key(x_aryx_api_key: str = Header(default="")) -> str:
+    """Hard route-level guard — fails closed regardless of ARYX_API_AUTH mode.
+
+    Use as a FastAPI dependency on admin endpoints that must always require a
+    valid key, even when the global middleware is in 'optional' or 'off' mode.
+    """
+    if not x_aryx_api_key or not _verify_key(x_aryx_api_key):
+        raise HTTPException(
+            status_code=401,
+            detail="missing or invalid api key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return x_aryx_api_key
+
+
+def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
+    """Mode-aware auth guard for write operations.
+
+    Respects ARYX_API_AUTH env var so dev workflows are not blocked:
+      off      → passes through (no key required)
+      optional → passes with a response warning header if key absent/invalid
+      required → hard 401 if key absent/invalid (production setting)
+    Default: optional.
+    """
+    mode = os.environ.get("ARYX_API_AUTH", "optional").lower()
+    if mode == "off":
+        return None
+    key = x_aryx_api_key.strip()
+    valid = _verify_key(key) if key else False
+    if mode == "required" and not valid:
+        raise HTTPException(
+            status_code=401,
+            detail="missing or invalid api key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return key if valid else None
 
 
 def _verify_key(key: str) -> bool:

@@ -31,13 +31,18 @@ class CsvConnector(Connector):
             reader = csv.DictReader(self._source.open(encoding="utf-8"))
         count = 0
         for row in reader:
+            # DictReader stores extra-column values under the None key when a row
+            # has more fields than the header (restkey=None default). Drop those
+            # extra values: they are positionally meaningless and cause
+            # json.dumps(sort_keys=True) to crash with NoneType < str.
+            clean_row = {k: v for k, v in row.items() if k is not None}
             record_id = hashlib.sha256(
-                json.dumps(row, sort_keys=True).encode()
+                json.dumps(clean_row, sort_keys=True).encode()
             ).hexdigest()[:16]
             yield RawRecord(
                 source=SourceRef(system=self._system, dataset=self._dataset,
                                  record_id=record_id),
-                payload=dict(row),
+                payload=clean_row,
             )
             count += 1
         logger.info("csv extracted dataset=%s records=%d", self._dataset, count)

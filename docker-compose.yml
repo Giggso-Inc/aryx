@@ -6,7 +6,7 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: aryx
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aryx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: aryx
     # Host port 55432 avoids colliding with other stacks already on 5432.
     # In-network clients still reach this as postgres:5432.
@@ -46,7 +46,11 @@ services:
     image: ollama/ollama
     volumes:
       - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=4
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 15s
@@ -62,7 +66,7 @@ services:
         condition: service_healthy
     environment:
       - OLLAMA_HOST=http://ollama:11434
-    entrypoint: ["/bin/sh", "-c", "ollama pull qwen3.5:0.8b && ollama pull lfm2.5-thinking && ollama pull nomic-embed-text"]
+    entrypoint: ["/bin/sh", "-c", "ollama pull llama3.2:3b && ollama pull nomic-embed-text"]
     restart: "no"
 
   api:
@@ -75,11 +79,21 @@ services:
     environment:
       - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
       - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
-      - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-qwen3.5:0.8b}
-      - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-lfm2.5-thinking:latest}
+      - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-llama3.2:3b}
+      - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-llama3.2:3b}
+      - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-360}
+      - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-600}
+      - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
       - ARYX_LLM_API_KEY=${ARYX_LLM_API_KEY:-}
+      - ARYX_MAX_RELATE_PAIRS=${ARYX_MAX_RELATE_PAIRS:-3}
+      - ARYX_RELATE_WORKERS=${ARYX_RELATE_WORKERS:-2}
+      - ARYX_XML_MAX_ENTITY_TYPES=${ARYX_XML_MAX_ENTITY_TYPES:-20}
+      - ARYX_XML_MAX_ROWS_PER_TYPE=${ARYX_XML_MAX_ROWS_PER_TYPE:-500}
+      - ARYX_INGEST_WORKERS=${ARYX_INGEST_WORKERS:-3}
+      - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
+      - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
     ports:
-      - "8088:8000"
+      - "127.0.0.1:8088:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,7 +113,7 @@ services:
     env_file: .env
     command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
     ports:
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     depends_on:
       falkordb:
         condition: service_started

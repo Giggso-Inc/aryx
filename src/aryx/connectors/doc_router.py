@@ -4,9 +4,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from pathlib import Path
 
 from aryx.broker import Broker
@@ -21,6 +20,7 @@ from aryx.ontology.extract import extract_mentions
 from aryx.pipeline.clean_text import chunk_pages
 from aryx.pipeline.embed import embed_chunks
 from aryx.pipeline.pii import screen_chunks
+from aryx.config import get_settings
 from aryx.store.chunk_store import ChunkStore
 
 logger = logging.getLogger(__name__)
@@ -46,8 +46,13 @@ def _connector_for(path: Path):
 
 
 # Hard wall-clock budget per document — a hang in parse / OCR / embed /
-# extract is abandoned so the batch finishes. Override ARYX_PER_DOC_TIMEOUT.
-_PER_DOC_TIMEOUT = float(os.environ.get("ARYX_PER_DOC_TIMEOUT", "300"))
+# extract is abandoned so the batch finishes. Override with ARYX_PER_DOC_TIMEOUT.
+_PER_DOC_TIMEOUT = get_settings().per_doc_timeout
+
+# Max documents processed concurrently. Default 1 (sequential) for CPU Ollama
+# where parallelism adds queue overhead without throughput gain. Set to 3-5
+# when using a cloud LLM (Anthropic/OpenAI) that handles concurrent requests.
+_DOC_WORKERS = get_settings().doc_workers
 
 
 def _ingest_with_timeout(
@@ -110,18 +115,43 @@ class DocumentRouterConnector(Connector):
         self._context = context
 
     def extract(self) -> Iterator[RawRecord]:
-        for path in self._paths:
-            try:
-                yield from _ingest_with_timeout(
-                    path, self._system, self._broker, self._chunk_store,
-                    self._chunk_size, self._chunk_overlap,
-                    self._expected_embed_dim, self._run_pii, self._context,
-                )
-            except FuturesTimeout:
-                logger.error("ingest TIMED OUT path=%s after %ss — skipping; "
-                             "batch continues", path.name, _PER_DOC_TIMEOUT)
-            except Exception as exc:
-                logger.error("ingest failed path=%s error=%s", path.name, exc)
+        if _DOC_WORKERS <= 1 or len(self._paths) <= 1:
+            for path in self._paths:
+                try:
+                    yield from _ingest_with_timeout(
+                        path, self._system, self._broker, self._chunk_store,
+                        self._chunk_size, self._chunk_overlap,
+                        self._expected_embed_dim, self._run_pii, self._context,
+                    )
+                except FuturesTimeout:
+                    logger.error("ingest TIMED OUT path=%s after %ss — skipping; "
+                                 "batch continues", path.name, _PER_DOC_TIMEOUT)
+                except Exception as exc:
+                    logger.error("ingest failed path=%s error=%s", path.name, exc)
+        else:
+            # Parallel mode: ARYX_DOC_WORKERS > 1 (use with cloud LLMs only).
+            # All docs are submitted concurrently; results yielded as each finishes.
+            logger.info("parallel doc ingest workers=%d docs=%d",
+                        _DOC_WORKERS, len(self._paths))
+            with ThreadPoolExecutor(max_workers=_DOC_WORKERS) as pool:
+                futures = {
+                    pool.submit(
+                        _ingest_with_timeout,
+                        path, self._system, self._broker, self._chunk_store,
+                        self._chunk_size, self._chunk_overlap,
+                        self._expected_embed_dim, self._run_pii, self._context,
+                    ): path
+                    for path in self._paths
+                }
+                for future in as_completed(futures):
+                    path = futures[future]
+                    try:
+                        yield from future.result()
+                    except FuturesTimeout:
+                        logger.error("ingest TIMED OUT path=%s after %ss — skipping",
+                                     path.name, _PER_DOC_TIMEOUT)
+                    except Exception as exc:
+                        logger.error("ingest failed path=%s error=%s", path.name, exc)
 
 
 async def ingest_documents_parallel(
@@ -129,7 +159,7 @@ async def ingest_documents_parallel(
     chunk_size: int = 1000, chunk_overlap: int = 100,
     expected_embed_dim: int = 768, run_pii: bool = True,
 ) -> list[RawRecord]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     tasks = [
         loop.run_in_executor(
             None, lambda p=path: ingest_document(
