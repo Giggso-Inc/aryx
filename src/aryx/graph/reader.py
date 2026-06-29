@@ -106,14 +106,11 @@ class GraphReader:
         """Return a connected subgraph suitable for graph-canvas rendering.
 
         Samples proportionally from every edge type so all relationship kinds
-        appear in the canvas — not just whichever type FalkorDB happens to
-        return first.  For N edge types the per-type cap is rel_limit // N
-        (minimum 1), so the total edge count stays near rel_limit regardless
-        of how many types exist.  Every returned entity has at least one edge.
+        appear in the canvas.  After collecting relationship-connected entities,
+        also fetches all remaining isolated entities (no edges) so every entity
+        in the workspace is visible on the canvas regardless of connectivity.
 
-        Results are cached for 30 s (per graph + rel_limit combination) to
-        collapse repeated canvas renders — the proportional query fires N+1
-        FalkorDB round-trips; caching avoids that cost on every page load.
+        Results are cached for 30 s (per graph + rel_limit combination).
         """
         capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
         cache_key = f"{self._graph.name}:{capped}"
@@ -130,26 +127,36 @@ class GraphReader:
         ).result_set
         rel_types = [r[0] for r in type_rows if r[0]]
 
-        if not rel_types:
-            return {"entities": [], "relationships": []}
-
-        per_type = max(1, capped // len(rel_types))
         entity_map: dict[int, dict[str, Any]] = {}
         rels: list[dict[str, Any]] = []
 
-        for rtype in rel_types:
-            rows = self._graph.query(
-                "MATCH (a:Entity)-[r:REL]->(b:Entity) "
-                "WHERE r.name = $rname "
-                "RETURN a.id, a.type, a.name, b.id, b.type, b.name, r.name "
-                f"LIMIT {per_type}",
-                {"rname": rtype},
+        if rel_types:
+            per_type = max(1, capped // len(rel_types))
+            for rtype in rel_types:
+                rows = self._graph.query(
+                    "MATCH (a:Entity)-[r:REL]->(b:Entity) "
+                    "WHERE r.name = $rname "
+                    "RETURN a.id, a.type, a.name, b.id, b.type, b.name, r.name "
+                    f"LIMIT {per_type}",
+                    {"rname": rtype},
+                ).result_set
+                for row in rows:
+                    aid, atype, aname, bid, btype, bname, rname = row
+                    entity_map[aid] = {"id": aid, "type": atype, "name": aname}
+                    entity_map[bid] = {"id": bid, "type": btype, "name": bname}
+                    rels.append({"source": aid, "target": bid, "name": rname})
+
+        # Always fetch all entities so isolated nodes (no relationships yet)
+        # are visible on the canvas — entity count drives the ontology panel.
+        remaining = capped - len(entity_map)
+        if remaining > 0:
+            all_rows = self._graph.query(
+                f"MATCH (e:Entity) RETURN e.id, e.type, e.name LIMIT {remaining}"
             ).result_set
-            for row in rows:
-                aid, atype, aname, bid, btype, bname, rname = row
-                entity_map[aid] = {"id": aid, "type": atype, "name": aname}
-                entity_map[bid] = {"id": bid, "type": btype, "name": bname}
-                rels.append({"source": aid, "target": bid, "name": rname})
+            for row in all_rows:
+                eid, etype, ename = row
+                if eid not in entity_map:
+                    entity_map[eid] = {"id": eid, "type": etype, "name": ename}
 
         result = {"entities": list(entity_map.values()), "relationships": rels}
         _subgraph_cache[cache_key] = (now, result)

@@ -8,7 +8,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  AlertCircle, ChevronDown, Loader2, RefreshCw, Search, X,
+  AlertCircle, ChevronDown, GitMerge, Loader2, RefreshCw, Search, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { autoLayout } from "@/lib/canvasLayout";
@@ -26,11 +26,13 @@ interface DetailPanelProps {
   workspaceId: number;
   onClose: () => void;
   onNavigate: (id: number) => void;
+  onExpandOnCanvas: (entityId: number, neighbors: Array<{ id: number; type: string; name: string; relationship: string }>) => void;
 }
 
-function DetailPanel({ entity, workspaceId, onClose, onNavigate }: DetailPanelProps) {
+function DetailPanel({ entity, workspaceId, onClose, onNavigate, onExpandOnCanvas }: DetailPanelProps) {
   const [neighbors, setNeighbors] = useState<Array<{ id: number; type: string; name: string; relationship: string }>>([]);
   const [loading, setLoading] = useState(true);
+  const [expanding, setExpanding] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -48,10 +50,28 @@ function DetailPanel({ entity, workspaceId, onClose, onNavigate }: DetailPanelPr
           <h3 className="truncate font-semibold text-navy-900">{entity.name}</h3>
           <div className="text-[10px] text-subtle">id:{entity.id}</div>
         </div>
-        <button type="button" onClick={onClose}
-          className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
-          <X size={14} />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {!loading && neighbors.length > 0 && (
+            <button
+              type="button"
+              disabled={expanding}
+              title="Show all connections for this node on the canvas"
+              onClick={async () => {
+                setExpanding(true);
+                onExpandOnCanvas(entity.id, neighbors);
+                setExpanding(false);
+              }}
+              className="focus-ring flex items-center gap-1 rounded-md border border-steel-200 bg-steel-50 px-2 py-1 text-[10px] font-medium text-steel-700 hover:bg-steel-100 disabled:opacity-50"
+            >
+              {expanding ? <Loader2 size={10} className="animate-spin" /> : <GitMerge size={10} />}
+              Expand
+            </button>
+          )}
+          <button type="button" onClick={onClose}
+            className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
+            <X size={14} />
+          </button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {entity.attributes && Object.keys(entity.attributes).length > 0 && (
@@ -176,6 +196,7 @@ function buildGraph(
   pathIds: Set<number>,
   typeIndex: Map<string, number>,
   schemaOnlyTypes: string[],
+  expandedIds: Set<number> = new Set(),
 ): { nodes: Node[]; edges: Edge[] } {
   const shown = entities.filter((e) =>
     (typeSet.size === 0 || typeSet.has(e.type)) &&
@@ -188,6 +209,7 @@ function buildGraph(
     const idx = typeIndex.get(e.type) ?? 0;
     const color = typeColor(idx);
     const highlighted = pathIds.size > 0 && pathIds.has(e.id);
+    const isExpanded = expandedIds.has(e.id);
     return {
       id: String(e.id),
       type: "default",
@@ -200,19 +222,24 @@ function buildGraph(
             <div style={{ fontSize: 10, color: color, marginTop: 1 }}>
               {e.type}
             </div>
+            {isExpanded && (
+              <div style={{ fontSize: 9, color: "#64748b", marginTop: 2 }}>expanded</div>
+            )}
           </div>
         ),
       },
       position: { x: 0, y: 0 },
       style: {
         background: highlighted ? "#fef3c7" : "#ffffff",
-        border: `2px solid ${color}`,
+        border: isExpanded ? `3px solid ${color}` : `2px solid ${color}`,
         borderRadius: 8,
         padding: "6px 10px",
         width: 160,
         boxShadow: highlighted
           ? `0 0 0 3px ${color}55, 0 2px 8px rgba(0,0,0,0.12)`
-          : "0 1px 4px rgba(0,0,0,0.08)",
+          : isExpanded
+            ? `0 0 0 3px ${color}44, 0 2px 8px rgba(0,0,0,0.10)`
+            : "0 1px 4px rgba(0,0,0,0.08)",
       },
     };
   });
@@ -286,6 +313,7 @@ function buildGraph(
 
 export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const rfInstance = useRef<ReactFlowInstance | null>(null);
+  const fitOnNextRender = useRef(true); // true only after a full load or reload
   const [allEntities, setAllEntities] = useState<EntityNode[]>([]);
   const [allRels, setAllRels] = useState<EntityRel[]>([]);
   const [schemaTypes, setSchemaTypes] = useState<string[]>([]);
@@ -296,6 +324,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const [selected, setSelected] = useState<EntityNode | null>(null);
   const [pathIds, setPathIds] = useState<Set<number>>(new Set());
   const [showPath, setShowPath] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
@@ -317,6 +346,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   }, [allTypes]);
 
   const load = useCallback(async () => {
+    fitOnNextRender.current = true; // full reload → fit the new graph
     setLoading(true); setError(null);
     try {
       const [g, onto] = await Promise.all([
@@ -343,19 +373,21 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   useEffect(() => {
     if (loading) return;
     if (allEntities.length === 0) return;
-    const schemaOnly = schemaTypes.filter(
-      (t) => !allEntities.some((e) => e.type === t),
-    );
+    // Schema-only placeholder nodes only make sense in empty workspaces; suppress
+    // them when real entity instances exist so they don't clutter the canvas.
     const { nodes: n, edges: e } = buildGraph(
-      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, schemaOnly,
+      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, [], expandedIds,
     );
     setNodes(n);
     setEdges(e);
-    // Fit view after React has had a chance to render the new nodes
-    setTimeout(() => {
-      rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
-    }, 80);
-  }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, loading, setNodes, setEdges]);
+    // fitView only on full load/reload — not on incremental expand or filter changes.
+    if (fitOnNextRender.current) {
+      fitOnNextRender.current = false;
+      setTimeout(() => {
+        rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
+      }, 80);
+    }
+  }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, expandedIds, loading, setNodes, setEdges]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     // schema:: nodes are type placeholders — not selectable entity instances
@@ -363,6 +395,36 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     const entity = allEntities.find((e) => String(e.id) === node.id);
     if (entity) { setSelected(entity); setPathIds(new Set()); }
   }, [allEntities]);
+
+  // Expand a node's 1-hop neighbors onto the canvas — adds missing entities and edges.
+  // Called from the "Expand" button in the sidebar so there's no double-click race condition.
+  const expandOnCanvas = useCallback((
+    entityId: number,
+    neighbors: Array<{ id: number; type: string; name: string; relationship: string }>,
+  ) => {
+    setExpandedIds((prev) => new Set([...prev, entityId]));
+    setAllEntities((prev) => {
+      const existing = new Set(prev.map((e) => e.id));
+      const newOnes = neighbors
+        .filter((n) => !existing.has(n.id))
+        .map((n) => ({ id: n.id, type: n.type, name: n.name }));
+      return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+    });
+    setAllRels((prev) => {
+      const existingKey = new Set(prev.map((r) => `${r.source}-${r.target}`));
+      const newRels = neighbors.flatMap((n) => {
+        const edges: EntityRel[] = [];
+        if (!existingKey.has(`${entityId}-${n.id}`)) {
+          edges.push({ source: entityId, target: n.id, name: n.relationship });
+        }
+        if (!existingKey.has(`${n.id}-${entityId}`)) {
+          edges.push({ source: n.id, target: entityId, name: n.relationship });
+        }
+        return edges;
+      });
+      return newRels.length > 0 ? [...prev, ...newRels] : prev;
+    });
+  }, []);
 
   const navigateTo = (id: number) => {
     const entity = allEntities.find((e) => e.id === id);
@@ -493,10 +555,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick}
-          onInit={(instance) => {
-            rfInstance.current = instance;
-            setTimeout(() => instance.fitView({ padding: 0.15 }), 50);
-          }}
+          onInit={(instance) => { rfInstance.current = instance; }}
           minZoom={0.05}
           maxZoom={3}
           proOptions={{ hideAttribution: true }}
@@ -527,6 +586,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           workspaceId={workspaceId}
           onClose={() => setSelected(null)}
           onNavigate={navigateTo}
+          onExpandOnCanvas={expandOnCanvas}
         />
       )}
     </div>

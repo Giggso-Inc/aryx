@@ -33,14 +33,18 @@ export function Header(props: HeaderProps) {
 
   const onWizard = pathname?.startsWith("/start") || false;
   const showBell = !onWizard && !!active;
+  const hideLogo = !onWizard;
+  const logoSize = 80;
 
   return (
     <header className="sticky top-0 z-20 border-b border-navy-100/80 bg-canvas/85">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3">
         <div className="flex items-center gap-8">
-          <Link href="/" className="focus-ring rounded-md">
-            <Logo size={34} withWordmark />
-          </Link>
+          {!hideLogo && (
+            <Link href="/" className="focus-ring rounded-md">
+              <Logo size={logoSize} />
+            </Link>
+          )}
           <nav className="flex items-center gap-1">
             <NavLink href="/home" icon={<Home size={14} />} label="Home"
                       active={pathname === "/home"} />
