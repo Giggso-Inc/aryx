@@ -121,7 +121,7 @@ class Settings(BaseSettings):
         description="API key for cloud LLM providers (OpenAI, Anthropic, Gemini).",
     )
     llm_timeout: float = Field(
-        default=120.0,
+        default=600.0,
         description="Per-call HTTP timeout in seconds for LLM requests.",
     )
 
