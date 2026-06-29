@@ -100,12 +100,12 @@ def _mount_mcp(app: FastAPI) -> None:
 
 
 async def _stale_job_sweep() -> None:
-    timeout_min = int(os.environ.get("ARYX_JOB_TIMEOUT_MINUTES", "10"))
     while True:
         await asyncio.sleep(60)
         try:
             from aryx.config import get_settings
             from aryx.store.job_store import JobStore
+            timeout_min = int(os.environ.get("ARYX_JOB_TIMEOUT_MINUTES", "120"))
             JobStore(get_settings().effective_dsn()).sweep_stale(timeout_min)
         except Exception as exc:  # noqa: BLE001
             logger.warning("stale-job sweep error: %s", exc)
