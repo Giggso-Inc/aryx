@@ -11,7 +11,7 @@ import csv
 import io
 import json
 import logging
-import os
+import re
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as defused_ET
 from collections import Counter
@@ -291,8 +291,9 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
     # unnamed to fill remaining slots.  Cap is configurable via
     # ARYX_XML_MAX_ENTITY_TYPES (default 20) so large CPQ/ERP exports with
     # 20+ entity types are not silently truncated.
-    _xml_max_types = int(os.environ.get("ARYX_XML_MAX_ENTITY_TYPES", "20"))
-    _xml_max_rows = int(os.environ.get("ARYX_XML_MAX_ROWS_PER_TYPE", "500"))
+    _settings = get_settings()
+    _xml_max_types = _settings.xml_max_entity_types
+    _xml_max_rows = _settings.xml_max_rows_per_type
     _all_by_freq = [t for t, _ in counts.most_common()]
     _named = [t for t in _all_by_freq if type_has_name.get(t, False)]
     _unnamed = [t for t in _all_by_freq if not type_has_name.get(t, False)]
@@ -400,10 +401,9 @@ def _consolidate_csv_names(data: bytes) -> bytes:
 
         # Find multi-part name groups: columns whose names differ only by a
         # trailing _2 / _3 / _4 / _5 suffix (e.g. COMPANY_NAME, COMPANY_NAME_2).
-        import re as _re
         base_names: dict[str, list[str]] = {}
         for h in headers:
-            m = _re.match(r"^(.+?)(?:_[2-9]|_\d{2,})$", h)
+            m = re.match(r"^(.+?)(?:_[2-9]|_\d{2,})$", h)
             if m:
                 base = m.group(1)
                 if base in headers:
@@ -522,6 +522,20 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
         return False  # 0 or 1 distinct value → constant field, skip
 
     plan_headers = [_headers(p["data"]) for p in plans]
+
+    # Cardinality cache — _col_is_varying re-parses CSV bytes on every call.
+    # Pass 2 runs O(N² × cols) iterations; caching avoids ≈ 24,000 re-parses
+    # for a 20-plan XML ingest with 20 columns each.
+    _varying_cache: dict[tuple[int, str], bool] = {}
+
+    def _is_varying(plan_idx: int, col: str) -> bool:
+        key = (plan_idx, col)
+        if key not in _varying_cache:
+            _varying_cache[key] = _col_is_varying(
+                plans[plan_idx]["data"], plan_headers[plan_idx], col
+            )
+        return _varying_cache[key]
+
     seen: set[tuple[str, str]] = set()
     links: list[dict] = []
 
@@ -608,7 +622,7 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 #   _col_is_varying — skip single-value context fields (company_id, etc.)
                 if (col_l == mk_b_l and col_l != own_mk_l
                         and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
-                        and _col_is_varying(plan_a["data"], plan_headers[i], col)):
+                        and _is_varying(i, col)):
                     seen2.add(col2_key)
                     links.append({
                         "source_type": plan_a["ontology_type"],
@@ -622,8 +636,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 # a key suffix — catches PARENT_CAGE → CAGE_CODE (stem "cage")
                 if (mk_stem in col_l and col_l != mk_b_l
                         and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
-                        and _col_is_varying(plan_a["data"], plan_headers[i], col)
-                        and _col_is_varying(plan_b["data"], plan_headers[j], mk_b)):
+                        and _is_varying(i, col)
+                        and _is_varying(j, mk_b)):
                     seen2.add(col2_key)
                     links.append({
                         "source_type": plan_a["ontology_type"],
@@ -642,8 +656,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 mk_sfx = next((s for s in _KEY_SUFFIXES if mk_b_l.endswith(s)), None)
                 if (col_sfx and mk_sfx and col_sfx == mk_sfx
                         and col_l != mk_b_l and col_l != own_mk_l
-                        and _col_is_varying(plan_a["data"], plan_headers[i], col)
-                        and _col_is_varying(plan_b["data"], plan_headers[j], mk_b)):
+                        and _is_varying(i, col)
+                        and _is_varying(j, mk_b)):
                     seen2.add(col2_key)
                     links.append({
                         "source_type": plan_a["ontology_type"],
@@ -760,8 +774,9 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         else:
             conn = CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
         try:
-            # relate=False: FK detection gives structural edges for tabular data;
-            # LLM relate hangs on large payloads (e.g. CPQ function bodies).
+            # relate: controlled by ingest_relate setting (default False).
+            # LLM relate hangs on large payloads (e.g. CPQ function bodies);
+            # operators who want inference set ARYX_INGEST_RELATE=true.
             # skip_graph=True for non-last plans: project_graph calls graph.clear()
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
@@ -771,7 +786,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=False, skip_graph=not is_last)
+                         relate=settings.ingest_relate, skip_graph=not is_last)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
@@ -779,20 +794,26 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # Non-last plans run in parallel — they don't apply FK links so ordering
     # between them doesn't matter.  The last plan runs serially after all
     # others complete so that link_by_attribute can see every prior entity.
-    ingest_workers = int(os.environ.get("ARYX_INGEST_WORKERS", "3"))
     non_last = valid_plans[:-1]
     last = valid_plans[-1] if valid_plans else None
 
     jobs.update_stage(job_id, f"{step + 1}/{total}", int((step + 1) * 90 / total),
-                      f"Ingesting {len(valid_plans)} file(s) ({ingest_workers} parallel)…")
+                      f"Ingesting {len(valid_plans)} file(s) ({settings.ingest_workers} parallel)…")
 
     if non_last:
-        with ThreadPoolExecutor(max_workers=ingest_workers) as pool:
+        with ThreadPoolExecutor(max_workers=settings.ingest_workers) as pool:
             futs = {pool.submit(_run_one_plan, p, False): p["filename"] for p in non_last}
+            failed: list[str] = []
             for fut in as_completed(futs):
                 exc = fut.exception()
                 if exc:
-                    logger.warning("plan failed %s: %s", futs[fut], exc)
+                    fname_failed = futs[fut]
+                    logger.warning("plan failed %s: %s", fname_failed, exc)
+                    failed.append(fname_failed)
+            if failed:
+                raise RuntimeError(
+                    f"{len(failed)} of {len(non_last)} plan(s) failed: {failed}"
+                )
 
     if last:
         step += len(valid_plans)

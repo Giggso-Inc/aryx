@@ -90,6 +90,37 @@ class Settings(BaseSettings):
             "Override with ARYX_CSV_CHUNK_ROWS."
         ),
     )
+    xml_max_entity_types: int = Field(
+        default=20,
+        description=(
+            "Max distinct XML element types extracted into separate CSVs per file. "
+            "Named types are preferred over unnamed ones within the cap. "
+            "Override with ARYX_XML_MAX_ENTITY_TYPES."
+        ),
+    )
+    xml_max_rows_per_type: int = Field(
+        default=500,
+        description=(
+            "Max rows kept per XML entity type after extraction. "
+            "Override with ARYX_XML_MAX_ROWS_PER_TYPE."
+        ),
+    )
+    ingest_workers: int = Field(
+        default=3,
+        description=(
+            "Parallel workers for non-last tabular plan ingestion. "
+            "The final plan always runs serially to apply FK links. "
+            "Override with ARYX_INGEST_WORKERS."
+        ),
+    )
+    ingest_relate: bool = Field(
+        default=False,
+        description=(
+            "Enable LLM relationship inference for tabular (CSV/XML) plans. "
+            "Disabled by default because large payloads (e.g. CPQ function bodies) "
+            "can cause inference to hang. Override with ARYX_INGEST_RELATE=true."
+        ),
+    )
 
     # ── Entity resolution thresholds ─────────────────────────────────────────
     er_auto_merge: float = Field(

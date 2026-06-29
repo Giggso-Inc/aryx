@@ -8,6 +8,7 @@ raw Node objects) so callers get plain, serializable dicts.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,6 +17,12 @@ from falkordb import FalkorDB
 from aryx.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Module-level TTL cache for subgraph results.
+# Each GET /graph fires N+1 FalkorDB queries (1 DISTINCT + 1 per type).
+# Caching the result for 30 s collapses repeated canvas renders to 0 queries.
+_subgraph_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_SUBGRAPH_TTL: float = 30.0
 
 
 class GraphReader:
@@ -103,8 +110,19 @@ class GraphReader:
         return first.  For N edge types the per-type cap is rel_limit // N
         (minimum 1), so the total edge count stays near rel_limit regardless
         of how many types exist.  Every returned entity has at least one edge.
+
+        Results are cached for 30 s (per graph + rel_limit combination) to
+        collapse repeated canvas renders — the proportional query fires N+1
+        FalkorDB round-trips; caching avoids that cost on every page load.
         """
         capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
+        cache_key = f"{self._graph.name}:{capped}"
+        now = time.monotonic()
+        cached = _subgraph_cache.get(cache_key)
+        if cached is not None:
+            ts, result = cached
+            if now - ts < _SUBGRAPH_TTL:
+                return result
 
         # Discover the distinct relationship types present in this graph.
         type_rows = self._graph.query(
@@ -112,13 +130,12 @@ class GraphReader:
         ).result_set
         rel_types = [r[0] for r in type_rows if r[0]]
 
-        entity_map: dict[int, dict[str, Any]] = {}
-        rels: list[dict[str, Any]] = []
-
         if not rel_types:
             return {"entities": [], "relationships": []}
 
         per_type = max(1, capped // len(rel_types))
+        entity_map: dict[int, dict[str, Any]] = {}
+        rels: list[dict[str, Any]] = []
 
         for rtype in rel_types:
             rows = self._graph.query(
@@ -134,7 +151,9 @@ class GraphReader:
                 entity_map[bid] = {"id": bid, "type": btype, "name": bname}
                 rels.append({"source": aid, "target": bid, "name": rname})
 
-        return {"entities": list(entity_map.values()), "relationships": rels}
+        result = {"entities": list(entity_map.values()), "relationships": rels}
+        _subgraph_cache[cache_key] = (now, result)
+        return result
 
     def provenance(self, entity_id: int) -> list[dict[str, Any]]:
         """Return the source records an entity was projected from."""

@@ -102,7 +102,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
         if "_element_type" in attrs:
             out["_element_type"] = attrs["_element_type"]
         for k, v in attrs.items():
-            if k in ("_element_type",):
+            if k == "_element_type":
                 continue
             out[k] = v
             if len(out) >= max_attrs:
