@@ -125,9 +125,13 @@ def run_pipeline(
             _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
             with runner.stage("fk_link"):
                 for spec in fk_links:
+                    rel_name = spec.get(
+                        "name",
+                        f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
+                    )
                     relationships += link_by_attribute(
                         estore, spec["source_type"], spec["source_attr"],
-                        spec["target_type"], spec["target_attr"], spec["name"],
+                        spec["target_type"], spec["target_attr"], rel_name,
                     )
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")

@@ -343,11 +343,10 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   useEffect(() => {
     if (loading) return;
     if (allEntities.length === 0) return;
-    const schemaOnly = schemaTypes.filter(
-      (t) => !allEntities.some((e) => e.type === t),
-    );
+    // Schema-only placeholder nodes only make sense in empty workspaces; suppress
+    // them when real entity instances exist so they don't clutter the canvas.
     const { nodes: n, edges: e } = buildGraph(
-      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, schemaOnly,
+      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, [],
     );
     setNodes(n);
     setEdges(e);
