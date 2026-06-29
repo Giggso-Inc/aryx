@@ -108,6 +108,12 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
 
     configure_logging(os.environ.get("ARYX_LOG_LEVEL", "INFO"))
 
+    # OCI Functions hard-kills the container at func.yaml timeout (300 s).
+    # Cap each LLM call to 240 s so the pipeline can finish and write
+    # jobs.finish() before the container is killed — preventing the
+    # "ingest function did not report completion" stuck-job symptom.
+    os.environ.setdefault("ARYX_LLM_TIMEOUT", "240")
+
     payload: dict[str, Any] = json.loads(data.getvalue())
     _required = {"job_id", "filename", "file_b64", "ontology_type"}
     missing = _required - payload.keys()
