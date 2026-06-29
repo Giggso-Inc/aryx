@@ -1,0 +1,749 @@
+<title>XML + OCI Mode — /read → /confirm Full Flow</title>
+<style>
+  :root {
+    --bg:       #080d12;
+    --s1:       #0e1620;
+    --s2:       #111d2c;
+    --s3:       #152438;
+    --border:   #1f3048;
+    --text:     #d4e2f0;
+    --muted:    #5d7d9e;
+
+    /* semantic */
+    --blue:   #4a9fd4;
+    --green:  #3bbf6d;
+    --yellow: #c89b14;
+    --red:    #d94f4f;
+    --violet: #8f72e8;
+    --orange: #d4783a;
+    --teal:   #2aab86;
+    --pink:   #c45f96;
+
+    /* OCI brand */
+    --oci:      #e8763a;
+    --oci-bg:   #1e1008;
+    --oci-b:    #6b3018;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "SF Mono","Cascadia Code","JetBrains Mono","Consolas", monospace;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 32px 24px;
+  }
+
+  /* PAGE HEADER */
+  .page-hd { max-width: 940px; margin: 0 auto 28px; }
+  .page-hd h1 { font-size: 20px; color: var(--blue); margin-bottom: 4px; }
+  .page-hd .sub { color: var(--muted); font-size: 11px; }
+
+  /* PHASE WRAPPERS */
+  .wrap { max-width: 940px; margin: 0 auto; display: flex; flex-direction: column; gap: 0; }
+
+  .phase {
+    border-left: 3px solid var(--border);
+    padding-left: 24px;
+    padding-bottom: 8px;
+  }
+  .phase.p1 { border-left-color: var(--blue); }
+  .phase.p2 { border-left-color: var(--green); }
+
+  .phase-label {
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 6px 12px 6px 0;
+    margin-bottom: 14px;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .phase.p1 .phase-label { color: var(--blue); }
+  .phase.p2 .phase-label { color: var(--green); }
+
+  .phase-label .pill {
+    font-size: 10px; padding: 1px 8px; border-radius: 10px;
+    background: var(--s2); border: 1px solid var(--border);
+    color: var(--muted);
+  }
+
+  /* ARROW CONNECTOR */
+  .arrow-down {
+    display: flex; flex-direction: column; align-items: center;
+    margin: 0 0 0 -24px;
+    padding: 4px 0;
+  }
+  .arrow-down .line { width: 2px; height: 20px; background: var(--border); }
+  .arrow-down .tip  { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--border); }
+
+  /* HAND-OFF BRIDGE */
+  .bridge {
+    background: var(--s2);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 0 0 0 -24px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex; align-items: flex-start; gap: 12px;
+  }
+  .bridge .b-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+  .bridge strong { color: var(--text); }
+
+  /* CARDS */
+  .card {
+    background: var(--s1); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 16px; margin-bottom: 12px;
+  }
+  .card.http  { border-color: var(--blue); }
+  .card.warn  { border-color: var(--yellow); }
+  .card.oci   { border-color: var(--oci); background: var(--oci-bg); }
+  .card.stage { border-color: var(--green); }
+  .card.fk    { border-color: var(--yellow); }
+  .card.graph { border-color: var(--teal); }
+  .card.mem   { border-color: var(--teal); }
+
+  .c-lbl {
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    margin-bottom: 5px;
+  }
+  .card.http  .c-lbl { color: var(--blue); }
+  .card.warn  .c-lbl { color: var(--yellow); }
+  .card.oci   .c-lbl { color: var(--oci); }
+  .card.stage .c-lbl { color: var(--green); }
+  .card.fk    .c-lbl { color: var(--yellow); }
+  .card.graph .c-lbl { color: var(--teal); }
+  .card.mem   .c-lbl { color: var(--teal); }
+
+  .c-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .card.http  .c-title { color: var(--blue); }
+  .card.warn  .c-title { color: var(--yellow); }
+  .card.oci   .c-title { color: var(--oci); }
+  .card.stage .c-title { color: var(--green); }
+  .card.fk    .c-title { color: var(--yellow); }
+  .card.graph .c-title { color: var(--teal); }
+  .card.mem   .c-title { color: var(--teal); }
+
+  .detail { font-size: 11px; color: var(--muted); }
+  .detail .k { color: var(--text); }
+  code { background: var(--s3); padding: 1px 5px; border-radius: 3px; font-size: 10.5px; color: var(--text); }
+
+  /* ALERT BOX */
+  .alert {
+    border-radius: 5px; padding: 9px 12px; margin: 10px 0;
+    font-size: 11px;
+  }
+  .alert.no-doc { background: #180d00; border: 1px solid var(--orange); color: var(--orange); }
+  .alert.ok     { background: #081508; border: 1px solid var(--green); color: var(--green); }
+  .alert.info   { background: #0d1820; border: 1px solid var(--blue); color: var(--blue); }
+
+  /* OCI API CALLOUT */
+  .oci-call {
+    background: var(--oci-bg); border: 1px solid var(--oci-b);
+    border-left: 3px solid var(--oci);
+    border-radius: 4px; padding: 10px 12px; margin: 10px 0;
+    font-size: 11px;
+  }
+  .oci-call .oci-tag {
+    display: inline-block; background: var(--oci); color: #fff;
+    font-size: 9px; padding: 1px 6px; border-radius: 3px;
+    font-weight: 700; letter-spacing: 0.05em; margin-bottom: 5px;
+  }
+  .oci-call pre { background: #0e0b05; border-radius: 3px; padding: 8px; margin-top: 6px; font-size: 10px; color: var(--text); white-space: pre-wrap; word-break: break-all; }
+
+  /* XML EXPAND */
+  .xml-expand {
+    background: var(--s2); border: 1px solid var(--border);
+    border-radius: 5px; padding: 10px 12px; margin: 10px 0;
+  }
+  .xml-expand .xe-title { font-size: 11px; color: var(--text); margin-bottom: 6px; }
+  .xml-expand pre { font-size: 10px; color: var(--muted); background: var(--s3); padding: 8px; border-radius: 3px; white-space: pre-wrap; }
+
+  /* BADGES */
+  .badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 10px; }
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 8px; }
+  .b-in  { background: var(--s2); border: 1px solid var(--border); color: var(--muted); }
+  .b-out { background: #091508; border: 1px solid var(--green); color: var(--green); }
+  .b-db  { background: #181200; border: 1px solid var(--yellow); color: var(--yellow); }
+  .b-mem { background: #041510; border: 1px solid var(--teal); color: var(--teal); }
+  .b-oci { background: var(--oci-bg); border: 1px solid var(--oci); color: var(--oci); }
+
+  /* TABLES */
+  .scroll-x { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+  th { text-align: left; color: var(--muted); font-weight: normal; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 4px 8px; border-bottom: 1px solid var(--s2); vertical-align: top; }
+  .c-g { color: var(--green); } .c-y { color: var(--yellow); }
+  .c-r { color: var(--red); }   .c-m { color: var(--muted); }
+  .c-o { color: var(--oci); }   .c-v { color: var(--violet); }
+
+  /* RESOLVE FUNNEL */
+  .funnel { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+  .funnel-step {
+    display: flex; align-items: stretch; border-radius: 4px;
+    overflow: hidden; font-size: 11px;
+  }
+  .f-num {
+    width: 26px; min-width: 26px; display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; background: var(--s3); color: var(--muted);
+  }
+  .f-body { padding: 8px 10px; flex: 1; background: var(--s2); color: var(--muted); }
+  .f-body .fk { color: var(--text); }
+  .f-api {
+    display: flex; align-items: center; padding: 0 10px;
+    background: var(--oci-bg); color: var(--oci); font-size: 10px;
+  }
+
+  /* THRESHOLD STRIP */
+  .threshold { border-radius: 5px; overflow: hidden; margin: 8px 0; }
+  .t-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--bg); font-size: 11px; }
+  .t-row:last-child { border-bottom: none; }
+  .t-score { width: 110px; min-width: 110px; padding: 7px 10px; display: flex; align-items: center; font-weight: 700; }
+  .t-action { flex: 1; padding: 7px 10px; background: var(--s2); }
+  .t-api { width: 90px; min-width: 90px; display: flex; align-items: center; justify-content: center; padding: 4px 8px; background: var(--oci-bg); font-size: 10px; color: var(--oci); text-align: center; }
+  .t-auto  { background: #0a1a0f; color: var(--green); }
+  .t-llm   { background: #150d2a; color: var(--violet); }
+  .t-human { background: #1a1500; color: var(--yellow); }
+  .t-rej   { background: #120808; color: var(--red); }
+
+  /* STAGE ROW */
+  .stage-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 5px;
+    background: var(--s2); border: 1px solid var(--border);
+    margin-bottom: 6px; font-size: 11px;
+  }
+  .sr-num { width: 22px; min-width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+  .sr-body { flex: 1; color: var(--muted); }
+  .sr-body .k { color: var(--text); }
+  .sr-db { font-size: 10px; color: var(--yellow); }
+  .sr-api { font-size: 10px; color: var(--oci); background: var(--oci-bg); padding: 2px 6px; border-radius: 4px; }
+
+  @media (max-width: 600px) {
+    body { padding: 16px 12px; }
+    .t-api { display: none; }
+  }
+</style>
+
+<div class="page-hd">
+  <h1>XML File · OCI Mode — /read → /confirm Full Flow</h1>
+  <p class="sub">
+    XML is structured data (DATA_EXTS), not a document — it bypasses the document pipeline entirely.
+    OCI Document Understanding is never called. Every LLM + embed call routes to OCI GenAI.
+    Project stage writes to Oracle Graph, not FalkorDB.
+  </p>
+</div>
+
+<div class="wrap">
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- PHASE 1 — /read                                  -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="phase p1">
+    <div class="phase-label">
+      Phase 1
+      <span class="pill">POST /admin/docs/read</span>
+    </div>
+
+    <!-- HTTP HANDLER -->
+    <div class="card http">
+      <div class="c-lbl">HTTP Handler</div>
+      <div class="c-title">Request Entry</div>
+      <div class="detail">
+        <span class="k">Body:</span> <code>catalog.xml</code> (multipart), <code>context="product catalog"</code>, <code>workspace_id=1</code><br>
+        Validates: ≤50 MB · extension in DOC_EXTS ∪ DATA_EXTS<br>
+        Creates: <code>discovery_id = uuid4().hex</code> · INSERT <code>aryx_jobs</code><br>
+        Returns immediately: <code>{"discovery_id": "a3f9..."}</code>
+      </div>
+      <div class="badges">
+        <span class="badge b-in">IN: catalog.xml (bytes)</span>
+        <span class="badge b-out">OUT: {discovery_id}</span>
+        <span class="badge b-db">aryx_jobs INSERT</span>
+      </div>
+    </div>
+
+    <!-- FILE ROUTER — key decision -->
+    <div class="card warn">
+      <div class="c-lbl">File Router — _read_job()</div>
+      <div class="c-title">XML → DATA_EXTS (tabular path)</div>
+      <div class="alert no-doc">
+        ⚠ <strong>.xml is in DATA_EXTS, not DOC_EXTS</strong> — the entire 8-step document pipeline is skipped.
+        No OCI Document Understanding. No chunking. No PII screen. No embedding. No NER.
+        No aryx_document / aryx_chunk / aryx_chunk_embedding writes.
+      </div>
+      <div class="detail" style="margin-top:8px">
+        <span class="k">DOC_EXTS</span> (.pdf .docx .pptx .ppt .rtf .html .htm images) → document pipeline → <span style="color:var(--muted)">not this path</span><br>
+        <span class="k">DATA_EXTS</span> (.json <strong>.csv <span style="color:var(--oci)">.xml</span></strong>) → tabular path → <span style="color:var(--oci)">this path ✓</span>
+      </div>
+      <div class="badges">
+        <span class="badge b-in">IN: catalog.xml bytes</span>
+        <span class="badge b-out">OUT: tabular=[(bytes, "catalog.xml")]</span>
+      </div>
+    </div>
+
+    <!-- _xml_to_csvs -->
+    <div class="card">
+      <div class="c-lbl">Local XML Parser — doc_discovery.py:_xml_to_csvs()</div>
+      <div class="c-title">XML → N CSVs (one per top-3 element type)</div>
+      <div class="detail">
+        Parses with <code>defusedxml.ElementTree</code> (safe against XML bombs).<br>
+        Counts all child element tags across the whole tree, takes the top-3 tags appearing ≥2 times.
+      </div>
+
+      <div class="xml-expand" style="margin-top:10px">
+        <div class="xe-title">Example — catalog.xml input:</div>
+        <pre>&lt;catalog&gt;
+  &lt;product id="P1" name="Widget A" price="9.99"&gt;
+    &lt;category id="C1" name="Widgets"/&gt;
+  &lt;/product&gt;
+  &lt;product id="P2" name="Widget B" price="14.99"&gt;
+    &lt;category id="C1" name="Widgets"/&gt;
+  &lt;/product&gt;
+&lt;/catalog&gt;</pre>
+      </div>
+      <div class="xml-expand">
+        <div class="xe-title">Output CSVs (<code>catalog_product.csv</code> + <code>catalog_category.csv</code>):</div>
+        <pre>catalog_product.csv:
+  _element_type, id,  name,     price,   catalog_id
+  product,       P1,  Widget A, 9.99,    (root attr or None)
+  product,       P2,  Widget B, 14.99,   ...
+
+catalog_category.csv:
+  _element_type, id,  name,    product_id   ← injected FK
+  category,      C1,  Widgets, P1
+  category,      C1,  Widgets, P2</pre>
+      </div>
+      <div class="alert info" style="margin-top:8px">
+        Each child CSV gets a <code>{parent_tag}_id</code> column injected automatically.
+        This is how <code>_detect_fk_links()</code> later finds the relationship between entity types — it looks for the <code>{TypeB}_id</code> naming pattern.
+      </div>
+      <div class="badges">
+        <span class="badge b-in">IN: catalog.xml bytes, stem="catalog"</span>
+        <span class="badge b-out">OUT: [(csv_bytes, "catalog_product.csv"), (csv_bytes, "catalog_category.csv")]</span>
+      </div>
+    </div>
+
+    <!-- _infer_type x2 — OCI GenAI -->
+    <div class="card oci">
+      <div class="c-lbl">Type Inference — _infer_type() × 2 CSVs</div>
+      <div class="c-title">OCI GenAI Chat (menial tier) — API Call D</div>
+      <div class="detail">
+        Called once per CSV. Filename signal wins when non-generic:<br>
+        <code>catalog_product.csv</code> → <code>_stem_type</code> → <code>"CatalogProduct"</code> (not generic → wins)<br>
+        <code>catalog_category.csv</code> → <code>"CatalogCategory"</code> (not generic → wins)<br><br>
+        LLM is still called to determine <span class="k">match_keys</span> even when filename wins.
+      </div>
+      <div class="oci-call">
+        <div class="oci-tag">OCI GenAI Chat — menial tier</div>
+        <div class="detail">
+          <span class="k">Input:</span> first 600 bytes of CSV rows + filename + context<br>
+          <span class="k">Prompt:</span> "Which 1-2 columns UNIQUELY IDENTIFY each row?"<br>
+        </div>
+        <pre>→ {"ontology_type": "CatalogProduct", "match_keys": ["id"]}
+→ {"ontology_type": "CatalogCategory", "match_keys": ["id"]}
+
+# type overridden by filename (non-generic):
+#   otype = stype = "CatalogProduct"
+# match_keys taken from LLM: ["id"]</pre>
+      </div>
+      <div class="badges">
+        <span class="badge b-in">IN: CSV sample + filename + context</span>
+        <span class="badge b-out">OUT: {ontology_type, match_keys} × 2</span>
+        <span class="badge b-oci">OCI GenAI Chat (menial)</span>
+      </div>
+    </div>
+
+    <!-- PROCESS MEMORY -->
+    <div class="card mem">
+      <div class="c-lbl">Process Memory — discoveries.py</div>
+      <div class="c-title">discoveries._STORE[did] — what /confirm will read</div>
+      <div style="background:var(--s3); border-radius:4px; padding:10px; margin-top:8px; font-size:10.5px; color:var(--text)">
+        <pre>{
+  "mentions": [],          ← EMPTY — XML has no document NER pipeline
+  "tabular": [
+    {
+      "filename":      "catalog_product.csv",
+      "data":          &lt;csv bytes&gt;,
+      "ontology_type": "CatalogProduct",
+      "match_keys":    ["id"]
+    },
+    {
+      "filename":      "catalog_category.csv",
+      "data":          &lt;csv bytes&gt;,
+      "ontology_type": "CatalogCategory",
+      "match_keys":    ["id"]
+    }
+  ],
+  "summary": {
+    "types": [],           ← no entity types discovered (no mentions)
+    "files": [
+      {"filename": "catalog_product.csv",  "ontology_type": "CatalogProduct"},
+      {"filename": "catalog_category.csv", "ontology_type": "CatalogCategory"}
+    ]
+  },
+  "workspace_id": 1
+}</pre>
+      </div>
+      <div class="alert ok" style="margin-top:8px">
+        <span class="k">GET /admin/docs/summary returns:</span> <code>{"types": [], "files": [{"filename":"catalog_product.csv", ...}, ...]}</code><br>
+        User sees no extracted entity types (expected for XML) — only the file type plans to approve.
+      </div>
+      <div class="badges">
+        <span class="badge b-mem">MEM: discoveries._STORE[did]</span>
+        <span class="badge b-db">aryx_jobs UPDATE (complete)</span>
+      </div>
+    </div>
+
+  </div><!-- /phase p1 -->
+
+  <!-- BRIDGE -->
+  <div class="arrow-down"><div class="line"></div><div class="tip"></div></div>
+  <div class="bridge">
+    <div class="b-icon">⟳</div>
+    <div>
+      <strong>User reviews summary → approves files</strong><br>
+      <code>GET /admin/docs/summary/{did}</code> returns <code>{"types": [], "files": [...]}</code>.
+      User selects which files to ingest. Submits <code>approved_types=[]</code>, <code>approved_files=["catalog_product.csv", "catalog_category.csv"]</code>.
+    </div>
+  </div>
+  <div class="arrow-down"><div class="line"></div><div class="tip"></div></div>
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- PHASE 2 — /confirm                               -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="phase p2">
+    <div class="phase-label">
+      Phase 2
+      <span class="pill">POST /admin/docs/confirm</span>
+    </div>
+
+    <!-- HTTP HANDLER -->
+    <div class="card http">
+      <div class="c-lbl">HTTP Handler</div>
+      <div class="c-title">Request Entry</div>
+      <div class="detail">
+        <span class="k">Body:</span> <code>{"discovery_id":"a3f9...", "approved_types":[], "approved_files":["catalog_product.csv","catalog_category.csv"]}</code><br>
+        Guard: <code>discoveries.get(did)</code> → 404 if expired<br>
+        Creates: <code>job_id = uuid4().hex</code> · INSERT <code>aryx_jobs</code><br>
+        Returns: <code>{"status":"queued","job_id":"b7c2..."}</code>
+      </div>
+      <div class="badges">
+        <span class="badge b-in">approved_types=[] · approved_files=[2 CSVs]</span>
+        <span class="badge b-out">OUT: {status, job_id}</span>
+        <span class="badge b-db">aryx_jobs INSERT</span>
+      </div>
+    </div>
+
+    <!-- FK DETECTION -->
+    <div class="card fk">
+      <div class="c-lbl">Pre-loop — _detect_fk_links(valid_plans)</div>
+      <div class="c-title">Auto FK Detection Across the Two CSVs</div>
+      <div class="detail">
+        Scans headers of both CSVs for <code>{TypeB}_id</code> or <code>{TypeB}_name</code> patterns.<br><br>
+        <span class="k">catalog_category.csv</span> has column <code>product_id</code><br>
+        → matches pattern <code>{CatalogProduct}_id</code> → <code>product_id</code> → FK detected
+      </div>
+      <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:8px; font-size:10.5px;">
+        <pre style="color:var(--text)">auto_fk = [{
+  "source_type": "CatalogCategory",    # entity carrying the FK
+  "source_attr": "product_id",         # FK column
+  "target_type": "CatalogProduct",     # entity being referenced
+  "target_attr": "id",                 # match key of target
+  "name":        "CATALOGPRODUCT_HAS_CATALOGCATEGORY"
+}]
+# passed to run_pipeline() of LAST file only</pre>
+      </div>
+      <div class="badges">
+        <span class="badge b-in">IN: valid_plans[2]</span>
+        <span class="badge b-out">OUT: auto_fk[1 spec]</span>
+      </div>
+    </div>
+
+    <!-- LOOP LABEL -->
+    <div style="font-size:10px; color:var(--muted); letter-spacing:0.07em; text-transform:uppercase; margin-bottom:8px; padding-left:2px;">
+      Loop — run_pipeline() called twice (once per approved file)
+    </div>
+
+    <!-- STAGE 1 — DISCOVER -->
+    <div class="card stage">
+      <div class="c-lbl">Stage 1 / 5 — Discover (× 2 files)</div>
+      <div class="c-title">Land CSV rows — run_spine() → aryx_landed</div>
+      <div class="detail">
+        <span class="k">File 1:</span> <code>CsvConnector(catalog_product.csv, system="csv", dataset="catalog_product")</code><br>
+        <span class="k">File 2:</span> <code>CsvConnector(catalog_category.csv, system="csv", dataset="catalog_category")</code>
+      </div>
+      <div class="funnel" style="margin-top:10px">
+        <div class="stage-row">
+          <div class="sr-num" style="background:#091508;color:var(--green);">a</div>
+          <div class="sr-body"><span class="k">start_run()</span> → INSERT aryx_runs (status="running") → run_id</div>
+          <div class="sr-db">aryx_runs</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:#091508;color:var(--green);">b</div>
+          <div class="sr-body"><span class="k">run_spine(connector, sink)</span> → clean + profile each row → <code>sink.land(record)</code> → batched INSERT into aryx_landed (payload JSONB)</div>
+          <div class="sr-db">aryx_landed</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:#091508;color:var(--green);">c</div>
+          <div class="sr-body"><span class="k">save_profiles()</span> → field stats (type, null_rate, cardinality)</div>
+          <div class="sr-db">aryx_profile_columns</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:#091508;color:var(--green);">d</div>
+          <div class="sr-body"><span class="k">finish_run()</span> → UPDATE aryx_runs (status="complete", record_count=N)</div>
+          <div class="sr-db">aryx_runs</div>
+        </div>
+      </div>
+      <div class="badges">
+        <span class="badge b-out">OUT: run_id: int</span>
+        <span class="badge b-db">aryx_runs · aryx_landed · aryx_profile_columns</span>
+      </div>
+    </div>
+
+    <!-- STAGE 2 — RESOLVE -->
+    <div class="card stage">
+      <div class="c-lbl">Stage 2 / 5 — Resolve (× 2 files)</div>
+      <div class="c-title">Entity Resolution Funnel → aryx_entity</div>
+      <div class="detail">
+        <code>records = store.landed_records(run_id, ["id"])</code><br>
+        Builds match text: <code>text = str(payload["id"])</code> — e.g. "P1", "P2", "C1"
+      </div>
+      <div class="funnel" style="margin-top:10px">
+        <div class="stage-row">
+          <div class="sr-num" style="background:#120d28;color:var(--violet);">a</div>
+          <div class="sr-body"><span class="k">block(records)</span> — groups by 4-char prefix + token-set + Soundex. Short IDs ("P1", "P2") likely land in same block.</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:#120d28;color:var(--violet);">b</div>
+          <div class="sr-body"><span class="k">_block_embeddings(group, broker)</span> — embeds match texts for cosine similarity</div>
+          <div class="sr-api">OCI GenAI Embed</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:#120d28;color:var(--violet);">c</div>
+          <div class="sr-body"><span class="k">score_pair()</span> — combined score = token-set ratio + Jaro-Winkler + cosine</div>
+        </div>
+      </div>
+
+      <!-- OCI Embed callout -->
+      <div class="oci-call">
+        <div class="oci-tag">OCI GenAI Embed — API A</div>
+        <div class="detail"><span class="k">Input:</span> match text per record (e.g. "P1", "Widget A", …) · batched<br>
+        <span class="k">Model:</span> cohere.embed-multilingual-v3.0 · dim=1024<br>
+        <span class="k">Skip when:</span> ARYX_ER_AUTO_MERGE ≥ 1.0 AND ARYX_ER_ADJUDICATE ≥ 1.0</div>
+      </div>
+
+      <!-- Threshold -->
+      <div style="font-size:10px; color:var(--muted); margin: 10px 0 5px; letter-spacing:0.06em; text-transform:uppercase;">Four-way threshold routing</div>
+      <div class="threshold">
+        <div class="t-row">
+          <div class="t-score t-auto">≥ 0.92</div>
+          <div class="t-action t-auto">Auto-merge → <code>union.union(left, right)</code> (in memory)</div>
+          <div class="t-api">no API</div>
+        </div>
+        <div class="t-row">
+          <div class="t-score t-llm">[0.90–0.92)</div>
+          <div class="t-action t-llm">LLM adjudicates → merge if same · queue if LLM down</div>
+          <div class="t-api">OCI GenAI Chat frontier</div>
+        </div>
+        <div class="t-row">
+          <div class="t-score t-human">[0.75–0.90)</div>
+          <div class="t-action t-human">Human queue → INSERT <code>aryx_adjudication</code> (pending)</div>
+          <div class="t-api">no API</div>
+        </div>
+        <div class="t-row">
+          <div class="t-score t-rej">&lt; 0.75</div>
+          <div class="t-action t-rej">Auto-reject — no merge, no DB write</div>
+          <div class="t-api">no API</div>
+        </div>
+      </div>
+
+      <!-- OCI adjudicate callout -->
+      <div class="oci-call">
+        <div class="oci-tag">OCI GenAI Chat (frontier) — API B — adjudication only</div>
+        <pre>CohereChatRequest(
+  message='{"left":{id:"P1",name:"Widget A"}, "right":{id:"P1",name:"Widget A v2"}}',
+  preamble_override="Are these the same entity?",
+  max_tokens=256
+)
+→ true / false
+Conservative: if OCI unavailable → pair goes to aryx_adjudication (pending)</pre>
+      </div>
+
+      <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:10px; font-size:11px; color:var(--muted)">
+        <span class="k">Golden record:</span> confidence-weighted merge per attribute · conflicts → <code>aryx_attribute_conflict</code><br>
+        <span class="k">Ontology type seeded (idempotent):</span> INSERT <code>aryx_ontology_type</code> ON CONFLICT DO NOTHING
+      </div>
+      <div class="badges">
+        <span class="badge b-out">OUT: entities: int</span>
+        <span class="badge b-db">aryx_entity · aryx_entity_member · aryx_adjudication · aryx_ontology_type</span>
+        <span class="badge b-oci">OCI GenAI Embed · OCI GenAI Chat</span>
+      </div>
+    </div>
+
+    <!-- STAGE 3 — RELATE -->
+    <div class="card stage">
+      <div class="c-lbl">Stage 3 / 5 — Relate (× 2 files, relate=True)</div>
+      <div class="c-title">LLM Relationship Inference → aryx_relationship</div>
+      <div class="detail">
+        For each entity pair (up to <code>ARYX_MAX_RELATE_PAIRS</code>): OCI GenAI infers whether a named relationship exists.
+      </div>
+      <div class="oci-call">
+        <div class="oci-tag">OCI GenAI Chat (frontier) — API C</div>
+        <pre>{"entity_a": {"type":"CatalogProduct","name":"Widget A","price":"9.99"},
+ "entity_b": {"type":"CatalogProduct","name":"Widget B","price":"14.99"}}
+→ {"has_relationship": false}        # different products, no relationship
+
+{"entity_a": {"type":"CatalogCategory","name":"Widgets","product_id":"P1"},
+ "entity_b": {"type":"CatalogProduct","name":"Widget A","id":"P1"}}
+→ {"has_relationship": true, "name": "CATEGORY_CONTAINS_PRODUCT", "confidence": 0.91}
+→ INSERT aryx_relationship</pre>
+      </div>
+      <div class="badges">
+        <span class="badge b-db">aryx_relationship INSERT</span>
+        <span class="badge b-oci">OCI GenAI Chat (frontier)</span>
+      </div>
+    </div>
+
+    <!-- STAGE 4 — FK LINK (last file only) -->
+    <div class="card fk">
+      <div class="c-lbl">Stage 4 / 5 — FK Link (catalog_category.csv only — last file)</div>
+      <div class="c-title">Deterministic Cross-file Join (no API)</div>
+      <div class="detail">
+        Uses the <code>auto_fk</code> spec detected before the loop.
+        At this point all CatalogProduct entities exist in <code>aryx_entity</code> — the FK match can succeed.
+      </div>
+      <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:8px; font-size:10.5px; color:var(--text)">
+        <pre>link_by_attribute(
+  source_type="CatalogCategory",  source_attr="product_id",
+  target_type="CatalogProduct",   target_attr="id",
+  name="CATALOGPRODUCT_HAS_CATALOGCATEGORY"
+)
+→ catalog_category.product_id == catalog_product.id → exact match
+→ INSERT aryx_relationship for each matched pair</pre>
+      </div>
+      <div class="alert ok" style="margin-top:8px">
+        Passed to the last file only — <code>fk_links=auto_fk if is_last else None</code>.
+        All CatalogProduct entities must exist before category→product links can be wired.
+      </div>
+      <div class="badges">
+        <span class="badge b-db">aryx_relationship INSERT</span>
+      </div>
+    </div>
+
+    <!-- STAGE 5 — PROJECT to Oracle Graph -->
+    <div class="card graph">
+      <div class="c-lbl">Stage 5 / 5 — Project</div>
+      <div class="c-title">Oracle Graph — OracleGraphStore (OCI mode)</div>
+      <div class="detail">
+        <code>settings.effective_graph_backend()</code> returns <code>"oci_graph"</code> when <code>ARYX_OCI_MODE=True</code>.<br>
+        <code>OracleGraphStore(settings.oci_adb_dsn, workspace_id)</code> — connects to Oracle ADB 23ai.
+      </div>
+      <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:10px; font-size:10.5px;">
+        <pre style="color:var(--text)">Reads: aryx_entity WHERE workspace_id=1
+Writes:
+  INSERT INTO ws1_vertices (entity_id, type, attrs_json)
+    VALUES (1, 'CatalogProduct', '{"name":"Widget A",...}')
+  INSERT INTO ws1_vertices (entity_id, type, attrs_json)
+    VALUES (3, 'CatalogCategory', '{"name":"Widgets",...}')
+
+Reads: aryx_relationship WHERE workspace_id=1
+Writes:
+  INSERT INTO ws1_edges (src, dst, label, confidence)
+    VALUES (3, 1, 'CATALOGPRODUCT_HAS_CATALOGCATEGORY', 0.95)
+    VALUES (3, 1, 'CATEGORY_CONTAINS_PRODUCT', 0.91)
+
+# _build_type_ancestors(dsn) folds parent type labels
+# onto each node if aryx_ontology_type has parent links</pre>
+      </div>
+      <div class="alert ok" style="margin-top:8px">
+        <span class="k">Returns:</span> <code>{"run_id": N, "entities": N, "relationships": N, "nodes_written": N, "edges_written": N}</code>
+      </div>
+      <div class="badges">
+        <span class="badge b-in">aryx_entity + aryx_relationship</span>
+        <span class="badge b-db">Oracle Graph vertices + edges</span>
+        <span class="badge b-oci">OCI ADB 23ai</span>
+      </div>
+    </div>
+
+  </div><!-- /phase p2 -->
+
+  <!-- ════════ COMPLETE DB WRITES ════════ -->
+  <div style="margin-top:32px">
+    <div style="font-size:11px; color:var(--blue); letter-spacing:0.08em; text-transform:uppercase; border-bottom:1px solid var(--border); padding-bottom:5px; margin-bottom:12px;">All DB Writes — XML + OCI Full Flow</div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Table</th><th>Phase</th><th>Stage</th><th>Written?</th></tr>
+        <tr><td class="c-y"><code>aryx_jobs</code></td><td>Both</td><td>HTTP handlers</td><td class="c-g">Yes</td></tr>
+        <tr><td class="c-m"><code>aryx_document</code></td><td>—</td><td>—</td><td class="c-r">No — XML is tabular, no document pipeline</td></tr>
+        <tr><td class="c-m"><code>aryx_chunk</code></td><td>—</td><td>—</td><td class="c-r">No</td></tr>
+        <tr><td class="c-m"><code>aryx_chunk_embedding</code></td><td>—</td><td>—</td><td class="c-r">No — no /ask RAG for XML content</td></tr>
+        <tr><td class="c-y"><code>aryx_runs</code></td><td>Phase 2</td><td>Stage 1 (× 2)</td><td class="c-g">Yes — one per run_pipeline call</td></tr>
+        <tr><td class="c-y"><code>aryx_landed</code></td><td>Phase 2</td><td>Stage 1 (× 2)</td><td class="c-g">Yes — one per CSV row</td></tr>
+        <tr><td class="c-y"><code>aryx_profile_columns</code></td><td>Phase 2</td><td>Stage 1 (× 2)</td><td class="c-g">Yes</td></tr>
+        <tr><td class="c-g"><code>aryx_entity</code></td><td>Phase 2</td><td>Stage 2 (× 2)</td><td class="c-g">Yes — canonical entities</td></tr>
+        <tr><td class="c-g"><code>aryx_entity_member</code></td><td>Phase 2</td><td>Stage 2 (× 2)</td><td class="c-g">Yes</td></tr>
+        <tr><td class="c-y"><code>aryx_adjudication</code></td><td>Phase 2</td><td>Stage 2</td><td>Only if pairs in review/adj band</td></tr>
+        <tr><td class="c-y"><code>aryx_ontology_type</code></td><td>Phase 2</td><td>After stage 2</td><td class="c-g">Yes (idempotent)</td></tr>
+        <tr><td class="c-g"><code>aryx_relationship</code></td><td>Phase 2</td><td>Stage 3 (LLM) + Stage 4 (FK)</td><td class="c-g">Yes</td></tr>
+        <tr><td class="c-g">Oracle Graph vertices/edges</td><td>Phase 2</td><td>Stage 5</td><td class="c-g">Yes — OCI ADB 23ai</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ════════ OCI API SUMMARY ════════ -->
+  <div style="margin-top:24px">
+    <div style="font-size:11px; color:var(--oci); letter-spacing:0.08em; text-transform:uppercase; border-bottom:1px solid var(--oci-b); padding-bottom:5px; margin-bottom:12px;">OCI API Calls — XML Flow</div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Call</th><th>Phase</th><th>Service</th><th>When</th><th>Local equivalent</th></tr>
+        <tr>
+          <td class="c-r">OCI Doc Understanding</td>
+          <td class="c-m">—</td>
+          <td class="c-m">—</td>
+          <td class="c-r">NOT called — XML is DATA_EXTS</td>
+          <td class="c-m">—</td>
+        </tr>
+        <tr>
+          <td class="c-o">D · Type inference</td>
+          <td>/read</td>
+          <td>OCI GenAI Chat (menial)</td>
+          <td>Once per XML-derived CSV (for match_keys)</td>
+          <td>Same — Ollama /api/chat</td>
+        </tr>
+        <tr>
+          <td class="c-o">A · Embed</td>
+          <td>/confirm stage 2</td>
+          <td>OCI GenAI Embed</td>
+          <td>Per block in resolve funnel</td>
+          <td>Ollama /api/embed</td>
+        </tr>
+        <tr>
+          <td class="c-o">B · Adjudicate</td>
+          <td>/confirm stage 2</td>
+          <td>OCI GenAI Chat (frontier)</td>
+          <td>Only for pairs in [0.90, 0.92)</td>
+          <td>Ollama /api/chat</td>
+        </tr>
+        <tr>
+          <td class="c-o">C · Relate</td>
+          <td>/confirm stage 3</td>
+          <td>OCI GenAI Chat (frontier)</td>
+          <td>Every run (relate=True), capped at max_pairs</td>
+          <td>Ollama /api/chat</td>
+        </tr>
+        <tr>
+          <td class="c-o">Graph write</td>
+          <td>/confirm stage 5</td>
+          <td>OCI ADB 23ai Oracle Graph</td>
+          <td>Always in OCI mode</td>
+          <td>FalkorDB</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<div style="max-width:940px; margin: 32px auto 0; font-size:10px; color:var(--muted); text-align:center; padding-top:12px; border-top:1px solid var(--border)">
+  doc_discover_api.py · doc_discovery.py (_xml_to_csvs, _infer_type, _detect_fk_links, ingest_confirmed) · orchestrate.py · discover.py · resolution/run.py · pipeline/fk_edges.py · project.py · graph/oracle_graph_store.py
+</div>

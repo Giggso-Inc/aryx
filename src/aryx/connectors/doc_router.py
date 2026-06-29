@@ -38,7 +38,23 @@ def _content_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# OCI Document Understanding supported types (PDF, Office docs, images).
+# Markup types (.xml, .html, .htm) are NOT supported — handled locally.
+_OCI_DOC_EXTS = {
+    ".pdf",
+    ".docx", ".doc", ".rtf",
+    ".pptx", ".ppt",
+    *IMAGE_EXTS,
+}
+
+
 def _connector_for(path: Path):
+    from aryx.config import get_settings
+    if get_settings().effective_parse_backend() == "oci":
+        if path.suffix.lower() in _OCI_DOC_EXTS:
+            from aryx.connectors.oci_doc import OciDocConnector  # noqa: PLC0415
+            return OciDocConnector(path)
+        # .xml / .html / .htm not supported by OCI DU — fall through to local connector.
     cls = _EXT_MAP.get(path.suffix.lower())
     if cls is None:
         raise ValueError(f"unsupported document type: {path.suffix!r}")
@@ -77,21 +93,29 @@ def ingest_document(
     doc_id = _content_hash(path)
     source = SourceRef(system=system, dataset=path.stem, record_id=doc_id)
     pages = list(_connector_for(path).extract_pages())
+    logger.info("[step 1/8] pages=%d  path=%s", len(pages), path.name)
     chunks = chunk_pages(pages, source=source, doc_id=doc_id,
                          chunk_size=chunk_size, overlap=chunk_overlap)
+    logger.info("[step 2/8] chunks=%d  doc_id=%s", len(chunks), doc_id[:8])
     if run_pii:
+        logger.info("[step 3/8] pii screening  chunks=%d", len(chunks))
         chunks = screen_chunks(chunks)
     doc_db_id = chunk_store.upsert_document(
         content_hash=doc_id, file_name=path.name,
         source_type=path.suffix.lstrip(".").lower(),
         byte_count=path.stat().st_size,
     )
+    logger.info("[step 4/8] doc saved  doc_db_id=%d", doc_db_id)
     chunk_db_ids = chunk_store.save_chunks(doc_db_id, chunks)
+    logger.info("[step 5/8] chunks saved  ids=%d", len(chunk_db_ids))
+    logger.info("[step 6/8] embedding  chunks=%d", len(chunks))
     embeddings = embed_chunks(chunks, broker, expected_dim=expected_embed_dim)
+    logger.info("[step 7/8] embeddings=%d  saving to db", len(embeddings))
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
+    logger.info("[step 8/8] extracting mentions  chunks=%d", len(chunks))
     records = extract_mentions(chunks, broker, context=context)
-    logger.info("ingest_document path=%s doc_id=%s chunks=%d mentions=%d",
-                path.name, doc_id[:8], len(chunks), len(records))
+    logger.info("[ingest done] path=%s  chunks=%d  mentions=%d  doc_id=%s",
+                path.name, len(chunks), len(records), doc_id[:8])
     return records
 
 

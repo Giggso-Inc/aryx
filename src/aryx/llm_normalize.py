@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Edit here when a new provider ships a quirky alias; never in business code.
 _SYNONYMS: dict[str, tuple[str, ...]] = {
     "type": ("entity_type", "category", "kind", "label_type"),
-    "name": ("entity_name", "label", "title", "value"),
+    "name": ("entity_name", "label", "title", "value", "relationship", "relation", "edge_label"),
     "span": ("verbatim_span", "evidence", "context", "quote", "excerpt"),
     "attributes": ("attrs", "properties_", "fields", "metadata"),
     "confidence": ("score", "probability", "conf"),

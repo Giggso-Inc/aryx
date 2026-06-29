@@ -1,0 +1,20 @@
+# OCI Function runtime — minimal subset of requirements.txt
+# Dropped vs requirements.txt: streamlit, fastapi, boto3, anthropic, mcp,
+#   SQLAlchemy, PyMySQL, falkordb (lazy-imported in orchestrate.py / project.py)
+pydantic~=2.9
+pydantic-settings~=2.6
+psycopg[binary]~=3.2
+oracledb~=2.4
+pgvector~=0.3
+rdflib~=7.0
+cryptography~=43.0
+pymupdf~=1.24
+python-pptx~=1.0
+python-docx~=1.1
+striprtf~=0.0.26
+pytesseract~=0.3.13
+Pillow~=11.0
+presidio-analyzer~=2.2
+presidio-anonymizer~=2.2
+spacy>=3.8,<4
+oci>=2.157,<3

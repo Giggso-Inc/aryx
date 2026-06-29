@@ -10,12 +10,11 @@ from __future__ import annotations
 import logging
 import os
 
-import psycopg
-
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
 from aryx.llm import complete_text
 from aryx.queries import load
+from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +54,7 @@ def _log_call(role: str, model: str, pt: int, ct: int, ms: int, err: str) -> Non
     if not dsn:
         return
     try:
-        with psycopg.connect(dsn, autocommit=True) as conn:
+        with get_pool(dsn).connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("insert_llm_call"),
                             (role, model, _state["provider"], pt, ct, ms, "ask", err or None))

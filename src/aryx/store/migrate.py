@@ -57,12 +57,20 @@ def _split_statements(sql: str) -> list[str]:
 def apply_migrations(dsn: str) -> None:
     """Apply every .sql file under migrations/ in lexical order.
 
+    When ARYX_DB_BACKEND=oci, delegates to oracle_migrate.apply_oracle_migrations()
+    which applies Oracle-compatible DDL from migrations_oracle/.
+
     Statements are split on ';' (respecting dollar-quoted DO blocks) and run
     one at a time, since psycopg runs a single statement per call.
 
     Args:
-        dsn: PostgreSQL connection string.
+        dsn: Database connection string (Postgres DSN or Oracle ADB DSN).
     """
+    from aryx.config import get_settings
+    if get_settings().effective_db_backend() == "oci":
+        from aryx.store.oracle_migrate import apply_oracle_migrations
+        apply_oracle_migrations(dsn)
+        return
     files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
     with psycopg.connect(dsn, autocommit=True) as conn:
         for path in files:

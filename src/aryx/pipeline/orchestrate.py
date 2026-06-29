@@ -15,8 +15,6 @@ from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
-from aryx.graph import FalkorStore
-from aryx.models import OntologyType
 from aryx.pipeline.enrich import _build_type_ancestors, _relate
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
@@ -24,9 +22,9 @@ from aryx.store.checkpoint_store import StageTracker
 from aryx.project import project_graph
 from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
+from aryx.models import OntologyType
 from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
-from aryx.workspaces import ws_graph
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +114,7 @@ def run_pipeline(
             finally:
                 onto.close()
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
-            logger.warning("ontology type seed failed for %s", ontology_type)
+            logger.warning("ontology type seed failed for %s", ontology_type, exc_info=True)
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
             with runner.stage("relate"):
@@ -133,16 +131,21 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
-        if not skip_graph:
-            _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
-            with runner.stage("project"):
-                type_ancestors = _build_type_ancestors(dsn)
-                counts = project_graph(
-                    estore, FalkorStore(graph_url, ws_graph(workspace_id)),
-                    type_ancestors=type_ancestors, workspace_id=workspace_id,
-                )
-        else:
-            logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
+        _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
+        with runner.stage("project"):
+            type_ancestors = _build_type_ancestors(dsn)
+            settings = get_settings()
+            if settings.effective_graph_backend() == "oci_graph":
+                from aryx.graph.oracle_graph_store import OracleGraphStore
+                graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
+            else:
+                from aryx.graph import FalkorStore  # noqa: PLC0415
+                from aryx.workspaces import ws_graph  # noqa: PLC0415
+                graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
+            counts = project_graph(
+                estore, graph_inst,
+                type_ancestors=type_ancestors, workspace_id=workspace_id,
+            )
     finally:
         estore.close()
 

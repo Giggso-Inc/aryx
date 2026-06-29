@@ -77,6 +77,7 @@ class MultiKeyBlocker:
     """
 
     def __init__(self, max_block_size: int | None = None) -> None:
+        """Initialise blocker; max_block_size defaults to ARYX_MAX_BLOCK_SIZE."""
         self.max_block_size = max_block_size if max_block_size is not None else get_settings().max_block_size
 
     def block(

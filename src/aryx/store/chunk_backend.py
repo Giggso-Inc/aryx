@@ -6,6 +6,7 @@ connection pool; SQL lives in queries/ per house rule.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 
@@ -65,6 +66,8 @@ class PgChunkBackend:
                 rows = cur.fetchall()
         records = []
         for record_id, payload, source_system, cleaned_at in rows:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
             text = " ".join(str(payload.get(a, ""))
                             for a in self._key_attrs).strip()
             records.append(ResolutionRecord(
