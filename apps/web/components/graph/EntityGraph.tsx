@@ -8,7 +8,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  AlertCircle, ChevronDown, Loader2, RefreshCw, Search, X,
+  AlertCircle, ChevronDown, Loader2, RefreshCw, Search, Share2, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { autoLayout } from "@/lib/canvasLayout";
@@ -176,6 +176,7 @@ function buildGraph(
   pathIds: Set<number>,
   typeIndex: Map<string, number>,
   schemaOnlyTypes: string[],
+  expandedIds: Set<number> = new Set(),
 ): { nodes: Node[]; edges: Edge[] } {
   const shown = entities.filter((e) =>
     (typeSet.size === 0 || typeSet.has(e.type)) &&
@@ -188,6 +189,7 @@ function buildGraph(
     const idx = typeIndex.get(e.type) ?? 0;
     const color = typeColor(idx);
     const highlighted = pathIds.size > 0 && pathIds.has(e.id);
+    const isExpanded = expandedIds.has(e.id);
     return {
       id: String(e.id),
       type: "default",
@@ -200,19 +202,24 @@ function buildGraph(
             <div style={{ fontSize: 10, color: color, marginTop: 1 }}>
               {e.type}
             </div>
+            {isExpanded && (
+              <div style={{ fontSize: 9, color: "#64748b", marginTop: 2 }}>expanded</div>
+            )}
           </div>
         ),
       },
       position: { x: 0, y: 0 },
       style: {
         background: highlighted ? "#fef3c7" : "#ffffff",
-        border: `2px solid ${color}`,
+        border: isExpanded ? `2px solid ${color}` : `2px solid ${color}`,
         borderRadius: 8,
         padding: "6px 10px",
         width: 160,
         boxShadow: highlighted
           ? `0 0 0 3px ${color}55, 0 2px 8px rgba(0,0,0,0.12)`
-          : "0 1px 4px rgba(0,0,0,0.08)",
+          : isExpanded
+            ? `0 0 0 3px ${color}44, 0 2px 8px rgba(0,0,0,0.10)`
+            : "0 1px 4px rgba(0,0,0,0.08)",
       },
     };
   });
@@ -296,6 +303,8 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const [selected, setSelected] = useState<EntityNode | null>(null);
   const [pathIds, setPathIds] = useState<Set<number>>(new Set());
   const [showPath, setShowPath] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [autoLinking, setAutoLinking] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
@@ -346,7 +355,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     // Schema-only placeholder nodes only make sense in empty workspaces; suppress
     // them when real entity instances exist so they don't clutter the canvas.
     const { nodes: n, edges: e } = buildGraph(
-      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, [],
+      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, [], expandedIds,
     );
     setNodes(n);
     setEdges(e);
@@ -354,7 +363,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     setTimeout(() => {
       rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
     }, 80);
-  }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, loading, setNodes, setEdges]);
+  }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, expandedIds, loading, setNodes, setEdges]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     // schema:: nodes are type placeholders — not selectable entity instances
@@ -362,6 +371,45 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     const entity = allEntities.find((e) => String(e.id) === node.id);
     if (entity) { setSelected(entity); setPathIds(new Set()); }
   }, [allEntities]);
+
+  // Double-click a node to expand its 1-hop neighbors onto the canvas (Protégé-style).
+  const onNodeDoubleClick = useCallback(async (_: unknown, node: Node) => {
+    if (node.id.startsWith("schema::")) return;
+    const entityId = Number(node.id);
+    if (expandedIds.has(entityId)) return; // already expanded
+    try {
+      const neighbors = await api.getEntityNeighbors(entityId, workspaceId);
+      setExpandedIds((prev) => new Set([...prev, entityId]));
+      setAllEntities((prev) => {
+        const existing = new Set(prev.map((e) => e.id));
+        const newOnes = neighbors
+          .filter((n) => !existing.has(n.id))
+          .map((n) => ({ id: n.id, type: n.type, name: n.name }));
+        return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+      });
+      setAllRels((prev) => {
+        const existingKey = new Set(prev.map((r) => `${r.source}-${r.target}`));
+        const newRels = neighbors
+          .filter((n) => !existingKey.has(`${entityId}-${n.id}`) && !existingKey.has(`${n.id}-${entityId}`))
+          .map((n) => ({ source: entityId, target: n.id, name: n.relationship }));
+        return newRels.length > 0 ? [...prev, ...newRels] : prev;
+      });
+    } catch {
+      // silently ignore expansion errors
+    }
+  }, [expandedIds, workspaceId]);
+
+  const autoLink = async () => {
+    setAutoLinking(true);
+    try {
+      const result = await api.autoLinkWorkspace(workspaceId);
+      if (result.links_created > 0) await load();
+    } catch {
+      // ignore
+    } finally {
+      setAutoLinking(false);
+    }
+  };
 
   const navigateTo = (id: number) => {
     const entity = allEntities.find((e) => e.id === id);
@@ -465,6 +513,16 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
             )}>
             Path finder
           </button>
+          <button
+            type="button"
+            onClick={autoLink}
+            disabled={autoLinking}
+            title="Ask LLM to detect and wire FK relationships automatically"
+            className="focus-ring flex items-center gap-1 rounded-lg border border-navy-100 bg-white/90 px-2 py-1.5 text-[11px] text-navy-700 hover:bg-navy-50 shadow-soft backdrop-blur-sm disabled:opacity-50"
+          >
+            {autoLinking ? <Loader2 size={11} className="animate-spin" /> : <Share2 size={11} />}
+            Auto-link
+          </button>
         </div>
 
         {showPath && (
@@ -492,6 +550,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick}
+          onNodeDoubleClick={onNodeDoubleClick}
           onInit={(instance) => {
             rfInstance.current = instance;
             setTimeout(() => instance.fitView({ padding: 0.15 }), 50);

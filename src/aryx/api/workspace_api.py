@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 import logging
+from itertools import islice
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.graph import FalkorStore
+from aryx.pipeline.fk_edges import link_by_attribute
+from aryx.project import project_graph
+from aryx.pipeline.enrich import _build_type_ancestors
+from aryx.relationships import infer_fk_links
+from aryx.store.entity_store import EntityStore
 from aryx.store.migrate import apply_migrations
+from aryx.store.ontology_store import OntologyStore
 from aryx.workspaces import WorkspaceStore, ws_graph
 
 logger = logging.getLogger(__name__)
@@ -124,6 +132,75 @@ def workspace_router() -> APIRouter:
         except Exception:  # noqa: BLE001
             logger.debug("graph clear skipped ws=%s", workspace_id)
         return result
+
+    @router.post("/{workspace_id}/auto-link")
+    def auto_link(workspace_id: int) -> dict[str, Any]:
+        """Detect and create FK-style edges across all entity types in a workspace.
+
+        Samples one entity per type to build attribute schemas, asks the LLM
+        which pairs form FK relationships, then runs link_by_attribute for each
+        detected pair and reprojects the graph.
+        """
+        settings = get_settings()
+        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        try:
+            # Sample one entity payload per type to build attribute schemas.
+            type_sample: dict[str, dict] = {}
+            for _, etype, payload in estore.list_entities():
+                if etype not in type_sample and isinstance(payload, dict):
+                    type_sample[etype] = payload
+
+            if len(type_sample) < 2:
+                return {"links_created": 0, "detail": "fewer than 2 entity types"}
+
+            # Build schemas including match_keys from the ontology store.
+            onto = OntologyStore(settings.rdb_dsn, workspace_id)
+            try:
+                mk_map = {t.name: list(t.attributes) for t in onto.list_types()}
+            finally:
+                onto.close()
+
+            type_schemas: dict[str, Any] = {
+                etype: {
+                    "attrs": list(payload.keys()),
+                    "match_keys": mk_map.get(etype, []),
+                }
+                for etype, payload in type_sample.items()
+            }
+
+            broker = _local_broker()
+            raw_links = infer_fk_links(type_schemas, broker)
+            if not raw_links:
+                return {"links_created": 0, "detail": "LLM found no FK relationships"}
+
+            total = 0
+            applied = []
+            for spec in raw_links:
+                try:
+                    count = link_by_attribute(
+                        estore,
+                        spec["source_type"], spec["source_attr"],
+                        spec["target_type"], spec["target_attr"],
+                        spec["name"],
+                    )
+                    total += count
+                    applied.append({**spec, "edges": count})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("auto-link spec failed %s: %s", spec, exc)
+
+            # Reproject the graph with the new edges.
+            if total > 0:
+                ancestors = _build_type_ancestors(settings.rdb_dsn, workspace_id)
+                project_graph(
+                    estore,
+                    FalkorStore(settings.graph_url, ws_graph(workspace_id)),
+                    type_ancestors=ancestors,
+                    workspace_id=workspace_id,
+                )
+
+            return {"links_created": total, "specs": applied}
+        finally:
+            estore.close()
 
     @router.delete("/{workspace_id}")
     def delete_workspace(workspace_id: int) -> dict[str, Any]:
