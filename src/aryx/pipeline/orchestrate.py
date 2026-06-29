@@ -55,6 +55,7 @@ def run_pipeline(
     fk_links: list[dict] | None = None,
     workspace_id: int = 1,
     resume_run_id: int | None = None,
+    skip_graph: bool = False,
 ) -> dict[str, int]:
     """Run a source from extraction through to the FalkorDB projection.
 
@@ -96,6 +97,7 @@ def run_pipeline(
 
     estore = EntityStore(dsn, workspace_id)
     entities = relationships = 0
+    counts: dict[str, int] = {}
     try:
         if not runner.skip("resolve_cluster"):
             _emit(on_progress, "Resolve", 50, "Resolving records into canonical entities")
@@ -127,13 +129,16 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], spec["name"],
                     )
-        _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
-        with runner.stage("project"):
-            type_ancestors = _build_type_ancestors(dsn)
-            counts = project_graph(
-                estore, FalkorStore(graph_url, ws_graph(workspace_id)),
-                type_ancestors=type_ancestors, workspace_id=workspace_id,
-            )
+        if not skip_graph:
+            _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
+            with runner.stage("project"):
+                type_ancestors = _build_type_ancestors(dsn)
+                counts = project_graph(
+                    estore, FalkorStore(graph_url, ws_graph(workspace_id)),
+                    type_ancestors=type_ancestors, workspace_id=workspace_id,
+                )
+        else:
+            logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
     finally:
         estore.close()
 

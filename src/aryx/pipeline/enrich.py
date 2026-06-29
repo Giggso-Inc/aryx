@@ -90,9 +90,15 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
             if len(candidates) >= max_pairs:
                 break
 
-    def _trim(attrs: dict) -> dict:
-        """Keep _element_type + first max_attrs keys to limit LLM prompt size."""
-        out: dict = {}
+    def _trim(attrs: dict, ontology_type: str) -> dict:
+        """Build the attribute dict shown to the LLM for one entity.
+
+        Always injects ``_ontology_type`` (the canonical type name from the
+        pipeline) so the model knows the entity domain even when the raw
+        attributes contain no ``_element_type`` field (CSV-ingested entities).
+        Then includes up to ``max_attrs`` attribute key-value pairs.
+        """
+        out: dict = {"_ontology_type": ontology_type}
         if "_element_type" in attrs:
             out["_element_type"] = attrs["_element_type"]
         for k, v in attrs.items():
@@ -104,7 +110,9 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
         return out
 
     def _infer(left: tuple, right: tuple) -> tuple[int, int, str | None, float]:
-        name, conf = infer_relationship(_trim(left[2]), _trim(right[2]), broker)
+        name, conf = infer_relationship(
+            _trim(left[2], left[1]), _trim(right[2], right[1]), broker
+        )
         return left[0], right[0], name, conf
 
     rels: list[Relationship] = []
