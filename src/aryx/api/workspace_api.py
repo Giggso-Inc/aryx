@@ -146,7 +146,7 @@ def workspace_router() -> APIRouter:
         try:
             # Sample one entity payload per type to build attribute schemas.
             type_sample: dict[str, dict] = {}
-            for _, etype, payload in estore.list_entities():
+            for _, etype, payload in islice(estore.list_entities(), 1000):
                 if etype not in type_sample and isinstance(payload, dict):
                     type_sample[etype] = payload
 

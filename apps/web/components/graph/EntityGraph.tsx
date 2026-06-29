@@ -231,7 +231,7 @@ function buildGraph(
       position: { x: 0, y: 0 },
       style: {
         background: highlighted ? "#fef3c7" : "#ffffff",
-        border: isExpanded ? `2px solid ${color}` : `2px solid ${color}`,
+        border: isExpanded ? `3px solid ${color}` : `2px solid ${color}`,
         borderRadius: 8,
         padding: "6px 10px",
         width: 160,

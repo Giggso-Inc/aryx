@@ -151,7 +151,7 @@ class GraphReader:
         remaining = capped - len(entity_map)
         if remaining > 0:
             all_rows = self._graph.query(
-                f"MATCH (e:Entity) RETURN e.id, e.type, e.name LIMIT {capped}"
+                f"MATCH (e:Entity) RETURN e.id, e.type, e.name LIMIT {remaining}"
             ).result_set
             for row in all_rows:
                 eid, etype, ename = row
