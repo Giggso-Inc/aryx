@@ -25,7 +25,8 @@ _NAME_KEYS = (
     "ITEM_NAME", "item_name",
     "LITERAL", "literal",                    # FLIS HELP.csv display name
     "COLLOQUIAL_NAME", "colloquial_name",    # FLIS colloquial name
-    "NIIN", "niin",                          # FLIS national item ID number
+    "FSC", "fsc",                            # FLIS Federal Supply Class (on NSN rows)
+    "NIIN", "niin",                          # FLIS NIIN — fallback when FSC absent
     # XML / CPQ config domain fields
     "variable_name", "var_name", "bm_variable_name",
     "item_text", "item_value",
@@ -40,6 +41,7 @@ _GENERIC_NAMES: frozenset[str] = frozenset({
     "no item name available", "not available", "n/a", "none", "null",
     "unknown", "tbd", "to be determined", "see above", "see below",
     "no name", "no description", "no data",
+    "########",  # Excel column-too-narrow placeholder (truncated dates)
 })
 
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
