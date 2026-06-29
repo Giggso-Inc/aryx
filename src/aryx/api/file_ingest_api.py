@@ -154,6 +154,9 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 for idx, (csv_data, csv_name, derived_type) in enumerate(xml_plans):
                     is_last = (idx == len(xml_plans) - 1)
                     jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
+                    # relate=False on all sub-pipelines except the last so that the
+                    # LLM relationship pass runs once across the full merged entity set
+                    # instead of N times on incomplete per-type slices (N×10 → 10 calls).
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
@@ -164,7 +167,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         on_progress=on_prog,
                         fk_links=auto_fk if is_last else [],
                         workspace_id=workspace_id,
-                        relate=True,
+                        relate=is_last,
                     )
                 continue
             else:

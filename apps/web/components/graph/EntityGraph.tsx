@@ -313,6 +313,7 @@ function buildGraph(
 
 export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const rfInstance = useRef<ReactFlowInstance | null>(null);
+  const fitOnNextRender = useRef(true); // true only after a full load or reload
   const [allEntities, setAllEntities] = useState<EntityNode[]>([]);
   const [allRels, setAllRels] = useState<EntityRel[]>([]);
   const [schemaTypes, setSchemaTypes] = useState<string[]>([]);
@@ -345,6 +346,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   }, [allTypes]);
 
   const load = useCallback(async () => {
+    fitOnNextRender.current = true; // full reload → fit the new graph
     setLoading(true); setError(null);
     try {
       const [g, onto] = await Promise.all([
@@ -378,10 +380,13 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     );
     setNodes(n);
     setEdges(e);
-    // Fit view after React has had a chance to render the new nodes
-    setTimeout(() => {
-      rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
-    }, 80);
+    // fitView only on full load/reload — not on incremental expand or filter changes.
+    if (fitOnNextRender.current) {
+      fitOnNextRender.current = false;
+      setTimeout(() => {
+        rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
+      }, 80);
+    }
   }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, expandedIds, loading, setNodes, setEdges]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
@@ -550,10 +555,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick}
-          onInit={(instance) => {
-            rfInstance.current = instance;
-            setTimeout(() => instance.fitView({ padding: 0.15 }), 50);
-          }}
+          onInit={(instance) => { rfInstance.current = instance; }}
           minZoom={0.05}
           maxZoom={3}
           proOptions={{ hideAttribution: true }}
