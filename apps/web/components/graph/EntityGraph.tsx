@@ -8,7 +8,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  AlertCircle, ChevronDown, Loader2, RefreshCw, Search, Share2, X,
+  AlertCircle, ChevronDown, GitMerge, Loader2, RefreshCw, Search, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { autoLayout } from "@/lib/canvasLayout";
@@ -26,11 +26,13 @@ interface DetailPanelProps {
   workspaceId: number;
   onClose: () => void;
   onNavigate: (id: number) => void;
+  onExpandOnCanvas: (entityId: number, neighbors: Array<{ id: number; type: string; name: string; relationship: string }>) => void;
 }
 
-function DetailPanel({ entity, workspaceId, onClose, onNavigate }: DetailPanelProps) {
+function DetailPanel({ entity, workspaceId, onClose, onNavigate, onExpandOnCanvas }: DetailPanelProps) {
   const [neighbors, setNeighbors] = useState<Array<{ id: number; type: string; name: string; relationship: string }>>([]);
   const [loading, setLoading] = useState(true);
+  const [expanding, setExpanding] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -48,10 +50,28 @@ function DetailPanel({ entity, workspaceId, onClose, onNavigate }: DetailPanelPr
           <h3 className="truncate font-semibold text-navy-900">{entity.name}</h3>
           <div className="text-[10px] text-subtle">id:{entity.id}</div>
         </div>
-        <button type="button" onClick={onClose}
-          className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
-          <X size={14} />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {!loading && neighbors.length > 0 && (
+            <button
+              type="button"
+              disabled={expanding}
+              title="Show all connections for this node on the canvas"
+              onClick={async () => {
+                setExpanding(true);
+                onExpandOnCanvas(entity.id, neighbors);
+                setExpanding(false);
+              }}
+              className="focus-ring flex items-center gap-1 rounded-md border border-steel-200 bg-steel-50 px-2 py-1 text-[10px] font-medium text-steel-700 hover:bg-steel-100 disabled:opacity-50"
+            >
+              {expanding ? <Loader2 size={10} className="animate-spin" /> : <GitMerge size={10} />}
+              Expand
+            </button>
+          )}
+          <button type="button" onClick={onClose}
+            className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
+            <X size={14} />
+          </button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {entity.attributes && Object.keys(entity.attributes).length > 0 && (
@@ -304,7 +324,6 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const [pathIds, setPathIds] = useState<Set<number>>(new Set());
   const [showPath, setShowPath] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
-  const [autoLinking, setAutoLinking] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
@@ -372,44 +391,35 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     if (entity) { setSelected(entity); setPathIds(new Set()); }
   }, [allEntities]);
 
-  // Double-click a node to expand its 1-hop neighbors onto the canvas (Protégé-style).
-  const onNodeDoubleClick = useCallback(async (_: unknown, node: Node) => {
-    if (node.id.startsWith("schema::")) return;
-    const entityId = Number(node.id);
-    if (expandedIds.has(entityId)) return; // already expanded
-    try {
-      const neighbors = await api.getEntityNeighbors(entityId, workspaceId);
-      setExpandedIds((prev) => new Set([...prev, entityId]));
-      setAllEntities((prev) => {
-        const existing = new Set(prev.map((e) => e.id));
-        const newOnes = neighbors
-          .filter((n) => !existing.has(n.id))
-          .map((n) => ({ id: n.id, type: n.type, name: n.name }));
-        return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+  // Expand a node's 1-hop neighbors onto the canvas — adds missing entities and edges.
+  // Called from the "Expand" button in the sidebar so there's no double-click race condition.
+  const expandOnCanvas = useCallback((
+    entityId: number,
+    neighbors: Array<{ id: number; type: string; name: string; relationship: string }>,
+  ) => {
+    setExpandedIds((prev) => new Set([...prev, entityId]));
+    setAllEntities((prev) => {
+      const existing = new Set(prev.map((e) => e.id));
+      const newOnes = neighbors
+        .filter((n) => !existing.has(n.id))
+        .map((n) => ({ id: n.id, type: n.type, name: n.name }));
+      return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+    });
+    setAllRels((prev) => {
+      const existingKey = new Set(prev.map((r) => `${r.source}-${r.target}`));
+      const newRels = neighbors.flatMap((n) => {
+        const edges: EntityRel[] = [];
+        if (!existingKey.has(`${entityId}-${n.id}`)) {
+          edges.push({ source: entityId, target: n.id, name: n.relationship });
+        }
+        if (!existingKey.has(`${n.id}-${entityId}`)) {
+          edges.push({ source: n.id, target: entityId, name: n.relationship });
+        }
+        return edges;
       });
-      setAllRels((prev) => {
-        const existingKey = new Set(prev.map((r) => `${r.source}-${r.target}`));
-        const newRels = neighbors
-          .filter((n) => !existingKey.has(`${entityId}-${n.id}`) && !existingKey.has(`${n.id}-${entityId}`))
-          .map((n) => ({ source: entityId, target: n.id, name: n.relationship }));
-        return newRels.length > 0 ? [...prev, ...newRels] : prev;
-      });
-    } catch {
-      // silently ignore expansion errors
-    }
-  }, [expandedIds, workspaceId]);
-
-  const autoLink = async () => {
-    setAutoLinking(true);
-    try {
-      const result = await api.autoLinkWorkspace(workspaceId);
-      if (result.links_created > 0) await load();
-    } catch {
-      // ignore
-    } finally {
-      setAutoLinking(false);
-    }
-  };
+      return newRels.length > 0 ? [...prev, ...newRels] : prev;
+    });
+  }, []);
 
   const navigateTo = (id: number) => {
     const entity = allEntities.find((e) => e.id === id);
@@ -513,16 +523,6 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
             )}>
             Path finder
           </button>
-          <button
-            type="button"
-            onClick={autoLink}
-            disabled={autoLinking}
-            title="Ask LLM to detect and wire FK relationships automatically"
-            className="focus-ring flex items-center gap-1 rounded-lg border border-navy-100 bg-white/90 px-2 py-1.5 text-[11px] text-navy-700 hover:bg-navy-50 shadow-soft backdrop-blur-sm disabled:opacity-50"
-          >
-            {autoLinking ? <Loader2 size={11} className="animate-spin" /> : <Share2 size={11} />}
-            Auto-link
-          </button>
         </div>
 
         {showPath && (
@@ -550,7 +550,6 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick}
-          onNodeDoubleClick={onNodeDoubleClick}
           onInit={(instance) => {
             rfInstance.current = instance;
             setTimeout(() => instance.fitView({ padding: 0.15 }), 50);
@@ -585,6 +584,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           workspaceId={workspaceId}
           onClose={() => setSelected(null)}
           onNavigate={navigateTo}
+          onExpandOnCanvas={expandOnCanvas}
         />
       )}
     </div>
