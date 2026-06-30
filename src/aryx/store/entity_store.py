@@ -106,6 +106,18 @@ class EntityStore:
                       r.name, r.confidence) for r in relationships],
                 )
 
+    def list_entities_typed_sample(self, n_per_type: int) -> list[tuple[int, str, dict]]:
+        """Return up to *n_per_type* entities for EACH ontology type in the workspace.
+
+        Uses a window function (PARTITION BY ontology_type) so every type is
+        represented even when one type has millions of rows.  The caller gets
+        a balanced sample suitable for cross-type relationship inference.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_entities_typed_sample"), (self._ws, n_per_type))
+                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
 
