@@ -12,6 +12,53 @@ logger = logging.getLogger(__name__)
 _NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
               "sku", "code", "email", "username", "_text")
 
+# Oracle ADB thin-client ORA-03106 guard values.
+# Trigger is num_rows × num_bind_params, not just total bytes.
+# merge_graph_vertex has 6 bind vars → 25 rows = 150 bind slots per call.
+# Keep attrs small so even 25 rows stay well under the SDU budget.
+_CHUNK_MAX_ROWS = 25
+_CHUNK_MAX_BYTES = 50_000
+
+# Graph projection attrs — display + traversal only, not source of truth.
+# Full attribute text lives in aryx_entity.attributes (the primary store).
+_GRAPH_ATTR_STR_MAX = 200
+
+
+def _safe_attrs_json(attrs: dict[str, Any]) -> str:
+    """Serialize attrs, always truncating long string values to _GRAPH_ATTR_STR_MAX chars.
+
+    The graph store is a projection cache — full text lives in aryx_entity.attributes.
+    CPQ function bodies and scripts cause ORA-03106 even across small row counts
+    because each bind variable contributes to the wire-protocol packet size.
+    Trim unconditionally so no single bind value is large.
+    """
+    trimmed = {
+        k: (v[:_GRAPH_ATTR_STR_MAX] + "…" if isinstance(v, str) and len(v) > _GRAPH_ATTR_STR_MAX else v)
+        for k, v in attrs.items()
+    }
+    return json.dumps(trimmed, default=str)
+
+
+def _iter_chunks(batch: list[dict], payload_key: str = "attrs") -> list[list[dict]]:
+    """Yield sub-lists bounded by row count AND estimated payload bytes.
+
+    Prevents ORA-03106 when individual attribute JSON blobs are large
+    (e.g. CPQ function bodies) even at low row counts.
+    """
+    chunk: list[dict] = []
+    size = 0
+    for row in batch:
+        val = row.get(payload_key)
+        row_bytes = len(val) if isinstance(val, (str, bytes)) else 0
+        if chunk and (len(chunk) >= _CHUNK_MAX_ROWS or size + row_bytes > _CHUNK_MAX_BYTES):
+            yield chunk
+            chunk = []
+            size = 0
+        chunk.append(row)
+        size += row_bytes
+    if chunk:
+        yield chunk
+
 
 def _display_name(attributes: dict[str, Any]) -> str:
     """Extract a human-readable display name from entity attributes."""
@@ -124,17 +171,15 @@ class OracleGraphStore:
                 "typ": typ,
                 "name": _display_name(attrs) or f"#{eid}",
                 "iri": iri or "",
-                "attrs": json.dumps(attrs),
+                "attrs": _safe_attrs_json(attrs),
             }
             for eid, typ, attrs, _labels, iri in rows
         ]
-        chunk_size = 100
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for start in range(0, len(batch), chunk_size):
-                    chunk = batch[start:start + chunk_size]
+                for chunk in _iter_chunks(batch, payload_key="attrs"):
                     cur.executemany(load("merge_graph_vertex"), chunk)
-                    logger.info("graph vertices chunk %d-%d done", start + 1, start + len(chunk))
+                    logger.info("graph vertices chunk rows=%d done", len(chunk))
         logger.info("graph vertices batch done count=%d", len(rows))
 
     def add_provenance_batch(
@@ -161,8 +206,8 @@ class OracleGraphStore:
         prov_rows: list[dict] = []
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for start in range(0, len(source_rows), 100):
-                    cur.executemany(load("merge_graph_source"), source_rows[start:start + 100])
+                for chunk in _iter_chunks(source_rows, payload_key="rid"):
+                    cur.executemany(load("merge_graph_source"), chunk)
                 logger.info("graph sources merged count=%d — fetching source_ids", len(source_rows))
                 cur.execute(
                     "SELECT source_id, system, dataset, record_id "
@@ -183,8 +228,8 @@ class OracleGraphStore:
                     logger.warning("graph provenance batch: %d source_ids not found — skipped", missing)
                 logger.info("graph provenance links ready=%d — inserting", len(prov_rows))
                 if prov_rows:
-                    for start in range(0, len(prov_rows), 100):
-                        cur.executemany(load("merge_graph_provenance"), prov_rows[start:start + 100])
+                    for chunk in _iter_chunks(prov_rows, payload_key="sid"):
+                        cur.executemany(load("merge_graph_provenance"), chunk)
         logger.info("graph provenance batch done prov=%d missing=%d", len(prov_rows), missing)
 
     def add_relationships_batch(
@@ -204,6 +249,6 @@ class OracleGraphStore:
         ]
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for start in range(0, len(batch), 100):
-                    cur.executemany(load("merge_graph_edge"), batch[start:start + 100])
+                for chunk in _iter_chunks(batch, payload_key="name"):
+                    cur.executemany(load("merge_graph_edge"), chunk)
         logger.info("graph edges batch done count=%d", len(rows))
