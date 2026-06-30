@@ -138,9 +138,20 @@ def resolve(
     # Embedding records beyond what the loop can reach is pure waste: cap at
     # the number of records n where n*(n-1)/2 ≤ max_pairs_per_block.
     _embed_cap = int((2 * max_pairs_per_block) ** 0.5) + 2  # n where n*(n-1)/2 ≤ max_pairs_per_block; +2 guards rounding
-    for group in block(records).values():
+    blocks = block(records)
+    total_blocks = len(blocks)
+    total_merged = 0
+    for block_idx, group in enumerate(blocks.values()):
+        if len(group) <= 1:
+            # Size-1 blocks have no pairs — skip OCI embed API call entirely.
+            logger.debug(
+                "resolve block=%d/%d size=1 skip total_merged=%d",
+                block_idx + 1, total_blocks, total_merged,
+            )
+            continue
         embeddings = _block_embeddings(group[:_embed_cap], broker)
         pairs_evaluated = 0
+        block_merges = 0
         done = False
         for i in range(len(group)):
             if done:
@@ -150,12 +161,23 @@ def resolve(
                     done = True
                     break
                 left, right = group[i], group[j]
+                left_root_before = union.find(left.record_id)
+                right_root_before = union.find(right.record_id)
                 score = score_pair(left.text, right.text,
                                    embeddings.get(left.record_id),
                                    embeddings.get(right.record_id))
                 pair_scores[(left.record_id, right.record_id)] = score
                 _route_pair(left, right, score, broker, union, review)
+                if left_root_before != right_root_before and \
+                        union.find(left.record_id) == union.find(right.record_id):
+                    block_merges += 1
                 pairs_evaluated += 1
+        total_merged += block_merges
+        logger.info(
+            "resolve block=%d/%d size=%d pairs=%d merges=%d total_merged=%d",
+            block_idx + 1, total_blocks, len(group),
+            pairs_evaluated, block_merges, total_merged,
+        )
 
     results = [
         (_materialize(member_ids, by_id, pair_scores, ontology_type, policy),

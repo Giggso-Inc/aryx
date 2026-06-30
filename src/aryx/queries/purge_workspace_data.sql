@@ -11,6 +11,7 @@ DELETE FROM aryx_projection_state WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ontology_axiom WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ontology_change_log WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ontology_rule WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ontology_type WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ontology_version WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_field_profile WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
 DELETE FROM aryx_field_tag WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);

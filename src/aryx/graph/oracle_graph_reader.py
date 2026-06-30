@@ -108,6 +108,71 @@ class OracleGraphReader:
                 rows = cur.fetchall()
         return [{"system": r[0], "dataset": r[1], "record_id": r[2]} for r in rows]
 
+    def subgraph(self, rel_limit: int = 500) -> dict[str, Any]:
+        """Return a connected subgraph for graph-canvas rendering.
+
+        Mirrors FalkorReader.subgraph(): samples proportionally from every
+        relationship type then fills remaining slots with isolated entities.
+        """
+        capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
+        entity_map: dict[int, dict[str, Any]] = {}
+        rels: list[dict[str, Any]] = []
+
+        # 1. Distinct relationship types in this workspace
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT name FROM aryx_graph_edge WHERE workspace_id = :1",
+                    (self._workspace_id,),
+                )
+                rel_types = [r[0] for r in cur.fetchall() if r[0]]
+
+        # 2. Sample edges proportionally per type
+        if rel_types:
+            per_type = max(1, capped // len(rel_types))
+            for rtype in rel_types:
+                with self._pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"""
+                            SELECT e.src_id, v1.type, v1.name,
+                                   e.tgt_id, v2.type, v2.name,
+                                   e.name
+                              FROM aryx_graph_edge e
+                              JOIN aryx_graph_vertex v1
+                                ON v1.workspace_id = e.workspace_id
+                               AND v1.entity_id = e.src_id
+                              JOIN aryx_graph_vertex v2
+                                ON v2.workspace_id = e.workspace_id
+                               AND v2.entity_id = e.tgt_id
+                             WHERE e.workspace_id = :ws AND e.name = :rel
+                             FETCH FIRST {per_type} ROWS ONLY
+                            """,  # nosec S608 — per_type is a validated int
+                            {"ws": self._workspace_id, "rel": rtype},
+                        )
+                        for row in cur.fetchall():
+                            aid, atype, aname, bid, btype, bname, rname = row
+                            entity_map[aid] = {"id": aid, "type": atype, "name": aname}
+                            entity_map[bid] = {"id": bid, "type": btype, "name": bname}
+                            rels.append({"source": aid, "target": bid, "name": rname})
+
+        # 3. Fill remaining slots with isolated entities
+        remaining = capped - len(entity_map)
+        if remaining > 0:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT entity_id, type, name FROM aryx_graph_vertex "
+                        f"WHERE workspace_id = :1 FETCH FIRST {remaining} ROWS ONLY",  # nosec S608
+                        (self._workspace_id,),
+                    )
+                    for row in cur.fetchall():
+                        eid, etype, ename = row
+                        if eid not in entity_map:
+                            entity_map[eid] = {"id": eid, "type": etype, "name": ename}
+
+        return {"entities": list(entity_map.values()), "relationships": rels}
+
     def shortest_path(self, src: int, dst: int, max_hops: int = 6) -> list[dict[str, Any]]:
         """Return shortest path using Oracle 23ai SQL/PGQ GRAPH_TABLE ONE ROW PER STEP.
 

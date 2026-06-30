@@ -237,18 +237,38 @@ class TestTranslateSql(unittest.TestCase):
         self.assertFalse(cur._conflict_ignore)
 
     def test_returning_rewritten_with_into(self) -> None:
+        # 1 positional param (%s → :1); RETURNING INTO continues at :2
         cur = _make_cursor()
         result = _translate_sql("INSERT INTO t (name) VALUES (%s) RETURNING id", cur)
-        self.assertIn("RETURNING id INTO :r0", result)
+        self.assertIn("RETURNING id INTO :2", result)
         self.assertEqual(len(cur._out_vars), 1)
 
     def test_returning_multi_column(self) -> None:
+        # 2 positional params (%s, %s → :1, :2); RETURNING INTO continues at :3, :4
         cur = _make_cursor()
         result = _translate_sql(
             "INSERT INTO t (a, b) VALUES (%s, %s) RETURNING id, name", cur
         )
-        self.assertIn("RETURNING id, name INTO :r0, :r1", result)
+        self.assertIn("RETURNING id, name INTO :3, :4", result)
         self.assertEqual(len(cur._out_vars), 2)
+
+    def test_returning_named_params_use_r_prefix(self) -> None:
+        # Named params (%(x)s) have _pos_counter=0 → fallback to :r0, :r1, ...
+        cur = _make_cursor()
+        result = _translate_sql(
+            "INSERT INTO t (ws, name) VALUES (%(ws)s, %(n)s) RETURNING id", cur
+        )
+        self.assertIn("RETURNING id INTO :r0", result)
+        self.assertEqual(len(cur._out_vars), 1)
+
+    def test_returning_positional_4_params(self) -> None:
+        # insert_entity pattern: 4 %s params → RETURNING id INTO :5
+        cur = _make_cursor()
+        result = _translate_sql(
+            "INSERT INTO t (a, b, c, d) VALUES (%s, %s, %s, %s) RETURNING id", cur
+        )
+        self.assertIn("RETURNING id INTO :5", result)
+        self.assertEqual(len(cur._out_vars), 1)
 
     def test_returning_not_doubled_when_into_present(self) -> None:
         """SQL already containing RETURNING...INTO must not get a second INTO appended."""
@@ -622,6 +642,190 @@ class TestLimitTranslation(unittest.TestCase):
         result = _translate_sql(sql, cur)
         self.assertNotIn("LIMIT", result)
         self.assertIn("OFFSET :3 ROWS FETCH NEXT :2 ROWS ONLY", result)
+
+
+# ── _save_batch per-row entity insert tests ───────────────────────────────────
+
+def _stub_falkordb() -> None:
+    """Stub falkordb so oracle_graph_store can be imported without the library."""
+    import sys
+    import types
+    if "falkordb" in sys.modules:
+        return
+    mod = types.ModuleType("falkordb")
+    mod.FalkorDB = MagicMock
+    sys.modules["falkordb"] = mod
+
+
+_DUMMY_SQL = "INSERT INTO t (a) VALUES (:1) RETURNING id INTO :2"
+# entity_store does `from aryx.queries import load` — patch the name in that module
+_load_patcher = patch("aryx.store.entity_store.load", return_value=_DUMMY_SQL)
+
+
+class TestSaveBatch(unittest.TestCase):
+    """entity_store._save_batch: bulk insert via identity sequence pre-fetch, no per-row loop."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _stub_psycopg()
+        _stub_oracledb()
+        _load_patcher.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        _load_patcher.stop()
+
+    def _make_cursor(self) -> tuple:
+        """Return (OracleCursorWrapper, many_calls) — execute is a no-op."""
+        import oracledb
+        from aryx.store.oracle_pool import OracleCursorWrapper
+        raw_cur = oracledb._Cursor()
+        wrapped = OracleCursorWrapper(raw_cur)
+        wrapped.execute = lambda sql, params=None: None
+
+        many_calls: list = []
+        wrapped.executemany = lambda sql, seq: many_calls.append(list(seq))
+
+        return wrapped, many_calls
+
+    def _make_results(self, n: int):
+        from aryx.models import ResolvedEntity, EntityMember
+        return [
+            (ResolvedEntity(ontology_type="T", attributes={"name": str(i)},
+                            confidence=1.0, provenance=None, conflicts=None),
+             [EntityMember(landed_record_id=i * 10)])
+            for i in range(n)
+        ]
+
+    def _store(self):
+        from aryx.store.entity_store import EntityStore
+        store = EntityStore.__new__(EntityStore)
+        store._ws = 1
+        store._pool = None
+        return store
+
+    def test_save_batch_uses_executemany_not_loop(self) -> None:
+        """_save_batch must call executemany for entities (no per-row execute loop)."""
+        import aryx.store.entity_store as es
+        wrapped, many_calls = self._make_cursor()
+        results = self._make_results(3)
+
+        with patch.object(es, "_fetch_entity_ids", return_value=[101, 102, 103]):
+            self._store()._save_batch(wrapped, results)
+
+        # 1st executemany = entity insert, 2nd = member insert
+        self.assertEqual(len(many_calls), 2)
+        # Entity rows have id as first element: 101, 102, 103
+        self.assertEqual([r[0] for r in many_calls[0]], [101, 102, 103])
+
+    def test_save_batch_member_rows_use_fetched_ids(self) -> None:
+        """Member rows must reference the IDs returned by _fetch_entity_ids."""
+        import aryx.store.entity_store as es
+        wrapped, many_calls = self._make_cursor()
+        results = self._make_results(3)
+
+        with patch.object(es, "_fetch_entity_ids", return_value=[201, 202, 203]):
+            self._store()._save_batch(wrapped, results)
+
+        member_rows = many_calls[1]
+        self.assertEqual([r[1] for r in member_rows], [201, 202, 203])
+
+    def test_save_batch_no_executemany_when_empty(self) -> None:
+        """No executemany calls when results list is empty."""
+        import aryx.store.entity_store as es
+        wrapped, many_calls = self._make_cursor()
+
+        with patch.object(es, "_fetch_entity_ids", return_value=[]):
+            self._store()._save_batch(wrapped, [])
+
+        self.assertEqual(many_calls, [])
+
+
+# ── oracle_graph_store chunking tests ─────────────────────────────────────────
+
+_stub_falkordb()
+
+# Import directly to bypass aryx.graph.__init__ → falkordb chain
+import importlib.util as _ilu
+import pathlib as _pathlib
+import sys as _sys
+_store_path = _pathlib.Path(__file__).parents[1] / "src/aryx/graph/oracle_graph_store.py"
+_spec = _ilu.spec_from_file_location(
+    "aryx.graph.oracle_graph_store",
+    _store_path,
+)
+_mod = _ilu.module_from_spec(_spec)
+_sys.modules["aryx.graph.oracle_graph_store"] = _mod
+_spec.loader.exec_module(_mod)
+_OracleGraphStore = _mod.OracleGraphStore
+
+
+_GRAPH_DUMMY_SQL = "MERGE INTO t USING dual ON (1=1) WHEN MATCHED THEN UPDATE SET a=:1 WHEN NOT MATCHED THEN INSERT (a) VALUES (:1)"
+# _mod.load is the `load` name bound inside the oracle_graph_store module — swap directly.
+_graph_load_real = _mod.load
+_mod.load = lambda *_: _GRAPH_DUMMY_SQL
+
+
+class TestGraphStoreBatchChunking(unittest.TestCase):
+    """add_entities_batch must split executemany into ≤100-row chunks."""
+
+    def _make_store(self) -> tuple:
+        """Return (OracleGraphStore, executemany_chunk_sizes)."""
+        from contextlib import contextmanager
+        executemany_calls: list[int] = []
+
+        class _FakeCur:
+            def executemany(self, sql, rows):
+                executemany_calls.append(len(rows))
+            def execute(self, sql, params=None):
+                pass
+            def fetchall(self):
+                return []
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCur()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                pass
+
+        class _FakePool:
+            @contextmanager
+            def connection(self):
+                yield _FakeConn()
+
+        store = _OracleGraphStore.__new__(_OracleGraphStore)
+        store._workspace_id = 1
+        store._pool = _FakePool()
+        return store, executemany_calls
+
+    def test_add_entities_batch_chunks_at_100(self) -> None:
+        store, calls = self._make_store()
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(250)]
+        store.add_entities_batch(rows)
+        self.assertEqual(calls, [100, 100, 50])
+
+    def test_add_entities_batch_small_batch_single_chunk(self) -> None:
+        store, calls = self._make_store()
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(30)]
+        store.add_entities_batch(rows)
+        self.assertEqual(calls, [30])
+
+    def test_add_relationships_batch_chunks_at_100(self) -> None:
+        store, calls = self._make_store()
+        rows = [(i, i + 1, "rel") for i in range(210)]
+        store.add_relationships_batch(rows)
+        self.assertEqual(calls, [100, 100, 10])
+
+    def test_add_entities_batch_empty_is_noop(self) -> None:
+        store, calls = self._make_store()
+        store.add_entities_batch([])
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

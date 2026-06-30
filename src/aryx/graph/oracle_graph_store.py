@@ -101,3 +101,109 @@ class OracleGraphStore:
                 load("merge_graph_edge"),
                 {"ws": self._workspace_id, "src": source_id, "tgt": target_id, "name": name},
             )
+
+    # ── Batch methods — one Oracle round-trip per phase ──────────────────────
+
+    def add_entities_batch(
+        self,
+        rows: list[tuple[int, str, dict, list | None, str | None]],
+    ) -> None:
+        """Batch-upsert entity vertices in one Oracle round-trip.
+
+        Each row: (entity_id, ontology_type, attributes, labels, iri).
+        ``labels`` is accepted for API parity with add_entity but not stored
+        (Oracle backing table has no labels column).
+        """
+        if not rows:
+            return
+        logger.info("graph vertices batch start count=%d", len(rows))
+        batch = [
+            {
+                "ws": self._workspace_id,
+                "eid": eid,
+                "typ": typ,
+                "name": _display_name(attrs) or f"#{eid}",
+                "iri": iri or "",
+                "attrs": json.dumps(attrs),
+            }
+            for eid, typ, attrs, _labels, iri in rows
+        ]
+        chunk_size = 100
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                for start in range(0, len(batch), chunk_size):
+                    chunk = batch[start:start + chunk_size]
+                    cur.executemany(load("merge_graph_vertex"), chunk)
+                    logger.info("graph vertices chunk %d-%d done", start + 1, start + len(chunk))
+        logger.info("graph vertices batch done count=%d", len(rows))
+
+    def add_provenance_batch(
+        self,
+        rows: list[tuple[int, str, str, str]],
+    ) -> None:
+        """Batch-upsert provenance edges in three Oracle round-trips.
+
+        Each row: (entity_id, system, dataset, record_id).
+
+        Steps within one connection/transaction:
+          1. executemany merge_graph_source   — upsert all source records
+          2. SELECT source_id back for the workspace
+          3. executemany merge_graph_provenance — link entity → source
+        """
+        if not rows:
+            return
+        logger.info("graph provenance batch start count=%d", len(rows))
+        source_rows = [
+            {"ws": self._workspace_id, "sys": system, "ds": dataset, "rid": record_id}
+            for _eid, system, dataset, record_id in rows
+        ]
+        missing = 0
+        prov_rows: list[dict] = []
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                for start in range(0, len(source_rows), 100):
+                    cur.executemany(load("merge_graph_source"), source_rows[start:start + 100])
+                logger.info("graph sources merged count=%d — fetching source_ids", len(source_rows))
+                cur.execute(
+                    "SELECT source_id, system, dataset, record_id "
+                    "FROM aryx_graph_source WHERE workspace_id = :1",
+                    (self._workspace_id,),
+                )
+                source_map: dict[tuple[str, str, str], int] = {
+                    (r[1], r[2], r[3]): int(r[0]) for r in cur.fetchall()
+                }
+                logger.info("graph source_ids resolved %d — building provenance links", len(source_map))
+                for eid, system, dataset, record_id in rows:
+                    sid = source_map.get((system, dataset, record_id))
+                    if sid is None:
+                        missing += 1
+                        continue
+                    prov_rows.append({"ws": self._workspace_id, "eid": eid, "sid": sid})
+                if missing:
+                    logger.warning("graph provenance batch: %d source_ids not found — skipped", missing)
+                logger.info("graph provenance links ready=%d — inserting", len(prov_rows))
+                if prov_rows:
+                    for start in range(0, len(prov_rows), 100):
+                        cur.executemany(load("merge_graph_provenance"), prov_rows[start:start + 100])
+        logger.info("graph provenance batch done prov=%d missing=%d", len(prov_rows), missing)
+
+    def add_relationships_batch(
+        self,
+        rows: list[tuple[int, int, str]],
+    ) -> None:
+        """Batch-upsert relationship edges in one Oracle round-trip.
+
+        Each row: (source_id, target_id, name).
+        """
+        if not rows:
+            return
+        logger.info("graph edges batch start count=%d", len(rows))
+        batch = [
+            {"ws": self._workspace_id, "src": src, "tgt": tgt, "name": name}
+            for src, tgt, name in rows
+        ]
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                for start in range(0, len(batch), 100):
+                    cur.executemany(load("merge_graph_edge"), batch[start:start + 100])
+        logger.info("graph edges batch done count=%d", len(rows))

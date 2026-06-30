@@ -154,7 +154,7 @@ def _oci_chat_raw(
         )
 
     client = get_genai_client()
-    logger.info("oci_chat model=%s prompt_chars=%d", spec.name, len(system) + len(user))
+    logger.debug("oci_chat model=%s prompt_chars=%d", spec.name, len(system) + len(user))
     request = oci.generative_ai_inference.models.ChatDetails(
         compartment_id=compartment_id,
         serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
@@ -177,7 +177,7 @@ def _oci_chat_raw(
     else:
         in_tok = (len(system) + len(user)) // 4
         out_tok = len(text) // 4
-    logger.info("oci_chat ok model=%s response_chars=%d in_tok=%d out_tok=%d", spec.name, len(text), in_tok, out_tok)
+    logger.debug("oci_chat ok model=%s response_chars=%d in_tok=%d out_tok=%d", spec.name, len(text), in_tok, out_tok)
     return text, in_tok, out_tok
 
 
