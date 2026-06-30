@@ -747,10 +747,12 @@ _stub_falkordb()
 
 # Import directly to bypass aryx.graph.__init__ → falkordb chain
 import importlib.util as _ilu
+import pathlib as _pathlib
 import sys as _sys
+_store_path = _pathlib.Path(__file__).parents[1] / "src/aryx/graph/oracle_graph_store.py"
 _spec = _ilu.spec_from_file_location(
     "aryx.graph.oracle_graph_store",
-    "/home/halcyoona/giggso/github_repo/aryx/aryx/src/aryx/graph/oracle_graph_store.py",
+    _store_path,
 )
 _mod = _ilu.module_from_spec(_spec)
 _sys.modules["aryx.graph.oracle_graph_store"] = _mod
