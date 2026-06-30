@@ -85,11 +85,16 @@ class OracleGraphStore:
 
     def clear(self) -> None:
         """Delete all graph data for this workspace."""
+        logger.info("graph clear ws=%s — deleting provenance", self._workspace_id)
         with self._pool.connection() as conn:
             conn.execute(load("delete_graph_provenance_by_workspace"), (self._workspace_id,))
+            logger.info("graph clear ws=%s — deleting edges", self._workspace_id)
             conn.execute(load("delete_graph_edge_by_workspace"), (self._workspace_id,))
+            logger.info("graph clear ws=%s — deleting sources", self._workspace_id)
             conn.execute(load("delete_graph_source_by_workspace"), (self._workspace_id,))
+            logger.info("graph clear ws=%s — deleting vertices", self._workspace_id)
             conn.execute(load("delete_graph_vertex_by_workspace"), (self._workspace_id,))
+        logger.info("graph clear ws=%s — done", self._workspace_id)
 
     def add_entity(self, entity_id: int, ontology_type: str,
                    attributes: dict[str, Any],
@@ -206,8 +211,9 @@ class OracleGraphStore:
         prov_rows: list[dict] = []
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for chunk in _iter_chunks(source_rows, payload_key="rid"):
+                for i, chunk in enumerate(_iter_chunks(source_rows, payload_key="rid")):
                     cur.executemany(load("merge_graph_source"), chunk)
+                    logger.info("graph sources chunk=%d rows=%d done", i + 1, len(chunk))
                 logger.info("graph sources merged count=%d — fetching source_ids", len(source_rows))
                 cur.execute(
                     "SELECT source_id, system, dataset, record_id "
@@ -228,8 +234,9 @@ class OracleGraphStore:
                     logger.warning("graph provenance batch: %d source_ids not found — skipped", missing)
                 logger.info("graph provenance links ready=%d — inserting", len(prov_rows))
                 if prov_rows:
-                    for chunk in _iter_chunks(prov_rows, payload_key="sid"):
+                    for i, chunk in enumerate(_iter_chunks(prov_rows, payload_key="sid")):
                         cur.executemany(load("merge_graph_provenance"), chunk)
+                        logger.info("graph provenance chunk=%d rows=%d done", i + 1, len(chunk))
         logger.info("graph provenance batch done prov=%d missing=%d", len(prov_rows), missing)
 
     def add_relationships_batch(
@@ -249,6 +256,7 @@ class OracleGraphStore:
         ]
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for chunk in _iter_chunks(batch, payload_key="name"):
+                for i, chunk in enumerate(_iter_chunks(batch, payload_key="name")):
                     cur.executemany(load("merge_graph_edge"), chunk)
+                    logger.info("graph edges chunk=%d rows=%d done", i + 1, len(chunk))
         logger.info("graph edges batch done count=%d", len(rows))
