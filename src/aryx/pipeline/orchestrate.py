@@ -136,22 +136,25 @@ def run_pipeline(
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
             _emit(on_progress, "Link", 84, f"{relationships} total relationships after FK links")
-        _emit(on_progress, "Project", 86, "Projecting entities and edges to graph store")
-        with runner.stage("project"):
-            type_ancestors = _build_type_ancestors(dsn)
-            settings = get_settings()
-            if settings.effective_graph_backend() == "oci_graph":
-                from aryx.graph.oracle_graph_store import OracleGraphStore
-                graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
-            else:
-                from aryx.graph import FalkorStore  # noqa: PLC0415
-                from aryx.workspaces import ws_graph  # noqa: PLC0415
-                graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
-            counts = project_graph(
-                estore, graph_inst,
-                type_ancestors=type_ancestors, workspace_id=workspace_id,
-            )
-        _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('vertices', 0)} nodes, {counts.get('edges', 0)} edges")
+        if skip_graph:
+            _emit(on_progress, "Project", 95, "Graph projection skipped (non-final file)")
+        else:
+            _emit(on_progress, "Project", 86, "Projecting entities and edges to graph store")
+            with runner.stage("project"):
+                type_ancestors = _build_type_ancestors(dsn)
+                settings = get_settings()
+                if settings.effective_graph_backend() == "oci_graph":
+                    from aryx.graph.oracle_graph_store import OracleGraphStore
+                    graph_inst = OracleGraphStore(settings.oci_adb_dsn, workspace_id)
+                else:
+                    from aryx.graph import FalkorStore  # noqa: PLC0415
+                    from aryx.workspaces import ws_graph  # noqa: PLC0415
+                    graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
+                counts = project_graph(
+                    estore, graph_inst,
+                    type_ancestors=type_ancestors, workspace_id=workspace_id,
+                )
+            _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('vertices', 0)} nodes, {counts.get('edges', 0)} edges")
     finally:
         estore.close()
 
