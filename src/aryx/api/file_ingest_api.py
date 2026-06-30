@@ -178,9 +178,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 for idx, (csv_data, csv_name, derived_type) in enumerate(xml_plans):
                     is_last = (idx == len(xml_plans) - 1)
                     jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
-                    # relate=False on all sub-pipelines except the last so that the
-                    # LLM relationship pass runs once across the full merged entity set
-                    # instead of N times on incomplete per-type slices (N×10 → 10 calls).
+                    # relate/skip_graph mirror ingest_confirmed() semantics:
+                    # - relate only on the last plan (full entity set visible)
+                    # - skip_graph on all but the last (project_graph clears+rebuilds the
+                    #   entire workspace graph; N rebuilds for N plans wastes wall-clock
+                    #   and causes the UI to flash with partial graphs mid-ingest)
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
@@ -192,6 +194,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         fk_links=auto_fk if is_last else [],
                         workspace_id=workspace_id,
                         relate=is_last,
+                        skip_graph=not is_last,
                     )
                 continue
             else:
@@ -225,6 +228,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         fk_links=eff_fk if is_last_chunk else [],
                         workspace_id=workspace_id,
                         relate=eff_relate and is_last_chunk,
+                        skip_graph=not is_last_chunk,
                     )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")

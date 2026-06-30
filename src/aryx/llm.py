@@ -16,6 +16,7 @@ from typing import Any
 
 from aryx.broker import Broker
 from aryx.broker.specs import Tier
+from aryx.config import get_settings
 from aryx.llm_normalize import normalize as _normalize_json
 from aryx.llm_providers import (
     anthropic_json, ollama_json, openai_json, post_json,
@@ -55,7 +56,7 @@ def complete_text(
         body: dict[str, Any] = {"model": spec.name, "stream": False,
                                 "messages": msgs,
                                 "options": {"temperature": 0.2,
-                                            "num_predict": 512}}
+                                            "num_predict": get_settings().llm_num_predict}}
         if think is not None:
             body["think"] = think
         out = post_json((spec.endpoint or "").rstrip("/") + "/api/chat",

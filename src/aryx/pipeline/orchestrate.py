@@ -17,7 +17,7 @@ from aryx.connectors.base import Connector
 from aryx.discover import discover
 from aryx.graph import FalkorStore
 from aryx.models import OntologyType
-from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate
+from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
 from aryx.store.checkpoint_store import StageTracker
@@ -158,6 +158,13 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
+        if relate and not runner.skip("relate_isolated"):
+            # Final safety net: any entity still isolated after FK linking and
+            # sampled-pair inference gets one LLM call against the nearest anchor.
+            # Enforces the rule: no FK link -> LLM inference, for any file type.
+            _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
+            with runner.stage("relate_isolated"):
+                relationships += _relate_isolated(estore, broker)
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):

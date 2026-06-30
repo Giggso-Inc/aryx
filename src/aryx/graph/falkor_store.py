@@ -132,3 +132,26 @@ class FalkorStore:
             "MERGE (a)-[:REL {name: $name}]->(b)",
             {"src": source_id, "tgt": target_id, "name": name},
         )
+
+    def add_relationships_batch(
+        self,
+        rels: list[tuple[int, int, str]],
+        batch_size: int = 500,
+    ) -> int:
+        """Write multiple relationships in batched UNWIND queries.
+
+        Uses UNWIND so N relationships cost ceil(N/batch_size) round-trips
+        instead of N. Returns count of relationships written.
+        """
+        written = 0
+        for i in range(0, len(rels), batch_size):
+            chunk = rels[i : i + batch_size]
+            params = [{"src": s, "tgt": t, "name": n} for s, t, n in chunk]
+            self._graph.query(
+                "UNWIND $rels AS rel "
+                "MATCH (a:Entity {id: rel.src}), (b:Entity {id: rel.tgt}) "
+                "MERGE (a)-[:REL {name: rel.name}]->(b)",
+                {"rels": params},
+            )
+            written += len(chunk)
+        return written

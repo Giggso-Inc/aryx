@@ -146,14 +146,18 @@ class GraphReader:
                     entity_map[bid] = {"id": bid, "type": btype, "name": bname}
                     rels.append({"source": aid, "target": bid, "name": rname})
 
-        # Always fetch all entities so isolated nodes (no relationships yet)
-        # are visible on the canvas — entity count drives the ontology panel.
+        # Add any truly isolated entities (zero edges in FalkorDB) so they appear
+        # on the canvas for debugging. Intentionally NOT adding random non-isolated
+        # entities here — entities that have edges but were not sampled would appear
+        # as isolated in the UI because their edges are not in `rels`, which is
+        # misleading and was the root cause of "isolated node" complaints.
         remaining = capped - len(entity_map)
         if remaining > 0:
-            all_rows = self._graph.query(
-                f"MATCH (e:Entity) RETURN e.id, e.type, e.name LIMIT {remaining}"
+            iso_rows = self._graph.query(
+                "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+                f"RETURN e.id, e.type, e.name LIMIT {remaining}"
             ).result_set
-            for row in all_rows:
+            for row in iso_rows:
                 eid, etype, ename = row
                 if eid not in entity_map:
                     entity_map[eid] = {"id": eid, "type": etype, "name": ename}

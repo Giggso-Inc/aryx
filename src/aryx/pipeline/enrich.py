@@ -63,18 +63,17 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     types = list(by_type.keys())
     n_types = len(types)
 
-    # Adaptive budget: cover every cross-type combination at least once so no
-    # type pair is silently skipped when max_pairs < k*(k-1)/2.
-    # Hard cap at max_pairs * n_types to prevent O(k²) blowup on large ontologies
-    # (e.g. 50 types → 1,225 combos at 2 s/call ≈ 40 min without the cap).
+    # max_pairs is a true hard cap — schema_fk covers type-level FK discovery
+    # via a single LLM call across all schemas, so _relate pairs only need to
+    # sample representative cross-type combinations, not exhaust every combo.
+    # With 19 types the old formula inflated to 171 pairs regardless of the
+    # setting, making ARYX_MAX_RELATE_PAIRS ineffective for large ontologies.
     n_cross_combos = n_types * (n_types - 1) // 2
-    effective_pairs = min(max(max_pairs, n_cross_combos), max_pairs * n_types)
-    if effective_pairs > max_pairs:
-        logger.warning(
-            "_relate: effective_pairs=%d exceeds max_pairs=%d (k=%d types) — "
-            "raise ARYX_MAX_RELATE_PAIRS if coverage is insufficient",
-            effective_pairs, max_pairs, n_types,
-        )
+    effective_pairs = min(max_pairs, n_cross_combos)
+    logger.info(
+        "_relate: %d type(s), %d cross-type combos, effective_pairs=%d (cap=%d)",
+        n_types, n_cross_combos, effective_pairs, max_pairs,
+    )
 
     candidates: list[tuple] = []
 
@@ -111,6 +110,33 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
             if len(candidates) >= effective_pairs:
                 break
 
+    # Coverage guarantee: ensure every entity type appears in at least one
+    # candidate pair.  The round-robin stops at effective_pairs so tail types
+    # (high index) can be represented only once — and if that one LLM call
+    # returns related=false the type stays isolated forever.  We force one
+    # extra pair per uncovered type against the richest-sampled type.
+    # These extra pairs are outside the original budget but bounded by n_types
+    # so the wall-clock cost is at most one extra LLM-worker batch.
+    covered: set[str] = set()
+    for left, right in candidates:
+        covered.add(left[1])
+        covered.add(right[1])
+    uncovered = [t for t in types if t not in covered]
+    if uncovered:
+        # Pick the type with the most sampled entities as the coverage anchor.
+        anchor = max(types, key=lambda t: len(by_type[t]))
+        for t in uncovered:
+            if t == anchor:
+                continue  # single-type workspace — no cross-type pair possible
+            anchor_list = by_type[anchor]
+            t_list = by_type[t]
+            if anchor_list and t_list:
+                candidates.append((anchor_list[0], t_list[0]))
+                logger.info(
+                    "_relate: coverage pair added for type %s (anchor=%s)",
+                    t, anchor,
+                )
+
     def _trim(attrs: dict, ontology_type: str) -> dict:
         """Build the attribute dict shown to the LLM for one entity.
 
@@ -140,7 +166,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     with ThreadPoolExecutor(max_workers=relate_workers) as pool:
         futures = {
             pool.submit(_infer, left, right): (left[0], right[0])
-            for left, right in candidates[:effective_pairs]
+            for left, right in candidates
         }
         for fut in as_completed(futures):
             src_id, tgt_id, name, conf = fut.result()
@@ -150,43 +176,203 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
                     name=name, confidence=conf))
     store.save_relationships(rels)
     logger.info(
-        "_relate evaluated %d pair(s) across %d type(s), found %d relationship(s)",
+        "_relate evaluated %d pair(s) across %d type(s), found %d relationship(s) "
+        "(budget=%d, coverage_extras=%d)",
         len(candidates), n_types, len(rels),
+        effective_pairs, max(0, len(candidates) - effective_pairs),
     )
     return len(rels)
 
 
 def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str, Any]]:
-    """One LLM call that identifies FK joins across ALL entity type schemas.
+    """Identify FK joins across entity type schemas via batched LLM calls.
 
     Samples one entity per type to get actual column names, then asks the LLM
     which attributes form FK relationships between types.  The caller applies
     the result via link_by_attribute which creates edges for ALL matching
     entities — not just the handful sampled for _relate.
 
-    This covers the case where neither column-name patterns (_detect_fk_links)
-    nor entity-pair sampling (_relate) find connections — e.g. when a shared
-    code column has no recognised FK suffix.
+    When there are more than _BATCH_SIZE types, the schemas are split into
+    overlapping batches so each LLM call stays within the token budget.
+    Each batch always contains the "anchor" type (the one with the most FK-like
+    attributes) so cross-batch FK links involving the anchor are discovered.
     """
-    # One representative entity per type gives us the full attribute schema
-    # without loading the whole table.
     sample = store.list_entities_typed_sample(1)
     if len(sample) < 2:
         return []
 
+    _MAX_SCHEMA_ATTRS = 8   # reduced per-type to fit more types per call
+    _BATCH_SIZE = 8          # max types per LLM call — keeps output under 768 tok
+    _SNAKE_FK = ("_id", "_code", "_key", "_ref", "_type", "_no", "_num")
+    _CAMEL_FK = ("Id", "Code", "Key", "Ref", "Type", "No", "Num")
+
     type_schemas: dict[str, dict] = {}
     for _eid, etype, attrs in sample:
+        public_attrs = [k for k in attrs if not k.startswith("_")]
+        fk_first = [
+            k for k in public_attrs
+            if k.lower().endswith(_SNAKE_FK) or k.endswith(_CAMEL_FK)
+        ]
+        other_attrs = [k for k in public_attrs if k not in set(fk_first)]
+        schema_attrs = (fk_first + other_attrs)[:_MAX_SCHEMA_ATTRS]
         type_schemas[etype] = {
-            "attrs": [k for k in attrs if not k.startswith("_")],
+            "attrs": schema_attrs,
             "match_keys": [],
+            "_fk_count": len(fk_first),
         }
 
-    try:
-        links = infer_fk_links(type_schemas, broker)
-    except Exception:  # noqa: BLE001 — schema inference is best-effort
-        logger.exception("schema FK inference failed — skipping")
-        return []
+    # Anchor = type with most FK-like columns; always included in each batch
+    # so that cross-batch FK links involving the anchor are detected.
+    anchor_type = max(type_schemas, key=lambda t: type_schemas[t]["_fk_count"])
+    non_anchor = [t for t in type_schemas if t != anchor_type]
 
-    if links:
-        logger.info("schema FK inference found %d link(s): %s", len(links), links)
-    return links
+    # Clean up internal key before sending to LLM.
+    for t in type_schemas:
+        type_schemas[t].pop("_fk_count", None)
+
+    all_links: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+
+    # Build batches: anchor + up to (_BATCH_SIZE - 1) other types.
+    batch_size = _BATCH_SIZE - 1
+    batches = [
+        non_anchor[i: i + batch_size]
+        for i in range(0, max(1, len(non_anchor)), batch_size)
+    ] or [[]]
+
+    for batch_types in batches:
+        batch_keys = [anchor_type] + batch_types
+        batch_schemas = {t: type_schemas[t] for t in batch_keys if t in type_schemas}
+        try:
+            links = infer_fk_links(batch_schemas, broker)
+        except Exception:  # noqa: BLE001 — schema inference is best-effort
+            logger.exception("schema FK inference failed for batch %s — skipping", batch_keys)
+            continue
+        for lnk in links:
+            key = (lnk.get("source_type"), lnk.get("source_attr"),
+                   lnk.get("target_type"), lnk.get("target_attr"))
+            if key not in seen:
+                seen.add(key)
+                all_links.append(lnk)
+
+    if all_links:
+        logger.info(
+            "schema FK inference found %d link(s) across %d batch(es): %s",
+            len(all_links), len(batches), all_links,
+        )
+    return all_links
+
+
+def _relate_isolated(store: EntityStore, broker: Broker) -> int:
+    """Connect isolated entity types via one LLM call per type, not per entity.
+
+    Runs after _relate, schema_fk, and link_by_attribute. Operates type-aware:
+    makes ONE LLM inference call per isolated type (using a sample entity), then
+    if related=true creates one edge per isolated entity of that type to the
+    confirmed anchor entity. This is O(isolated_types) not O(isolated_entities),
+    keeping the cost bounded even for large XML files with thousands of entities.
+
+    For the small-file CSV case (a handful of unreferenced supplier rows), the
+    cost is trivially low. For large XML files with 20+ types, at most ~20 LLM
+    calls are made regardless of how many individual entities are isolated.
+    """
+    cfg = get_settings()
+
+    # Collect all entity IDs that already have at least one relationship edge.
+    linked_ids: set[int] = set()
+    for src_id, tgt_id, _ in store.list_relationships():
+        linked_ids.add(src_id)
+        linked_ids.add(tgt_id)
+
+    # Sample one anchor entity per type — used both to detect isolated types
+    # and as the inference partner when an isolated type needs an LLM call.
+    anchors_sample = store.list_entities_typed_sample(1)
+    anchors: dict[str, tuple[int, str, dict]] = {
+        etype: (eid, etype, attrs)
+        for eid, etype, attrs in anchors_sample
+    }
+    if len(anchors) < 2:
+        return 0  # need at least two types for cross-type inference
+
+    # Collect every isolated entity (zero relationship edges) and group by type.
+    isolated_by_type: dict[str, list[tuple[int, str, dict]]] = defaultdict(list)
+    for eid, etype, attrs in store.list_entities():
+        if eid not in linked_ids:
+            isolated_by_type[etype].append((eid, etype, attrs))
+
+    if not isolated_by_type:
+        logger.debug("_relate_isolated: no isolated entities — skipping")
+        return 0
+
+    total_isolated = sum(len(v) for v in isolated_by_type.values())
+    logger.info(
+        "_relate_isolated: %d isolated entity(ies) across %d type(s)",
+        total_isolated, len(isolated_by_type),
+    )
+
+    max_attrs = cfg.relate_max_attrs
+
+    def _trim(attrs: dict, ontology_type: str) -> dict:
+        out: dict = {"_ontology_type": ontology_type}
+        if "_element_type" in attrs:
+            out["_element_type"] = attrs["_element_type"]
+        for k, v in attrs.items():
+            if k == "_element_type":
+                continue
+            out[k] = v
+            if len(out) >= max_attrs:
+                break
+        return out
+
+    def _pick_anchor(iso_type: str) -> tuple[int, str, dict] | None:
+        """Return one anchor entity from any type other than iso_type."""
+        for t, anchor in anchors.items():
+            if t != iso_type:
+                return anchor
+        return None
+
+    def _infer_type(iso_type: str, sample_entity: tuple[int, str, dict]) -> tuple[str, int, str | None, float]:
+        """One LLM call for a sample entity of iso_type vs an anchor."""
+        anchor = _pick_anchor(iso_type)
+        if not anchor:
+            return iso_type, -1, None, 0.0
+        _, iso_type_, iso_attrs = sample_entity
+        a_id, a_type, a_attrs = anchor
+        name, conf = infer_relationship(
+            _trim(iso_attrs, iso_type_), _trim(a_attrs, a_type), broker,
+        )
+        return iso_type, a_id, name, conf
+
+    # ONE LLM call per isolated type (not per entity).
+    rels: list[Relationship] = []
+    with ThreadPoolExecutor(max_workers=cfg.relate_workers) as pool:
+        futures = {
+            pool.submit(_infer_type, iso_type, entities[0]): iso_type
+            for iso_type, entities in isolated_by_type.items()
+        }
+        for fut in as_completed(futures):
+            iso_type, anchor_id, name, conf = fut.result()
+            if name and anchor_id != -1:
+                # Create one edge per isolated entity of this type → anchor.
+                for iso_id, _, _ in isolated_by_type[iso_type]:
+                    rels.append(Relationship(
+                        source_entity_id=iso_id,
+                        target_entity_id=anchor_id,
+                        name=name,
+                        confidence=conf,
+                    ))
+                logger.info(
+                    "_relate_isolated: type=%s linked %d entity(ies) via '%s'",
+                    iso_type, len(isolated_by_type[iso_type]), name,
+                )
+
+    if rels:
+        store.save_relationships(rels)
+    logger.info(
+        "_relate_isolated: linked %d / %d isolated entity(ies) (%d type(s) confirmed)",
+        len(rels), total_isolated,
+        sum(1 for iso_type in isolated_by_type if any(
+            r.source_entity_id == isolated_by_type[iso_type][0][0] for r in rels
+        )),
+    )
+    return len(rels)

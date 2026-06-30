@@ -338,7 +338,13 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
                 records.extend(_collect_tag(child, tag, ctag, child_id))
         return records
 
-    root_id = _elem_id(root) or root_tag
+    # Do NOT fall back to root_tag when root has no real id: injecting
+    # {root_tag}_id = root_tag (a constant non-id string) into all child rows
+    # creates a spurious FK column that link_by_attribute can never satisfy,
+    # making child entities appear as candidates for FK joining but producing
+    # zero edges.  Leaving root_id=None means no FK column is injected for
+    # direct children of a root with no id, which is the correct behaviour.
+    root_id = _elem_id(root)
     results: list[tuple[bytes, str]] = []
 
     for target_tag in top_tags:
@@ -773,9 +779,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         else:
             conn = CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
         try:
-            # relate: controlled by ingest_relate setting (default False).
-            # LLM relate hangs on large payloads (e.g. CPQ function bodies);
-            # operators who want inference set ARYX_INGEST_RELATE=true.
+            # relate: only the last plan runs LLM inference — it can see ALL
+            # entity types that were resolved by prior plans.  Non-last plans
+            # run on a partial entity set and would produce spurious/incomplete
+            # relationships that the final pass then can't correct.
             # skip_graph=True for non-last plans: project_graph calls graph.clear()
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
@@ -785,7 +792,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=settings.ingest_relate, skip_graph=not is_last)
+                         relate=is_last and settings.ingest_relate, skip_graph=not is_last)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)

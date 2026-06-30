@@ -30,7 +30,7 @@ def graph_router() -> APIRouter:
 
     @router.get("/graph")
     def full_graph(
-        rel_limit: int = 500,
+        rel_limit: int = 2000,
         reader: GraphReader = Depends(_reader),
     ) -> dict[str, Any]:
         """Connected subgraph for graph canvas rendering.
