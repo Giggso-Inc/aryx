@@ -8,6 +8,7 @@ import {
 import { Header } from "@/components/brand/Header";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
+import { useWorkspaceAwareHref } from "@/lib/workspace-route";
 
 interface Stats {
   entities: number;
@@ -53,6 +54,10 @@ export default function HomePage() {
   const { workspaceId, workspaces } = useWorkspace();
   const [stats, setStats] = useState<Stats | null>(null);
   const active = workspaces.find((w) => w.id === workspaceId) || workspaces[0];
+  const askHref = useWorkspaceAwareHref("/", "ask");
+  const ingestHref = useWorkspaceAwareHref("/ingest", "ingest");
+  const graphHref = useWorkspaceAwareHref("/graph", "graph");
+  const briefHref = useWorkspaceAwareHref("/brief", "brief");
 
   useEffect(() => {
     let cancelled = false;
@@ -95,13 +100,13 @@ export default function HomePage() {
           </p>
           <div className="mt-6 flex gap-3">
             <Link
-              href="/"
+              href={askHref}
               className="inline-flex items-center gap-1.5 rounded-lg bg-white px-4 py-2 text-[13px] font-semibold text-navy-900 hover:bg-navy-50"
             >
               <MessageCircle size={14} /> Ask a question
             </Link>
             <Link
-              href="/ingest"
+              href={ingestHref}
               className="inline-flex items-center gap-1.5 rounded-lg border border-navy-600 px-4 py-2 text-[13px] font-semibold text-white hover:bg-navy-800"
             >
               <Upload size={14} /> Ingest data
@@ -132,7 +137,7 @@ export default function HomePage() {
           {STEPS.map((s) => (
             <Link
               key={s.num}
-              href={s.href}
+              href={s.title === "Ingest" ? ingestHref : s.title === "Ask" ? askHref : graphHref}
               className="group rounded-xl border border-navy-100 bg-white p-5 shadow-soft transition-shadow hover:shadow-md"
             >
               <div className="mb-3 flex items-center gap-2">
@@ -168,7 +173,7 @@ export default function HomePage() {
               improving extraction quality significantly.
             </p>
             <Link
-              href="/brief"
+              href={briefHref}
               className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-steel-600 hover:text-steel-800"
             >
               Edit brief <ArrowRight size={11} />

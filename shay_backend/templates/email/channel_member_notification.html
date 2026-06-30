@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{page_title} - {platform_name}</title>
+  <style>
+    body {{
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f8f9fa;
+      color: #0f1729;
+      margin: 0;
+      padding: 0;
+    }}
+
+    .email-wrapper {{
+      max-width: 600px;
+      margin: 40px auto;
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+    }}
+
+    /* HEADER */
+    .email-header {{
+      background-color: #2a6df4;
+      color: #fff;
+      text-align: center;
+      padding: 24px 20px;
+    }}
+
+    .email-header h1 {{
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+      color: #ffffff;
+    }}
+
+    /* Tagline: force white on blue header (same as verification template) */
+    .email-header p {{
+      margin: 8px 0 0;
+      font-size: 14px;
+      color: #ffffff !important;
+      opacity: 1;
+    }}
+
+    /* CONTENT */
+    .email-body {{
+      padding: 36px 30px;
+    }}
+
+    .greeting {{
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }}
+
+    .message {{
+      font-size: 15px;
+      line-height: 1.7;
+      margin-bottom: 22px;
+    }}
+
+    .info-box {{
+      background-color: #f1f5f9;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 24px 0;
+      border-left: 4px solid #2a6df4;
+    }}
+
+    .info-box p {{
+      margin: 8px 0;
+      font-size: 14px;
+      color: #0f1729;
+    }}
+
+    .info-box strong {{
+      color: #2a6df4;
+    }}
+
+    /* CTA BUTTON - View Channel: white text on blue for visibility */
+    .cta-button {{
+      display: inline-block;
+      background-color: #2a6df4;
+      color: #ffffff !important;
+      text-decoration: none;
+      padding: 14px 32px;
+      border-radius: 50px;
+      font-weight: 600;
+      font-size: 15px;
+      text-align: center;
+      margin: 24px 0;
+      transition: background 0.3s ease;
+    }}
+
+    /* FOOTER */
+    .footer {{
+      background: #f8f9fa;
+      padding: 30px;
+      text-align: center;
+      border-top: 1px solid #e9ecef;
+    }}
+
+    .footer p {{
+      margin: 0 0 10px 0;
+      color: #0f1729;
+      font-size: 14px;
+    }}
+
+    .footer .company-info {{
+      color: #0f1729;
+      font-weight: 500;
+    }}
+
+    @media (max-width: 600px) {{
+      .email-body {{
+        padding: 28px 20px;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="email-wrapper">
+
+    <!-- HEADER: embedded logo top-left, title right -->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="email-header" style="background-color: #2a6df4; color: #ffffff;"><tr>
+      <td style="width: 180px; vertical-align: middle;">{logo_html}</td>
+      <td style="vertical-align: middle; padding: 24px 20px; text-align: center;">{header_content}</td>
+      <td style="width: 180px; vertical-align: middle;"></td>
+    </tr></table>
+
+    <!-- BODY -->
+    <div class="email-body">
+      <p class="greeting">Hello,</p>
+
+      <p class="message">
+        {intro_message}
+      </p>
+
+      <div class="info-box">
+        <p><strong>User Name:</strong> {user_name}</p>
+        <p><strong>Email:</strong> {user_email}</p>
+        <p><strong>Role:</strong> {user_role_display}</p>
+        <p><strong>Added by:</strong> {added_by}</p>
+      </div>
+
+      <p class="message">
+        {access_paragraph}
+      </p>
+
+      {view_channel_block}
+
+      <p class="message">
+        If you have any questions or concerns, please contact your system administrator.
+      </p>
+    </div>
+
+    <div class="footer">
+      <p>This email was sent from {platform_name}</p>
+      <p class="company-info">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+
+  </div>
+</body>
+</html>
+

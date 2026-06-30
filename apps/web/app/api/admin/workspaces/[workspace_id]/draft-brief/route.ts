@@ -18,15 +18,22 @@ export async function POST(
   }
 
   const { workspace_id } = await params;
-  const target = process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
+  const target =
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:8088"
+      : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
 
   try {
+    const authorization = req.headers.get("authorization");
     const upstream = await fetch(
       `${target}/admin/workspaces/${workspace_id}/draft-brief`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(authorization ? { Authorization: authorization } : {}),
+        },
         body,
         // undici (Node.js built-in fetch) has no default timeout — safe for
         // LLM calls that may take 30-90 s depending on model and hardware.

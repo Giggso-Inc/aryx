@@ -17,12 +17,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
   }
 
-  const target = process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
+  const target =
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:8088"
+      : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
   try {
+    const authorization = req.headers.get("authorization");
     const upstream = await fetch(`${target}/ask`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(authorization ? { Authorization: authorization } : {}),
+      },
       body,
     });
     const data = await upstream.text();

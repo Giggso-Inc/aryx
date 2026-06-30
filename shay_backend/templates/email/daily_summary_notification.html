@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <title>Daily Summary - {platform_name}</title>
+    <style type="text/css">
+        /* Reset styles for email clients */
+        body, table, td, p, a, li, blockquote {{
+            -webkit-text-size-adjust: 100%;
+            -ms-text-size-adjust: 100%;
+        }}
+        table {{
+            border-collapse: collapse;
+            mso-table-lspace: 0pt;
+            mso-table-rspace: 0pt;
+        }}
+        img {{
+            -ms-interpolation-mode: bicubic;
+            border: 0;
+            outline: none;
+            text-decoration: none;
+        }}
+
+        /* Base styles */
+        body {{
+            margin: 0 !important;
+            padding: 0 !important;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, Arial, Helvetica, sans-serif;
+            background-color: #f8f9fa;
+            color: #0f1729;
+            width: 100% !important;
+            min-width: 100%;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }}
+
+        /* Email wrapper */
+        .email-wrapper {{
+            max-width: 600px;
+            width: 100%;
+            margin: 40px auto;
+            background-color: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+            overflow: hidden;
+            box-sizing: border-box;
+        }}
+
+        /* Header styles */
+        .email-header {{
+            background-color: #2a6df4;
+            color: #ffffff;
+            text-align: center;
+            padding: 24px 20px;
+            width: 100%;
+            box-sizing: border-box;
+        }}
+
+        .email-header h1 {{
+            margin: 0;
+            padding: 0;
+            font-size: 22px;
+            font-weight: 700;
+            line-height: 1.3;
+            color: #ffffff;
+        }}
+
+        .email-header p {{
+            margin: 8px 0 0 0;
+            padding: 0;
+            font-size: 14px;
+            line-height: 1.4;
+            color: #ffffff;
+            opacity: 0.95;
+        }}
+
+        /* Content styles */
+        .email-body {{
+            padding: 36px 30px;
+            width: 100%;
+            box-sizing: border-box;
+        }}
+
+        .greeting {{
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 16px 0;
+            padding: 0;
+            line-height: 1.4;
+            color: #0f1729;
+        }}
+
+        .intro-text {{
+            font-size: 15px;
+            line-height: 1.7;
+            margin: 0 0 8px 0;
+            padding: 0;
+            color: #0f1729;
+        }}
+
+        .intro-text strong {{
+            font-weight: 600;
+            color: #0f1729;
+        }}
+
+        .domain-link {{
+            color: #2a6df4;
+            text-decoration: none;
+            font-weight: 600;
+        }}
+
+        .domain-link:hover {{
+            text-decoration: underline;
+        }}
+
+        .settings-text {{
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 0 0 30px 0;
+            padding: 0;
+            color: #0f1729;
+        }}
+
+        .settings-link {{
+            color: #2a6df4;
+            text-decoration: none;
+            font-weight: 500;
+        }}
+
+        .settings-link:hover {{
+            text-decoration: underline;
+        }}
+
+        /* Summary cards container */
+        .summary-cards {{
+            display: table;
+            width: 100%;
+            margin: 30px 0;
+            table-layout: fixed;
+            border-spacing: 12px;
+        }}
+
+        .summary-card {{
+            display: table-cell;
+            background-color: #e8d5ff;
+            border-radius: 8px;
+            padding: 20px 16px;
+            text-align: center;
+            vertical-align: middle;
+            box-sizing: border-box;
+            min-width: 0;
+        }}
+
+        .summary-card-number {{
+            font-size: 28px;
+            font-weight: 700;
+            margin: 0 0 6px 0;
+            padding: 0;
+            color: #0f1729;
+            line-height: 1.2;
+        }}
+
+        .summary-card-label {{
+            font-size: 13px;
+            font-weight: 500;
+            margin: 0;
+            padding: 0;
+            color: #0f1729;
+            line-height: 1.4;
+        }}
+
+        /* Top 5 Groups section */
+        .groups-section {{
+            margin: 40px 0 30px 0;
+        }}
+
+        .groups-heading {{
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 20px 0;
+            padding: 0;
+            color: #0f1729;
+            line-height: 1.4;
+        }}
+
+        .groups-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0;
+            background-color: #ffffff;
+        }}
+
+        .groups-table th {{
+            background-color: #f8f9fa;
+            padding: 12px 16px;
+            text-align: left;
+            font-size: 14px;
+            font-weight: 600;
+            color: #0f1729;
+            border-bottom: 2px solid #e9ecef;
+        }}
+
+        .groups-table td {{
+            padding: 12px 16px;
+            font-size: 14px;
+            color: #0f1729;
+            border-bottom: 1px solid #e9ecef;
+        }}
+
+        .groups-table tr:last-child td {{
+            border-bottom: none;
+        }}
+
+        .group-name-link {{
+            color: #2a6df4;
+            text-decoration: none;
+            font-weight: 500;
+        }}
+
+        .group-name-link:hover {{
+            text-decoration: underline;
+        }}
+
+        .group-count {{
+            color: #2a6df4;
+            font-weight: 600;
+        }}
+
+        /* Footer */
+        .footer {{
+            background-color: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            border-top: 1px solid #e9ecef;
+            width: 100%;
+            box-sizing: border-box;
+        }}
+
+        .footer p {{
+            margin: 0 0 10px 0;
+            padding: 0;
+            color: #0f1729;
+            font-size: 14px;
+            line-height: 1.6;
+        }}
+
+        .footer p:last-child {{
+            margin-bottom: 0;
+        }}
+
+        .footer .company-info {{
+            color: #0f1729;
+            font-weight: 500;
+        }}
+
+        /* Mobile responsive */
+        @media only screen and (max-width: 600px) {{
+            .email-wrapper {{
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 auto !important;
+                border-radius: 0 !important;
+            }}
+            .email-body {{
+                padding: 28px 20px !important;
+            }}
+            .email-header {{
+                padding: 20px 15px !important;
+            }}
+            .email-header h1 {{
+                font-size: 20px !important;
+            }}
+            .summary-cards {{
+                display: block !important;
+                border-spacing: 0 !important;
+            }}
+            .summary-card {{
+                display: block !important;
+                width: 100% !important;
+                margin-bottom: 12px !important;
+            }}
+            .summary-card:last-child {{
+                margin-bottom: 0 !important;
+            }}
+            .groups-table {{
+                font-size: 12px !important;
+            }}
+            .groups-table th,
+            .groups-table td {{
+                padding: 10px 12px !important;
+            }}
+            .footer {{
+                padding: 24px 20px !important;
+            }}
+        }}
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, Arial, Helvetica, sans-serif;">
+<div class="email-wrapper" style="max-width: 600px; width: 100%; margin: 40px auto; background-color: #ffffff; border-radius: 10px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);">
+
+    <!-- HEADER: logo top-left, title right -->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="email-header" style="background-color: #2a6df4; color: #ffffff; padding: 24px 20px;"><tr>
+      <td style="width: 180px; vertical-align: middle;">{logo_html}</td>
+      <td style="vertical-align: middle; text-align: center;">
+        <h1 style="margin: 0; padding: 0; font-size: 22px; font-weight: 700; line-height: 1.3; color: #ffffff;">Daily Summary notification</h1>
+        <p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; line-height: 1.4; color: #ffffff; opacity: 0.95;">{platform_name} - AI-Powered Collaboration Platform</p>
+      </td>
+      <td style="width: 180px; vertical-align: middle;"></td>
+    </tr></table>
+
+    <!-- BODY -->
+    <div class="email-body" style="padding: 36px 30px;">
+        <p class="greeting" style="font-size: 18px; font-weight: 600; margin: 0 0 16px 0; padding: 0; line-height: 1.4; color: #0f1729;">Hi {user_name}!</p>
+
+        <p class="intro-text" style="font-size: 15px; line-height: 1.7; margin: 0 0 8px 0; padding: 0; color: #0f1729;">
+            Below are the notification and meetings from <a href="{domain_url}" class="domain-link" style="color: #2a6df4; text-decoration: none; font-weight: 600;"><strong style="font-weight: 600; color: #2a6df4;">{domain_name}</strong></a>.
+        </p>
+
+        <p class="settings-text" style="font-size: 14px; line-height: 1.6; margin: 0 0 30px 0; padding: 0; color: #0f1729;">
+            To update your summary email notification settings <a href="{notification_settings_url}" class="settings-link" style="color: #2a6df4; text-decoration: none; font-weight: 500;"><strong style="font-weight: 500; color: #2a6df4;">click here</strong></a>.
+        </p>
+
+        <!-- Summary Statistics Cards - Dynamic based on enabled notification types -->
+        <!-- Cards will only appear if the corresponding notification type is enabled (value = 1) -->
+        <!-- 
+        NOTE: The cards below (3, 48, 11) are EXAMPLE/PLACEHOLDER values for design preview only.
+        The backend will automatically replace this entire section with actual cards based on:
+        1. User's enabled notification types (mention_enabled, post_enabled, etc.)
+        2. Actual notification counts from the database
+        When viewing this template directly in a browser, you'll see these example values.
+        In actual emails sent to users, these will be replaced with real data.
+        -->
+        <table class="summary-cards" style="display: table; width: 100%; margin: 30px 0; table-layout: fixed; border-spacing: 12px;">
+            <tr>
+                <!-- Backend will replace {enabled_cards} with cards for enabled notification types -->
+                <!-- Example cards for preview (backend will replace this entire section with actual cards based on user settings) -->
+                <td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+                    <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">3</div>
+                    <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">Mentions</div>
+                </td>
+                <td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+                    <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">48</div>
+                    <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">Posts</div>
+                </td>
+                <td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+                    <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">11</div>
+                    <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">Email Conversations</div>
+                </td>
+                <!-- Backend will replace the above example cards with actual cards for enabled notification types only -->
+            </tr>
+        </table>
+        
+        <!-- 
+        BACKEND INSTRUCTIONS:
+        Replace {enabled_cards} with card HTML for each enabled notification type.
+        
+        For each notification type that is enabled (value = 1), add a card using this format:
+        
+        <td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+            <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">{count}</div>
+            <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">{label}</div>
+        </td>
+        
+        Example cards for enabled types:
+        - mention_enabled = 1 -> Add Mentions card with {mentions_count}
+        - post_enabled = 1 -> Add Posts card with {posts_count}
+        - reply_enabled = 1 -> Add Replies card with {replies_count}
+        - task_enabled = 1 -> Add Tasks card with {tasks_count}
+        - approval_pending_enabled = 1 -> Add Approvals card with {approvals_count}
+        - meeting_enabled = 1 -> Add Meetings card with {meetings_count}
+        - blocker_enabled = 1 -> Add Blockers card with {blockers_count}
+        - app_enabled = 1 -> Add Apps card with {apps_count}
+        - chat_enabled = 1 -> Add Chats card with {chats_count}
+        - friend_enabled = 1 -> Add Friends card with {friends_count}
+        - Email Conversations card (if email notifications enabled)
+        -->
+        
+        <!-- 
+        CARD HTML FORMAT - Use this format when replacing placeholders:
+        
+        If notification type is enabled (value = 1), replace placeholder with:
+        <td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+            <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">{count_value}</div>
+            <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">{label_name}</div>
+        </td>
+        
+        If notification type is disabled (value = 0), replace placeholder with empty string: ""
+        
+        Example for Mentions card (if mention_enabled = 1):
+        <td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+            <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">3</div>
+            <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">Mentions</div>
+        </td>
+        -->
+
+        <!-- Top 5 Channels Section -->
+        <div class="groups-section" style="margin: 40px 0 30px 0;">
+            <h2 class="groups-heading" style="font-size: 18px; font-weight: 600; margin: 0 0 20px 0; padding: 0; color: #0f1729; line-height: 1.4;">Top 5 Channels</h2>
+            
+            <table class="groups-table" style="width: 100%; border-collapse: collapse; margin: 0; background-color: #ffffff;">
+                <thead>
+                    <tr>
+                        <th style="background-color: #f8f9fa; padding: 12px 16px; text-align: left; font-size: 14px; font-weight: 600; color: #0f1729; border-bottom: 2px solid #e9ecef;">Channel Name</th>
+                        <th style="background-color: #f8f9fa; padding: 12px 16px; text-align: left; font-size: 14px; font-weight: 600; color: #0f1729; border-bottom: 2px solid #e9ecef;">Notification Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Example groups_rows format (replace {groups_rows} with actual rows):
+                    <tr>
+                        <td style="padding: 12px 16px; font-size: 14px; color: #0f1729; border-bottom: 1px solid #e9ecef;">
+                            <a href="{channel_url}" class="group-name-link" style="color: #2a6df4; text-decoration: none; font-weight: 500;">{channel_name}</a>
+                        </td>
+                        <td style="padding: 12px 16px; font-size: 14px; color: #0f1729; border-bottom: 1px solid #e9ecef;">
+                            <span class="group-count" style="color: #2a6df4; font-weight: 600;">{notification_count}</span>
+                        </td>
+                    </tr>
+                    -->
+                    {groups_rows}
+                </tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <div class="footer" style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e9ecef;">
+        <p style="margin: 0 0 10px 0; padding: 0; color: #0f1729; font-size: 14px; line-height: 1.6;">This email was sent from {platform_name}</p>
+        <p style="margin: 0 0 10px 0; padding: 0; color: #0f1729; font-size: 14px; line-height: 1.6;">To unsubscribe from this email or modify your notifications settings <a href="{notification_settings_url}" class="settings-link" style="color: #2a6df4; text-decoration: none; font-weight: 500;">click here</a></p>
+        <p class="company-info" style="margin: 0; padding: 0; color: #0f1729; font-size: 14px; line-height: 1.6; font-weight: 500;">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+
+</div>
+</body>
+</html>

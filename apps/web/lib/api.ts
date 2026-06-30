@@ -4,18 +4,49 @@ import type {
   McpToken, McpTokenIssued, ObservabilityData, OntologyChange, OntologyDoc,
   OntologyVersion, QuizSpec, ReasonerCheck, Rule, SurvivorshipPolicy, Workspace,
 } from "./types";
+import { SHAY_SESSION_STORAGE_KEY } from "./shay-auth";
 
 // Same-origin relative path. Next.js rewrites /api/* → FastAPI internally
 // (see next.config.mjs). Works in dev (proxies to localhost:8088) and in
 // production (proxies to api:8000) without any client-side knowledge.
 const BASE = "/api";
 
+function getAccessTokenFromSessionStorage(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const raw = window.localStorage.getItem(SHAY_SESSION_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const session = JSON.parse(raw) as { access_token?: string };
+    return typeof session.access_token === "string" && session.access_token
+      ? session.access_token
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyAuthHeader(headers: Headers) {
+  const token = getAccessTokenFromSessionStorage();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+}
+
 /** Throw on non-2xx; return parsed JSON otherwise. */
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  applyAuthHeader(headers);
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     cache: "no-store",
     ...init,
+    headers,
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -265,8 +296,13 @@ export const api = {
     form.append("ontology_type", ontologyType);
     form.append("match_keys", matchKeys);
     form.append("workspace_id", String(workspaceId));
-    const res = await fetch(`${BASE}/admin/ingest/file`,
-                            { method: "POST", body: form });
+    const headers = new Headers();
+    applyAuthHeader(headers);
+    const res = await fetch(`${BASE}/admin/ingest/file`, {
+      method: "POST",
+      body: form,
+      headers,
+    });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
       throw new Error(`${res.status} ${res.statusText}: ${detail}`);
@@ -346,7 +382,13 @@ export const api = {
     for (const f of files) form.append("files", f);
     form.append("context", context);
     form.append("workspace_id", String(workspaceId));
-    const res = await fetch("/api/admin/docs/read", { method: "POST", body: form });
+    const headers = new Headers();
+    applyAuthHeader(headers);
+    const res = await fetch("/api/admin/docs/read", {
+      method: "POST",
+      body: form,
+      headers,
+    });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
       throw new Error(`${res.status} ${res.statusText}: ${detail}`);

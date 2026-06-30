@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -99,44 +100,49 @@ class LlmConfigRequest(BaseModel):
     api_key: str = ""
 
 
+def run_ask(req: AskRequest) -> dict[str, Any]:
+    """Execute the Aryx Ask pipeline for a request payload."""
+    reader = _reader(req.workspace_id)
+    types = all_types(reader)
+    overview = build_overview(reader, req.workspace_id)
+    try:
+        terms, p_in, p_out, p_ms = _extract_terms(req.question, types, req.history)
+        entities, calls = gather(reader, terms)
+        context = render_context(entities)
+        answer, s_in, s_out, s_ms = _synthesise(req.question, context, overview)
+        grounding = build_grounding(answer or "", entities)
+    except Exception as exc:  # noqa: BLE001 — surface model/runtime errors to UI
+        logger.warning("ask failed: %s", exc)
+        return {"answer": f"LLM unavailable: {exc}", "terms": [],
+                "tools_called": [], "usage": {}, "grounding": None}
+    cfg = llm_runtime.status()
+    usage = {
+        "prompt_tokens": p_in + s_in,
+        "completion_tokens": p_out + s_out,
+        "latency_ms": p_ms + s_ms,
+        "menial_model": cfg["menial_model"],
+        "answer_model": cfg["answer_model"],
+    }
+    try:
+        hstore = AskHistoryStore(get_settings().rdb_dsn)
+        try:
+            hstore.append(req.workspace_id, req.question,
+                          answer or "", calls, [], usage)
+        finally:
+            hstore.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ask history persist failed: %s", exc)
+    return {"answer": answer or "No answer produced.", "terms": terms,
+            "tools_called": calls, "usage": usage,
+            "grounding": grounding.to_dict()}
+
+
 def ask_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("/ask")
     def ask(req: AskRequest) -> dict:
-        reader = _reader(req.workspace_id)
-        types = all_types(reader)
-        overview = build_overview(reader, req.workspace_id)
-        try:
-            terms, p_in, p_out, p_ms = _extract_terms(req.question, types, req.history)
-            entities, calls = gather(reader, terms)
-            context = render_context(entities)
-            answer, s_in, s_out, s_ms = _synthesise(req.question, context, overview)
-            grounding = build_grounding(answer or "", entities)
-        except Exception as exc:  # noqa: BLE001 — surface model/runtime errors to UI
-            logger.warning("ask failed: %s", exc)
-            return {"answer": f"LLM unavailable: {exc}", "terms": [],
-                    "tools_called": [], "usage": {}, "grounding": None}
-        cfg = llm_runtime.status()
-        usage = {
-            "prompt_tokens": p_in + s_in,
-            "completion_tokens": p_out + s_out,
-            "latency_ms": p_ms + s_ms,
-            "menial_model": cfg["menial_model"],
-            "answer_model": cfg["answer_model"],
-        }
-        try:
-            hstore = AskHistoryStore(get_settings().rdb_dsn)
-            try:
-                hstore.append(req.workspace_id, req.question,
-                              answer or "", calls, [], usage)
-            finally:
-                hstore.close()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ask history persist failed: %s", exc)
-        return {"answer": answer or "No answer produced.", "terms": terms,
-                "tools_called": calls, "usage": usage,
-                "grounding": grounding.to_dict()}
+        return run_ask(req)
 
     @router.get("/llm/config")
     def get_llm_config() -> dict:

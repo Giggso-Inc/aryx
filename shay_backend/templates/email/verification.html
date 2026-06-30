@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verify Your Email - {platform_name}</title>
+  <style>
+    body {{
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f8f9fa;
+      color: #0f1729;
+      margin: 0;
+      padding: 0;
+    }}
+
+    .email-wrapper {{
+      max-width: 600px;
+      margin: 40px auto;
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+    }}
+
+    /* HEADER */
+    .email-header {{
+      background-color: #2a6df4;
+      color: #fff;
+      text-align: center;
+      padding: 24px 20px;
+    }}
+
+    .email-header h1 {{
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+      color: #ffffff;
+    }}
+
+    /* Tagline under title: force white so it's visible on blue header in all email clients */
+    .email-header p {{
+      margin: 8px 0 0;
+      font-size: 14px;
+      color: #ffffff !important;
+      opacity: 1;
+    }}
+
+    /* CONTENT */
+    .email-body {{
+      padding: 36px 30px;
+    }}
+
+    .greeting {{
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }}
+
+    .message {{
+      font-size: 15px;
+      line-height: 1.7;
+      margin-bottom: 22px;
+    }}
+
+    .product-intro {{
+      background-color: #f1f5f9;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin: 24px 0;
+    }}
+
+    .product-intro p {{
+      margin: 0;
+      font-size: 14px;
+      color: #0f1729;
+    }}
+
+    /* CTA BUTTON */
+    .cta-button {{
+      display: inline-block;
+      background-color: #2a6df4;
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 32px;
+      border-radius: 50px;
+      font-weight: 600;
+      font-size: 15px;
+      text-align: center;
+      margin: 30px auto;
+      transition: background 0.3s ease;
+    }}
+
+    .cta-button:hover {{
+      background-color: #1f56c1;
+    }}
+
+    .link-fallback {{
+      font-size: 14px;
+      color: #555;
+      margin-top: 10px;
+      word-break: break-all;
+    }}
+
+    .link-fallback a {{
+      color: #2a6df4;
+      text-decoration: none;
+    }}
+
+    /* WARNING BOX */
+    .warning {{
+      background-color: #fff8e1;
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 28px 0;
+      font-size: 14px;
+      color: #c47f08;
+    }}
+
+    .warning ul {{
+      margin: 10px 0 0 20px;
+      padding: 0;
+    }}
+
+    .warning li {{
+      margin: 5px 0;
+    }}
+
+    /* FOOTER */
+    .footer {{
+      background: #f8f9fa;
+      padding: 30px;
+      text-align: center;
+      border-top: 1px solid #e9ecef;
+    }}
+
+    .footer p {{
+      margin: 0 0 10px 0;
+      color: #0f1729;
+      font-size: 14px;
+    }}
+
+    .footer .company-info {{
+      color: #0f1729;
+      font-weight: 500;
+    }}
+
+    @media (max-width: 600px) {{
+      .email-body {{
+        padding: 28px 20px;
+      }}
+      .cta-button {{
+        width: 100%;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="email-wrapper">
+
+    <!-- HEADER: logo top-left, title right -->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="email-header" style="background-color: #2a6df4; color: #ffffff;"><tr>
+      <td style="width: 180px; vertical-align: middle;">{logo_html}</td>
+      <td style="vertical-align: middle; padding: 24px 20px; text-align: center;">
+        <h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">Verify Your Email</h1>
+        <p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; line-height: 1.4; color: #ffffff !important; opacity: 1;"><span style="color: #ffffff !important;">{platform_name} - AI-Powered Collaboration Platform</span></p>
+      </td>
+      <td style="width: 180px; vertical-align: middle;"></td>
+    </tr></table>
+
+    <!-- BODY -->
+    <div class="email-body">
+      <p class="greeting">Hello {user_name},</p>
+
+      <p class="message">
+        Thank you for signing up for <strong>{company_name}</strong> on <strong>{platform_name}</strong>! We're excited to have you join our platform.
+      </p>
+
+      <div class="product-intro">
+        <p>
+          {product_intro_text}
+        </p>
+      </div>
+
+      <p class="message">
+        To complete your registration and activate your account, please verify your email address by clicking the button below:
+      </p>
+
+      <div style="text-align:center;">
+        <a href="{verification_link}" class="cta-button" style="color: #ffffff !important;">Verify Email Address</a>
+      </div>
+
+      <div class="link-fallback">
+        Can't click the button? Copy and paste this link into your browser:  
+        <a href="{verification_link}">{verification_link}</a>
+      </div>
+
+      <div class="warning">
+        ⚠️ <strong>Important:</strong>
+        <ul>
+          <li>This verification link will expire in <strong>{expires_in_hours} hours</strong></li>
+          <li>If you didn't create an account, please ignore this email</li>
+          <li>For security, this link can only be used once</li>
+        </ul>
+      </div>
+
+      <p class="message">
+        If you have any questions or need assistance, please contact us at <strong>{support_email}</strong>.
+      </p>
+    </div>
+
+    <div class="footer">
+      <p>This email was sent from {platform_name}</p>
+      <p class="company-info">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+
+  </div>
+</body>
+</html>
+

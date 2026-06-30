@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import dynamic from "next/dynamic";
+import { FolderDown, FolderUp, GitBranch, Scale, Table2, Weight } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { LightweightTab } from "@/components/model/LightweightTab";
 import { RulesTab } from "@/components/model/RulesTab";
@@ -23,13 +24,55 @@ const Canvas = dynamic(
 
 type Tab = "lightweight" | "diagram" | "rules" | "versions" | "publish" | "import";
 
-const TABS: Array<{ id: Tab; label: string; emoji: string }> = [
-  { id: "lightweight", label: "Lightweight",    emoji: "🟦" },
-  { id: "diagram",     label: "Schema Diagram", emoji: "🖼" },
-  { id: "rules",       label: "Rules",          emoji: "🟪" },
-  { id: "versions",    label: "Versions",       emoji: "🟪" },
-  { id: "publish",     label: "Publish",        emoji: "📤" },
-  { id: "import",      label: "Import",         emoji: "📥" },
+const TABS: Array<{
+  id: Tab;
+  label: string;
+  icon: ReactNode;
+  iconClass: string;
+  activeClass: string;
+}> = [
+  {
+    id: "lightweight",
+    label: "Lightweight",
+    icon: <Weight size={14} strokeWidth={2.25} />,
+    iconClass: "text-steel-600",
+    activeClass: "border-steel-500 text-steel-700",
+  },
+  {
+    id: "diagram",
+    label: "Schema Diagram",
+    icon: <Table2 size={14} strokeWidth={2.1} />,
+    iconClass: "text-steel-600",
+    activeClass: "border-steel-500 text-steel-700",
+  },
+  {
+    id: "rules",
+    label: "Rules",
+    icon: <Scale size={14} strokeWidth={2.1} />,
+    iconClass: "text-purple-600",
+    activeClass: "border-purple-500 text-purple-700",
+  },
+  {
+    id: "versions",
+    label: "Versions",
+    icon: <GitBranch size={14} strokeWidth={2.1} />,
+    iconClass: "text-purple-600",
+    activeClass: "border-purple-500 text-purple-700",
+  },
+  {
+    id: "publish",
+    label: "Publish",
+    icon: <FolderUp size={14} strokeWidth={2.1} />,
+    iconClass: "text-emerald-600",
+    activeClass: "border-emerald-500 text-emerald-700",
+  },
+  {
+    id: "import",
+    label: "Import",
+    icon: <FolderDown size={14} strokeWidth={2.1} />,
+    iconClass: "text-emerald-600",
+    activeClass: "border-emerald-500 text-emerald-700",
+  },
 ];
 
 export default function ModelPage() {
@@ -46,58 +89,66 @@ export default function ModelPage() {
     <div className={cn("flex flex-col", isDiagram ? "h-screen" : "min-h-screen")}>
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
 
-      {/* Tab bar */}
-      <div className="border-b border-navy-100 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-end gap-0 px-6">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn(
-                "inline-flex items-center gap-1.5 border-b-2 px-4 py-3 text-[13px] font-medium transition-colors",
-                tab === t.id
-                  ? "border-steel-500 text-steel-700"
-                  : "border-transparent text-navy-500 hover:text-navy-800",
-              )}
-            >
-              <span>{t.emoji}</span>
-              {t.label}
-            </button>
-          ))}
+      <div className={cn("app-shell-offset flex min-w-0 flex-1 flex-col", isDiagram ? "min-h-0" : "")}>
+        {/* Tab bar */}
+        <div className="border-b border-navy-100 bg-white">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-end gap-0 px-6">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 border-b-2 px-4 py-3 text-[13px] font-medium transition-colors",
+                  tab === t.id
+                    ? t.activeClass
+                    : "border-transparent text-navy-500 hover:text-navy-800",
+                )}
+              >
+                <span className={cn("shrink-0", t.iconClass)}>{t.icon}</span>
+                {t.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* Lifecycle summary (collapsed hint) */}
-      {!isDiagram && (
-        <div className="border-b border-navy-50 bg-navy-50/40 px-6 py-2 text-[11px] text-navy-500">
-          Brief → Ingest →
-          <span className="font-semibold text-steel-600"> 🟦 Lightweight</span> →
-          HITL review →
-          <span className="font-semibold text-purple-600"> 🟪 Heavyweight (Rules + Versions)</span> →
-          <span className="font-semibold text-emerald-600"> 📤 Publish</span>
+        {/* Lifecycle summary (collapsed hint) */}
+        {!isDiagram && (
+          <div className="border-b border-navy-50 bg-navy-50/40 px-6 py-2 text-[11px] text-navy-500">
+            Brief → Ingest →
+            <span className="inline-flex items-center gap-1 font-semibold text-steel-600">
+              <Weight size={11} /> Lightweight
+            </span> →
+            HITL review →
+            <span className="inline-flex items-center gap-1 font-semibold text-purple-600">
+              <Scale size={11} /> Heavyweight (Rules + Versions)
+            </span> →
+            <span className="inline-flex items-center gap-1 font-semibold text-emerald-600">
+              <FolderUp size={11} /> Publish
+            </span>
+          </div>
+        )}
+
+        {/* Tab content */}
+        {isDiagram ? (
+          <Canvas key={diagramKey} />
+        ) : (
+          <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-6">
+            {tab === "lightweight" && (
+              <LightweightTab workspaceId={workspaceId} onChanged={handleChanged} />
+            )}
+            {tab === "rules" && <RulesTab workspaceId={workspaceId} />}
+            {tab === "versions" && <VersionsTab workspaceId={workspaceId} />}
+            {tab === "publish" && <PublishTab workspaceId={workspaceId} />}
+            {tab === "import" && (
+              <ImportTab
+                workspaceId={workspaceId}
+                onImported={() => { handleChanged(); setTab("lightweight"); }}
+              />
+            )}
+          </main>
+        )}
         </div>
-      )}
-
-      {/* Tab content */}
-      {isDiagram ? (
-        <Canvas key={diagramKey} />
-      ) : (
-        <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-6">
-          {tab === "lightweight" && (
-            <LightweightTab workspaceId={workspaceId} onChanged={handleChanged} />
-          )}
-          {tab === "rules" && <RulesTab workspaceId={workspaceId} />}
-          {tab === "versions" && <VersionsTab workspaceId={workspaceId} />}
-          {tab === "publish" && <PublishTab workspaceId={workspaceId} />}
-          {tab === "import" && (
-            <ImportTab
-              workspaceId={workspaceId}
-              onImported={() => { handleChanged(); setTab("lightweight"); }}
-            />
-          )}
-        </main>
-      )}
     </div>
   );
 }

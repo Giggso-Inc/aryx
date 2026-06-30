@@ -32,6 +32,7 @@ from aryx.api.ontology_assist_api import ontology_assist_router
 from aryx.api.relationship_type_api import relationship_type_router
 from aryx.api.rest_ingest_api import rest_ingest_router
 from aryx.api.rules_api import rules_router
+from aryx.api.shay_bridge_api import shay_bridge_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
@@ -123,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(axioms_router())
     app.include_router(shapes_router())
     app.include_router(rules_router())
+    app.include_router(shay_bridge_router())
     app.include_router(rest_ingest_router())
     app.include_router(versions_router())
     app.include_router(mcp_tokens_router())

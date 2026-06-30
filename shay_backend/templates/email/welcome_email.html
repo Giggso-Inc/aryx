@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to {platform_name}</title>
+  <style>
+    body {{
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f8f9fa;
+      color: #0f1729;
+      margin: 0;
+      padding: 0;
+    }}
+
+    .email-wrapper {{
+      max-width: 600px;
+      margin: 40px auto;
+      background: #ffffff;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+    }}
+
+    /* HEADER */
+    .email-header {{
+      background-color: #2a6df4;
+      color: #fff;
+      text-align: center;
+      padding: 24px 20px;
+    }}
+
+    .email-header h1 {{
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+    }}
+
+    .email-header p {{
+      margin: 8px 0 0;
+      font-size: 14px;
+      opacity: 0.95;
+    }}
+
+    /* CONTENT */
+    .email-body {{
+      padding: 36px 30px;
+    }}
+
+    .greeting {{
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }}
+
+    .message {{
+      font-size: 15px;
+      line-height: 1.7;
+      margin-bottom: 22px;
+    }}
+
+    .info-box {{
+      background-color: #f1f5f9;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 24px 0;
+      border-left: 4px solid #2a6df4;
+    }}
+
+    .info-box ul {{
+      margin: 10px 0;
+      padding-left: 20px;
+    }}
+
+    .info-box li {{
+      margin: 8px 0;
+      font-size: 14px;
+      color: #0f1729;
+    }}
+
+    .info-box strong {{
+      color: #2a6df4;
+    }}
+
+    /* CTA BUTTON */
+    .cta-button {{
+      display: inline-block;
+      background-color: #2a6df4;
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 32px;
+      border-radius: 50px;
+      font-weight: 600;
+      font-size: 15px;
+      text-align: center;
+      margin: 10px 5px;
+      transition: background 0.3s ease;
+    }}
+
+    .cta-button:hover {{
+      background-color: #1f56c1;
+    }}
+
+    .app-link {{
+      background-color: #f0f0f0;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 15px 0;
+      word-break: break-all;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      color: #0f1729;
+    }}
+
+    /* FOOTER */
+    .footer {{
+      background: #f8f9fa;
+      padding: 30px;
+      text-align: center;
+      border-top: 1px solid #e9ecef;
+    }}
+
+    .footer p {{
+      margin: 0 0 10px 0;
+      color: #0f1729;
+      font-size: 14px;
+    }}
+
+    .footer .company-info {{
+      color: #0f1729;
+      font-weight: 500;
+    }}
+
+    @media (max-width: 600px) {{
+      .email-body {{
+        padding: 28px 20px;
+      }}
+      .cta-button {{
+        width: 100%;
+        margin: 5px 0;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="email-wrapper">
+
+    <!-- HEADER: logo top-left, title right -->
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="email-header" style="background-color: #2a6df4; color: #ffffff;"><tr>
+      <td style="width: 180px; vertical-align: middle;">{logo_html}</td>
+      <td style="vertical-align: middle; padding: 24px 20px; text-align: center;">
+        <h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">Welcome to {platform_name}!</h1>
+        <p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; color: #ffffff;">AI-Powered Collaboration Platform</p>
+      </td>
+      <td style="width: 180px; vertical-align: middle;"></td>
+    </tr></table>
+
+    <!-- BODY -->
+    <div class="email-body">
+      <p class="greeting">Hi {company_name},</p>
+
+      <p class="message">
+        Welcome to {platform_name}! Your account has been successfully created and you're ready to start using our AI platform.
+      </p>
+
+      <div class="info-box">
+        <h3 style="margin-top: 0; color: #2a6df4; font-size: 16px;">Your Account Details:</h3>
+        <ul>
+          <li><strong>Company:</strong> {company_name}</li>
+          <li><strong>Plan:</strong> {plan_name} - ${monthly_price}/month</li>
+          <li><strong>Email:</strong> {contact_email}</li>
+        </ul>
+      </div>
+
+      <h3 style="font-size: 16px; margin-top: 24px; margin-bottom: 12px;">Access Your App:</h3>
+      <p class="message">
+        You can access your {platform_name} application using the link below:
+      </p>
+      <div class="app-link">
+        {app_link}
+      </div>
+      <div style="text-align:center; margin: 20px 0;">
+        <a href="{app_link}" class="cta-button">Launch App</a>
+      </div>
+
+      <h3 style="font-size: 16px; margin-top: 24px; margin-bottom: 12px;">Next Steps:</h3>
+      <ul style="font-size: 15px; line-height: 1.7;">
+        <li>Schedule your onboarding session</li>
+        <li>Watch our self-help videos</li>
+        <li>Read our documentation</li>
+      </ul>
+
+      <p class="message">
+        If you have any questions, feel free to reach out to our support team.
+      </p>
+
+      <p class="message">
+        Best regards,<br>The {platform_name} Team
+      </p>
+    </div>
+
+    <div class="footer">
+      <p>This email was sent to {contact_email}</p>
+      <p class="company-info">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+
+  </div>
+</body>
+</html>

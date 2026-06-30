@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, FolderUp, Loader2, Plus, Scale, Trash2, Weight } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { OntologyDoc } from "@/lib/types";
@@ -103,8 +103,17 @@ export function LightweightTab({ workspaceId, onChanged }: Props) {
     <div className="space-y-6">
       {/* Lifecycle explanation */}
       <div className="rounded-xl border border-navy-100 bg-navy-50/40 p-4 text-[12px] text-navy-700">
-        <strong>Lifecycle:</strong> Brief → Ingest → <span className="text-steel-600">🟦 Lightweight (observed, below)</span> →
-        HITL review → <span className="text-purple-700">🟪 Heavyweight (Rules + Versions tabs)</span> → <span className="text-emerald-700">📤 Publish</span>
+        <strong>Lifecycle:</strong> Brief → Ingest →
+        <span className="inline-flex items-center gap-1 text-steel-600">
+          <Weight size={11} /> Lightweight (observed, below)
+        </span> →
+        HITL review →
+        <span className="inline-flex items-center gap-1 text-purple-700">
+          <Scale size={11} /> Heavyweight (Rules + Versions tabs)
+        </span> →
+        <span className="inline-flex items-center gap-1 text-emerald-700">
+          <FolderUp size={11} /> Publish
+        </span>
       </div>
 
       {/* Pending review */}

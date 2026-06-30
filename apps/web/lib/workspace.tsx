@@ -4,6 +4,7 @@ import {
   createContext, useContext, useEffect, useState, type ReactNode,
 } from "react";
 import { api } from "./api";
+import { useShayAuth } from "./shay-auth";
 import type { Workspace } from "./types";
 
 interface WorkspaceContext {
@@ -22,10 +23,15 @@ const STORAGE_KEY = "aryx.workspaceId";
  *  empty onboarding one), so the auto-redirect on / bounces them to /start.
  *  Returning users stay on whatever they last selected (localStorage). */
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const [workspaceId, setWorkspaceIdState] = useState(1);
+  const { ready, session } = useShayAuth();
+  const [workspaceId, setWorkspaceIdState] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
 
   const refresh = async () => {
+    if (!session?.access_token) {
+      setWorkspaces([]);
+      return;
+    }
     try {
       const list = await api.listWorkspaces();
       setWorkspaces(list);
@@ -35,8 +41,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
+    if (!ready || !session?.access_token) {
+      setWorkspaceIdState(0);
+      setWorkspaces([]);
+      return;
+    }
     api.listWorkspaces().then((list) => {
       setWorkspaces(list);
+      if (list.length === 0) {
+        setWorkspaceIdState(0);
+        if (typeof window !== "undefined") {
+          localStorage.removeItem(STORAGE_KEY);
+        }
+        return;
+      }
       const stored = typeof window !== "undefined"
         ? localStorage.getItem(STORAGE_KEY) : null;
       if (stored) {
@@ -51,8 +69,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       // first workspace, then id=1.
       const def = list.find((w) => w.name === "Default") || list[0];
       if (def) setWorkspaceIdState(def.id);
-    }).catch(() => setWorkspaces([]));
-  }, []);
+    }).catch(() => {
+      setWorkspaceIdState(0);
+      setWorkspaces([]);
+    });
+  }, [ready, session?.access_token]);
 
   const setWorkspaceId = (id: number) => {
     setWorkspaceIdState(id);
