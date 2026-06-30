@@ -25,7 +25,7 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
-from aryx.pipeline.doc_discovery import _detect_fk_links, _xml_to_csvs
+from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xml_to_csvs
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
@@ -114,6 +114,30 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
+
+        # Pre-compute FK links for multi-file CSV uploads so that cross-file
+        # relationships are detected before any pipeline runs (mirrors XML path).
+        csv_data_files = [(d, n) for d, n in data_files if Path(n).suffix.lower() == ".csv"]
+        csv_auto_fk: list[dict] = []
+        csv_type_map: dict[str, str] = {}  # filename -> derived ontology type
+        if len(csv_data_files) > 1:
+            csv_plans = []
+            for csv_d, csv_n in csv_data_files:
+                derived = _stem_type(csv_n) or ontology_type
+                csv_type_map[csv_n] = derived
+                csv_plans.append({
+                    "data": csv_d,
+                    "filename": csv_n,
+                    "ontology_type": derived,
+                    "match_keys": match_keys or ["name"],
+                })
+            csv_auto_fk = _detect_fk_links(csv_plans)
+            if csv_auto_fk:
+                logger.info(
+                    "CSV multi-file: auto-detected %d fk-link spec(s): %s",
+                    len(csv_auto_fk), csv_auto_fk,
+                )
+
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
             if suffix == ".json":
@@ -171,11 +195,21 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     )
                 continue
             else:
+                # Multi-file CSV: derive type per filename and apply auto FK links
+                # on the last file's last chunk (same pattern as XML sub-pipeline).
+                # Single-file CSV: preserve user-provided ontology_type and fk_links.
+                multi_csv = len(csv_data_files) > 1
+                is_last_csv = multi_csv and (name == csv_data_files[-1][1])
+                eff_type = csv_type_map.get(name, ontology_type) if multi_csv else ontology_type
+                eff_fk = csv_auto_fk if is_last_csv else (fk_links if not multi_csv else [])
+                eff_relate = is_last_csv if multi_csv else True
+
                 chunk_rows = settings.csv_chunk_rows
                 csv_chunks = _chunk_csv_bytes(data, chunk_rows) if chunk_rows > 0 else [data]
                 stem = Path(name).stem
                 total_chunks = len(csv_chunks)
                 for chunk_idx, chunk_data in enumerate(csv_chunks):
+                    is_last_chunk = (chunk_idx == total_chunks - 1)
                     dataset = f"{stem}_c{chunk_idx:04d}" if total_chunks > 1 else stem
                     jobs.update_stage(
                         job_id, "Ingest", 20,
@@ -185,11 +219,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         connector=CsvConnector(chunk_data, system="csv", dataset=dataset),
                         dsn=settings.rdb_dsn,
                         system="csv", dataset=dataset,
-                        ontology_type=ontology_type, match_keys=match_keys,
+                        ontology_type=eff_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
                         on_progress=on_prog,
-                        fk_links=fk_links, workspace_id=workspace_id,
-                        relate=True,
+                        fk_links=eff_fk if is_last_chunk else [],
+                        workspace_id=workspace_id,
+                        relate=eff_relate and is_last_chunk,
                     )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
