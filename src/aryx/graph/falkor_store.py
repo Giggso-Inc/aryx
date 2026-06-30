@@ -15,8 +15,34 @@ from falkordb import FalkorDB
 
 logger = logging.getLogger(__name__)
 
-_NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
-              "sku", "code", "email", "username", "_text")
+_NAME_KEYS = (
+    # Standard identifier fields
+    "name", "full_name", "title", "label", "ticket_ref", "ref",
+    "sku", "code", "email", "username",
+    # Defense / government data (CAGE, supplier, procurement, FLIS)
+    "COMPANY", "COMPANY_NAME", "company", "company_name",
+    "CAGE_CODE", "cage_code",
+    "ITEM_NAME", "item_name",
+    "LITERAL", "literal",                    # FLIS HELP.csv display name
+    "COLLOQUIAL_NAME", "colloquial_name",    # FLIS colloquial name
+    "FSC", "fsc",                            # FLIS Federal Supply Class (on NSN rows)
+    "NIIN", "niin",                          # FLIS NIIN — fallback when FSC absent
+    # XML / CPQ config domain fields
+    "variable_name", "var_name", "bm_variable_name",
+    "item_text", "item_value",
+    "prop_value", "property_value", "prop_type",
+    "bm_name", "func_name", "rule_name",
+    "java_class_name", "file_name", "relative_path",
+)
+
+# Placeholder strings that should not be used as display names — fall through
+# to the next candidate or the numeric ID instead.
+_GENERIC_NAMES: frozenset[str] = frozenset({
+    "no item name available", "not available", "n/a", "none", "null",
+    "unknown", "tbd", "to be determined", "see above", "see below",
+    "no name", "no description", "no data",
+    "########",  # Excel column-too-narrow placeholder (truncated dates)
+})
 
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_LABELS = 6  # cap to avoid label-bloat on deep hierarchies
@@ -49,16 +75,22 @@ def _display_name(attributes: dict[str, Any]) -> str:
 
     Tries common identifying keys, then the first short string value, so a
     ticket shows its ref/issue and a product shows its name — not a blank node.
+    Generic placeholder strings (e.g. "NO ITEM NAME AVAILABLE") are skipped so
+    the pipeline falls through to a numeric ID rather than exposing them.
     """
     for key in _NAME_KEYS:
         value = attributes.get(key)
-        if value:
+        if value and str(value).lower() not in _GENERIC_NAMES:
             return str(value)
-    for key, value in attributes.items():
-        if key.startswith("_"):
-            continue
+    # Prefer non-numeric strings so numeric IDs don't leak as display labels.
+    for value in attributes.values():
+        if isinstance(value, str) and 0 < len(value) <= 80 and not value.isdigit():
+            if value.lower() not in _GENERIC_NAMES:
+                return value
+    for value in attributes.values():
         if isinstance(value, str) and 0 < len(value) <= 80:
-            return value
+            if value.lower() not in _GENERIC_NAMES:
+                return value
     return ""
 
 
@@ -131,6 +163,13 @@ class FalkorStore:
         """Tombstone one entity node and all its edges (incremental delete)."""
         self._graph.query(
             "MATCH (e:Entity {id: $id}) DETACH DELETE e", {"id": entity_id},
+        )
+
+    def remove_entities_by_type(self, ontology_type: str) -> None:
+        """Delete all entity nodes of a given type and their edges."""
+        self._graph.query(
+            "MATCH (e:Entity {type: $type}) DETACH DELETE e",
+            {"type": ontology_type},
         )
 
     def add_relationship(self, source_id: int, target_id: int, name: str) -> None:

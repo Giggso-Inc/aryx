@@ -8,6 +8,7 @@ raw Node objects) so callers get plain, serializable dicts.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,6 +17,12 @@ from falkordb import FalkorDB
 from aryx.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Module-level TTL cache for subgraph results.
+# Each GET /graph fires N+1 FalkorDB queries (1 DISTINCT + 1 per type).
+# Caching the result for 30 s collapses repeated canvas renders to 0 queries.
+_subgraph_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_SUBGRAPH_TTL: float = 30.0
 
 
 class GraphReader:
@@ -87,12 +94,73 @@ class GraphReader:
         ).result_set
         return [{**_entity(r), "relationship": r[3], "direction": r[4]} for r in rows]
 
-    def all_relationships(self) -> list[dict[str, Any]]:
-        """Return every relationship edge in the graph."""
+    def all_relationships(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return relationship edges in the graph, optionally capped."""
+        cap = f" LIMIT {max(1, int(limit))}" if limit else ""
         rows = self._graph.query(
-            "MATCH (a:Entity)-[r:REL]->(b:Entity) RETURN a.id, b.id, r.name"
+            f"MATCH (a:Entity)-[r:REL]->(b:Entity) RETURN a.id, b.id, r.name{cap}"
         ).result_set
         return [{"source": r[0], "target": r[1], "name": r[2]} for r in rows]
+
+    def subgraph(self, rel_limit: int = 500) -> dict[str, Any]:
+        """Return a connected subgraph suitable for graph-canvas rendering.
+
+        Samples proportionally from every edge type so all relationship kinds
+        appear in the canvas.  After collecting relationship-connected entities,
+        also fetches all remaining isolated entities (no edges) so every entity
+        in the workspace is visible on the canvas regardless of connectivity.
+
+        Results are cached for 30 s (per graph + rel_limit combination).
+        """
+        capped = max(1, min(int(rel_limit), get_settings().graph_query_limit))
+        cache_key = f"{self._graph.name}:{capped}"
+        now = time.monotonic()
+        cached = _subgraph_cache.get(cache_key)
+        if cached is not None:
+            ts, result = cached
+            if now - ts < _SUBGRAPH_TTL:
+                return result
+
+        # Discover the distinct relationship types present in this graph.
+        type_rows = self._graph.query(
+            "MATCH ()-[r:REL]->() RETURN DISTINCT r.name AS t"
+        ).result_set
+        rel_types = [r[0] for r in type_rows if r[0]]
+
+        entity_map: dict[int, dict[str, Any]] = {}
+        rels: list[dict[str, Any]] = []
+
+        if rel_types:
+            per_type = max(1, capped // len(rel_types))
+            for rtype in rel_types:
+                rows = self._graph.query(
+                    "MATCH (a:Entity)-[r:REL]->(b:Entity) "
+                    "WHERE r.name = $rname "
+                    "RETURN a.id, a.type, a.name, b.id, b.type, b.name, r.name "
+                    f"LIMIT {per_type}",
+                    {"rname": rtype},
+                ).result_set
+                for row in rows:
+                    aid, atype, aname, bid, btype, bname, rname = row
+                    entity_map[aid] = {"id": aid, "type": atype, "name": aname}
+                    entity_map[bid] = {"id": bid, "type": btype, "name": bname}
+                    rels.append({"source": aid, "target": bid, "name": rname})
+
+        # Always fetch all entities so isolated nodes (no relationships yet)
+        # are visible on the canvas — entity count drives the ontology panel.
+        remaining = capped - len(entity_map)
+        if remaining > 0:
+            all_rows = self._graph.query(
+                f"MATCH (e:Entity) RETURN e.id, e.type, e.name LIMIT {remaining}"
+            ).result_set
+            for row in all_rows:
+                eid, etype, ename = row
+                if eid not in entity_map:
+                    entity_map[eid] = {"id": eid, "type": etype, "name": ename}
+
+        result = {"entities": list(entity_map.values()), "relationships": rels}
+        _subgraph_cache[cache_key] = (now, result)
+        return result
 
     def provenance(self, entity_id: int) -> list[dict[str, Any]]:
         """Return the source records an entity was projected from."""

@@ -53,6 +53,7 @@ def run_pipeline(
     fk_links: list[dict] | None = None,
     workspace_id: int = 1,
     resume_run_id: int | None = None,
+    skip_graph: bool = False,
 ) -> dict[str, int]:
     """Run a source from extraction through to the FalkorDB projection.
 
@@ -94,6 +95,7 @@ def run_pipeline(
 
     estore = EntityStore(dsn, workspace_id)
     entities = relationships = 0
+    counts: dict[str, int] = {}
     try:
         if not runner.skip("resolve_cluster"):
             _emit(on_progress, "Resolve", 50, "Resolving records into canonical entities")
@@ -121,9 +123,13 @@ def run_pipeline(
             _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
             with runner.stage("fk_link"):
                 for spec in fk_links:
+                    rel_name = spec.get(
+                        "name",
+                        f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
+                    )
                     relationships += link_by_attribute(
                         estore, spec["source_type"], spec["source_attr"],
-                        spec["target_type"], spec["target_attr"], spec["name"],
+                        spec["target_type"], spec["target_attr"], rel_name,
                     )
         _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
         with runner.stage("project"):

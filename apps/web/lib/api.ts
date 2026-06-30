@@ -421,6 +421,12 @@ export const api = {
       method: "POST", body: "{}",
     }),
 
+  autoLinkWorkspace: (workspaceId: number) =>
+    fetchJSON<{ links_created: number; specs: Array<Record<string, unknown>> }>(
+      `/admin/workspaces/${workspaceId}/auto-link`,
+      { method: "POST", body: "{}" },
+    ),
+
   // ── Ontology rules ────────────────────────────────────────────────────
   createRule: (workspaceId: number, rule: Omit<Rule, "enabled">) =>
     fetchJSON<{ status: string }>("/rules", {

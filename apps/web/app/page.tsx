@@ -121,7 +121,7 @@ export default function HomePage() {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(true);
 
   // First-run redirect: empty workspace → guided setup. "Empty" means
   // zero records, regardless of whether stub types exist.
@@ -216,17 +216,15 @@ export default function HomePage() {
       )}
 
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 py-10">
-        {!empty && (
-          <div className="mb-2 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setShowHistory((v) => !v)}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
-            >
-              <Clock size={12} /> History
-            </button>
-          </div>
-        )}
+        <div className="mb-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowHistory((v) => !v)}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+          >
+            <Clock size={12} /> History
+          </button>
+        </div>
         {empty ? (
           <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
             <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">
