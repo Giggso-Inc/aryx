@@ -24,15 +24,13 @@ _GRAPH_ATTR_STR_MAX = 500
 
 
 def _safe_attrs_json(attrs: dict[str, Any]) -> str:
-    """Serialize attrs, truncating long string values to _GRAPH_ATTR_STR_MAX chars.
+    """Serialize attrs, always truncating long string values to _GRAPH_ATTR_STR_MAX chars.
 
-    The graph store is a projection cache. CPQ function bodies and other large
-    text fields cause ORA-03106 in Oracle thin client executemany even as a
-    single row. Truncating here keeps the graph navigable without the full text.
+    The graph store is a projection cache — full text lives in aryx_entity.attributes.
+    CPQ function bodies and scripts cause ORA-03106 even across small row counts
+    because each bind variable contributes to the wire-protocol packet size.
+    Trim unconditionally so no single bind value is large.
     """
-    full = json.dumps(attrs, default=str)
-    if len(full) <= _CHUNK_MAX_BYTES:
-        return full
     trimmed = {
         k: (v[:_GRAPH_ATTR_STR_MAX] + "…" if isinstance(v, str) and len(v) > _GRAPH_ATTR_STR_MAX else v)
         for k, v in attrs.items()
