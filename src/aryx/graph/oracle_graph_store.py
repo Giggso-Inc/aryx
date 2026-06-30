@@ -164,11 +164,8 @@ class OracleGraphStore:
         if not rows:
             return
         logger.info("graph vertices batch start count=%d", len(rows))
-        # Build and deduplicate by (ws, eid) — same entity from multiple source rows
-        # keeps last occurrence. Prevents ORA-00001 within a single executemany batch.
-        seen: dict[tuple, dict] = {}
-        for eid, typ, attrs, _labels, iri in rows:
-            seen[(self._workspace_id, eid)] = {
+        batch = [
+            {
                 "ws": self._workspace_id,
                 "eid": eid,
                 "typ": typ,
@@ -176,7 +173,8 @@ class OracleGraphStore:
                 "iri": iri or "",
                 "attrs": _safe_attrs_json(attrs),
             }
-        batch = list(seen.values())
+            for eid, typ, attrs, _labels, iri in rows
+        ]
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 for chunk in _iter_chunks(batch, payload_key="attrs"):
