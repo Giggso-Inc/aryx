@@ -41,5 +41,5 @@ def adjudicate(left: ResolutionRecord, right: ResolutionRecord, broker: Broker) 
     user = json.dumps({"a": left.payload, "b": right.payload})
     result = complete_json(broker, "frontier", _SYSTEM, user, _SCHEMA)
     same = bool(result.get("same"))
-    logger.info("adjudicate same=%s a=%s b=%s", same, left.record_id, right.record_id)
+    logger.debug("adjudicate same=%s a=%s b=%s", same, left.record_id, right.record_id)
     return same
