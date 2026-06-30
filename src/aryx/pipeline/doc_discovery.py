@@ -921,8 +921,9 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                                    job_id, fname_done, exc_info=True)
                     failed.append(fname_done)
             if failed:
-                raise RuntimeError(
-                    f"{len(failed)} of {len(non_last)} plan(s) failed: {failed}"
+                logger.warning(
+                    "confirm job=%s skipping %d failed plan(s): %s — continuing with remaining",
+                    job_id, len(failed), failed,
                 )
 
     if last:
