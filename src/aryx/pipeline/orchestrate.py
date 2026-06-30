@@ -98,6 +98,7 @@ def run_pipeline(
     estore = EntityStore(dsn, workspace_id)
     entities = relationships = 0
     counts: dict[str, int] = {}
+    _FK_REQUIRED = {"source_type", "source_attr", "target_type", "target_attr"}
     try:
         if not runner.skip("resolve_cluster"):
             _emit(on_progress, "Resolve", 50, "Resolving records into canonical entities")
@@ -130,6 +131,9 @@ def run_pipeline(
             with runner.stage("schema_fk"):
                 schema_links = _infer_schema_fk_links(estore, broker)
                 for spec in schema_links:
+                    if not _FK_REQUIRED.issubset(spec):
+                        logger.warning("schema_fk: skipping incomplete FK spec: %s", spec)
+                        continue
                     rel_name = spec.get(
                         "name",
                         f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
@@ -142,6 +146,9 @@ def run_pipeline(
             _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
             with runner.stage("fk_link"):
                 for spec in fk_links:
+                    if not _FK_REQUIRED.issubset(spec):
+                        logger.warning("fk_link: skipping incomplete FK spec: %s", spec)
+                        continue
                     rel_name = spec.get(
                         "name",
                         f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",

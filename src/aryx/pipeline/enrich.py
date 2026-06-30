@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
 from aryx.broker import Broker
 from aryx.config import get_settings
@@ -147,7 +148,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     return len(rels)
 
 
-def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict]:
+def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str, Any]]:
     """One LLM call that identifies FK joins across ALL entity type schemas.
 
     Samples one entity per type to get actual column names, then asks the LLM
@@ -175,7 +176,7 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict]:
     try:
         links = infer_fk_links(type_schemas, broker)
     except Exception:  # noqa: BLE001 — schema inference is best-effort
-        logger.warning("schema FK inference failed — skipping")
+        logger.exception("schema FK inference failed — skipping")
         return []
 
     if links:
