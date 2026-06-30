@@ -202,7 +202,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 is_last_csv = multi_csv and (name == csv_data_files[-1][1])
                 eff_type = csv_type_map.get(name, ontology_type) if multi_csv else ontology_type
                 eff_fk = csv_auto_fk if is_last_csv else (fk_links if not multi_csv else [])
-                eff_relate = is_last_csv if multi_csv else True
+                eff_relate = is_last_csv if multi_csv else settings.ingest_relate
 
                 chunk_rows = settings.csv_chunk_rows
                 csv_chunks = _chunk_csv_bytes(data, chunk_rows) if chunk_rows > 0 else [data]

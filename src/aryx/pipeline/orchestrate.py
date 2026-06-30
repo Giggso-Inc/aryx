@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 Progress = Callable[[str, int, str], None]
 
+_FK_REQUIRED: frozenset[str] = frozenset({"source_type", "source_attr", "target_type", "target_attr"})
+
 
 def _emit(cb: Progress | None, stage: str, pct: int, detail: str) -> None:
     """Report a pipeline stage to an optional progress callback."""
@@ -98,7 +100,6 @@ def run_pipeline(
     estore = EntityStore(dsn, workspace_id)
     entities = relationships = 0
     counts: dict[str, int] = {}
-    _FK_REQUIRED = {"source_type", "source_attr", "target_type", "target_attr"}
     try:
         if not runner.skip("resolve_cluster"):
             _emit(on_progress, "Resolve", 50, "Resolving records into canonical entities")

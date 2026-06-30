@@ -63,10 +63,18 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     types = list(by_type.keys())
     n_types = len(types)
 
-    # Adaptive budget: always cover every cross-type combination at least once
-    # so no type pair is silently skipped when max_pairs < k*(k-1)/2.
+    # Adaptive budget: cover every cross-type combination at least once so no
+    # type pair is silently skipped when max_pairs < k*(k-1)/2.
+    # Hard cap at max_pairs * n_types to prevent O(k²) blowup on large ontologies
+    # (e.g. 50 types → 1,225 combos at 2 s/call ≈ 40 min without the cap).
     n_cross_combos = n_types * (n_types - 1) // 2
-    effective_pairs = max(max_pairs, n_cross_combos)
+    effective_pairs = min(max(max_pairs, n_cross_combos), max_pairs * n_types)
+    if effective_pairs > max_pairs:
+        logger.warning(
+            "_relate: effective_pairs=%d exceeds max_pairs=%d (k=%d types) — "
+            "raise ARYX_MAX_RELATE_PAIRS if coverage is insufficient",
+            effective_pairs, max_pairs, n_types,
+        )
 
     candidates: list[tuple] = []
 

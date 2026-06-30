@@ -77,7 +77,18 @@ def display_name(
         if val and str(val).lower() not in _GENERIC_NAMES:
             return str(val)
 
-    # 3. Fallback — first short non-private string value
+    # 3a. Fallback — first short non-private, non-numeric string value
+    #     (numeric-string values are meaningful data IDs but poor display names;
+    #      prefer "Acme Corp" over "12345" when neither key is in _NAME_KEYS)
+    for key, val in attrs.items():
+        if key.startswith("_"):
+            continue
+        if (isinstance(val, str) and 0 < len(val) <= 80
+                and not val.isdigit()
+                and val.lower() not in _GENERIC_NAMES):
+            return val
+
+    # 3b. Last resort — any short non-private string, including numeric-only
     for key, val in attrs.items():
         if key.startswith("_"):
             continue
