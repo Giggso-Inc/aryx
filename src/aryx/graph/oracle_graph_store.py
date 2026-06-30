@@ -17,6 +17,28 @@ _NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
 _CHUNK_MAX_ROWS = 100
 _CHUNK_MAX_BYTES = 200_000
 
+# Graph projection stores attrs for display + traversal only — not source of truth.
+# Large string values (function bodies, scripts) are truncated to this length
+# so a single entity never blows the executemany wire buffer.
+_GRAPH_ATTR_STR_MAX = 500
+
+
+def _safe_attrs_json(attrs: dict[str, Any]) -> str:
+    """Serialize attrs, truncating long string values to _GRAPH_ATTR_STR_MAX chars.
+
+    The graph store is a projection cache. CPQ function bodies and other large
+    text fields cause ORA-03106 in Oracle thin client executemany even as a
+    single row. Truncating here keeps the graph navigable without the full text.
+    """
+    full = json.dumps(attrs, default=str)
+    if len(full) <= _CHUNK_MAX_BYTES:
+        return full
+    trimmed = {
+        k: (v[:_GRAPH_ATTR_STR_MAX] + "…" if isinstance(v, str) and len(v) > _GRAPH_ATTR_STR_MAX else v)
+        for k, v in attrs.items()
+    }
+    return json.dumps(trimmed, default=str)
+
 
 def _iter_chunks(batch: list[dict], payload_key: str = "attrs") -> list[list[dict]]:
     """Yield sub-lists bounded by row count AND estimated payload bytes.
@@ -150,7 +172,7 @@ class OracleGraphStore:
                 "typ": typ,
                 "name": _display_name(attrs) or f"#{eid}",
                 "iri": iri or "",
-                "attrs": json.dumps(attrs),
+                "attrs": _safe_attrs_json(attrs),
             }
             for eid, typ, attrs, _labels, iri in rows
         ]
