@@ -41,7 +41,7 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
 
     Uses a type-aware sample (window function PARTITION BY ontology_type) so
     that every entity type in the workspace is represented even when one type
-    has vastly more entities than others (e.g. 10k FlisNsn vs 500 Company).
+    has vastly more entities than others.
     A plain sequential islice would return only the dominant type and produce
     zero cross-type pairs — leaving all entities as isolated nodes.
     """
@@ -165,8 +165,8 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
     entities — not just the handful sampled for _relate.
 
     This covers the case where neither column-name patterns (_detect_fk_links)
-    nor entity-pair sampling (_relate) find connections: e.g. FlisNsn.CAGE_CODE
-    → Company.CAGE_CODE when the column name has no recognised FK suffix.
+    nor entity-pair sampling (_relate) find connections — e.g. when a shared
+    code column has no recognised FK suffix.
     """
     # One representative entity per type gives us the full attribute schema
     # without loading the whole table.

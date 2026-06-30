@@ -578,14 +578,13 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 })
                 break
 
-    # ── Pass 2: code-keyed data (CAGE, supplier, procurement style) ──────────
+    # ── Pass 2: code-keyed data (shared-suffix columns) ──────────────────────
     # Handles patterns that Pass 1 misses because they don't follow {type}_id.
     # Three rules, all columns scanned per pair (no break) so multiple relationship
-    # columns (CAGE_CODE primary join, PARENT_CAGE hierarchy, RPLM_CODE replacement)
-    # each generate their own edge spec:
-    #   Rule A — shared match key:  CAGE_CODE in A == CAGE_CODE in B
-    #   Rule B — stem reference:    PARENT_CAGE in A, stem "cage" ⊂ "cage_code"
-    #   Rule C — suffix match:      RPLM_CODE and CAGE_CODE share _CODE suffix
+    # columns each generate their own edge spec:
+    #   Rule A — shared match key:  same column name in A and B
+    #   Rule B — stem reference:    column in A contains B's match-key stem
+    #   Rule C — suffix match:      both columns share the same key suffix
     seen2: set[tuple[str, str, str]] = set()  # (src_type, tgt_type, col_l)
     for i, plan_a in enumerate(plans):
         own_mk = (plan_a.get("match_keys") or [None])[0]
@@ -616,10 +615,10 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     continue
                 src_upper = plan_a["ontology_type"].upper()
                 # Rule A: column exactly equals B's match key and looks like a code
-                # column — catches CAGE_CODE in A referencing CAGE_CODE in B.
+                # column — catches shared identifier columns across entity types.
                 # Guards:
                 #   own_mk_l — skip when both A and B are siblings sharing a parent FK
-                #   _col_is_varying — skip single-value context fields (company_id, etc.)
+                #   _col_is_varying — skip single-value context fields
                 if (col_l == mk_b_l and col_l != own_mk_l
                         and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
                         and _is_varying(i, col)):
@@ -633,7 +632,7 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     })
                     continue
                 # Rule B: column contains B's match-key stem as a fragment AND has
-                # a key suffix — catches PARENT_CAGE → CAGE_CODE (stem "cage")
+                # a key suffix — catches hierarchical/reference column patterns
                 if (mk_stem in col_l and col_l != mk_b_l
                         and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
                         and _is_varying(i, col)
@@ -647,8 +646,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
                     continue
-                # Rule C: same key-suffix — RPLM_CODE and CAGE_CODE both end in
-                # _CODE, signalling a replacement / alternate-entity reference.
+                # Rule C: same key-suffix — both columns share a suffix like _CODE,
+                # signalling a replacement / alternate-entity reference.
                 # Target cardinality guard: if the join target column has only one
                 # distinct value (e.g. company_id = constant) it cannot produce
                 # meaningful per-row joins — only false cartesian-product edges.
@@ -668,8 +667,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     })
 
     # ── Pass 3: XML element-type FK detection ─────────────────────────────────
-    # _collect_tag injects {parent_tag}_id columns (e.g. bm_config_rule_id) into
-    # child entity rows.  Pass 1 misses these because it compares against the full
+    # _collect_tag injects {parent_tag}_id columns into child entity rows.
+    # Pass 1 misses these because it compares against the full
     # PascalCase ontology type name; Pass 2 misses them when the match key is a
     # short generic like "id".  Here we read the raw XML element type from the
     # _element_type column of each plan and check whether any other plan's headers

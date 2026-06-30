@@ -18,15 +18,15 @@ _NAME_KEYS: tuple[str, ...] = (
     # Universal / standard
     "name", "full_name", "title", "label", "ticket_ref", "ref",
     "sku", "code", "email", "username", "_text",
-    # Defense / government / FLIS
+    # Domain-specific keys (government / procurement / config)
     "COMPANY", "COMPANY_NAME", "company", "company_name",
     "CAGE_CODE", "cage_code",
     "ITEM_NAME", "item_name",
-    "LITERAL", "literal",                    # FLIS HELP.csv display name
-    "COLLOQUIAL_NAME", "colloquial_name",    # FLIS colloquial name
-    "FSC", "fsc",                            # FLIS Federal Supply Class (NSN rows)
-    "NIIN", "niin",                          # FLIS NIIN — fallback when FSC absent
-    # XML / CPQ config domain fields
+    "LITERAL", "literal",
+    "COLLOQUIAL_NAME", "colloquial_name",
+    "FSC", "fsc",
+    "NIIN", "niin",
+    # XML / structured config fields
     "variable_name", "var_name", "bm_variable_name",
     "item_text", "item_value",
     "prop_value", "property_value", "prop_type",

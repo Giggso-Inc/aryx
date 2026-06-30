@@ -125,8 +125,8 @@ def run_pipeline(
                 relationships = _relate(estore, broker, _max_pairs)
         if relate and not runner.skip("schema_fk"):
             # Schema-level LLM FK inference: ONE call across ALL type schemas.
-            # Finds joins like FlisNsn.CAGE_CODE → Company.CAGE_CODE that have
-            # no _id/_name suffix pattern and weren't in the entity-pair sample.
+            # Finds shared-value joins that have no _id/_name suffix pattern
+            # and were not covered by the entity-pair sample.
             # link_by_attribute then creates edges for ALL matching entities.
             _emit(on_progress, "Link", 78, "Discovering schema-level FK links")
             with runner.stage("schema_fk"):
