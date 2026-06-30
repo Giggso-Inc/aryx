@@ -12,15 +12,16 @@ logger = logging.getLogger(__name__)
 _NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
               "sku", "code", "email", "username", "_text")
 
-# Oracle thin-client protocol saturates around 1 MB per round-trip.
-# Cap at 200 KB to leave headroom for bind metadata and other overhead.
-_CHUNK_MAX_ROWS = 100
-_CHUNK_MAX_BYTES = 200_000
+# Oracle ADB thin-client ORA-03106 guard values.
+# Trigger is num_rows × num_bind_params, not just total bytes.
+# merge_graph_vertex has 6 bind vars → 25 rows = 150 bind slots per call.
+# Keep attrs small so even 25 rows stay well under the SDU budget.
+_CHUNK_MAX_ROWS = 25
+_CHUNK_MAX_BYTES = 50_000
 
-# Graph projection stores attrs for display + traversal only — not source of truth.
-# Large string values (function bodies, scripts) are truncated to this length
-# so a single entity never blows the executemany wire buffer.
-_GRAPH_ATTR_STR_MAX = 500
+# Graph projection attrs — display + traversal only, not source of truth.
+# Full attribute text lives in aryx_entity.attributes (the primary store).
+_GRAPH_ATTR_STR_MAX = 200
 
 
 def _safe_attrs_json(attrs: dict[str, Any]) -> str:
