@@ -17,7 +17,7 @@ from aryx.connectors.base import Connector
 from aryx.discover import discover
 from aryx.graph import FalkorStore
 from aryx.models import OntologyType
-from aryx.pipeline.enrich import _build_type_ancestors, _relate
+from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
 from aryx.store.checkpoint_store import StageTracker
@@ -121,6 +121,23 @@ def run_pipeline(
             _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
             with runner.stage("relate"):
                 relationships = _relate(estore, broker, _max_pairs)
+        if relate and not runner.skip("schema_fk"):
+            # Schema-level LLM FK inference: ONE call across ALL type schemas.
+            # Finds joins like FlisNsn.CAGE_CODE → Company.CAGE_CODE that have
+            # no _id/_name suffix pattern and weren't in the entity-pair sample.
+            # link_by_attribute then creates edges for ALL matching entities.
+            _emit(on_progress, "Link", 78, "Discovering schema-level FK links")
+            with runner.stage("schema_fk"):
+                schema_links = _infer_schema_fk_links(estore, broker)
+                for spec in schema_links:
+                    rel_name = spec.get(
+                        "name",
+                        f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
+                    )
+                    relationships += link_by_attribute(
+                        estore, spec["source_type"], spec["source_attr"],
+                        spec["target_type"], spec["target_attr"], rel_name,
+                    )
         if fk_links and not runner.skip("fk_link"):
             _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
             with runner.stage("fk_link"):

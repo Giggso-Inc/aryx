@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.models import Relationship
-from aryx.relationships import infer_relationship
+from aryx.relationships import infer_fk_links, infer_relationship
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
 
@@ -145,3 +145,39 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
         len(candidates), n_types, len(rels),
     )
     return len(rels)
+
+
+def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict]:
+    """One LLM call that identifies FK joins across ALL entity type schemas.
+
+    Samples one entity per type to get actual column names, then asks the LLM
+    which attributes form FK relationships between types.  The caller applies
+    the result via link_by_attribute which creates edges for ALL matching
+    entities — not just the handful sampled for _relate.
+
+    This covers the case where neither column-name patterns (_detect_fk_links)
+    nor entity-pair sampling (_relate) find connections: e.g. FlisNsn.CAGE_CODE
+    → Company.CAGE_CODE when the column name has no recognised FK suffix.
+    """
+    # One representative entity per type gives us the full attribute schema
+    # without loading the whole table.
+    sample = store.list_entities_typed_sample(1)
+    if len(sample) < 2:
+        return []
+
+    type_schemas: dict[str, dict] = {}
+    for _eid, etype, attrs in sample:
+        type_schemas[etype] = {
+            "attrs": [k for k in attrs if not k.startswith("_")],
+            "match_keys": [],
+        }
+
+    try:
+        links = infer_fk_links(type_schemas, broker)
+    except Exception:  # noqa: BLE001 — schema inference is best-effort
+        logger.warning("schema FK inference failed — skipping")
+        return []
+
+    if links:
+        logger.info("schema FK inference found %d link(s): %s", len(links), links)
+    return links
