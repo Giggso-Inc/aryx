@@ -141,7 +141,10 @@ def run_pipeline(
         else:
             _emit(on_progress, "Project", 86, "Projecting entities and edges to graph store")
             with runner.stage("project"):
+                logger.info("project stage — building type ancestors ws=%s", workspace_id)
                 type_ancestors = _build_type_ancestors(dsn)
+                logger.info("project stage — type ancestors done count=%d — opening graph store",
+                            len(type_ancestors))
                 settings = get_settings()
                 if settings.effective_graph_backend() == "oci_graph":
                     from aryx.graph.oracle_graph_store import OracleGraphStore
@@ -150,6 +153,7 @@ def run_pipeline(
                     from aryx.graph import FalkorStore  # noqa: PLC0415
                     from aryx.workspaces import ws_graph  # noqa: PLC0415
                     graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
+                logger.info("project stage — calling project_graph ws=%s", workspace_id)
                 counts = project_graph(
                     estore, graph_inst,
                     type_ancestors=type_ancestors, workspace_id=workspace_id,

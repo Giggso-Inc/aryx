@@ -51,9 +51,9 @@ def project_graph(
     Returns:
         Counts of {entities, provenance, relationships} written.
     """
-    logger.info("graph project start ws=%s — clearing", workspace_id)
+    logger.info("graph project start ws=%s — clearing existing graph data", workspace_id)
     graph.clear()
-    logger.info("graph cleared — writing entities")
+    logger.info("graph cleared ws=%s — writing entities", workspace_id)
 
     ancestors_for = type_ancestors or {}
 
