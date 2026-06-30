@@ -27,7 +27,8 @@ def _iter_chunks(batch: list[dict], payload_key: str = "attrs") -> list[list[dic
     chunk: list[dict] = []
     size = 0
     for row in batch:
-        row_bytes = len(row.get(payload_key) or "")
+        val = row.get(payload_key)
+        row_bytes = len(val) if isinstance(val, (str, bytes)) else 0
         if chunk and (len(chunk) >= _CHUNK_MAX_ROWS or size + row_bytes > _CHUNK_MAX_BYTES):
             yield chunk
             chunk = []
