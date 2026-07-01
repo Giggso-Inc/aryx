@@ -15,8 +15,6 @@ from aryx.broker import Broker
 from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
-from aryx.graph import FalkorStore
-from aryx.naming import ws_graph
 from aryx.models import OntologyType
 from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
@@ -184,6 +182,8 @@ def run_pipeline(
                             "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
                         ) from exc
                 else:
+                    from aryx.graph import FalkorStore  # noqa: PLC0415
+                    from aryx.workspaces import ws_graph  # noqa: PLC0415
                     graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
                 counts = project_graph(
                     estore, graph_inst,

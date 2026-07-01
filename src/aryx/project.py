@@ -51,19 +51,62 @@ def project_graph(
     Returns:
         Counts of {entities, provenance, relationships} written.
     """
-    logger.info("graph project start ws=%s — clearing", workspace_id)
+    logger.info("graph project start ws=%s — clearing existing graph data", workspace_id)
     graph.clear()
-    logger.info("graph cleared — writing entities")
+    logger.info("graph cleared ws=%s — writing entities", workspace_id)
 
     ancestors_for = type_ancestors or {}
 
-    all_rels = list(store.list_relationships())
-    if hasattr(graph, "add_relationships_batch"):
-        n_relationships = graph.add_relationships_batch(all_rels)
+    if hasattr(graph, "add_entities_batch"):
+        # Oracle batch path: collect all rows, then write in 3 round-trips per phase.
+        logger.info("graph collecting entities from store...")
+        entity_rows = [
+            (eid, typ, attrs, ancestors_for.get(typ, []), _entity_iri(base_uri, workspace_id, eid))
+            for eid, typ, attrs in store.list_entities()
+        ]
+        n_entities = len(entity_rows)
+        logger.info("graph entities collected %d — batch inserting vertices", n_entities)
+        graph.add_entities_batch(entity_rows)
+        logger.info("graph entities done total=%d — collecting provenance links", n_entities)
+
+        logger.info("graph collecting provenance links from store...")
+        prov_rows = list(store.list_members_provenance())
+        n_provenance = len(prov_rows)
+        logger.info("graph provenance collected %d — batch inserting provenance", n_provenance)
+        graph.add_provenance_batch(prov_rows)
+        logger.info("graph provenance done total=%d — collecting relationships", n_provenance)
+
+        logger.info("graph collecting relationships from store...")
+        rel_rows = list(store.list_relationships())
+        n_relationships = len(rel_rows)
+        logger.info("graph relationships collected %d — batch inserting edges", n_relationships)
+        graph.add_relationships_batch(rel_rows)
+        logger.info("graph relationships done total=%d", n_relationships)
     else:
-        for src, tgt, name in all_rels:
-            graph.add_relationship(src, tgt, name)
-        n_relationships = len(all_rels)
+        # FalkorStore path: per-item loops.
+        n_entities = 0
+        for entity_id, ontology_type, attributes in store.list_entities():
+            labels = ancestors_for.get(ontology_type, [])
+            iri = _entity_iri(base_uri, workspace_id, entity_id)
+            graph.add_entity(entity_id, ontology_type, attributes, labels=labels, iri=iri)
+            n_entities += 1
+            if n_entities % 50 == 0:
+                logger.info("graph entities written %d", n_entities)
+        logger.info("graph entities done total=%d — writing provenance", n_entities)
+
+        n_provenance = 0
+        for entity_id, system, dataset, record_id in store.list_members_provenance():
+            graph.add_provenance(entity_id, system, dataset, record_id)
+            n_provenance += 1
+        logger.info("graph provenance done total=%d — writing relationships", n_provenance)
+
+        all_rels = list(store.list_relationships())
+        if hasattr(graph, "add_relationships_batch"):
+            n_relationships = graph.add_relationships_batch(all_rels) or len(all_rels)
+        else:
+            for src, tgt, name in all_rels:
+                graph.add_relationship(src, tgt, name)
+            n_relationships = len(all_rels)
 
     counts = {"entities": n_entities, "provenance": n_provenance,
               "relationships": n_relationships}
