@@ -171,7 +171,7 @@ def run_pipeline(
                 cfg = get_settings()
                 if cfg.effective_graph_backend() == "oci_graph":
                     try:
-                        from aryx.graph.oracle import OracleGraphStore  # optional OCI dep
+                        from aryx.graph.oracle_graph_store import OracleGraphStore  # optional OCI dep
                         graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
                     except ImportError as exc:
                         raise RuntimeError(
