@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 from typing import Any
 from urllib.parse import urlparse
 
@@ -184,8 +185,7 @@ class GraphReader:
             # reached the per_type cap yet.  Skip a rel only when BOTH
             # endpoints would exceed their caps — they'll appear in a later
             # rel or be filled from seeds in step 4.
-            from collections import Counter as _Counter
-            rel_count: _Counter[int] = _Counter()
+            rel_count: Counter[int] = Counter()
             for sid, tid, _ in raw_rels:
                 rel_count[sid] += 1
                 rel_count[tid] += 1

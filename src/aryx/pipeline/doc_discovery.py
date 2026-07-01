@@ -228,13 +228,17 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
         return [(data, stem + ".csv")]
 
     # Candidate fields to use as entity name when no ``name`` field exists.
-    # Ordered by priority; first non-trivial value wins.
+    # Ordered by priority; first non-trivial value wins.  Generic fields
+    # come first; the ``bm_*`` / CPQ-specific entries are additive hints
+    # that match BigMachines exports and are silently skipped on other data.
     _NAME_CANDIDATES = (
-        "variable_name", "var_name", "bm_variable_name",
+        "variable_name", "var_name",
         "item_text", "item_value",
         "prop_value", "property_value", "prop_type",
-        "label", "bm_name", "func_name", "rule_name",
-        "java_class_name", "file_name", "relative_path",
+        "label", "file_name", "relative_path",
+        # CPQ/BigMachines-specific — degrade gracefully on non-BM data:
+        "bm_variable_name", "bm_name", "func_name", "rule_name",
+        "java_class_name",
     )
     _NAME_CANDIDATE_SET: frozenset[str] = frozenset(_NAME_CANDIDATES) | {"name"}
     _TRIVIAL = frozenset({"0", "1", "2", "true", "false", ""})
