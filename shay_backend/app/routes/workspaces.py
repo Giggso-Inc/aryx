@@ -1,7 +1,7 @@
 """Workspace routes for CRUD operations."""
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.security import HTTPBearer
@@ -50,6 +50,46 @@ def serialize_workspace(workspace: Workspace) -> WorkspaceResponse:
     )
 
 
+async def _ensure_aryx_workspace_bridge(request: Request, workspace: Workspace) -> dict[str, Any]:
+    """Create or reuse the Aryx bridge for a newly created Shay workspace."""
+    headers = {}
+    authorization = request.headers.get("authorization")
+    if authorization:
+        headers["Authorization"] = authorization
+    headers["Content-Type"] = "application/json"
+
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/ensure",
+            json={
+                "shay_workspace_id": str(workspace.id),
+                "name": workspace.name,
+                "description": workspace.description or "",
+                "company_id": str(workspace.company_id),
+            },
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def _delete_aryx_workspace_bridge(aryx_workspace_id: Any) -> None:
+    """Delete the paired Aryx workspace for a Shay workspace."""
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.delete(
+            f"{settings.ARYX_API_URL_INTERNAL}/admin/workspaces/{aryx_workspace_id}",
+        )
+        response.raise_for_status()
+
+
+async def _bridge_for_workspace(request: Request, workspace: Workspace) -> dict[str, Any] | None:
+    """Return the Aryx bridge mapping for a Shay workspace, creating it when missing."""
+    bridge = await _ensure_aryx_workspace_bridge(request, workspace)
+    return bridge
+
+
 @router.post("/", response_model=WorkspaceResponse)
 async def create_workspace(
     workspace_data: WorkspaceCreate,
@@ -96,8 +136,23 @@ async def create_workspace(
     )
     await db.commit()
     await db.refresh(workspace)
-    
-    return serialize_workspace(workspace)
+    try:
+        bridge = await _bridge_for_workspace(request, workspace)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx workspace bridge creation failed: {detail}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx service unavailable: {exc}",
+        ) from exc
+
+    payload = serialize_workspace(workspace).model_dump()
+    payload["bridge"] = bridge
+    return payload
 
 
 @router.get("/", response_model=WorkspaceList)
@@ -140,12 +195,19 @@ async def list_workspaces(
     count_result = await db.execute(count_query)
     total = count_result.scalar()
     
-    return WorkspaceList(
-        workspaces=[serialize_workspace(w) for w in workspaces],
-        total=total,
-        page=page,
-        size=size
-    )
+    bridged_workspaces = []
+    for workspace in workspaces:
+        bridge = await _bridge_for_workspace(request, workspace)
+        payload = serialize_workspace(workspace).model_dump()
+        payload["bridge"] = bridge
+        bridged_workspaces.append(payload)
+
+    return {
+        "workspaces": bridged_workspaces,
+        "total": total,
+        "page": page,
+        "size": size,
+    }
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceResponse)
@@ -175,7 +237,10 @@ async def get_workspace(
             detail="Access denied to workspace"
         )
     
-    return serialize_workspace(workspace)
+    bridge = await _bridge_for_workspace(request, workspace)
+    payload = serialize_workspace(workspace).model_dump()
+    payload["bridge"] = bridge
+    return payload
 
 
 @router.put("/{workspace_id}", response_model=WorkspaceResponse)
@@ -215,7 +280,10 @@ async def update_workspace(
     await db.commit()
     await db.refresh(workspace)
     
-    return serialize_workspace(workspace)
+    bridge = await _bridge_for_workspace(request, workspace)
+    payload = serialize_workspace(workspace).model_dump()
+    payload["bridge"] = bridge
+    return payload
 
 
 @router.delete("/{workspace_id}")
@@ -226,29 +294,53 @@ async def delete_workspace(
 ):
     """Delete workspace"""
     user = await get_current_user_required(request)
-    
-    # Get workspace
+
     stmt = select(Workspace).where(Workspace.id == workspace_id)
     result = await db.execute(stmt)
     workspace = result.scalar_one_or_none()
-    
+
     if not workspace:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace not found"
         )
-    
-    # Check permissions
+
     if not workspace.is_accessible_by_user(user.company_id, user.role):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to workspace"
         )
-    
-    # Delete workspace
+
+    bridge = None
+    timeout = httpx.Timeout(30.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            mapping_response = await client.get(
+                f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{workspace_id}/mapping"
+            )
+            if mapping_response.status_code == status.HTTP_200_OK:
+                bridge = mapping_response.json()
+    except httpx.RequestError:
+        bridge = None
+
     await db.delete(workspace)
     await db.commit()
-    
+
+    if bridge and bridge.get("aryx_workspace_id"):
+        try:
+            await _delete_aryx_workspace_bridge(bridge["aryx_workspace_id"])
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text or str(exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Aryx workspace deletion failed: {detail}",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Aryx service unavailable: {exc}",
+            ) from exc
+
     return {"message": "Workspace deleted successfully"}
 
 

@@ -62,9 +62,11 @@ export async function ensureWorkspaceBridge(
   req: NextRequest,
   workspace: WorkspacePayload,
 ): Promise<WorkspaceBridge> {
+  const headers = forwardHeaders(req);
+  headers.set("Content-Type", "application/json");
   const upstream = await fetch(`${aryxTarget()}/admin/shay/workspaces/ensure`, {
     method: "POST",
-    headers: forwardHeaders(req),
+    headers,
     body: JSON.stringify({
       shay_workspace_id: workspace.id,
       name: workspace.name,

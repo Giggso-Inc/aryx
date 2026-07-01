@@ -49,6 +49,7 @@ class WorkspaceResponse(BaseModel):
     user_id: Optional[str] = None
     created_by: Optional[str] = None
     settings: Optional[Dict[str, Any]] = None
+    bridge: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     

@@ -20,7 +20,6 @@ import type {
 } from "./shay-types";
 
 const SHAY_BASE = "/shay/api/v1";
-const SHAY_PROXY_BASE = "/api/shay";
 const ARYX_BASE = "/api";
 const SHAY_SESSION_STORAGE_KEY = "aryx.shay.session";
 
@@ -429,12 +428,12 @@ export const shayApi = {
     ),
 
   listWorkspaces: (token: string) =>
-    requestJSON<ShayWorkspaceList>(SHAY_PROXY_BASE, "/workspaces/", undefined, token),
+    requestJSON<ShayWorkspaceList>(SHAY_BASE, "/workspaces/", undefined, token),
 
   getWorkspace: async (workspaceId: string, token: string) => {
     try {
       return await requestJSON<ShayWorkspace>(
-        SHAY_PROXY_BASE,
+        SHAY_BASE,
         `/workspaces/${workspaceId}`,
         undefined,
         token,
@@ -445,7 +444,7 @@ export const shayApi = {
       }
 
       const list = await requestJSON<ShayWorkspaceList>(
-        SHAY_PROXY_BASE,
+        SHAY_BASE,
         "/workspaces/",
         undefined,
         token,
@@ -458,14 +457,17 @@ export const shayApi = {
     }
   },
 
+  getWorkspaceDirect: (workspaceId: string, token: string) =>
+    requestJSON<ShayWorkspace>(SHAY_BASE, `/workspaces/${workspaceId}`, undefined, token),
+
   createWorkspace: (
     payload: { name: string; description?: string; workspace_type?: string },
     token: string,
   ) =>
     requestJSON<ShayWorkspace>(
-      SHAY_PROXY_BASE,
+      SHAY_BASE,
       "/workspaces/",
-      withBearerAuth(token, {
+      {
         method: "POST",
         body: JSON.stringify({
           name: payload.name,
@@ -476,7 +478,7 @@ export const shayApi = {
           ai_provider: "openai",
           ai_model: "gpt-4",
         }),
-      }),
+      },
       token,
     ),
 
@@ -485,19 +487,14 @@ export const shayApi = {
     payload: Partial<Pick<ShayWorkspace, "name" | "description" | "is_public" | "ai_enabled" | "ai_provider" | "ai_model" | "is_active">>,
     token: string,
   ) =>
-    requestJSON<ShayWorkspace>(
-      SHAY_PROXY_BASE,
-      `/workspaces/${workspaceId}`,
-      {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      },
-      token,
-    ),
+    requestJSON<ShayWorkspace>(SHAY_BASE, `/workspaces/${workspaceId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }, token),
 
   deleteWorkspace: (workspaceId: string, token: string) =>
     requestJSON<{ success?: boolean; message?: string }>(
-      SHAY_PROXY_BASE,
+      SHAY_BASE,
       `/workspaces/${workspaceId}`,
       { method: "DELETE" },
       token,
@@ -505,7 +502,7 @@ export const shayApi = {
 
   purgeWorkspace: (workspaceId: string, token: string) =>
     requestJSON<{ status: string }>(
-      SHAY_PROXY_BASE,
+      SHAY_BASE,
       `/workspaces/${workspaceId}/purge`,
       { method: "POST", body: "{}" },
       token,
@@ -513,8 +510,8 @@ export const shayApi = {
 
   listWorkspaceMembers: (workspaceId: string, token: string) =>
     requestJSON<ShayWorkspaceMemberList>(
-      SHAY_PROXY_BASE,
-      `/workspaces/${workspaceId}/members`,
+      SHAY_BASE,
+      `/gg-workspaces/${workspaceId}/members`,
       undefined,
       token,
     ),
@@ -525,8 +522,8 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspaceMember>(
-      SHAY_PROXY_BASE,
-      `/workspaces/${workspaceId}/members`,
+      SHAY_BASE,
+      `/gg-workspaces/${workspaceId}/members`,
       {
         method: "POST",
         body: JSON.stringify(payload),
@@ -541,8 +538,8 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspaceMember>(
-      SHAY_PROXY_BASE,
-      `/workspaces/${workspaceId}/members/${userId}`,
+      SHAY_BASE,
+      `/gg-workspaces/${workspaceId}/members/${userId}`,
       {
         method: "PUT",
         body: JSON.stringify(payload),
@@ -552,8 +549,8 @@ export const shayApi = {
 
   removeWorkspaceMember: (workspaceId: string, userId: string, token: string) =>
     requestJSON(
-      SHAY_PROXY_BASE,
-      `/workspaces/${workspaceId}/members/${userId}`,
+      SHAY_BASE,
+      `/gg-workspaces/${workspaceId}/members/${userId}`,
       { method: "DELETE" },
       token,
     ),

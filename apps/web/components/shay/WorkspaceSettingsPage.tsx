@@ -255,11 +255,10 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   };
 
   const deleteWorkspace = async () => {
-    if (!session || !bridge?.aryx_workspace_id) {
-      setDangerError("Workspace bridge is not ready yet.");
+    if (!session) {
       return;
     }
-    if (bridge.aryx_workspace_id === 1) {
+    if (workspaceId === "1") {
       setDangerError("Workspace 1 cannot be deleted.");
       return;
     }
