@@ -237,13 +237,13 @@ class OracleGraphStore:
     def add_relationships_batch(
         self,
         rows: list[tuple[int, int, str]],
-    ) -> None:
+    ) -> int:
         """Batch-upsert relationship edges in one Oracle round-trip.
 
-        Each row: (source_id, target_id, name).
+        Each row: (source_id, target_id, name). Returns count written.
         """
         if not rows:
-            return
+            return 0
         logger.info("graph edges batch start count=%d", len(rows))
         batch = [
             {"ws": self._workspace_id, "src": src, "tgt": tgt, "name": name}
@@ -254,3 +254,4 @@ class OracleGraphStore:
                 for chunk in _iter_chunks(batch, payload_key="name"):
                     cur.executemany(load("merge_graph_edge"), chunk)
         logger.info("graph edges batch done count=%d", len(rows))
+        return len(rows)
