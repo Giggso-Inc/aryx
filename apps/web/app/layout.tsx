@@ -7,6 +7,7 @@ const sans = Inter({
   subsets: ["latin"],
   variable: "--font-sans",
   display: "swap",
+  preload: false,
 });
 
 const display = Fraunces({
@@ -14,12 +15,14 @@ const display = Fraunces({
   variable: "--font-display",
   display: "swap",
   weight: ["400", "500", "600"],
+  preload: false,
 });
 
 const mono = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-mono",
   display: "swap",
+  preload: false,
 });
 
 export const metadata: Metadata = {

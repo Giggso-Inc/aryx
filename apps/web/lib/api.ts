@@ -110,8 +110,7 @@ export const api = {
       .then((d) => d.axioms || []),
 
   getRules: (workspaceId: number) =>
-    fetchJSON<{ rules: Rule[] }>(`/ontology/rules?workspace_id=${workspaceId}`)
-      .then((d) => d.rules || []),
+    fetchJSON<Rule[]>(`/rules?workspace_id=${workspaceId}`),
 
   getSurvivorship: (workspaceId: number) =>
     fetchJSON<{ workspace_id: number; survivorship: SurvivorshipPolicy }>(

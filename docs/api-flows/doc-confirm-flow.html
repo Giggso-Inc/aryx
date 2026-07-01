@@ -1,0 +1,749 @@
+<title>POST /admin/docs/confirm — Entity Resolution Pipeline</title>
+<style>
+  :root {
+    --bg: #0a0f14;
+    --surface: #111820;
+    --surface2: #172030;
+    --surface3: #1c2940;
+    --border: #243044;
+    --text: #d8e3ee;
+    --muted: #6e88a6;
+    --accent: #4fa3e0;
+
+    /* semantic — encode state, not decoration */
+    --green: #3ecf72;
+    --yellow: #d4a017;
+    --red: #e85555;
+    --violet: #9e7ef5;
+    --orange: #e8883a;
+    --teal: #2abf8f;
+    --pink: #e06fa3;
+    --pill: #172030;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", "Consolas", monospace;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.6;
+    padding: 36px 28px;
+  }
+
+  /* === PAGE HEADER === */
+  .page-header { max-width: 920px; margin: 0 auto 36px; }
+  .breadcrumb { font-size: 11px; color: var(--muted); margin-bottom: 10px; letter-spacing: 0.05em; }
+  .breadcrumb span { color: var(--accent); }
+  h1 { font-size: 22px; color: var(--accent); margin-bottom: 4px; letter-spacing: -0.02em; }
+  .tagline { color: var(--muted); font-size: 11.5px; }
+
+  /* === LAYOUT === */
+  .wrap { max-width: 920px; margin: 0 auto; }
+
+  /* === TIMELINE RAIL === */
+  .timeline { position: relative; padding-left: 52px; }
+  .timeline::before {
+    content: "";
+    position: absolute;
+    left: 20px;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--accent) 0%, var(--border) 30%, var(--border) 70%, transparent 100%);
+  }
+  .tl-item { position: relative; margin-bottom: 20px; }
+  .tl-marker {
+    position: absolute;
+    left: -40px;
+    top: 14px;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    border: 2px solid var(--border);
+    background: var(--bg);
+    letter-spacing: 0;
+  }
+  .tl-marker.handler { border-color: var(--accent); color: var(--accent); }
+  .tl-marker.bg     { border-color: var(--muted);  color: var(--muted); }
+  .tl-marker.s1     { border-color: var(--teal);   color: var(--teal); }
+  .tl-marker.s2     { border-color: var(--violet);  color: var(--violet); }
+  .tl-marker.s3     { border-color: var(--orange);  color: var(--orange); }
+  .tl-marker.s4     { border-color: var(--yellow);  color: var(--yellow); }
+  .tl-marker.s5     { border-color: var(--green);   color: var(--green); }
+
+  /* === CARDS === */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .card.handler { border-color: var(--accent); }
+  .card.stage1  { border-color: var(--teal); }
+  .card.stage2  { border-color: var(--violet); }
+  .card.stage3  { border-color: var(--orange); }
+  .card.stage4  { border-color: var(--yellow); }
+  .card.stage5  { border-color: var(--green); }
+
+  .card-label {
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .card.handler .card-label { color: var(--accent); }
+  .card.stage1  .card-label { color: var(--teal); }
+  .card.stage2  .card-label { color: var(--violet); }
+  .card.stage3  .card-label { color: var(--orange); }
+  .card.stage4  .card-label { color: var(--yellow); }
+  .card.stage5  .card-label { color: var(--green); }
+
+  .card-title {
+    font-size: 14px; font-weight: 700; margin-bottom: 10px;
+  }
+  .card.handler .card-title { color: var(--accent); }
+  .card.stage1  .card-title { color: var(--teal); }
+  .card.stage2  .card-title { color: var(--violet); }
+  .card.stage3  .card-title { color: var(--orange); }
+  .card.stage4  .card-title { color: var(--yellow); }
+  .card.stage5  .card-title { color: var(--green); }
+
+  .detail { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  .detail .k { color: var(--text); }
+  code {
+    background: var(--surface2); padding: 1px 5px; border-radius: 3px;
+    font-size: 11px; color: var(--text);
+  }
+  pre.snippet {
+    background: var(--surface2); border-radius: 4px; padding: 10px 12px;
+    font-size: 10.5px; color: var(--text); white-space: pre-wrap;
+    word-break: break-all; margin-top: 8px; line-height: 1.5;
+  }
+
+  /* === BADGES === */
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .badge {
+    font-size: 10px; padding: 2px 9px; border-radius: 10px;
+    display: flex; align-items: center; gap: 3px;
+  }
+  .b-in   { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); }
+  .b-out  { background: #0d2218; border: 1px solid var(--green); color: var(--green); }
+  .b-db   { background: #1e1600; border: 1px solid var(--yellow); color: var(--yellow); }
+  .b-api  { background: #120d28; border: 1px solid var(--violet); color: var(--violet); }
+  .b-mem  { background: #041a14; border: 1px solid var(--teal); color: var(--teal); }
+
+  /* === TABLES === */
+  .scroll-x { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+  th { text-align: left; color: var(--muted); font-weight: normal; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--surface2); vertical-align: top; }
+  td code { background: transparent; padding: 0; }
+  .c-green { color: var(--green); }
+  .c-red   { color: var(--red); }
+  .c-yellow { color: var(--yellow); }
+  .c-violet { color: var(--violet); }
+  .c-muted  { color: var(--muted); }
+
+  /* === LOOP PANEL === */
+  .loop-panel {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 20px;
+  }
+  .loop-label { font-size: 10px; color: var(--muted); letter-spacing: 0.07em; text-transform: uppercase; margin-bottom: 8px; }
+  .loop-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .loop-col h4 { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .loop-col p { font-size: 11px; color: var(--text); }
+
+  /* === THRESHOLD TABLE === */
+  .threshold-row { display: grid; grid-template-columns: auto 1fr 1fr; gap: 0; }
+  .t-band {
+    padding: 8px 12px; border-bottom: 1px solid var(--surface2);
+    font-size: 11px; display: contents;
+  }
+  .t-band > * { padding: 7px 10px; border-bottom: 1px solid var(--surface2); }
+
+  /* === INSET BOXES === */
+  .inset {
+    background: var(--surface2);
+    border-left: 3px solid var(--border);
+    border-radius: 0 4px 4px 0;
+    padding: 10px 12px;
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .inset.violet  { border-left-color: var(--violet); }
+  .inset.teal    { border-left-color: var(--teal); }
+  .inset.orange  { border-left-color: var(--orange); }
+  .inset.yellow  { border-left-color: var(--yellow); }
+  .inset.red     { border-left-color: var(--red); background: #150d0d; }
+  .inset .head   { color: var(--text); margin-bottom: 4px; }
+
+  /* === API CALLOUT === */
+  .api-callout {
+    background: #120d28; border: 1px solid var(--violet);
+    border-radius: 6px; padding: 14px 16px; margin-top: 12px;
+  }
+  .api-callout .api-label { color: var(--violet); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+  .api-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 6px; }
+  .api-col h4 { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+
+  /* === SECTIONS === */
+  .section { margin-top: 36px; }
+  .section-title {
+    font-size: 12px; color: var(--accent); letter-spacing: 0.08em;
+    text-transform: uppercase; border-bottom: 1px solid var(--border);
+    padding-bottom: 6px; margin-bottom: 16px;
+  }
+
+  /* === CONFIRM PATH === */
+  .path-chain {
+    display: flex; flex-direction: column; gap: 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    overflow: hidden;
+  }
+  .path-row {
+    display: flex; align-items: stretch;
+    border-bottom: 1px solid var(--surface2);
+    font-size: 11px;
+  }
+  .path-row:last-child { border-bottom: none; }
+  .path-row .p-arrow {
+    width: 32px; min-width: 32px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 14px;
+    border-right: 1px solid var(--surface2);
+  }
+  .path-row.hl .p-arrow { color: var(--green); background: #0d1e13; }
+  .path-row .p-body { padding: 8px 12px; flex: 1; color: var(--muted); }
+  .path-row.hl .p-body { color: var(--text); }
+  .path-row .p-tag {
+    display: flex; align-items: center; padding: 0 10px;
+    font-size: 10px;
+  }
+
+  @media (max-width: 600px) {
+    .loop-row, .api-grid { grid-template-columns: 1fr; }
+    body { padding: 20px 14px; }
+  }
+</style>
+
+<div class="page-header">
+  <div class="breadcrumb">
+    Document Self-Discovery &nbsp;›&nbsp;
+    <span>POST /admin/docs/confirm</span>
+    &nbsp;›&nbsp; Step 3 of 3
+  </div>
+  <h1>POST /admin/docs/confirm</h1>
+  <p class="tagline">Entity resolution funnel · graph projection · first time aryx_entity is written</p>
+</div>
+
+<div class="wrap">
+
+  <!-- ═══ LOOP CONTEXT ═══ -->
+  <div class="loop-panel">
+    <div class="loop-label">Outer loop — ingest_confirmed() iterates over approved types then files</div>
+    <div class="loop-row">
+      <div class="loop-col">
+        <h4>Document entity types path</h4>
+        <p>For each <code>approved_type</code>: filters the mention list by type, wraps in <code>RecordsConnector</code>, runs full pipeline. <code>match_keys=["name"]</code>.</p>
+      </div>
+      <div class="loop-col">
+        <h4>Tabular files path</h4>
+        <p>Detects FK links across all approved files once. For each file: <code>CsvConnector</code> or <code>JsonConnector</code>. Last file gets <code>fk_links</code> — by then all prior entities exist.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ TIMELINE ═══ -->
+  <div class="timeline">
+
+    <!-- HTTP HANDLER -->
+    <div class="tl-item">
+      <div class="tl-marker handler">HTTP</div>
+      <div class="card handler">
+        <div class="card-label">HTTP Handler — doc_discover_api.py :: confirm</div>
+        <div class="card-title">Request Entry</div>
+        <div class="detail">
+          <span class="k">Body:</span> <code>{"discovery_id": "a3f9...", "approved_types": ["Invoice"], "approved_files": ["customers.csv"]}</code><br>
+          <span class="k">Guard:</span> <code>discoveries.get(did)</code> → 404 if expired or missing<br>
+          <span class="k">Creates:</span> <code>job_id = uuid4().hex</code> · <code>JobStore.create(job_id, "documents", "confirmed entities", workspace_id)</code><br>
+          <span class="k">Returns immediately:</span> <code>{"status": "queued", "job_id": "b7c2..."}</code> HTTP 200
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: discovery_id + approved_types + approved_files</span>
+          <span class="badge b-out">OUT: {status, job_id}</span>
+          <span class="badge b-db">DB: aryx_jobs INSERT</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- BACKGROUND JOB -->
+    <div class="tl-item">
+      <div class="tl-marker bg">BG</div>
+      <div class="card">
+        <div class="card-label">Background thread — _confirm_job()</div>
+        <div class="card-title" style="color:var(--muted)">Data Retrieval from Process Memory</div>
+        <div class="detail">
+          <code>data = discoveries.get(did)</code> — pulls the full result stored by <code>/read</code>:<br>
+          <span class="k">mentions:</span> all <code>RawRecord</code> objects extracted in step 8/8 of <code>/read</code><br>
+          <span class="k">tabular:</span> file plans with inferred <code>ontology_type</code> + <code>match_keys</code><br>
+          <span class="k">workspace_id:</span> from original <code>/read</code> call
+        </div>
+        <div class="inset red">
+          <div class="head">Process memory risk</div>
+          If the process restarted between <code>/read</code> and <code>/confirm</code>, <code>discoveries.get(did)</code> returns <code>None</code> → <code>ValueError("discovery expired — re-read the files")</code> → job marked <code>failed</code>.
+        </div>
+        <div class="badges">
+          <span class="badge b-mem">MEM: discoveries._STORE[did]</span>
+          <span class="badge b-out">OUT: mentions[], tabular plans[]</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STAGE 1 — DISCOVER -->
+    <div class="tl-item">
+      <div class="tl-marker s1">1</div>
+      <div class="card stage1">
+        <div class="card-label">Stage 1 / 5 — Discover</div>
+        <div class="card-title">Land Records — discover.py → pipeline/run.py:run_spine()</div>
+        <div class="detail">
+          <code>run_id = store.start_run(system, dataset)</code><br>
+          → INSERT <code>aryx_runs</code> (status="running") → returns <code>run_id: int</code><br><br>
+          <span class="k">run_spine(connector, sink):</span> iterates records, cleans + profiles each one, then:<br>
+          &nbsp;&nbsp;<code>sink.land(record)</code> → batched INSERT into <code>aryx_landed</code><br>
+          &nbsp;&nbsp;Batching: accumulates records, flushes every <code>ARYX_BATCH_SIZE</code><br><br>
+          <code>store.save_profiles(run_id, profiles)</code> → INSERT <code>aryx_profile_columns</code><br>
+          <code>store.finish_run(run_id, sink.total)</code> → UPDATE <code>aryx_runs</code> status="complete"
+        </div>
+        <div class="scroll-x" style="margin-top:10px">
+          <table>
+            <tr><th>Table</th><th>Columns written</th></tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_runs</code></td>
+              <td>system · dataset · status · record_count</td>
+            </tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_landed</code></td>
+              <td>run_id (FK) · workspace_id · source_system · payload (JSONB) · cleaned_at</td>
+            </tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_profile_columns</code></td>
+              <td>run_id · field · inferred_type · null_rate · cardinality</td>
+            </tr>
+          </table>
+        </div>
+        <div class="inset teal">
+          <div class="head">Tag stage (disabled for /confirm)</div>
+          <code>tag=False</code> — the cheap-tier LLM field-tagging stage is not run here. Field tagging runs on the <code>/admin/ingest/file</code> path, not doc-discover.
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: connector (RawRecord or CSV/JSON rows)</span>
+          <span class="badge b-out">OUT: run_id: int</span>
+          <span class="badge b-db">DB: aryx_runs · aryx_landed · aryx_profile_columns</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STAGE 2 — RESOLVE -->
+    <div class="tl-item">
+      <div class="tl-marker s2">2</div>
+      <div class="card stage2">
+        <div class="card-label">Stage 2 / 5 — Resolve</div>
+        <div class="card-title">Entity Resolution Funnel — resolution/run.py:resolve()</div>
+        <div class="detail">
+          <code>records = store.landed_records(run_id, key_attrs)</code><br>
+          SELECT <code>aryx_landed</code> WHERE run_id=? AND workspace_id=?<br><br>
+          For each row, build <span class="k">match text</span>:<br>
+          <code>text = " ".join(str(payload.get(a, "")) for a in key_attrs)</code><br>
+          e.g. <code>match_keys=["name"]</code> → <code>text = "INV-2024-001"</code>
+        </div>
+
+        <!-- Four sub-stages -->
+        <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+
+          <!-- 2a blocking -->
+          <div class="inset teal">
+            <div class="head">2a — Blocking  (deterministic, no API)</div>
+            <code>block(records)</code> — groups candidates to avoid O(n²) comparison:<br>
+            &nbsp;&nbsp;• 4-char prefix of match text<br>
+            &nbsp;&nbsp;• Token-set canonical form (sorted lowercase tokens)<br>
+            &nbsp;&nbsp;• Soundex of first token<br>
+            Records only compete within the same block.
+          </div>
+
+          <!-- 2b embedding -->
+          <div class="inset violet">
+            <div class="head">2b — Embedding per block  (API A)</div>
+            <code>_block_embeddings(group, broker)</code> — embeds match texts for cosine similarity.<br>
+            Capped at <code>_embed_cap</code> = √(2 × max_pairs_per_block) records per block.<br>
+            Skipped entirely when <code>ARYX_ER_AUTO_MERGE ≥ 1.0 AND ARYX_ER_ADJUDICATE ≥ 1.0</code>.<br>
+            Silent fallback to string-only if embed fails for a batch.
+          </div>
+
+          <!-- 2c scoring -->
+          <div class="inset">
+            <div class="head">2c — Scoring per pair  (no API)</div>
+            <code>score_pair(left.text, right.text, vec_left, vec_right)</code><br>
+            Combined float [0.0, 1.0] = weighted(token-set ratio + Jaro-Winkler + cosine similarity)
+          </div>
+
+          <!-- 2d routing — threshold table -->
+          <div style="background:var(--surface3); border-radius:5px; overflow:hidden; margin-top:2px;">
+            <div style="font-size:10px; color:var(--violet); letter-spacing:0.07em; text-transform:uppercase; padding:8px 12px; border-bottom:1px solid var(--border)">2d — Four-way threshold routing</div>
+            <div class="scroll-x">
+              <table>
+                <tr><th>Score range</th><th>Action</th><th>Env var (default)</th><th>DB write</th></tr>
+                <tr>
+                  <td class="c-green">≥ 0.92</td>
+                  <td>Auto-merge → <code>union.union(left, right)</code></td>
+                  <td><code>ARYX_ER_AUTO_MERGE</code></td>
+                  <td class="c-muted">none (in-memory)</td>
+                </tr>
+                <tr>
+                  <td class="c-violet">[0.90, 0.92)</td>
+                  <td>LLM adjudicates → merge if same<br>LLM down → human queue</td>
+                  <td><code>ARYX_ER_ADJUDICATE</code></td>
+                  <td class="c-yellow"><code>aryx_adjudication</code></td>
+                </tr>
+                <tr>
+                  <td class="c-yellow">[0.75, 0.90)</td>
+                  <td>Human queue → <code>aryx_adjudication</code> pending</td>
+                  <td><code>ARYX_ER_REVIEW</code></td>
+                  <td class="c-yellow"><code>aryx_adjudication</code></td>
+                </tr>
+                <tr>
+                  <td class="c-red">&lt; 0.75</td>
+                  <td>Auto-reject — no action</td>
+                  <td>—</td>
+                  <td class="c-muted">none</td>
+                </tr>
+              </table>
+            </div>
+          </div>
+
+          <!-- LLM adjudication callout -->
+          <div class="api-callout" style="margin-top:4px">
+            <div class="api-label">API B — LLM Adjudication (frontier tier, score in [0.90, 0.92))</div>
+            <div class="api-grid">
+              <div class="api-col">
+                <h4>Local — Ollama (frontier model)</h4>
+                <pre class="snippet">POST http://ollama:11434/api/chat
+{
+  "model": "llama3.2:70b",
+  "messages": [
+    {"role":"system",
+     "content":"Are these the same entity?"},
+    {"role":"user",
+     "content":"{\"left\":{payload A},
+                 \"right\":{payload B}}"}
+  ]
+}
+→ true / false</pre>
+              </div>
+              <div class="api-col">
+                <h4>Conservative fallback</h4>
+                <pre class="snippet">If LLM unavailable or times out:
+  → pair queued for human
+  → aryx_adjudication (status=pending)
+
+"A wrong merge is worse than a
+ missed merge in audited domains."
+
+Human approves via:
+POST /adjudication/{id}/decide</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- clustering -->
+          <div class="inset teal">
+            <div class="head">Clustering — UnionFind + golden record</div>
+            After all pairs are routed, <code>UnionFind.groups()</code> produces clusters.<br><br>
+            For each cluster → <code>_materialize(member_ids, ...)</code>:<br>
+            &nbsp;&nbsp;• <span style="color:var(--text)">Confidence-weighted merge</span>: highest-confidence member's value wins per attribute<br>
+            &nbsp;&nbsp;• Conflicting values logged → <code>aryx_attribute_conflict</code><br>
+            &nbsp;&nbsp;• <code>cluster_confidence(edges, n_members)</code> → entity confidence score
+          </div>
+
+        </div>
+
+        <div class="scroll-x" style="margin-top:12px">
+          <table>
+            <tr><th>Table</th><th>When</th><th>Key columns</th></tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_entity</code></td>
+              <td>Always — one per cluster</td>
+              <td>workspace_id · ontology_type · attributes JSONB · confidence</td>
+            </tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_entity_member</code></td>
+              <td>Always — one per member</td>
+              <td>entity_id (FK) · landed_record_id (FK) · confidence</td>
+            </tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_attribute_conflict</code></td>
+              <td>On merge conflict</td>
+              <td>entity_id · attribute · winning_value · losing_values · strategy</td>
+            </tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_adjudication</code></td>
+              <td>Score in review/adjudicate band</td>
+              <td>left/right record_id · score · llm_verdict · status</td>
+            </tr>
+            <tr>
+              <td class="c-yellow"><code>aryx_ontology_type</code></td>
+              <td>Always (idempotent)</td>
+              <td>name=ontology_type · status="approved" · source="pipeline"</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="badges">
+          <span class="badge b-in">IN: run_id, ontology_type, match_keys</span>
+          <span class="badge b-out">OUT: entities: int</span>
+          <span class="badge b-db">DB: aryx_entity · aryx_entity_member · aryx_adjudication · aryx_ontology_type</span>
+          <span class="badge b-api">API A — embed · API B — adjudicate</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STAGE 3 — RELATE -->
+    <div class="tl-item">
+      <div class="tl-marker s3">3</div>
+      <div class="card stage3">
+        <div class="card-label">Stage 3 / 5 — Relate  (relate=True, always in /confirm path)</div>
+        <div class="card-title">LLM Relationship Inference — pipeline/enrich.py:_relate()</div>
+        <div class="detail">
+          For each candidate entity pair (up to <code>ARYX_MAX_RELATE_PAIRS</code>, default 100):<br>
+          The LLM is asked whether a meaningful relationship exists between the two entities and what to name it.
+        </div>
+        <div class="api-callout">
+          <div class="api-label">API C — Relationship Inference (frontier tier)</div>
+          <div class="api-grid">
+            <div class="api-col">
+              <h4>User message (per pair)</h4>
+              <pre class="snippet">{"entity_a": {"type":"Invoice",
+              "name":"INV-2024-001",
+              "amount":"$4200", ...},
+ "entity_b": {"type":"Customer",
+              "name":"Acme Corp", ...}}
+
+Is there a meaningful named
+relationship between these?</pre>
+            </div>
+            <div class="api-col">
+              <h4>Response</h4>
+              <pre class="snippet">{
+  "has_relationship": true,
+  "name": "INVOICE_ISSUED_BY",
+  "confidence": 0.87
+}
+
+→ INSERT aryx_relationship
+  source=Invoice entity_id
+  target=Customer entity_id
+  name="INVOICE_ISSUED_BY"</pre>
+            </div>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: entity pairs from aryx_entity</span>
+          <span class="badge b-db">DB: aryx_relationship INSERT</span>
+          <span class="badge b-api">API C — LLM frontier tier</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STAGE 4 — FK LINK -->
+    <div class="tl-item">
+      <div class="tl-marker s4">4</div>
+      <div class="card stage4">
+        <div class="card-label">Stage 4 / 5 — FK Link  (last approved file only, deterministic)</div>
+        <div class="card-title">Cross-file Join — pipeline/fk_edges.py:link_by_attribute()</div>
+        <div class="detail">
+          Uses the <code>auto_fk</code> specs from <code>_detect_fk_links()</code> — run once across all approved files before the loop:<br><br>
+          Pattern: if <code>orders.csv</code> has column <code>customer_id</code> → matched against <code>customers.csv</code> by <code>{TypeB}_id</code> naming convention.
+        </div>
+        <pre class="snippet">link_by_attribute(
+    estore,
+    source_type="Order",         # entity carrying the FK
+    source_attr="customer_id",   # FK column name
+    target_type="Customer",      # entity being referenced
+    target_attr="id",            # PK or match key in target
+    name="CUSTOMER_HAS_ORDER",   # edge label
+)
+→ exact match: order.attributes["customer_id"] == customer.attributes["id"]
+→ INSERT aryx_relationship for each matched pair</pre>
+        <div class="inset yellow">
+          <div class="head">No LLM call here</div>
+          FK linking is deterministic pattern matching on column names and attribute values. No embedding, no adjudication.
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: fk_links[] specs, aryx_entity attributes</span>
+          <span class="badge b-db">DB: aryx_relationship INSERT</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STAGE 5 — PROJECT -->
+    <div class="tl-item">
+      <div class="tl-marker s5">5</div>
+      <div class="card stage5">
+        <div class="card-label">Stage 5 / 5 — Project</div>
+        <div class="card-title">Graph Projection — project.py:project_graph()</div>
+        <div class="detail">
+          Dispatches to graph backend via <code>settings.effective_graph_backend()</code>:
+        </div>
+        <div class="scroll-x">
+          <table>
+            <tr><th>Backend</th><th>Condition</th><th>Class</th><th>Write pattern</th></tr>
+            <tr>
+              <td>FalkorDB</td>
+              <td>default (local mode)</td>
+              <td><code>FalkorStore</code></td>
+              <td><code>MERGE (n:TypeName {entity_id: X}) SET n += attrs</code></td>
+            </tr>
+            <tr>
+              <td>Oracle Graph</td>
+              <td><code>ARYX_GRAPH_BACKEND=oci_graph</code></td>
+              <td><code>OracleGraphStore</code></td>
+              <td><code>INSERT INTO {ws}_vertices / {ws}_edges</code></td>
+            </tr>
+          </table>
+        </div>
+        <div class="inset teal" style="margin-top:10px">
+          <div class="head">Type ancestor folding</div>
+          <code>_build_type_ancestors(dsn)</code> reads <code>aryx_ontology_type</code> parent links. Nodes carrying type <code>Invoice</code> also get the parent label <code>Document</code> (if configured) — enabling traversal queries at multiple type granularities.
+        </div>
+        <div class="detail" style="margin-top:10px">
+          <span class="k">Returns:</span> <code>{"run_id": N, "entities": N, "relationships": N, "nodes_written": N, "edges_written": N}</code>
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: aryx_entity + aryx_relationship</span>
+          <span class="badge b-out">OUT: graph projection counts</span>
+          <span class="badge b-db">FalkorDB nodes+edges  or  Oracle Graph vertices+edges</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /timeline -->
+
+  <!-- ═══ FULL DB WRITES TABLE ═══ -->
+  <div class="section">
+    <div class="section-title">All Database Writes During /confirm</div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Table</th><th>Operation</th><th>Stage</th><th>Notes</th></tr>
+        <tr><td class="c-yellow"><code>aryx_jobs</code></td><td>INSERT</td><td>HTTP handler</td><td>type="documents"</td></tr>
+        <tr><td class="c-yellow"><code>aryx_jobs</code></td><td>UPDATE</td><td>Per-type/file progress + finish</td><td></td></tr>
+        <tr><td class="c-yellow"><code>aryx_job_events</code></td><td>INSERT</td><td>Each update_stage call</td><td></td></tr>
+        <tr><td class="c-yellow"><code>aryx_runs</code></td><td>INSERT</td><td>Stage 1 start_run</td><td>one per run_pipeline call</td></tr>
+        <tr><td class="c-yellow"><code>aryx_landed</code></td><td>INSERT</td><td>Stage 1 sink (batched)</td><td>one row per mention/CSV row</td></tr>
+        <tr><td class="c-yellow"><code>aryx_profile_columns</code></td><td>INSERT</td><td>Stage 1 save_profiles</td><td>field statistics</td></tr>
+        <tr><td class="c-yellow"><code>aryx_runs</code></td><td>UPDATE</td><td>Stage 1 finish_run</td><td>record_count, status="complete"</td></tr>
+        <tr><td class="c-green"><code>aryx_entity</code></td><td>INSERT</td><td>Stage 2 — resolve</td><td>canonical entities — first write here</td></tr>
+        <tr><td class="c-green"><code>aryx_entity_member</code></td><td>INSERT</td><td>Stage 2 — resolve</td><td>provenance per member</td></tr>
+        <tr><td class="c-yellow"><code>aryx_attribute_conflict</code></td><td>INSERT</td><td>Stage 2 — on conflict</td><td>merge conflict detail</td></tr>
+        <tr><td class="c-yellow"><code>aryx_adjudication</code></td><td>INSERT</td><td>Stage 2 — review/adj band</td><td>human queue + LLM verdicts</td></tr>
+        <tr><td class="c-yellow"><code>aryx_ontology_type</code></td><td>INSERT (idempotent)</td><td>After stage 2</td><td>ON CONFLICT DO NOTHING</td></tr>
+        <tr><td class="c-green"><code>aryx_relationship</code></td><td>INSERT</td><td>Stage 3 (LLM) + Stage 4 (FK)</td><td>graph edges</td></tr>
+        <tr><td class="c-green">FalkorDB / Oracle Graph</td><td>MERGE / INSERT</td><td>Stage 5 — project</td><td>nodes + edges</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ DECISION MATRIX ═══ -->
+  <div class="section">
+    <div class="section-title">Which External APIs Are Called</div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Condition</th><th>A · Embed (resolve)</th><th>B · Adjudicate (resolve)</th><th>C · Relate</th></tr>
+        <tr>
+          <td>Always (default)</td>
+          <td class="c-violet">Yes — per block</td>
+          <td class="c-yellow">Only score in [0.90, 0.92)</td>
+          <td class="c-orange">Yes — up to max_pairs</td>
+        </tr>
+        <tr>
+          <td><code>er_auto_merge=1.0 AND er_adjudicate=1.0</code></td>
+          <td class="c-muted">No (skipped)</td>
+          <td class="c-muted">No (skipped)</td>
+          <td class="c-orange">Yes</td>
+        </tr>
+        <tr>
+          <td>Empty mention list for type</td>
+          <td class="c-muted">No (empty connector)</td>
+          <td class="c-muted">No</td>
+          <td class="c-muted">No</td>
+        </tr>
+        <tr>
+          <td>Local mode</td>
+          <td>Ollama /api/embed</td>
+          <td>Ollama /api/chat (frontier model)</td>
+          <td>Ollama /api/chat (frontier model)</td>
+        </tr>
+        <tr>
+          <td><code>ARYX_OCI_MODE=true</code></td>
+          <td>OCI GenAI Embed</td>
+          <td>OCI GenAI Chat</td>
+          <td>OCI GenAI Chat</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ HOW IT CONNECTS TO /read ═══ -->
+  <div class="section">
+    <div class="section-title">How /confirm Connects to /read</div>
+    <div class="path-chain">
+      <div class="path-row">
+        <div class="p-arrow">→</div>
+        <div class="p-body"><strong>POST /admin/docs/read</strong> — chunks + embeds + extracts mentions → writes aryx_document, aryx_chunk, aryx_chunk_embedding · stores mentions in process memory</div>
+        <div class="p-tag" style="color:var(--muted)">infra only</div>
+      </div>
+      <div class="path-row">
+        <div class="p-arrow">→</div>
+        <div class="p-body"><strong>GET /admin/docs/summary/{did}</strong> — user reviews discovered types and file plans</div>
+        <div class="p-tag" style="color:var(--muted)">review</div>
+      </div>
+      <div class="path-row hl">
+        <div class="p-arrow">→</div>
+        <div class="p-body"><strong>POST /admin/docs/confirm</strong> → aryx_runs · aryx_landed → <strong>aryx_entity</strong> → aryx_relationship → graph</div>
+        <div class="p-tag" style="color:var(--green)">entities created</div>
+      </div>
+    </div>
+    <div class="inset teal" style="margin-top:12px">
+      <div class="head">The /read infrastructure persists independently</div>
+      aryx_document, aryx_chunk, aryx_chunk_embedding are written by <code>/read</code> regardless of whether <code>/confirm</code> is ever called. They power <code>/ask</code> RAG retrieval via vector similarity search on <code>aryx_chunk_embedding</code> — independent of the entity resolution path.
+    </div>
+  </div>
+
+  <!-- ═══ ERROR PATHS ═══ -->
+  <div class="section">
+    <div class="section-title">Error Paths</div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Error</th><th>Where</th><th>Behaviour</th></tr>
+        <tr><td>discovery_id not found</td><td>HTTP handler</td><td class="c-red">HTTPException 404</td></tr>
+        <tr><td>Process restart between /read and /confirm</td><td>_confirm_job</td><td class="c-red">ValueError "discovery expired" → job failed — re-run /read</td></tr>
+        <tr><td>Empty mention list for approved type</td><td>ingest_confirmed</td><td class="c-green">run_pipeline with empty connector → zero entities, no error</td></tr>
+        <tr><td>aryx_runs INSERT fails</td><td>Stage 1</td><td class="c-red">Exception → job failed for this type/file</td></tr>
+        <tr><td>Embed unavailable for a batch</td><td>Stage 2 — blocking</td><td class="c-yellow">Silent fallback to string-only scoring for that batch</td></tr>
+        <tr><td>LLM adjudication unavailable</td><td>Stage 2 — threshold</td><td class="c-yellow">Pair queued for human (conservative: no wrong merges)</td></tr>
+        <tr><td>Relate LLM unavailable</td><td>Stage 3</td><td class="c-red">Exception propagates → job failed</td></tr>
+        <tr><td>FK link finds no matches</td><td>Stage 4</td><td class="c-green">No writes, continues silently</td></tr>
+        <tr><td>FalkorDB unreachable</td><td>Stage 5</td><td class="c-red">Exception → job failed</td></tr>
+        <tr><td>Oracle Graph unavailable</td><td>Stage 5</td><td class="c-red">Exception → job failed</td></tr>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<div style="margin-top:36px; max-width:920px; margin-left:auto; margin-right:auto; font-size:10px; color:var(--muted); text-align:center; padding-top:14px; border-top:1px solid var(--border)">
+  doc_discover_api.py · doc_discovery.py · orchestrate.py · discover.py · resolve_entities.py · resolution/run.py · pipeline/enrich.py · pipeline/fk_edges.py · project.py · store/entity_store.py
+</div>

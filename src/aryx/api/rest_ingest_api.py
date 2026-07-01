@@ -16,7 +16,6 @@ from aryx.config import get_settings
 from aryx.connectors.rest_api import RestApiConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +200,6 @@ def rest_ingest_router() -> APIRouter:
         otype = req.ontology_type.strip() or _type_from_url(req.url)
         keys = req.match_keys or ["id"]
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)
         try:

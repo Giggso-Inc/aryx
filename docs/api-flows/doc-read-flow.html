@@ -1,0 +1,782 @@
+<title>POST /admin/docs/read — Pipeline Flow</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --orange: #ffa657;
+    --teal: #39d353;
+    --pill-bg: #21262d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 32px 24px;
+  }
+  h1 { font-size: 20px; color: var(--accent); margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 12px; margin-bottom: 32px; }
+
+  .flow { display: flex; flex-direction: column; gap: 0; align-items: center; width: 100%; max-width: 860px; margin: 0 auto; }
+
+  .http-handler {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+  .http-handler .label { color: var(--accent); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+
+  .conn { display: flex; flex-direction: column; align-items: center; margin: 0; }
+  .conn-line { width: 2px; background: var(--border); height: 24px; }
+  .conn-arrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid var(--border); }
+
+  .split-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%; }
+
+  .step-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+  .step-card.active { border-color: var(--green); }
+  .step-card.embed  { border-color: var(--orange); }
+  .step-card.ner    { border-color: var(--purple); }
+  .step-card.db     { border-color: var(--yellow); }
+
+  .step-num {
+    display: inline-block;
+    background: var(--pill-bg);
+    color: var(--muted);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin-bottom: 6px;
+  }
+  .step-card.active .step-num { color: var(--green); }
+  .step-card.embed  .step-num { color: var(--orange); }
+  .step-card.ner    .step-num { color: var(--purple); }
+  .step-card.db     .step-num { color: var(--yellow); }
+
+  .step-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+  .step-card.active .step-title { color: var(--green); }
+  .step-card.embed  .step-title { color: var(--orange); }
+  .step-card.ner    .step-title { color: var(--purple); }
+  .step-card.db     .step-title { color: var(--yellow); }
+
+  .io-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .io-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .io-in  { background: #1c2330; border: 1px solid #30363d; color: var(--muted); }
+  .io-out { background: #1a2f1a; border: 1px solid var(--green); color: var(--green); }
+  .io-db  { background: #2a2000; border: 1px solid var(--yellow); color: var(--yellow); }
+  .io-api { background: #1a1a2e; border: 1px solid var(--purple); color: var(--purple); }
+
+  .detail { margin-top: 10px; color: var(--muted); font-size: 11px; }
+  .detail .key { color: var(--text); }
+  code { background: var(--pill-bg); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+  .ext-api {
+    background: #1a1a2e;
+    border: 1px solid var(--purple);
+    border-radius: 8px;
+    padding: 14px 16px;
+    width: 100%;
+  }
+  .ext-api .api-label { color: var(--purple); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
+  .api-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+  .api-col h4 { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .api-col pre { background: var(--surface2); border-radius: 4px; padding: 8px; font-size: 10px; color: var(--text); white-space: pre-wrap; word-break: break-all; overflow: hidden; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px; }
+  th { text-align: left; color: var(--muted); font-weight: normal; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 4px 8px; border-bottom: 1px solid #1c2330; vertical-align: top; }
+  td.col-action { color: var(--red); }
+  td.col-ok { color: var(--green); }
+  td.col-warn { color: var(--yellow); }
+
+  .section { width: 100%; max-width: 860px; margin: 28px auto 0; }
+  .section-title { font-size: 13px; color: var(--accent); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+
+  .pii-table td:nth-child(2) { color: var(--orange); }
+  .pii-table td:nth-child(3) { color: var(--teal); }
+
+  .gate-box {
+    background: #1e1428;
+    border: 1px solid var(--purple);
+    border-radius: 8px;
+    padding: 14px 16px;
+    width: 100%;
+    margin-top: 12px;
+  }
+  .gate-box .gate-label { color: var(--purple); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+
+  .memory-box {
+    background: #141e1e;
+    border: 1px solid var(--teal);
+    border-radius: 8px;
+    padding: 14px 16px;
+    width: 100%;
+    margin-top: 12px;
+  }
+  .memory-box .mem-label { color: var(--teal); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+
+  .db-table td:nth-child(1) { color: var(--yellow); font-family: monospace; }
+  .db-table td:nth-child(2) { color: var(--orange); }
+  .db-table td:nth-child(4) { color: var(--muted); font-size: 10px; }
+
+  .confirm-path {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .confirm-path .path-step { display: flex; align-items: flex-start; gap: 10px; padding: 4px 0; }
+  .confirm-path .arrow { color: var(--accent); flex-shrink: 0; }
+  .confirm-path .path-step.highlight .arrow { color: var(--green); }
+  .confirm-path .path-step.highlight span { color: var(--text); }
+
+  .scroll-x { overflow-x: auto; }
+</style>
+
+<h1>POST /admin/docs/read</h1>
+<p class="subtitle">8-step document pipeline · entity extraction · process memory · no entity DB writes until /confirm</p>
+
+<div class="flow">
+
+  <!-- HTTP HANDLER -->
+  <div class="http-handler">
+    <div class="label">HTTP Handler — doc_discover_api.py</div>
+    <div class="step-title" style="color:var(--accent)">Request Entry</div>
+    <div class="detail">
+      <span class="key">Accepts:</span> multipart/form-data — <code>files[]</code> (binary), <code>context</code> (string), <code>workspace_id</code> (int)<br>
+      <span class="key">Validates:</span> 50 MB per-file limit · extension whitelist (DOC_EXTS + DATA_EXTS)<br>
+      <span class="key">Creates:</span> <code>discovery_id = uuid4().hex</code> · <code>JobStore.create(did, "discovery", workspace_id)</code><br>
+      <span class="key">Schedules:</span> <code>_read_job</code> as FastAPI BackgroundTask<br>
+      <span class="key">Returns immediately:</span> <code>{"discovery_id": "a3f9..."}</code> HTTP 200
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: multipart files</span>
+      <span class="io-badge io-out">OUT: {discovery_id}</span>
+      <span class="io-badge io-db">DB: aryx_jobs INSERT</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- FILE ROUTER -->
+  <div class="step-card active" style="width:100%">
+    <div class="step-num">background thread</div>
+    <div class="step-title">_read_job — File Router</div>
+    <div class="detail">
+      Splits files by extension into two parallel paths:<br>
+      <span class="key">DOC_EXTS</span> (.pdf .docx .pptx .ppt .rtf .html .htm .jpg .jpeg .png .tiff .tif .bmp)
+        → write to <code>NamedTemporaryFile</code> → <code>doc_paths[]</code><br>
+      <span class="key">DATA_EXTS</span> (.json .csv .xml) → keep as bytes → <code>tabular[]</code><br>
+      XML → <code>_xml_to_csvs()</code> → one CSV per top-3 most-frequent element type<br>
+      <code>JobStore.update_stage(did, "Reading", 30, "Reading N file(s)…")</code>
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: binary file bytes</span>
+      <span class="io-badge io-out">OUT: doc_paths[], tabular[]</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- PRE-STEP -->
+  <div class="step-card" style="width:100%">
+    <div class="step-num">pre-step</div>
+    <div class="step-title">Content Hash + SourceRef</div>
+    <div class="detail">
+      <code>doc_id = hashlib.sha256(path.read_bytes()).hexdigest()</code><br>
+      <code>source = SourceRef(system="document", dataset=path.stem, record_id=doc_id)</code><br>
+      <span class="key">doc_id</span> is the SHA-256 hex of raw file bytes — idempotency key in step 4 and base for mention IDs in step 8.<br>
+      Format: <code>"{doc_id}:{chunk_index}:{i}"</code> for every mention.
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: Path (file on disk)</span>
+      <span class="io-badge io-out">OUT: doc_id (64-char hex), SourceRef</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEP 1 -->
+  <div class="step-card active" style="width:100%">
+    <div class="step-num">step 1/8</div>
+    <div class="step-title">Parse Pages — _connector_for(path).extract_pages()</div>
+    <div class="detail">Picks connector by backend flag + file extension:</div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Mode</th><th>Extension</th><th>Connector</th><th>Mechanism</th></tr>
+        <tr><td>OCI</td><td>.pdf .docx .pptx images</td><td>OciDocConnector</td><td>OCI Document Understanding (base64 inline, max 15 MB)</td></tr>
+        <tr><td>Local</td><td>.pdf</td><td>PdfConnector</td><td>pymupdf layout-aware extraction</td></tr>
+        <tr><td>Local</td><td>.docx .doc .rtf</td><td>DocxConnector</td><td>python-docx</td></tr>
+        <tr><td>Local</td><td>.pptx .ppt</td><td>PptxConnector</td><td>python-pptx</td></tr>
+        <tr><td>Local</td><td>.jpg .png .tiff .bmp</td><td>ImageConnector</td><td>pytesseract OCR</td></tr>
+        <tr><td>Local</td><td>.html .htm</td><td>MarkupConnector</td><td>html.parser</td></tr>
+      </table>
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: Path (file on disk)</span>
+      <span class="io-badge io-out">OUT: list[(page_num, raw_text)]</span>
+      <span class="io-badge io-api">API A — OCI mode only</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line" style="height:12px"></div></div>
+
+  <!-- API CALL A -->
+  <div class="ext-api" style="width:100%">
+    <div class="api-label">External API Call A — OCI Document Understanding (OCI mode only)</div>
+    <div class="api-grid">
+      <div class="api-col">
+        <h4>Request</h4>
+        <pre>AnalyzeDocumentDetails(
+  document=InlineDocumentDetails(
+    data="&lt;base64 file bytes&gt;"  # max 15 MB
+  ),
+  features=[
+    DocumentTextExtractionFeature(),
+    DocumentTableExtractionFeature()
+  ],
+  compartment_id=ARYX_OCI_COMPARTMENT_ID
+)</pre>
+      </div>
+      <div class="api-col">
+        <h4>Response → parsed to</h4>
+        <pre>Iterator[
+  (page_num: int, text: str)
+]
+# one tuple per page/table cell
+# falls back to local pymupdf
+# if OCI is unavailable</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEP 2 -->
+  <div class="step-card active" style="width:100%">
+    <div class="step-num">step 2/8</div>
+    <div class="step-title">Chunk Pages — pipeline/clean_text.py:chunk_pages()</div>
+    <div class="detail">
+      <span class="key">Sub-step 1 — Normalize</span> (<code>_normalize(text)</code>):<br>
+      &nbsp;&nbsp;• <code>unicodedata.normalize("NFC", text)</code> — canonical unicode form<br>
+      &nbsp;&nbsp;• <code>re.sub(r"-\n(\S)", r"\1", text)</code> — rejoin hyphenated line-breaks<br>
+      &nbsp;&nbsp;• <code>re.sub(r"\n{3,}", "\n\n", text)</code> — collapse 3+ blank lines to 2<br><br>
+      <span class="key">Sub-step 2 — Sliding window split:</span><br>
+      &nbsp;&nbsp;• <code>chunk_size</code> = ARYX_CHUNK_SIZE (default 1000 chars)<br>
+      &nbsp;&nbsp;• <code>overlap</code> = ARYX_CHUNK_OVERLAP (default 100 chars)<br>
+      &nbsp;&nbsp;• <code>start=0, end=start+chunk_size</code>, next <code>start=end-overlap</code>
+    </div>
+    <div style="margin-top:10px; background:var(--surface2); border-radius:4px; padding:10px; font-size:11px;">
+      <pre style="color:var(--muted)">page text:  [────────────────────────────────────────────────]
+chunk 0:    [──────────────────────────]
+chunk 1:             [──────────────────────────]
+chunk 2:                      [──────────────────────────]
+            ←──── 1000 chars ────→
+                     ←── 100 ──→ (overlap)</pre>
+    </div>
+    <div style="margin-top:10px; font-size:11px; color:var(--muted)">
+      Each <code>DocumentChunk</code>: <code>doc_id · chunk_index · page_slide · text · char_start · char_end · source</code><br>
+      <strong style="color:var(--green)">No text leaves the machine at this step.</strong> PII screening runs before any external call.
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: list[(page_num, raw_text)]</span>
+      <span class="io-badge io-out">OUT: list[DocumentChunk]</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEP 3 -->
+  <div class="step-card active" style="width:100%">
+    <div class="step-num">step 3/8</div>
+    <div class="step-title">PII Screen — pipeline/pii.py:screen_chunks()</div>
+    <div class="detail">
+      Runs <strong>entirely locally</strong> — no external call. Uses <code>presidio-analyzer</code> (spaCy <code>en_core_web_sm</code> + regex recognizers) loaded once via <code>@lru_cache(maxsize=1)</code>.
+    </div>
+    <div class="scroll-x">
+      <table class="pii-table">
+        <tr><th>Entity type</th><th>Action</th><th>Result in text</th></tr>
+        <tr><td>EMAIL_ADDRESS</td><td>hash (sha256)</td><td><code>sha256_&lt;hex&gt;</code></td></tr>
+        <tr><td>PHONE_NUMBER</td><td>mask</td><td><code>&lt;PHONE_NUMBER&gt;</code></td></tr>
+        <tr><td>PERSON</td><td>mask</td><td><code>&lt;PERSON&gt;</code></td></tr>
+        <tr><td>CREDIT_CARD</td><td>drop (redact)</td><td><em>removed entirely</em></td></tr>
+        <tr><td>IBAN_CODE</td><td>drop (redact)</td><td><em>removed entirely</em></td></tr>
+        <tr><td>US_SSN</td><td>drop (redact)</td><td><em>removed entirely</em></td></tr>
+        <tr><td>Any other</td><td>mask</td><td><code>&lt;ENTITY_TYPE&gt;</code></td></tr>
+      </table>
+    </div>
+    <div style="margin-top:10px; font-size:11px; background:#1e0e0e; border:1px solid var(--red); border-radius:4px; padding:8px; color:var(--red)">
+      ⛔ Fail-closed: if presidio or spaCy fails to load, the step raises immediately. No unscreened text can proceed.
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: list[DocumentChunk] (raw text)</span>
+      <span class="io-badge io-out">OUT: list[DocumentChunk] (anonymized text)</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEPS 4 + 5 -->
+  <div class="split-row">
+    <div class="step-card db">
+      <div class="step-num">step 4/8</div>
+      <div class="step-title">Save Document Row</div>
+      <div class="detail">
+        <code>ChunkStore.upsert_document()</code><br>
+        <span class="key">Table:</span> <code>aryx_document</code>
+      </div>
+      <table>
+        <tr><th>Column</th><th>Value</th></tr>
+        <tr><td><code>content_hash</code></td><td>SHA-256 hex (doc_id)</td></tr>
+        <tr><td><code>file_name</code></td><td>original filename</td></tr>
+        <tr><td><code>source_type</code></td><td>ext without dot</td></tr>
+        <tr><td><code>byte_count</code></td><td>file size in bytes</td></tr>
+      </table>
+      <div style="margin-top:8px; font-size:10px; color:var(--muted)">Idempotent on <code>content_hash</code> — re-upload returns existing ID.</div>
+      <div class="io-row">
+        <span class="io-badge io-in">IN: doc_id, file meta</span>
+        <span class="io-badge io-out">OUT: doc_db_id: int</span>
+        <span class="io-badge io-db">DB: aryx_document UPSERT</span>
+      </div>
+    </div>
+
+    <div class="step-card db">
+      <div class="step-num">step 5/8</div>
+      <div class="step-title">Save Chunks</div>
+      <div class="detail">
+        <code>ChunkStore.save_chunks(doc_db_id, chunks)</code><br>
+        <span class="key">Table:</span> <code>aryx_chunk</code>
+      </div>
+      <table>
+        <tr><th>Column</th><th>Value</th></tr>
+        <tr><td><code>doc_id</code> (FK)</td><td>doc_db_id from step 4</td></tr>
+        <tr><td><code>chunk_index</code></td><td>0-based sequential</td></tr>
+        <tr><td><code>page_slide</code></td><td>source page number</td></tr>
+        <tr><td><code>char_start/end</code></td><td>char offsets in page</td></tr>
+        <tr><td><code>text</code></td><td>PII-anonymized text</td></tr>
+      </table>
+      <div class="io-row">
+        <span class="io-badge io-in">IN: doc_db_id, chunks[]</span>
+        <span class="io-badge io-out">OUT: list[chunk_db_id]</span>
+        <span class="io-badge io-db">DB: aryx_chunk INSERT</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEP 6 -->
+  <div class="step-card embed" style="width:100%">
+    <div class="step-num">step 6/8</div>
+    <div class="step-title">Embed Chunks — pipeline/embed.py:embed_chunks()</div>
+    <div class="detail">
+      <code>texts = [c.text for c in chunks]</code> — all chunk texts sent in one batch.<br><br>
+      <span class="key">Backend dispatch:</span><br>
+      &nbsp;&nbsp;• <code>ARYX_EMBED_BACKEND=local</code> → Ollama <code>/api/embed</code> → dim=768<br>
+      &nbsp;&nbsp;• <code>ARYX_EMBED_BACKEND=oci</code> → OCI GenAI Embed → dim=1024<br><br>
+      <span class="key">Dim validation (fail-closed):</span><br>
+      <code>if len(vectors[0]) != expected_dim: raise RuntimeError("embed dim mismatch")</code><br>
+      Prevents mixed-dim vectors from silently entering the store.
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: list[DocumentChunk]</span>
+      <span class="io-badge io-out">OUT: list[ChunkEmbedding(chunk_index, doc_id, model_id, dim, vector)]</span>
+      <span class="io-badge io-api">API B — Ollama or OCI GenAI Embed</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line" style="height:12px"></div></div>
+
+  <!-- API CALL B -->
+  <div class="ext-api" style="width:100%">
+    <div class="api-label">External API Call B — Embedding</div>
+    <div class="api-grid">
+      <div class="api-col">
+        <h4>Local — Ollama</h4>
+        <pre>POST http://ollama:11434/api/embed
+{
+  "model": "nomic-embed-text",
+  "input": ["chunk text 1",
+            "chunk text 2", ...]
+}
+→ {"embeddings": [[0.012,...], ...]}
+  dim=768</pre>
+      </div>
+      <div class="api-col">
+        <h4>OCI — GenAI Embed</h4>
+        <pre>EmbedTextDetails(
+  inputs=["chunk text 1", ...],
+  serving_mode=OnDemandServingMode(
+    model_id="cohere.embed-multilingual-v3.0"
+  ),
+  input_type="SEARCH_DOCUMENT"
+)
+→ response.data.embeddings
+  dim=1024</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEP 7 -->
+  <div class="step-card db" style="width:100%">
+    <div class="step-num">step 7/8</div>
+    <div class="step-title">Save Embeddings — store/chunk_store.py:save_embeddings()</div>
+    <div class="detail">
+      Vector serialized as pgvector literal: <code>"[" + ",".join(str(v) for v in emb.vector) + "]"</code><br>
+      <span class="key">Table:</span> <code>aryx_chunk_embedding</code>
+    </div>
+    <table>
+      <tr><th>Column</th><th>Value</th></tr>
+      <tr><td><code>chunk_id</code> (FK)</td><td>chunk_db_ids[] from step 5</td></tr>
+      <tr><td><code>model_id</code></td><td>nomic-embed-text or cohere.embed-multilingual-v3.0</td></tr>
+      <tr><td><code>dim</code></td><td>768 (local) or 1024 (OCI)</td></tr>
+      <tr><td><code>embedding</code></td><td>pgvector column — "[f1,f2,...]" string</td></tr>
+    </table>
+    <div style="margin-top:8px; font-size:10px; color:var(--muted)">Once written, semantic RAG search via /ask is live for this document.</div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: chunk_db_ids[], embeddings[]</span>
+      <span class="io-badge io-db">DB: aryx_chunk_embedding INSERT</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- STEP 8 — ENTITY EXTRACTION -->
+  <div class="step-card ner" style="width:100%">
+    <div class="step-num">step 8/8 — ENTITY EXTRACTION</div>
+    <div class="step-title">extract_mentions() — ontology/extract.py</div>
+    <div style="background:#1e0a2e; border:1px solid var(--purple); border-radius:6px; padding:10px; margin-top:6px; font-size:11px;">
+      ⚡ This is where entities are extracted. One LLM call per chunk (cheap tier). Results are raw mentions — NOT yet resolved entities. Nothing writes to <code>aryx_entity</code> here.
+    </div>
+    <div class="detail" style="margin-top:10px;">
+      <span class="key">System prompt</span> — workspace context prepended + NER instructions:<br>
+      &nbsp;&nbsp;• Preferred domain types: Goal, Scope, Aim, Initiative, Capability, ValueProposition,<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;CustomerSegment, Milestone, Metric, Feature, Risk, Pricing, MarketSegment,<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;Strategy, Partner, Competitor, Dataset, KPI, RoadmapItem …<br>
+      &nbsp;&nbsp;• Generic fallback (Organization, Person, Product, Location, Date) — only when no domain type fits<br>
+      &nbsp;&nbsp;• Never use: Entity, Item, Thing, Concept<br><br>
+      <span class="key">User message per chunk:</span>
+      <code>{"chunk_index": N, "text": "&lt;PII-screened chunk text&gt;"}</code>
+    </div>
+
+    <div class="api-grid" style="margin-top:12px">
+      <div class="api-col">
+        <h4>LLM Response Schema</h4>
+        <pre>{
+  "mentions": [
+    {
+      "type": "Invoice",
+      "name": "INV-2024-001",
+      "span": "Invoice INV-2024-001 dated Jan 15",
+      "attributes": {
+        "date": "2024-01-15",
+        "amount": "$4,200"
+      }
+    }
+  ]
+}
+# attributes is optional
+# required: type, name, span</pre>
+      </div>
+      <div class="api-col">
+        <h4>Accepted mention → RawRecord</h4>
+        <pre>mention_id =
+  f"{doc_id}:{chunk_index}:{i}"
+
+RawRecord(
+  source=SourceRef(
+    system="document",
+    dataset=path.stem,
+    record_id=mention_id
+  ),
+  payload={
+    "type":        "Invoice",
+    "name":        "INV-2024-001",
+    "chunk_index": 3,
+    "span":        "Invoice INV-2024-001...",
+    # attributes spread in:
+    "date":        "2024-01-15",
+    "amount":      "$4,200"
+  }
+)</pre>
+      </div>
+    </div>
+
+    <!-- Verbatim-span gate -->
+    <div class="gate-box">
+      <div class="gate-label">Verbatim-Span Gate (deterministic — no API cost)</div>
+      <div style="font-size:11px;">
+        <code>def _verbatim_ok(name, span): return name.lower() in span.lower()</code><br><br>
+        Any mention where <code>name</code> is absent from <code>span</code> is <strong>silently dropped</strong>.<br>
+        Prevents hallucinated entity names from reaching resolution or the graph.<br><br>
+        <span style="color:var(--green)">✓ PASS:</span> name=<code>"INV-2024-001"</code> span=<code>"Invoice INV-2024-001 dated Jan 15"</code><br>
+        <span style="color:var(--red)">✗ DROP:</span> name=<code>"Q1 Invoice"</code> span=<code>"Invoice INV-2024-001 dated Jan 15"</code><br><br>
+        Chunk failures (network/LLM error): chunk skipped, rest continue — logged at WARNING.<br>
+        Gate rejections: logged at DEBUG.
+      </div>
+    </div>
+
+    <div class="io-row">
+      <span class="io-badge io-in">IN: list[DocumentChunk] (PII-screened)</span>
+      <span class="io-badge io-out">OUT: list[RawRecord] (raw mentions)</span>
+      <span class="io-badge io-api">API C — Ollama or OCI GenAI Chat</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line" style="height:12px"></div></div>
+
+  <!-- API CALL C -->
+  <div class="ext-api" style="width:100%">
+    <div class="api-label">External API Call C — LLM NER (cheap tier, one call per chunk)</div>
+    <div class="api-grid">
+      <div class="api-col">
+        <h4>Local — Ollama</h4>
+        <pre>POST http://ollama:11434/api/chat
+{
+  "model": "llama3.2:3b",
+  "stream": false,
+  "format": { /* mentions JSON schema */ },
+  "messages": [
+    {"role":"system","content":"NER prompt"},
+    {"role":"user","content":
+      "{\"chunk_index\":3,
+       \"text\":\"...chunk text...\"}"}
+  ]
+}
+→ message.content = '{"mentions":[...]}'</pre>
+      </div>
+      <div class="api-col">
+        <h4>OCI — GenAI Chat</h4>
+        <pre>CohereChatRequest(
+  message=chunk_json,
+  preamble_override=system_prompt,
+  max_tokens=2048,
+  temperature=0.2
+)
+→ chat_response.text =
+    '{"mentions":[...]}'
+
+# llm_normalize.py absorbs
+# provider-shape quirks:
+# Gemini bare-list envelope,
+# entity_type / verbatim_span
+# field renames, etc.</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <!-- Process memory -->
+  <div class="step-card" style="width:100%">
+    <div class="step-num">after pipeline</div>
+    <div class="step-title">Process Memory — discoveries.py</div>
+    <div class="detail">
+      Summary assembled, stored in module-level dict. No DB write.
+    </div>
+    <div class="memory-box">
+      <div class="mem-label">discoveries._STORE[did] — in-process only</div>
+      <pre style="font-size:11px; background:var(--surface2); border-radius:4px; padding:10px; margin-top:8px; color:var(--text)">{
+  "mentions": [RawRecord, ...],   # all accepted mentions from step 8
+  "tabular":  [{filename, data, ontology_type, match_keys}, ...],
+  "summary":  {
+    "types": [
+      {"type": "Invoice", "count": 14, "examples": ["INV-2024-001", ...]},
+      ...
+    ],
+    "files": [
+      {"filename": "customers.csv", "ontology_type": "Customer"}
+    ]
+  }
+}</pre>
+      <div style="font-size:11px; color:var(--red); margin-top:8px;">
+        ⚠ Process restart after /read completes = _STORE reset.
+        GET /summary returns {} · POST /confirm returns 404.
+      </div>
+    </div>
+    <div style="margin-top:10px; font-size:11px;">
+      <code>JobStore.finish(did, status="complete")</code> → UPDATE aryx_jobs
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: mentions[], tab_plans[], summary</span>
+      <span class="io-badge" style="background:#141e1e;border:1px solid var(--teal);color:var(--teal)">MEM: discoveries._STORE[did]</span>
+      <span class="io-badge io-db">DB: aryx_jobs UPDATE</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- TABULAR PATH -->
+<div class="section">
+  <div class="section-title">Tabular Path — API Call D (JSON / CSV / XML files)</div>
+  <div class="step-card" style="width:100%">
+    <div class="step-title" style="color:var(--orange)">_infer_type() — Type Inference per File</div>
+    <div class="detail">
+      <span class="key">Filename signal (preferred):</span> <code>support_tickets.csv</code> → <code>SupportTicket</code><br>
+      Filename wins unless stem is a generic word (data, export, report, file, table, row, record…)<br><br>
+      <span class="key">LLM fallback (generic filenames only):</span>
+    </div>
+    <div class="ext-api" style="margin-top:10px">
+      <div class="api-label">API Call D — Tabular Type Inference (same LLM backend as C)</div>
+      <div class="api-grid">
+        <div class="api-col">
+          <h4>User prompt</h4>
+          <pre>Goal: {context or 'general knowledge graph'}
+File: {filename}
+Sample rows:
+{first 600 bytes of CSV}
+
+Which 1-2 columns UNIQUELY IDENTIFY
+each row (the natural key or ID)?
+Reply ONLY as JSON:
+{"ontology_type":"SingularPascalCase",
+ "match_keys":["col1"]}</pre>
+        </div>
+        <div class="api-col">
+          <h4>Response → tab_plan</h4>
+          <pre>{
+  "ontology_type": "Customer",
+  "match_keys": ["customer_id"]
+}
+
+# Filename wins if non-generic:
+# customers.csv → Customer
+# LLM only for data.csv, export.csv
+
+# On LLM failure: fallback to
+# filename-derived type — never
+# propagates the exception</pre>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:10px; font-size:11px; color:var(--muted)">
+      XML files → <code>_xml_to_csvs()</code> → top-3 most-frequent element types → one CSV each → <code>{parent_tag}_id</code> FK column injected → <code>_detect_fk_links()</code> auto-wires parent→child relationships at /confirm.
+    </div>
+  </div>
+</div>
+
+<!-- WHERE ENTITIES ARE CREATED -->
+<div class="section">
+  <div class="section-title">Where Entities Are Actually Created — /confirm path</div>
+  <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+    Step 8 extracts raw mentions. Canonical <code>aryx_entity</code> rows are only created after the user confirms types via POST /admin/docs/confirm.
+  </div>
+  <div class="confirm-path">
+    <div class="path-step"><span class="arrow">→</span><span><strong>POST /admin/docs/read</strong> — extracts RawRecord mentions · stores in process memory · writes aryx_document + aryx_chunk + aryx_chunk_embedding</span></div>
+    <div class="path-step"><span class="arrow">→</span><span><strong>GET /admin/docs/summary/{did}</strong> — user reviews discovered types + file plans</span></div>
+    <div class="path-step"><span class="arrow">→</span><span><strong>POST /admin/docs/confirm</strong> — <code>ingest_confirmed()</code> called with approved_types + approved_files</span></div>
+    <div class="path-step highlight"><span class="arrow">→</span><span><strong>run_pipeline(RecordsConnector(recs), ...)</strong> — pipelines each approved type</span></div>
+    <div class="path-step highlight"><span class="arrow">→</span><span><strong>discover()</strong> → <code>aryx_landed</code> INSERT — raw records land in staging table</span></div>
+    <div class="path-step highlight"><span class="arrow">→</span><span><strong>resolve_run()</strong> → <code>aryx_entity</code> INSERT/UPDATE — dedup + confidence merge — <strong>CANONICAL ENTITIES WRITTEN HERE</strong></span></div>
+    <div class="path-step highlight"><span class="arrow">→</span><span><strong>project_graph()</strong> → FalkorDB / Oracle Graph — nodes + edges projected</span></div>
+  </div>
+</div>
+
+<!-- DB WRITES TABLE -->
+<div class="section">
+  <div class="section-title">Database Writes — /read vs /confirm</div>
+  <div class="scroll-x">
+    <table class="db-table">
+      <tr><th>Table</th><th>Operation</th><th>Step</th><th>Written after /confirm?</th></tr>
+      <tr><td>aryx_jobs</td><td>INSERT</td><td>HTTP handler</td><td>—</td></tr>
+      <tr><td>aryx_jobs</td><td>UPDATE</td><td>Background job start + end</td><td>—</td></tr>
+      <tr><td>aryx_job_events</td><td>INSERT</td><td>Each stage update</td><td>—</td></tr>
+      <tr><td>aryx_document</td><td>UPSERT</td><td>Step 4/8 — idempotent on hash</td><td>—</td></tr>
+      <tr><td>aryx_chunk</td><td>INSERT</td><td>Step 5/8</td><td>—</td></tr>
+      <tr><td>aryx_chunk_embedding</td><td>INSERT</td><td>Step 7/8 — pgvector</td><td>—</td></tr>
+      <tr><td style="color:var(--green) !important">aryx_landed</td><td>INSERT</td><td style="color:var(--green)">Never during /read</td><td>Yes — /confirm → discover()</td></tr>
+      <tr><td style="color:var(--green) !important">aryx_entity</td><td>INSERT/UPDATE</td><td style="color:var(--green)">Never during /read</td><td>Yes — /confirm → resolve_run()</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- DECISION MATRIX -->
+<div class="section">
+  <div class="section-title">Which External APIs Are Called</div>
+  <div class="scroll-x">
+    <table>
+      <tr><th>Condition</th><th>A · Parse</th><th>B · Embed</th><th>C · NER</th><th>D · Type Infer</th></tr>
+      <tr>
+        <td>Local mode (default)</td>
+        <td class="col-ok">No (local libs)</td>
+        <td class="col-warn">Ollama /api/embed</td>
+        <td class="col-warn">Ollama /api/chat</td>
+        <td class="col-warn">Ollama /api/chat</td>
+      </tr>
+      <tr>
+        <td>ARYX_OCI_MODE=true</td>
+        <td class="col-warn">OCI Doc Understanding</td>
+        <td class="col-warn">OCI GenAI Embed</td>
+        <td class="col-warn">OCI GenAI Chat</td>
+        <td class="col-warn">OCI GenAI Chat</td>
+      </tr>
+      <tr>
+        <td>Doc files only (.pdf etc)</td>
+        <td class="col-ok">Yes</td>
+        <td class="col-ok">Yes</td>
+        <td class="col-ok">Yes</td>
+        <td>No</td>
+      </tr>
+      <tr>
+        <td>Tabular files only (.csv etc)</td>
+        <td>No</td>
+        <td>No</td>
+        <td>No</td>
+        <td class="col-ok">Yes</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<!-- ERROR PATHS -->
+<div class="section">
+  <div class="section-title">Error Paths</div>
+  <div class="scroll-x">
+    <table>
+      <tr><th>Error</th><th>Where</th><th>Behaviour</th></tr>
+      <tr><td>File > 50 MB</td><td>HTTP handler</td><td class="col-action">HTTPException 400 — no job created</td></tr>
+      <tr><td>OCI file > 15 MB</td><td>Step 1/8</td><td class="col-action">ValueError — job marked failed</td></tr>
+      <tr><td>OCI Document Understanding unreachable</td><td>Step 1/8</td><td class="col-action">Exception → job failed</td></tr>
+      <tr><td>presidio / spaCy not installed</td><td>Step 3/8</td><td class="col-action">Raises — job failed, no unscreened text passes</td></tr>
+      <tr><td>Ollama not running</td><td>Step 6/8</td><td class="col-action">RuntimeError — job failed</td></tr>
+      <tr><td>Embed dim mismatch</td><td>Step 6/8</td><td class="col-action">RuntimeError — job failed</td></tr>
+      <tr><td>LLM NER chunk fails</td><td>Step 8/8</td><td class="col-warn">Chunk skipped, rest continue (WARNING)</td></tr>
+      <tr><td>Mention fails verbatim-span gate</td><td>Step 8/8</td><td class="col-warn">Mention dropped, rest continue (DEBUG)</td></tr>
+      <tr><td>Type inference fails</td><td>_infer_type</td><td class="col-ok">Fallback to filename-derived type — never propagates</td></tr>
+      <tr><td>Process restart after /read</td><td>discoveries._STORE</td><td class="col-action">GET /summary → {} · POST /confirm → 404</td></tr>
+    </table>
+  </div>
+</div>
+
+<div style="margin-top:32px; font-size:10px; color:var(--muted); text-align:center; padding-top:16px; border-top:1px solid var(--border)">
+  src/aryx/connectors/doc_router.py · src/aryx/pipeline/clean_text.py · src/aryx/pipeline/pii.py · src/aryx/store/chunk_store.py · src/aryx/pipeline/embed.py · src/aryx/ontology/extract.py · src/aryx/pipeline/doc_discovery.py
+</div>

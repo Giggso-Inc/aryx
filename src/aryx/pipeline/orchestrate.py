@@ -24,9 +24,9 @@ from aryx.store.checkpoint_store import StageTracker
 from aryx.project import project_graph
 from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
+from aryx.models import OntologyType
 from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
-from aryx.workspaces import ws_graph
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def run_pipeline(
             finally:
                 onto.close()
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
-            logger.warning("ontology type seed failed for %s", ontology_type)
+            logger.warning("ontology type seed failed for %s", ontology_type, exc_info=True)
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
             with runner.stage("relate"):

@@ -95,7 +95,12 @@ def infer_relationship(
     result = complete_json(broker, "frontier", _SYSTEM, user, _SCHEMA)
     if not result.get("related"):
         return None, 0.0
-    name = str(result["name"])
+    name_raw = (result.get("name") or result.get("relationship") or
+                result.get("label") or result.get("title"))
+    if not name_raw:
+        logger.warning("relationship LLM returned related=true but no name field: %s", result)
+        return None, 0.0
+    name = str(name_raw)
     confidence = float(result.get("confidence", 0.0))
     logger.info("relationship inferred name=%s conf=%.2f", name, confidence)
     return name, confidence

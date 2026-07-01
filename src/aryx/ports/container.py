@@ -35,14 +35,22 @@ class Container:
 
     def graph_reader(self, workspace_id: int = 1) -> GraphReaderPort:
         """Return the read-side graph adapter for one workspace."""
+        settings = get_settings()
+        if settings.effective_graph_backend() == "oci_graph":
+            from aryx.graph.oracle_graph_reader import OracleGraphReader
+            return cast(GraphReaderPort, OracleGraphReader(settings.oci_adb_dsn, workspace_id))
         cls = self._cls("graph_reader")
-        adapter = cls(get_settings().graph_url, ws_graph(workspace_id))
+        adapter = cls(settings.graph_url, ws_graph(workspace_id))
         return cast(GraphReaderPort, adapter)
 
     def graph_store(self, workspace_id: int = 1) -> GraphStorePort:
         """Return the write-side graph adapter for one workspace."""
+        settings = get_settings()
+        if settings.effective_graph_backend() == "oci_graph":
+            from aryx.graph.oracle_graph_store import OracleGraphStore
+            return cast(GraphStorePort, OracleGraphStore(settings.oci_adb_dsn, workspace_id))
         cls = self._cls("graph_store")
-        adapter = cls(get_settings().graph_url, ws_graph(workspace_id))
+        adapter = cls(settings.graph_url, ws_graph(workspace_id))
         return cast(GraphStorePort, adapter)
 
     def describe(self) -> dict[str, object]:
