@@ -51,7 +51,9 @@ def project_graph(
     Returns:
         Counts of {entities, provenance, relationships} written.
     """
+    logger.info("graph project start ws=%s — clearing", workspace_id)
     graph.clear()
+    logger.info("graph cleared — writing entities")
     ancestors_for = type_ancestors or {}
     n_entities = 0
     for entity_id, ontology_type, attributes in store.list_entities():
