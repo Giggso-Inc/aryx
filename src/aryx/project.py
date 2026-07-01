@@ -54,6 +54,14 @@ def project_graph(
     logger.info("graph project start ws=%s — clearing", workspace_id)
     graph.clear()
     logger.info("graph cleared — writing entities")
+    ancestors_for = type_ancestors or {}
+    n_entities = 0
+    for entity_id, ontology_type, attributes in store.list_entities():
+        labels = ancestors_for.get(ontology_type, [])
+        iri = _entity_iri(base_uri, workspace_id, entity_id)
+        graph.add_entity(entity_id, ontology_type, attributes,
+                         labels=labels, iri=iri)
+        n_entities += 1
 
     ancestors_for = type_ancestors or {}
 
