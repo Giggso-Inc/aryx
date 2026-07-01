@@ -474,7 +474,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     for d, n in tabular:
         if Path(n).suffix.lower() == ".xml":
             for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
-                converted_tabular.append((csv_bytes, csv_name, True))
+                converted_tabular.append((csv_bytes, csv_name))
         else:
             converted_tabular.append((_consolidate_csv_names(d), n))
 
@@ -750,6 +750,53 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
     return links
 
 
+def _detect_fk_links_workspace(
+    plan: dict, known_types: list[str], seen: set[tuple[str, str]] | None = None
+) -> list[dict]:
+    """Detect FK links between one plan and workspace types already in OntologyStore.
+
+    Fires even for single-file confirm jobs where _detect_fk_links returns [].
+    For each column header matching {KnownType}_id or {KnownType}_name (case-
+    insensitive, singular/plural), emits an FK spec for link_by_attribute.
+    """
+    seen = seen or set()
+    links: list[dict] = []
+    try:
+        line = plan["data"].split(b"\n")[0].decode("utf-8", "ignore")
+        headers = next(csv.reader(io.StringIO(line)), [])
+    except Exception:  # noqa: BLE001
+        return []
+
+    src_type = plan.get("ontology_type", "")
+    match_key = (plan.get("match_keys") or ["id"])[0]
+
+    for known in known_types:
+        if known == src_type:
+            continue
+        pair_key = (src_type, known)
+        if pair_key in seen:
+            continue
+        known_l = known.lower()
+        singular = known_l.rstrip("s")
+        candidates = {
+            f"{known_l}_id", f"{known_l}_name",
+            f"{singular}_id", f"{singular}_name",
+        }
+        for col in headers:
+            if col.lower() in candidates:
+                seen.add(pair_key)
+                links.append({
+                    "source_type": src_type,
+                    "source_attr": col,
+                    "target_type": known,
+                    "target_attr": match_key,
+                    "name": f"{known.upper()}_HAS_{src_type.upper()}",
+                })
+                break
+
+    return links
+
+
 def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      approved_files: list[str], broker: Broker, jobs, job_id: str,
                      workspace_id: int = 1) -> None:
@@ -757,15 +804,26 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     settings = get_settings()
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
+
     for otype in approved_types:
         step += 1
         jobs.update_stage(job_id, f"{step}/{total}", int(step * 90 / total), f"Adding {otype}")
         recs = [m for m in data["mentions"] if m.payload.get("type") == otype]
         if recs:
+            logger.info("confirm job=%s step=%d/%d otype=%s records=%d",
+                        job_id, step, total, otype, len(recs))
+
+            def _progress_otype(stage: str, pct: int, detail: str, _otype: str = otype,
+                                 _step: int = step) -> None:
+                jobs.update_stage(job_id, f"{_step}/{total} · {stage}",
+                                  int(_step * 90 / total) + pct // 10, detail)
+                logger.info("confirm job=%s otype=%s stage=%s pct=%d %s",
+                            job_id, _otype, stage, pct, detail)
+
             run_pipeline(connector=RecordsConnector(recs), dsn=settings.rdb_dsn,
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
-                         workspace_id=workspace_id, relate=True)
+                         workspace_id=workspace_id, relate=True, on_progress=_progress_otype)
 
     # Collect valid plans in approval order so FK detection sees the full picture.
     valid_plans = [p for p in
@@ -774,11 +832,39 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                    if p is not None]
     auto_fk = _detect_fk_links(valid_plans)
     if auto_fk:
-        logger.info("auto-detected %d fk-link spec(s): %s", len(auto_fk), auto_fk)
+        logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
+                    job_id, len(auto_fk), auto_fk)
 
-    def _run_one_plan(plan: dict, is_last: bool) -> None:
+    # Detect FK links from the last plan to types already in the workspace.
+    # Fires for single-file jobs where _detect_fk_links returns [].
+    if valid_plans:
+        try:
+            onto = OntologyStore(settings.rdb_dsn, workspace_id)
+            try:
+                known_types = [t.name for t in onto.list_types()]
+            finally:
+                onto.close()
+        except Exception:  # noqa: BLE001
+            known_types = []
+        existing_pairs: set[tuple[str, str]] = {
+            (lk["source_type"], lk["target_type"]) for lk in auto_fk
+        }
+        workspace_fk = _detect_fk_links_workspace(
+            valid_plans[-1], known_types, seen=existing_pairs
+        )
+        if workspace_fk:
+            auto_fk.extend(workspace_fk)
+            logger.info("confirm job=%s workspace FK links detected count=%d specs=%s",
+                        job_id, len(workspace_fk), workspace_fk)
+
+    def _run_one_plan(plan: dict, is_last: bool, plan_step: int) -> None:
         """Run a single tabular plan through the pipeline."""
         fname = plan["filename"]
+        otype = plan["ontology_type"]
+        logger.info("confirm job=%s step=%d/%d file=%s otype=%s is_last=%s",
+                    job_id, plan_step, total, fname, otype, is_last)
+        jobs.update_stage(job_id, f"{plan_step}/{total} · Discover",
+                          int(plan_step * 90 / total), f"Starting {fname}")
         tmp_path: Path | None = None
         if Path(fname).suffix.lower() == ".json":
             tmp = NamedTemporaryFile(suffix=".json", delete=False)
@@ -788,6 +874,15 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             conn = JsonConnector(tmp_path, system="json")
         else:
             conn = CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
+
+        def _progress_plan(stage: str, pct: int, detail: str) -> None:
+            # Parallel plans share the job record — cap pct so we don't jump backwards.
+            base = int(plan_step * 90 / total)
+            jobs.update_stage(job_id, f"{plan_step}/{total} · {stage}",
+                              min(base + pct // 10, 90), detail)
+            logger.info("confirm job=%s file=%s stage=%s pct=%d %s",
+                        job_id, fname, stage, pct, detail)
+
         try:
             # relate: only the last plan runs LLM inference — it can see ALL
             # entity types that were resolved by prior plans.  Non-last plans
@@ -799,10 +894,13 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             # it calls estore.list_entities() which covers ALL workspace entities.
             run_pipeline(connector=conn, dsn=settings.rdb_dsn,
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
-                         ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
+                         ontology_type=otype, match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=is_last and settings.ingest_relate, skip_graph=not is_last)
+                         relate=is_last and settings.ingest_relate, 
+                         skip_graph=not is_last,
+                         on_progress=_progress_plan)
+            logger.info("confirm job=%s file=%s done", job_id, fname)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
@@ -812,27 +910,35 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # others complete so that link_by_attribute can see every prior entity.
     non_last = valid_plans[:-1]
     last = valid_plans[-1] if valid_plans else None
+    plan_steps = {p["filename"]: step + i + 1 for i, p in enumerate(valid_plans)}
 
     jobs.update_stage(job_id, f"{step + 1}/{total}", int((step + 1) * 90 / total),
                       f"Ingesting {len(valid_plans)} file(s) ({settings.ingest_workers} parallel)…")
+    logger.info("confirm job=%s ingesting files=%s fk_links=%d",
+                job_id, [p["filename"] for p in valid_plans], len(auto_fk))
 
     if non_last:
         with ThreadPoolExecutor(max_workers=settings.ingest_workers) as pool:
-            futs = {pool.submit(_run_one_plan, p, False): p["filename"] for p in non_last}
+            futs = {pool.submit(_run_one_plan, p, False, plan_steps[p["filename"]]): p["filename"]
+                    for p in non_last}
             failed: list[str] = []
             for fut in as_completed(futs):
-                exc = fut.exception()
-                if exc:
-                    fname_failed = futs[fut]
-                    logger.warning("plan failed %s: %s", fname_failed, exc)
-                    failed.append(fname_failed)
+                fname_done = futs[fut]
+                try:
+                    fut.result()
+                    logger.info("confirm job=%s plan complete file=%s", job_id, fname_done)
+                except Exception:
+                    logger.warning("confirm job=%s plan failed file=%s",
+                                   job_id, fname_done, exc_info=True)
+                    failed.append(fname_done)
             if failed:
-                raise RuntimeError(
-                    f"{len(failed)} of {len(non_last)} plan(s) failed: {failed}"
+                logger.warning(
+                    "confirm job=%s skipping %d failed plan(s): %s — continuing with remaining",
+                    job_id, len(failed), failed,
                 )
 
     if last:
-        step += len(valid_plans)
-        jobs.update_stage(job_id, f"{step}/{total}", int(step * 90 / total),
-                          f"Finalising FK links…")
-        _run_one_plan(last, is_last=True)
+        last_step = plan_steps[last["filename"]]
+        jobs.update_stage(job_id, f"{last_step}/{total} · FK links",
+                          int(last_step * 90 / total), f"Finalising FK links for {last['filename']}…")
+        _run_one_plan(last, is_last=True, plan_step=last_step)

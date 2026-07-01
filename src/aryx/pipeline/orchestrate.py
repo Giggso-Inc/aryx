@@ -84,11 +84,12 @@ def run_pipeline(
         runner = StageRunner(dsn, run_id, resume=True)
         logger.info("resuming run_id=%s", run_id)
     else:
-        _emit(on_progress, "Discover", 10, "Extracting, profiling and landing source records")
+        _emit(on_progress, "Discover", 5, "Starting extraction from source")
         store = PostgresStore(dsn, workspace_id)
         try:
             run_id = discover(connector, store, system, dataset,
-                              broker=broker if tag else None)
+                              broker=broker if tag else None,
+                              on_progress=on_progress)
         finally:
             store.close()
         runner = StageRunner(dsn, run_id, resume=False)
@@ -101,12 +102,14 @@ def run_pipeline(
     counts: dict[str, int] = {}
     try:
         if not runner.skip("resolve_cluster"):
-            _emit(on_progress, "Resolve", 50, "Resolving records into canonical entities")
+            _emit(on_progress, "Resolve", 30, "Loading landed records for resolution")
             with runner.stage("resolve_cluster"):
                 entities = resolve_run(run_id, ontology_type, match_keys,
-                                       estore, broker)
+                                       estore, broker, on_progress=on_progress)
+            _emit(on_progress, "Resolve", 62, f"{entities} entities resolved")
         # Register the type in OntologyStore so the schema diagram populates.
         # seed_types is idempotent (ON CONFLICT DO NOTHING).
+        _emit(on_progress, "Seed", 65, f"Registering ontology type {ontology_type}")
         try:
             onto = OntologyStore(dsn, workspace_id)
             try:
@@ -119,7 +122,7 @@ def run_pipeline(
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
             logger.warning("ontology type seed failed for %s", ontology_type, exc_info=True)
         if relate and not runner.skip("relate"):
-            _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
+            _emit(on_progress, "Relate", 70, "Inferring relationships between entities")
             with runner.stage("relate"):
                 relationships = _relate(estore, broker, _max_pairs)
         if relate and not runner.skip("schema_fk"):
@@ -142,8 +145,9 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
+            _emit(on_progress, "Relate", 78, f"{relationships} relationships inferred")
         if fk_links and not runner.skip("fk_link"):
-            _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
+            _emit(on_progress, "Link", 80, f"Linking entities via {len(fk_links)} FK spec(s)")
             with runner.stage("fk_link"):
                 for spec in fk_links:
                     if not _FK_REQUIRED.issubset(spec):
@@ -186,11 +190,12 @@ def run_pipeline(
                 )
         else:
             logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
+            _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('vertices', 0)} nodes, {counts.get('edges', 0)} edges")
     finally:
         estore.close()
 
     summary = {"run_id": run_id, "entities": entities,
                "relationships": relationships, **counts}
-    _emit(on_progress, "Done", 100, f"{entities} entities, {relationships} relationships")
+    _emit(on_progress, "Done", 100, f"{entities} entities · {relationships} relationships · {counts.get('vertices', 0)} graph nodes")
     logger.info("pipeline complete %s", summary)
     return summary

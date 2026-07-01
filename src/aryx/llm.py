@@ -76,7 +76,7 @@ def complete_text(
         text, in_tok, out_tok = oci_providers.oci_genai_text(spec, system, user)
         _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
-        logger.info("complete_text tier=%s provider=oci model=%s tokens=%d",
+        logger.debug("complete_text tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
         _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
         return text.strip(), in_tok, out_tok
@@ -156,7 +156,7 @@ def complete_json(
         data, in_tok, out_tok = oci_genai_json(spec, system, user, schema)
         _ms = int((_time.monotonic() - _t0) * 1000)
         broker.charge(tier, in_tok + out_tok)
-        logger.info("complete tier=%s provider=oci model=%s tokens=%d",
+        logger.debug("complete tier=%s provider=oci model=%s tokens=%d",
                     tier, model_name, in_tok + out_tok)
         _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
         return _normalize_json(data, schema)
@@ -170,7 +170,7 @@ def complete_json(
     else:
         data, in_tok, out_tok = openai_json(spec, system, user, key)
     broker.charge(tier, in_tok + out_tok)
-    logger.info("complete tier=%s provider=%s model=%s tokens=%d", tier,
+    logger.debug("complete tier=%s provider=%s model=%s tokens=%d", tier,
                 spec.provider, spec.name, in_tok + out_tok)
     # Provider-quirk normalization: list-vs-dict envelope + synonym rename.
     return _normalize_json(data, schema)
