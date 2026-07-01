@@ -197,7 +197,11 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
     Each batch always contains the "anchor" type (the one with the most FK-like
     attributes) so cross-batch FK links involving the anchor are discovered.
     """
-    sample = store.list_entities_typed_sample(1)
+    try:
+        sample = store.list_entities_typed_sample(1)
+    except Exception:  # noqa: BLE001 — schema FK inference is best-effort
+        logger.exception("_infer_schema_fk_links: typed sample query failed — skipping")
+        return []
     if len(sample) < 2:
         return []
 
@@ -278,14 +282,11 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
     """
     cfg = get_settings()
 
-    # Collect all entity IDs that already have at least one relationship edge.
-    linked_ids: set[int] = set()
-    for src_id, tgt_id, _ in store.list_relationships():
-        linked_ids.add(src_id)
-        linked_ids.add(tgt_id)
+    # Single anti-join query: entities with no relationship edge (W1 fix).
+    isolated_rows = store.list_isolated_entities()
 
-    # Sample one anchor entity per type — used both to detect isolated types
-    # and as the inference partner when an isolated type needs an LLM call.
+    # Sample one anchor entity per type — used as the inference partner when
+    # an isolated type needs an LLM call.
     anchors_sample = store.list_entities_typed_sample(1)
     anchors: dict[str, tuple[int, str, dict]] = {
         etype: (eid, etype, attrs)
@@ -294,11 +295,10 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
     if len(anchors) < 2:
         return 0  # need at least two types for cross-type inference
 
-    # Collect every isolated entity (zero relationship edges) and group by type.
+    # Group isolated entities by type using the anti-join result directly.
     isolated_by_type: dict[str, list[tuple[int, str, dict]]] = defaultdict(list)
-    for eid, etype, attrs in store.list_entities():
-        if eid not in linked_ids:
-            isolated_by_type[etype].append((eid, etype, attrs))
+    for eid, etype, attrs in isolated_rows:
+        isolated_by_type[etype].append((eid, etype, attrs))
 
     if not isolated_by_type:
         logger.debug("_relate_isolated: no isolated entities — skipping")

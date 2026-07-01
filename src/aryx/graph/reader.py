@@ -233,44 +233,49 @@ class GraphReader:
                         entity_map[eid] = {"id": eid, "type": et, "name": en}
                         valid_ids.add(eid)
 
-        # Step 5 — post-linking pass: guarantee every entity has a visible edge.
-        # For entities whose specific neighbors are not in valid_ids, add ONE
-        # real neighbor from FalkorDB directly (allowing the per-type cap to be
-        # exceeded by a small margin rather than leaving nodes isolated).
-        # Each query is LIMIT 1 — cheap even at 50-100 isolated entities.
+        # Step 5 — post-linking pass (batched): guarantee every entity has a
+        # visible edge.  Two UNWIND queries replace N×LIMIT 1 round-trips.
+        # First pass: outbound neighbors for all still-isolated entities.
+        # Second pass: inbound neighbors for any still-isolated after the first.
         if entity_map:
             connected_ids: set[int] = set()
             for r in rels:
                 connected_ids.add(r["source"])
                 connected_ids.add(r["target"])
-            for eid in list(entity_map.keys()):
-                if eid in connected_ids:
-                    continue
-                # Try outbound first
-                rows = self._graph.query(
-                    "MATCH (a:Entity {id: $id})-[r:REL]->(b:Entity) "
-                    "RETURN b.id, b.type, b.name, r.name LIMIT 1",
-                    {"id": eid},
+            isolated_eids = [eid for eid in entity_map if eid not in connected_ids]
+            if isolated_eids:
+                found: dict[int, tuple] = {}
+                out_cap = len(isolated_eids) * 2 + 10
+                out_rows = self._graph.query(
+                    "UNWIND $ids AS eid "
+                    "MATCH (a:Entity {id: eid})-[r:REL]->(b:Entity) "
+                    f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {out_cap}",
+                    {"ids": isolated_eids},
                 ).result_set
-                if rows:
-                    bid, btype, bname, rname = rows[0]
+                for row in out_rows:
+                    eid_ = row[0]
+                    if eid_ not in found:
+                        found[eid_] = (row[1], row[2], row[3], row[4], "out")
+                still_iso = [e for e in isolated_eids if e not in found]
+                if still_iso:
+                    in_cap = len(still_iso) * 2 + 10
+                    in_rows = self._graph.query(
+                        "UNWIND $ids AS eid "
+                        "MATCH (b:Entity)-[r:REL]->(a:Entity {id: eid}) "
+                        f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {in_cap}",
+                        {"ids": still_iso},
+                    ).result_set
+                    for row in in_rows:
+                        eid_ = row[0]
+                        if eid_ not in found:
+                            found[eid_] = (row[1], row[2], row[3], row[4], "in")
+                for eid, (bid, btype, bname, rname, direction) in found.items():
                     entity_map[bid] = {"id": bid, "type": btype, "name": bname}
                     valid_ids.add(bid)
-                    rels.append({"source": eid, "target": bid, "name": rname})
-                    connected_ids.add(eid)
-                    connected_ids.add(bid)
-                    continue
-                # Try inbound
-                rows = self._graph.query(
-                    "MATCH (b:Entity)-[r:REL]->(a:Entity {id: $id}) "
-                    "RETURN b.id, b.type, b.name, r.name LIMIT 1",
-                    {"id": eid},
-                ).result_set
-                if rows:
-                    bid, btype, bname, rname = rows[0]
-                    entity_map[bid] = {"id": bid, "type": btype, "name": bname}
-                    valid_ids.add(bid)
-                    rels.append({"source": bid, "target": eid, "name": rname})
+                    if direction == "out":
+                        rels.append({"source": eid, "target": bid, "name": rname})
+                    else:
+                        rels.append({"source": bid, "target": eid, "name": rname})
                     connected_ids.add(eid)
                     connected_ids.add(bid)
 

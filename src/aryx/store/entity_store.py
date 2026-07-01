@@ -144,6 +144,17 @@ class EntityStore:
                 while batch := cur.fetchmany(batch_size):
                     yield from ((r[0], r[1], r[2], r[3]) for r in batch)
 
+    def list_isolated_entities(self) -> list[tuple[int, str, dict]]:
+        """Return entities that have no relationship edges (source or target).
+
+        Single anti-join query — replaces the two-scan pattern of materialising
+        all relationships then all entities and diffing in Python.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_isolated_entities"), (self._ws, self._ws))
+                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
     def list_relationships(self) -> Iterator[tuple[int, int, str]]:
         """Yield (source_entity_id, target_entity_id, name) edges.
 
