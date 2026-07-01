@@ -524,7 +524,7 @@ function headerMeta(pathname?: string | null) {
   if (pathname === "/settings") {
     return {
       title: "Settings",
-      description: "",
+      description: "Manage platform-wide tokens, ontology options, and guarded reset controls.",
     };
   }
   return {

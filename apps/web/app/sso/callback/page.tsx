@@ -23,7 +23,8 @@ export default function SsoCallbackPage() {
       ? window.location.hash.slice(1)
       : window.location.hash;
     const params = new URLSearchParams(hash);
-    const next = localStorage.getItem("aryx.shay.sso.next") || "/workspaces";
+    const rawNext = localStorage.getItem("aryx.shay.sso.next") || "/workspaces";
+    const next = rawNext === "/start" ? "/workspaces" : rawNext;
     localStorage.removeItem("aryx.shay.sso.next");
 
     const error = params.get("message");
@@ -40,7 +41,7 @@ export default function SsoCallbackPage() {
     try {
       const parsed = JSON.parse(decodeBase64Url(ssoData)) as ShaySession;
       setSession(parsed);
-      router.replace(parsed.default_workspace_id ? `/workspaces/${parsed.default_workspace_id}` : next);
+      router.replace(next);
     } catch (nextError: unknown) {
       setMessage(nextError instanceof Error ? nextError.message : "Unable to decode SSO payload.");
     }
@@ -58,4 +59,3 @@ export default function SsoCallbackPage() {
     </div>
   );
 }
-

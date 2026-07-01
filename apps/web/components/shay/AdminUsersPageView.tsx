@@ -88,7 +88,12 @@ interface AdminUsersPageViewProps {
   onSendInvites: (invites: Array<{ email: string; role: string }>) => void;
   inviteError: string | null;
   onUpdateUser: (userId: string, payload: { role?: string; is_active?: boolean }) => void;
+  onDeleteUser: (user: ShayUser) => void;
   onDeleteInvitation: (email: string) => void;
+  onShowAllUsers: () => void;
+  onShowActiveUsers: () => void;
+  onShowInactiveUsers: () => void;
+  onShowPendingInvitations: () => void;
 }
 
 export function AdminUsersPageView({
@@ -121,7 +126,12 @@ export function AdminUsersPageView({
   onSendInvites,
   inviteError,
   onUpdateUser,
+  onDeleteUser,
   onDeleteInvitation,
+  onShowAllUsers,
+  onShowActiveUsers,
+  onShowInactiveUsers,
+  onShowPendingInvitations,
 }: AdminUsersPageViewProps) {
   return (
     <div className="space-y-6 animate-fade-in">
@@ -175,7 +185,12 @@ export function AdminUsersPageView({
               onRoleFilterChange={onRoleFilterChange}
               onStatusFilterChange={onStatusFilterChange}
               onUpdateUser={onUpdateUser}
+              onDeleteUser={onDeleteUser}
               onDeleteInvitation={onDeleteInvitation}
+              onShowAllUsers={onShowAllUsers}
+              onShowActiveUsers={onShowActiveUsers}
+              onShowInactiveUsers={onShowInactiveUsers}
+              onShowPendingInvitations={onShowPendingInvitations}
             />
           ) : null}
 
@@ -219,7 +234,12 @@ function UsersSection({
   onRoleFilterChange,
   onStatusFilterChange,
   onUpdateUser,
+  onDeleteUser,
   onDeleteInvitation,
+  onShowAllUsers,
+  onShowActiveUsers,
+  onShowInactiveUsers,
+  onShowPendingInvitations,
 }: {
   users: ShayUser[];
   invitations: ShayInvitation[];
@@ -236,7 +256,12 @@ function UsersSection({
   onRoleFilterChange: (value: string) => void;
   onStatusFilterChange: (value: string) => void;
   onUpdateUser: (userId: string, payload: { role?: string; is_active?: boolean }) => void;
+  onDeleteUser: (user: ShayUser) => void;
   onDeleteInvitation: (email: string) => void;
+  onShowAllUsers: () => void;
+  onShowActiveUsers: () => void;
+  onShowInactiveUsers: () => void;
+  onShowPendingInvitations: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -247,6 +272,7 @@ function UsersSection({
           value={users.length}
           helper="All company members"
           icon={<Users2 size={18} />}
+          onClick={onShowAllUsers}
         />
         <MetricCard
           tone="green"
@@ -254,6 +280,7 @@ function UsersSection({
           value={users.filter((user) => user.is_active).length}
           helper="Currently active"
           icon={<UserRoundCheck size={18} />}
+          onClick={onShowActiveUsers}
         />
         <MetricCard
           tone="red"
@@ -261,6 +288,7 @@ function UsersSection({
           value={users.filter((user) => !user.is_active).length}
           helper="Disabled accounts"
           icon={<UserRoundX size={18} />}
+          onClick={onShowInactiveUsers}
         />
         <MetricCard
           tone="slate"
@@ -268,6 +296,7 @@ function UsersSection({
           value={invitations.length}
           helper="Awaiting response"
           icon={<Mail size={18} />}
+          onClick={onShowPendingInvitations}
         />
       </section>
 
@@ -368,6 +397,7 @@ function UsersSection({
             users={filteredUsers}
             onRoleChange={(userId, role) => onUpdateUser(userId, { role })}
             onToggle={(user) => onUpdateUser(user.id, { is_active: !user.is_active })}
+            onDelete={onDeleteUser}
             saving={saving}
           />
         ) : (

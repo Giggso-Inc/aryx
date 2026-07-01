@@ -11,6 +11,7 @@ import type { ShayCompany, ShayInvitation, ShayUser } from "@/lib/shay-types";
 
 type AdminTab = "users" | "subscription" | "company-profile";
 type TableTab = "users" | "invitations";
+type TabFeedback = Partial<Record<AdminTab, string | null>>;
 
 export interface CompanyProfileDraft {
   name: string;
@@ -59,8 +60,8 @@ export function AdminUsersPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingCompany, setSavingCompany] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [errorsByTab, setErrorsByTab] = useState<TabFeedback>({});
+  const [noticesByTab, setNoticesByTab] = useState<TabFeedback>({});
   const [inviteError, setInviteError] = useState<string | null>(null);
   const tabParam = searchParams.get("tab");
   const tab: AdminTab =
@@ -77,10 +78,18 @@ export function AdminUsersPage() {
     description: "",
   });
 
+  const setTabError = (targetTab: AdminTab, message: string | null) => {
+    setErrorsByTab((current) => ({ ...current, [targetTab]: message }));
+  };
+
+  const setTabNotice = (targetTab: AdminTab, message: string | null) => {
+    setNoticesByTab((current) => ({ ...current, [targetTab]: message }));
+  };
+
   const load = async () => {
     if (!session) return;
     setLoading(true);
-    setError(null);
+    setTabError("users", null);
     try {
       const [companyList, userList, invitationList] = await Promise.all([
         shayApi.getMyCompany(session.access_token),
@@ -97,7 +106,7 @@ export function AdminUsersPage() {
       setUsers(userList.users);
       setInvitations(invitationList.invitations);
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to load company users.");
+      setTabError("users", nextError instanceof Error ? nextError.message : "Unable to load company users.");
     } finally {
       setLoading(false);
     }
@@ -106,6 +115,28 @@ export function AdminUsersPage() {
   useEffect(() => {
     void load();
   }, [session?.access_token, session?.company_id]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    const activeNotice = noticesByTab[tab];
+    const activeError = errorsByTab[tab];
+    if (!activeNotice && !activeError) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      if (activeNotice) {
+        setTabNotice(tab, null);
+      }
+      if (activeError) {
+        setTabError(tab, null);
+      }
+    }, 4000);
+
+    return () => window.clearTimeout(timer);
+  }, [errorsByTab, noticesByTab, tab]);
 
   const setTab = (nextTab: AdminTab) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -121,6 +152,11 @@ export function AdminUsersPage() {
   const openInviteModal = () => {
     setInviteError(null);
     setShowInviteComposer(true);
+  };
+
+  const setUserTableState = (nextTableTab: TableTab, nextStatusFilter: string) => {
+    setTableTab(nextTableTab);
+    setStatusFilter(nextStatusFilter);
   };
 
   const filteredUsers = useMemo(() => {
@@ -160,7 +196,8 @@ export function AdminUsersPage() {
     }
     setSaving(true);
     setInviteError(null);
-    setNotice(null);
+    setTabNotice("users", null);
+    setTabError("users", null);
     try {
       const result = await shayApi.bulkInviteUsers(
         {
@@ -176,7 +213,8 @@ export function AdminUsersPage() {
       );
       setShowInviteComposer(false);
       setInviteError(null);
-      setNotice(result.message || (invites.length === 1 ? "Invitation sent." : "Invitations sent."));
+      setUserTableState("invitations", "pending");
+      setTabNotice("users", result.message || (invites.length === 1 ? "Invitation sent." : "Invitations sent."));
       await load();
     } catch (nextError: unknown) {
       setInviteError(nextError instanceof Error ? nextError.message : "Unable to invite user.");
@@ -188,14 +226,31 @@ export function AdminUsersPage() {
   const updateUser = async (userId: string, payload: { role?: string; is_active?: boolean }) => {
     if (!session) return;
     setSaving(true);
-    setError(null);
-    setNotice(null);
+    setTabError("users", null);
+    setTabNotice("users", null);
     try {
       await shayApi.updateCompanyUser(session.company_id, userId, payload, session.access_token);
-      setNotice("User updated.");
+      setTabNotice("users", "User updated.");
       await load();
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to update user.");
+      setTabError("users", nextError instanceof Error ? nextError.message : "Unable to update user.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteUser = async (user: ShayUser) => {
+    if (!session) return;
+    if (!window.confirm(`Delete ${user.name || user.email_id} from this company?`)) return;
+    setSaving(true);
+    setTabError("users", null);
+    setTabNotice("users", null);
+    try {
+      await shayApi.deleteCompanyUser(session.company_id, user.id, session.access_token);
+      setTabNotice("users", "User deleted.");
+      await load();
+    } catch (nextError: unknown) {
+      setTabError("users", nextError instanceof Error ? nextError.message : "Unable to delete user.");
     } finally {
       setSaving(false);
     }
@@ -205,18 +260,19 @@ export function AdminUsersPage() {
     if (!session) return;
     if (!window.confirm(`Delete pending invitations for ${email}?`)) return;
     setSaving(true);
-    setError(null);
-    setNotice(null);
+    setTabError("users", null);
+    setTabNotice("users", null);
     try {
       const result = await shayApi.deletePendingInvitation(
         session.company_id,
         email,
         session.access_token,
       );
-      setNotice(result.message);
+      setUserTableState("invitations", "pending");
+      setTabNotice("users", result.message);
       await load();
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to delete invitation.");
+      setTabError("users", nextError instanceof Error ? nextError.message : "Unable to delete invitation.");
     } finally {
       setSaving(false);
     }
@@ -225,8 +281,8 @@ export function AdminUsersPage() {
   const saveCompanyProfile = async () => {
     if (!session || !company) return;
     setSavingCompany(true);
-    setError(null);
-    setNotice(null);
+    setTabError("company-profile", null);
+    setTabNotice("company-profile", null);
     try {
       const nextSettings: Record<string, unknown> = {
         ...(company.settings ?? {}),
@@ -250,9 +306,9 @@ export function AdminUsersPage() {
 
       setCompany(updated);
       setCompanyDraft(buildCompanyDraft(updated));
-      setNotice("Company profile updated.");
+      setTabNotice("company-profile", "Company profile updated.");
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to save company profile.");
+      setTabError("company-profile", nextError instanceof Error ? nextError.message : "Unable to save company profile.");
     } finally {
       setSavingCompany(false);
     }
@@ -272,8 +328,8 @@ export function AdminUsersPage() {
           loading={loading}
           saving={saving}
           savingCompany={savingCompany}
-          error={error}
-          notice={notice}
+          error={errorsByTab[tab] ?? null}
+          notice={noticesByTab[tab] ?? null}
           tab={tab}
           tableTab={tableTab}
           showInviteComposer={showInviteComposer}
@@ -300,7 +356,12 @@ export function AdminUsersPage() {
           onSendInvites={inviteUsers}
           inviteError={inviteError}
           onUpdateUser={updateUser}
+          onDeleteUser={deleteUser}
           onDeleteInvitation={deleteInvitation}
+          onShowAllUsers={() => setUserTableState("users", "all")}
+          onShowActiveUsers={() => setUserTableState("users", "active")}
+          onShowInactiveUsers={() => setUserTableState("users", "inactive")}
+          onShowPendingInvitations={() => setUserTableState("invitations", "pending")}
         />
       </ShayPageShell>
     </AuthGuard>

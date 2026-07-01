@@ -1,17 +1,26 @@
+# syntax=docker/dockerfile:1.7
+#
 # Multi-stage Next.js build — standalone output for a small runtime image.
 # The web app is fully isolated: it talks to FastAPI over HTTP, nothing more.
 
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json ./
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund
 
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY app ./app
+COPY components ./components
+COPY lib ./lib
+COPY public ./public
+COPY package.json package-lock.json ./
+COPY tsconfig.json next.config.mjs postcss.config.mjs tailwind.config.ts next-env.d.ts ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN --mount=type=cache,target=/app/.next/cache \
+    npm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app

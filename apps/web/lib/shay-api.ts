@@ -188,6 +188,45 @@ function query(params: Record<string, string | number | boolean | undefined | nu
   return serialized ? `?${serialized}` : "";
 }
 
+type CachedEntry = {
+  expiresAt: number;
+  value: Promise<unknown>;
+};
+
+const shayGetCache = new Map<string, CachedEntry>();
+
+function invalidateShayCache(prefix: string) {
+  for (const key of shayGetCache.keys()) {
+    if (key.startsWith(prefix)) {
+      shayGetCache.delete(key);
+    }
+  }
+}
+
+function cachedRequestJSON<T>(
+  cacheKey: string,
+  ttlMs: number,
+  base: string,
+  path: string,
+  token?: string,
+) {
+  const now = Date.now();
+  const cached = shayGetCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value as Promise<T>;
+  }
+
+  const nextValue = requestJSON<T>(base, path, undefined, token).catch((error) => {
+    shayGetCache.delete(cacheKey);
+    throw error;
+  });
+  shayGetCache.set(cacheKey, {
+    expiresAt: now + ttlMs,
+    value: nextValue,
+  });
+  return nextValue;
+}
+
 async function listBridgedWorkspaces(token: string): Promise<ShayWorkspaceList> {
   return requestJSON<ShayWorkspaceList>(
     SHAY_WORKSPACE_PROXY_BASE,
@@ -320,10 +359,11 @@ export const shayApi = {
     ),
 
   listCompanyUsers: (companyId: string, token: string) =>
-    requestJSON<ShayUserList>(
+    cachedRequestJSON<ShayUserList>(
+      `company-users:${companyId}`,
+      10_000,
       SHAY_BASE,
       `/users/company/${companyId}/users`,
-      undefined,
       token,
     ),
 
@@ -360,7 +400,23 @@ export const shayApi = {
         body: JSON.stringify(payload),
       },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`company-users:${companyId}`);
+      return result;
+    }),
+
+  deleteCompanyUser: (companyId: string, userId: string, token: string) =>
+    requestJSON<{ success?: boolean; message?: string }>(
+      SHAY_BASE,
+      `/users/company/${companyId}/users/${userId}`,
+      {
+        method: "DELETE",
+      },
+      token,
+    ).then((result) => {
+      invalidateShayCache(`company-users:${companyId}`);
+      return result;
+    }),
 
   inviteUser: (
     payload: {
@@ -425,7 +481,13 @@ export const shayApi = {
         body: JSON.stringify(payload),
       },
       token,
-    ),
+    ).then((result) => {
+      const companyId = payload.users[0]?.company_id;
+      if (companyId) {
+        invalidateShayCache(`company-users:${companyId}`);
+      }
+      return result;
+    }),
 
   deletePendingInvitation: (companyId: string, email: string, token: string) =>
     requestJSON<{ message: string; deleted_count: number; email: string; company_id: string }>(
@@ -435,16 +497,20 @@ export const shayApi = {
         method: "DELETE",
       },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`company-users:${companyId}`);
+      return result;
+    }),
 
   listWorkspaces: (token: string) => listBridgedWorkspaces(token),
 
   getWorkspace: async (workspaceId: string, token: string) => {
     try {
-      return await requestJSON<ShayWorkspace>(
+      return await cachedRequestJSON<ShayWorkspace>(
+        `workspace:${workspaceId}`,
+        10_000,
         SHAY_WORKSPACE_PROXY_BASE,
         `/${workspaceId}`,
-        undefined,
         token,
       );
     } catch (error) {
@@ -455,6 +521,10 @@ export const shayApi = {
       const list = await listBridgedWorkspaces(token);
       const match = list.workspaces.find((workspace) => workspace.id === workspaceId);
       if (match) {
+        shayGetCache.set(`workspace:${workspaceId}`, {
+          expiresAt: Date.now() + 10_000,
+          value: Promise.resolve(match),
+        });
         return match;
       }
       throw error;
@@ -489,7 +559,10 @@ export const shayApi = {
         }),
       },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache("workspace:");
+      return result;
+    }),
 
   updateWorkspace: (
     workspaceId: string,
@@ -498,7 +571,10 @@ export const shayApi = {
   ) => requestJSON<ShayWorkspace>(SHAY_WORKSPACE_PROXY_BASE, `/${workspaceId}`, {
     method: "PUT",
     body: JSON.stringify(payload),
-  }, token),
+  }, token).then((result) => {
+    invalidateShayCache(`workspace:${workspaceId}`);
+    return result;
+  }),
 
   deleteWorkspace: (workspaceId: string, token: string) =>
     requestJSON<{ success?: boolean; message?: string }>(
@@ -506,7 +582,12 @@ export const shayApi = {
       `/${workspaceId}`,
       { method: "DELETE" },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`workspace:${workspaceId}`);
+      invalidateShayCache(`workspace-members:${workspaceId}`);
+      invalidateShayCache(`datasources:${workspaceId}`);
+      return result;
+    }),
 
   purgeWorkspace: (workspaceId: string, token: string) =>
     requestJSON<{ status: string }>(
@@ -517,10 +598,11 @@ export const shayApi = {
     ),
 
   listWorkspaceMembers: (workspaceId: string, token: string) =>
-    requestJSON<ShayWorkspaceMemberList>(
+    cachedRequestJSON<ShayWorkspaceMemberList>(
+      `workspace-members:${workspaceId}`,
+      10_000,
       SHAY_WORKSPACE_PROXY_BASE,
       `/${workspaceId}/members`,
-      undefined,
       token,
     ),
 
@@ -537,7 +619,10 @@ export const shayApi = {
         body: JSON.stringify(payload),
       },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`workspace-members:${workspaceId}`);
+      return result;
+    }),
 
   updateWorkspaceMember: (
     workspaceId: string,
@@ -553,7 +638,10 @@ export const shayApi = {
         body: JSON.stringify(payload),
       },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`workspace-members:${workspaceId}`);
+      return result;
+    }),
 
   removeWorkspaceMember: (workspaceId: string, userId: string, token: string) =>
     requestJSON(
@@ -561,7 +649,10 @@ export const shayApi = {
       `/${workspaceId}/members/${userId}`,
       { method: "DELETE" },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`workspace-members:${workspaceId}`);
+      return result;
+    }),
 
   listApps: (token: string) =>
     requestJSON<ShayAppList>(SHAY_BASE, "/apps/?size=100", undefined, token),
@@ -635,10 +726,11 @@ export const shayApi = {
     ),
 
   listDatasources: (workspaceId: string, token: string) =>
-    requestJSON<ShayDatasourceList>(
+    cachedRequestJSON<ShayDatasourceList>(
+      `datasources:${workspaceId}`,
+      10_000,
       SHAY_BASE,
       `/gg-datasources/${query({ level: "workspace", workspace_id: workspaceId, page_size: 100 })}`,
-      undefined,
       token,
     ),
 
@@ -676,7 +768,10 @@ export const shayApi = {
         }),
       },
       token,
-    ),
+    ).then((result) => {
+      invalidateShayCache(`datasources:${payload.workspace_id}`);
+      return result;
+    }),
 
   ensureWorkspaceBridge: (payload: {
     shay_workspace_id: string;

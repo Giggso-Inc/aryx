@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, PencilLine, Plus, UserPlus, Users2, X } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/cn";
+import { getAvatarInitial } from "@/lib/avatar";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
 import { formatWorkspaceName } from "@/lib/workspace-name";
@@ -724,9 +725,5 @@ function ProfileSummaryField({
 }
 
 function memberInitials(member: ShayWorkspaceMember) {
-  const source = member.name || member.email || member.user_id;
-  const parts = source.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
-  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+  return getAvatarInitial(member.name, member.email, member.user_id);
 }

@@ -2,8 +2,9 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { MailPlus, Trash2, UserCheck, UserCog, UserX, Users2 } from "lucide-react";
+import { MailPlus, Trash2, UserCheck, UserX, Users2 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { getAvatarInitial } from "@/lib/avatar";
 import type { ShayInvitation, ShayUser } from "@/lib/shay-types";
 
 type InviteRow = {
@@ -34,12 +35,14 @@ export function MetricCard({
   value,
   helper,
   icon,
+  onClick,
 }: {
   tone: "blue" | "green" | "red" | "slate";
   title: string;
   value: number;
   helper: string;
   icon: ReactNode;
+  onClick?: () => void;
 }) {
   const toneClasses = {
     blue: "text-blue-700 bg-blue-100",
@@ -55,8 +58,30 @@ export function MetricCard({
     slate: "text-slate-700",
   }[tone];
 
+  const classes = cn(
+    "rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-[0_2px_6px_rgba(10,21,48,0.04)] transition-colors",
+    onClick ? "focus-ring cursor-pointer hover:border-steel-300 hover:bg-canvas/70" : "",
+  );
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={classes}>
+        <div className="flex items-start justify-between gap-4">
+          <div className="text-left">
+            <p className={cn("text-sm font-medium", titleClass)}>{title}</p>
+            <p className="mt-2 text-4xl font-semibold tracking-tight text-navy-900">{value}</p>
+            <p className="mt-2 text-sm text-subtle">{helper}</p>
+          </div>
+          <div className={cn("flex size-11 items-center justify-center rounded-2xl", toneClasses)}>
+            {icon}
+          </div>
+        </div>
+      </button>
+    );
+  }
+
   return (
-    <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-[0_2px_6px_rgba(10,21,48,0.04)]">
+    <div className={classes}>
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className={cn("text-sm font-medium", titleClass)}>{title}</p>
@@ -279,11 +304,13 @@ export function UsersTable({
   users,
   onRoleChange,
   onToggle,
+  onDelete,
   saving,
 }: {
   users: ShayUser[];
   onRoleChange: (userId: string, role: string) => void;
   onToggle: (user: ShayUser) => void;
+  onDelete: (user: ShayUser) => void;
   saving: boolean;
 }) {
   return (
@@ -344,12 +371,13 @@ export function UsersTable({
                   </button>
                   <button
                     type="button"
-                    disabled
-                    className="inline-flex size-9 items-center justify-center rounded-xl border border-navy-100 bg-white text-navy-300"
-                    aria-label="Edit user"
-                    title="Edit user"
+                    onClick={() => onDelete(user)}
+                    disabled={saving}
+                    className="focus-ring inline-flex size-9 items-center justify-center rounded-xl border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:opacity-60"
+                    aria-label="Delete user"
+                    title="Delete user"
                   >
-                    <UserCog size={15} />
+                    <Trash2 size={15} />
                   </button>
                 </div>
               </div>
@@ -505,11 +533,7 @@ function EmptyState({
 }
 
 function initials(name: string, email: string) {
-  const source = name.trim() || email.trim();
-  const parts = source.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "A";
-  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
-  return `${parts[0].slice(0, 1)}${parts[1].slice(0, 1)}`.toUpperCase();
+  return getAvatarInitial(name, email);
 }
 
 function formatDateTime(value: string) {
