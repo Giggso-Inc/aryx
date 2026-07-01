@@ -51,14 +51,14 @@ def project_graph(
     Returns:
         Counts of {entities, provenance, relationships} written.
     """
-    logger.info("graph project start ws=%s — clearing", workspace_id)
+    logger.info("graph project start ws=%s — clearing existing graph data", workspace_id)
     graph.clear()
-    logger.info("graph cleared — writing entities")
+    logger.info("graph cleared ws=%s — writing entities", workspace_id)
 
     ancestors_for = type_ancestors or {}
 
     if hasattr(graph, "add_entities_batch"):
-        # Oracle batch path: collect all rows, then write in 3 round-trips per phase
+        # Oracle batch path: collect all rows, then write in 3 round-trips per phase.
         logger.info("graph collecting entities from store...")
         entity_rows = [
             (eid, typ, attrs, ancestors_for.get(typ, []), _entity_iri(base_uri, workspace_id, eid))
@@ -83,13 +83,12 @@ def project_graph(
         graph.add_relationships_batch(rel_rows)
         logger.info("graph relationships done total=%d", n_relationships)
     else:
-        # FalkorStore / Postgres path: per-item loop with progress logs
+        # FalkorStore path: per-item loops.
         n_entities = 0
         for entity_id, ontology_type, attributes in store.list_entities():
             labels = ancestors_for.get(ontology_type, [])
             iri = _entity_iri(base_uri, workspace_id, entity_id)
-            graph.add_entity(entity_id, ontology_type, attributes,
-                             labels=labels, iri=iri)
+            graph.add_entity(entity_id, ontology_type, attributes, labels=labels, iri=iri)
             n_entities += 1
             if n_entities % 50 == 0:
                 logger.info("graph entities written %d", n_entities)
@@ -99,15 +98,15 @@ def project_graph(
         for entity_id, system, dataset, record_id in store.list_members_provenance():
             graph.add_provenance(entity_id, system, dataset, record_id)
             n_provenance += 1
-            if n_provenance % 100 == 0:
-                logger.info("graph provenance written %d", n_provenance)
         logger.info("graph provenance done total=%d — writing relationships", n_provenance)
 
-        n_relationships = 0
-        for source_id, target_id, name in store.list_relationships():
-            graph.add_relationship(source_id, target_id, name)
-            n_relationships += 1
-        logger.info("graph relationships done total=%d", n_relationships)
+        all_rels = list(store.list_relationships())
+        if hasattr(graph, "add_relationships_batch"):
+            n_relationships = graph.add_relationships_batch(all_rels) or len(all_rels)
+        else:
+            for src, tgt, name in all_rels:
+                graph.add_relationship(src, tgt, name)
+            n_relationships = len(all_rels)
 
     counts = {"entities": n_entities, "provenance": n_provenance,
               "relationships": n_relationships}
@@ -147,8 +146,11 @@ def project_incremental(
     for entity_id, system, dataset, record_id in provenance:
         graph.add_provenance(entity_id, system, dataset, record_id)
     relationships = pstore.relationships_for(dirty_ids) if dirty_ids else []
-    for source_id, target_id, name in relationships:
-        graph.add_relationship(source_id, target_id, name)
+    if hasattr(graph, "add_relationships_batch"):
+        graph.add_relationships_batch(relationships)
+    else:
+        for src, tgt, name in relationships:
+            graph.add_relationship(src, tgt, name)
     tombstones = pstore.tombstones()
     for entity_id in tombstones:
         graph.remove_entity(entity_id)

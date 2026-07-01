@@ -11,6 +11,7 @@ drift apart.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from aryx.ask.evidence import RetrievedEntity
@@ -27,10 +28,14 @@ def all_types(reader: GraphReader) -> list[str]:
 def _lookup(reader: GraphReader, term: str) -> list[dict]:
     """Find entities for a term.
 
-    Tries in order: (1) numeric id lookup ('378' -> entity id=378), (2) substring
-    name match, (3) fallback to the longest word in a phrase. Numeric-id lookup
-    is needed because pipeline-derived entity names are often a non-id column
-    (e.g. ticket.status='open'), so plain name search misses 'ticket 378'.
+    Tries in order:
+    (1) Numeric id lookup ('378' -> entity id=378).
+    (2) Substring name match on the term as-is.
+    (3) Longest-word fallback for multi-word phrases.
+    (4) Compressed fallback: strip non-alphanumeric chars so that
+        "APX NEXT" matches entity names like "aPXNext_BOM" — necessary
+        when XML attribute values use camelCase+underscores while question
+        terms use space-separated words.
     """
     digits = "".join(ch for ch in term if ch.isdigit())
     if digits and len(digits) <= 9:
@@ -44,6 +49,20 @@ def _lookup(reader: GraphReader, term: str) -> list[dict]:
                 hits = reader.find_entities(name=word, limit=5)
                 if hits:
                     break
+
+    # Always also try the compressed form (non-alphanumeric chars stripped).
+    # "APX NEXT" compresses to "APXNEXT" which matches entity names like
+    # "aPXNext_BOM" even when the space-separated form already found different
+    # entities (e.g. BmMenuItems named "APX NEXT Single Band").  Merging both
+    # result sets ensures catalog/root entities are included alongside leaf nodes.
+    compressed = re.sub(r"[^a-zA-Z0-9]", "", term)
+    if compressed and compressed.lower() != term.lower() and len(compressed) > 2:
+        existing_ids = {h["id"] for h in hits}
+        for h in reader.find_entities(name=compressed, limit=5):
+            if h["id"] not in existing_ids:
+                hits.append(h)
+                existing_ids.add(h["id"])
+
     return hits
 
 

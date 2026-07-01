@@ -31,7 +31,7 @@ class Settings(BaseSettings):
         description="Max records per blocking group in resolution. Groups over this size are logged and skipped.",
     )
     graph_query_limit: int = Field(
-        default=500,
+        default=2000,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
     )
     max_relate_pairs: int = Field(
@@ -164,6 +164,15 @@ class Settings(BaseSettings):
     llm_timeout: float = Field(
         default=900.0,
         description="Per-call HTTP timeout in seconds for LLM requests.",
+    )
+    llm_num_predict: int = Field(
+        default=768,
+        description=(
+            "Max tokens Ollama generates per JSON completion call. "
+            "768 fits schema-FK responses for up to ~25 entity types. "
+            "Raise to 1024+ only if schema_fk returns truncated JSON. "
+            "Override with ARYX_LLM_NUM_PREDICT."
+        ),
     )
 
     # ── Document processing ───────────────────────────────────────────────────

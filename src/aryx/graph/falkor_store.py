@@ -13,36 +13,9 @@ from urllib.parse import urlparse
 
 from falkordb import FalkorDB
 
+from aryx.display_name import _GENERIC_NAMES, _NAME_KEYS, display_name as _dn
+
 logger = logging.getLogger(__name__)
-
-_NAME_KEYS = (
-    # Standard identifier fields
-    "name", "full_name", "title", "label", "ticket_ref", "ref",
-    "sku", "code", "email", "username",
-    # Defense / government data (CAGE, supplier, procurement, FLIS)
-    "COMPANY", "COMPANY_NAME", "company", "company_name",
-    "CAGE_CODE", "cage_code",
-    "ITEM_NAME", "item_name",
-    "LITERAL", "literal",                    # FLIS HELP.csv display name
-    "COLLOQUIAL_NAME", "colloquial_name",    # FLIS colloquial name
-    "FSC", "fsc",                            # FLIS Federal Supply Class (on NSN rows)
-    "NIIN", "niin",                          # FLIS NIIN — fallback when FSC absent
-    # XML / CPQ config domain fields
-    "variable_name", "var_name", "bm_variable_name",
-    "item_text", "item_value",
-    "prop_value", "property_value", "prop_type",
-    "bm_name", "func_name", "rule_name",
-    "java_class_name", "file_name", "relative_path",
-)
-
-# Placeholder strings that should not be used as display names — fall through
-# to the next candidate or the numeric ID instead.
-_GENERIC_NAMES: frozenset[str] = frozenset({
-    "no item name available", "not available", "n/a", "none", "null",
-    "unknown", "tbd", "to be determined", "see above", "see below",
-    "no name", "no description", "no data",
-    "########",  # Excel column-too-narrow placeholder (truncated dates)
-})
 
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_LABELS = 6  # cap to avoid label-bloat on deep hierarchies
@@ -71,27 +44,7 @@ def _safe_labels(labels: list[str] | None) -> list[str]:
 
 
 def _display_name(attributes: dict[str, Any]) -> str:
-    """Pick a human label for a node, working across arbitrary entity types.
-
-    Tries common identifying keys, then the first short string value, so a
-    ticket shows its ref/issue and a product shows its name — not a blank node.
-    Generic placeholder strings (e.g. "NO ITEM NAME AVAILABLE") are skipped so
-    the pipeline falls through to a numeric ID rather than exposing them.
-    """
-    for key in _NAME_KEYS:
-        value = attributes.get(key)
-        if value and str(value).lower() not in _GENERIC_NAMES:
-            return str(value)
-    # Prefer non-numeric strings so numeric IDs don't leak as display labels.
-    for value in attributes.values():
-        if isinstance(value, str) and 0 < len(value) <= 80 and not value.isdigit():
-            if value.lower() not in _GENERIC_NAMES:
-                return value
-    for value in attributes.values():
-        if isinstance(value, str) and 0 < len(value) <= 80:
-            if value.lower() not in _GENERIC_NAMES:
-                return value
-    return ""
+    return _dn(attributes)
 
 
 class FalkorStore:
@@ -179,3 +132,26 @@ class FalkorStore:
             "MERGE (a)-[:REL {name: $name}]->(b)",
             {"src": source_id, "tgt": target_id, "name": name},
         )
+
+    def add_relationships_batch(
+        self,
+        rels: list[tuple[int, int, str]],
+        batch_size: int = 500,
+    ) -> int:
+        """Write multiple relationships in batched UNWIND queries.
+
+        Uses UNWIND so N relationships cost ceil(N/batch_size) round-trips
+        instead of N. Returns count of relationships written.
+        """
+        written = 0
+        for i in range(0, len(rels), batch_size):
+            chunk = rels[i : i + batch_size]
+            params = [{"src": s, "tgt": t, "name": n} for s, t, n in chunk]
+            self._graph.query(
+                "UNWIND $rels AS rel "
+                "MATCH (a:Entity {id: rel.src}), (b:Entity {id: rel.tgt}) "
+                "MERGE (a)-[:REL {name: rel.name}]->(b)",
+                {"rels": params},
+            )
+            written += len(chunk)
+        return written

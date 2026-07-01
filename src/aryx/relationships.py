@@ -59,11 +59,10 @@ _SYSTEM = (
     "Use '_ontology_type' and '_element_type' fields to understand each entity's domain. "
     "STRUCTURAL RULES — return related=true with confidence >= 0.9 when: "
     "(1) entity B has an attribute like '{TypeA}_id' whose value matches entity A's 'id'; "
-    "(2) both entities share a common code/key attribute (e.g. CAGE_CODE, SUPPLIER_CODE, "
-    "PART_NO) with the same value — they describe the same real-world object from "
-    "different angles; "
-    "(3) entity A has a reference column (e.g. PARENT_CAGE, RPLM_CODE, ASSOC_CODE) "
-    "whose value matches entity B's primary code attribute. "
+    "(2) both entities share a common code/key attribute with the same value "
+    "— they describe the same real-world object from different angles; "
+    "(3) entity A has a reference column whose value matches entity B's primary "
+    "code attribute. "
     "Set related=false only when the entities are clearly from unrelated domains."
 )
 
@@ -110,7 +109,7 @@ def infer_relationship(
 def infer_fk_links(
     type_schemas: dict[str, dict[str, Any]],
     broker: Broker,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Ask the LLM to identify FK relationships across multiple entity type schemas.
 
     Args:
@@ -124,7 +123,7 @@ def infer_fk_links(
     try:
         result = complete_json(broker, "frontier", _FK_INFER_SYSTEM, user, _FK_SCHEMA)
     except Exception:  # noqa: BLE001
-        logger.warning("FK schema inference failed — returning empty list")
+        logger.exception("FK schema inference failed — returning empty list")
         return []
     links = result.get("links") or []
     logger.info("FK schema inference found %d link(s): %s", len(links), links)

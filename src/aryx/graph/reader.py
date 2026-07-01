@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 from typing import Any
 from urllib.parse import urlparse
 
@@ -102,13 +103,22 @@ class GraphReader:
         ).result_set
         return [{"source": r[0], "target": r[1], "name": r[2]} for r in rows]
 
-    def subgraph(self, rel_limit: int = 500) -> dict[str, Any]:
+    def subgraph(self, rel_limit: int = 2000) -> dict[str, Any]:
         """Return a connected subgraph suitable for graph-canvas rendering.
 
-        Samples proportionally from every edge type so all relationship kinds
-        appear in the canvas.  After collecting relationship-connected entities,
-        also fetches all remaining isolated entities (no edges) so every entity
-        in the workspace is visible on the canvas regardless of connectivity.
+        Algorithm (all steps run per cache miss):
+        1. Discover entity types and relationship types.
+        2. Sample rels_per_rtype rels per relationship type so every rel class
+           is represented and source/target pairs are loaded together.
+        3. Greedy per-type cap: process rels from highest combined endpoint
+           degree to lowest; include both endpoints only if each type still has
+           room under the per_type cap.  Guarantees included entities are hubs
+           that connect across types.
+        4. Seed any entity type with zero rels so all types appear on canvas.
+        5. Post-linking pass: for any entity still without a visible edge, run
+           a LIMIT 1 query to find one real neighbor and add it.  Guarantees
+           zero isolated nodes in the rendered canvas.
+        6. Add truly isolated FalkorDB entities (no edges at all) for debugging.
 
         Results are cached for 30 s (per graph + rel_limit combination).
         """
@@ -121,39 +131,163 @@ class GraphReader:
             if now - ts < _SUBGRAPH_TTL:
                 return result
 
-        # Discover the distinct relationship types present in this graph.
-        type_rows = self._graph.query(
-            "MATCH ()-[r:REL]->() RETURN DISTINCT r.name AS t"
+        # Step 1 — entity types present in this graph.
+        etype_rows = self._graph.query(
+            "MATCH (e:Entity) RETURN DISTINCT e.type ORDER BY e.type"
         ).result_set
-        rel_types = [r[0] for r in type_rows if r[0]]
+        entity_types = [r[0] for r in etype_rows if r[0]]
 
         entity_map: dict[int, dict[str, Any]] = {}
         rels: list[dict[str, Any]] = []
+        seen_rels: set[tuple] = set()
+        valid_ids: set[int] = set()
 
-        if rel_types:
-            per_type = max(1, capped // len(rel_types))
-            for rtype in rel_types:
+        if entity_types:
+            per_type = max(5, min(50, capped // max(1, len(entity_types))))
+
+            # Step 2 — discover relationship types present in this graph.
+            # Sampling by relationship type (not entity type) ensures connected
+            # source→target pairs are loaded together, so their endpoints are
+            # co-present and survive the per-type cap as a matched pair.
+            rtype_rows = self._graph.query(
+                "MATCH ()-[r:REL]->() RETURN DISTINCT r.name ORDER BY r.name"
+            ).result_set
+            rel_types = [r[0] for r in rtype_rows if r[0]]
+
+            # N rels per relationship type: enough to cover per_type entities
+            # on each side.  Use at least per_type*2 so high-degree nodes get
+            # good coverage even when relationship types are many.
+            n_rel_types = max(1, len(rel_types))
+            rels_per_rtype = max(per_type * 2, capped // n_rel_types)
+
+            raw_rels: list[tuple] = []   # (src_id, tgt_id, rname)
+            entity_info: dict[int, dict[str, Any]] = {}
+            for rname in rel_types:
                 rows = self._graph.query(
-                    "MATCH (a:Entity)-[r:REL]->(b:Entity) "
-                    "WHERE r.name = $rname "
-                    "RETURN a.id, a.type, a.name, b.id, b.type, b.name, r.name "
-                    f"LIMIT {per_type}",
-                    {"rname": rtype},
+                    "MATCH (a:Entity)-[r:REL {name: $rname}]->(b:Entity) "
+                    "RETURN a.id, a.type, a.name, b.id, b.type, b.name "
+                    f"LIMIT {rels_per_rtype}",
+                    {"rname": rname},
                 ).result_set
                 for row in rows:
-                    aid, atype, aname, bid, btype, bname, rname = row
-                    entity_map[aid] = {"id": aid, "type": atype, "name": aname}
-                    entity_map[bid] = {"id": bid, "type": btype, "name": bname}
-                    rels.append({"source": aid, "target": bid, "name": rname})
+                    aid, atype, aname, bid, btype, bname = row
+                    entity_info[aid] = {"id": aid, "type": atype, "name": aname}
+                    entity_info[bid] = {"id": bid, "type": btype, "name": bname}
+                    key = (aid, bid, rname)
+                    if key not in seen_rels:
+                        seen_rels.add(key)
+                        raw_rels.append((aid, bid, rname))
 
-        # Always fetch all entities so isolated nodes (no relationships yet)
-        # are visible on the canvas — entity count drives the ontology panel.
+            # Step 3 — greedy per-type cap that GUARANTEES every included
+            # entity has at least one visible rel.  Process rels from most
+            # connected pair to least; add both endpoints when either (a) the
+            # endpoint is already in the valid set, or (b) its type hasn't
+            # reached the per_type cap yet.  Skip a rel only when BOTH
+            # endpoints would exceed their caps — they'll appear in a later
+            # rel or be filled from seeds in step 4.
+            rel_count: Counter[int] = Counter()
+            for sid, tid, _ in raw_rels:
+                rel_count[sid] += 1
+                rel_count[tid] += 1
+
+            # Sort rels: highest combined endpoint degree first so the most
+            # hub-like cross-type connections are processed before the caps fill.
+            sorted_raw = sorted(
+                raw_rels,
+                key=lambda r: -(rel_count.get(r[0], 0) + rel_count.get(r[1], 0)),
+            )
+
+            type_count: dict[str, int] = {}
+
+            for sid, tid, rname in sorted_raw:
+                stype = entity_info[sid]["type"]
+                ttype = entity_info[tid]["type"]
+                s_in = sid in valid_ids
+                t_in = tid in valid_ids
+                s_cap_ok = s_in or type_count.get(stype, 0) < per_type
+                t_cap_ok = t_in or type_count.get(ttype, 0) < per_type
+                if not (s_cap_ok and t_cap_ok):
+                    continue   # both would exceed cap — skip
+                if not s_in:
+                    valid_ids.add(sid)
+                    entity_map[sid] = entity_info[sid]
+                    type_count[stype] = type_count.get(stype, 0) + 1
+                if not t_in:
+                    valid_ids.add(tid)
+                    entity_map[tid] = entity_info[tid]
+                    type_count[ttype] = type_count.get(ttype, 0) + 1
+                rels.append({"source": sid, "target": tid, "name": rname})
+
+            # Step 4 — add sample entities for types with zero rels so all
+            # entity types appear on the canvas.
+            for etype in entity_types:
+                if type_count.get(etype, 0) == 0:
+                    rows = self._graph.query(
+                        "MATCH (e:Entity {type: $type}) "
+                        "RETURN e.id, e.type, e.name "
+                        f"LIMIT {per_type}",
+                        {"type": etype},
+                    ).result_set
+                    for row in rows:
+                        eid, et, en = row
+                        entity_map[eid] = {"id": eid, "type": et, "name": en}
+                        valid_ids.add(eid)
+
+        # Step 5 — post-linking pass (batched): guarantee every entity has a
+        # visible edge.  Two UNWIND queries replace N×LIMIT 1 round-trips.
+        # First pass: outbound neighbors for all still-isolated entities.
+        # Second pass: inbound neighbors for any still-isolated after the first.
+        if entity_map:
+            connected_ids: set[int] = set()
+            for r in rels:
+                connected_ids.add(r["source"])
+                connected_ids.add(r["target"])
+            isolated_eids = [eid for eid in entity_map if eid not in connected_ids]
+            if isolated_eids:
+                found: dict[int, tuple] = {}
+                out_cap = len(isolated_eids) * 2 + 10
+                out_rows = self._graph.query(
+                    "UNWIND $ids AS eid "
+                    "MATCH (a:Entity {id: eid})-[r:REL]->(b:Entity) "
+                    f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {out_cap}",
+                    {"ids": isolated_eids},
+                ).result_set
+                for row in out_rows:
+                    eid_ = row[0]
+                    if eid_ not in found:
+                        found[eid_] = (row[1], row[2], row[3], row[4], "out")
+                still_iso = [e for e in isolated_eids if e not in found]
+                if still_iso:
+                    in_cap = len(still_iso) * 2 + 10
+                    in_rows = self._graph.query(
+                        "UNWIND $ids AS eid "
+                        "MATCH (b:Entity)-[r:REL]->(a:Entity {id: eid}) "
+                        f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {in_cap}",
+                        {"ids": still_iso},
+                    ).result_set
+                    for row in in_rows:
+                        eid_ = row[0]
+                        if eid_ not in found:
+                            found[eid_] = (row[1], row[2], row[3], row[4], "in")
+                for eid, (bid, btype, bname, rname, direction) in found.items():
+                    entity_map[bid] = {"id": bid, "type": btype, "name": bname}
+                    valid_ids.add(bid)
+                    if direction == "out":
+                        rels.append({"source": eid, "target": bid, "name": rname})
+                    else:
+                        rels.append({"source": bid, "target": eid, "name": rname})
+                    connected_ids.add(eid)
+                    connected_ids.add(bid)
+
+        # Step 6 — add truly isolated entities (zero edges in FalkorDB, not just
+        # in the subgraph view) for debugging visibility.
         remaining = capped - len(entity_map)
         if remaining > 0:
-            all_rows = self._graph.query(
-                f"MATCH (e:Entity) RETURN e.id, e.type, e.name LIMIT {remaining}"
+            iso_rows = self._graph.query(
+                "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+                f"RETURN e.id, e.type, e.name LIMIT {remaining}"
             ).result_set
-            for row in all_rows:
+            for row in iso_rows:
                 eid, etype, ename = row
                 if eid not in entity_map:
                     entity_map[eid] = {"id": eid, "type": etype, "name": ename}
