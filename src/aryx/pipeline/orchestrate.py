@@ -175,7 +175,7 @@ def run_pipeline(
                         graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
                     except ImportError as exc:
                         raise RuntimeError(
-                            "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle is not "
+                            "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle_graph_store is not "
                             "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
                         ) from exc
                 else:
