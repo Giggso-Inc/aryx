@@ -169,8 +169,20 @@ def run_pipeline(
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):
                 type_ancestors = _build_type_ancestors(dsn)
+                cfg = get_settings()
+                if cfg.effective_graph_backend() == "oci_graph":
+                    try:
+                        from aryx.graph.oracle import OracleGraphStore  # optional OCI dep
+                        graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
+                    except ImportError as exc:
+                        raise RuntimeError(
+                            "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle is not "
+                            "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
+                        ) from exc
+                else:
+                    graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
                 counts = project_graph(
-                    estore, FalkorStore(graph_url, ws_graph(workspace_id)),
+                    estore, graph_inst,
                     type_ancestors=type_ancestors, workspace_id=workspace_id,
                 )
         else:

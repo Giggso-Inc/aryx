@@ -185,6 +185,20 @@ class Settings(BaseSettings):
         description="Parallel document extraction workers (1 = sequential).",
     )
 
+    # ── Graph backend selection ───────────────────────────────────────────────
+    graph_backend: str = Field(
+        default="falkordb",
+        description="Graph projection backend: falkordb or oci_graph. Override with ARYX_GRAPH_BACKEND.",
+    )
+    oci_adb_dsn: str = Field(
+        default="",
+        description="Oracle ADB connection string (required when graph_backend=oci_graph).",
+    )
+
+    def effective_graph_backend(self) -> str:
+        """Return the resolved graph projection backend name."""
+        return self.graph_backend
+
     # ── Ontology interchange ──────────────────────────────────────────────────
     ontology_enabled: bool = Field(
         default=False,
