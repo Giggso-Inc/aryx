@@ -24,7 +24,6 @@ from aryx.store.checkpoint_store import StageTracker
 from aryx.project import project_graph
 from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
-from aryx.models import OntologyType
 from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
 
