@@ -474,7 +474,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     for d, n in tabular:
         if Path(n).suffix.lower() == ".xml":
             for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
-                converted_tabular.append((csv_bytes, csv_name, True))
+                converted_tabular.append((csv_bytes, csv_name))
         else:
             converted_tabular.append((_consolidate_csv_names(d), n))
 
