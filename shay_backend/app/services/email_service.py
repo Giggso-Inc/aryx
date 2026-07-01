@@ -43,6 +43,18 @@ class EmailService:
             os.path.dirname(__file__),
             '..', '..', 'templates', 'email'
         )
+
+    def _brand_header_tagline(self, platform_name: Optional[str] = None) -> str:
+        """Return the short Aryx header line used across email templates."""
+        return f"{platform_name or self.default_platform_name} | Linked data, Ask, and graph workspaces"
+
+    def _platform_intro_text(self, platform_name: Optional[str] = None) -> str:
+        """Return the standard Aryx product description for onboarding emails."""
+        display_name = platform_name or self.default_platform_name or "Aryx"
+        return (
+            f"{display_name} helps teams ingest data, connect records into a searchable knowledge graph, "
+            "and ask grounded questions with confidence."
+        )
     
     def _load_template(self, template_name: str) -> str:
         """
@@ -346,7 +358,7 @@ class EmailService:
         reset_url = password_reset_data.get('reset_url', '')
         expires_at = password_reset_data.get('expires_at', '1 hour')
         support_email = password_reset_data.get('support_email') or self.from_email
-        platform_name = password_reset_data.get('platform_name', self.default_platform_name)
+        platform_name = self._resolve_platform_name(password_reset_data)
         current_year = datetime.now().year
         
         # Load template from file
@@ -374,8 +386,8 @@ class EmailService:
             user_name = user_email.split('@')[0] if user_email and '@' in user_email else 'User'
         reset_url = password_reset_data.get('reset_url', '')
         expires_at = password_reset_data.get('expires_at', '1 hour')
-        platform_name = platform_name or password_reset_data.get('platform_name', self.default_platform_name)
-        support_email = support_email or password_reset_data.get('support_email') or self.from_email
+        platform_name = self._resolve_platform_name(password_reset_data)
+        support_email = password_reset_data.get('support_email') or self.from_email
         
         text = f"""
         Password Reset Request - {platform_name}
@@ -383,7 +395,8 @@ class EmailService:
         
         Hello {user_name},
         
-        We received a request to reset your password for your {platform_name} account. Click the link below to reset your password.
+        We received a request to reset the password for your {platform_name} workspace.
+        Use the secure link below to choose a new password and get back into Aryx.
         
         Reset Link: {reset_url}
         
@@ -392,7 +405,7 @@ class EmailService:
         - If you didn't request this reset, please ignore this email
         - For security, this link can only be used once
         
-        If you have any questions or need assistance, please contact us at {support_email}.
+        Need help regaining access? Contact us at {support_email}.
         
         This email was sent from {platform_name}
         © {datetime.now().year} {platform_name}. All rights reserved.
@@ -465,26 +478,10 @@ class EmailService:
         user_name = verification_data.get('user_name', 'there')
         verification_link = verification_data.get('verification_link', '')
         expires_in_hours = verification_data.get('expires_in_hours', 24)
-        support_email = verification_data.get('support_email', 'support@prism7.com')
-        platform_name = verification_data.get('platform_name', self.default_platform_name)
+        support_email = verification_data.get('support_email', self.from_email)
+        platform_name = self._resolve_platform_name(verification_data)
         current_year = datetime.now().year
-        # Zaptag-only: use custom paragraph; all other platforms use generic paragraph (previous flow unchanged)
-        display_name = platform_name or self.default_platform_name or 'our platform'
-        platform_slug = str(platform_name or '').strip().lower()
-        is_zaptag = platform_slug == 'zaptag'
-        # [DEBUG] Log so we can confirm Zaptag intro is used when signup is for Zaptag
-        print(f"📧 [verification email] platform_name={platform_name!r}, is_zaptag={is_zaptag} -> {'Zaptag intro' if is_zaptag else 'generic intro'}")
-        if is_zaptag:
-            product_intro_text = (
-                "You'll leverage our cutting-edge AI technology to convert every image into a potential "
-                "business opportunity, streamlining your sales process and maximizing conversion rates."
-            )
-        else:
-            # Previous flow unchanged: generic collaboration message for all non-Zaptag (None, prism7, Accsell, etc.)
-            product_intro_text = (
-                f"{display_name} is a powerful AI-powered collaboration platform that helps teams work "
-                "smarter through intelligent automation, seamless communication, and data-driven insights."
-            )
+        product_intro_text = self._platform_intro_text(platform_name)
 
         # Load template from file
         try:
@@ -511,29 +508,9 @@ class EmailService:
         user_name = verification_data.get('user_name', 'there')
         verification_link = verification_data.get('verification_link', '')
         expires_in_hours = verification_data.get('expires_in_hours', 24)
-        support_email = verification_data.get('support_email', 'support@prism7.com')
-        platform_name = verification_data.get('platform_name', self.default_platform_name)
-        # Same as HTML: Zaptag-only custom paragraph; else previous flow (generic for all other platforms)
-        display_name = platform_name or self.default_platform_name or 'our platform'
-        is_zaptag = str(platform_name or '').strip().lower() == 'zaptag'
-        is_accsell = str(platform_name or '').strip().lower() == 'accsell'
-        # [DEBUG] Plain text branch must match HTML (same is_zaptag)
-        if is_zaptag:
-            product_intro_text = (
-                "You'll leverage our cutting-edge AI technology to convert every image into a potential "
-                "business opportunity, streamlining your sales process and maximizing conversion rates."
-            )
-        elif is_accsell:
-            product_intro_text = (
-                "Accsell is a AI powered sales platform that will automates your outreach from end-to-end."
-                "Define your ICP, generate and enrich leads, and launch AI-customized sales strategies directly into your CRM."
-            )
-        else:
-            # Previous flow unchanged: generic intro for all non-Zaptag
-            product_intro_text = (
-                f"{display_name} is a powerful AI-powered collaboration platform that helps teams work "
-                "smarter through intelligent automation, seamless communication, and data-driven insights."
-            )
+        support_email = verification_data.get('support_email', self.from_email)
+        platform_name = self._resolve_platform_name(verification_data)
+        product_intro_text = self._platform_intro_text(platform_name)
 
         text = f"""
         Verify Your Email - {platform_name}
@@ -541,11 +518,11 @@ class EmailService:
         
         Hello {user_name},
         
-        Thank you for signing up for {company_name} on {platform_name}! We're excited to have you join our platform.
+        Thanks for joining {company_name} on {platform_name}.
         
         {product_intro_text}
         
-        To complete your registration and activate your account, please verify your email address by clicking the link below:
+        Verify your email address to activate your Aryx workspace and continue setup:
         
         {verification_link}
         
@@ -554,7 +531,7 @@ class EmailService:
         - If you didn't create an account, please ignore this email
         - For security, this link can only be used once
         
-        If you have any questions or need assistance, please contact us at {support_email}.
+        If you need help finishing setup, contact us at {support_email}.
         
         This email was sent from {platform_name}
         © 2025 {platform_name}. All rights reserved.
@@ -692,18 +669,18 @@ class EmailService:
         
         Hello {user_name},
         
-        Great news! {invited_by} has invited you to join {company_name} on {platform_name}, a powerful AI-powered collaboration platform designed to streamline your team's workflow and enhance productivity.
+        {invited_by} has invited you to join {company_name} on {platform_name}.
         
-        {platform_name} helps teams collaborate more effectively through intelligent automation, seamless communication, and powerful AI-driven insights — empowering your team to work smarter and achieve more.
+        {self._platform_intro_text(platform_name)}
         
-        Visit this link to accept your invitation and set up your account:
+        Use this link to accept the invitation and finish setting up your workspace:
         {registration_short_link}
         
         Security Notice:
         - This invitation expires in 7 days
         - The link is unique to you; please do not share it
         
-        If you need assistance, please contact your team administrator or reach out to our support team at {support_email}.
+        If you need help, contact your workspace administrator or {support_email}.
         
         If you didn't expect this invitation, you can safely ignore this email.
         
@@ -862,29 +839,29 @@ class EmailService:
         app_link = data.get('appLink', 'N/A')
         
         return f"""
-        Welcome to Shay!
+        Welcome to {data.get('platform_name', self.default_platform_name)}!
         
         Hi {company_name},
         
-        Welcome to Shay! Your account has been successfully created and you're ready to start using our AI platform.
+        Your {data.get('platform_name', self.default_platform_name)} workspace is ready.
         
         Your Account Details:
         - Company: {company_name}
         - Plan: {plan_name} - ${monthly_price}/month
         - Email: {contact_email}
         
-        Access Your App:
+        Launch Your Workspace:
         {app_link}
         
         Next Steps:
-        - Schedule your onboarding session
-        - Watch our self-help videos
-        - Read our documentation
+        - Connect a datasource or upload files
+        - Review the first entities and relationships Aryx discovers
+        - Start asking questions against your workspace
         
         If you have any questions, feel free to reach out to our support team.
         
         Best regards,
-        The Shay Team
+        The {data.get('platform_name', self.default_platform_name)} Team
         """
     
     def send_welcome_email(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -913,7 +890,8 @@ class EmailService:
             
             # Create message
             msg = MIMEMultipart('alternative')
-            msg['Subject'] = 'Welcome to Shay - Your Account is Ready!'
+            platform_name = data.get('platform_name', self.default_platform_name)
+            msg['Subject'] = f'Welcome to {platform_name} - Your Workspace Is Ready'
             msg['From'] = self.from_email
             msg['To'] = data['contactEmail']
             
@@ -1144,7 +1122,7 @@ class EmailService:
             # Inline styles so "View Channel" text is white and visible in all email clients
             view_channel_block = (
                 f'<div style="text-align: center;">'
-                f'<a href="{channel_url}" class="cta-button" style="display: inline-block; background-color: #2a6df4; color: #ffffff !important; text-decoration: none; padding: 14px 32px; border-radius: 50px; font-weight: 600; font-size: 15px;">View Channel</a>'
+                f'<a href="{channel_url}" class="cta-button" style="display: inline-block; background-color: #2D7DFF; color: #ffffff !important; text-decoration: none; padding: 14px 32px; border-radius: 50px; font-weight: 600; font-size: 15px;">View Channel</a>'
                 f'</div>' if channel_url else ''
             )
         else:
@@ -1156,12 +1134,12 @@ class EmailService:
         if send_to_added_user:
             header_content = (
                 '<h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">You have been added to the channel</h1>'
-                '<p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; color: #ffffff;">' + platform_name + ' - AI-Powered Collaboration Platform</p>'
+                '<p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; color: #ffffff;">' + self._brand_header_tagline(platform_name) + '</p>'
             )
         else:
             header_content = (
                 '<h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">New User Added to Channel</h1>'
-                '<p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; color: #ffffff;">' + platform_name + ' - AI-Powered Collaboration Platform</p>'
+                '<p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; color: #ffffff;">' + self._brand_header_tagline(platform_name) + '</p>'
             )
         # Page title for HTML <title> so it matches email type (added-user vs admin)
         page_title = "You have been added to the channel" if send_to_added_user else "New User Added to Channel"
@@ -1428,17 +1406,15 @@ class EmailService:
         return template
 
     def _get_embedded_logo_html(self) -> str:
-        """Return embedded logo img tag only when PLATFORM_NAME (env) is Prism 7; else empty. Other platforms using same HTML get no logo."""
-        if (settings.PLATFORM_NAME or "").strip().lower() != "prism 7":
-            return ""
+        """Return the embedded Aryx logo markup when the local base64 asset is available."""
         logo_dir = os.path.join(os.path.dirname(__file__), "..", "..", "static", "email")
-        logo_b64_path = os.path.join(logo_dir, "logo_embed.txt")
+        logo_b64_path = os.path.join(logo_dir, "logo_base64.txt")
         try:
             if os.path.isfile(logo_b64_path):
                 with open(logo_b64_path, "r", encoding="utf-8") as f:
                     b64 = f.read().strip()
                 if b64:
-                    return f'<img src="data:image/jpeg;base64,{b64}" alt="Logo" style="max-width: 180px; max-height: 48px; display: block;" />'
+                    return f'<img src="data:image/jpeg;base64,{b64}" alt="Aryx" style="max-width: 180px; max-height: 48px; display: block;" />'
         except Exception:
             pass
         return ""
@@ -1481,31 +1457,31 @@ class EmailService:
             # Fallback inline HTML (same style as template)
             return f"""
         <!DOCTYPE html><html><head><meta charset="UTF-8"/><title>New Support Request - {platform_name}</title></head>
-        <body style="font-family:Segoe UI,sans-serif;background:#f8f9fa;color:#0f1729;margin:0;padding:20px">
-        <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:10px;box-shadow:0 4px 10px rgba(0,0,0,.08);overflow:hidden">
-        <div style="background:#3366FF;color:#fff;text-align:center;padding:24px 20px">
-        <h1 style="margin:0 0 8px 0;font-size:22px;font-weight:700;color:#fff">New Support Request</h1>
-        <p style="margin:0;font-size:14px;color:#fff">{platform_name} - AI-Powered Collaboration Platform</p>
+        <body style="font-family:Segoe UI,sans-serif;background:#F4F6FB;color:#0B1430;margin:0;padding:24px 12px">
+        <div style="max-width:640px;margin:0 auto;background:#FFFFFF;border:1px solid #D9DEEB;border-radius:20px;box-shadow:0 18px 50px rgba(13,27,90,.10);overflow:hidden">
+        <div style="background:#1E3A8A;background-image:linear-gradient(135deg,#0D1B5A 0%,#1E3A8A 60%,#2D7DFF 100%);color:#fff;text-align:center;padding:24px 20px">
+        <h1 style="margin:0 0 8px 0;font-size:28px;font-weight:700;color:#fff">New support request</h1>
+        <p style="margin:0;font-size:14px;color:#DCE8FF">Aryx support intake</p>
         </div>
-        <div style="padding:36px 30px">
+        <div style="padding:36px 32px">
         <p style="font-size:18px;font-weight:600;margin-bottom:16px">Hello,</p>
-        <p style="font-size:15px;line-height:1.7;margin-bottom:22px">{intro_message}</p>
-        <div style="background:#f1f5f9;border-radius:8px;padding:20px;margin:24px 0;border-left:4px solid #3366FF">
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">Ticket Reference:</strong> {ticket_ref}</p>
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">Subject/Category:</strong> {subject}</p>
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">Company ID:</strong> {company_id}</p>
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">Company Name:</strong> {company_name}</p>
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">User ID:</strong> {user_id}</p>
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">From:</strong> {name} &lt;{email}&gt;</p>
-        <p style="margin:8px 0;font-size:14px"><strong style="color:#3366FF">Received:</strong> {created_at}</p>
+        <p style="font-size:15px;line-height:1.8;margin-bottom:22px">{intro_message}</p>
+        <div style="background:#F4F6FB;border:1px solid #D9DEEB;border-radius:16px;padding:20px;margin:24px 0">
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">Ticket Reference:</strong> {ticket_ref}</p>
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">Subject/Category:</strong> {subject}</p>
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">Company ID:</strong> {company_id}</p>
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">Company Name:</strong> {company_name}</p>
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">User ID:</strong> {user_id}</p>
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">From:</strong> {name} &lt;{email}&gt;</p>
+        <p style="margin:8px 0;font-size:14px"><strong style="color:#0D1B5A">Received:</strong> {created_at}</p>
         </div>
         <p style="font-size:15px;margin-bottom:8px"><strong>Description:</strong></p>
-        <div style="background:#f1f5f9;border-radius:8px;padding:16px;white-space:pre-wrap;border-left:4px solid #3366FF">{description_escaped}</div>
+        <div style="background:#F8FAFE;border:1px solid #D9DEEB;border-radius:16px;padding:16px;white-space:pre-wrap">{description_escaped}</div>
         <p style="font-size:15px;line-height:1.7;margin-top:22px">If you have any questions or need to follow up, please use the ticket reference above.</p>
         </div>
-        <div style="background:#f8f9fa;padding:30px;text-align:center;border-top:1px solid #e9ecef">
+        <div style="background:#F8FAFE;padding:24px 32px;text-align:center;border-top:1px solid #D9DEEB">
         <p style="margin:0 0 10px 0;font-size:14px">This email was sent from {platform_name}</p>
-        <p style="margin:0;font-size:12px;color:#64748b">© {current_year} {platform_name}. All rights reserved.</p>
+        <p style="margin:0;font-size:12px;color:#4A5A7A">© {current_year} {platform_name}. All rights reserved.</p>
         </div>
         </div></body></html>
         """
@@ -1524,7 +1500,7 @@ class EmailService:
         platform_name = support_data.get("platform_name", self.default_platform_name)
         return f"""
 New Support Request - {platform_name}
-{platform_name} - AI-Powered Collaboration Platform
+{self._brand_header_tagline(platform_name)}
 
 Hello,
 
@@ -1600,23 +1576,23 @@ This email was sent from {platform_name}
 <!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" /></head>
-<body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8f9fa; color: #0f1729; margin: 0; padding: 20px;">
-  <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.08); overflow: hidden;">
-    <div style="background-color: #3366FF; color: #ffffff; text-align: center; padding: 24px 20px;">
-      <h1 style="margin: 0 0 8px 0; font-size: 22px; font-weight: 700; color: #ffffff;">Request Received</h1>
-      <p style="margin: 0; font-size: 14px; color: #ffffff;">{platform_name} Support</p>
+<body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #F4F6FB; color: #0B1430; margin: 0; padding: 24px 12px;">
+  <div style="max-width: 640px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D9DEEB; border-radius: 20px; box-shadow: 0 18px 50px rgba(13,27,90,0.10); overflow: hidden;">
+    <div style="background-color: #1E3A8A; background-image: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%); color: #ffffff; text-align: center; padding: 24px 20px;">
+      <h1 style="margin: 0 0 8px 0; font-size: 28px; font-weight: 700; color: #ffffff;">Support request received</h1>
+      <p style="margin: 0; font-size: 14px; color: #DCE8FF;">We have your Aryx request</p>
     </div>
-    <div style="padding: 36px 30px;">
+    <div style="padding: 36px 32px;">
       <p style="font-size: 18px; font-weight: 600; margin: 0 0 16px 0;">Hi {name},</p>
-      <p style="font-size: 15px; line-height: 1.7; margin: 0 0 22px 0;">We have received your support request and will get back to you as soon as we can.</p>
-      <div style="background-color: #f1f5f9; border-radius: 8px; padding: 20px; margin: 24px 0; border-left: 4px solid #3366FF;">
-        <p style="margin: 8px 0; font-size: 14px;"><strong style="color: #3366FF;">Ticket reference:</strong> {ticket_ref}</p>
+      <p style="font-size: 15px; line-height: 1.8; margin: 0 0 22px 0;">We have received your support request and will get back to you as soon as we can.</p>
+      <div style="background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 16px; padding: 20px; margin: 24px 0;">
+        <p style="margin: 8px 0; font-size: 14px;"><strong style="color: #0D1B5A;">Ticket reference:</strong> {ticket_ref}</p>
       </div>
-      <p style="font-size: 15px; line-height: 1.7; margin: 0;">You can use this reference when following up. If you have any urgent questions, reply to this email or contact us at <a href="mailto:{support_email}" style="color: #3366FF; text-decoration: underline;">{support_email}</a>.</p>
+      <p style="font-size: 15px; line-height: 1.8; margin: 0;">You can use this reference when following up. If you have any urgent questions, reply to this email or contact us at <a href="mailto:{support_email}" style="color: #2D7DFF; text-decoration: underline;">{support_email}</a>.</p>
     </div>
-    <div style="background: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e9ecef;">
+    <div style="background: #F8FAFE; padding: 24px 32px; text-align: center; border-top: 1px solid #D9DEEB;">
       <p style="margin: 0 0 10px 0; font-size: 14px;">This email was sent from {platform_name}</p>
-      <p style="margin: 0; font-size: 12px; color: #64748b;">© {current_year} {platform_name}. All rights reserved.</p>
+      <p style="margin: 0; font-size: 12px; color: #4A5A7A;">© {current_year} {platform_name}. All rights reserved.</p>
     </div>
   </div>
 </body>
@@ -1624,7 +1600,7 @@ This email was sent from {platform_name}
         """
 
     def _create_support_confirmation_text(self, support_data: dict, platform_url: str) -> str:
-        """Build plain text for user confirmation email (Request Received / Shay Suite Support)."""
+        """Build plain text for user confirmation email."""
         name = support_data.get("name", "User")
         ticket_ref = support_data.get("ticket_reference", "N/A")
         platform_name = support_data.get("platform_name", self.default_platform_name)

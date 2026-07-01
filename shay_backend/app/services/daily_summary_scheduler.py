@@ -742,109 +742,24 @@ class DailySummaryScheduler:
             HTML content string
         """
         try:
-            # Load template
             template = email_service._load_template('daily_summary_notification.html')
-            
-            # Prepare template variables
             user_name = user.name or user.email_id.split('@')[0] if user.email_id else 'User'
             platform_name = settings.PLATFORM_NAME
             domain_url = settings.PLATFORM_URL
             domain_name = settings.PLATFORM_URL.replace('http://', '').replace('https://', '').split('/')[0]
             notification_settings_url = f"{settings.PLATFORM_URL}/settings/notifications"
             current_year = datetime.now().year
-            
-            # Generate channels rows HTML
             channels_rows = self.generate_channels_rows(top_channels)
             print(f"📊 [EMAIL] Generated channels rows for {len(top_channels)} top channels")
-            
-            # Replace template placeholders
-            # First replace the example cards section with enabled cards
-            import re
-            
-            # Strategy: Match the specific example cards (3, 48, 11) and replace them with our generated cards
-            # The template has example cards with values 3, 48, and 11
-            # We'll match the entire section from opening comment to closing comment
-            
-            # Pattern 1: Match from opening comment to closing comment (most reliable)
-            # Handle whitespace variations with \s*
-            pattern1 = (
-                r'<!--\s*Backend will replace \{enabled_cards\} with cards for enabled notification types\s*-->'
-                r'.*?'
-                r'<!--\s*Backend will replace the above example cards with actual cards for enabled notification types only\s*-->'
-            )
-            # If enabled_cards is empty, remove the entire cards table section
-            # Otherwise, replace with the actual enabled cards
-            original_template = template
-            if enabled_cards:
-                replacement1 = (
-                    f'<!-- Backend will replace {{enabled_cards}} with cards for enabled notification types -->\n'
-                    f'                {enabled_cards}\n'
-                    f'                <!-- Backend will replace the above example cards with actual cards for enabled notification types only -->'
-                )
-                template = re.sub(pattern1, replacement1, template, flags=re.DOTALL)
-            else:
-                # If no enabled cards, remove the entire cards table (from opening comment to closing </table>)
-                # Match the entire table including the opening comment
-                pattern1_full = (
-                    r'<!--\s*Backend will replace \{enabled_cards\} with cards for enabled notification types\s*-->'
-                    r'.*?'
-                    r'</table>'
-                )
-                template = re.sub(pattern1_full, '', template, flags=re.DOTALL)
-                print(f"✅ [TEMPLATE] Removed cards section (no cards with count > 0)")
-            
-            # Pattern 2: If first pattern didn't work and we have cards, try matching the specific example card values
-            if template == original_template and enabled_cards:
-                # Match the three example cards with values 3, 48, 11
-                pattern2 = (
-                    r'(<td class="summary-card"[^>]*>.*?<div[^>]*>3</div>.*?</td>)'
-                    r'\s*'
-                    r'(<td class="summary-card"[^>]*>.*?<div[^>]*>48</div>.*?</td>)'
-                    r'\s*'
-                    r'(<td class="summary-card"[^>]*>.*?<div[^>]*>11</div>.*?</td>)'
-                )
-                replacement2 = enabled_cards
-                template = re.sub(pattern2, replacement2, template, flags=re.DOTALL)
-            
-            # Pattern 3: If still not working and we have cards, match everything between the two specific comments
-            if template == original_template and enabled_cards:
-                # Match everything between the opening and closing comments (with flexible whitespace)
-                pattern3 = (
-                    r'(<!--\s*Backend will replace \{enabled_cards\} with cards for enabled notification types\s*-->)'
-                    r'.*?'
-                    r'(<!--\s*Backend will replace the above example cards with actual cards for enabled notification types only\s*-->)'
-                )
-                replacement3 = r'\1\n                ' + enabled_cards + r'\n                \2'
-                template = re.sub(pattern3, replacement3, template, flags=re.DOTALL)
-            
-            # Debug: Check if replacement happened
-            if template != original_template:
-                card_count = enabled_cards.count('</td>') if enabled_cards else 0
-                print(f"✅ [TEMPLATE] Successfully replaced example cards with {card_count} enabled notification cards")
-            else:
-                print(f"❌ [TEMPLATE] All replacement patterns failed - example cards will remain in email")
-                print(f"🔍 [TEMPLATE] Enabled cards content: {enabled_cards[:200] if enabled_cards else 'EMPTY'}...")
-            
-            # Escape all braces in HTML comments to prevent .format() from trying to replace them
-            # This prevents KeyError when .format() encounters placeholders in comments
-            def escape_comment_braces(match):
-                comment_content = match.group(1)
-                # Double all braces to escape them
-                escaped = comment_content.replace('{', '{{').replace('}', '}}')
-                return f'<!--{escaped}-->'
-            
-            # Find and escape all HTML comments
-            comment_pattern = r'<!--(.*?)-->'
-            template = re.sub(comment_pattern, escape_comment_braces, template, flags=re.DOTALL)
-            
+
             email_content = template.format(
                 platform_name=platform_name,
                 user_name=user_name,
                 domain_url=domain_url,
                 domain_name=domain_name,
                 notification_settings_url=notification_settings_url,
-                enabled_cards=enabled_cards,  # Keep for any other references
-                groups_rows=channels_rows,  # Template still uses {groups_rows} placeholder
+                enabled_cards=enabled_cards,
+                groups_rows=channels_rows,
                 current_year=current_year,
                 logo_html=email_service._get_embedded_logo_html(),
             )
@@ -875,9 +790,9 @@ class DailySummaryScheduler:
         cards = []
         
         # Card HTML template
-        card_template = """<td class="summary-card" style="display: table-cell; background-color: #e8d5ff; border-radius: 8px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
-            <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0f1729; line-height: 1.2;">{count}</div>
-            <div class="summary-card-label" style="font-size: 13px; font-weight: 500; margin: 0; padding: 0; color: #0f1729; line-height: 1.4;">{label}</div>
+        card_template = """<td class="summary-card" style="display: table-cell; background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 14px; padding: 20px 16px; text-align: center; vertical-align: middle; box-sizing: border-box;">
+            <div class="summary-card-number" style="font-size: 28px; font-weight: 700; margin: 0 0 6px 0; padding: 0; color: #0D1B5A; line-height: 1.2;">{count}</div>
+            <div class="summary-card-label" style="font-size: 13px; font-weight: 600; margin: 0; padding: 0; color: #0B1430; line-height: 1.4;">{label}</div>
         </td>"""
         
         # Check each notification type and add card if enabled AND count > 0
@@ -988,15 +903,15 @@ class DailySummaryScheduler:
             HTML string for table rows
         """
         if not top_channels:
-            return '<tr><td colspan="2" style="padding: 12px 16px; font-size: 14px; color: #0f1729; border-bottom: 1px solid #e9ecef; text-align: center;">No channels with notifications found</td></tr>'
+            return '<tr><td colspan="2" style="padding: 16px 18px; font-size: 14px; color: #0B1430; border-bottom: 1px solid #D9DEEB; text-align: center;">No channels with notifications found</td></tr>'
         
         rows = []
         row_template = """<tr>
-            <td style="padding: 12px 16px; font-size: 14px; color: #0f1729; border-bottom: 1px solid #e9ecef;">
-                <a href="{channel_url}" class="group-name-link" style="color: #2a6df4; text-decoration: none; font-weight: 500;">{channel_name}</a>
+            <td style="padding: 16px 18px; font-size: 14px; color: #0B1430; border-bottom: 1px solid #D9DEEB;">
+                <a href="{channel_url}" class="group-name-link" style="color: #2D7DFF; text-decoration: none; font-weight: 600;">{channel_name}</a>
             </td>
-            <td style="padding: 12px 16px; font-size: 14px; color: #0f1729; border-bottom: 1px solid #e9ecef;">
-                <span class="group-count" style="color: #2a6df4; font-weight: 600;">{notification_count}</span>
+            <td style="padding: 16px 18px; font-size: 14px; color: #0B1430; border-bottom: 1px solid #D9DEEB;">
+                <span class="group-count" style="color: #0D1B5A; font-weight: 700;">{notification_count}</span>
             </td>
         </tr>"""
         

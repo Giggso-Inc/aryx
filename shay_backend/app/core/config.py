@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     DEFAULT_CHANNEL_ID: Optional[str] = 'ef48a45f-de2c-4f58-a56d-bb080f317bec'
     
     # Platform Configuration
-    PLATFORM_NAME: str = os.environ.get("PLATFORM_NAME","Prism 7")
+    PLATFORM_NAME: str = os.environ.get("PLATFORM_NAME","Aryx")
     PLATFORM_URL: str = os.environ.get("PLATFORM_URL", "http://localhost:3000")
     FRONTEND_URL: str = os.environ.get("FRONTEND_URL", "http://localhost:3000")
     # Public-facing base URL of shay_backend. Must be set in prod — request.base_url

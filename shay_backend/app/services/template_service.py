@@ -156,7 +156,7 @@ class TemplateService:
                     overflow: hidden;
                 }}
                 .email-header {{
-                    background-color: #2a6df4;
+                    background: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%);
                     color: #fff;
                     text-align: center;
                     padding: 24px 20px;
@@ -187,7 +187,7 @@ class TemplateService:
                     margin-bottom: 22px;
                 }}
                 .product-intro {{
-                    background-color: #f1f5f9;
+                    background-color: #F4F6FB;
                     border-radius: 8px;
                     padding: 16px 20px;
                     margin: 24px 0;
@@ -199,7 +199,7 @@ class TemplateService:
                 }}
                 .cta-button {{
                     display: inline-block;
-                    background-color: #2a6df4;
+                    background-color: #2D7DFF;
                     color: #fff;
                     text-decoration: none;
                     padding: 14px 32px;
@@ -211,7 +211,7 @@ class TemplateService:
                     transition: background 0.3s ease;
                 }}
                 .cta-button:hover {{
-                    background-color: #1f56c1;
+                    background-color: #1E3A8A;
                 }}
                 .link-fallback {{
                     font-size: 14px;
@@ -220,7 +220,7 @@ class TemplateService:
                     word-break: break-all;
                 }}
                 .link-fallback a {{
-                    color: #2a6df4;
+                    color: #2D7DFF;
                     text-decoration: none;
                 }}
                 .warning {{
@@ -272,7 +272,7 @@ class TemplateService:
                         
                         <div class="product-intro">
                             <p>
-                                {platform_name} helps teams collaborate effectively with secure access, guided workflows, and powerful automation to keep everyone aligned.
+                                {platform_name} helps teams connect source data, build a linked knowledge graph, and ask grounded questions from one workspace.
                             </p>
                         </div>
                         
@@ -306,8 +306,6 @@ class TemplateService:
 
 # Create a singleton instance
 template_service = TemplateService()
-
-
 
 
 

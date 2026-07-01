@@ -4,206 +4,65 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Welcome to {platform_name}</title>
-  <style>
-    body {{
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background-color: #f8f9fa;
-      color: #0f1729;
-      margin: 0;
-      padding: 0;
-    }}
-
-    .email-wrapper {{
-      max-width: 600px;
-      margin: 40px auto;
-      background: #ffffff;
-      border-radius: 10px;
-      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-      overflow: hidden;
-    }}
-
-    /* HEADER */
-    .email-header {{
-      background-color: #2a6df4;
-      color: #fff;
-      text-align: center;
-      padding: 24px 20px;
-    }}
-
-    .email-header h1 {{
-      margin: 0;
-      font-size: 22px;
-      font-weight: 700;
-    }}
-
-    .email-header p {{
-      margin: 8px 0 0;
-      font-size: 14px;
-      opacity: 0.95;
-    }}
-
-    /* CONTENT */
-    .email-body {{
-      padding: 36px 30px;
-    }}
-
-    .greeting {{
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 16px;
-    }}
-
-    .message {{
-      font-size: 15px;
-      line-height: 1.7;
-      margin-bottom: 22px;
-    }}
-
-    .info-box {{
-      background-color: #f1f5f9;
-      border-radius: 8px;
-      padding: 20px;
-      margin: 24px 0;
-      border-left: 4px solid #2a6df4;
-    }}
-
-    .info-box ul {{
-      margin: 10px 0;
-      padding-left: 20px;
-    }}
-
-    .info-box li {{
-      margin: 8px 0;
-      font-size: 14px;
-      color: #0f1729;
-    }}
-
-    .info-box strong {{
-      color: #2a6df4;
-    }}
-
-    /* CTA BUTTON */
-    .cta-button {{
-      display: inline-block;
-      background-color: #2a6df4;
-      color: #fff;
-      text-decoration: none;
-      padding: 14px 32px;
-      border-radius: 50px;
-      font-weight: 600;
-      font-size: 15px;
-      text-align: center;
-      margin: 10px 5px;
-      transition: background 0.3s ease;
-    }}
-
-    .cta-button:hover {{
-      background-color: #1f56c1;
-    }}
-
-    .app-link {{
-      background-color: #f0f0f0;
-      padding: 15px;
-      border-radius: 8px;
-      margin: 15px 0;
-      word-break: break-all;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      color: #0f1729;
-    }}
-
-    /* FOOTER */
-    .footer {{
-      background: #f8f9fa;
-      padding: 30px;
-      text-align: center;
-      border-top: 1px solid #e9ecef;
-    }}
-
-    .footer p {{
-      margin: 0 0 10px 0;
-      color: #0f1729;
-      font-size: 14px;
-    }}
-
-    .footer .company-info {{
-      color: #0f1729;
-      font-weight: 500;
-    }}
-
-    @media (max-width: 600px) {{
-      .email-body {{
-        padding: 28px 20px;
-      }}
-      .cta-button {{
-        width: 100%;
-        margin: 5px 0;
-      }}
-    }}
-  </style>
 </head>
-<body>
-  <div class="email-wrapper">
+<body style="margin: 0; padding: 24px 12px; background-color: #F4F6FB; color: #0B1430; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #FFFFFF; border: 1px solid #D9DEEB; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 50px rgba(13, 27, 90, 0.10);">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #1E3A8A; background-image: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%); color: #FFFFFF;">
+      <tr>
+        <td style="width: 180px; padding: 24px 0 24px 24px; vertical-align: middle;">{logo_html}</td>
+        <td style="padding: 24px 24px 24px 12px; text-align: center; vertical-align: middle;">
+          <h1 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; color: #FFFFFF;">Welcome to {platform_name}</h1>
+          <p style="margin: 10px 0 0 0; font-size: 14px; line-height: 1.5; color: #DCE8FF;">Your Aryx workspace is ready</p>
+        </td>
+        <td style="width: 72px;"></td>
+      </tr>
+    </table>
 
-    <!-- HEADER: logo top-left, title right -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="email-header" style="background-color: #2a6df4; color: #ffffff;"><tr>
-      <td style="width: 180px; vertical-align: middle;">{logo_html}</td>
-      <td style="vertical-align: middle; padding: 24px 20px; text-align: center;">
-        <h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">Welcome to {platform_name}!</h1>
-        <p style="margin: 8px 0 0 0; padding: 0; font-size: 14px; color: #ffffff;">AI-Powered Collaboration Platform</p>
-      </td>
-      <td style="width: 180px; vertical-align: middle;"></td>
-    </tr></table>
-
-    <!-- BODY -->
-    <div class="email-body">
-      <p class="greeting">Hi {company_name},</p>
-
-      <p class="message">
-        Welcome to {platform_name}! Your account has been successfully created and you're ready to start using our AI platform.
+    <div style="padding: 36px 32px;">
+      <p style="margin: 0 0 16px 0; font-size: 20px; line-height: 1.4; font-weight: 600; color: #0B1430;">Hi {company_name},</p>
+      <p style="margin: 0 0 22px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Your <strong>{platform_name}</strong> workspace has been created and is ready for onboarding.
       </p>
 
-      <div class="info-box">
-        <h3 style="margin-top: 0; color: #2a6df4; font-size: 16px;">Your Account Details:</h3>
-        <ul>
-          <li><strong>Company:</strong> {company_name}</li>
-          <li><strong>Plan:</strong> {plan_name} - ${monthly_price}/month</li>
-          <li><strong>Email:</strong> {contact_email}</li>
+      <div style="margin: 0 0 24px 0; padding: 20px 22px; background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 16px;">
+        <p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6; font-weight: 700; color: #0D1B5A;">Workspace details</p>
+        <ul style="margin: 0; padding-left: 20px; color: #0B1430;">
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;"><strong>Company:</strong> {company_name}</li>
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;"><strong>Plan:</strong> {plan_name} - ${monthly_price}/month</li>
+          <li style="margin: 0; font-size: 14px; line-height: 1.7;"><strong>Primary contact:</strong> {contact_email}</li>
         </ul>
       </div>
 
-      <h3 style="font-size: 16px; margin-top: 24px; margin-bottom: 12px;">Access Your App:</h3>
-      <p class="message">
-        You can access your {platform_name} application using the link below:
+      <p style="margin: 0 0 12px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Open your workspace to start connecting source data, reviewing discovered entities, and exploring Ask.
       </p>
-      <div class="app-link">
-        {app_link}
+      <div style="margin: 0 0 18px 0; padding: 16px 18px; background-color: #F8FAFE; border-radius: 14px; border: 1px dashed #BED1F8; font-size: 13px; line-height: 1.7; color: #0B1430; word-break: break-all;">
+        Workspace URL:
+        <br />
+        <a href="{app_link}" style="color: #2D7DFF; text-decoration: underline;">{app_link}</a>
       </div>
-      <div style="text-align:center; margin: 20px 0;">
-        <a href="{app_link}" class="cta-button">Launch App</a>
+      <div style="text-align: center; margin: 0 0 24px 0;">
+        <a href="{app_link}" style="display: inline-block; padding: 14px 30px; border-radius: 999px; background-color: #2D7DFF; color: #FFFFFF; text-decoration: none; font-size: 15px; line-height: 1.4; font-weight: 700;">Launch Workspace</a>
       </div>
 
-      <h3 style="font-size: 16px; margin-top: 24px; margin-bottom: 12px;">Next Steps:</h3>
-      <ul style="font-size: 15px; line-height: 1.7;">
-        <li>Schedule your onboarding session</li>
-        <li>Watch our self-help videos</li>
-        <li>Read our documentation</li>
-      </ul>
+      <div style="margin: 0 0 22px 0; padding: 20px 22px; background-color: #F8FAFE; border-radius: 16px; border: 1px solid #D9DEEB;">
+        <p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6; font-weight: 700; color: #0D1B5A;">Suggested next steps</p>
+        <ul style="margin: 0; padding-left: 20px; color: #0B1430;">
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;">Connect a datasource or upload sample files.</li>
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;">Review the first entities and relationships Aryx proposes.</li>
+          <li style="margin: 0; font-size: 14px; line-height: 1.7;">Start asking questions against your workspace.</li>
+        </ul>
+      </div>
 
-      <p class="message">
-        If you have any questions, feel free to reach out to our support team.
-      </p>
-
-      <p class="message">
-        Best regards,<br>The {platform_name} Team
+      <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;">
+        If you need help during onboarding, reply to this email or contact your Aryx support team.
       </p>
     </div>
 
-    <div class="footer">
-      <p>This email was sent to {contact_email}</p>
-      <p class="company-info">© {current_year} {platform_name}. All rights reserved.</p>
+    <div style="padding: 24px 32px; background-color: #F8FAFE; border-top: 1px solid #D9DEEB; text-align: center;">
+      <p style="margin: 0 0 8px 0; font-size: 13px; line-height: 1.6; color: #4A5A7A;">This message was sent to {contact_email}.</p>
+      <p style="margin: 0; font-size: 13px; line-height: 1.6; font-weight: 600; color: #0D1B5A;">© {current_year} {platform_name}. All rights reserved.</p>
     </div>
-
   </div>
 </body>
 </html>
