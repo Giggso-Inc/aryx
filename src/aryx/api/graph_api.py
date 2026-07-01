@@ -11,6 +11,9 @@ from aryx.ports import ports
 
 
 def _reader(workspace_id: int = 1) -> GraphReader:
+    # Default workspace 1 = "Default". Callers pass ?workspace_id= to select
+    # a different workspace.  Multi-tenant deployments should derive this from
+    # the auth context instead of relying on the query-param default.
     return ports().graph_reader(workspace_id)  # type: ignore[return-value]
 
 
@@ -30,7 +33,7 @@ def graph_router() -> APIRouter:
 
     @router.get("/graph")
     def full_graph(
-        rel_limit: int = 500,
+        rel_limit: int = 2000,
         reader: GraphReader = Depends(_reader),
     ) -> dict[str, Any]:
         """Connected subgraph for graph canvas rendering.

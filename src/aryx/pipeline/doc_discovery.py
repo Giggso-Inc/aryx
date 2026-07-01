@@ -229,13 +229,17 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
         return [(data, stem + ".csv")]
 
     # Candidate fields to use as entity name when no ``name`` field exists.
-    # Ordered by priority; first non-trivial value wins.
+    # Ordered by priority; first non-trivial value wins.  Generic fields
+    # come first; the ``bm_*`` / CPQ-specific entries are additive hints
+    # that match BigMachines exports and are silently skipped on other data.
     _NAME_CANDIDATES = (
-        "variable_name", "var_name", "bm_variable_name",
+        "variable_name", "var_name",
         "item_text", "item_value",
         "prop_value", "property_value", "prop_type",
-        "label", "bm_name", "func_name", "rule_name",
-        "java_class_name", "file_name", "relative_path",
+        "label", "file_name", "relative_path",
+        # CPQ/BigMachines-specific — degrade gracefully on non-BM data:
+        "bm_variable_name", "bm_name", "func_name", "rule_name",
+        "java_class_name",
     )
     _NAME_CANDIDATE_SET: frozenset[str] = frozenset(_NAME_CANDIDATES) | {"name"}
     _TRIVIAL = frozenset({"0", "1", "2", "true", "false", ""})
@@ -339,7 +343,13 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
                 records.extend(_collect_tag(child, tag, ctag, child_id))
         return records
 
-    root_id = _elem_id(root) or root_tag
+    # Do NOT fall back to root_tag when root has no real id: injecting
+    # {root_tag}_id = root_tag (a constant non-id string) into all child rows
+    # creates a spurious FK column that link_by_attribute can never satisfy,
+    # making child entities appear as candidates for FK joining but producing
+    # zero edges.  Leaving root_id=None means no FK column is injected for
+    # direct children of a root with no id, which is the correct behaviour.
+    root_id = _elem_id(root)
     results: list[tuple[bytes, str]] = []
 
     for target_tag in top_tags:
@@ -584,14 +594,13 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 })
                 break
 
-    # ── Pass 2: code-keyed data (CAGE, supplier, procurement style) ──────────
+    # ── Pass 2: code-keyed data (shared-suffix columns) ──────────────────────
     # Handles patterns that Pass 1 misses because they don't follow {type}_id.
     # Three rules, all columns scanned per pair (no break) so multiple relationship
-    # columns (CAGE_CODE primary join, PARENT_CAGE hierarchy, RPLM_CODE replacement)
-    # each generate their own edge spec:
-    #   Rule A — shared match key:  CAGE_CODE in A == CAGE_CODE in B
-    #   Rule B — stem reference:    PARENT_CAGE in A, stem "cage" ⊂ "cage_code"
-    #   Rule C — suffix match:      RPLM_CODE and CAGE_CODE share _CODE suffix
+    # columns each generate their own edge spec:
+    #   Rule A — shared match key:  same column name in A and B
+    #   Rule B — stem reference:    column in A contains B's match-key stem
+    #   Rule C — suffix match:      both columns share the same key suffix
     seen2: set[tuple[str, str, str]] = set()  # (src_type, tgt_type, col_l)
     for i, plan_a in enumerate(plans):
         own_mk = (plan_a.get("match_keys") or [None])[0]
@@ -622,10 +631,10 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     continue
                 src_upper = plan_a["ontology_type"].upper()
                 # Rule A: column exactly equals B's match key and looks like a code
-                # column — catches CAGE_CODE in A referencing CAGE_CODE in B.
+                # column — catches shared identifier columns across entity types.
                 # Guards:
                 #   own_mk_l — skip when both A and B are siblings sharing a parent FK
-                #   _col_is_varying — skip single-value context fields (company_id, etc.)
+                #   _col_is_varying — skip single-value context fields
                 if (col_l == mk_b_l and col_l != own_mk_l
                         and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
                         and _is_varying(i, col)):
@@ -639,7 +648,7 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     })
                     continue
                 # Rule B: column contains B's match-key stem as a fragment AND has
-                # a key suffix — catches PARENT_CAGE → CAGE_CODE (stem "cage")
+                # a key suffix — catches hierarchical/reference column patterns
                 if (mk_stem in col_l and col_l != mk_b_l
                         and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
                         and _is_varying(i, col)
@@ -653,8 +662,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
                     continue
-                # Rule C: same key-suffix — RPLM_CODE and CAGE_CODE both end in
-                # _CODE, signalling a replacement / alternate-entity reference.
+                # Rule C: same key-suffix — both columns share a suffix like _CODE,
+                # signalling a replacement / alternate-entity reference.
                 # Target cardinality guard: if the join target column has only one
                 # distinct value (e.g. company_id = constant) it cannot produce
                 # meaningful per-row joins — only false cartesian-product edges.
@@ -674,8 +683,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                     })
 
     # ── Pass 3: XML element-type FK detection ─────────────────────────────────
-    # _collect_tag injects {parent_tag}_id columns (e.g. bm_config_rule_id) into
-    # child entity rows.  Pass 1 misses these because it compares against the full
+    # _collect_tag injects {parent_tag}_id columns into child entity rows.
+    # Pass 1 misses these because it compares against the full
     # PascalCase ontology type name; Pass 2 misses them when the match key is a
     # short generic like "id".  Here we read the raw XML element type from the
     # _element_type column of each plan and check whether any other plan's headers
@@ -780,9 +789,10 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         else:
             conn = CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
         try:
-            # relate: controlled by ingest_relate setting (default False).
-            # LLM relate hangs on large payloads (e.g. CPQ function bodies);
-            # operators who want inference set ARYX_INGEST_RELATE=true.
+            # relate: only the last plan runs LLM inference — it can see ALL
+            # entity types that were resolved by prior plans.  Non-last plans
+            # run on a partial entity set and would produce spurious/incomplete
+            # relationships that the final pass then can't correct.
             # skip_graph=True for non-last plans: project_graph calls graph.clear()
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
@@ -792,7 +802,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=settings.ingest_relate, skip_graph=not is_last)
+                         relate=is_last and settings.ingest_relate, skip_graph=not is_last)
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)

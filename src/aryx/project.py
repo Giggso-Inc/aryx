@@ -66,10 +66,13 @@ def project_graph(
         graph.add_provenance(entity_id, system, dataset, record_id)
         n_provenance += 1
 
-    n_relationships = 0
-    for source_id, target_id, name in store.list_relationships():
-        graph.add_relationship(source_id, target_id, name)
-        n_relationships += 1
+    all_rels = list(store.list_relationships())
+    if hasattr(graph, "add_relationships_batch"):
+        n_relationships = graph.add_relationships_batch(all_rels)
+    else:
+        for src, tgt, name in all_rels:
+            graph.add_relationship(src, tgt, name)
+        n_relationships = len(all_rels)
 
     counts = {"entities": n_entities, "provenance": n_provenance,
               "relationships": n_relationships}
@@ -109,8 +112,11 @@ def project_incremental(
     for entity_id, system, dataset, record_id in provenance:
         graph.add_provenance(entity_id, system, dataset, record_id)
     relationships = pstore.relationships_for(dirty_ids) if dirty_ids else []
-    for source_id, target_id, name in relationships:
-        graph.add_relationship(source_id, target_id, name)
+    if hasattr(graph, "add_relationships_batch"):
+        graph.add_relationships_batch(relationships)
+    else:
+        for src, tgt, name in relationships:
+            graph.add_relationship(src, tgt, name)
     tombstones = pstore.tombstones()
     for entity_id in tombstones:
         graph.remove_entity(entity_id)

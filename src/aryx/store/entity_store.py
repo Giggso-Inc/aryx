@@ -110,6 +110,18 @@ class EntityStore:
                       r.name, r.confidence) for r in relationships],
                 )
 
+    def list_entities_typed_sample(self, n_per_type: int) -> list[tuple[int, str, dict]]:
+        """Return up to *n_per_type* entities for EACH ontology type in the workspace.
+
+        Uses a window function (PARTITION BY ontology_type) so every type is
+        represented even when one type has millions of rows.  The caller gets
+        a balanced sample suitable for cross-type relationship inference.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_entities_typed_sample"), (self._ws, n_per_type))
+                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
 
@@ -135,6 +147,17 @@ class EntityStore:
                 cur.execute(load("select_members_provenance"), (self._ws,))
                 while batch := cur.fetchmany(batch_size):
                     yield from ((r[0], r[1], r[2], r[3]) for r in batch)
+
+    def list_isolated_entities(self) -> list[tuple[int, str, dict]]:
+        """Return entities that have no relationship edges (source or target).
+
+        Single anti-join query — replaces the two-scan pattern of materialising
+        all relationships then all entities and diffing in Python.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_isolated_entities"), (self._ws, self._ws))
+                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
     def list_relationships(self) -> Iterator[tuple[int, int, str]]:
         """Yield (source_entity_id, target_entity_id, name) edges.
