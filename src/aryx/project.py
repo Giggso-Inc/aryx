@@ -63,10 +63,7 @@ def project_graph(
                          labels=labels, iri=iri)
         n_entities += 1
 
-    n_provenance = 0
-    for entity_id, system, dataset, record_id in store.list_members_provenance():
-        graph.add_provenance(entity_id, system, dataset, record_id)
-        n_provenance += 1
+    ancestors_for = type_ancestors or {}
 
     all_rels = list(store.list_relationships())
     if hasattr(graph, "add_relationships_batch"):

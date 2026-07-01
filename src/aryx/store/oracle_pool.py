@@ -105,7 +105,14 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
         cols = [c.strip() for c in cols_str.split(",")]
         out_vars = [cursor._cur.var(oracledb.STRING) for _ in cols]
         cursor._out_vars = out_vars
-        into_clause = ", ".join(f":r{i}" for i in range(len(cols)))
+        if _pos_counter[0] > 0:
+            # Positional SQL (%s → :1, :2, …): continue the positional sequence so
+            # cursor.var() can be appended as a tuple element in executemany() and
+            # oracledb recognises it as an array DML RETURNING accumulator.
+            into_clause = ", ".join(f":{_pos_counter[0] + i + 1}" for i in range(len(cols)))
+        else:
+            # Named SQL (%(name)s → :name): fall back to :r0, :r1, … named style.
+            into_clause = ", ".join(f":r{i}" for i in range(len(cols)))
         sql = sql[:m.start()] + f"RETURNING {cols_str} INTO {into_clause}"
 
     return sql
@@ -233,6 +240,56 @@ class OracleCursorWrapper:
             sample = oracle_seq[0] if oracle_seq else None
             logger.error("executemany failed sql=%r row0=%r error=%s", oracle_sql, sample, exc)
             raise
+
+    def executemany_returning(self, sql: str, seq: Any) -> list[Any]:
+        """Batch INSERT...RETURNING in one Oracle round-trip; returns scalar list.
+
+        Uses Oracle array DML: setinputsizes binds an arraysize=N output var to
+        the RETURNING INTO position so oracledb collects all N generated values
+        in a single executemany call.  Only supports single-column RETURNING
+        (the standard RETURNING id / RETURNING sequence.NEXTVAL case).
+        """
+        import oracledb  # noqa: PLC0415
+        self._out_vars = []
+        self._conflict_ignore = False
+        oracle_seq = [_unwrap_params(p) for p in seq]
+        if not oracle_seq:
+            return []
+        n = len(oracle_seq)
+        oracle_sql = _translate_sql(sql, self)
+        if not self._out_vars:
+            # No RETURNING clause detected — fall back to plain executemany
+            self._cur.executemany(oracle_sql, oracle_seq)
+            return []
+        # _translate_sql put single-value vars in self._out_vars for RETURNING INTO :5, …
+        # Replace with array-sized vars so executemany collects one value per row.
+        array_vars = [self._cur.var(oracledb.NUMBER, arraysize=n) for _ in self._out_vars]
+        self._out_vars = []
+        # oracledb requires the SAME cursor.var() instance to appear in every data row —
+        # that triggers array accumulation (see python-oracledb "Returning data" docs).
+        first = oracle_seq[0]
+        if isinstance(first, (list, tuple)):
+            oracle_seq = [row + tuple(array_vars) for row in oracle_seq]
+        else:
+            for row in oracle_seq:
+                for i, av in enumerate(array_vars):
+                    row[f"r{i}"] = av
+        logger.info(
+            "executemany_returning sql=%r rows=%d row0_len=%d arraysize=%d",
+            oracle_sql[:120], n, len(oracle_seq[0]), array_vars[0].size,
+        )
+        try:
+            self._cur.executemany(oracle_sql, oracle_seq)
+        except Exception as exc:
+            logger.error("executemany_returning failed sql=%r row0=%r error=%s",
+                         oracle_sql, oracle_seq[0], exc)
+            raise
+        raw = array_vars[0].getvalue()
+        logger.info("executemany_returning raw_ids type=%s len=%s sample=%s",
+                    type(raw).__name__, len(raw) if isinstance(raw, list) else "scalar", raw if not isinstance(raw, list) else raw[:3])
+        if not array_vars:
+            return []
+        return [int(v) for v in (raw or []) if v is not None]
 
     def fetchone(self) -> tuple | None:
         """Return one row; drains RETURNING output vars when present."""
