@@ -16,6 +16,7 @@ from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
 from aryx.graph import FalkorStore
+from aryx.naming import ws_graph
 from aryx.models import OntologyType
 from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
