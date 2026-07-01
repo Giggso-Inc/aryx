@@ -99,13 +99,13 @@ export default function ModelPage() {
                 type="button"
                 onClick={() => setTab(t.id)}
                 className={cn(
-                  "inline-flex items-center gap-1.5 border-b-2 px-4 py-3 text-[13px] font-medium transition-colors",
+                  "inline-flex items-center gap-2 border-b-2 px-4 py-3 text-[13px] font-medium leading-none transition-colors",
                   tab === t.id
                     ? t.activeClass
                     : "border-transparent text-navy-500 hover:text-navy-800",
                 )}
               >
-                <span className={cn("shrink-0", t.iconClass)}>{t.icon}</span>
+                <span className={cn("flex size-4 shrink-0 items-center justify-center", t.iconClass)}>{t.icon}</span>
                 {t.label}
               </button>
             ))}
@@ -116,14 +116,14 @@ export default function ModelPage() {
         {!isDiagram && (
           <div className="border-b border-navy-50 bg-navy-50/40 px-6 py-2 text-[11px] text-navy-500">
             Brief → Ingest →
-            <span className="inline-flex items-center gap-1 font-semibold text-steel-600">
+            <span className="inline-flex items-center gap-1.5 align-middle font-semibold text-steel-600">
               <Weight size={11} /> Lightweight
             </span> →
             HITL review →
-            <span className="inline-flex items-center gap-1 font-semibold text-purple-600">
+            <span className="inline-flex items-center gap-1.5 align-middle font-semibold text-purple-600">
               <Scale size={11} /> Heavyweight (Rules + Versions)
             </span> →
-            <span className="inline-flex items-center gap-1 font-semibold text-emerald-600">
+            <span className="inline-flex items-center gap-1.5 align-middle font-semibold text-emerald-600">
               <FolderUp size={11} /> Publish
             </span>
           </div>

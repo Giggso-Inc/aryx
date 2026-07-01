@@ -1,6 +1,6 @@
-# Aryx local stack — dev only. RDB is the source of truth; FalkorDB is the
-# rebuildable graph projection. Production orchestrator (ECS/EKS/OCI) is
-# decided at rollout — these containers are 12-factor and portable.
+# Aryx OCI/dev-server stack. This file is for the shared docker environment on
+# the instance and runs Ollama inside compose. Localhost developers should use
+# docker-compose.local.yml instead.
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -73,18 +73,20 @@ services:
     build: .
     env_file: .env
     command: ["uvicorn", "aryx.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    # ARYX_LLM_* vars come from .env so the doc ingest + Ask API can be
-    # pointed at any provider (Ollama / Gemini / Anthropic) without editing
-    # this file. Defaults to local Ollama if the .env doesn't set them.
+    # OCI dev seeds Ask + ingest against the in-compose Ollama service.
+    # Model names and timeouts still come from .env, and runtime Settings can
+    # switch providers later without editing this file.
     environment:
-      - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
-      - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
+      - ARYX_LLM_BASE_URL=http://ollama:11434
+      - ARYX_LLM_PROVIDER=ollama
       - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-llama3.2:3b}
       - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-llama3.2:3b}
       - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-360}
       - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-600}
       - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
       - ARYX_LLM_API_KEY=${ARYX_LLM_API_KEY:-}
+      - ARYX_EMBED_MODEL=${ARYX_EMBED_MODEL:-nomic-embed-text}
+      - ARYX_EMBED_ENDPOINT=http://ollama:11434
       - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
     ports:
@@ -94,14 +96,48 @@ services:
         condition: service_healthy
       falkordb:
         condition: service_started
-      ollama:
-        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 15s
       timeout: 5s
-      retries: 3
+      start_period: 60s
+      retries: 5
+
+  shay-api:
+    build:
+      context: ./shay_backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      # Shay must use the same relational database URL as Aryx so both apps
+      # operate on the same Postgres instance and credentials.
+      - DATABASE_URL=${ARYX_RDB_DSN:-postgresql+asyncpg://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx}
+      - SHAY_RUN_MIGRATIONS=false
+      # Public API base includes /api because Shay builds callback and short-link URLs from it.
+      # In OCI dev, nginx should publish /shay/api/* and reverse-proxy that path to this container.
+      - BASE_URL=${SHAY_BASE_URL:-http://localhost:3000/shay/api}
+      - FRONTEND_URL=${SHAY_FRONTEND_URL:-http://localhost:3000}
+      - PLATFORM_URL=${SHAY_FRONTEND_URL:-http://localhost:3000}
+      - SHAY_BE_PUBLIC_URL=${SHAY_PUBLIC_URL:-http://localhost:3000/shay}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sso/google/callback}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sso/microsoft/callback}
+      - GOOGLE_GMAIL_REDIRECT_URI=${GOOGLE_GMAIL_REDIRECT_URI:-http://localhost:3000/shay/api/v1/gmail/connect/callback}
+      - SF_CONNECT_REDIRECT_URI=${SF_CONNECT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sf/connect/callback}
+      - ZOHO_CRM_CONNECT_REDIRECT_URI=${ZOHO_CRM_CONNECT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/zoho/connect/callback}
+      - ALLOWED_ORGS=${SHAY_FRONTEND_URL:-http://localhost:3000},http://127.0.0.1:3000
+    ports:
+      - "127.0.0.1:8090:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
   mcp:
     build: .
@@ -134,16 +170,22 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
     environment:
-      # Server-side proxy target — Next.js rewrites /api/* to this URL.
-      # Browser only talks to the same origin; no CORS, no host coupling.
+      # Aryx API is proxied by Next.js route handlers / rewrites for local and container use.
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      # Shay is publicly exposed by nginx in OCI dev, but these internal handlers still need
+      # direct container access for workspace bridge routes under apps/web/app/api/shay/*.
+      - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}
       - NODE_ENV=production
     ports:
       - "3000:3000"
     depends_on:
       api:
         condition: service_healthy
+      shay-api:
+        condition: service_healthy
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   pgdata:

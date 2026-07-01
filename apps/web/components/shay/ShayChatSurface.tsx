@@ -7,6 +7,7 @@ import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
 import { shayApi } from "@/lib/shay-api";
 import { streamReveal } from "@/lib/stream";
+import { workspaceSectionHref } from "@/lib/workspace-route";
 import { formatWorkspaceName } from "@/lib/workspace-name";
 import type { ChatTurn, Citation, Usage } from "@/lib/types";
 
@@ -181,7 +182,7 @@ export function ShayChatSurface({
             <p className="mt-2 text-sm text-subtle">{subtitle}</p>
           </div>
           <Link
-            href="/"
+            href={workspaceSectionHref(workspaceId, "ask")}
             className="inline-flex items-center gap-1 rounded-full border border-navy-100 px-3 py-1.5 text-xs font-medium text-navy-700 hover:bg-navy-50"
           >
             Open Aryx Ask

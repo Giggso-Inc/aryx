@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 import {
   Background, BackgroundVariant, Controls, MiniMap, ReactFlow,
   ReactFlowProvider, useEdgesState, useNodesState,
@@ -12,6 +13,7 @@ import { api } from "@/lib/api";
 import { autoLayout } from "@/lib/canvasLayout";
 import type { OntologyDoc } from "@/lib/types";
 import { useWorkspace } from "@/lib/workspace";
+import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import {
   EntityTypeNode, type EntityTypeNodeData,
 } from "./EntityTypeNode";
@@ -231,6 +233,9 @@ function CanvasInner() {
 }
 
 function EmptyState({ onCreate }: { onCreate: () => void }) {
+  const pathname = usePathname();
+  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
       <div className="pointer-events-auto max-w-md rounded-2xl border border-dashed border-navy-200 bg-white/80 px-8 py-10 text-center shadow-soft backdrop-blur">
@@ -243,7 +248,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         </p>
         <div className="mt-5 flex flex-col items-center gap-2">
           <a
-            href="/start"
+            href={shayWorkspaceId ? workspaceStartHref(shayWorkspaceId) : "/start"}
             className="focus-ring inline-flex items-center gap-2 rounded-lg bg-navy-800 px-4 py-2 text-[13px] font-semibold text-white hover:bg-navy-700"
           >
             ✨ Start guided setup

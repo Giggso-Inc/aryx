@@ -1,8 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 import {
   aryxTarget,
-  attachWorkspaceBridge,
   forwardHeaders,
   jsonResponse,
   readJsonOrThrow,
@@ -22,7 +21,7 @@ async function proxyWorkspace(req: NextRequest, workspaceId: string) {
       cache: "no-store",
     });
     const workspace = await readJsonOrThrow<WorkspacePayload>(upstream);
-    return jsonResponse(await attachWorkspaceBridge(req, workspace), upstream.status);
+    return jsonResponse(workspace, upstream.status);
   } catch (error) {
     return jsonResponse(
       { detail: error instanceof Error ? error.message : "Workspace proxy failed" },

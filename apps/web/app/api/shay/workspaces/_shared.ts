@@ -58,51 +58,6 @@ export async function readJsonOrThrow<T>(response: Response): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-export async function ensureWorkspaceBridge(
-  req: NextRequest,
-  workspace: WorkspacePayload,
-): Promise<WorkspaceBridge> {
-  const headers = forwardHeaders(req);
-  headers.set("Content-Type", "application/json");
-  const upstream = await fetch(`${aryxTarget()}/admin/shay/workspaces/ensure`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      shay_workspace_id: workspace.id,
-      name: workspace.name,
-      description: workspace.description ?? "",
-      company_id: workspace.company_id ?? null,
-    }),
-    cache: "no-store",
-  });
-
-  return readJsonOrThrow<WorkspaceBridge>(upstream);
-}
-
-export async function attachWorkspaceBridge(
-  req: NextRequest,
-  workspace: WorkspacePayload,
-): Promise<WorkspacePayload> {
-  const bridge = await ensureWorkspaceBridge(req, workspace);
-  return {
-    ...workspace,
-    bridge,
-  };
-}
-
-export async function attachWorkspaceBridges(
-  req: NextRequest,
-  payload: WorkspaceListPayload,
-): Promise<WorkspaceListPayload> {
-  const workspaces = await Promise.all(
-    payload.workspaces.map((workspace) => attachWorkspaceBridge(req, workspace)),
-  );
-  return {
-    ...payload,
-    workspaces,
-  };
-}
-
 export function jsonResponse(payload: unknown, status = 200) {
   return NextResponse.json(payload, { status });
 }

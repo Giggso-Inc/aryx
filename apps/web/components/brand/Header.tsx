@@ -165,11 +165,13 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
             )}
 
             {hasSession && shayWorkspaceId ? (
-              <div className="flex min-w-0 items-center gap-6">
-                <h1 className="shrink-0 truncate text-base font-semibold text-navy-900 md:text-[1.05rem]">
-                  {workspaceName ? formatWorkspaceName(workspaceName) : "Workspace"}
-                </h1>
-                <nav className="flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="flex min-w-0 flex-1 items-center gap-4">
+                <div className="min-w-0 max-w-[clamp(11rem,24vw,23rem)]">
+                  <h1 className="truncate text-base font-semibold text-navy-900 md:text-[1.05rem]">
+                    {workspaceName ? formatWorkspaceName(workspaceName) : "Workspace"}
+                  </h1>
+                </div>
+                <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {WORKSPACE_TABS.map((tab) => {
                     const href = workspaceSectionHref(shayWorkspaceId, tab.section);
                     const active = pathname === href

@@ -19,7 +19,7 @@ Paste-ready context for a fresh Claude Code session. Keep this current as the co
 
 ## 1. Non-negotiable working rules (learned the hard way)
 
-1. **Deploy via git only.** Edit → commit → push → on EC2 `git pull && docker compose up -d`.
+1. **Deploy via git only.** Edit → commit → push → on the OCI/dev server `git pull && docker compose up -d`.
    Never `scp`, ad-hoc `docker run`, or manual `docker exec` for changes. Infra is code.
 2. **Never `cd` in a Bash tool call.** Raven hooks resolve scripts by **relative** path; a
    persisted `cd` breaks every hook and locks all tools. Use absolute paths / `git -C`.
@@ -50,7 +50,7 @@ ssh -i ~/.ssh/rvdts-oracle-key.pem ec2-user@ec2-3-91-73-197.compute-1.amazonaws.
 docker exec aryx-api-1 python -c \
  "from aryx.store.migrate import apply_migrations; from aryx.config import get_settings; apply_migrations(get_settings().rdb_dsn)"
 ```
-EC2 `.env` holds `POSTGRES_PASSWORD`, `ARYX_RDB_DSN`, `ARYX_GRAPH_URL` (gitignored).
+OCI/dev-server `.env` holds `POSTGRES_PASSWORD`, `ARYX_RDB_DSN`, `ARYX_GRAPH_URL` (gitignored).
 In-network hosts: `postgres:5432`, `ollama:11434`, `falkordb:6379`.
 
 ---
@@ -77,7 +77,7 @@ In-network hosts: `postgres:5432`, `ollama:11434`, `falkordb:6379`.
   `src/aryx/llm_runtime.py` = runtime-swappable provider/model/key for Ask (Settings), logs every
   call to `aryx_llm_call`.
 
-### Ollama models (on EC2, ~2 GB total, pulled by `ollama-init` in compose)
+### Ollama models (on OCI/dev server, ~2 GB total, pulled by `ollama-init` in compose)
 - `qwen3.5:0.8b` (988 MB) — menial+answer (Ask), term/type inference. Thinking-capable; run `think=False`.
 - `lfm2.5-thinking` (731 MB) — opt-in deep reasoning (installed; not default — slow on CPU).
 - `nomic-embed-text` (274 MB, dim 768) — document embeddings. `catalog.json` embed endpoint `http://ollama:11434`.

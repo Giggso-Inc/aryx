@@ -13,6 +13,26 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 
 
+def _ensure_async_postgres_driver(url: str) -> str:
+    """
+    Normalize PostgreSQL URLs for async SQLAlchemy usage.
+
+    Shay boot uses ``create_async_engine`` for PostgreSQL, so plain
+    ``postgresql://`` (or psycopg2-flavoured) URLs must be promoted to
+    ``postgresql+asyncpg://`` to avoid loading a synchronous driver.
+    """
+    if not url:
+        return url
+
+    raw = url.strip()
+    lowered = raw.lower()
+    if lowered.startswith("postgresql+asyncpg://"):
+        return raw
+    if lowered.startswith(("postgresql://", "postgres://", "postgresql+psycopg2://", "postgres+psycopg2://")):
+        return f"postgresql+asyncpg://{raw.split('://', 1)[1]}"
+    return raw
+
+
 def _normalize_postgres_url(url: str) -> str:
     """
     Return a PostgreSQL URL safe for drivers: encode password so special chars (@, !, :, etc.) work.
@@ -38,21 +58,23 @@ def _normalize_postgres_url(url: str) -> str:
         return url
 
 
-_db_url = (settings.DATABASE_URL or "").strip().lower()
+_raw_database_url = settings.DATABASE_URL or ""
+_database_url = _ensure_async_postgres_driver(_raw_database_url)
+_db_url = _database_url.strip().lower()
 # Use normalized URL for PostgreSQL so passwords with @, !, etc. work (sqlite/oracle unchanged)
-_database_url = _normalize_postgres_url(settings.DATABASE_URL or "") if _db_url.startswith(("postgresql", "postgres")) else (settings.DATABASE_URL or "")
+_database_url = _normalize_postgres_url(_database_url) if _db_url.startswith(("postgresql", "postgres")) else _database_url
 
 if _db_url.startswith("sqlite"):
     # SQLite configuration
     engine = create_async_engine(
-        settings.DATABASE_URL,
+        _database_url,
         echo=settings.DEBUG,
         connect_args={"check_same_thread": False}
     )
-elif settings.DATABASE_URL.strip().lower().startswith("oracle"):
+elif _database_url.strip().lower().startswith("oracle"):
     # Oracle DB (new): JDBC-style or ?dsn= in DATABASE_URL; uses DATABASE_POOL_SIZE / DATABASE_MAX_OVERFLOW
     # Oracle DB: use oracledb_async so create_async_engine loads the async driver (required for asyncio)
-    oracle_url = settings.DATABASE_URL.strip()
+    oracle_url = _database_url.strip()
     if "oracledb_async" not in oracle_url.lower():
         oracle_url = oracle_url.replace("oracle+oracledb", "oracle+oracledb_async", 1)
     # TCPS/SSL: DSN only from DATABASE_URL – JDBC-style @(description=...) or query ?dsn=...

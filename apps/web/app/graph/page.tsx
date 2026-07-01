@@ -14,7 +14,9 @@ export default function GraphPage() {
   return (
     <div className="flex h-screen flex-col">
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
-      <EntityGraph workspaceId={workspaceId} />
+      <div className="app-shell-offset flex min-h-0 flex-1">
+        <EntityGraph workspaceId={workspaceId} />
+      </div>
     </div>
   );
 }

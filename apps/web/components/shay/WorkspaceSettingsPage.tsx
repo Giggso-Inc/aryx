@@ -71,17 +71,20 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     setError(null);
     try {
       const nextWorkspace = await shayApi.getWorkspace(workspaceId, session.access_token);
-      const [memberList, userList] = await Promise.all([
-        shayApi.listWorkspaceMembers(workspaceId, session.access_token),
-        shayApi.listCompanyUsers(session.company_id, session.access_token),
-      ]);
+      const memberList = await shayApi.listWorkspaceMembers(workspaceId, session.access_token);
 
       setWorkspace(nextWorkspace);
       setBridge(nextWorkspace.bridge ?? null);
       setDraftName(nextWorkspace.name);
       setDraftDescription(nextWorkspace.description ?? "");
       setMembers(memberList.members);
-      setCompanyUsers(userList.users);
+
+      try {
+        const userList = await shayApi.listCompanyUsers(session.company_id, session.access_token);
+        setCompanyUsers(userList.users);
+      } catch {
+        setCompanyUsers([]);
+      }
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to load workspace settings.");
     } finally {

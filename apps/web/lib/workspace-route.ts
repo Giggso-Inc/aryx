@@ -50,6 +50,13 @@ export function parseWorkspaceScope(pathname?: string | null): WorkspaceScope {
     };
   }
 
+  if (parts[2] === "model") {
+    return {
+      shayWorkspaceId: parts[1],
+      section: "ontology",
+    };
+  }
+
   return {
     shayWorkspaceId: parts[1],
     section: asWorkspaceSection(parts[2]) ?? "home",
@@ -61,6 +68,14 @@ export function workspaceSectionHref(
   section: WorkspaceSection,
 ) {
   return `/workspaces/${shayWorkspaceId}/${section}`;
+}
+
+export function workspaceModelHref(shayWorkspaceId: string) {
+  return `/workspaces/${shayWorkspaceId}/model`;
+}
+
+export function workspaceStartHref(shayWorkspaceId: string) {
+  return `/workspaces/${shayWorkspaceId}/start`;
 }
 
 export function useWorkspaceScope() {

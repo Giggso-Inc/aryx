@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useWorkspace } from "@/lib/workspace";
+import { parseWorkspaceScope, workspaceModelHref, workspaceSectionHref } from "@/lib/workspace-route";
 import type { Brief } from "@/lib/types";
 import { Intro } from "@/components/start/Intro";
 import { Goals } from "@/components/start/Goals";
@@ -22,14 +23,18 @@ type Step =
  *  for now (Inspector on /model handles manual type creation). */
 export default function StartWizard() {
   const router = useRouter();
+  const pathname = usePathname();
   const { ready, workspaceId, workspaces } = useWorkspace();
+  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
 
   const [step, setStep] = useState<Step>("intro");
   const [brief, setBrief] = useState<Brief>({});
   const [sources, setSources] = useState<SourceKind[]>(["database"]);
   const [jobId, setJobId] = useState<string | null>(null);
   const hasWorkspace = ready && workspaceId > 0 && workspaces.length > 0;
-  const briefHref = hasWorkspace ? `/workspaces/${workspaceId}/brief` : "/workspaces";
+  const briefHref = hasWorkspace
+    ? (shayWorkspaceId ? workspaceSectionHref(shayWorkspaceId, "brief") : "/workspaces")
+    : "/workspaces";
 
   /** After a source completes, advance through any remaining picked
    *  sources before flipping to "running". */
@@ -104,7 +109,7 @@ export default function StartWizard() {
           workspaceId={workspaceId}
           jobId={jobId}
           onDone={() => setStep("done")}
-          onSkip={() => router.push("/model")}
+          onSkip={() => router.push(shayWorkspaceId ? workspaceModelHref(shayWorkspaceId) : "/model")}
         />
       )}
 

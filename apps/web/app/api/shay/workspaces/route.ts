@@ -1,8 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 import {
-  attachWorkspaceBridge,
-  attachWorkspaceBridges,
   forwardHeaders,
   jsonResponse,
   readJsonOrThrow,
@@ -19,7 +17,7 @@ export async function GET(req: NextRequest) {
       cache: "no-store",
     });
     const body = await readJsonOrThrow<WorkspaceListPayload>(upstream);
-    return jsonResponse(await attachWorkspaceBridges(req, body));
+    return jsonResponse(body, upstream.status);
   } catch (error) {
     return jsonResponse(
       { detail: error instanceof Error ? error.message : "Workspace proxy failed" },
@@ -38,7 +36,7 @@ export async function POST(req: NextRequest) {
       cache: "no-store",
     });
     const workspace = await readJsonOrThrow<WorkspacePayload>(upstream);
-    return jsonResponse(await attachWorkspaceBridge(req, workspace), upstream.status);
+    return jsonResponse(workspace, upstream.status);
   } catch (error) {
     return jsonResponse(
       { detail: error instanceof Error ? error.message : "Workspace proxy failed" },

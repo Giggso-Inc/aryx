@@ -10,6 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/cn";
+import { parseWorkspaceScope } from "@/lib/workspace-route";
 
 const POLL_MS = 5_000;
 
@@ -49,7 +50,11 @@ export function JobsBadge() {
   // Auto-open on Ask + Model when something is running and user hasn't
   // dismissed the panel for this session.
   const running = jobs.filter((j) => RUNNING.has(j.status)).length;
-  const onAskOrModel = pathname === "/" || pathname?.startsWith("/model");
+  const workspaceScope = parseWorkspaceScope(pathname);
+  const onAskOrModel = pathname === "/"
+    || pathname?.startsWith("/model")
+    || workspaceScope.section === "ask"
+    || workspaceScope.section === "ontology";
   useEffect(() => {
     if (running > 0 && onAskOrModel && !dismissed) setOpen(true);
     if (running === 0) setDismissed(false);

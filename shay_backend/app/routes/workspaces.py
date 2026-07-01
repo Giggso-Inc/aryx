@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any, List, Optional
+from uuid import UUID
 import httpx
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.security import HTTPBearer
@@ -25,6 +26,29 @@ from app.services.workspace_membership import ensure_workspace_membership
 
 router = APIRouter()
 security = HTTPBearer()
+
+
+def _to_uuid(value: str, name: str) -> UUID:
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {name} format",
+        ) from exc
+
+
+async def _get_workspace_or_404(db: AsyncSession, workspace_id: str) -> Workspace:
+    """Load a workspace by route param, normalizing UUID input consistently."""
+    workspace_uuid = _to_uuid(workspace_id, "workspace_id")
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_uuid))
+    workspace = result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+    return workspace
 
 
 def serialize_workspace(workspace: Workspace) -> WorkspaceResponse:
@@ -218,17 +242,7 @@ async def get_workspace(
 ):
     """Get workspace by ID"""
     user = await get_current_user_required(request)
-    
-    # Get workspace
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found"
-        )
+    workspace = await _get_workspace_or_404(db, workspace_id)
     
     # Check access permissions
     if not workspace.is_accessible_by_user(user.company_id, user.role):
@@ -252,17 +266,7 @@ async def update_workspace(
 ):
     """Update workspace"""
     user = await get_current_user_required(request)
-    
-    # Get workspace
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found"
-        )
+    workspace = await _get_workspace_or_404(db, workspace_id)
     
     # Check permissions
     if not workspace.is_accessible_by_user(user.company_id, user.role):
@@ -294,16 +298,7 @@ async def delete_workspace(
 ):
     """Delete workspace"""
     user = await get_current_user_required(request)
-
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found"
-        )
+    workspace = await _get_workspace_or_404(db, workspace_id)
 
     if not workspace.is_accessible_by_user(user.company_id, user.role):
         raise HTTPException(
@@ -352,16 +347,7 @@ async def purge_workspace(
 ):
     """Purge Aryx data for the mapped workspace while keeping the Shay workspace."""
     user = await get_current_user_required(request)
-
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found"
-        )
+    workspace = await _get_workspace_or_404(db, workspace_id)
 
     if not workspace.is_accessible_by_user(user.company_id, user.role):
         raise HTTPException(
@@ -425,17 +411,8 @@ async def get_workspace_stats(
 ):
     """Get workspace statistics"""
     user = await get_current_user_required(request)
-    
-    # Get workspace
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found"
-        )
+    workspace = await _get_workspace_or_404(db, workspace_id)
+    workspace_uuid = UUID(str(workspace.id))
     
     # Check access permissions
     if not workspace.is_accessible_by_user(user.company_id, user.role):
@@ -451,7 +428,7 @@ async def get_workspace_stats(
     from app.models.ai_response import AIResponse
 
     # Subquery: channel IDs belonging to this workspace
-    channel_subq = select(Channel.id).where(Channel.workspace_id == workspace_id).scalar_subquery()
+    channel_subq = select(Channel.id).where(Channel.workspace_id == workspace_uuid).scalar_subquery()
 
     # Count threads via channel chain (gg_threads has no workspace_id)
     thread_count = await db.execute(select(func.count(Thread.id)).where(Thread.channel_id.in_(channel_subq)))
@@ -465,11 +442,11 @@ async def get_workspace_stats(
     total_messages = msg_count.scalar()
     
     # Count attachments
-    attach_count = await db.execute(select(func.count(Attachment.id)).where(Attachment.workspace_id == workspace_id))
+    attach_count = await db.execute(select(func.count(Attachment.id)).where(Attachment.workspace_id == workspace_uuid))
     total_attachments = attach_count.scalar()
     
     # Count AI responses
-    ai_count = await db.execute(select(func.count(AIResponse.id)).where(AIResponse.workspace_id == workspace_id))
+    ai_count = await db.execute(select(func.count(AIResponse.id)).where(AIResponse.workspace_id == workspace_uuid))
     ai_responses_count = ai_count.scalar()
     
     return WorkspaceStats(

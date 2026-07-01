@@ -20,6 +20,7 @@ import type {
 } from "./shay-types";
 
 const SHAY_BASE = "/shay/api/v1";
+const SHAY_WORKSPACE_PROXY_BASE = "/api/shay/workspaces";
 const ARYX_BASE = "/api";
 const SHAY_SESSION_STORAGE_KEY = "aryx.shay.session";
 
@@ -185,6 +186,15 @@ function query(params: Record<string, string | number | boolean | undefined | nu
   });
   const serialized = search.toString();
   return serialized ? `?${serialized}` : "";
+}
+
+async function listBridgedWorkspaces(token: string): Promise<ShayWorkspaceList> {
+  return requestJSON<ShayWorkspaceList>(
+    SHAY_WORKSPACE_PROXY_BASE,
+    "/",
+    undefined,
+    token,
+  );
 }
 
 export const shayApi = {
@@ -427,14 +437,13 @@ export const shayApi = {
       token,
     ),
 
-  listWorkspaces: (token: string) =>
-    requestJSON<ShayWorkspaceList>(SHAY_BASE, "/workspaces/", undefined, token),
+  listWorkspaces: (token: string) => listBridgedWorkspaces(token),
 
   getWorkspace: async (workspaceId: string, token: string) => {
     try {
       return await requestJSON<ShayWorkspace>(
-        SHAY_BASE,
-        `/workspaces/${workspaceId}`,
+        SHAY_WORKSPACE_PROXY_BASE,
+        `/${workspaceId}`,
         undefined,
         token,
       );
@@ -443,12 +452,7 @@ export const shayApi = {
         throw error;
       }
 
-      const list = await requestJSON<ShayWorkspaceList>(
-        SHAY_BASE,
-        "/workspaces/",
-        undefined,
-        token,
-      );
+      const list = await listBridgedWorkspaces(token);
       const match = list.workspaces.find((workspace) => workspace.id === workspaceId);
       if (match) {
         return match;
@@ -458,15 +462,20 @@ export const shayApi = {
   },
 
   getWorkspaceDirect: (workspaceId: string, token: string) =>
-    requestJSON<ShayWorkspace>(SHAY_BASE, `/workspaces/${workspaceId}`, undefined, token),
+    requestJSON<ShayWorkspace>(
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}`,
+      undefined,
+      token,
+    ),
 
   createWorkspace: (
     payload: { name: string; description?: string; workspace_type?: string },
     token: string,
   ) =>
     requestJSON<ShayWorkspace>(
-      SHAY_BASE,
-      "/workspaces/",
+      SHAY_WORKSPACE_PROXY_BASE,
+      "/",
       {
         method: "POST",
         body: JSON.stringify({
@@ -486,32 +495,31 @@ export const shayApi = {
     workspaceId: string,
     payload: Partial<Pick<ShayWorkspace, "name" | "description" | "is_public" | "ai_enabled" | "ai_provider" | "ai_model" | "is_active">>,
     token: string,
-  ) =>
-    requestJSON<ShayWorkspace>(SHAY_BASE, `/workspaces/${workspaceId}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    }, token),
+  ) => requestJSON<ShayWorkspace>(SHAY_WORKSPACE_PROXY_BASE, `/${workspaceId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  }, token),
 
   deleteWorkspace: (workspaceId: string, token: string) =>
     requestJSON<{ success?: boolean; message?: string }>(
-      SHAY_BASE,
-      `/workspaces/${workspaceId}`,
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}`,
       { method: "DELETE" },
       token,
     ),
 
   purgeWorkspace: (workspaceId: string, token: string) =>
     requestJSON<{ status: string }>(
-      SHAY_BASE,
-      `/workspaces/${workspaceId}/purge`,
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}/purge`,
       { method: "POST", body: "{}" },
       token,
     ),
 
   listWorkspaceMembers: (workspaceId: string, token: string) =>
     requestJSON<ShayWorkspaceMemberList>(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members`,
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}/members`,
       undefined,
       token,
     ),
@@ -522,8 +530,8 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspaceMember>(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members`,
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}/members`,
       {
         method: "POST",
         body: JSON.stringify(payload),
@@ -538,8 +546,8 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspaceMember>(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members/${userId}`,
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}/members/${userId}`,
       {
         method: "PUT",
         body: JSON.stringify(payload),
@@ -549,8 +557,8 @@ export const shayApi = {
 
   removeWorkspaceMember: (workspaceId: string, userId: string, token: string) =>
     requestJSON(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members/${userId}`,
+      SHAY_WORKSPACE_PROXY_BASE,
+      `/${workspaceId}/members/${userId}`,
       { method: "DELETE" },
       token,
     ),

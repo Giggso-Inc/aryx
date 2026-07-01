@@ -104,14 +104,14 @@ export function LightweightTab({ workspaceId, onChanged }: Props) {
       {/* Lifecycle explanation */}
       <div className="rounded-xl border border-navy-100 bg-navy-50/40 p-4 text-[12px] text-navy-700">
         <strong>Lifecycle:</strong> Brief → Ingest →
-        <span className="inline-flex items-center gap-1 text-steel-600">
+        <span className="inline-flex items-center gap-1.5 align-middle text-steel-600">
           <Weight size={11} /> Lightweight (observed, below)
         </span> →
         HITL review →
-        <span className="inline-flex items-center gap-1 text-purple-700">
+        <span className="inline-flex items-center gap-1.5 align-middle text-purple-700">
           <Scale size={11} /> Heavyweight (Rules + Versions tabs)
         </span> →
-        <span className="inline-flex items-center gap-1 text-emerald-700">
+        <span className="inline-flex items-center gap-1.5 align-middle text-emerald-700">
           <FolderUp size={11} /> Publish
         </span>
       </div>
