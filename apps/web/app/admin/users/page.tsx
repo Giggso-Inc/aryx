@@ -1,6 +1,5 @@
-import { AdminUsersPage } from "@/components/shay/AdminUsersPage";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <AdminUsersPage />;
+  redirect("/admin");
 }
-

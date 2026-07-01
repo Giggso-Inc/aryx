@@ -1,53 +1,69 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { AlertTriangle, Loader2, PencilLine, Plus, UserPlus, Users2, X } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, Link2, Save, ShieldCheck, Users2 } from "lucide-react";
-import { AuthGuard } from "./AuthGuard";
-import { ShayPageShell } from "./ShayPageShell";
+import { cn } from "@/lib/cn";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
+import { formatWorkspaceName } from "@/lib/workspace-name";
 import type {
-  ShayApp,
-  ShayDatasource,
+  ShayBridgeWorkspaceMap,
   ShayUser,
   ShayWorkspace,
-  ShayWorkspaceAppConnection,
   ShayWorkspaceMember,
 } from "@/lib/shay-types";
+import { AuthGuard } from "./AuthGuard";
+import { ShayPageShell } from "./ShayPageShell";
+import { WorkspaceProfileDialog } from "./WorkspaceProfileDialog";
 
-const datasourceKinds = ["postgresql", "mysql", "oracle", "docs", "rest"];
+type SettingsTab = "members" | "apps" | "danger-zone";
+
+const MEMBER_ROLES = [
+  { value: "admin", label: "Admin" },
+  { value: "member", label: "Member" },
+  { value: "viewer", label: "Viewer" },
+] as const;
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: "members", label: "Members" },
+  { id: "apps", label: "Apps" },
+  { id: "danger-zone", label: "Danger Zone" },
+];
+
+type DisplayWorkspaceMember = ShayWorkspaceMember & {
+  derived?: boolean;
+  derivedLabel?: string;
+};
 
 export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const tab = searchParams.get("tab") || "members";
-  const { session, profile } = useShayAuth();
+  const { session } = useShayAuth();
+
+  const rawTab = searchParams.get("tab");
+  const tab: SettingsTab = rawTab === "apps" || rawTab === "danger-zone" ? rawTab : "members";
 
   const [workspace, setWorkspace] = useState<ShayWorkspace | null>(null);
   const [members, setMembers] = useState<ShayWorkspaceMember[]>([]);
   const [companyUsers, setCompanyUsers] = useState<ShayUser[]>([]);
-  const [apps, setApps] = useState<ShayApp[]>([]);
-  const [connections, setConnections] = useState<ShayWorkspaceAppConnection[]>([]);
-  const [datasources, setDatasources] = useState<ShayDatasource[]>([]);
+  const [bridge, setBridge] = useState<ShayBridgeWorkspaceMap | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-
   const [draftName, setDraftName] = useState("");
   const [draftDescription, setDraftDescription] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [memberUserId, setMemberUserId] = useState("");
   const [memberRole, setMemberRole] = useState("member");
-  const [appId, setAppId] = useState("");
-  const [connectionName, setConnectionName] = useState("");
-  const [connectionProvider, setConnectionProvider] = useState("");
-  const [datasourceName, setDatasourceName] = useState("");
-  const [datasourceProvider, setDatasourceProvider] = useState("");
-  const [datasourceUrl, setDatasourceUrl] = useState("");
-  const [datasourceKind, setDatasourceKind] = useState("rest");
-  const [saving, setSaving] = useState(false);
+  const [memberBusy, setMemberBusy] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [dangerNotice, setDangerNotice] = useState<string | null>(null);
+  const [dangerError, setDangerError] = useState<string | null>(null);
 
   const load = async () => {
     if (!session) return;
@@ -55,27 +71,17 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     setError(null);
     try {
       const nextWorkspace = await shayApi.getWorkspace(workspaceId, session.access_token);
-      await shayApi.ensureWorkspaceBridge({
-        shay_workspace_id: nextWorkspace.id,
-        name: nextWorkspace.name,
-        description: nextWorkspace.description ?? "",
-        company_id: session.company_id,
-      });
-      const [memberList, userList, appList, connectionList, datasourceList] = await Promise.all([
+      const [memberList, userList] = await Promise.all([
         shayApi.listWorkspaceMembers(workspaceId, session.access_token),
         shayApi.listCompanyUsers(session.company_id, session.access_token),
-        shayApi.listApps(session.access_token),
-        shayApi.listWorkspaceAppConnections(workspaceId, session.access_token),
-        shayApi.listDatasources(workspaceId, session.access_token),
       ]);
+
       setWorkspace(nextWorkspace);
+      setBridge(nextWorkspace.bridge ?? null);
       setDraftName(nextWorkspace.name);
       setDraftDescription(nextWorkspace.description ?? "");
       setMembers(memberList.members);
       setCompanyUsers(userList.users);
-      setApps(appList.apps);
-      setConnections(connectionList.connections);
-      setDatasources(datasourceList.items);
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to load workspace settings.");
     } finally {
@@ -87,12 +93,43 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     void load();
   }, [session?.access_token, session?.company_id, workspaceId]);
 
-  const availableUsers = useMemo(() => {
-    const memberIds = new Set(members.map((member) => member.user_id));
-    return companyUsers.filter((user) => !memberIds.has(user.id));
-  }, [companyUsers, members]);
+  const displayMembers = useMemo(() => {
+    const nextMembers = [...members] as DisplayWorkspaceMember[];
+    const currentUserId = session?.user_id;
+    if (!currentUserId) return nextMembers;
 
-  const setTab = (nextTab: string) => {
+    const alreadyPresent = nextMembers.some((member) => member.user_id === currentUserId);
+    if (alreadyPresent) return nextMembers;
+
+    const currentCompanyUser = companyUsers.find((user) => user.id === currentUserId);
+    const isWorkspaceOwner =
+      workspace?.user_id === currentUserId || workspace?.created_by === currentUserId;
+
+    if (!currentCompanyUser && !isWorkspaceOwner) {
+      return nextMembers;
+    }
+
+    nextMembers.unshift({
+      id: `derived-${currentUserId}`,
+      user_id: currentUserId,
+      workspace_id: workspaceId,
+      level: "workspace",
+      role: isWorkspaceOwner ? "admin" : session.role || "member",
+      is_active: true,
+      name: currentCompanyUser?.name || session.name || "You",
+      email: currentCompanyUser?.email_id || session.email_id,
+      derived: true,
+      derivedLabel: isWorkspaceOwner ? "Workspace owner" : "Current user",
+    });
+    return nextMembers;
+  }, [companyUsers, members, session, workspace, workspaceId]);
+
+  const availableUsers = useMemo(() => {
+    const memberIds = new Set(displayMembers.map((member) => member.user_id));
+    return companyUsers.filter((user) => !memberIds.has(user.id));
+  }, [companyUsers, displayMembers]);
+
+  const setTab = (nextTab: SettingsTab) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("tab", nextTab);
     router.replace(`${pathname}?${params.toString()}`);
@@ -100,158 +137,145 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
 
   const saveWorkspace = async () => {
     if (!session || !workspace) return;
-    setSaving(true);
+    setSavingProfile(true);
     setError(null);
     setNotice(null);
     try {
-      const updated = await shayApi.updateWorkspace(workspace.id, {
-        name: draftName,
-        description: draftDescription,
-      }, session.access_token);
-      await shayApi.ensureWorkspaceBridge({
-        shay_workspace_id: updated.id,
-        name: updated.name,
-        description: updated.description ?? "",
-        company_id: session.company_id,
-      });
+      const updated = await shayApi.updateWorkspace(
+        workspace.id,
+        { name: draftName, description: draftDescription },
+        session.access_token,
+      );
       setWorkspace(updated);
-      setNotice("Workspace profile saved and bridge metadata refreshed.");
+      setBridge(updated.bridge ?? null);
+      setNotice("Workspace profile saved.");
+      setEditProfileOpen(false);
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to save workspace.");
     } finally {
-      setSaving(false);
+      setSavingProfile(false);
     }
   };
 
   const addMember = async () => {
     if (!session || !memberUserId) return;
-    setSaving(true);
+    setMemberBusy("add");
     setError(null);
     setNotice(null);
     try {
-      await shayApi.addWorkspaceMember(workspaceId, {
-        user_id: memberUserId,
-        role: memberRole,
-      }, session.access_token);
+      await shayApi.addWorkspaceMember(
+        workspaceId,
+        { user_id: memberUserId, role: memberRole },
+        session.access_token,
+      );
       setMemberUserId("");
+      setMemberRole("member");
+      setAddMemberOpen(false);
       setNotice("Workspace member added.");
       await load();
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to add member.");
     } finally {
-      setSaving(false);
+      setMemberBusy(null);
     }
   };
 
-  const updateMember = async (userId: string, payload: { role?: string; is_active?: boolean }) => {
+  const updateMemberRole = async (userId: string, role: string) => {
     if (!session) return;
-    setSaving(true);
+    setMemberBusy(`role:${userId}`);
     setError(null);
     setNotice(null);
     try {
-      await shayApi.updateWorkspaceMember(workspaceId, userId, payload, session.access_token);
+      await shayApi.updateWorkspaceMember(workspaceId, userId, { role }, session.access_token);
       setNotice("Workspace member updated.");
       await load();
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to update member.");
     } finally {
-      setSaving(false);
+      setMemberBusy(null);
     }
   };
 
-  const removeMember = async (userId: string) => {
+  const toggleMember = async (member: ShayWorkspaceMember) => {
     if (!session) return;
-    setSaving(true);
+    setMemberBusy(`toggle:${member.user_id}`);
     setError(null);
     setNotice(null);
     try {
-      await shayApi.removeWorkspaceMember(workspaceId, userId, session.access_token);
+      await shayApi.updateWorkspaceMember(
+        workspaceId,
+        member.user_id,
+        { is_active: !member.is_active },
+        session.access_token,
+      );
+      setNotice(member.is_active ? "Member deactivated." : "Member reactivated.");
+      await load();
+    } catch (nextError: unknown) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to update member.");
+    } finally {
+      setMemberBusy(null);
+    }
+  };
+
+  const removeMember = async (member: ShayWorkspaceMember) => {
+    if (!session) return;
+    setMemberBusy(`remove:${member.user_id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await shayApi.removeWorkspaceMember(workspaceId, member.user_id, session.access_token);
       setNotice("Workspace member removed.");
       await load();
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to remove member.");
     } finally {
-      setSaving(false);
+      setMemberBusy(null);
     }
   };
 
-  const addConnection = async () => {
-    if (!session || !appId) return;
-    setSaving(true);
-    setError(null);
-    setNotice(null);
+  const purgeWorkspaceData = async () => {
+    if (!session || !bridge?.aryx_workspace_id) {
+      setDangerError("Workspace bridge is not ready yet.");
+      return;
+    }
+    if (!window.confirm(`Purge all Aryx data from "${formatWorkspaceName(workspace?.name)}"?`)) {
+      return;
+    }
+    setPurging(true);
+    setDangerError(null);
+    setDangerNotice(null);
     try {
-      await shayApi.createWorkspaceAppConnection(workspaceId, {
-        app_id: appId,
-        connection_name: connectionName || undefined,
-        provider: connectionProvider || undefined,
-      }, session.access_token);
-      setAppId("");
-      setConnectionName("");
-      setConnectionProvider("");
-      setNotice("Workspace app connection added.");
-      await load();
+      await shayApi.purgeWorkspace(workspaceId, session.access_token);
+      setDangerNotice("Workspace data purged.");
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to add app connection.");
+      setDangerError(nextError instanceof Error ? nextError.message : "Unable to purge workspace data.");
     } finally {
-      setSaving(false);
+      setPurging(false);
     }
   };
 
-  const toggleConnection = async (connection: ShayWorkspaceAppConnection) => {
-    if (!session) return;
-    setSaving(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await shayApi.updateWorkspaceAppConnection(workspaceId, connection.id, {
-        is_active: !connection.is_active,
-        connection_status: !connection.is_active ? "active" : "inactive",
-      }, session.access_token);
-      setNotice("Workspace app connection updated.");
-      await load();
-    } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to update connection.");
-    } finally {
-      setSaving(false);
+  const deleteWorkspace = async () => {
+    if (!session || !bridge?.aryx_workspace_id) {
+      setDangerError("Workspace bridge is not ready yet.");
+      return;
     }
-  };
-
-  const addDatasource = async () => {
-    if (!session || !datasourceName.trim()) return;
-    setSaving(true);
-    setError(null);
-    setNotice(null);
+    if (bridge.aryx_workspace_id === 1) {
+      setDangerError("Workspace 1 cannot be deleted.");
+      return;
+    }
+    if (!window.confirm(`Delete workspace "${formatWorkspaceName(workspace?.name)}" permanently?`)) {
+      return;
+    }
+    setDeleting(true);
+    setDangerError(null);
+    setDangerNotice(null);
     try {
-      const datasource = await shayApi.createDatasource({
-        workspace_id: workspaceId,
-        name: datasourceName.trim(),
-        storage_type: datasourceKind === "docs" ? "local" : datasourceKind === "rest" ? "app" : "database",
-        provider: datasourceProvider || datasourceKind,
-        file_url: datasourceUrl || undefined,
-        config: datasourceUrl ? { url: datasourceUrl } : {},
-        datasource_metadata: {
-          source: "shay-settings",
-          created_by_name: profile?.name || session.name || session.email_id,
-        },
-      }, session.access_token);
-      await shayApi.syncDatasourceBridge({
-        shay_workspace_id: workspaceId,
-        shay_datasource_id: datasource.id,
-        name: datasource.name,
-        kind: datasourceKind,
-        config: datasource.config ?? {},
-      });
-      setDatasourceName("");
-      setDatasourceProvider("");
-      setDatasourceUrl("");
-      setDatasourceKind("rest");
-      setNotice("Datasource created and synced into Aryx ingest.");
-      await load();
+      await shayApi.deleteWorkspace(workspaceId, session.access_token);
+      router.replace("/workspaces");
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to create datasource.");
+      setDangerError(nextError instanceof Error ? nextError.message : "Unable to delete workspace.");
     } finally {
-      setSaving(false);
+      setDeleting(false);
     }
   };
 
@@ -259,8 +283,9 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     <AuthGuard>
       <ShayPageShell
         eyebrow="Workspace settings"
-        title={workspace ? `${workspace.name} settings` : "Workspace settings"}
-        description="Manage membership, app connections, and datasource bridging for this workspace while keeping the Aryx mapping current."
+        title="Workspace settings"
+        description="Manage workspace access and maintenance actions while keeping the Aryx workspace mapping aligned."
+        showHero={false}
       >
         {loading ? (
           <div className="rounded-[1.5rem] border border-navy-100 bg-white px-5 py-12 text-center text-sm text-subtle shadow-soft">
@@ -269,311 +294,437 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
         ) : (
           <div className="space-y-6">
             <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold text-navy-900">Workspace profile</h2>
-                  <p className="mt-2 text-sm text-subtle">
-                    Keep the workspace profile in sync with the mapped Aryx workspace identity.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={saveWorkspace}
-                  disabled={saving}
-                  className="focus-ring inline-flex items-center gap-2 rounded-full bg-navy-800 px-4 py-2 text-sm font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
-                >
-                  <Save size={15} />
-                  Save workspace
-                </button>
-              </div>
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
-                <input
-                  value={draftName}
-                  onChange={(event) => setDraftName(event.target.value)}
-                  placeholder="Workspace name"
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                />
-                <input
-                  value={draftDescription}
-                  onChange={(event) => setDraftDescription(event.target.value)}
-                  placeholder="Workspace description"
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                />
-              </div>
-              {notice ? (
-                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                  {notice}
-                </div>
-              ) : null}
-              {error ? (
-                <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {error}
-                </div>
-              ) : null}
-            </section>
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                <div className="flex w-full flex-col gap-5 lg:flex-row lg:items-start">
+                  <div className="grid flex-1 gap-5 md:grid-cols-2">
+                    <ProfileSummaryField
+                      label="Workspace name"
+                      value={formatWorkspaceName(workspace?.name)}
+                    />
+                    <ProfileSummaryField
+                      label="Workspace description"
+                      value={workspace?.description || "No description added yet."}
+                    />
+                  </div>
 
-            <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-              <div className="flex flex-wrap gap-2">
-                {[
-                  ["members", "Workspace members"],
-                  ["apps", "Apps"],
-                  ["data-sources", "Data sources"],
-                ].map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setTab(key)}
-                    className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                      tab === key ? "bg-navy-800 text-white" : "bg-navy-50 text-navy-700 hover:bg-navy-100"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {tab === "members" ? (
-                <div className="mt-6 space-y-5">
-                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_160px_160px]">
-                    <select
-                      value={memberUserId}
-                      onChange={(event) => setMemberUserId(event.target.value)}
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    >
-                      <option value="">Select company user</option>
-                      {availableUsers.map((user) => (
-                        <option key={user.id} value={user.id}>
-                          {user.name} ({user.email_id})
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={memberRole}
-                      onChange={(event) => setMemberRole(event.target.value)}
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    >
-                      <option value="member">Member</option>
-                      <option value="admin">Admin</option>
-                      <option value="viewer">Viewer</option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={addMember}
-                      disabled={!memberUserId || saving}
-                      className="focus-ring rounded-2xl bg-navy-800 px-4 py-3 text-sm font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
-                    >
-                      Add member
-                    </button>
-                  </div>
-                  <div className="space-y-3">
-                    {members.map((member) => (
-                      <div key={member.id} className="grid gap-3 rounded-2xl border border-navy-100 p-4 md:grid-cols-[minmax(0,1fr)_140px_140px_120px] md:items-center">
-                        <div>
-                          <p className="text-sm font-medium text-navy-900">{member.name || member.email || member.user_id}</p>
-                          <p className="mt-1 text-xs text-subtle">{member.email || member.user_id}</p>
-                        </div>
-                        <select
-                          value={member.role}
-                          onChange={(event) => void updateMember(member.user_id, { role: event.target.value })}
-                          className="focus-ring rounded-xl border border-navy-100 px-3 py-2 text-sm text-navy-900"
-                        >
-                          <option value="member">Member</option>
-                          <option value="admin">Admin</option>
-                          <option value="viewer">Viewer</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => void updateMember(member.user_id, { is_active: !member.is_active })}
-                          className="focus-ring rounded-xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                        >
-                          {member.is_active ? "Deactivate" : "Reactivate"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void removeMember(member.user_id)}
-                          className="focus-ring rounded-xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {tab === "apps" ? (
-                <div className="mt-6 space-y-5">
-                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_180px_180px_150px]">
-                    <select
-                      value={appId}
-                      onChange={(event) => setAppId(event.target.value)}
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    >
-                      <option value="">Select app</option>
-                      {apps.map((app) => (
-                        <option key={app.id} value={app.id}>
-                          {app.app_name} ({app.app_key})
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      value={connectionName}
-                      onChange={(event) => setConnectionName(event.target.value)}
-                      placeholder="Connection name"
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    />
-                    <input
-                      value={connectionProvider}
-                      onChange={(event) => setConnectionProvider(event.target.value)}
-                      placeholder="Provider"
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    />
-                    <button
-                      type="button"
-                      onClick={addConnection}
-                      disabled={!appId || saving}
-                      className="focus-ring rounded-2xl bg-navy-800 px-4 py-3 text-sm font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
-                    >
-                      Connect app
-                    </button>
-                  </div>
-                  <div className="space-y-3">
-                    {connections.map((connection) => {
-                      const app = apps.find((item) => item.id === connection.app_id);
-                      return (
-                        <div key={connection.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-navy-100 p-4">
-                          <div>
-                            <p className="text-sm font-medium text-navy-900">
-                              {connection.connection_name || app?.app_name || connection.app_id}
-                            </p>
-                            <p className="mt-1 text-xs text-subtle">
-                              {app?.app_key || "unknown app"} · {connection.connection_status} · {connection.provider || "provider not set"}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void toggleConnection(connection)}
-                            className="focus-ring rounded-xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                          >
-                            {connection.is_active ? "Disable" : "Enable"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                    {connections.length === 0 ? (
-                      <p className="rounded-2xl border border-dashed border-navy-200 px-4 py-6 text-sm text-subtle">
-                        No app connections yet for this workspace.
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-
-              {tab === "data-sources" ? (
-                <div className="mt-6 space-y-5">
-                  <div className="rounded-2xl border border-navy-100 bg-canvas p-4 text-sm text-subtle">
-                    Each datasource created here is also synced into Aryx ingest through the bridge table so the workspace can use Ask immediately after ingestion is configured.
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <input
-                      value={datasourceName}
-                      onChange={(event) => setDatasourceName(event.target.value)}
-                      placeholder="Datasource name"
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    />
-                    <select
-                      value={datasourceKind}
-                      onChange={(event) => setDatasourceKind(event.target.value)}
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    >
-                      {datasourceKinds.map((kind) => (
-                        <option key={kind} value={kind}>{kind}</option>
-                      ))}
-                    </select>
-                    <input
-                      value={datasourceProvider}
-                      onChange={(event) => setDatasourceProvider(event.target.value)}
-                      placeholder="Provider or app key"
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    />
-                    <input
-                      value={datasourceUrl}
-                      onChange={(event) => setDatasourceUrl(event.target.value)}
-                      placeholder="URL, file path, or connection hint"
-                      className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                    />
-                  </div>
                   <button
                     type="button"
-                    onClick={addDatasource}
-                    disabled={!datasourceName.trim() || saving}
-                    className="focus-ring rounded-2xl bg-navy-800 px-4 py-3 text-sm font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
+                    onClick={() => setEditProfileOpen(true)}
+                    className="focus-ring inline-flex items-center justify-center gap-2 self-start rounded-full border border-navy-200 bg-white px-4 py-2 text-sm font-semibold text-navy-800 hover:bg-navy-50 lg:ml-auto"
                   >
-                    Create and sync datasource
+                    <PencilLine size={15} />
+                    Edit workspace
                   </button>
-                  <div className="space-y-3">
-                    {datasources.map((datasource) => (
-                      <div key={datasource.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-navy-100 p-4">
-                        <div>
-                          <p className="text-sm font-medium text-navy-900">{datasource.name}</p>
-                          <p className="mt-1 text-xs text-subtle">
-                            {datasource.storage_type} · {datasource.provider || "manual"} · {datasource.processing_status}
-                          </p>
-                        </div>
-                        <Link
-                          href={`/workspaces/${workspaceId}`}
-                          className="inline-flex items-center gap-2 rounded-full border border-navy-100 px-3 py-1.5 text-xs font-medium text-navy-700 hover:bg-navy-50"
-                        >
-                          Overview
-                          <ArrowRight size={12} />
-                        </Link>
-                      </div>
-                    ))}
-                  </div>
                 </div>
-              ) : null}
+              </div>
+
+              {notice ? <InlineNotice tone="success">{notice}</InlineNotice> : null}
+              {error ? <InlineNotice tone="error">{error}</InlineNotice> : null}
             </section>
 
-            <section className="grid gap-4 md:grid-cols-3">
-              <InfoCard
-                icon={<Users2 size={16} />}
-                title="Member control"
-                body="Workspace membership uses bridge tables while the mapping keeps the matching Aryx workspace available for Ask and ingest."
-              />
-              <InfoCard
-                icon={<Link2 size={16} />}
-                title="Bridge refresh"
-                body="Saving workspace metadata updates the Aryx bridge mapping so names and descriptions stay aligned."
-              />
-              <InfoCard
-                icon={<ShieldCheck size={16} />}
-                title="Shared database"
-                body="Both services run against the same Postgres instance with separate API surfaces and common bridge tables."
-              />
+            <section className="overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white shadow-soft">
+              <div className="border-b border-navy-100 bg-white">
+                <div className="flex flex-wrap items-end gap-0 px-5">
+                  {SETTINGS_TABS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setTab(item.id)}
+                      className={cn(
+                        "border-b-2 px-4 py-3 text-sm font-medium transition-colors",
+                        tab === item.id
+                          ? "border-navy-800 text-navy-900"
+                          : "border-transparent text-navy-500 hover:text-navy-800",
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="px-5 py-5">
+                {tab === "members" ? (
+                  <MembersTab
+                    addMemberOpen={addMemberOpen}
+                    availableUsers={availableUsers}
+                    memberBusy={memberBusy}
+                    memberRole={memberRole}
+                    memberUserId={memberUserId}
+                    members={displayMembers}
+                    onAddMember={addMember}
+                    onCloseModal={() => setAddMemberOpen(false)}
+                    onOpenModal={() => setAddMemberOpen(true)}
+                    onMemberRoleChange={setMemberRole}
+                    onMemberUserChange={setMemberUserId}
+                    onRemoveMember={removeMember}
+                    onToggleMember={toggleMember}
+                    onUpdateMemberRole={updateMemberRole}
+                  />
+                ) : null}
+
+                {tab === "apps" ? <AppsTab /> : null}
+
+                {tab === "danger-zone" ? (
+                  <DangerZoneTab
+                    bridgeReady={Boolean(bridge?.aryx_workspace_id)}
+                    dangerError={dangerError}
+                    dangerNotice={dangerNotice}
+                    deleting={deleting}
+                    onDeleteWorkspace={deleteWorkspace}
+                    onPurgeWorkspace={purgeWorkspaceData}
+                    purging={purging}
+                    workspaceName={workspace?.name}
+                  />
+                ) : null}
+              </div>
             </section>
           </div>
         )}
+        {editProfileOpen ? (
+          <WorkspaceProfileDialog
+            description={draftDescription}
+            name={draftName}
+            onClose={() => setEditProfileOpen(false)}
+            onDescriptionChange={setDraftDescription}
+            onNameChange={setDraftName}
+            onSave={saveWorkspace}
+            saving={savingProfile}
+          />
+        ) : null}
       </ShayPageShell>
     </AuthGuard>
   );
 }
 
-function InfoCard({
-  icon,
-  title,
-  body,
+function MembersTab({
+  addMemberOpen,
+  availableUsers,
+  memberBusy,
+  memberRole,
+  memberUserId,
+  members,
+  onAddMember,
+  onCloseModal,
+  onOpenModal,
+  onMemberRoleChange,
+  onMemberUserChange,
+  onRemoveMember,
+  onToggleMember,
+  onUpdateMemberRole,
 }: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
+  addMemberOpen: boolean;
+  availableUsers: ShayUser[];
+  memberBusy: string | null;
+  memberRole: string;
+  memberUserId: string;
+  members: DisplayWorkspaceMember[];
+  onAddMember: () => void;
+  onCloseModal: () => void;
+  onOpenModal: () => void;
+  onMemberRoleChange: (value: string) => void;
+  onMemberUserChange: (value: string) => void;
+  onRemoveMember: (member: ShayWorkspaceMember) => void;
+  onToggleMember: (member: ShayWorkspaceMember) => void;
+  onUpdateMemberRole: (userId: string, role: string) => void;
 }) {
   return (
-    <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-      <div className="inline-flex items-center gap-2 rounded-full bg-navy-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-navy-700">
-        {icon}
-        {title}
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-semibold text-navy-900">Workspace members</h3>
+          <p className="mt-2 text-sm text-subtle">
+            Manage who has access to this workspace with a tile-based member view.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onOpenModal}
+          className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700"
+        >
+          <UserPlus size={15} />
+          Add member
+        </button>
       </div>
-      <p className="mt-4 text-sm text-subtle">{body}</p>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {members.map((member) => {
+          const busy = memberBusy?.includes(member.user_id);
+          return (
+            <article
+              key={member.id}
+              className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-[0_18px_35px_rgba(10,21,48,0.06)]"
+            >
+              <div className="flex flex-col items-center text-center">
+                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-[linear-gradient(135deg,#173068,#3271d6)] text-2xl font-semibold text-white">
+                  {memberInitials(member)}
+                </div>
+                <p className="mt-4 text-base font-semibold text-navy-900">
+                  {member.name || member.email || member.user_id}
+                </p>
+                <p className="mt-1 text-sm text-subtle">{member.email || member.user_id}</p>
+                <span
+                  className={cn(
+                    "mt-3 rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em]",
+                    member.derived
+                      ? "bg-blue-50 text-blue-700"
+                      : member.is_active
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-slate-100 text-slate-500",
+                  )}
+                >
+                  {member.derived ? member.derivedLabel || "Current user" : member.is_active ? "Active" : "Inactive"}
+                </span>
+              </div>
+
+              <div className="mt-5 space-y-3">
+                <select
+                  value={member.role}
+                  onChange={(event) => void onUpdateMemberRole(member.user_id, event.target.value)}
+                  disabled={Boolean(busy) || member.derived}
+                  className="focus-ring w-full rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
+                >
+                  {MEMBER_ROLES.map((role) => (
+                    <option key={role.value} value={role.value}>
+                      {role.label}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void onToggleMember(member)}
+                    disabled={Boolean(busy) || member.derived}
+                    className="focus-ring rounded-2xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
+                  >
+                    {busy && memberBusy?.startsWith("toggle:") ? "Working..." : member.is_active ? "Deactivate" : "Reactivate"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onRemoveMember(member)}
+                    disabled={Boolean(busy) || member.derived}
+                    className="focus-ring rounded-2xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                  >
+                    {busy && memberBusy?.startsWith("remove:") ? "Removing..." : "Remove"}
+                  </button>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      <p className="text-sm text-subtle">Showing {members.length} of {members.length} members</p>
+
+      {addMemberOpen ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-navy-900/35 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-[2rem] border border-navy-100 bg-white p-6 shadow-soft">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-semibold text-navy-900">Add members</h2>
+                <p className="mt-2 text-sm text-subtle">
+                  Add people from your company roster to this workspace.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCloseModal}
+                className="focus-ring rounded-full border border-navy-100 p-2 text-navy-500 hover:bg-navy-50"
+                aria-label="Close add member dialog"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_180px]">
+              <select
+                value={memberUserId}
+                onChange={(event) => onMemberUserChange(event.target.value)}
+                className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
+              >
+                <option value="">Select company user</option>
+                {availableUsers.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name} ({user.email_id})
+                  </option>
+                ))}
+              </select>
+              <select
+                value={memberRole}
+                onChange={(event) => onMemberRoleChange(event.target.value)}
+                className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
+              >
+                {MEMBER_ROLES.map((role) => (
+                  <option key={role.value} value={role.value}>
+                    {role.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {availableUsers.length === 0 ? (
+              <div className="mt-4 rounded-2xl border border-navy-100 bg-canvas px-4 py-3 text-sm text-subtle">
+                Everyone in the company is already part of this workspace.
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={onCloseModal}
+                className="focus-ring rounded-2xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onAddMember}
+                disabled={!memberUserId || memberBusy === "add" || availableUsers.length === 0}
+                className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-5 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700 disabled:opacity-50"
+              >
+                {memberBusy === "add" ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+                Add member
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function AppsTab() {
+  return (
+    <div className="rounded-[1.5rem] border border-dashed border-navy-200 bg-[radial-gradient(circle_at_top_left,_rgba(50,113,214,0.08),_transparent_42%),linear-gradient(180deg,_#ffffff,_#f7f9fd)] px-6 py-12 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-navy-900 text-white">
+        <Users2 size={22} />
+      </div>
+      <h3 className="mt-5 text-2xl font-semibold text-navy-900">Apps are coming soon</h3>
+      <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-subtle">
+        Workspace app connections will land here next. This tab is reserved for install state,
+        permissions, and app-specific workspace controls.
+      </p>
+    </div>
+  );
+}
+
+function DangerZoneTab({
+  bridgeReady,
+  dangerError,
+  dangerNotice,
+  deleting,
+  onDeleteWorkspace,
+  onPurgeWorkspace,
+  purging,
+  workspaceName,
+}: {
+  bridgeReady: boolean;
+  dangerError: string | null;
+  dangerNotice: string | null;
+  deleting: boolean;
+  onDeleteWorkspace: () => void;
+  onPurgeWorkspace: () => void;
+  purging: boolean;
+  workspaceName?: string | null;
+}) {
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-xl font-semibold text-rose-900">Danger zone</h3>
+        <p className="mt-2 text-sm text-subtle">
+          Destructive workspace actions for {formatWorkspaceName(workspaceName)} live here.
+        </p>
+      </div>
+
+      {dangerNotice ? <InlineNotice tone="success">{dangerNotice}</InlineNotice> : null}
+      {dangerError ? <InlineNotice tone="error">{dangerError}</InlineNotice> : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-[1.5rem] border border-amber-200 bg-[linear-gradient(180deg,rgba(255,250,235,0.95),rgba(255,244,214,0.9))] p-5">
+          <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-800">
+            <AlertTriangle size={14} />
+            Purge workspace data
+          </div>
+          <p className="mt-4 text-sm leading-6 text-amber-900">
+            Deletes all entities, relationships, and Aryx graph data for this workspace while keeping the workspace itself.
+          </p>
+          <button
+            type="button"
+            onClick={onPurgeWorkspace}
+            disabled={purging || !bridgeReady}
+            className="focus-ring mt-5 inline-flex items-center gap-2 rounded-2xl border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+          >
+            {purging ? <Loader2 size={15} className="animate-spin" /> : <AlertTriangle size={15} />}
+            Purge workspace data
+          </button>
+        </div>
+
+        <div className="rounded-[1.5rem] border border-rose-200 bg-[linear-gradient(180deg,rgba(255,245,246,0.98),rgba(255,236,239,0.94))] p-5">
+          <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-rose-800">
+            <AlertTriangle size={14} />
+            Delete workspace data
+          </div>
+          <p className="mt-4 text-sm leading-6 text-rose-900">
+            Permanently deletes this workspace and all of its data. Workspace 1 remains protected.
+          </p>
+          <button
+            type="button"
+            onClick={onDeleteWorkspace}
+            disabled={deleting}
+            className="focus-ring mt-5 inline-flex items-center gap-2 rounded-2xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
+          >
+            {deleting ? <Loader2 size={15} className="animate-spin" /> : <AlertTriangle size={15} />}
+            Delete workspace data
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InlineNotice({
+  children,
+  tone,
+}: {
+  children: React.ReactNode;
+  tone: "success" | "error";
+}) {
+  return (
+    <div
+      className={cn(
+        "mt-4 rounded-2xl px-4 py-3 text-sm",
+        tone === "success"
+          ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border border-rose-200 bg-rose-50 text-rose-700",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ProfileSummaryField({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-navy-500">
+        {label}
+      </p>
+      <p className="mt-2 break-words text-base text-navy-900">{value}</p>
+    </div>
+  );
+}
+
+function memberInitials(member: ShayWorkspaceMember) {
+  const source = member.name || member.email || member.user_id;
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
 }

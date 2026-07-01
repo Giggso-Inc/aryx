@@ -33,12 +33,10 @@ export function WorkspaceRouteBridge({
           shayWorkspaceId,
           session.access_token,
         );
-        const bridge = await shayApi.ensureWorkspaceBridge({
-          shay_workspace_id: workspace.id,
-          name: workspace.name,
-          description: workspace.description ?? "",
-          company_id: session.company_id,
-        }, session.access_token);
+        const bridge = workspace.bridge;
+        if (!bridge) {
+          throw new Error("Workspace bridge is not ready yet.");
+        }
         if (!active) {
           return;
         }
@@ -61,7 +59,7 @@ export function WorkspaceRouteBridge({
     return () => {
       active = false;
     };
-  }, [session?.access_token, session?.company_id, setWorkspaceId, shayWorkspaceId]);
+  }, [session?.access_token, setWorkspaceId, shayWorkspaceId]);
 
   if (error) {
     return (

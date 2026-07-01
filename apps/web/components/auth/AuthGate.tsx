@@ -37,7 +37,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready || !protectedPath || session) return;
     const search = typeof window !== "undefined" ? window.location.search : "";
-    const next = `${pathname || "/"}${search}`;
+    const next = pathname === "/" ? "/workspaces" : `${pathname || "/"}${search}`;
     router.replace(`/login?next=${encodeURIComponent(next)}`);
   }, [pathname, protectedPath, ready, router, session]);
 

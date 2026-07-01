@@ -8,6 +8,7 @@ import {
   WorkspaceIndexCard,
   type WorkspaceCardMetrics,
 } from "./WorkspaceIndexCard";
+import { WorkspaceProfileDialog } from "./WorkspaceProfileDialog";
 import { ShayPageShell } from "./ShayPageShell";
 import { api } from "@/lib/api";
 import { getShayAccessToken, shayApi } from "@/lib/shay-api";
@@ -30,6 +31,9 @@ export function WorkspaceIndexPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [workspaceToDelete, setWorkspaceToDelete] = useState<ShayWorkspace | null>(null);
+  const [workspaceToEdit, setWorkspaceToEdit] = useState<ShayWorkspace | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
   const [workspaceMetrics, setWorkspaceMetrics] = useState<Record<string, WorkspaceCardMetrics>>({});
 
   const load = async () => {
@@ -60,18 +64,15 @@ export function WorkspaceIndexPage() {
 
     const loadMetrics = async () => {
       const metricResults = await Promise.allSettled(workspaces.map(async (workspace) => {
-        const [members, datasources, bridge] = await Promise.all([
+        const [members, datasources] = await Promise.all([
           shayApi.listWorkspaceMembers(workspace.id, session.access_token),
           shayApi.listDatasources(workspace.id, session.access_token),
-          shayApi.ensureWorkspaceBridge({
-            shay_workspace_id: workspace.id,
-            name: workspace.name,
-            description: workspace.description ?? "",
-            company_id: session.company_id,
-          }, session.access_token),
         ]);
 
-        const summary = await api.dataSummary(bridge.aryx_workspace_id).catch(() => null);
+        const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
+        const summary = aryxWorkspaceId
+          ? await api.dataSummary(aryxWorkspaceId).catch(() => null)
+          : null;
 
         return [workspace.id, {
           users: members.total ?? members.members.length,
@@ -120,6 +121,49 @@ export function WorkspaceIndexPage() {
     setShowCreateModal(false);
   };
 
+  const openEditModal = (workspace: ShayWorkspace) => {
+    setWorkspaceToEdit(workspace);
+    setEditName(workspace.name);
+    setEditDescription(workspace.description ?? "");
+    setModalError(null);
+  };
+
+  const closeEditModal = () => {
+    setWorkspaceToEdit(null);
+    setEditName("");
+    setEditDescription("");
+    setModalError(null);
+  };
+
+  const saveEditedWorkspace = async () => {
+    if (!workspaceToEdit || !session?.company_id) {
+      setModalError("Authentication required");
+      return;
+    }
+    const accessToken = session.access_token || getShayAccessToken();
+    if (!accessToken) {
+      setModalError("Authentication required");
+      return;
+    }
+    setSaving(true);
+    setModalError(null);
+    try {
+      const updated = await shayApi.updateWorkspace(
+        workspaceToEdit.id,
+        { name: editName.trim(), description: editDescription.trim() },
+        accessToken,
+      );
+      setWorkspaces((current) =>
+        current.map((workspace) => (workspace.id === updated.id ? updated : workspace)),
+      );
+      closeEditModal();
+    } catch (nextError: unknown) {
+      setModalError(nextError instanceof Error ? nextError.message : "Workspace save failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const createWorkspace = async () => {
     const accessToken = session?.access_token || getShayAccessToken();
     if (!accessToken || !session?.company_id || !name.trim()) {
@@ -138,12 +182,6 @@ export function WorkspaceIndexPage() {
       const workspace = await shayApi.createWorkspace({
         name: name.trim(),
         description: description.trim(),
-      }, accessToken);
-      await shayApi.ensureWorkspaceBridge({
-        shay_workspace_id: workspace.id,
-        name: workspace.name,
-        description: workspace.description ?? "",
-        company_id: session.company_id,
       }, accessToken);
       resetModal();
       router.push(workspaceSectionHref(workspace.id, "home"));
@@ -229,7 +267,7 @@ export function WorkspaceIndexPage() {
                   workspace={workspace}
                   metrics={workspaceMetrics[workspace.id]}
                   onOpen={() => router.push(workspaceSectionHref(workspace.id, "home"))}
-                  onEdit={() => router.push(workspaceSectionHref(workspace.id, "settings"))}
+                  onEdit={() => openEditModal(workspace)}
                   onDelete={() => {
                     setDeleteError(null);
                     setWorkspaceToDelete(workspace);
@@ -362,6 +400,21 @@ export function WorkspaceIndexPage() {
               </div>
             </div>
           </div>
+        ) : null}
+
+        {workspaceToEdit ? (
+          <WorkspaceProfileDialog
+            description={editDescription}
+            error={modalError}
+            name={editName}
+            onClose={closeEditModal}
+            onDescriptionChange={setEditDescription}
+            onNameChange={setEditName}
+            onSave={saveEditedWorkspace}
+            saving={saving}
+            title="Edit workspace"
+            descriptionText="Update the workspace name and description directly from the workspace library."
+          />
         ) : null}
       </ShayPageShell>
     </AuthGuard>

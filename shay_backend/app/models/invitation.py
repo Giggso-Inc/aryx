@@ -2,7 +2,7 @@
 Invitation model for user invitations
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import Column, String, DateTime, Boolean, Text, Index
 from sqlalchemy.sql import func
 from app.core.db_types import UUID
@@ -41,18 +41,55 @@ class Invitation(Base):
     
     def __repr__(self):
         return f"<Invitation(id={self.id}, email={self.email}, company_id={self.company_id})>"
+
+    @classmethod
+    def create_invitation(
+        cls,
+        *,
+        email: str,
+        role: str,
+        company_id,
+        invited_by,
+        message: str | None = None,
+        expires_at: datetime | None = None,
+    ) -> "Invitation":
+        """Create a pending invitation with a default 7-day expiry."""
+        return cls(
+            email=email,
+            role=role,
+            company_id=company_id,
+            invited_by=invited_by,
+            status="pending",
+            message=message,
+            expires_at=expires_at or (datetime.utcnow() + timedelta(days=7)),
+        )
     
     @property
     def is_valid(self) -> bool:
         """Check if invitation is still valid"""
-        return self.status == "pending" and datetime.utcnow() < self.expires_at
+        return self.status == "pending" and self._utc_now_for(self.expires_at) < self.expires_at
     
     def mark_as_used(self):
         """Mark invitation as used"""
         self.status = "used"
         self.updated_at = datetime.utcnow()
-    
+
+    def accept(self):
+        """Backward-compatible alias for marking the invitation as used."""
+        self.mark_as_used()
+
     def mark_as_expired(self):
         """Mark invitation as expired"""
         self.status = "expired"
-        self.updated_at = datetime.utcnow() 
+        self.updated_at = datetime.utcnow()
+
+    @property
+    def email_id(self) -> str:
+        """Backward-compatible alias used by older routes."""
+        return self.email
+    @staticmethod
+    def _utc_now_for(value: datetime | None) -> datetime:
+        """Return a UTC timestamp that matches the target datetime awareness."""
+        if value and value.tzinfo is not None and value.utcoffset() is not None:
+            return datetime.now(timezone.utc)
+        return datetime.utcnow()

@@ -1,25 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function shayTarget() {
-  return process.env.NODE_ENV === "development"
-    ? "http://localhost:8090"
-    : process.env.SHAY_API_URL_INTERNAL ?? "http://shay-api:8000";
-}
+import {
+  aryxTarget,
+  attachWorkspaceBridge,
+  forwardHeaders,
+  jsonResponse,
+  readJsonOrThrow,
+  shayTarget,
+  type WorkspacePayload,
+} from "../_shared";
 
-function forwardHeaders(req: NextRequest) {
-  const headers = new Headers();
-  const authorization = req.headers.get("authorization");
-  const contentType = req.headers.get("content-type");
-  if (authorization) {
-    headers.set("Authorization", authorization);
-  }
-  if (contentType) {
-    headers.set("Content-Type", contentType);
-  }
-  return headers;
-}
-
-async function proxy(req: NextRequest, workspaceId: string) {
+async function proxyWorkspace(req: NextRequest, workspaceId: string) {
   try {
     const body = req.method === "GET" || req.method === "DELETE"
       ? undefined
@@ -30,17 +21,53 @@ async function proxy(req: NextRequest, workspaceId: string) {
       body,
       cache: "no-store",
     });
-    const responseBody = await upstream.text();
-    return new NextResponse(responseBody, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
-      },
-    });
+    const workspace = await readJsonOrThrow<WorkspacePayload>(upstream);
+    return jsonResponse(await attachWorkspaceBridge(req, workspace), upstream.status);
   } catch (error) {
-    return NextResponse.json(
+    return jsonResponse(
       { detail: error instanceof Error ? error.message : "Workspace proxy failed" },
-      { status: 502 },
+      502,
+    );
+  }
+}
+
+async function deleteWorkspace(req: NextRequest, workspaceId: string) {
+  try {
+    let aryxWorkspaceId: number | null = null;
+    const mappingResponse = await fetch(
+      `${aryxTarget()}/admin/shay/workspaces/${workspaceId}/mapping`,
+      {
+        method: "GET",
+        headers: forwardHeaders(req),
+        cache: "no-store",
+      },
+    );
+    if (mappingResponse.ok) {
+      const mapping = await readJsonOrThrow<{ aryx_workspace_id: number }>(mappingResponse);
+      aryxWorkspaceId = mapping.aryx_workspace_id;
+    }
+
+    const shayResponse = await fetch(`${shayTarget()}/api/v1/workspaces/${workspaceId}`, {
+      method: "DELETE",
+      headers: forwardHeaders(req),
+      cache: "no-store",
+    });
+    const shayBody = await readJsonOrThrow<Record<string, unknown>>(shayResponse);
+
+    if (aryxWorkspaceId !== null) {
+      const aryxResponse = await fetch(`${aryxTarget()}/admin/workspaces/${aryxWorkspaceId}`, {
+        method: "DELETE",
+        headers: forwardHeaders(req),
+        cache: "no-store",
+      });
+      await readJsonOrThrow<Record<string, unknown>>(aryxResponse);
+    }
+
+    return jsonResponse(shayBody, shayResponse.status);
+  } catch (error) {
+    return jsonResponse(
+      { detail: error instanceof Error ? error.message : "Workspace proxy failed" },
+      502,
     );
   }
 }
@@ -50,7 +77,7 @@ export async function GET(
   context: { params: Promise<{ workspaceId: string }> },
 ) {
   const { workspaceId } = await context.params;
-  return proxy(req, workspaceId);
+  return proxyWorkspace(req, workspaceId);
 }
 
 export async function PUT(
@@ -58,7 +85,7 @@ export async function PUT(
   context: { params: Promise<{ workspaceId: string }> },
 ) {
   const { workspaceId } = await context.params;
-  return proxy(req, workspaceId);
+  return proxyWorkspace(req, workspaceId);
 }
 
 export async function DELETE(
@@ -66,5 +93,5 @@ export async function DELETE(
   context: { params: Promise<{ workspaceId: string }> },
 ) {
   const { workspaceId } = await context.params;
-  return proxy(req, workspaceId);
+  return deleteWorkspace(req, workspaceId);
 }

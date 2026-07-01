@@ -8,6 +8,7 @@ import { useShayAuth } from "./shay-auth";
 import type { Workspace } from "./types";
 
 interface WorkspaceContext {
+  ready: boolean;
   workspaceId: number;
   workspaces: Workspace[];
   setWorkspaceId: (id: number) => void;
@@ -83,7 +84,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ workspaceId, workspaces, setWorkspaceId, refresh }}>
+    <Ctx.Provider value={{ ready, workspaceId, workspaces, setWorkspaceId, refresh }}>
       {children}
     </Ctx.Provider>
   );

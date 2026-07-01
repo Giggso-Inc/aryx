@@ -48,6 +48,10 @@ from app.schemas.gg_workspace import (
     GGWorkspaceMemberUpdate,
 )
 from app.utils.permissions import get_effective_role
+from app.services.workspace_membership import (
+    ensure_default_workspace_memberships,
+    ensure_workspace_membership,
+)
 
 router = APIRouter()
 security = HTTPBearer()
@@ -145,6 +149,15 @@ async def list_workspace_members(
 
     if not ws.is_accessible_by_user(str(user.company_id), user.role):
         raise HTTPException(status_code=403, detail="Access denied to this workspace")
+
+    await ensure_workspace_membership(
+        db,
+        workspace=ws,
+        user=user,
+        role="admin" if user.role == "admin" else "member",
+    )
+    await ensure_default_workspace_memberships(db, workspace=ws)
+    await db.commit()
 
     filters = [
         GGMember.workspace_id == ws_uuid,

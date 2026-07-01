@@ -22,12 +22,14 @@ type Step =
  *  for now (Inspector on /model handles manual type creation). */
 export default function StartWizard() {
   const router = useRouter();
-  const { workspaceId } = useWorkspace();
+  const { ready, workspaceId, workspaces } = useWorkspace();
 
   const [step, setStep] = useState<Step>("intro");
   const [brief, setBrief] = useState<Brief>({});
   const [sources, setSources] = useState<SourceKind[]>(["database"]);
   const [jobId, setJobId] = useState<string | null>(null);
+  const hasWorkspace = ready && workspaceId > 0 && workspaces.length > 0;
+  const briefHref = hasWorkspace ? `/workspaces/${workspaceId}/brief` : "/workspaces";
 
   /** After a source completes, advance through any remaining picked
    *  sources before flipping to "running". */
@@ -41,9 +43,15 @@ export default function StartWizard() {
 
   return (
     <>
-      {step === "intro" && <Intro onStart={() => router.push("/brief")} />}
+      {step === "intro" && <Intro onStart={() => router.push(briefHref)} />}
 
-      {step === "goals" && (
+      {ready && !hasWorkspace && (
+        <div className="mx-auto mt-6 max-w-xl rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          You need a workspace before onboarding can continue. Create or select one from Workspaces first.
+        </div>
+      )}
+
+      {step === "goals" && hasWorkspace && (
         <Goals
           workspaceId={workspaceId}
           onDrafted={(b) => { setBrief(b); setStep("confirm"); }}
@@ -51,7 +59,7 @@ export default function StartWizard() {
         />
       )}
 
-      {step === "confirm" && (
+      {step === "confirm" && hasWorkspace && (
         <Confirm
           workspaceId={workspaceId}
           brief={brief}
@@ -60,7 +68,7 @@ export default function StartWizard() {
         />
       )}
 
-      {step === "sources" && (
+      {step === "sources" && hasWorkspace && (
         <Sources
           initial={sources}
           onContinue={(picked) => {
@@ -73,7 +81,7 @@ export default function StartWizard() {
         />
       )}
 
-      {step === "connect" && (
+      {step === "connect" && hasWorkspace && (
         <Connect
           workspaceId={workspaceId}
           kind="postgres"
@@ -82,7 +90,7 @@ export default function StartWizard() {
         />
       )}
 
-      {step === "files" && (
+      {step === "files" && hasWorkspace && (
         <Files
           workspaceId={workspaceId}
           onUploaded={(id) => { setJobId(id); nextSource("files"); }}
@@ -91,7 +99,7 @@ export default function StartWizard() {
         />
       )}
 
-      {step === "running" && (
+      {step === "running" && hasWorkspace && (
         <Running
           workspaceId={workspaceId}
           jobId={jobId}
@@ -100,7 +108,7 @@ export default function StartWizard() {
         />
       )}
 
-      {step === "done" && <Done workspaceId={workspaceId} />}
+      {step === "done" && hasWorkspace && <Done workspaceId={workspaceId} />}
     </>
   );
 }

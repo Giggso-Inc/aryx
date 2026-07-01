@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle, CheckCircle2, FileText, Loader2, Sparkles,
 } from "lucide-react";
@@ -63,7 +64,8 @@ function Readiness({ filled }: { filled: number }) {
 }
 
 export default function BriefPage() {
-  const { workspaceId, workspaces, setWorkspaceId, refresh } = useWorkspace();
+  const { ready, workspaceId, workspaces, setWorkspaceId, refresh } = useWorkspace();
+  const router = useRouter();
   const [domain, setDomain] = useState("");
   const [aim, setAim] = useState("");
   const [objectives, setObjectives] = useState("");
@@ -88,6 +90,12 @@ export default function BriefPage() {
 
   // Re-load when workspace changes or workspaces list updates.
   useEffect(() => { loadBrief(); }, [loadBrief]);
+
+  useEffect(() => {
+    if (ready && (workspaceId <= 0 || workspaces.length === 0)) {
+      router.replace("/start");
+    }
+  }, [ready, router, workspaceId, workspaces.length]);
 
   const filledCount = [domain, aim, objectives, scope, roles].filter(
     (v) => v.trim().length > 0,

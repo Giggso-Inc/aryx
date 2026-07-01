@@ -9,6 +9,7 @@ import { ShayPageShell } from "./ShayPageShell";
 import { ShayWorkspaceTabs } from "./ShayWorkspaceTabs";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
+import { formatWorkspaceName } from "@/lib/workspace-name";
 import type {
   ShayBridgeThread,
   ShayBridgeWorkspaceMap,
@@ -34,12 +35,7 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
       setError(null);
       try {
         const nextWorkspace = await shayApi.getWorkspace(workspaceId, session.access_token);
-        const bridge = await shayApi.ensureWorkspaceBridge({
-          shay_workspace_id: nextWorkspace.id,
-          name: nextWorkspace.name,
-          description: nextWorkspace.description ?? "",
-          company_id: session.company_id,
-        });
+        const bridge = nextWorkspace.bridge ?? null;
         const [datasourceList, threadList] = await Promise.all([
           shayApi.listDatasources(workspaceId, session.access_token),
           shayApi.listBridgeThreads(workspaceId),
@@ -60,7 +56,7 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
     return () => {
       active = false;
     };
-  }, [session?.access_token, session?.company_id, workspaceId]);
+  }, [session?.access_token, workspaceId]);
 
   const openNewChat = () => {
     router.push(`/workspaces/${workspaceId}/chats/${crypto.randomUUID()}`);
@@ -70,7 +66,7 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
     <AuthGuard>
       <ShayPageShell
         eyebrow="Workspace bridge"
-        title={workspace?.name || "Workspace"}
+        title={workspace ? formatWorkspaceName(workspace.name) : "Workspace"}
         description={workspace?.description || "This workspace is bridged to Aryx so data sources, Ask sessions, and workspace controls run from one mapped surface."}
         actions={workspace ? <ShayWorkspaceTabs workspaceId={workspace.id} /> : undefined}
       >

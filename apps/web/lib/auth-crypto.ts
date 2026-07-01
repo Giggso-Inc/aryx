@@ -137,3 +137,38 @@ export async function decodeVerificationToken(token: string) {
     valid: false,
   };
 }
+
+export async function decodeRegistrationToken(token: string) {
+  const candidateValues = [decodeURIComponent(token), token];
+
+  for (const candidate of candidateValues) {
+    try {
+      const decrypted = await decrypt(candidate);
+      const parts = decrypted.split("$@$");
+      if (parts.length !== 4) {
+        continue;
+      }
+      const [email, inviteCode, companyId, role] = parts;
+      if (!email.trim() || !inviteCode.trim() || !companyId.trim() || !role.trim()) {
+        continue;
+      }
+      return {
+        email: email.trim(),
+        invite_code: inviteCode.trim(),
+        company_id: companyId.trim(),
+        role: role.trim(),
+        valid: true,
+      };
+    } catch {
+      // Try the next candidate format.
+    }
+  }
+
+  return {
+    email: "",
+    invite_code: "",
+    company_id: "",
+    role: "",
+    valid: false,
+  };
+}

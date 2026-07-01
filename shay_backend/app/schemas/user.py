@@ -175,6 +175,7 @@ class UserLoginEncryptedRequest(BaseModel):
 class UserRegisterEncryptedRequest(BaseModel):
     """User registration request schema with encrypted password support"""
     invite_id: Optional[str] = Field(None, description="Invitation ID from email link (optional)")
+    encrypted_param: Optional[str] = Field(None, description="Encrypted invitation payload from email link (optional)")
     email_id: EmailStr = Field(..., description="Email address")
     password: str = Field(..., description="Password (encrypted or plain text based on encrypted flag)")
     name: Optional[str] = Field(None, description="User's full name (optional)")
@@ -189,6 +190,12 @@ class UserRegisterEncryptedRequest(BaseModel):
                 uuid.UUID(v)
             except ValueError:
                 raise ValueError("Invalid invite_id format")
+        return v
+
+    @validator('encrypted_param')
+    def validate_encrypted_param(cls, v):
+        if v and len(v.strip()) < 10:
+            raise ValueError("Invalid encrypted_param format")
         return v
 
 
@@ -705,4 +712,3 @@ class BulkRemoveUsersResponse(BaseModel):
                 "revoked_channel_memberships": 5
             }
         }
-

@@ -2,11 +2,13 @@
 
 from datetime import datetime
 from typing import List, Optional
+import httpx
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.auth import generate_workspace_id
 from app.middleware.auth_middleware import get_current_user_required
@@ -19,6 +21,7 @@ from app.schemas.workspace import (
     WorkspaceList,
     WorkspaceStats
 )
+from app.services.workspace_membership import ensure_workspace_membership
 
 router = APIRouter()
 security = HTTPBearer()
@@ -84,6 +87,13 @@ async def create_workspace(
     )
     
     db.add(workspace)
+    await db.flush()
+    await ensure_workspace_membership(
+        db,
+        workspace=workspace,
+        user=user,
+        role="admin",
+    )
     await db.commit()
     await db.refresh(workspace)
     
@@ -240,6 +250,79 @@ async def delete_workspace(
     await db.commit()
     
     return {"message": "Workspace deleted successfully"}
+
+
+@router.post("/{workspace_id}/purge")
+async def purge_workspace(
+    workspace_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Purge Aryx data for the mapped workspace while keeping the Shay workspace."""
+    user = await get_current_user_required(request)
+
+    stmt = select(Workspace).where(Workspace.id == workspace_id)
+    result = await db.execute(stmt)
+    workspace = result.scalar_one_or_none()
+
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found"
+        )
+
+    if not workspace.is_accessible_by_user(user.company_id, user.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to workspace"
+        )
+
+    timeout = httpx.Timeout(30.0)
+    mapping_url = f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{workspace_id}/mapping"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            mapping_response = await client.get(mapping_url)
+            if mapping_response.status_code == status.HTTP_404_NOT_FOUND:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Workspace bridge mapping not found"
+                )
+            mapping_response.raise_for_status()
+            mapping = mapping_response.json()
+            aryx_workspace_id = mapping.get("aryx_workspace_id")
+            if not aryx_workspace_id:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Mapped Aryx workspace ID is missing"
+                )
+
+            purge_response = await client.post(
+                f"{settings.ARYX_API_URL_INTERNAL}/admin/workspaces/{aryx_workspace_id}/purge",
+                json={},
+            )
+            purge_response.raise_for_status()
+            purge_result = purge_response.json()
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx purge failed: {detail}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx service unavailable: {exc}"
+        ) from exc
+
+    return {
+        "status": purge_result.get("status", "purged"),
+        "shay_workspace_id": workspace_id,
+        "aryx_workspace_id": aryx_workspace_id,
+        "bridge": "shay-backend",
+    }
 
 
 @router.get("/{workspace_id}/stats", response_model=WorkspaceStats)

@@ -88,6 +88,13 @@ export default function CompanySignupPage() {
 
   const passwordFlags = useMemo(() => getPasswordRequirementFlags(password), [password]);
 
+  const routeToOnboarding = () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("aryx.workspaceId");
+    }
+    router.push("/start");
+  };
+
   const validate = () => {
     const nextErrors: FormErrors = {};
 
@@ -140,7 +147,7 @@ export default function CompanySignupPage() {
       });
       const auth = await shayApi.autoLogin(contactEmail.trim(), password);
       setSession(auth);
-      router.push(auth.default_workspace_id ? `/workspaces/${auth.default_workspace_id}` : "/workspaces");
+      routeToOnboarding();
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Company signup failed.");
     } finally {

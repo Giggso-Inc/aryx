@@ -3,6 +3,7 @@
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Database, PencilLine, Shapes, Trash2, Users2, Workflow } from "lucide-react";
 import type { ShayWorkspace } from "@/lib/shay-types";
+import { formatWorkspaceName } from "@/lib/workspace-name";
 
 export interface WorkspaceCardMetrics {
   users: number | null;
@@ -26,6 +27,7 @@ export function WorkspaceIndexCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const displayName = formatWorkspaceName(workspace.name);
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Enter" && event.key !== " ") {
       return;
@@ -43,10 +45,10 @@ export function WorkspaceIndexCard({
       className="group rounded-[1.75rem] border border-navy-100 bg-white p-6 text-left shadow-soft transition-all hover:-translate-y-0.5 hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-4">
-        <h3 className="text-2xl font-semibold text-navy-900">{workspace.name}</h3>
+        <h3 className="text-2xl font-semibold text-navy-900">{displayName}</h3>
         <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <ActionIcon
-            label={`Edit ${workspace.name}`}
+            label={`Edit ${displayName}`}
             onClick={(event) => {
               event.stopPropagation();
               onEdit();
@@ -55,7 +57,7 @@ export function WorkspaceIndexCard({
             <PencilLine size={16} />
           </ActionIcon>
           <ActionIcon
-            label={`Delete ${workspace.name}`}
+            label={`Delete ${displayName}`}
             onClick={(event) => {
               event.stopPropagation();
               onDelete();

@@ -30,6 +30,9 @@ function LoginPageContent() {
   const next = searchParams.get("next") || "";
   const mcpCallback = searchParams.get("mcp_callback") || "";
   const destinationFor = useCallback((auth: ShaySession) => {
+    if (next === "/") {
+      return "/workspaces";
+    }
     if (next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/login")) {
       return next;
     }

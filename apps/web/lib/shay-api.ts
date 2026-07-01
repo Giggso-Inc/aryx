@@ -5,6 +5,7 @@ import type {
   ShayBridgeThread,
   ShayBridgeWorkspaceMap,
   ShayCompany,
+  ShayInvitationList,
   ShayDatasource,
   ShayDatasourceList,
   ShayProfile,
@@ -232,6 +233,7 @@ export const shayApi = {
     name?: string;
     company_id?: string;
     invite_id?: string;
+    encrypted_param?: string;
     role?: string;
   }) =>
     requestJSON<ShaySession>(SHAY_BASE, "/user-auth/register", {
@@ -289,10 +291,48 @@ export const shayApi = {
   getMyCompany: (token: string) =>
     requestJSON<ShayCompany>(SHAY_BASE, "/companies/my", undefined, token),
 
+  updateCompany: (
+    companyId: string,
+    payload: {
+      name?: string;
+      description?: string;
+      settings?: Record<string, unknown>;
+    },
+    token: string,
+  ) =>
+    requestJSON<ShayCompany>(
+      SHAY_BASE,
+      `/companies/${companyId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
   listCompanyUsers: (companyId: string, token: string) =>
     requestJSON<ShayUserList>(
       SHAY_BASE,
       `/users/company/${companyId}/users`,
+      undefined,
+      token,
+    ),
+
+  listCompanyInvitations: (
+    companyId: string,
+    token: string,
+    params?: {
+      page?: number;
+      size?: number;
+      search?: string;
+      role?: string;
+      sort_by?: "email" | "created_at";
+      sort_order?: "asc" | "desc";
+    },
+    ) =>
+    requestJSON<ShayInvitationList>(
+      SHAY_BASE,
+      `/companies/${companyId}/invitations${query(params ?? {})}`,
       undefined,
       token,
     ),
@@ -314,7 +354,13 @@ export const shayApi = {
     ),
 
   inviteUser: (
-    payload: { email: string; company_id: string; role: string; user_id?: string },
+    payload: {
+      email: string;
+      company_id: string;
+      role: string;
+      user_id?: string;
+      platform_name?: string;
+    },
     token: string,
   ) =>
     requestJSON(
@@ -322,7 +368,62 @@ export const shayApi = {
       "/user-auth/invite",
       {
         method: "POST",
-        body: JSON.stringify({ ...payload, platform_name: "Aryx" }),
+        body: JSON.stringify({ ...payload }),
+      },
+      token,
+    ),
+
+  inviteCompanyUser: (
+    companyId: string,
+    payload: { email: string; role: string; message?: string | null },
+    token: string,
+  ) =>
+    requestJSON(
+      SHAY_BASE,
+      `/companies/${companyId}/invite`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  bulkInviteUsers: (
+    payload: {
+      users: Array<{ email: string; company_id: string; role: string }>;
+      template_id?: string;
+      user_id?: string;
+      platform_name?: string;
+    },
+    token: string,
+  ) =>
+    requestJSON<{
+      message: string;
+      total_invited: number;
+      successful_invitations: Array<{
+        message: string;
+        invite_id: string;
+        email_id: string;
+        registration_link: string;
+        expires_at: string;
+      }>;
+      failed_invitations: Array<Record<string, unknown>>;
+    }>(
+      SHAY_BASE,
+      "/user-auth/bulk-invite",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  deletePendingInvitation: (companyId: string, email: string, token: string) =>
+    requestJSON<{ message: string; deleted_count: number; email: string; company_id: string }>(
+      SHAY_BASE,
+      `/users/company/${companyId}/pendingInvitedUsers/${encodeURIComponent(email)}`,
+      {
+        method: "DELETE",
       },
       token,
     ),
@@ -402,10 +503,18 @@ export const shayApi = {
       token,
     ),
 
+  purgeWorkspace: (workspaceId: string, token: string) =>
+    requestJSON<{ status: string }>(
+      SHAY_PROXY_BASE,
+      `/workspaces/${workspaceId}/purge`,
+      { method: "POST", body: "{}" },
+      token,
+    ),
+
   listWorkspaceMembers: (workspaceId: string, token: string) =>
     requestJSON<ShayWorkspaceMemberList>(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members`,
+      SHAY_PROXY_BASE,
+      `/workspaces/${workspaceId}/members`,
       undefined,
       token,
     ),
@@ -416,8 +525,8 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspaceMember>(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members`,
+      SHAY_PROXY_BASE,
+      `/workspaces/${workspaceId}/members`,
       {
         method: "POST",
         body: JSON.stringify(payload),
@@ -432,8 +541,8 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspaceMember>(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members/${userId}`,
+      SHAY_PROXY_BASE,
+      `/workspaces/${workspaceId}/members/${userId}`,
       {
         method: "PUT",
         body: JSON.stringify(payload),
@@ -443,8 +552,8 @@ export const shayApi = {
 
   removeWorkspaceMember: (workspaceId: string, userId: string, token: string) =>
     requestJSON(
-      SHAY_BASE,
-      `/gg-workspaces/${workspaceId}/members/${userId}`,
+      SHAY_PROXY_BASE,
+      `/workspaces/${workspaceId}/members/${userId}`,
       { method: "DELETE" },
       token,
     ),

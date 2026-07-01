@@ -1,23 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function shayTarget() {
-  return process.env.NODE_ENV === "development"
-    ? "http://localhost:8090"
-    : process.env.SHAY_API_URL_INTERNAL ?? "http://shay-api:8000";
-}
-
-function forwardHeaders(req: NextRequest) {
-  const headers = new Headers();
-  const authorization = req.headers.get("authorization");
-  const contentType = req.headers.get("content-type");
-  if (authorization) {
-    headers.set("Authorization", authorization);
-  }
-  if (contentType) {
-    headers.set("Content-Type", contentType);
-  }
-  return headers;
-}
+import {
+  attachWorkspaceBridge,
+  attachWorkspaceBridges,
+  forwardHeaders,
+  jsonResponse,
+  readJsonOrThrow,
+  shayTarget,
+  type WorkspaceListPayload,
+  type WorkspacePayload,
+} from "./_shared";
 
 export async function GET(req: NextRequest) {
   try {
@@ -26,17 +18,12 @@ export async function GET(req: NextRequest) {
       headers: forwardHeaders(req),
       cache: "no-store",
     });
-    const body = await upstream.text();
-    return new NextResponse(body, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
-      },
-    });
+    const body = await readJsonOrThrow<WorkspaceListPayload>(upstream);
+    return jsonResponse(await attachWorkspaceBridges(req, body));
   } catch (error) {
-    return NextResponse.json(
+    return jsonResponse(
       { detail: error instanceof Error ? error.message : "Workspace proxy failed" },
-      { status: 502 },
+      502,
     );
   }
 }
@@ -50,17 +37,12 @@ export async function POST(req: NextRequest) {
       body,
       cache: "no-store",
     });
-    const responseBody = await upstream.text();
-    return new NextResponse(responseBody, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
-      },
-    });
+    const workspace = await readJsonOrThrow<WorkspacePayload>(upstream);
+    return jsonResponse(await attachWorkspaceBridge(req, workspace), upstream.status);
   } catch (error) {
-    return NextResponse.json(
+    return jsonResponse(
       { detail: error instanceof Error ? error.message : "Workspace proxy failed" },
-      { status: 502 },
+      502,
     );
   }
 }

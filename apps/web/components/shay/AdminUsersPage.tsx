@@ -1,36 +1,101 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { Building2, MailPlus, Users } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AuthGuard } from "./AuthGuard";
 import { ShayPageShell } from "./ShayPageShell";
+import { AdminUsersPageView } from "./AdminUsersPageView";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
-import type { ShayCompany, ShayUser } from "@/lib/shay-types";
+import type { ShayCompany, ShayInvitation, ShayUser } from "@/lib/shay-types";
+
+type AdminTab = "users" | "subscription" | "company-profile";
+type TableTab = "users" | "invitations";
+
+export interface CompanyProfileDraft {
+  name: string;
+  website: string;
+  emailAddress: string;
+  description: string;
+}
+
+function readSetting(settings: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  if (!settings) return "";
+  for (const key of keys) {
+    const value = settings[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function buildCompanyDraft(company: ShayCompany): CompanyProfileDraft {
+  return {
+    name: company.name,
+    website:
+      readSetting(company.settings, "website", "companyWebsite", "company_website") ||
+      company.domain ||
+      "",
+    emailAddress: readSetting(
+      company.settings,
+      "companyEmailAddress",
+      "company_email_address",
+      "contactEmail",
+      "contact_email",
+    ),
+    description: company.description ?? readSetting(company.settings, "description"),
+  };
+}
 
 export function AdminUsersPage() {
-  const { session } = useShayAuth();
+  const { session, profile } = useShayAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [company, setCompany] = useState<ShayCompany | null>(null);
   const [users, setUsers] = useState<ShayUser[]>([]);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("user");
+  const [invitations, setInvitations] = useState<ShayInvitation[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingCompany, setSavingCompany] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const tabParam = searchParams.get("tab");
+  const tab: AdminTab =
+    tabParam === "subscription" || tabParam === "company-profile" ? tabParam : "users";
+  const [tableTab, setTableTab] = useState<TableTab>("users");
+  const [showInviteComposer, setShowInviteComposer] = useState(false);
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [companyDraft, setCompanyDraft] = useState<CompanyProfileDraft>({
+    name: "",
+    website: "",
+    emailAddress: "",
+    description: "",
+  });
 
   const load = async () => {
     if (!session) return;
     setLoading(true);
     setError(null);
     try {
-      const [nextCompany, userList] = await Promise.all([
+      const [companyList, userList, invitationList] = await Promise.all([
         shayApi.getMyCompany(session.access_token),
         shayApi.listCompanyUsers(session.company_id, session.access_token),
+        shayApi.listCompanyInvitations(session.company_id, session.access_token, {
+          page: 1,
+          size: 100,
+          sort_by: "created_at",
+          sort_order: "desc",
+        }),
       ]);
-      setCompany(nextCompany);
+      setCompany(companyList);
+      setCompanyDraft(buildCompanyDraft(companyList));
       setUsers(userList.users);
+      setInvitations(invitationList.invitations);
     } catch (nextError: unknown) {
       setError(nextError instanceof Error ? nextError.message : "Unable to load company users.");
     } finally {
@@ -42,23 +107,79 @@ export function AdminUsersPage() {
     void load();
   }, [session?.access_token, session?.company_id]);
 
-  const inviteUser = async () => {
-    if (!session || !inviteEmail.trim()) return;
+  const setTab = (nextTab: AdminTab) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextTab === "users") {
+      params.delete("tab");
+    } else {
+      params.set("tab", nextTab);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  };
+
+  const openInviteModal = () => {
+    setInviteError(null);
+    setShowInviteComposer(true);
+  };
+
+  const filteredUsers = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return users.filter((user) => {
+      const matchesSearch =
+        !needle ||
+        user.name.toLowerCase().includes(needle) ||
+        user.email_id.toLowerCase().includes(needle);
+      const matchesRole = roleFilter === "all" || user.role === roleFilter;
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" ? user.is_active : !user.is_active);
+      return matchesSearch && matchesRole && matchesStatus;
+    });
+  }, [roleFilter, search, statusFilter, users]);
+
+  const filteredInvitations = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return invitations.filter((invitation) => {
+      const matchesSearch =
+        !needle ||
+        invitation.email.toLowerCase().includes(needle) ||
+        (invitation.invited_by.username ?? "").toLowerCase().includes(needle) ||
+        (invitation.invited_by.userEmail ?? "").toLowerCase().includes(needle);
+      const matchesRole = roleFilter === "all" || invitation.role === roleFilter;
+      const matchesStatus =
+        statusFilter === "all" || invitation.status.toLowerCase() === statusFilter;
+      return matchesSearch && matchesRole && matchesStatus;
+    });
+  }, [invitations, roleFilter, search, statusFilter]);
+
+  const inviteUsers = async (invites: Array<{ email: string; role: string }>) => {
+    if (!session || !profile?.id || invites.length === 0) {
+      setInviteError("Your account is still loading. Please try again in a moment.");
+      return;
+    }
     setSaving(true);
-    setError(null);
+    setInviteError(null);
     setNotice(null);
     try {
-      await shayApi.inviteUser({
-        email: inviteEmail.trim(),
-        company_id: session.company_id,
-        role: inviteRole,
-        user_id: session.user_id,
-      }, session.access_token);
-      setInviteEmail("");
-      setInviteRole("user");
-      setNotice("Invitation sent.");
+      const result = await shayApi.bulkInviteUsers(
+        {
+          users: invites.map((invite) => ({
+            email: invite.email,
+            company_id: session.company_id,
+            role: invite.role,
+          })),
+          user_id: profile.id,
+          platform_name: "Aryx",
+        },
+        session.access_token,
+      );
+      setShowInviteComposer(false);
+      setInviteError(null);
+      setNotice(result.message || (invites.length === 1 ? "Invitation sent." : "Invitations sent."));
+      await load();
     } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to invite user.");
+      setInviteError(nextError instanceof Error ? nextError.message : "Unable to invite user.");
     } finally {
       setSaving(false);
     }
@@ -80,143 +201,108 @@ export function AdminUsersPage() {
     }
   };
 
+  const deleteInvitation = async (email: string) => {
+    if (!session) return;
+    if (!window.confirm(`Delete pending invitations for ${email}?`)) return;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await shayApi.deletePendingInvitation(
+        session.company_id,
+        email,
+        session.access_token,
+      );
+      setNotice(result.message);
+      await load();
+    } catch (nextError: unknown) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to delete invitation.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveCompanyProfile = async () => {
+    if (!session || !company) return;
+    setSavingCompany(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const nextSettings: Record<string, unknown> = {
+        ...(company.settings ?? {}),
+      };
+
+      if (companyDraft.website.trim()) nextSettings.website = companyDraft.website.trim();
+      if (companyDraft.emailAddress.trim()) {
+        nextSettings.companyEmailAddress = companyDraft.emailAddress.trim();
+      }
+      if (companyDraft.description.trim()) nextSettings.description = companyDraft.description.trim();
+
+      const updated = await shayApi.updateCompany(
+        company.id,
+        {
+          name: companyDraft.name.trim() || company.name,
+          description: companyDraft.description.trim() || undefined,
+          settings: nextSettings,
+        },
+        session.access_token,
+      );
+
+      setCompany(updated);
+      setCompanyDraft(buildCompanyDraft(updated));
+      setNotice("Company profile updated.");
+    } catch (nextError: unknown) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to save company profile.");
+    } finally {
+      setSavingCompany(false);
+    }
+  };
+
   return (
     <AuthGuard>
       <ShayPageShell
-        eyebrow="Company admin hub"
-        title="Company user management"
-        description="Manage company access, then assign those users to bridged workspaces where ingest and Ask are available."
+        showHero={false}
+        title="Admin Hub"
+        description="Manage company users and invitations."
       >
-        {loading ? (
-          <div className="rounded-[1.5rem] border border-navy-100 bg-white px-5 py-12 text-center text-sm text-subtle shadow-soft">
-            Loading company users...
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <section className="grid gap-4 md:grid-cols-3">
-              <InfoCard
-                icon={<Building2 size={16} />}
-                title={company?.name || "Company"}
-                body={company?.description || "The company object anchors login, invitations, and workspace ownership."}
-              />
-              <InfoCard
-                icon={<Users size={16} />}
-                title={`${users.length} active records`}
-                body="These users can be assigned into the shared Aryx workspace."
-              />
-              <InfoCard
-                icon={<MailPlus size={16} />}
-                title="Invitation flow"
-                body="Invites land in auth first, then new users can be mapped into any bridged workspace."
-              />
-            </section>
-
-            <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold text-navy-900">Invite users</h2>
-                  <p className="mt-2 text-sm text-subtle">
-                    Bring a user into the company so they can be added into specific workspaces next.
-                  </p>
-                </div>
-                <Link
-                  href="/workspaces"
-                  className="rounded-full border border-navy-100 px-4 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                >
-                  Open workspaces
-                </Link>
-              </div>
-              <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_180px_160px]">
-                <input
-                  value={inviteEmail}
-                  onChange={(event) => setInviteEmail(event.target.value)}
-                  placeholder="name@company.com"
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                />
-                <select
-                  value={inviteRole}
-                  onChange={(event) => setInviteRole(event.target.value)}
-                  className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                >
-                  <option value="user">User</option>
-                  <option value="manager">Manager</option>
-                  <option value="admin">Admin</option>
-                </select>
-                <button
-                  type="button"
-                  onClick={inviteUser}
-                  disabled={!inviteEmail.trim() || saving}
-                  className="focus-ring rounded-2xl bg-navy-800 px-4 py-3 text-sm font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
-                >
-                  Send invite
-                </button>
-              </div>
-              {notice ? (
-                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                  {notice}
-                </div>
-              ) : null}
-              {error ? (
-                <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                  {error}
-                </div>
-              ) : null}
-            </section>
-
-            <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-              <h2 className="text-xl font-semibold text-navy-900">Current users</h2>
-              <div className="mt-5 space-y-3">
-                {users.map((user) => (
-                  <div key={user.id} className="grid gap-3 rounded-2xl border border-navy-100 p-4 md:grid-cols-[minmax(0,1fr)_150px_150px] md:items-center">
-                    <div>
-                      <p className="text-sm font-medium text-navy-900">{user.name}</p>
-                      <p className="mt-1 text-xs text-subtle">
-                        {user.email_id} · last login {user.last_login ? new Date(user.last_login).toLocaleString() : "never"}
-                      </p>
-                    </div>
-                    <select
-                      value={user.role}
-                      onChange={(event) => void updateUser(user.id, { role: event.target.value })}
-                      className="focus-ring rounded-xl border border-navy-100 px-3 py-2 text-sm text-navy-900"
-                    >
-                      <option value="user">User</option>
-                      <option value="manager">Manager</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => void updateUser(user.id, { is_active: !user.is_active })}
-                      className="focus-ring rounded-xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50"
-                    >
-                      {user.is_active ? "Deactivate" : "Reactivate"}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-        )}
+        <AdminUsersPageView
+          company={company}
+          users={users}
+          invitations={invitations}
+          loading={loading}
+          saving={saving}
+          savingCompany={savingCompany}
+          error={error}
+          notice={notice}
+          tab={tab}
+          tableTab={tableTab}
+          showInviteComposer={showInviteComposer}
+          search={search}
+          roleFilter={roleFilter}
+          statusFilter={statusFilter}
+          companyDraft={companyDraft}
+          filteredUsers={filteredUsers}
+          filteredInvitations={filteredInvitations}
+          onTabChange={setTab}
+          onTableTabChange={setTableTab}
+          onOpenInviteModal={openInviteModal}
+          onCloseInviteModal={() => {
+            setShowInviteComposer(false);
+            setInviteError(null);
+          }}
+          onSearchChange={setSearch}
+          onRoleFilterChange={setRoleFilter}
+          onStatusFilterChange={setStatusFilter}
+          onCompanyDraftChange={(patch) =>
+            setCompanyDraft((current) => ({ ...current, ...patch }))
+          }
+          onSaveCompanyProfile={saveCompanyProfile}
+          onSendInvites={inviteUsers}
+          inviteError={inviteError}
+          onUpdateUser={updateUser}
+          onDeleteInvitation={deleteInvitation}
+        />
       </ShayPageShell>
     </AuthGuard>
-  );
-}
-
-function InfoCard({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  body: string;
-}) {
-  return (
-    <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-      <div className="inline-flex items-center gap-2 rounded-full bg-navy-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-navy-700">
-        {icon}
-        {title}
-      </div>
-      <p className="mt-4 text-sm text-subtle">{body}</p>
-    </div>
   );
 }

@@ -73,6 +73,36 @@ export interface ShayUserList {
   has_previous: boolean;
 }
 
+export interface ShayInvitationInvitedBy {
+  userId: string;
+  userEmail?: string | null;
+  username?: string | null;
+  avatar_url?: string | null;
+  role?: string | null;
+}
+
+export interface ShayInvitation {
+  id: string;
+  email: string;
+  role: string;
+  company_id: string;
+  invited_by: ShayInvitationInvitedBy;
+  status: string;
+  message?: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface ShayInvitationList {
+  invitations: ShayInvitation[];
+  total: number;
+  page: number;
+  size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
 export interface ShayWorkspace {
   id: string;
   name: string;
@@ -89,6 +119,7 @@ export interface ShayWorkspace {
   user_id?: string | null;
   created_by?: string | null;
   settings?: Record<string, unknown> | null;
+  bridge?: ShayBridgeWorkspaceMap | null;
   created_at: string;
   updated_at: string;
 }
@@ -287,4 +318,3 @@ export interface ShayBridgeAskResponse {
     marker?: number;
   }>;
 }
-

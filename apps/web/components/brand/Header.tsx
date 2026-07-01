@@ -12,6 +12,7 @@ import { Logo } from "./Logo";
 import { cn } from "@/lib/cn";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
+import { formatWorkspaceName } from "@/lib/workspace-name";
 import { HITLBadge } from "@/components/hitl/HITLBadge";
 import { JobsBadge } from "@/components/jobs/JobsBadge";
 import {
@@ -36,6 +37,7 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
   const { session, profile, clearSession } = useShayAuth();
   const router = useRouter();
   const hasSession = !!session;
+  const canAccessAdminHub = (profile?.role ?? session?.role) === "admin";
   const pathname = usePathname();
   const { shayWorkspaceId, section } = parseWorkspaceScope(pathname);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -71,6 +73,8 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
       active = false;
     };
   }, [session?.access_token, shayWorkspaceId]);
+
+  const workspaceTitle = pathname === "/settings" ? "Settings" : null;
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -112,6 +116,7 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
           mobileOpen={mobileSidebarOpen}
           pathname={pathname}
           displayName={profile?.name || session?.name || session?.email_id}
+          showAdminHub={canAccessAdminHub}
           onCloseMobile={() => setMobileSidebarOpen(false)}
           onSignOut={() => {
             clearSession();
@@ -162,7 +167,7 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
             {hasSession && shayWorkspaceId ? (
               <div className="flex min-w-0 items-center gap-6">
                 <h1 className="shrink-0 truncate text-base font-semibold text-navy-900 md:text-[1.05rem]">
-                  {workspaceName || "Workspace"}
+                  {workspaceName ? formatWorkspaceName(workspaceName) : "Workspace"}
                 </h1>
                 <nav className="flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {WORKSPACE_TABS.map((tab) => {
@@ -186,11 +191,13 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
             ) : hasSession ? (
               <div>
                 <h1 className="text-base font-semibold text-navy-900 md:text-lg">
-                  {topbarMeta.title}
+                  {workspaceTitle || topbarMeta.title}
                 </h1>
-                <p className="mt-0.5 text-xs text-subtle md:text-[13px]">
-                  {topbarMeta.description}
-                </p>
+                {topbarMeta.description ? (
+                  <p className="mt-0.5 text-xs text-subtle md:text-[13px]">
+                    {topbarMeta.description}
+                  </p>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -221,6 +228,7 @@ function AppSidebar({
   mobileOpen,
   pathname,
   displayName,
+  showAdminHub,
   onCloseMobile,
   onSignOut,
 }: {
@@ -228,6 +236,7 @@ function AppSidebar({
   mobileOpen: boolean;
   pathname?: string | null;
   displayName?: string;
+  showAdminHub: boolean;
   onCloseMobile: () => void;
   onSignOut: () => void;
 }) {
@@ -300,11 +309,21 @@ function AppSidebar({
               collapsed={collapsed}
               onClick={onCloseMobile}
             />
+            {showAdminHub ? (
+              <SidebarLink
+                href="/admin"
+                icon={<Shield size={18} />}
+                label="Admin Hub"
+                active={pathname?.startsWith("/admin") || false}
+                collapsed={collapsed}
+                onClick={onCloseMobile}
+              />
+            ) : null}
             <SidebarLink
-              href="/admin/users"
-              icon={<Shield size={18} />}
-              label="Admin Hub"
-              active={pathname?.startsWith("/admin") || false}
+              href="/settings"
+              icon={<Settings size={18} />}
+              label="Settings"
+              active={pathname === "/settings" || pathname?.startsWith("/settings/") || false}
               collapsed={collapsed}
               onClick={onCloseMobile}
             />
@@ -498,6 +517,12 @@ function headerMeta(pathname?: string | null) {
     return {
       title: "Profile",
       description: "Review your account details and company context.",
+    };
+  }
+  if (pathname === "/settings") {
+    return {
+      title: "Settings",
+      description: "",
     };
   }
   return {

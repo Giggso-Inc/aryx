@@ -7,6 +7,7 @@ import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
 import { shayApi } from "@/lib/shay-api";
 import { streamReveal } from "@/lib/stream";
+import { formatWorkspaceName } from "@/lib/workspace-name";
 import type { ChatTurn, Citation, Usage } from "@/lib/types";
 
 function uid() {
@@ -108,7 +109,7 @@ export function ShayChatSurface({
 
   const subtitle = useMemo(() => {
     if (!workspaceName) return "Merged chat session backed by Aryx Ask.";
-    return `${workspaceName} chat session backed by Aryx Ask and shared citations.`;
+    return `${formatWorkspaceName(workspaceName)} chat session backed by Aryx Ask and shared citations.`;
   }, [workspaceName]);
 
   const send = async () => {
@@ -232,7 +233,9 @@ export function ShayChatSurface({
           <dl className="mt-3 space-y-2 text-sm">
             <div className="flex items-start justify-between gap-3">
               <dt className="text-subtle">Workspace</dt>
-              <dd className="text-right font-medium text-navy-900">{workspaceName ?? workspaceId}</dd>
+              <dd className="text-right font-medium text-navy-900">
+                {workspaceName ? formatWorkspaceName(workspaceName) : workspaceId}
+              </dd>
             </div>
             <div className="flex items-start justify-between gap-3">
               <dt className="text-subtle">Thread</dt>

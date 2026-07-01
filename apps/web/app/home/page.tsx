@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowRight, Database, MessageCircle, Network, Upload, Zap,
+  ArrowRight, Database, MessageSquareText, Share2, Upload, Zap,
 } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 import { useWorkspaceAwareHref } from "@/lib/workspace-route";
+import { formatWorkspaceName } from "@/lib/workspace-name";
 
 interface Stats {
   entities: number;
@@ -38,14 +39,14 @@ const STEPS = [
     num: 2,
     title: "Ask",
     href: "/",
-    icon: <MessageCircle size={18} />,
+    icon: <MessageSquareText size={18} />,
     body: "Type a company, ticket, or keyword. Aryx traverses the graph and shows every connected entity, relationships, and provenance.",
   },
   {
     num: 3,
     title: "Graph",
     href: "/graph",
-    icon: <Network size={18} />,
+    icon: <Share2 size={18} />,
     body: "See the whole picture as an interactive canvas. Filter by type, follow relationships, and click any node to explore neighbours.",
   },
 ];
@@ -54,6 +55,10 @@ export default function HomePage() {
   const { workspaceId, workspaces } = useWorkspace();
   const [stats, setStats] = useState<Stats | null>(null);
   const active = workspaces.find((w) => w.id === workspaceId) || workspaces[0];
+  const activeWorkspaceName = formatWorkspaceName(active?.name);
+  const workspaceBadge = activeWorkspaceName === "Workspace"
+    ? activeWorkspaceName
+    : `${activeWorkspaceName} workspace`;
   const askHref = useWorkspaceAwareHref("/", "ask");
   const ingestHref = useWorkspaceAwareHref("/ingest", "ingest");
   const graphHref = useWorkspaceAwareHref("/graph", "graph");
@@ -88,7 +93,7 @@ export default function HomePage() {
           <div className="flex items-center gap-2 mb-3">
             <Zap size={18} className="text-steel-300" />
             <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-steel-300">
-              {active?.name ?? "Default"} workspace
+              {workspaceBadge}
             </span>
           </div>
           <h1 className="font-display text-[2.2rem] font-bold leading-tight">
@@ -103,7 +108,7 @@ export default function HomePage() {
               href={askHref}
               className="inline-flex items-center gap-1.5 rounded-lg bg-white px-4 py-2 text-[13px] font-semibold text-navy-900 hover:bg-navy-50"
             >
-              <MessageCircle size={14} /> Ask a question
+              <MessageSquareText size={14} /> Ask a question
             </Link>
             <Link
               href={ingestHref}
@@ -120,7 +125,7 @@ export default function HomePage() {
             <StatCard label="Entities" value={stats.entities} />
             <StatCard label="Entity types" value={stats.types} />
             <StatCard label="Ingest runs" value={stats.ingest_runs} />
-            <StatCard label="Workspace" value={active?.name ?? "—"} />
+            <StatCard label="Workspace" value={activeWorkspaceName} />
           </div>
         )}
 

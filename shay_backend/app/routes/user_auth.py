@@ -36,9 +36,10 @@ from app.core.config import settings
 
 # Authentication utilities for JWT token creation and password verification
 from app.core.auth import create_access_token, create_refresh_token, get_password_hash, verify_password
-from app.core.encryption_utils import create_registration_url, decrypt
+from app.core.encryption_utils import create_registration_url, decrypt, decrypt_registration_params
 from app.services.email_service import email_service
 from app.services.link_shortener_service import link_shortener_service
+from app.services.workspace_membership import ensure_workspace_membership
 
 # Authentication middleware for user verification
 from app.middleware.auth_middleware import get_current_user_required
@@ -128,6 +129,7 @@ async def invite_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Company not found"
         )
+    company_name = company.name
     
     # Fetch invited_by user name if user_id is provided
     invited_by_name = "System User"  # Default fallback
@@ -206,7 +208,7 @@ async def invite_user(
     
     # Send invitation email
     invitation_data = {
-        'company_name': company.name,
+        'company_name': company_name,
         'role': invite_data.role,
         'registration_link': registration_link,
         'registration_short_link': short_registration_link,
@@ -296,6 +298,7 @@ async def bulk_invite_users(
                     "reason": "Company not found"
                 })
                 continue
+            company_name = company.name
             
             # Check if user already exists
             stmt = select(User).where(User.email_id == user_invite.email)
@@ -327,7 +330,8 @@ async def bulk_invite_users(
             )
             
             db.add(invitation)
-            await db.flush()  # Flush to get the invitation ID
+            await db.commit()
+            await db.refresh(invitation)
             
             # Generate encrypted registration link
             platform_url = settings.PLATFORM_URL
@@ -343,7 +347,7 @@ async def bulk_invite_users(
             
             # Send invitation email
             invitation_data = {
-                'company_name': company.name,
+                'company_name': company_name,
                 'role': user_invite.role,
                 'registration_link': registration_link,
                 'registration_short_link': short_registration_link,
@@ -431,7 +435,28 @@ async def register_user(
     
     company_id = None
     role = register_data.role or "user"
-    
+    encrypted_invite_data = None
+
+    if register_data.encrypted_param:
+        try:
+            encrypted_invite_data = decrypt_registration_params(register_data.encrypted_param)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid encrypted invitation format"
+            )
+
+        if encrypted_invite_data.get("email") and encrypted_invite_data["email"] != register_data.email_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email does not match invitation"
+            )
+
+        register_data.invite_id = encrypted_invite_data.get("invite_code") or register_data.invite_id
+        register_data.company_id = encrypted_invite_data.get("company_id") or register_data.company_id
+        register_data.role = encrypted_invite_data.get("role") or register_data.role
+        role = register_data.role or "user"
+
     if register_data.invite_id:
         # Validate invite_id as UUID
         try:
@@ -459,7 +484,7 @@ async def register_user(
                 detail="Invitation has already been used"
             )
         
-        if invitation.status == "expired" or invitation.expires_at < datetime.utcnow():
+        if invitation.status == "expired" or not invitation.is_valid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invitation has expired"
@@ -570,6 +595,14 @@ async def register_user(
         db.add(default_workspace)
         await db.commit()
         await db.refresh(default_workspace)
+
+    await ensure_workspace_membership(
+        db,
+        workspace=default_workspace,
+        user=user,
+        role="admin" if user.role == "admin" else "member",
+    )
+    await db.commit()
     
     # Create JWT tokens
     token_data = {
@@ -762,6 +795,14 @@ async def login_user(
         db.add(default_workspace)
         await db.commit()
         await db.refresh(default_workspace)
+
+    await ensure_workspace_membership(
+        db,
+        workspace=default_workspace,
+        user=user,
+        role="admin" if user.role == "admin" else "member",
+    )
+    await db.commit()
     
     # Create JWT tokens
     token_data = {
@@ -1744,5 +1785,3 @@ async def _send_default_password_reset_email(user, reset_url, product_name="Shay
     except Exception as e:
         print(f"❌ Error sending default password reset email: {e}")
         return False
-
-

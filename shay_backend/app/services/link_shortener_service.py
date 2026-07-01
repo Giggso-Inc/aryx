@@ -70,10 +70,9 @@ class LinkShortenerService:
                     entity_type=entity_type,
                 )
                 db.add(row)
+                # Keep URL shortening inside the caller's transaction so invite flows
+                # don't issue nested commits on the same async session.
                 await db.flush()
-                # Commit so the row is persisted; callers often commit before calling shorten(),
-                # so the short link would otherwise never be committed and not appear in the DB.
-                await db.commit()
                 # Log after DB insertion for debugging / audit
                 logger.info(
                     "Short link inserted: short_link=%s original_url=%s",
@@ -84,16 +83,12 @@ class LinkShortenerService:
                 # BASE_URL always contains /api (e.g., https://domain.com/api)
                 # So we just append /v1/redirect to avoid duplication
                 # Match main.py router prefix /api/v1/redirect so click-through and resolve work like register
+                await db.commit()
                 return f"{base}/v1/redirect/{short_link}"
             logger.warning("Internal shortener failed (collision?), using original URL")
             return url
         except Exception as exc:
             logger.warning("Internal URL shortening failed, using original link. Error: %s", exc)
-            if db is not None:
-                try:
-                    await db.rollback()
-                except Exception as rollback_exc:
-                    logger.debug("Rollback after URL shortening failure also failed: %s", rollback_exc)
             return url
 
 

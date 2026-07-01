@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     
     APP_URL: str = os.environ.get("APP_URL", "http://localhost:8000/app")
     BASE_URL: str = os.environ.get("BASE_URL", "http://localhost:8000")
+    ARYX_API_URL_INTERNAL: str = os.environ.get("ARYX_API_URL_INTERNAL", "http://localhost:8088")
 
     # Marketplace platform: when True, subscription validation uses CHANNEL_COUNT and MESSAGE_COUNT from env
     IS_MARKETPLACE: bool = os.environ.get("IS_MARKETPLACE", "false").lower() == "true"
