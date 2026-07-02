@@ -713,6 +713,7 @@ export const shayApi = {
         token,
       ),
     ).then((result) => {
+      invalidateShayCache("workspace:");
       invalidateShayCache(`workspace-members:${workspaceId}`);
       invalidateShayCache(`workspace-members:${result.workspace_id}`);
       return result;
@@ -735,6 +736,7 @@ export const shayApi = {
         token,
       ),
     ).then((result) => {
+      invalidateShayCache("workspace:");
       invalidateShayCache(`workspace-members:${workspaceId}`);
       invalidateShayCache(`workspace-members:${result.workspace_id}`);
       return result;
@@ -749,6 +751,7 @@ export const shayApi = {
         token,
       ),
     ).then((result) => {
+      invalidateShayCache("workspace:");
       invalidateShayCache(`workspace-members:${workspaceId}`);
       return result;
     }),

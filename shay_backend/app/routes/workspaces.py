@@ -7,13 +7,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import and_, select, func
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.auth import generate_workspace_id
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.user import User
+from app.models.member import GGMember
 from app.models.workspace import Workspace
 from app.schemas.workspace import (
     WorkspaceCreate,
@@ -23,6 +24,7 @@ from app.schemas.workspace import (
     WorkspaceStats
 )
 from app.services.workspace_membership import ensure_workspace_membership
+from app.utils.permissions import require_active_workspace_role
 
 router = APIRouter()
 security = HTTPBearer()
@@ -215,13 +217,19 @@ async def list_workspaces(
 ):
     """List workspaces for current user"""
     user = await get_current_user_required(request)
-    
-    # Build query
-    query = select(Workspace)
-    
-    # Filter by company (unless admin)
-    if not user.is_admin:
-        query = query.where(Workspace.company_id == user.company_id)
+
+    membership_join = and_(
+        GGMember.workspace_id == Workspace.id,
+        GGMember.user_id == user.id,
+        GGMember.level == "workspace",
+        GGMember.is_active == True,  # noqa: E712
+    )
+    filters = [
+        Workspace.company_id == user.company_id,
+        Workspace.is_active == True,  # noqa: E712
+    ]
+
+    query = select(Workspace).join(GGMember, membership_join).where(*filters)
     
     # Add search filter
     if search:
@@ -236,9 +244,12 @@ async def list_workspaces(
     workspaces = result.scalars().all()
     
     # Get total count
-    count_query = select(func.count(Workspace.id))
-    if not user.is_admin:
-        count_query = count_query.where(Workspace.company_id == user.company_id)
+    count_query = (
+        select(func.count(Workspace.id))
+        .select_from(Workspace)
+        .join(GGMember, membership_join)
+        .where(*filters)
+    )
     if search:
         count_query = count_query.where(Workspace.name.ilike(f"%{search}%"))
     
@@ -269,13 +280,7 @@ async def get_workspace(
     """Get workspace by ID"""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
-    
-    # Check access permissions
-    if not workspace.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to workspace"
-        )
+    await require_active_workspace_role(db, user.id, UUID(str(workspace.id)))
     
     bridge = await _bridge_for_workspace(request, workspace)
     payload = serialize_workspace(workspace).model_dump()
@@ -293,13 +298,7 @@ async def update_workspace(
     """Update workspace"""
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
-    
-    # Check permissions
-    if not workspace.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to workspace"
-        )
+    await require_active_workspace_role(db, user.id, UUID(str(workspace.id)), allowed_roles={"admin"})
     
     # Update workspace
     update_data = workspace_data.dict(exclude_unset=True)
@@ -345,11 +344,7 @@ async def delete_workspace(
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
 
-    if not workspace.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to workspace"
-        )
+    await require_active_workspace_role(db, user.id, UUID(str(workspace.id)), allowed_roles={"admin"})
 
     bridge = None
     timeout = httpx.Timeout(30.0)
@@ -394,11 +389,7 @@ async def purge_workspace(
     user = await get_current_user_required(request)
     workspace = await _get_workspace_or_404(db, workspace_id)
 
-    if not workspace.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to workspace"
-        )
+    await require_active_workspace_role(db, user.id, UUID(str(workspace.id)), allowed_roles={"admin"})
 
     timeout = httpx.Timeout(30.0)
     mapping_url = f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{workspace_id}/mapping"
@@ -460,11 +451,7 @@ async def get_workspace_stats(
     workspace_uuid = UUID(str(workspace.id))
     
     # Check access permissions
-    if not workspace.is_accessible_by_user(user.company_id, user.role):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied to workspace"
-        )
+    await require_active_workspace_role(db, user.id, workspace_uuid)
     
     # Get statistics (simplified for now)
     from app.models.message import Message, Thread

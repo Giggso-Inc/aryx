@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Shield } from "lucide-react";
+import { Eye, EyeOff, Shield } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import SsoProviderButtons from "@/components/auth/SsoProviderButtons";
 import { shayApi } from "@/lib/shay-api";
@@ -24,6 +24,7 @@ function LoginPageContent() {
   const { ready, session, setSession } = useShayAuth();
   const [email, setEmail] = useState(searchParams.get("email") || "");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,16 +95,27 @@ function LoginPageContent() {
                 placeholder="Email address"
                 className="focus-ring w-full rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
               />
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="Password"
-                className="focus-ring w-full rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !saving) void submit();
-                }}
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Password"
+                  className="focus-ring w-full rounded-2xl border border-navy-100 px-4 py-3 pr-12 text-sm text-navy-900"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !saving) void submit();
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((current) => !current)}
+                  className="focus-ring absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-navy-500 hover:bg-navy-50 hover:text-navy-800"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  title={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+                </button>
+              </div>
               <div className="flex justify-end">
                 <Link
                   href="/forgot-password"

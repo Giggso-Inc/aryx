@@ -47,12 +47,7 @@ from app.schemas.gg_workspace import (
     GGWorkspaceMemberResponse,
     GGWorkspaceMemberUpdate,
 )
-from app.utils.permissions import get_effective_role
-from app.services.workspace_membership import (
-    ensure_default_workspace_memberships,
-    ensure_workspace_membership,
-)
-
+from app.utils.permissions import get_effective_role, require_active_workspace_role
 router = APIRouter()
 security = HTTPBearer()
 
@@ -145,19 +140,14 @@ async def list_workspace_members(
     user = await get_current_user_required(request, db)
 
     ws_uuid = _to_uuid(workspace_id, "workspace_id")
-    ws = await _get_workspace_or_404(db, ws_uuid)
+    await _get_workspace_or_404(db, ws_uuid)
 
-    if not ws.is_accessible_by_user(str(user.company_id), user.role):
-        raise HTTPException(status_code=403, detail="Access denied to this workspace")
-
-    await ensure_workspace_membership(
+    await require_active_workspace_role(
         db,
-        workspace=ws,
-        user=user,
-        role="admin" if user.role == "admin" else "member",
+        user.id,
+        ws_uuid,
+        access_detail="Access denied to this workspace",
     )
-    await ensure_default_workspace_memberships(db, workspace=ws)
-    await db.commit()
 
     filters = [
         GGMember.workspace_id == ws_uuid,
@@ -165,8 +155,7 @@ async def list_workspace_members(
     ]
     if role:
         filters.append(GGMember.role == role)
-    if is_active is not None:
-        filters.append(GGMember.is_active == is_active)
+    filters.append(GGMember.is_active == (True if is_active is None else is_active))
 
     total = (await db.execute(
         select(func.count()).select_from(GGMember).where(and_(*filters))
@@ -205,10 +194,15 @@ async def add_workspace_member(
     user = await get_current_user_required(request, db)
 
     ws_uuid = _to_uuid(workspace_id, "workspace_id")
-    ws = await _get_workspace_or_404(db, ws_uuid)
+    await _get_workspace_or_404(db, ws_uuid)
 
-    if not ws.is_accessible_by_user(str(user.company_id), user.role):
-        raise HTTPException(status_code=403, detail="Access denied to this workspace")
+    await require_active_workspace_role(
+        db,
+        user.id,
+        ws_uuid,
+        allowed_roles={"admin"},
+        access_detail="Access denied to this workspace",
+    )
 
     member = GGMember(
         id=uuid4(),
@@ -242,10 +236,23 @@ async def update_workspace_member(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a workspace GGMember's role, permissions, or active status."""
-    await get_current_user_required(request, db)
+    user = await get_current_user_required(request, db)
 
     ws_uuid   = _to_uuid(workspace_id, "workspace_id")
     user_uuid = _to_uuid(user_id,      "user_id")
+
+    await require_active_workspace_role(
+        db,
+        user.id,
+        ws_uuid,
+        allowed_roles={"admin"},
+        access_detail="Access denied to this workspace",
+    )
+    if str(user.id) == str(user_uuid):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own workspace membership",
+        )
 
     member = (await db.execute(
         select(GGMember).where(and_(
@@ -275,10 +282,23 @@ async def remove_workspace_member(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a GGMember from a workspace."""
-    await get_current_user_required(request, db)
+    user = await get_current_user_required(request, db)
 
     ws_uuid   = _to_uuid(workspace_id, "workspace_id")
     user_uuid = _to_uuid(user_id,      "user_id")
+
+    await require_active_workspace_role(
+        db,
+        user.id,
+        ws_uuid,
+        allowed_roles={"admin"},
+        access_detail="Access denied to this workspace",
+    )
+    if str(user.id) == str(user_uuid):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove your own workspace membership",
+        )
 
     member = (await db.execute(
         select(GGMember).where(and_(
@@ -356,6 +376,12 @@ async def list_workspace_app_connections(
 
     ws_uuid = _to_uuid(workspace_id, "workspace_id")
     await _get_workspace_or_404(db, ws_uuid)
+    await require_active_workspace_role(
+        db,
+        current_user.id,
+        ws_uuid,
+        access_detail="Access denied to this workspace",
+    )
 
     # Resolve Gmail app once — used in both branches below
     gmail_app = (await db.execute(
@@ -420,10 +446,14 @@ async def connect_workspace_app(
     user = await get_current_user_required(request, db)
 
     ws_uuid = _to_uuid(workspace_id, "workspace_id")
-    ws = await _get_workspace_or_404(db, ws_uuid)
+    await _get_workspace_or_404(db, ws_uuid)
 
-    if not ws.is_accessible_by_user(str(user.company_id), user.role):
-        raise HTTPException(status_code=403, detail="Access denied to this workspace")
+    await require_active_workspace_role(
+        db,
+        user.id,
+        ws_uuid,
+        access_detail="Access denied to this workspace",
+    )
 
     app = (await db.execute(
         select(App).where(and_(App.id == data.app_id, App.is_active == True))
@@ -499,9 +529,13 @@ async def update_workspace_app_connection(
     ws_uuid   = _to_uuid(workspace_id,  "workspace_id")
     conn_uuid = _to_uuid(connection_id, "connection_id")
 
-    ws = await _get_workspace_or_404(db, ws_uuid)
-    if not ws.is_accessible_by_user(str(user.company_id), user.role):
-        raise HTTPException(status_code=403, detail="Access denied to this workspace")
+    await _get_workspace_or_404(db, ws_uuid)
+    await require_active_workspace_role(
+        db,
+        user.id,
+        ws_uuid,
+        access_detail="Access denied to this workspace",
+    )
 
     conn = (await db.execute(
         select(GGAppConnection).where(and_(
@@ -537,9 +571,13 @@ async def disconnect_workspace_app(
     ws_uuid   = _to_uuid(workspace_id,  "workspace_id")
     conn_uuid = _to_uuid(connection_id, "connection_id")
 
-    ws = await _get_workspace_or_404(db, ws_uuid)
-    if not ws.is_accessible_by_user(str(user.company_id), user.role):
-        raise HTTPException(status_code=403, detail="Access denied to this workspace")
+    await _get_workspace_or_404(db, ws_uuid)
+    await require_active_workspace_role(
+        db,
+        user.id,
+        ws_uuid,
+        access_detail="Access denied to this workspace",
+    )
 
     conn = (await db.execute(
         select(GGAppConnection).where(and_(

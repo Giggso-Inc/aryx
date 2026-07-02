@@ -8,7 +8,7 @@ Inheritance direction: bottom-up (thread > channel > workspace).
 The most specific active role wins.
 """
 
-from typing import Optional
+from typing import Iterable, Optional
 from uuid import UUID
 
 from sqlalchemy import select, and_
@@ -87,4 +87,31 @@ async def require_effective_role(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Insufficient role. Required: {min_role}, current: {role}.",
         )
+    return role
+
+
+async def require_active_workspace_role(
+    db: AsyncSession,
+    user_id: UUID,
+    workspace_id: UUID,
+    *,
+    allowed_roles: Optional[Iterable[str]] = None,
+    access_detail: str = "Access denied to workspace",
+    role_detail: str = "Only workspace admins can manage this workspace",
+) -> str:
+    """Require an active workspace membership, optionally constrained by role."""
+    role = await get_effective_role(db, user_id, workspace_id=workspace_id)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=access_detail,
+        )
+
+    allowed = set(allowed_roles or [])
+    if allowed and role not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=role_detail,
+        )
+
     return role

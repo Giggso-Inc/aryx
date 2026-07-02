@@ -302,12 +302,14 @@ export function InviteUserModal({
 
 export function UsersTable({
   users,
+  currentUserId,
   onRoleChange,
   onToggle,
   onDelete,
   saving,
 }: {
   users: ShayUser[];
+  currentUserId?: string | null;
   onRoleChange: (userId: string, role: string) => void;
   onToggle: (user: ShayUser) => void;
   onDelete: (user: ShayUser) => void;
@@ -332,56 +334,71 @@ export function UsersTable({
               body="Adjust the search or filters to reveal the company members."
             />
           ) : (
-            users.map((user) => (
-              <div
-                key={user.id}
-                className="grid grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.9fr)_minmax(0,1.4fr)_120px_120px_160px_96px] lg:items-center"
-              >
-                <UserCell user={user} />
-                <div className="min-w-0">
-                  <p className="truncate text-sm text-navy-900">{user.email_id}</p>
+            users.map((user) => {
+              const isSelf = currentUserId === user.id;
+              return (
+                <div
+                  key={user.id}
+                  className="grid grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.9fr)_minmax(0,1.4fr)_120px_120px_160px_96px] lg:items-center"
+                >
+                  <UserCell user={user} />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm text-navy-900">{user.email_id}</p>
+                  </div>
+                  <div>
+                    {isSelf ? (
+                      <RoleBadge role={user.role} />
+                    ) : (
+                      <select
+                        value={user.role}
+                        onChange={(event) => onRoleChange(user.id, event.target.value)}
+                        disabled={saving}
+                        className="focus-ring w-full rounded-full border border-navy-100 bg-white px-3 py-2 text-sm text-navy-900 disabled:opacity-60"
+                      >
+                        <option value="user">User</option>
+                        <option value="manager">Manager</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                    )}
+                  </div>
+                  <div>
+                    <StatusBadge active={user.is_active} />
+                  </div>
+                  <div className="text-sm text-navy-700">
+                    {user.last_login ? new Date(user.last_login).toLocaleString() : "Never"}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {isSelf ? (
+                      <span className="rounded-full bg-navy-50 px-3 py-1 text-xs font-semibold text-navy-700">
+                        You
+                      </span>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onToggle(user)}
+                          disabled={saving}
+                          className="focus-ring inline-flex size-9 items-center justify-center rounded-xl border border-navy-100 bg-white text-navy-700 hover:bg-navy-50 disabled:opacity-60"
+                          aria-label={user.is_active ? "Deactivate user" : "Reactivate user"}
+                        >
+                          {user.is_active ? <UserX size={15} /> : <UserCheck size={15} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDelete(user)}
+                          disabled={saving}
+                          className="focus-ring inline-flex size-9 items-center justify-center rounded-xl border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:opacity-60"
+                          aria-label="Delete user"
+                          title="Delete user"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <select
-                    value={user.role}
-                    onChange={(event) => onRoleChange(user.id, event.target.value)}
-                    disabled={saving}
-                    className="focus-ring w-full rounded-full border border-navy-100 bg-white px-3 py-2 text-sm text-navy-900 disabled:opacity-60"
-                  >
-                    <option value="user">User</option>
-                    <option value="manager">Manager</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                </div>
-                <div>
-                  <StatusBadge active={user.is_active} />
-                </div>
-                <div className="text-sm text-navy-700">
-                  {user.last_login ? new Date(user.last_login).toLocaleString() : "Never"}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onToggle(user)}
-                    disabled={saving}
-                    className="focus-ring inline-flex size-9 items-center justify-center rounded-xl border border-navy-100 bg-white text-navy-700 hover:bg-navy-50 disabled:opacity-60"
-                    aria-label={user.is_active ? "Deactivate user" : "Reactivate user"}
-                  >
-                    {user.is_active ? <UserX size={15} /> : <UserCheck size={15} />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onDelete(user)}
-                    disabled={saving}
-                    className="focus-ring inline-flex size-9 items-center justify-center rounded-xl border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 disabled:opacity-60"
-                    aria-label="Delete user"
-                    title="Delete user"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

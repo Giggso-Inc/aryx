@@ -76,6 +76,7 @@ interface AdminUsersPageViewProps {
   companyDraft: CompanyProfileDraft;
   filteredUsers: ShayUser[];
   filteredInvitations: ShayInvitation[];
+  currentUserId?: string | null;
   onTabChange: (tab: AdminTab) => void;
   onTableTabChange: (tab: TableTab) => void;
   onOpenInviteModal: () => void;
@@ -114,6 +115,7 @@ export function AdminUsersPageView({
   companyDraft,
   filteredUsers,
   filteredInvitations,
+  currentUserId,
   onTabChange,
   onTableTabChange,
   onOpenInviteModal,
@@ -179,6 +181,7 @@ export function AdminUsersPageView({
               statusFilter={statusFilter}
               filteredUsers={filteredUsers}
               filteredInvitations={filteredInvitations}
+              currentUserId={currentUserId}
               onTableTabChange={onTableTabChange}
               onOpenInviteModal={onOpenInviteModal}
               onSearchChange={onSearchChange}
@@ -228,6 +231,7 @@ function UsersSection({
   statusFilter,
   filteredUsers,
   filteredInvitations,
+  currentUserId,
   onTableTabChange,
   onOpenInviteModal,
   onSearchChange,
@@ -250,6 +254,7 @@ function UsersSection({
   statusFilter: string;
   filteredUsers: ShayUser[];
   filteredInvitations: ShayInvitation[];
+  currentUserId?: string | null;
   onTableTabChange: (tab: TableTab) => void;
   onOpenInviteModal: () => void;
   onSearchChange: (value: string) => void;
@@ -395,6 +400,7 @@ function UsersSection({
         {tab === "users" ? (
           <UsersTable
             users={filteredUsers}
+            currentUserId={currentUserId}
             onRoleChange={(userId, role) => onUpdateUser(userId, { role })}
             onToggle={(user) => onUpdateUser(user.id, { is_active: !user.is_active })}
             onDelete={onDeleteUser}

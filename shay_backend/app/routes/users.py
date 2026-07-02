@@ -285,6 +285,15 @@ async def update_company_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Insufficient permissions to update users"
         )
+
+    update_data = user_update.dict(exclude_unset=True)
+    if str(current_user.id) == str(user_id) and any(
+        field in update_data for field in ("role", "is_active")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own role or active status",
+        )
     
     stmt = select(User).where(
         User.id == user_id,
@@ -307,7 +316,6 @@ async def update_company_user(
         )
     
     # Update user fields
-    update_data = user_update.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(target_user, field, value)
     
@@ -648,4 +656,3 @@ async def bulk_remove_company_users(
         "not_found_user_ids": not_found_user_ids,
         "revoked_channel_memberships": len(channel_memberships)
     }
-

@@ -125,6 +125,26 @@ class TestUpdateUser:
         )
         assert resp.status_code == 200
 
+    @pytest.mark.unit
+    def test_update_company_user_blocks_self_role_or_status_change(self, mock_db, admin_user):
+        app = FastAPI()
+        app.include_router(router, prefix="/users")
+        app.dependency_overrides[get_db] = lambda: mock_db
+        client = TestClient(app, raise_server_exceptions=False)
+
+        admin_user.can_access_company = MagicMock(return_value=True)
+        mock_db.execute = AsyncMock()
+
+        with patch("app.routes.users.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            resp = client.put(
+                f"/users/company/{admin_user.company_id}/users/{admin_user.id}",
+                json={"role": "user"},
+            )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Cannot change your own role or active status"
+        mock_db.execute.assert_not_awaited()
+
 
 class TestDeleteUser:
     @pytest.mark.unit

@@ -339,6 +339,7 @@ export function AdminUsersPage() {
           companyDraft={companyDraft}
           filteredUsers={filteredUsers}
           filteredInvitations={filteredInvitations}
+          currentUserId={session.user_id}
           onTabChange={setTab}
           onTableTabChange={setTableTab}
           onOpenInviteModal={openInviteModal}

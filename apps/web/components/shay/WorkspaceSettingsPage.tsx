@@ -139,6 +139,15 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     return nextMembers;
   }, [companyUsers, members, session, workspace, workspaceId]);
 
+  const currentWorkspaceMember = useMemo(() => {
+    if (!session?.user_id) return null;
+    return displayMembers.find((member) => member.user_id === session.user_id) ?? null;
+  }, [displayMembers, session?.user_id]);
+
+  const canManageWorkspace = currentWorkspaceMember?.is_active === true
+    && currentWorkspaceMember.role === "admin";
+  const activeTab = tab === "danger-zone" && !canManageWorkspace ? "members" : tab;
+
   const availableUsers = useMemo(() => {
     const memberIds = new Set(displayMembers.map((member) => member.user_id));
     return companyUsers.filter((user) => !memberIds.has(user.id));
@@ -151,7 +160,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   };
 
   const saveWorkspace = async () => {
-    if (!session || !workspace) return;
+    if (!session || !workspace || !canManageWorkspace) return;
     setSavingProfile(true);
     setError(null);
     setNotice(null);
@@ -173,7 +182,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   };
 
   const addMember = async () => {
-    if (!session || !memberUserId) return;
+    if (!session || !memberUserId || !canManageWorkspace) return;
     setMemberBusy("add");
     setError(null);
     setNotice(null);
@@ -196,7 +205,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   };
 
   const updateMemberRole = async (userId: string, role: string) => {
-    if (!session) return;
+    if (!session || !canManageWorkspace || userId === session.user_id) return;
     setMemberBusy(`role:${userId}`);
     setError(null);
     setNotice(null);
@@ -211,29 +220,8 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     }
   };
 
-  const toggleMember = async (member: ShayWorkspaceMember) => {
-    if (!session) return;
-    setMemberBusy(`toggle:${member.user_id}`);
-    setError(null);
-    setNotice(null);
-    try {
-      await shayApi.updateWorkspaceMember(
-        workspaceId,
-        member.user_id,
-        { is_active: !member.is_active },
-        session.access_token,
-      );
-      setNotice(member.is_active ? "Member deactivated." : "Member reactivated.");
-      await load();
-    } catch (nextError: unknown) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to update member.");
-    } finally {
-      setMemberBusy(null);
-    }
-  };
-
   const removeMember = async (member: ShayWorkspaceMember) => {
-    if (!session) return;
+    if (!session || !canManageWorkspace || member.user_id === session.user_id) return;
     setMemberBusy(`remove:${member.user_id}`);
     setError(null);
     setNotice(null);
@@ -249,6 +237,10 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   };
 
   const purgeWorkspaceData = async () => {
+    if (!canManageWorkspace) {
+      setDangerError("Only workspace admins can purge workspace data.");
+      return;
+    }
     if (!session || !bridge?.aryx_workspace_id) {
       setDangerError("Workspace bridge is not ready yet.");
       return;
@@ -270,6 +262,10 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   };
 
   const deleteWorkspace = async () => {
+    if (!canManageWorkspace) {
+      setDangerError("Only workspace admins can delete this workspace.");
+      return;
+    }
     if (!session) {
       return;
     }
@@ -321,14 +317,16 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
                     />
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setEditProfileOpen(true)}
-                    className="focus-ring inline-flex items-center justify-center gap-2 self-start rounded-full border border-navy-200 bg-white px-4 py-2 text-sm font-semibold text-navy-800 hover:bg-navy-50 lg:ml-auto"
-                  >
-                    <PencilLine size={15} />
-                    Edit workspace
-                  </button>
+                  {canManageWorkspace ? (
+                    <button
+                      type="button"
+                      onClick={() => setEditProfileOpen(true)}
+                      className="focus-ring inline-flex items-center justify-center gap-2 self-start rounded-full border border-navy-200 bg-white px-4 py-2 text-sm font-semibold text-navy-800 hover:bg-navy-50 lg:ml-auto"
+                    >
+                      <PencilLine size={15} />
+                      Edit workspace
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
@@ -339,14 +337,16 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
             <section className="overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white shadow-soft">
               <div className="border-b border-navy-100 bg-white">
                 <div className="flex flex-wrap items-end gap-0 px-5">
-                  {SETTINGS_TABS.map((item) => (
+                  {SETTINGS_TABS
+                    .filter((item) => item.id !== "danger-zone" || canManageWorkspace)
+                    .map((item) => (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => setTab(item.id)}
                       className={cn(
                         "border-b-2 px-4 py-3 text-sm font-medium transition-colors",
-                        tab === item.id
+                        activeTab === item.id
                           ? "border-navy-800 text-navy-900"
                           : "border-transparent text-navy-500 hover:text-navy-800",
                       )}
@@ -358,10 +358,12 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
               </div>
 
               <div className="px-5 py-5">
-                {tab === "members" ? (
+                {activeTab === "members" ? (
                   <MembersTab
                     addMemberOpen={addMemberOpen}
                     availableUsers={availableUsers}
+                    canManageMembers={canManageWorkspace}
+                    currentUserId={session?.user_id ?? null}
                     memberBusy={memberBusy}
                     memberRole={memberRole}
                     memberUserId={memberUserId}
@@ -372,14 +374,13 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
                     onMemberRoleChange={setMemberRole}
                     onMemberUserChange={setMemberUserId}
                     onRemoveMember={removeMember}
-                    onToggleMember={toggleMember}
                     onUpdateMemberRole={updateMemberRole}
                   />
                 ) : null}
 
-                {tab === "apps" ? <AppsTab /> : null}
+                {activeTab === "apps" ? <AppsTab /> : null}
 
-                {tab === "danger-zone" ? (
+                {activeTab === "danger-zone" ? (
                   <DangerZoneTab
                     bridgeReady={Boolean(bridge?.aryx_workspace_id)}
                     dangerError={dangerError}
@@ -414,6 +415,8 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
 function MembersTab({
   addMemberOpen,
   availableUsers,
+  canManageMembers,
+  currentUserId,
   memberBusy,
   memberRole,
   memberUserId,
@@ -424,11 +427,12 @@ function MembersTab({
   onMemberRoleChange,
   onMemberUserChange,
   onRemoveMember,
-  onToggleMember,
   onUpdateMemberRole,
 }: {
   addMemberOpen: boolean;
   availableUsers: ShayUser[];
+  canManageMembers: boolean;
+  currentUserId?: string | null;
   memberBusy: string | null;
   memberRole: string;
   memberUserId: string;
@@ -439,7 +443,6 @@ function MembersTab({
   onMemberRoleChange: (value: string) => void;
   onMemberUserChange: (value: string) => void;
   onRemoveMember: (member: ShayWorkspaceMember) => void;
-  onToggleMember: (member: ShayWorkspaceMember) => void;
   onUpdateMemberRole: (userId: string, role: string) => void;
 }) {
   return (
@@ -451,19 +454,23 @@ function MembersTab({
             Manage who has access to this workspace with a tile-based member view.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onOpenModal}
-          className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700"
-        >
-          <UserPlus size={15} />
-          Add member
-        </button>
+        {canManageMembers ? (
+          <button
+            type="button"
+            onClick={onOpenModal}
+            className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700"
+          >
+            <UserPlus size={15} />
+            Add member
+          </button>
+        ) : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {members.map((member) => {
           const busy = memberBusy?.includes(member.user_id);
+          const isSelf = currentUserId === member.user_id;
+          const canManageThisMember = canManageMembers && !isSelf && !member.derived;
           return (
             <article
               key={member.id}
@@ -492,37 +499,35 @@ function MembersTab({
               </div>
 
               <div className="mt-5 space-y-3">
-                <select
-                  value={member.role}
-                  onChange={(event) => void onUpdateMemberRole(member.user_id, event.target.value)}
-                  disabled={Boolean(busy) || member.derived}
-                  className="focus-ring w-full rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
-                >
-                  {MEMBER_ROLES.map((role) => (
-                    <option key={role.value} value={role.value}>
-                      {role.label}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void onToggleMember(member)}
-                    disabled={Boolean(busy) || member.derived}
-                    className="focus-ring rounded-2xl border border-navy-100 px-3 py-2 text-sm font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
+                {canManageThisMember ? (
+                  <select
+                    value={member.role}
+                    onChange={(event) => void onUpdateMemberRole(member.user_id, event.target.value)}
+                    disabled={Boolean(busy)}
+                    className="focus-ring w-full rounded-2xl border border-navy-100 bg-white px-4 py-3 text-sm text-navy-900"
                   >
-                    {busy && memberBusy?.startsWith("toggle:") ? "Working..." : member.is_active ? "Deactivate" : "Reactivate"}
-                  </button>
+                    {MEMBER_ROLES.map((role) => (
+                      <option key={role.value} value={role.value}>
+                        {role.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="rounded-2xl border border-navy-100 bg-canvas px-4 py-3 text-sm font-medium text-navy-800">
+                    {roleLabel(member.role)}
+                  </div>
+                )}
+
+                {canManageThisMember ? (
                   <button
                     type="button"
                     onClick={() => void onRemoveMember(member)}
-                    disabled={Boolean(busy) || member.derived}
-                    className="focus-ring rounded-2xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                    disabled={Boolean(busy)}
+                    className="focus-ring w-full rounded-2xl border border-rose-200 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
                   >
                     {busy && memberBusy?.startsWith("remove:") ? "Removing..." : "Remove"}
                   </button>
-                </div>
+                ) : null}
               </div>
             </article>
           );
@@ -737,4 +742,8 @@ function ProfileSummaryField({
 
 function memberInitials(member: ShayWorkspaceMember) {
   return getAvatarInitial(member.name, member.email, member.user_id);
+}
+
+function roleLabel(role: string) {
+  return MEMBER_ROLES.find((option) => option.value === role)?.label ?? role;
 }

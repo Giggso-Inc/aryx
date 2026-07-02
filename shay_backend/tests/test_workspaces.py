@@ -9,7 +9,7 @@ from uuid import UUID
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -133,6 +133,78 @@ def test_get_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, admin_
 
 
 @pytest.mark.unit
+def test_list_workspaces_filters_to_active_memberships(mock_db, admin_user):
+    workspace_id = "a97c20b0-536d-4017-a171-1ee6d140def0"
+    captured = {}
+    mock_workspace = _build_workspace(admin_user, workspace_id)
+
+    class _WorkspaceResult:
+        def scalars(self):
+            return MagicMock(all=MagicMock(return_value=[mock_workspace]))
+
+    class _CountResult:
+        def scalar(self):
+            return 1
+
+    async def execute(stmt):
+        text = str(stmt).lower()
+        if "count(" in text:
+            captured["count_query"] = text
+            return _CountResult()
+        captured["list_query"] = text
+        return _WorkspaceResult()
+
+    mock_db.execute = execute
+    client = _make_client(mock_db)
+
+    with (
+        patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.workspaces._bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
+    ):
+        response = client.get(
+            "/api/v1/workspaces/",
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    assert response.status_code == 200
+    assert "gg_members" in captured["list_query"]
+    assert "gg_members" in captured["count_query"]
+    assert "is_active" in captured["list_query"]
+    assert response.json()["total"] == 1
+
+
+@pytest.mark.unit
+def test_get_workspace_denies_removed_member(mock_db, regular_user):
+    workspace_id = "a97c20b0-536d-4017-a171-1ee6d140def0"
+    mock_workspace = _build_workspace(regular_user, workspace_id)
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return mock_workspace
+
+    async def execute(_stmt):
+        return _Result()
+
+    mock_db.execute = execute
+    client = _make_client(mock_db)
+
+    with (
+        patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=regular_user)),
+        patch(
+            "app.routes.workspaces.require_active_workspace_role",
+            new=AsyncMock(side_effect=HTTPException(status_code=403, detail="Access denied to workspace")),
+        ),
+    ):
+        response = client.get(
+            f"/api/v1/workspaces/{workspace_id}",
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Access denied to workspace"
+
+
+@pytest.mark.unit
 def test_update_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, admin_user):
     workspace_id = "a97c20b0-536d-4017-a171-1ee6d140def0"
     captured = {}
@@ -154,6 +226,7 @@ def test_update_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
 
     with (
         patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")),
         patch("app.routes.workspaces._bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
         patch("app.routes.workspaces._update_aryx_workspace_bridge", new=aryx_sync),
     ):
@@ -200,6 +273,7 @@ def test_delete_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
 
     with (
         patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")),
         patch("app.routes.workspaces.httpx.AsyncClient", return_value=fake_async_client),
     ):
         response = client.delete(

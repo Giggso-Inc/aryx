@@ -210,14 +210,7 @@ export function Header({ workspaceId, onWorkspaceChange }: HeaderProps) {
                 {shayWorkspaceId ? <JobsBadge /> : null}
                 {shayWorkspaceId ? <HITLBadge /> : null}
               </>
-            ) : (
-              <Link
-                href="/login"
-                className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 px-3 py-1.5 text-[13px] font-medium text-navy-700 hover:bg-navy-50"
-              >
-                Login
-              </Link>
-            )}
+            ) : null}
           </div>
         </div>
       </header>

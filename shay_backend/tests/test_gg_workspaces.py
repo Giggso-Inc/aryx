@@ -19,7 +19,7 @@ sys.modules.setdefault("socketio", MagicMock())
 sys.modules.setdefault("python_socketio", MagicMock())
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -277,14 +277,52 @@ class TestUpdateWorkspaceMember:
     def test_update_role(self, mock_db, admin_user):
         """Member found → role updated, 200."""
         member = _make_member_mock()
+        mock_db.execute = AsyncMock(side_effect=[
+            _scalar(member),
+            _scalar(_make_user_mock()),
+        ])
+        client = _make_ws_client(mock_db)
+        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.put(
+                    f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
+                    json={"role": "admin"},
+                )
+        assert resp.status_code == 200
+
+    @pytest.mark.unit
+    def test_update_role_requires_workspace_admin(self, mock_db, regular_user):
+        """Workspace member cannot change another member's role."""
+        member = _make_member_mock()
+        mock_db.execute = AsyncMock(return_value=_scalar(member))
+        client = _make_ws_client(mock_db)
+        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=regular_user)):
+            with patch(
+                "app.routes.gg_workspaces.require_active_workspace_role",
+                new=AsyncMock(side_effect=HTTPException(status_code=403, detail="Only workspace admins can manage this workspace")),
+            ):
+                resp = client.put(
+                    f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
+                    json={"role": "admin"},
+                )
+        assert resp.status_code == 403
+        mock_db.commit.assert_not_awaited()
+
+    @pytest.mark.unit
+    def test_update_role_blocks_self_management(self, mock_db, admin_user):
+        """Logged-in users cannot change their own workspace membership row."""
+        admin_user.id = _USER_ID
+        member = _make_member_mock()
         mock_db.execute = AsyncMock(return_value=_scalar(member))
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            resp = client.put(
-                f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
-                json={"role": "admin"},
-            )
-        assert resp.status_code == 200
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.put(
+                    f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
+                    json={"role": "member"},
+                )
+        assert resp.status_code == 400
+        mock_db.commit.assert_not_awaited()
 
     @pytest.mark.unit
     def test_update_member_not_found(self, mock_db, admin_user):
@@ -292,10 +330,11 @@ class TestUpdateWorkspaceMember:
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            resp = client.put(
-                f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
-                json={"role": "admin"},
-            )
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.put(
+                    f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}",
+                    json={"role": "admin"},
+                )
         assert resp.status_code == 404
 
     @pytest.mark.unit
@@ -303,10 +342,11 @@ class TestUpdateWorkspaceMember:
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            resp = client.put(
-                f"/gg-workspaces/not-a-uuid/members/{_USER_ID}",
-                json={"role": "admin"},
-            )
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.put(
+                    f"/gg-workspaces/not-a-uuid/members/{_USER_ID}",
+                    json={"role": "admin"},
+                )
         assert resp.status_code == 400
 
 
@@ -324,8 +364,41 @@ class TestRemoveWorkspaceMember:
         mock_db.delete = AsyncMock()
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
         assert resp.status_code == 200
+
+    @pytest.mark.unit
+    def test_remove_requires_workspace_admin(self, mock_db, regular_user):
+        """Workspace member cannot remove another workspace member."""
+        member = _make_member_mock()
+        mock_db.execute = AsyncMock(return_value=_scalar(member))
+        mock_db.delete = AsyncMock()
+        client = _make_ws_client(mock_db)
+        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=regular_user)):
+            with patch(
+                "app.routes.gg_workspaces.require_active_workspace_role",
+                new=AsyncMock(side_effect=HTTPException(status_code=403, detail="Only workspace admins can manage this workspace")),
+            ):
+                resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
+        assert resp.status_code == 403
+        mock_db.delete.assert_not_awaited()
+        mock_db.commit.assert_not_awaited()
+
+    @pytest.mark.unit
+    def test_remove_blocks_self_management(self, mock_db, admin_user):
+        """Logged-in users cannot remove themselves from workspace settings."""
+        admin_user.id = _USER_ID
+        member = _make_member_mock()
+        mock_db.execute = AsyncMock(return_value=_scalar(member))
+        mock_db.delete = AsyncMock()
+        client = _make_ws_client(mock_db)
+        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
+        assert resp.status_code == 400
+        mock_db.delete.assert_not_awaited()
+        mock_db.commit.assert_not_awaited()
 
     @pytest.mark.unit
     def test_remove_not_found(self, mock_db, admin_user):
@@ -333,7 +406,8 @@ class TestRemoveWorkspaceMember:
         mock_db.execute = AsyncMock(return_value=_scalar(None))
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.delete(f"/gg-workspaces/{_WS_ID}/members/{_USER_ID}")
         assert resp.status_code == 404
 
     @pytest.mark.unit
@@ -341,7 +415,8 @@ class TestRemoveWorkspaceMember:
         """Invalid workspace_id UUID → 400."""
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
-            resp = client.delete(f"/gg-workspaces/not-a-uuid/members/{_USER_ID}")
+            with patch("app.routes.gg_workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")):
+                resp = client.delete(f"/gg-workspaces/not-a-uuid/members/{_USER_ID}")
         assert resp.status_code == 400
 
 
