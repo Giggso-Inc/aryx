@@ -48,7 +48,7 @@ def _pkce_pair() -> tuple[str, str]:
 
 
 def _get_state_secret() -> str:
-    return settings.SSO_STATE_SECRET or settings.SECRET_KEY
+    return settings.SSO_STATE_SECRET
 
 
 def _build_sf_state(

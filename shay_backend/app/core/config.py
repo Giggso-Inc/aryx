@@ -30,6 +30,35 @@ def _decode_base64_env_or_passthrough(name: str, default: str = "") -> str:
     return value
 
 
+def _parse_env_list(name: str, default: str) -> list[str]:
+    """Parse a list env var from either JSON-array or comma-separated syntax."""
+    raw_value = os.environ.get(name, default)
+    if not raw_value:
+        return []
+
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = None
+
+    if isinstance(parsed, list):
+        return [str(item).strip().rstrip("/") for item in parsed if str(item).strip()]
+
+    return [item.strip().rstrip("/") for item in raw_value.split(",") if item.strip()]
+
+
+def _normalize_url(value: str, default: str = "") -> str:
+    """Trim whitespace and trailing slashes from URL-like settings."""
+    candidate = (value or default).strip()
+    return candidate.rstrip("/") if candidate else ""
+
+
+def _append_path(base: str, path: str) -> str:
+    """Join a normalized base URL with a fixed leading-slash path."""
+    root = _normalize_url(base)
+    return f"{root}{path}" if root else path
+
+
 class Settings(BaseSettings):
     """Application settings"""
     
@@ -39,16 +68,21 @@ class Settings(BaseSettings):
     DEBUG: bool = os.environ.get("DEBUG", "false").lower() == "true"
 
     # Default identifiers for workspace/channel scoped operations
-    DEFAULT_WORKSPACE_ID: Optional[str] =  '47472d9b-3070-4184-b805-0c37f2f79995'
-    DEFAULT_CHANNEL_ID: Optional[str] = 'ef48a45f-de2c-4f58-a56d-bb080f317bec'
+    DEFAULT_WORKSPACE_ID: Optional[str] = os.environ.get("DEFAULT_WORKSPACE_ID")
+    DEFAULT_CHANNEL_ID: Optional[str] = os.environ.get("DEFAULT_CHANNEL_ID")
     
     # Platform Configuration
     PLATFORM_NAME: str = os.environ.get("PLATFORM_NAME","Aryx")
-    PLATFORM_URL: str = os.environ.get("PLATFORM_URL", "http://localhost:3000")
-    FRONTEND_URL: str = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    FRONTEND_ROOT_URL: str = Field(
+        default_factory=lambda: os.environ.get("FRONTEND_URL", "http://localhost:3000"),
+        alias="FRONTEND_URL",
+    )
     # Public-facing base URL of shay_backend. Must be set in prod — request.base_url
     # resolves to the internal Docker hostname when behind a reverse proxy.
-    SHAY_BE_PUBLIC_URL: str = os.environ.get("SHAY_BE_PUBLIC_URL", "")
+    SHAY_BE_PUBLIC_ROOT_URL: str = Field(
+        default_factory=lambda: os.environ.get("SHAY_BE_PUBLIC_URL", ""),
+        alias="SHAY_BE_PUBLIC_URL",
+    )
     # Comma-separated app keys to exclude; from env EXCLUDED_APP_KEYS (use .EXCLUDED_APP_KEYS for list)
     EXCLUDED_APP_KEYS: str = os.environ.get("EXCLUDED_APP_KEYS", "gmail,outlook")
 
@@ -59,8 +93,6 @@ class Settings(BaseSettings):
     SHAY_LOGO_URL: str = os.environ.get("SHAY_LOGO_URL", "xxxxxxxxxxxxxxxxxx")
     ZAPTAG_LOGO_URL: str = os.environ.get("ZAPTAG_LOGO_URL", "xxxxxxxxxxxxxxxxxxxx")
     
-    APP_URL: str = os.environ.get("APP_URL", "http://localhost:8000/app")
-    BASE_URL: str = os.environ.get("BASE_URL", "http://localhost:8000")
     ARYX_API_URL_INTERNAL: str = os.environ.get("ARYX_API_URL_INTERNAL", "http://localhost:8088")
     ARYX_INTERNAL_API_KEY: str = os.environ.get("ARYX_INTERNAL_API_KEY", "")
     SHAY_TOKEN_ENCRYPTION_KEY: str = os.environ.get("SHAY_TOKEN_ENCRYPTION_KEY", "")
@@ -127,20 +159,16 @@ class Settings(BaseSettings):
     MICROSOFT_REDIRECT_URI: str = os.environ.get("MICROSOFT_REDIRECT_URI", "http://localhost:8000/api/v1/sso/microsoft/callback")
 
     # SSO Security
-    SSO_STATE_SECRET: str = os.environ.get("SSO_STATE_SECRET", "Xj6QJ2riXqJymGewJ1EYpKMUzI6Tj2IFHhqxpUjatzU")
+    SSO_STATE_SECRET: str = os.environ.get("SSO_STATE_SECRET", "")
     
     # CORS
-    ALLOWED_ORIGINS: List[str] = [
-    o.strip().rstrip("/")   # ← strip trailing slashes
-    for o in os.environ.get(
-        "ALLOWED_ORGS",
+    ALLOWED_ORIGINS: List[str] = _parse_env_list(
+        "ALLOWED_ORIGINS",
         "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,"
         "http://127.0.0.1:8000,https://dev-fourd.shay-ai.com,https://dev-accell.shay-ai.com,"
         "https://dev-zaptag.shay-ai.com,https://alb.accsell.ai,https://app.accsell.ai",
-    ).split(",")
-    if o.strip()
-]  
-    ALLOWED_HOSTS: List[str] = os.environ.get("ALLOWED_HST", "localhost,127.0.0.1,*").split(",")
+    )
+    ALLOWED_HOSTS: List[str] = _parse_env_list("ALLOWED_HOSTS", "localhost,127.0.0.1,*")
     
     # File Upload
     # Allowed file types matching datasources supported formats: csv, xlsx, xls, json, pdf, docx, doc, txt, pptx, ppt
@@ -290,6 +318,34 @@ class Settings(BaseSettings):
     ML_API_URL: str = os.environ.get("ML_API_URL", "xxxxxxxxxxxxxxx")
     ML_API_KEY: str = _decode_base64_env_or_passthrough("ML_API_KEY", "")
     
+    @property
+    def FRONTEND_URL(self) -> str:
+        """Canonical frontend root used for browser-facing redirects."""
+        return _normalize_url(self.FRONTEND_ROOT_URL, "http://localhost:3000")
+
+    @property
+    def PLATFORM_URL(self) -> str:
+        """Canonical platform root for user-facing links."""
+        return self.FRONTEND_URL
+
+    @property
+    def APP_URL(self) -> str:
+        """Canonical app entry point."""
+        return _append_path(self.FRONTEND_URL, "/login")
+
+    @property
+    def SHAY_BE_PUBLIC_URL(self) -> str:
+        """Canonical public Shay backend root, without the trailing /api segment."""
+        configured = _normalize_url(self.SHAY_BE_PUBLIC_ROOT_URL)
+        if configured.endswith("/api"):
+            configured = configured[: -len("/api")]
+        return configured or _append_path(self.FRONTEND_URL, "/shay")
+
+    @property
+    def BASE_URL(self) -> str:
+        """Canonical public Shay API root."""
+        return _append_path(self.SHAY_BE_PUBLIC_URL, "/api")
+
 
     @property
     def is_oracle(self) -> bool:
@@ -333,6 +389,14 @@ class Settings(BaseSettings):
         if not v or not any(v):
             raise ValueError("SUPPORTED_LOG_TYPES cannot be empty")
         return [log_type.strip().lower() for log_type in v if log_type.strip()]
+
+    @field_validator("SSO_STATE_SECRET")
+    @classmethod
+    def validate_sso_state_secret(cls, value: str) -> str:
+        """Require an explicit SSO state secret so OAuth state signing fails closed."""
+        if not value or not value.strip():
+            raise ValueError("SSO_STATE_SECRET must be set")
+        return value.strip()
     
     # Socket Configuration
     SOCKET_SERVER_URL: str = os.environ.get("SOCKET_SERVER_URL", "wss://dev-fourd.shay-ai.com/socket.io/")

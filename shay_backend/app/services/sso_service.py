@@ -76,7 +76,7 @@ class ProviderError(SSOError):
 
 
 def _get_state_secret() -> str:
-    return settings.SSO_STATE_SECRET or settings.SECRET_KEY
+    return settings.SSO_STATE_SECRET
 
 
 def build_state(invite_id: str, redirect_uri: str, csrf_token: str) -> str:

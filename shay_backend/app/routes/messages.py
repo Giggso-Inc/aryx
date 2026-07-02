@@ -950,8 +950,8 @@ async def create_message(
     
     # Process mention notifications for user messages only
     if message_data.message_type == "user" and message_data.content:
-        # Get platform URL from environment variables for real-time notifications
-        platform_url = os.environ.get("PLATFORM_URL") or settings.PLATFORM_URL
+        # Use the canonical frontend root for real-time notifications.
+        platform_url = settings.PLATFORM_URL
         
         # Construct redirect URL to view the thread (shortened; store thread_id/channel_id for move-safe links)
         redirect_url = await link_shortener_service.shorten(
@@ -2511,4 +2511,3 @@ async def trigger_ai_processing(message_id: str):
                 ai_response.status = "failed"
                 ai_response.error_message = str(e)
                 await db.commit() 
-

@@ -76,16 +76,16 @@ services:
     environment:
       - DATABASE_URL=${ARYX_RDB_DSN:-postgresql+asyncpg://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx}
       - SHAY_RUN_MIGRATIONS=false
-      - BASE_URL=http://localhost:3000/shay/api
-      - FRONTEND_URL=http://localhost:3000
-      - PLATFORM_URL=http://localhost:3000
-      - SHAY_BE_PUBLIC_URL=http://localhost:3000/shay
-      - GOOGLE_REDIRECT_URI=http://localhost:3000/shay/api/v1/sso/google/callback
-      - MICROSOFT_REDIRECT_URI=http://localhost:3000/shay/api/v1/sso/microsoft/callback
-      - GOOGLE_GMAIL_REDIRECT_URI=http://localhost:3000/shay/api/v1/gmail/connect/callback
-      - SF_CONNECT_REDIRECT_URI=http://localhost:3000/shay/api/v1/sf/connect/callback
-      - ZOHO_CRM_CONNECT_REDIRECT_URI=http://localhost:3000/shay/api/v1/zoho/connect/callback
-      - ALLOWED_ORGS=http://localhost:3000,http://127.0.0.1:3000
+      # Canonical frontend root. PLATFORM_URL and APP_URL are derived in config.
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      # Canonical public Shay backend root. BASE_URL is derived as /api under this root.
+      - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL:-http://localhost:3000/shay}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sso/google/callback}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sso/microsoft/callback}
+      - GOOGLE_GMAIL_REDIRECT_URI=${GOOGLE_GMAIL_REDIRECT_URI:-http://localhost:3000/shay/api/v1/gmail/connect/callback}
+      - SF_CONNECT_REDIRECT_URI=${SF_CONNECT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sf/connect/callback}
+      - ZOHO_CRM_CONNECT_REDIRECT_URI=${ZOHO_CRM_CONNECT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/zoho/connect/callback}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     ports:
       - "127.0.0.1:8090:8000"
     depends_on:
@@ -103,6 +103,8 @@ services:
     build: .
     env_file: .env
     command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
+    environment:
+      - ARYX_API_URL=http://api:8000
     ports:
       - "127.0.0.1:8765:8765"
     depends_on:
@@ -130,6 +132,7 @@ services:
     environment:
       - ARYX_API_URL_INTERNAL=http://api:8000
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
       - SHAY_API_URL_INTERNAL=http://shay-api:8000
       - NODE_ENV=production
     ports:

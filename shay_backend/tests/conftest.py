@@ -23,8 +23,9 @@ os.environ.setdefault(
 )
 os.environ.setdefault(
     "SHAY_TOKEN_ENCRYPTION_KEY",
-    "9a2b7c4d1e5f80316789a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abc",
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 )
+os.environ.setdefault("SSO_STATE_SECRET", "test-only-sso-state-secret")
 os.environ.setdefault("ARYX_INTERNAL_API_KEY", "test-aryx-internal-key")
 sys.modules.setdefault("socketio", MagicMock())
 sys.modules.setdefault("python_socketio", MagicMock())

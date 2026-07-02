@@ -1020,8 +1020,8 @@ async def create_approval(
 
     # Process approval notifications in background
     if resolved_channel_id and approval.approver_user_id:
-        # Get platform URL from environment variables for real-time notifications
-        platform_url = os.environ.get("PLATFORM_URL") or settings.PLATFORM_URL
+        # Use the canonical frontend root for real-time notifications.
+        platform_url = settings.PLATFORM_URL
 
         # Construct redirect URL (shortened; store thread_id/channel_id for move-safe links)
         redirect_url = await link_shortener_service.shorten(
@@ -2063,8 +2063,8 @@ async def reassign_approval(
     
     # Process approval reassignment notifications in background
     if reassign_channel_id and approval.approver_user_id and reassign_thread_id:
-        # Get platform URL from environment variables for real-time notifications
-        platform_url = os.environ.get("PLATFORM_URL") or settings.PLATFORM_URL
+        # Use the canonical frontend root for real-time notifications.
+        platform_url = settings.PLATFORM_URL
 
         # Construct redirect URL (shortened; store thread_id/channel_id for move-safe links)
         redirect_url = await link_shortener_service.shorten(

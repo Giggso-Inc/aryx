@@ -1179,8 +1179,8 @@ async def create_task(
     
     # Process task assignment notifications in background
     if task.assigned_to and channel_id and thread_id:
-        # Get platform URL from environment variables for real-time notifications
-        platform_url = os.environ.get("PLATFORM_URL") or settings.PLATFORM_URL
+        # Use the canonical frontend root for real-time notifications.
+        platform_url = settings.PLATFORM_URL
 
         try:
             # Construct redirect URL (shortened; store thread_id/channel_id for move-safe links)
@@ -1755,8 +1755,8 @@ async def update_task(
     
     # Process task reassignment notifications in background if reassigned
     if is_reassignment and task.assigned_to and task_channel_id and task_thread_id:
-        # Get platform URL from environment variables for real-time notifications
-        platform_url = os.environ.get("PLATFORM_URL") or settings.PLATFORM_URL
+        # Use the canonical frontend root for real-time notifications.
+        platform_url = settings.PLATFORM_URL
 
         # Construct redirect URL (shortened; store thread_id/channel_id for move-safe links)
         redirect_url = await link_shortener_service.shorten(
@@ -2025,8 +2025,8 @@ async def assign_task(
     
     # Process task reassignment notifications in background if reassigned
     if is_reassignment and task.assigned_to and assign_channel_id and assign_thread_id:
-        # Get platform URL from environment variables for real-time notifications
-        platform_url = os.environ.get("PLATFORM_URL") or settings.PLATFORM_URL
+        # Use the canonical frontend root for real-time notifications.
+        platform_url = settings.PLATFORM_URL
 
         # Construct redirect URL (shortened; store thread_id/channel_id for move-safe links)
         redirect_url = await link_shortener_service.shorten(

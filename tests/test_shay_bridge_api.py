@@ -33,6 +33,24 @@ def test_shay_bridge_router_requires_api_key():
     assert response.status_code == 401
 
 
+def test_shay_bridge_ask_requires_api_key():
+    from aryx.api.shay_bridge_api import shay_bridge_router
+
+    app = FastAPI()
+    app.include_router(shay_bridge_router())
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/admin/shay/chats/ask",
+        json={
+            "shay_workspace_id": "ws-401",
+            "shay_thread_id": "thread-401",
+            "question": "Who can access this?",
+        },
+    )
+
+    assert response.status_code == 401
+
+
 def test_ensure_workspace_mapping_creates_aryx_workspace_when_missing(client):
     class FakeStore:
         def close(self):

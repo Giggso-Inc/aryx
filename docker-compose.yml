@@ -118,18 +118,14 @@ services:
       # operate on the same Postgres instance and credentials.
       - DATABASE_URL=${ARYX_RDB_DSN:-postgresql+asyncpg://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx}
       - SHAY_RUN_MIGRATIONS=false
-      # Public API base includes /api because Shay builds callback and short-link URLs from it.
-      # In OCI dev, nginx should publish /shay/api/* and reverse-proxy that path to this container.
-      - BASE_URL=${SHAY_BASE_URL:-http://localhost:3000/shay/api}
-      - FRONTEND_URL=${SHAY_FRONTEND_URL:-http://localhost:3000}
-      - PLATFORM_URL=${SHAY_FRONTEND_URL:-http://localhost:3000}
-      - SHAY_BE_PUBLIC_URL=${SHAY_PUBLIC_URL:-http://localhost:3000/shay}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL:-http://localhost:3000/shay}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sso/google/callback}
       - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sso/microsoft/callback}
       - GOOGLE_GMAIL_REDIRECT_URI=${GOOGLE_GMAIL_REDIRECT_URI:-http://localhost:3000/shay/api/v1/gmail/connect/callback}
       - SF_CONNECT_REDIRECT_URI=${SF_CONNECT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/sf/connect/callback}
       - ZOHO_CRM_CONNECT_REDIRECT_URI=${ZOHO_CRM_CONNECT_REDIRECT_URI:-http://localhost:3000/shay/api/v1/zoho/connect/callback}
-      - ALLOWED_ORGS=${SHAY_FRONTEND_URL:-http://localhost:3000},http://127.0.0.1:3000
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     ports:
       - "127.0.0.1:8090:8000"
     depends_on:
@@ -147,6 +143,8 @@ services:
     build: .
     env_file: .env
     command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
+    environment:
+      - ARYX_API_URL=http://api:8000
     ports:
       - "127.0.0.1:8765:8765"
     depends_on:
@@ -177,6 +175,7 @@ services:
       # Aryx API is proxied by Next.js route handlers / rewrites for local and container use.
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
       # Shay is publicly exposed by nginx in OCI dev, but these internal handlers still need
       # direct container access for workspace bridge routes under apps/web/app/api/shay/*.
       - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}

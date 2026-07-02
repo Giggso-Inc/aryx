@@ -2,6 +2,7 @@
 Authentication utilities and JWT token management
 """
 
+import logging
 import uuid
 import warnings
 from datetime import datetime, timedelta
@@ -13,6 +14,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 # Suppress bcrypt version warning from passlib
 warnings.filterwarnings('ignore', message='.*bcrypt version.*', category=UserWarning)
 warnings.filterwarnings('ignore', message='.*trapped.*error reading bcrypt version.*', category=UserWarning)
@@ -21,10 +24,10 @@ warnings.filterwarnings('ignore', message='.*trapped.*error reading bcrypt versi
 try:
     import bcrypt
     BCrypt_AVAILABLE = True
-    print("✅ Direct bcrypt import successful")
+    logger.debug("Direct bcrypt import successful")
 except ImportError:
     BCrypt_AVAILABLE = False
-    print("⚠️ Direct bcrypt import failed")
+    logger.warning("Direct bcrypt import failed")
 
 # Fix bcrypt version detection for passlib compatibility
 # This prevents the AttributeError warning when passlib tries to read bcrypt.__about__.__version__
@@ -46,7 +49,7 @@ try:
     # Try to get version from __about__ if available
     if hasattr(bcrypt, '__about__'):
         bcrypt_version = getattr(bcrypt.__about__, '__version__', bcrypt_version)
-    print(f"🔍 Detected bcrypt version: {bcrypt_version}")
+    logger.debug("Detected bcrypt version: %s", bcrypt_version)
     
     if bcrypt_version.startswith('5.'):
         # bcrypt 5.x configuration
@@ -58,7 +61,7 @@ try:
             bcrypt__max_rounds=31,
             bcrypt__truncate_error=False
         )
-        print("✅ Bcrypt 5.x context initialized successfully")
+        logger.debug("Bcrypt 5.x context initialized successfully")
     else:
         # bcrypt 4.x configuration
         pwd_context = CryptContext(
@@ -68,13 +71,13 @@ try:
             bcrypt__min_rounds=4,
             bcrypt__max_rounds=31
         )
-        print("✅ Bcrypt 4.x context initialized successfully")
+        logger.debug("Bcrypt 4.x context initialized successfully")
         
 except Exception as e:
-    print(f"❌ Error initializing bcrypt context: {e}")
+    logger.warning("Error initializing bcrypt context: %s", e)
     # Fallback to basic configuration
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    print("⚠️ Using fallback bcrypt configuration")
+    logger.warning("Using fallback bcrypt configuration")
 
 # JWT token security
 security = HTTPBearer()
@@ -151,27 +154,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         # Validate and truncate password to bcrypt's 72-byte limit
         plain_password = validate_password_length(plain_password)
-        
-        # Debug logging
-        print(f"🔍 Password verification - Input length: {len(plain_password.encode('utf-8'))} bytes")
-        print(f"🔍 Password verification - Hash length: {len(hashed_password)} chars")
-        
         return pwd_context.verify(plain_password, hashed_password)
     except Exception as e:
-        print(f"❌ Passlib verification error: {e}")
-        print(f"❌ Password type: {type(plain_password)}")
-        print(f"❌ Hash type: {type(hashed_password)}")
-        
+        logger.warning("Passlib password verification failed; trying direct bcrypt fallback: %s", e)
         # Try direct bcrypt as fallback
         if BCrypt_AVAILABLE:
             try:
-                print("🔄 Trying direct bcrypt verification...")
                 # Ensure password is bytes for direct bcrypt
                 password_bytes = plain_password.encode('utf-8')
                 hash_bytes = hashed_password.encode('utf-8')
                 return bcrypt.checkpw(password_bytes, hash_bytes)
             except Exception as bcrypt_error:
-                print(f"❌ Direct bcrypt verification also failed: {bcrypt_error}")
+                logger.warning("Direct bcrypt verification failed: %s", bcrypt_error)
                 raise
         else:
             raise
@@ -208,7 +202,7 @@ def validate_password_length(password: str) -> str:
         while truncated_bytes and truncated_bytes[-1] & 0x80 and not (truncated_bytes[-1] & 0x40):
             truncated_bytes = truncated_bytes[:-1]
         password = truncated_bytes.decode('utf-8', errors='ignore')
-        print(f"⚠️ Password truncated from {len(password_bytes)} to {len(password.encode('utf-8'))} bytes")
+        logger.warning("Password exceeded bcrypt's 72-byte limit and was truncated before verification")
     
     return password
 

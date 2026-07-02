@@ -49,6 +49,7 @@ def shay_bridge_router() -> APIRouter:
 
     @router.post("/workspaces/ensure")
     def ensure_workspace(req: WorkspaceEnsureRequest) -> dict[str, Any]:
+        """Create or reuse the Aryx workspace mapped to a Shay workspace."""
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.ensure_workspace_mapping(
@@ -62,6 +63,7 @@ def shay_bridge_router() -> APIRouter:
 
     @router.get("/workspaces/{shay_workspace_id}/mapping")
     def get_workspace_mapping(shay_workspace_id: str) -> dict[str, Any]:
+        """Return the existing Aryx workspace mapping for a Shay workspace."""
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             mapping = store.get_workspace_mapping(shay_workspace_id)
@@ -73,6 +75,7 @@ def shay_bridge_router() -> APIRouter:
 
     @router.post("/datasources/sync")
     def sync_datasource(req: ShayDatasourceSyncRequest) -> dict[str, Any]:
+        """Mirror a Shay datasource into the mapped Aryx workspace."""
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.sync_datasource(
@@ -89,6 +92,7 @@ def shay_bridge_router() -> APIRouter:
 
     @router.post("/chats/ask")
     def ask_from_shay(req: ShayChatAskRequest) -> dict[str, Any]:
+        """Run an Aryx ask request for a Shay thread and persist the exchange."""
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             mapping = store.get_workspace_mapping(req.shay_workspace_id)
@@ -142,6 +146,7 @@ def shay_bridge_router() -> APIRouter:
         shay_thread_id: str,
         limit: int = Query(50, ge=1, le=200),
     ) -> list[dict[str, Any]]:
+        """List persisted bridge turns for a Shay thread."""
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.list_chat_turns(shay_thread_id, limit)
@@ -153,6 +158,7 @@ def shay_bridge_router() -> APIRouter:
         shay_workspace_id: str,
         limit: int = Query(50, ge=1, le=200),
     ) -> list[dict[str, Any]]:
+        """List Shay threads known to Aryx for one workspace."""
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.list_workspace_threads(shay_workspace_id, limit)
