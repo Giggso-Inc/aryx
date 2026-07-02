@@ -330,11 +330,9 @@ export const shayApi = {
     ),
 
   resetPassword: (payload: {
-    user_id: string;
-    email_id: string;
+    token: string;
     new_password: string;
     confirm_new_password: string;
-    base_url: string;
     encrypted: boolean;
   }) =>
     requestJSON<{ message: string; success: boolean }>(

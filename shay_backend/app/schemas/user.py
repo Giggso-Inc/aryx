@@ -627,12 +627,10 @@ class ForgetPasswordResponse(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    """Reset password request schema - accepts decrypted parameters from frontend"""
-    user_id: str = Field(..., description="User ID from decrypted token")
-    email_id: str = Field(..., description="Email ID from decrypted token")
+    """Reset password request schema - server validates the emailed reset token."""
+    token: str = Field(..., min_length=1, description="Opaque password reset token from the email link")
     new_password: str = Field(..., min_length=8, description="New password (encrypted or plain text based on encrypted flag)")
     confirm_new_password: str = Field(..., min_length=8, description="Confirm new password (encrypted or plain text based on encrypted flag)")
-    base_url: str = Field(..., description="Base URL for validation (e.g., https://dev-zaptag.shay-ai.com)")
     encrypted: bool = Field(default=False, description="Indicates if passwords are encrypted")
     
     # Password match validation is handled in the route handler after decryption
@@ -661,11 +659,9 @@ class ResetPasswordRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "user_id": "123",
-                "email_id": "user@example.com",
+                "token": "opaque-reset-token",
                 "new_password": "MyNewSecurePassword123!",
                 "confirm_new_password": "MyNewSecurePassword123!",
-                "base_url": "https://dev-zaptag.shay-ai.com",
                 "encrypted": False
             }
         }

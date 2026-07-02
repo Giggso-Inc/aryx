@@ -76,14 +76,19 @@ def serialize_workspace(workspace: Workspace) -> WorkspaceResponse:
     )
 
 
-async def _ensure_aryx_workspace_bridge(request: Request, workspace: Workspace) -> dict[str, Any]:
-    """Create or reuse the Aryx bridge for a newly created Shay workspace."""
-    headers = {}
-    authorization = request.headers.get("authorization")
-    if authorization:
-        headers["Authorization"] = authorization
-    headers["Content-Type"] = "application/json"
+def _aryx_headers() -> dict[str, str]:
+    """Build auth headers for internal Shay -> Aryx service calls."""
+    key = (settings.ARYX_INTERNAL_API_KEY or "").strip()
+    if not key:
+        raise RuntimeError("ARYX_INTERNAL_API_KEY is required for Shay bridge calls")
+    return {
+        "Content-Type": "application/json",
+        "x-aryx-api-key": key,
+    }
 
+
+async def _ensure_aryx_workspace_bridge(_request: Request, workspace: Workspace) -> dict[str, Any]:
+    """Create or reuse the Aryx bridge for a newly created Shay workspace."""
     timeout = httpx.Timeout(30.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
@@ -94,7 +99,7 @@ async def _ensure_aryx_workspace_bridge(request: Request, workspace: Workspace) 
                 "description": workspace.description or "",
                 "company_id": str(workspace.company_id),
             },
-            headers=headers,
+            headers=_aryx_headers(),
         )
         response.raise_for_status()
         return response.json()
@@ -106,22 +111,17 @@ async def _delete_aryx_workspace_bridge(aryx_workspace_id: Any) -> None:
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.delete(
             f"{settings.ARYX_API_URL_INTERNAL}/admin/workspaces/{aryx_workspace_id}",
+            headers=_aryx_headers(),
         )
         response.raise_for_status()
 
 
 async def _update_aryx_workspace_bridge(
-    request: Request,
+    _request: Request,
     aryx_workspace_id: Any,
     workspace: Workspace,
 ) -> dict[str, Any]:
     """Keep the bridged Aryx workspace metadata aligned with Shay workspace edits."""
-    headers = {}
-    authorization = request.headers.get("authorization")
-    if authorization:
-        headers["Authorization"] = authorization
-    headers["Content-Type"] = "application/json"
-
     timeout = httpx.Timeout(30.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.put(
@@ -130,7 +130,7 @@ async def _update_aryx_workspace_bridge(
                 "name": workspace.name,
                 "description": workspace.description or "",
             },
-            headers=headers,
+            headers=_aryx_headers(),
         )
         response.raise_for_status()
         return response.json()
@@ -186,20 +186,28 @@ async def create_workspace(
         user=user,
         role="admin",
     )
-    await db.commit()
-    await db.refresh(workspace)
     try:
         bridge = await _bridge_for_workspace(request, workspace)
+        await db.commit()
+        await db.refresh(workspace)
     except httpx.HTTPStatusError as exc:
+        await db.rollback()
         detail = exc.response.text or str(exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx workspace bridge creation failed: {detail}",
         ) from exc
     except httpx.RequestError as exc:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx service unavailable: {exc}",
+        ) from exc
+    except RuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
         ) from exc
 
     payload = serialize_workspace(workspace).model_dump()
@@ -305,28 +313,35 @@ async def update_workspace(
     for field, value in update_data.items():
         setattr(workspace, field, value)
     workspace.updated_at = datetime.utcnow()
-    
-    await db.commit()
-    await db.refresh(workspace)
-    
-    bridge = await _bridge_for_workspace(request, workspace)
+
     try:
+        bridge = await _bridge_for_workspace(request, workspace)
         if bridge and bridge.get("aryx_workspace_id"):
             await _update_aryx_workspace_bridge(
                 request,
                 bridge["aryx_workspace_id"],
                 workspace,
             )
+        await db.commit()
+        await db.refresh(workspace)
     except httpx.HTTPStatusError as exc:
+        await db.rollback()
         detail = exc.response.text or str(exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx workspace update failed: {detail}",
         ) from exc
     except httpx.RequestError as exc:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx service unavailable: {exc}",
+        ) from exc
+    except RuntimeError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
         ) from exc
 
     payload = serialize_workspace(workspace).model_dump()
@@ -351,15 +366,29 @@ async def delete_workspace(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             mapping_response = await client.get(
-                f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{workspace_id}/mapping"
+                f"{settings.ARYX_API_URL_INTERNAL}/admin/shay/workspaces/{workspace_id}/mapping",
+                headers=_aryx_headers(),
             )
             if mapping_response.status_code == status.HTTP_200_OK:
                 bridge = mapping_response.json()
-    except httpx.RequestError:
-        bridge = None
-
-    await db.delete(workspace)
-    await db.commit()
+            elif mapping_response.status_code != status.HTTP_404_NOT_FOUND:
+                mapping_response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx workspace lookup failed: {detail}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx service unavailable: {exc}",
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
 
     if bridge and bridge.get("aryx_workspace_id"):
         try:
@@ -375,6 +404,9 @@ async def delete_workspace(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Aryx service unavailable: {exc}",
             ) from exc
+
+    await db.delete(workspace)
+    await db.commit()
 
     return {"message": "Workspace deleted successfully"}
 
@@ -396,7 +428,7 @@ async def purge_workspace(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            mapping_response = await client.get(mapping_url)
+            mapping_response = await client.get(mapping_url, headers=_aryx_headers())
             if mapping_response.status_code == status.HTTP_404_NOT_FOUND:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -414,6 +446,7 @@ async def purge_workspace(
             purge_response = await client.post(
                 f"{settings.ARYX_API_URL_INTERNAL}/admin/workspaces/{aryx_workspace_id}/purge",
                 json={},
+                headers=_aryx_headers(),
             )
             purge_response.raise_for_status()
             purge_result = purge_response.json()
@@ -429,6 +462,11 @@ async def purge_workspace(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx service unavailable: {exc}"
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc)
         ) from exc
 
     return {

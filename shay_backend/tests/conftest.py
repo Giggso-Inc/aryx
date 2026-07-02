@@ -21,6 +21,11 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://accsell_user:accsell_pass@localhost:5433/accsell_test",
 )
+os.environ.setdefault(
+    "SHAY_TOKEN_ENCRYPTION_KEY",
+    "9a2b7c4d1e5f80316789a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abc",
+)
+os.environ.setdefault("ARYX_INTERNAL_API_KEY", "test-aryx-internal-key")
 sys.modules.setdefault("socketio", MagicMock())
 sys.modules.setdefault("python_socketio", MagicMock())
 

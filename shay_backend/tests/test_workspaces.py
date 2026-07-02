@@ -9,6 +9,7 @@ from uuid import UUID
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -78,6 +79,7 @@ def test_create_workspace_triggers_aryx_bridge_after_shay_create(mock_db, admin_
         patch("app.routes.workspaces.ensure_workspace_membership", new=AsyncMock()),
         patch("app.routes.workspaces.httpx.AsyncClient", return_value=fake_async_client),
         patch.object(workspaces_route.settings, "ARYX_API_URL_INTERNAL", "http://aryx-internal"),
+        patch.object(workspaces_route.settings, "ARYX_INTERNAL_API_KEY", "bridge-key"),
     ):
         response = client.post(
             "/api/v1/workspaces/",
@@ -99,7 +101,7 @@ def test_create_workspace_triggers_aryx_bridge_after_shay_create(mock_db, admin_
         "description": "Workspace description",
         "company_id": "company-001",
     }
-    assert kwargs["headers"]["Authorization"] == "Bearer test-token"
+    assert kwargs["headers"]["x-aryx-api-key"] == "bridge-key"
 
 
 @pytest.mark.unit
@@ -130,6 +132,41 @@ def test_get_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, admin_
 
     assert response.status_code == 200
     assert captured["workspace_id_type"] is UUID
+
+
+@pytest.mark.unit
+def test_create_workspace_rolls_back_when_aryx_bridge_fails(mock_db, admin_user):
+    from app.routes import workspaces as workspaces_route
+
+    fake_client = MagicMock()
+    fake_client.post = AsyncMock(side_effect=httpx.RequestError("bridge down"))
+    fake_async_client = MagicMock()
+    fake_async_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_async_client.__aexit__ = AsyncMock(return_value=None)
+
+    client = _make_client(mock_db)
+
+    with (
+        patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)),
+        patch("app.routes.workspaces.generate_workspace_id", return_value="workspace-123"),
+        patch("app.routes.workspaces.ensure_workspace_membership", new=AsyncMock()),
+        patch("app.routes.workspaces.httpx.AsyncClient", return_value=fake_async_client),
+        patch.object(workspaces_route.settings, "ARYX_API_URL_INTERNAL", "http://aryx-internal"),
+        patch.object(workspaces_route.settings, "ARYX_INTERNAL_API_KEY", "bridge-key"),
+    ):
+        response = client.post(
+            "/api/v1/workspaces/",
+            json={
+                "name": "My Workspace",
+                "description": "Workspace description",
+                "workspace_type": "aryx",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    assert response.status_code == 502
+    mock_db.rollback.assert_awaited_once()
+    mock_db.commit.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -275,6 +312,8 @@ def test_delete_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
         patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)),
         patch("app.routes.workspaces.require_active_workspace_role", new=AsyncMock(return_value="admin")),
         patch("app.routes.workspaces.httpx.AsyncClient", return_value=fake_async_client),
+        patch("app.routes.workspaces._delete_aryx_workspace_bridge", new=AsyncMock()),
+        patch("app.routes.workspaces._aryx_headers", return_value={"x-aryx-api-key": "bridge-key"}),
     ):
         response = client.delete(
             f"/api/v1/workspaces/{workspace_id}",

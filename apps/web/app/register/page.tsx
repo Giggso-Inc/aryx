@@ -1,13 +1,12 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Suspense, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, Eye, EyeOff, Info, Lock, Mail, User } from "lucide-react";
 import { PasswordRequirements } from "@/components/auth/PasswordRequirements";
 import SsoProviderButtons from "@/components/auth/SsoProviderButtons";
 import { Logo } from "@/components/brand/Logo";
-import { decodeRegistrationToken } from "@/lib/auth-crypto";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
 import {
@@ -77,39 +76,12 @@ function RegisterPageContent() {
     () => getPasswordRequirementFlags(password),
     [password],
   );
-  const emailLocked = !!encryptedInvite;
-
   const routeToOnboarding = () => {
     if (typeof window !== "undefined") {
       localStorage.removeItem("aryx.workspaceId");
     }
     router.push("/start");
   };
-
-  useEffect(() => {
-    let active = true;
-
-    async function preloadInvite() {
-      if (!encryptedInvite) {
-        return;
-      }
-
-      const decoded = await decodeRegistrationToken(encryptedInvite);
-      if (!active || !decoded.valid) {
-        return;
-      }
-
-      setEmail(decoded.email);
-      setInviteId(decoded.invite_code);
-      setCompanyId(decoded.company_id);
-      setRole(decoded.role || "user");
-    }
-
-    void preloadInvite();
-    return () => {
-      active = false;
-    };
-  }, [encryptedInvite]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -184,20 +156,16 @@ function RegisterPageContent() {
               label="Email Address"
               required
               icon={<Mail size={18} />}
-              note={emailLocked ? "Email from invitation link (cannot be changed)" : undefined}
+              note={encryptedInvite ? "Enter the invited email address from your secure link." : undefined}
             >
               <input
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="shay@giggso.com"
-                readOnly={emailLocked}
-                aria-readonly={emailLocked}
                 className={[
                   "focus-ring h-12 w-full rounded-xl border px-12 text-sm text-navy-900 placeholder:text-slate-400",
-                  emailLocked
-                    ? "cursor-not-allowed border-blue-100 bg-blue-50/70"
-                    : "border-navy-100 bg-white",
+                  encryptedInvite ? "border-blue-100 bg-blue-50/70" : "border-navy-100 bg-white",
                 ].join(" ")}
               />
             </Field>

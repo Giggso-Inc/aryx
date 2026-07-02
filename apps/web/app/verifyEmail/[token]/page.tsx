@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, MailCheck } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
-import { decodeVerificationToken } from "@/lib/auth-crypto";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
 
@@ -33,19 +32,8 @@ export default function VerifyEmailPage() {
         return;
       }
 
-      const decoded = await decodeVerificationToken(tokenParam);
-      if (!active) {
-        return;
-      }
-
-      if (!decoded.valid) {
-        setStatus("error");
-        setMessage("Verification link is invalid. Request a new email and try again.");
-        return;
-      }
-
       try {
-        const session = await shayApi.verifyEmail(decoded.token);
+        const session = await shayApi.verifyEmail(tokenParam);
         if (!active) {
           return;
         }

@@ -37,6 +37,7 @@ from app.routes.token_details import _normalize_token_type_for_vault  # ML vault
 from app.services.email_service import email_service
 from app.services.zoho_service import zoho_service, get_zoho_service
 from app.services.email_verification_service import email_verification_service
+from app.core.encryption_utils import decrypt_urlsafe_token
 from app.schemas.email_verification import (
     EmailVerificationRequest,
     EmailVerificationResponse,
@@ -1916,9 +1917,15 @@ async def verify_email(
     It validates the token, activates the user and company accounts, and returns JWT tokens.
     """
     try:
+        token = verification_request.token
+        try:
+            token = decrypt_urlsafe_token(token)
+        except Exception:
+            pass
+
         # Verify token and activate accounts
         company, user = await email_verification_service.verify_token(
-            token=verification_request.token,
+            token=token,
             db=db
         )
         

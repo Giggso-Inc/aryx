@@ -5,12 +5,22 @@ Equivalent to the JavaScript version for backend compatibility
 
 import base64
 import os
+import urllib.parse
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
+from app.core.config import settings
 
-# Configuration - MUST match the JavaScript version
-SECRET_KEY = bytes.fromhex('9a2b7c4d1e5f80316789a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abc')  # 32 bytes for AES-256
 SEPARATOR = '$@$'
+
+
+def _secret_key() -> bytes:
+    """Load the AES key from env-backed settings and validate its shape."""
+    key = (settings.SHAY_TOKEN_ENCRYPTION_KEY or "").strip()
+    if not key:
+        raise ValueError("SHAY_TOKEN_ENCRYPTION_KEY is required")
+    if len(key) != 64:
+        raise ValueError("SHAY_TOKEN_ENCRYPTION_KEY must be a 64-character hex string")
+    return bytes.fromhex(key)
 
 def encrypt(data: str) -> str:
     """
@@ -28,7 +38,7 @@ def encrypt(data: str) -> str:
         iv = os.urandom(12)
         
         # Create cipher
-        cipher = Cipher(algorithms.AES(SECRET_KEY), modes.GCM(iv), backend=default_backend())
+        cipher = Cipher(algorithms.AES(_secret_key()), modes.GCM(iv), backend=default_backend())
         encryptor = cipher.encryptor()
         
         # Encrypt the data
@@ -65,7 +75,7 @@ def decrypt(encrypted_data: str) -> str:
         tag = combined[-16:]
         
         # Create cipher
-        cipher = Cipher(algorithms.AES(SECRET_KEY), modes.GCM(iv, tag), backend=default_backend())
+        cipher = Cipher(algorithms.AES(_secret_key()), modes.GCM(iv, tag), backend=default_backend())
         decryptor = cipher.decryptor()
         
         # Decrypt the data
@@ -193,6 +203,31 @@ def create_password_reset_url(base_url: str, user_id: str, email: str, timestamp
     import urllib.parse
     encoded_param = urllib.parse.quote(encrypted_param, safe='')
     return f"{base_url}/reset-password?token={encoded_param}"
+
+
+def decrypt_urlsafe_token(token: str) -> str:
+    """
+    Decrypt a token that may have been URL encoded and converted to URL-safe base64.
+    """
+    candidates: list[str] = []
+    for raw in (token, urllib.parse.unquote(token)):
+        if not raw:
+            continue
+        candidates.append(raw)
+        normalized = raw.replace('-', '+').replace('_', '/')
+        padding = "=" * ((4 - (len(normalized) % 4)) % 4)
+        candidates.append(normalized + padding)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            return decrypt(candidate)
+        except Exception:
+            continue
+    raise ValueError("Invalid encrypted token")
 
 def test_encryption():
     """

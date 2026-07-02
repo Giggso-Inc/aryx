@@ -1,12 +1,11 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Suspense, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle, Eye, EyeOff, KeyRound, Lock } from "lucide-react";
 import { PasswordRequirements } from "@/components/auth/PasswordRequirements";
 import { Logo } from "@/components/brand/Logo";
-import { decodeResetToken, encryptPassword } from "@/lib/auth-crypto";
 import {
   getPasswordRequirementFlags,
   isPasswordPolicyValid,
@@ -28,14 +27,10 @@ function ResetPasswordContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") || "";
 
-  const [email, setEmail] = useState("");
-  const [userId, setUserId] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [loadingToken, setLoadingToken] = useState(true);
-  const [tokenError, setTokenError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -45,39 +40,7 @@ function ResetPasswordContent() {
     [newPassword],
   );
 
-  useEffect(() => {
-    let active = true;
-
-    async function loadToken() {
-      if (!token) {
-        if (active) {
-          setTokenError("Reset link is missing or invalid.");
-          setLoadingToken(false);
-        }
-        return;
-      }
-
-      const decoded = await decodeResetToken(token);
-      if (!active) {
-        return;
-      }
-
-      if (!decoded.valid) {
-        setTokenError("Reset link is invalid.");
-      } else if (decoded.expired) {
-        setTokenError("This reset link has expired. Request a new one to continue.");
-      } else {
-        setEmail(decoded.email);
-        setUserId(decoded.user_id);
-      }
-      setLoadingToken(false);
-    }
-
-    void loadToken();
-    return () => {
-      active = false;
-    };
-  }, [token]);
+  const tokenError = token ? null : "Reset link is missing or invalid.";
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -98,18 +61,11 @@ function ResetPasswordContent() {
 
     setSaving(true);
     try {
-      const [encryptedPassword, encryptedConfirmPassword] = await Promise.all([
-        encryptPassword(newPassword),
-        encryptPassword(confirmPassword),
-      ]);
-
       const response = await shayApi.resetPassword({
-        user_id: userId,
-        email_id: email,
-        new_password: encryptedPassword,
-        confirm_new_password: encryptedConfirmPassword,
-        base_url: window.location.origin,
-        encrypted: true,
+        token,
+        new_password: newPassword,
+        confirm_new_password: confirmPassword,
+        encrypted: false,
       });
 
       if (!response.success) {
@@ -155,11 +111,7 @@ function ResetPasswordContent() {
               </p>
             </div>
 
-            {loadingToken ? (
-              <div className="mt-8 rounded-xl border border-navy-100 bg-canvas px-4 py-6 text-center text-sm text-subtle">
-                Validating reset link...
-              </div>
-            ) : tokenError ? (
+            {tokenError ? (
               <div className="mt-8 text-center">
                 <Link
                   href="/forgot-password"
@@ -174,10 +126,6 @@ function ResetPasswordContent() {
               </div>
             ) : (
               <form onSubmit={submit} className="mt-8 space-y-5">
-                <div className="rounded-xl border border-navy-100 bg-canvas px-4 py-3 text-sm text-subtle">
-                  Resetting password for <span className="font-medium text-navy-900">{email}</span>
-                </div>
-
                 <label className="block space-y-2">
                   <span className="text-sm font-semibold text-navy-900">New Password</span>
                   <div className="relative">

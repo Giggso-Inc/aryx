@@ -16,10 +16,11 @@ _EXEMPT_PREFIXES = ("/mcp",)
 
 
 def _has_authenticated_header(request: Request) -> bool:
-    """Allow either a verified Aryx API key or a forwarded Bearer token."""
+    """Allow only verified Aryx API keys or verified bearer tokens."""
     auth = (request.headers.get("authorization") or "").strip()
-    if auth.lower().startswith("bearer ") and auth[7:].strip():
-        return True
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        return _verify_key(token) if token else False
     key = request.headers.get("x-aryx-api-key", "").strip()
     return _verify_key(key) if key else False
 

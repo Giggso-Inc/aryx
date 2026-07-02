@@ -12,10 +12,25 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     from aryx.api.shay_bridge_api import shay_bridge_router
+    from aryx.api.security import require_api_key
 
     app = FastAPI()
     app.include_router(shay_bridge_router())
+    app.dependency_overrides[require_api_key] = lambda: "test-key"
     return TestClient(app, raise_server_exceptions=False)
+
+
+def test_shay_bridge_router_requires_api_key():
+    from aryx.api.shay_bridge_api import shay_bridge_router
+
+    app = FastAPI()
+    app.include_router(shay_bridge_router())
+
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/admin/shay/chats/history?shay_thread_id=thread-77"
+    )
+
+    assert response.status_code == 401
 
 
 def test_ensure_workspace_mapping_creates_aryx_workspace_when_missing(client):

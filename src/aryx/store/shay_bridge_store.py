@@ -271,9 +271,10 @@ class ShayBridgeStore:
         ]
 
     def conversation_history(self, shay_thread_id: str, limit_pairs: int = 6) -> list[dict[str, str]]:
-        turns = self.list_chat_turns(shay_thread_id, limit=max(int(limit_pairs), 1))
+        pair_limit = max(int(limit_pairs), 1)
+        turns = self.list_chat_turns(shay_thread_id, limit=pair_limit)
         history: list[dict[str, str]] = []
-        for turn in turns[-limit_pairs:]:
+        for turn in turns:
             history.append({"role": "user", "text": turn["question"]})
             history.append({"role": "assistant", "text": turn["answer"]})
         return history
@@ -286,7 +287,7 @@ class ShayBridgeStore:
         name: str,
         kind: str,
         config: dict[str, Any] | None = None,
-        secret: str = "",
+        secret: str | None = None,
         ingest_job_id: str | None = None,
     ) -> dict[str, Any]:
         mapping = self.get_workspace_mapping(shay_workspace_id)
@@ -304,9 +305,35 @@ class ShayBridgeStore:
             )
             row = cur.fetchone()
         if row:
+            datasource = DatasourceStore(self._dsn).update(
+                int(row[1]),
+                name=name,
+                kind=kind,
+                config=config or {},
+                secret=secret,
+            )
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE aryx_shay_datasource_map
+                    SET shay_workspace_id = %s::uuid,
+                        aryx_workspace_id = %s,
+                        ingest_job_id = %s,
+                        updated_at = NOW()
+                    WHERE shay_datasource_id = %s::uuid
+                    RETURNING shay_datasource_id::text, aryx_datasource_id, shay_workspace_id::text, aryx_workspace_id, ingest_job_id
+                    """,
+                    (
+                        shay_workspace_id,
+                        int(mapping["aryx_workspace_id"]),
+                        ingest_job_id,
+                        shay_datasource_id,
+                    ),
+                )
+                row = cur.fetchone()
             return {
                 "shay_datasource_id": row[0],
-                "aryx_datasource_id": row[1],
+                "aryx_datasource_id": int(datasource["id"]),
                 "shay_workspace_id": row[2],
                 "aryx_workspace_id": row[3],
                 "ingest_job_id": row[4],
@@ -318,7 +345,7 @@ class ShayBridgeStore:
             name,
             kind,
             config or {},
-            secret,
+            secret or "",
         )
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(

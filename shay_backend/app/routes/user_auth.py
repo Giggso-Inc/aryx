@@ -39,6 +39,7 @@ from app.core.auth import create_access_token, create_refresh_token, get_passwor
 from app.core.encryption_utils import create_registration_url, decrypt, decrypt_registration_params
 from app.services.email_service import email_service
 from app.services.link_shortener_service import link_shortener_service
+from app.services.email_verification_service import email_verification_service
 from app.services.workspace_membership import ensure_workspace_membership
 
 # Authentication middleware for user verification
@@ -409,17 +410,6 @@ async def register_user(
 ):
     """Register new user with or without invitation, supporting encrypted passwords"""
     
-    # Check if user already exists
-    stmt = select(User).where(User.email_id == register_data.email_id)
-    result = await db.execute(stmt)
-    existing_user = result.scalar_one_or_none()
-    
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="User with this email already exists"
-        )
-    
     # Handle password decryption if encrypted
     password_to_use = register_data.password
     
@@ -446,7 +436,10 @@ async def register_user(
                 detail="Invalid encrypted invitation format"
             )
 
-        if encrypted_invite_data.get("email") and encrypted_invite_data["email"] != register_data.email_id:
+        invited_email = (encrypted_invite_data.get("email") or "").strip()
+        if invited_email and not register_data.email_id:
+            register_data.email_id = invited_email
+        if invited_email and invited_email != register_data.email_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email does not match invitation"
@@ -456,6 +449,15 @@ async def register_user(
         register_data.company_id = encrypted_invite_data.get("company_id") or register_data.company_id
         register_data.role = encrypted_invite_data.get("role") or register_data.role
         role = register_data.role or "user"
+
+    stmt = select(User).where(User.email_id == register_data.email_id)
+    result = await db.execute(stmt)
+    existing_user = result.scalar_one_or_none()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User with this email already exists"
+        )
 
     if register_data.invite_id:
         # Validate invite_id as UUID
@@ -1404,8 +1406,8 @@ async def forgot_password(
     """
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
+    from app.models.email_verification_token import EmailVerificationToken
     from app.services.email_service import EmailService
-    from app.core.encryption_utils import create_password_reset_url
     from app.services.template_service import template_service
 
     # Note: Template validation is now handled in the main processing section with graceful fallback
@@ -1461,14 +1463,22 @@ async def forgot_password(
     # If user exists, send reset email
     email_sent = False
     try:
-        # Generate encrypted reset link using base_url from request
-        timestamp = str(int(datetime.utcnow().timestamp()))
-        reset_url = create_password_reset_url(
-            base_url=forgot_password_data.base_url,
-            user_id=str(user.id),
-            email=user.email_id,
-            timestamp=timestamp
+        await email_verification_service.invalidate_existing_tokens(
+            user.email_id,
+            "password_reset",
+            db,
         )
+        reset_token = EmailVerificationToken.create_token(
+            email=user.email_id,
+            company_id=user.company_id,
+            user_id=user.id,
+            token_type="password_reset",
+            expires_in_hours=1,
+        )
+        db.add(reset_token)
+        await db.flush()
+
+        reset_url = f"{forgot_password_data.base_url.rstrip('/')}/reset-password?token={reset_token.token}"
         # Shorten reset link for email (in-platform; falls back to original URL if shortening fails)
         short_reset_url = await link_shortener_service.shorten(reset_url, db=db)
         # Commit so ShortenedUrl row is persisted (get_db does not auto-commit)
@@ -1481,7 +1491,7 @@ async def forgot_password(
             'reset_link': short_reset_url,
             'expiry_hours': 1,
             'email': user.email_id,
-            'timestamp': timestamp
+            'token': reset_token.token
         }
 
         # Use template-based email if template_id is provided
@@ -1560,10 +1570,7 @@ async def reset_password(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Reset user password using decrypted parameters from frontend.
-    
-    This endpoint accepts decrypted user information from the frontend,
-    validates the user exists, and updates the user's password.
+    Reset user password using a server-issued password reset token.
     
     Args:
         reset_data: ResetPasswordRequest containing user_id, email_id, and new password
@@ -1576,17 +1583,34 @@ async def reset_password(
         HTTPException: 400 for invalid data, 404 for user not found, 403 if account is inactive
     """
     try:
-        # Note: base_url is available in reset_data.base_url if needed for validation
-        # Find user by ID and email to verify the request
-        stmt = select(User).where(
-            and_(
-                User.id == reset_data.user_id,
-                User.email_id == reset_data.email_id
+        from app.models.email_verification_token import EmailVerificationToken
+
+        result = await db.execute(
+            select(EmailVerificationToken).where(
+                EmailVerificationToken.token == reset_data.token
             )
         )
-        result = await db.execute(stmt)
+        token_record = result.scalar_one_or_none()
+        if not token_record or token_record.token_type != "password_reset":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired password reset token"
+            )
+        if not token_record.is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This password reset link has expired or already been used"
+            )
+
+        result = await db.execute(
+            select(User).where(
+                and_(
+                    User.id == token_record.user_id,
+                    User.email_id == token_record.email,
+                )
+            )
+        )
         user = result.scalar_one_or_none()
-        
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1660,6 +1684,7 @@ async def reset_password(
         # Update user's password
         user.password_hash = new_password_hash
         user.updated_datetime = datetime.utcnow()
+        token_record.mark_as_used()
         
         # Commit changes
         await db.commit()

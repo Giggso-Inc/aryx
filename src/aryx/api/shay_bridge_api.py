@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from aryx.api.ask_api import AskRequest, Turn, run_ask
+from aryx.api.security import require_api_key
 from aryx.config import get_settings
-from aryx.store.migrate import apply_migrations
 from aryx.store.shay_bridge_store import ShayBridgeStore
 
 
@@ -30,8 +30,8 @@ class ShayDatasourceSyncRequest(BaseModel):
     shay_datasource_id: str
     name: str
     kind: str = Field(..., description="Aryx datasource kind to create")
-    config: dict[str, Any] = {}
-    secret: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    secret: str | None = None
     ingest_job_id: str | None = None
 
 
@@ -42,11 +42,13 @@ def _citations_from_answer(answer: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def shay_bridge_router() -> APIRouter:
-    router = APIRouter(prefix="/admin/shay")
+    router = APIRouter(
+        prefix="/admin/shay",
+        dependencies=[Depends(require_api_key)],
+    )
 
     @router.post("/workspaces/ensure")
     def ensure_workspace(req: WorkspaceEnsureRequest) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.ensure_workspace_mapping(
@@ -60,7 +62,6 @@ def shay_bridge_router() -> APIRouter:
 
     @router.get("/workspaces/{shay_workspace_id}/mapping")
     def get_workspace_mapping(shay_workspace_id: str) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             mapping = store.get_workspace_mapping(shay_workspace_id)
@@ -72,7 +73,6 @@ def shay_bridge_router() -> APIRouter:
 
     @router.post("/datasources/sync")
     def sync_datasource(req: ShayDatasourceSyncRequest) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.sync_datasource(
@@ -89,7 +89,6 @@ def shay_bridge_router() -> APIRouter:
 
     @router.post("/chats/ask")
     def ask_from_shay(req: ShayChatAskRequest) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             mapping = store.get_workspace_mapping(req.shay_workspace_id)
@@ -143,7 +142,6 @@ def shay_bridge_router() -> APIRouter:
         shay_thread_id: str,
         limit: int = Query(50, ge=1, le=200),
     ) -> list[dict[str, Any]]:
-        apply_migrations(get_settings().rdb_dsn)
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.list_chat_turns(shay_thread_id, limit)
@@ -155,7 +153,6 @@ def shay_bridge_router() -> APIRouter:
         shay_workspace_id: str,
         limit: int = Query(50, ge=1, le=200),
     ) -> list[dict[str, Any]]:
-        apply_migrations(get_settings().rdb_dsn)
         store = ShayBridgeStore(get_settings().rdb_dsn)
         try:
             return store.list_workspace_threads(shay_workspace_id, limit)

@@ -16,6 +16,10 @@ export async function POST(req: NextRequest) {
   if (secret && req.headers.get("x-aryx-key") !== secret) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
   }
+  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
+  if (!internalApiKey) {
+    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
+  }
 
   const target =
     process.env.NODE_ENV === "development"
@@ -23,12 +27,11 @@ export async function POST(req: NextRequest) {
       : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
   try {
-    const authorization = req.headers.get("authorization");
     const upstream = await fetch(`${target}/ask`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(authorization ? { Authorization: authorization } : {}),
+        "x-aryx-api-key": internalApiKey,
       },
       body,
     });

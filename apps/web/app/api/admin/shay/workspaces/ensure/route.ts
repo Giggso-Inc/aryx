@@ -8,13 +8,13 @@ function target() {
 
 function forwardHeaders(req: NextRequest) {
   const headers = new Headers();
-  const authorization = req.headers.get("authorization");
   const contentType = req.headers.get("content-type");
-  if (authorization) {
-    headers.set("Authorization", authorization);
-  }
+  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
   if (contentType) {
     headers.set("Content-Type", contentType);
+  }
+  if (internalApiKey) {
+    headers.set("x-aryx-api-key", internalApiKey);
   }
   return headers;
 }
@@ -23,6 +23,9 @@ export async function POST(req: NextRequest) {
   const secret = process.env.ARYX_PROXY_SECRET;
   if (secret && req.headers.get("x-aryx-key") !== secret) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
+  }
+  if (!process.env.ARYX_INTERNAL_API_KEY) {
+    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
   }
 
   const body = await req.text();

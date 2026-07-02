@@ -8,9 +8,9 @@ function target() {
 
 function forwardHeaders(req: NextRequest) {
   const headers = new Headers();
-  const authorization = req.headers.get("authorization");
-  if (authorization) {
-    headers.set("Authorization", authorization);
+  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
+  if (internalApiKey) {
+    headers.set("x-aryx-api-key", internalApiKey);
   }
   return headers;
 }
@@ -22,6 +22,9 @@ export async function GET(
   const secret = process.env.ARYX_PROXY_SECRET;
   if (secret && req.headers.get("x-aryx-key") !== secret) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
+  }
+  if (!process.env.ARYX_INTERNAL_API_KEY) {
+    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
   }
 
   const { shayWorkspaceId } = await context.params;
