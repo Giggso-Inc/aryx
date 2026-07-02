@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from aryx.graph import FalkorStore
+if TYPE_CHECKING:
+    from aryx.graph import FalkorStore
+
 from aryx.store.entity_store import EntityStore
 
 logger = logging.getLogger(__name__)
@@ -48,7 +51,9 @@ def project_graph(
     Returns:
         Counts of {entities, provenance, relationships} written.
     """
+    logger.info("graph project start ws=%s — clearing", workspace_id)
     graph.clear()
+    logger.info("graph cleared — writing entities")
     ancestors_for = type_ancestors or {}
     n_entities = 0
     for entity_id, ontology_type, attributes in store.list_entities():
@@ -63,10 +68,13 @@ def project_graph(
         graph.add_provenance(entity_id, system, dataset, record_id)
         n_provenance += 1
 
-    n_relationships = 0
-    for source_id, target_id, name in store.list_relationships():
-        graph.add_relationship(source_id, target_id, name)
-        n_relationships += 1
+    all_rels = list(store.list_relationships())
+    if hasattr(graph, "add_relationships_batch"):
+        n_relationships = graph.add_relationships_batch(all_rels)
+    else:
+        for src, tgt, name in all_rels:
+            graph.add_relationship(src, tgt, name)
+        n_relationships = len(all_rels)
 
     counts = {"entities": n_entities, "provenance": n_provenance,
               "relationships": n_relationships}
@@ -106,8 +114,11 @@ def project_incremental(
     for entity_id, system, dataset, record_id in provenance:
         graph.add_provenance(entity_id, system, dataset, record_id)
     relationships = pstore.relationships_for(dirty_ids) if dirty_ids else []
-    for source_id, target_id, name in relationships:
-        graph.add_relationship(source_id, target_id, name)
+    if hasattr(graph, "add_relationships_batch"):
+        graph.add_relationships_batch(relationships)
+    else:
+        for src, tgt, name in relationships:
+            graph.add_relationship(src, tgt, name)
     tombstones = pstore.tombstones()
     for entity_id in tombstones:
         graph.remove_entity(entity_id)

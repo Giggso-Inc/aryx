@@ -1,6 +1,7 @@
-"""Tests for _xml_to_csvs in pipeline.doc_discovery."""
+"""Tests for _xml_to_csvs, read_files, and _display_name in pipeline.doc_discovery."""
 import csv
 import io
+from unittest.mock import MagicMock, patch
 
 from aryx.pipeline.doc_discovery import _xml_to_csvs
 
@@ -81,3 +82,75 @@ def test_fk_column_injected_from_parent():
     assert len(results) == 1
     rows = _rows(results[0][0])
     assert all(r.get("store_id") == "s1" for r in rows)
+
+
+# ── read_files: XML match_keys override ──────────────────────────────────────
+
+def test_xml_derived_plans_get_text_match_key():
+    # When an XML file is expanded into CSVs, _infer_type may return match_keys
+    # based on the CSV sample (often ["name"] since that's the LLM fallback).
+    # read_files must override match_keys to ["_text"] for every XML-derived CSV
+    # because XML CSVs have no "name" column — only "_text" for the entity value.
+    xml = b"""<Catalogue>
+        <Product name="Widget">foo</Product>
+        <Product name="Gadget">bar</Product>
+        <Product name="Doohickey">baz</Product>
+    </Catalogue>"""
+
+    mock_settings = MagicMock()
+    mock_settings.rdb_dsn = "mock://db"
+    mock_settings.chunk_size = 500
+    mock_settings.chunk_overlap = 50
+    mock_settings.embed_dim = 1536
+
+    # _infer_type would normally return ["name"] as fallback — the override must win.
+    with patch("aryx.pipeline.doc_discovery.get_settings", return_value=mock_settings), \
+         patch("aryx.pipeline.doc_discovery._infer_type",
+               return_value={"ontology_type": "Product", "match_keys": ["name"]}):
+        from aryx.pipeline.doc_discovery import read_files
+        result = read_files(
+            doc_paths=[],
+            tabular=[(xml, "catalogue.xml")],
+            broker=MagicMock(),
+            context="",
+        )
+
+    for plan in result["tabular"]:
+        assert plan["match_keys"] == ["_text"], (
+            f"XML-derived plan '{plan['filename']}' should have match_keys=['_text'], "
+            f"got {plan['match_keys']}"
+        )
+
+
+# ── _display_name: _text key and underscore-prefix skip ──────────────────────
+
+def test_display_name_uses_text_key():
+    from aryx.graph.falkor_store import _display_name as falkor_dn
+    from aryx.graph.oracle_graph_store import _display_name as oracle_dn
+
+    attrs = {"_element_type": "Product", "_text": "TechCorp Global Industries"}
+    assert falkor_dn(attrs) == "TechCorp Global Industries"
+    assert oracle_dn(attrs) == "TechCorp Global Industries"
+
+
+def test_display_name_skips_underscore_prefixed_keys_in_fallback():
+    # When no key from _NAME_KEYS matches, the fallback loop must skip _-prefixed
+    # attributes (like _element_type) to avoid returning tag names as display labels.
+    from aryx.graph.falkor_store import _display_name as falkor_dn
+    from aryx.graph.oracle_graph_store import _display_name as oracle_dn
+
+    attrs = {"_element_type": "Supplier", "_some_meta": "internal", "ref": "SUP-001"}
+    # "ref" is in _NAME_KEYS — should be found before fallback loop runs.
+    assert falkor_dn(attrs) == "SUP-001"
+    assert oracle_dn(attrs) == "SUP-001"
+
+
+def test_display_name_fallback_skips_underscore_no_named_key():
+    # No _NAME_KEYS match; fallback loop must skip _ keys and pick the first
+    # short plain-string value instead of returning the tag name.
+    from aryx.graph.falkor_store import _display_name as falkor_dn
+    from aryx.graph.oracle_graph_store import _display_name as oracle_dn
+
+    attrs = {"_element_type": "Supplier", "_meta": "noise", "company": "Acme Corp"}
+    assert falkor_dn(attrs) == "Acme Corp"
+    assert oracle_dn(attrs) == "Acme Corp"

@@ -16,8 +16,9 @@ from aryx.config import get_settings
 from aryx.connectors.base import Connector
 from aryx.discover import discover
 from aryx.graph import FalkorStore
+from aryx.naming import ws_graph
 from aryx.models import OntologyType
-from aryx.pipeline.enrich import _build_type_ancestors, _relate
+from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
 from aryx.store.checkpoint_store import StageTracker
@@ -26,11 +27,12 @@ from aryx.resolve_entities import resolve_run
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
 from aryx.store.postgres_store import PostgresStore
-from aryx.workspaces import ws_graph
 
 logger = logging.getLogger(__name__)
 
 Progress = Callable[[str, int, str], None]
+
+_FK_REQUIRED: frozenset[str] = frozenset({"source_type", "source_attr", "target_type", "target_attr"})
 
 
 def _emit(cb: Progress | None, stage: str, pct: int, detail: str) -> None:
@@ -55,6 +57,7 @@ def run_pipeline(
     fk_links: list[dict] | None = None,
     workspace_id: int = 1,
     resume_run_id: int | None = None,
+    skip_graph: bool = False,
 ) -> dict[str, int]:
     """Run a source from extraction through to the FalkorDB projection.
 
@@ -82,11 +85,12 @@ def run_pipeline(
         runner = StageRunner(dsn, run_id, resume=True)
         logger.info("resuming run_id=%s", run_id)
     else:
-        _emit(on_progress, "Discover", 10, "Extracting, profiling and landing source records")
+        _emit(on_progress, "Discover", 5, "Starting extraction from source")
         store = PostgresStore(dsn, workspace_id)
         try:
             run_id = discover(connector, store, system, dataset,
-                              broker=broker if tag else None)
+                              broker=broker if tag else None,
+                              on_progress=on_progress)
         finally:
             store.close()
         runner = StageRunner(dsn, run_id, resume=False)
@@ -96,14 +100,17 @@ def run_pipeline(
 
     estore = EntityStore(dsn, workspace_id)
     entities = relationships = 0
+    counts: dict[str, int] = {}
     try:
         if not runner.skip("resolve_cluster"):
-            _emit(on_progress, "Resolve", 50, "Resolving records into canonical entities")
+            _emit(on_progress, "Resolve", 30, "Loading landed records for resolution")
             with runner.stage("resolve_cluster"):
                 entities = resolve_run(run_id, ontology_type, match_keys,
-                                       estore, broker)
+                                       estore, broker, on_progress=on_progress)
+            _emit(on_progress, "Resolve", 62, f"{entities} entities resolved")
         # Register the type in OntologyStore so the schema diagram populates.
         # seed_types is idempotent (ON CONFLICT DO NOTHING).
+        _emit(on_progress, "Seed", 65, f"Registering ontology type {ontology_type}")
         try:
             onto = OntologyStore(dsn, workspace_id)
             try:
@@ -114,31 +121,82 @@ def run_pipeline(
             finally:
                 onto.close()
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
-            logger.warning("ontology type seed failed for %s", ontology_type)
+            logger.warning("ontology type seed failed for %s", ontology_type, exc_info=True)
         if relate and not runner.skip("relate"):
-            _emit(on_progress, "Relate", 75, "Inferring relationships between entities")
+            _emit(on_progress, "Relate", 70, "Inferring relationships between entities")
             with runner.stage("relate"):
                 relationships = _relate(estore, broker, _max_pairs)
-        if fk_links and not runner.skip("fk_link"):
-            _emit(on_progress, "Link", 80, "Linking entities by foreign-key attributes")
-            with runner.stage("fk_link"):
-                for spec in fk_links:
+        if relate and not runner.skip("schema_fk"):
+            # Schema-level LLM FK inference: ONE call across ALL type schemas.
+            # Finds shared-value joins that have no _id/_name suffix pattern
+            # and were not covered by the entity-pair sample.
+            # link_by_attribute then creates edges for ALL matching entities.
+            _emit(on_progress, "Link", 78, "Discovering schema-level FK links")
+            with runner.stage("schema_fk"):
+                schema_links = _infer_schema_fk_links(estore, broker)
+                for spec in schema_links:
+                    if not _FK_REQUIRED.issubset(spec):
+                        logger.warning("schema_fk: skipping incomplete FK spec: %s", spec)
+                        continue
+                    rel_name = spec.get(
+                        "name",
+                        f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
+                    )
                     relationships += link_by_attribute(
                         estore, spec["source_type"], spec["source_attr"],
-                        spec["target_type"], spec["target_attr"], spec["name"],
+                        spec["target_type"], spec["target_attr"], rel_name,
                     )
-        _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
-        with runner.stage("project"):
-            type_ancestors = _build_type_ancestors(dsn)
-            counts = project_graph(
-                estore, FalkorStore(graph_url, ws_graph(workspace_id)),
-                type_ancestors=type_ancestors, workspace_id=workspace_id,
-            )
+            _emit(on_progress, "Relate", 78, f"{relationships} relationships inferred")
+        if fk_links and not runner.skip("fk_link"):
+            _emit(on_progress, "Link", 80, f"Linking entities via {len(fk_links)} FK spec(s)")
+            with runner.stage("fk_link"):
+                for spec in fk_links:
+                    if not _FK_REQUIRED.issubset(spec):
+                        logger.warning("fk_link: skipping incomplete FK spec: %s", spec)
+                        continue
+                    rel_name = spec.get(
+                        "name",
+                        f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
+                    )
+                    relationships += link_by_attribute(
+                        estore, spec["source_type"], spec["source_attr"],
+                        spec["target_type"], spec["target_attr"], rel_name,
+                    )
+        if relate and not runner.skip("relate_isolated"):
+            # Final safety net: any entity still isolated after FK linking and
+            # sampled-pair inference gets one LLM call against the nearest anchor.
+            # Enforces the rule: no FK link -> LLM inference, for any file type.
+            _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
+            with runner.stage("relate_isolated"):
+                relationships += _relate_isolated(estore, broker)
+        if not skip_graph:
+            _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
+            with runner.stage("project"):
+                type_ancestors = _build_type_ancestors(dsn)
+                cfg = get_settings()
+                if cfg.effective_graph_backend() == "oci_graph":
+                    try:
+                        from aryx.graph.oracle_graph_store import OracleGraphStore  # optional OCI dep
+                        graph_inst = OracleGraphStore(cfg.oci_adb_dsn, workspace_id)
+                    except ImportError as exc:
+                        raise RuntimeError(
+                            "ARYX_GRAPH_BACKEND=oci_graph but aryx.graph.oracle_graph_store is not "
+                            "installed. Install the oci extras or unset ARYX_GRAPH_BACKEND."
+                        ) from exc
+                else:
+                    graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
+                counts = project_graph(
+                    estore, graph_inst,
+                    type_ancestors=type_ancestors, workspace_id=workspace_id,
+                )
+        else:
+            logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
+            _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('vertices', 0)} nodes, {counts.get('edges', 0)} edges")
     finally:
         estore.close()
 
     summary = {"run_id": run_id, "entities": entities,
                "relationships": relationships, **counts}
-    _emit(on_progress, "Done", 100, f"{entities} entities, {relationships} relationships")
+    _emit(on_progress, "Done", 100, f"{entities} entities · {relationships} relationships · {counts.get('vertices', 0)} graph nodes")
     logger.info("pipeline complete %s", summary)
     return summary

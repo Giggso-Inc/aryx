@@ -11,6 +11,9 @@ from aryx.ports import ports
 
 
 def _reader(workspace_id: int = 1) -> GraphReader:
+    # Default workspace 1 = "Default". Callers pass ?workspace_id= to select
+    # a different workspace.  Multi-tenant deployments should derive this from
+    # the auth context instead of relying on the query-param default.
     return ports().graph_reader(workspace_id)  # type: ignore[return-value]
 
 
@@ -29,12 +32,18 @@ def graph_router() -> APIRouter:
         return reader.find_entities(ontology_type=type, name=name, limit=limit)
 
     @router.get("/graph")
-    def full_graph(reader: GraphReader = Depends(_reader)) -> dict[str, Any]:
-        """All entities + all relationships in one call (for graph canvas)."""
-        return {
-            "entities": reader.find_entities(limit=500),
-            "relationships": reader.all_relationships(),
-        }
+    def full_graph(
+        rel_limit: int = 2000,
+        reader: GraphReader = Depends(_reader),
+    ) -> dict[str, Any]:
+        """Connected subgraph for graph canvas rendering.
+
+        Returns up to *rel_limit* relationships and the entities at their
+        endpoints.  Every returned entity has at least one edge, so the
+        graph-canvas layout algorithm produces a proper connected diagram
+        instead of a linear list of orphan nodes.
+        """
+        return reader.subgraph(rel_limit=rel_limit)
 
     @router.post("/graph/cypher")
     def cypher_read(body: dict[str, Any]) -> dict[str, Any]:

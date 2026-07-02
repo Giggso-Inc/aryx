@@ -1,6 +1,6 @@
-# Aryx OCI/dev-server stack. This file is for the shared docker environment on
-# the instance and runs Ollama inside compose. Localhost developers should use
-# docker-compose.local.yml instead.
+# Aryx local stack — dev only. RDB is the source of truth; FalkorDB is the
+# rebuildable graph projection. Production orchestrator (ECS/EKS/OCI) is
+# decided at rollout — these containers are 12-factor and portable.
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: aryx
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: aryx
+    restart: unless-stopped
     # Host port 55432 avoids colliding with other stacks already on 5432.
     # In-network clients still reach this as postgres:5432.
     ports:
@@ -22,6 +23,7 @@ services:
 
   falkordb:
     image: falkordb/falkordb:latest
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -36,11 +38,7 @@ services:
       falkordb:
         condition: service_started
 
-  # Read-only HTTP API over the FalkorDB projection (Increment 6). Reuses the
-  # worker image, overriding the command to serve uvicorn. Bound to all
-  # interfaces so a published port is reachable; restrict exposure at the
-  # security-group / firewall layer.
-  # Local LLM runtime (Increment: Ask). CPU inference is fine for sub-2B models.
+  # Local LLM runtime — CPU inference for sub-2B models.
   # Models persist in the ollama_models volume so they download only once.
   ollama:
     image: ollama/ollama
@@ -73,12 +71,11 @@ services:
     build: .
     env_file: .env
     command: ["uvicorn", "aryx.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    # OCI dev seeds Ask + ingest against the in-compose Ollama service.
-    # Model names and timeouts still come from .env, and runtime Settings can
-    # switch providers later without editing this file.
+    # Ollama service URL uses the docker-network hostname — must be set here.
+    # All other ARYX_* vars are read from env_file: .env (pydantic-settings).
     environment:
-      - ARYX_LLM_BASE_URL=http://ollama:11434
-      - ARYX_LLM_PROVIDER=ollama
+      - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
+      - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
       - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-llama3.2:3b}
       - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-llama3.2:3b}
       - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-360}
@@ -86,7 +83,12 @@ services:
       - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
       - ARYX_LLM_API_KEY=${ARYX_LLM_API_KEY:-}
       - ARYX_EMBED_MODEL=${ARYX_EMBED_MODEL:-nomic-embed-text}
-      - ARYX_EMBED_ENDPOINT=http://ollama:11434
+      - ARYX_EMBED_ENDPOINT=${ARYX_EMBED_ENDPOINT:-http://ollama:11434}
+      - ARYX_MAX_RELATE_PAIRS=${ARYX_MAX_RELATE_PAIRS:-3}
+      - ARYX_RELATE_WORKERS=${ARYX_RELATE_WORKERS:-2}
+      - ARYX_XML_MAX_ENTITY_TYPES=${ARYX_XML_MAX_ENTITY_TYPES:-20}
+      - ARYX_XML_MAX_ROWS_PER_TYPE=${ARYX_XML_MAX_ROWS_PER_TYPE:-500}
+      - ARYX_INGEST_WORKERS=${ARYX_INGEST_WORKERS:-3}
       - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
     ports:
@@ -95,6 +97,8 @@ services:
       postgres:
         condition: service_healthy
       falkordb:
+        condition: service_started
+      ollama:
         condition: service_started
     restart: unless-stopped
     healthcheck:
@@ -184,8 +188,6 @@ services:
       shay-api:
         condition: service_healthy
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
 volumes:
   pgdata:

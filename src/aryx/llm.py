@@ -1,27 +1,53 @@
 """Unified model completion: route a tiered request to the chosen provider.
 
-The Broker decides which model serves a tier; this calls it. Three wire paths:
+The Broker decides which model serves a tier; this calls it. Four wire paths:
 - 'anthropic'  -> Claude SDK (structured outputs)
 - 'ollama'     -> native Ollama JSON mode
+- 'oci'        -> OCI Generative AI (Cohere Command R / R+) — active when
+                  ARYX_LLM_CHEAP_BACKEND=oci or ARYX_LLM_FRONTIER_BACKEND=oci
 - anything else-> OpenAI-compatible /chat/completions (Grok, Gemini, vLLM, ...)
+
+OCI path short-circuits before broker.choose() so it does not require local
+models to be registered in the broker catalog.
 
 Token usage is charged back to the governor so budgets actually bite.
 """
 from __future__ import annotations
 
 import logging
+import time as _time
 import urllib.error
 import urllib.request
 from typing import Any
 
 from aryx.broker import Broker
 from aryx.broker.specs import Tier
+from aryx.config import get_settings
+from aryx.broker.specs import ModelSpec, Tier
 from aryx.llm_normalize import normalize as _normalize_json
+import aryx.llm_providers as oci_providers
 from aryx.llm_providers import (
-    anthropic_json, ollama_json, openai_json, post_json,
+    anthropic_json, oci_genai_json, ollama_json, openai_json, post_json,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_llm_call(tier: str, model: str, provider: str,
+                  in_tok: int, out_tok: int, ms: int) -> None:
+    """Best-effort persist to aryx_llm_call; no-op if DB unavailable."""
+    try:
+        from aryx.config import get_settings    # noqa: PLC0415
+        from aryx.queries import load           # noqa: PLC0415
+        from aryx.store.pool import get_pool    # noqa: PLC0415
+        dsn = get_settings().effective_dsn()
+        with get_pool(dsn).connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("insert_llm_call"),
+                            (tier, model, provider, in_tok, out_tok, ms, "pipeline", None))
+    except Exception:  # noqa: BLE001
+        logger.debug("llm call log write failed", exc_info=True)
+
 
 # Re-export so legacy callers keep working.
 _post_json = post_json
@@ -38,7 +64,23 @@ def complete_text(
 
     `think` toggles hybrid-model reasoning on the Ollama path (False keeps fast
     models off thinking for menial work). Token counts let callers meter usage.
+
+    When ARYX_LLM_*_BACKEND=oci the OCI path short-circuits before the broker
+    registry is consulted — no local models need to be registered.
     """
+    import json
+    if _use_oci_for(tier):
+        model_name = _oci_model_for(tier)
+        spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        _t0 = _time.monotonic()
+        text, in_tok, out_tok = oci_providers.oci_genai_text(spec, system, user)
+        _ms = int((_time.monotonic() - _t0) * 1000)
+        broker.charge(tier, in_tok + out_tok)
+        logger.debug("complete_text tier=%s provider=oci model=%s tokens=%d",
+                    tier, model_name, in_tok + out_tok)
+        _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
+        return text.strip(), in_tok, out_tok
+
     spec = broker.choose(tier)
     key = broker.secrets.get(spec.api_key_ref) if spec.api_key_ref else None
     msgs = [{"role": "system", "content": system},
@@ -55,7 +97,7 @@ def complete_text(
         body: dict[str, Any] = {"model": spec.name, "stream": False,
                                 "messages": msgs,
                                 "options": {"temperature": 0.2,
-                                            "num_predict": 512}}
+                                            "num_predict": get_settings().llm_num_predict}}
         if think is not None:
             body["think"] = think
         out = post_json((spec.endpoint or "").rstrip("/") + "/api/chat",
@@ -75,6 +117,26 @@ def complete_text(
     return text.strip(), in_tok, out_tok
 
 
+def _oci_model_for(tier: Tier) -> str:
+    """Return the OCI GenAI model ID for the given tier, respecting overrides."""
+    from aryx.config import get_settings
+    settings = get_settings()
+    if tier == "cheap":
+        return settings.llm_cheap_model_override or "cohere.command-r-08-2024"
+    return settings.llm_frontier_model_override or "cohere.command-r-plus-08-2024"
+
+
+def _use_oci_for(tier: Tier) -> bool:
+    """Return True if the given tier is configured to use OCI GenAI."""
+    from aryx.config import get_settings
+    settings = get_settings()
+    if tier == "cheap":
+        return settings.effective_llm_cheap_backend() == "oci"
+    if tier == "frontier":
+        return settings.effective_llm_frontier_backend() == "oci"
+    return False
+
+
 def complete_json(
     broker: Broker, tier: Tier, system: str, user: str,
     schema: dict[str, Any],
@@ -83,7 +145,22 @@ def complete_json(
 
     Returns the parsed JSON object the model produced, normalized to the
     schema shape (envelope coercion + synonym renaming via llm_normalize).
+
+    When ARYX_LLM_*_BACKEND=oci the OCI path short-circuits before the broker
+    registry is consulted — no local models need to be registered.
     """
+    if _use_oci_for(tier):
+        model_name = _oci_model_for(tier)
+        spec = ModelSpec(name=model_name, provider="oci", tier=tier, endpoint="")
+        _t0 = _time.monotonic()
+        data, in_tok, out_tok = oci_genai_json(spec, system, user, schema)
+        _ms = int((_time.monotonic() - _t0) * 1000)
+        broker.charge(tier, in_tok + out_tok)
+        logger.debug("complete tier=%s provider=oci model=%s tokens=%d",
+                    tier, model_name, in_tok + out_tok)
+        _log_llm_call(tier, model_name, "oci", in_tok, out_tok, _ms)
+        return _normalize_json(data, schema)
+
     spec = broker.choose(tier)
     key = broker.secrets.get(spec.api_key_ref) if spec.api_key_ref else None
     if spec.provider == "anthropic":
@@ -93,7 +170,7 @@ def complete_json(
     else:
         data, in_tok, out_tok = openai_json(spec, system, user, key)
     broker.charge(tier, in_tok + out_tok)
-    logger.info("complete tier=%s provider=%s model=%s tokens=%d", tier,
+    logger.debug("complete tier=%s provider=%s model=%s tokens=%d", tier,
                 spec.provider, spec.name, in_tok + out_tok)
     # Provider-quirk normalization: list-vs-dict envelope + synonym rename.
     return _normalize_json(data, schema)

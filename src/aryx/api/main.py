@@ -1,6 +1,7 @@
 """Combined Aryx API: graph queries + admin/ingestion + MCP /mcp endpoint."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -36,6 +37,20 @@ from aryx.api.shay_bridge_api import shay_bridge_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
+# Attach a StreamHandler directly to the aryx logger so INFO output always
+# reaches stdout regardless of whether uvicorn was started with --log-level.
+# Without this, messages propagate to the root logger which uvicorn leaves at
+# WARNING by default, silently dropping aryx INFO logs.
+# propagate=False prevents double-printing when the caller ALSO configures root.
+_log_level = getattr(logging, os.environ.get("ARYX_LOG_LEVEL", "INFO").upper(), logging.INFO)
+_aryx_logger = logging.getLogger("aryx")
+_aryx_logger.setLevel(_log_level)
+if not _aryx_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setLevel(_log_level)
+    _h.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    _aryx_logger.addHandler(_h)
+    _aryx_logger.propagate = False
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +63,7 @@ def _bearer_ok(request) -> bool:
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         tokens = store.list_()
         if not any(not t.get("revoked_at") for t in tokens):
             return True
@@ -85,16 +100,36 @@ def _mount_mcp(app: FastAPI) -> None:
         logger.warning("MCP mount failed: %s", exc)
 
 
+async def _stale_job_sweep() -> None:
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from aryx.config import get_settings
+            from aryx.store.job_store import JobStore
+            timeout_min = int(os.environ.get("ARYX_JOB_TIMEOUT_MINUTES", "120"))
+            JobStore(get_settings().effective_dsn()).sweep_stale(timeout_min)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stale-job sweep error: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    yield
-    # shutdown_executor MUST run before close_all — in-flight ingest threads
-    # need the connection pool until they finish; reversing the order caused
-    # pool-closed errors mid-job during container restarts.
+    from aryx.config import get_settings
+    from aryx.store.migrate import apply_migrations
     from aryx.api.file_ingest_api import shutdown_executor
-    from aryx.store.pool import close_all
-    shutdown_executor()
-    close_all()
+    apply_migrations(get_settings().rdb_dsn)
+    _task = asyncio.ensure_future(_stale_job_sweep())
+    try:
+        yield
+    finally:
+        _task.cancel()
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        shutdown_executor()
+        from aryx.store.pool import close_all
+        close_all()
 
 
 def create_app() -> FastAPI:

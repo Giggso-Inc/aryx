@@ -29,7 +29,8 @@ _EXT_TO_FORMAT: dict[str, str] = {
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_]+")
 
-# Attribute keys (case-insensitive) preferred when deriving an entity label.
+# RDF-specific label keys for serialisation (rdfs:label, skos:prefLabel context).
+# General-purpose display-name resolution lives in aryx.display_name._NAME_KEYS.
 _LABEL_KEYS = ("name", "full_name", "title", "label", "display_name", "email")
 
 

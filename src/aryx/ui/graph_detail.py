@@ -1,6 +1,8 @@
 """Drill-down panel and path-explorer UI for the graph page."""
 from __future__ import annotations
 
+import json
+
 import streamlit as st
 
 from aryx.ui import api
@@ -44,6 +46,45 @@ def detail(entities: list[dict], entity_id: int) -> None:
     if prov:
         srcs = ", ".join(f"{p['system']}.{p['dataset']}" for p in prov)
         st.caption(f"Source: {srcs}")
+
+    st.divider()
+
+    with st.expander("✏️ Edit attributes", expanded=False):
+        try:
+            pg = api.get_entity_pg(int(entity_id))
+            current_attrs = pg.get("attributes", {})
+        except Exception as exc:
+            st.warning(f"Could not load attributes: {exc}")
+            current_attrs = {}
+        attrs_text = st.text_area(
+            "Edit as JSON",
+            value=json.dumps(current_attrs, indent=2),
+            height=220,
+            key=f"edit_attrs_{entity_id}",
+        )
+        if st.button("💾 Save changes", key=f"save_{entity_id}", use_container_width=True):
+            try:
+                new_attrs = json.loads(attrs_text)
+                api.update_entity(int(entity_id), new_attrs)
+                st.success("Saved — graph node resynced.")
+                st.rerun()
+            except json.JSONDecodeError as exc:
+                st.error(f"Invalid JSON: {exc}")
+            except Exception as exc:
+                st.error(f"Update failed: {exc}")
+
+    st.divider()
+    confirm = st.checkbox("Confirm deletion", key=f"confirm_del_{entity_id}")
+    if confirm:
+        if st.button("🗑️ Delete entity", key=f"del_{entity_id}",
+                     type="primary", use_container_width=True):
+            try:
+                api.delete_entity(int(entity_id))
+                st.success("Entity deleted from database and graph.")
+                st.session_state.pop("selected_id", None)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Delete failed: {exc}")
 
 
 def path_explorer(entities: list[dict]) -> tuple[set[int], set[tuple[int, int]]]:

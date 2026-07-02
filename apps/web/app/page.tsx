@@ -222,17 +222,15 @@ export default function HomePage() {
 
       <div className="app-shell-offset flex flex-1">
         <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-10 lg:px-5">
-          {!empty && (
-            <div className="mb-2 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowHistory((v) => !v)}
-                className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
-              >
-                <Clock size={12} /> History
-              </button>
-            </div>
-          )}
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowHistory((v) => !v)}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+            >
+              <Clock size={12} /> History
+            </button>
+          </div>
           {empty ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
               <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">
@@ -276,8 +274,8 @@ export default function HomePage() {
                 isEmptyWorkspace === true
                   ? "This workspace is empty — onboard data first to ask questions."
                   : turns.length === 0
-                  ? "Ask Aryx about your knowledge graph…  (⌘K to focus)"
-                  : "Continue the conversation…"
+                    ? "Ask Aryx about your knowledge graph…  (⌘K to focus)"
+                    : "Continue the conversation…"
               }
             />
             <p className="mt-2 text-center text-[11px] text-subtle">

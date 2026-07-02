@@ -80,7 +80,7 @@ def ollama_json(spec: ModelSpec, system: str,
         (spec.endpoint or "").rstrip("/") + "/api/chat",
         {"model": spec.name, "format": fmt, "stream": False,
          "think": False,
-         "options": {"num_predict": 2048},
+         "options": {"num_predict": get_settings().llm_num_predict},
          "messages": [{"role": "system", "content": system},
                       {"role": "user", "content": user}]},
         {},
@@ -131,3 +131,98 @@ def openai_json(
     data = json.loads(out["choices"][0]["message"]["content"])
     usage = out.get("usage", {})
     return data, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
+
+
+def _oci_chat_raw(
+    spec: ModelSpec, system: str, user: str, max_tokens: int = 2048,
+) -> tuple[str, int, int]:
+    """Call OCI GenAI Chat API (Cohere Command R / R+) and return raw text.
+
+    Uses the Chat API endpoint which is the correct path for Command R 08-2024
+    and Command R+ 08-2024 models. The older GenerateText endpoint is NOT used
+    as it is not supported by these model versions.
+    """
+    import oci  # noqa: PLC0415
+    from aryx.config import get_settings
+    from aryx.oci_client import get_genai_client
+
+    settings = get_settings()
+    compartment_id = settings.oci_compartment_id
+    if not compartment_id:
+        raise RuntimeError(
+            "ARYX_OCI_COMPARTMENT_ID must be set when using OCI GenAI LLM backend"
+        )
+
+    client = get_genai_client()
+    logger.debug("oci_chat model=%s prompt_chars=%d", spec.name, len(system) + len(user))
+    request = oci.generative_ai_inference.models.ChatDetails(
+        compartment_id=compartment_id,
+        serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(
+            model_id=spec.name,
+        ),
+        chat_request=oci.generative_ai_inference.models.CohereChatRequest(
+            message=user,
+            preamble_override=system,
+            max_tokens=max_tokens,
+            temperature=0.2,
+        ),
+    )
+    response = client.chat(chat_details=request)
+    chat_response = response.data.chat_response
+    text = chat_response.text.strip()
+    token_count = getattr(chat_response, "token_count", None)
+    if token_count is not None:
+        in_tok = int(getattr(token_count, "prompt_tokens", 0) or 0)
+        out_tok = int(getattr(token_count, "completion_tokens", 0) or 0)
+    else:
+        in_tok = (len(system) + len(user)) // 4
+        out_tok = len(text) // 4
+    logger.debug("oci_chat ok model=%s response_chars=%d in_tok=%d out_tok=%d", spec.name, len(text), in_tok, out_tok)
+    return text, in_tok, out_tok
+
+
+def oci_genai_text(
+    spec: ModelSpec, system: str, user: str,
+) -> tuple[str, int, int]:
+    """Call OCI GenAI Chat API for plain-text output (used by complete_text)."""
+    return _oci_chat_raw(spec, system, user, max_tokens=1024)
+
+
+def oci_genai_json(
+    spec: ModelSpec, system: str, user: str,
+    schema: "dict[str, Any] | None" = None,
+) -> tuple[dict[str, Any], int, int]:
+    """Call OCI GenAI Chat API (Cohere Command R / R+) for structured JSON output.
+
+    Command R 08-2024 and later require the Chat API, not the older
+    GenerateText endpoint. JSON mode is enforced via the user prompt instruction.
+    """
+    if schema and schema.get("properties"):
+        required = schema.get("required", list(schema["properties"].keys()))
+        fields_str = ", ".join(f'"{f}"' for f in required)
+        json_instruction = (
+            f"\n\nRespond with valid JSON only using exactly these fields: {fields_str}."
+            " Do not wrap in markdown code fences."
+        )
+    else:
+        json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
+    generated, in_tok, out_tok = _oci_chat_raw(
+        spec, system, user + json_instruction, max_tokens=2048
+    )
+
+    # Strip markdown code fences if the model ignores the instruction
+    if generated.startswith("```"):
+        lines = generated.splitlines()
+        generated = "\n".join(
+            line for line in lines
+            if not line.startswith("```")
+        ).strip()
+
+    try:
+        data = json.loads(generated)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"OCI GenAI returned non-JSON output (model={spec.name!r}): "
+            f"{generated[:200]!r}"
+        ) from exc
+    return data, in_tok, out_tok

@@ -62,6 +62,10 @@ class OntologyType(BaseModel):
 
     name: str = Field(description="Canonical type name, e.g. 'Organization'.")
     attributes: list[str] = Field(default_factory=list, description="Attribute names.")
+    attribute_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Per-column semantic metadata wired from tag_fields after each run.",
+    )
     status: Literal["proposed", "approved"] = Field(
         default="proposed", description="HITL gate: new types start 'proposed'."
     )

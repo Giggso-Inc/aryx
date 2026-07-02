@@ -1,0 +1,27 @@
+{
+  "session_started_at": "2026-06-30T13:49:49.478902+00:00",
+  "raven_overhead": {
+    "tokens": 57,
+    "cost_usd": 1.4e-05,
+    "calls": 1,
+    "by_source": {
+      "triage-router": {
+        "tokens": 57,
+        "calls": 1,
+        "cost_usd": 1.4e-05
+      }
+    }
+  },
+  "user_work": {
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "calls": 0,
+    "tier_counts": {
+      "SIMPLE": 0,
+      "MEDIUM": 0,
+      "COMPLEX": 0,
+      "LOCAL_ONLY": 0
+    }
+  },
+  "providers": {}
+}

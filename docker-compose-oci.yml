@@ -1,0 +1,197 @@
+# aryx OCI deployment stack — runs on OCI A1.Flex VM (4 OCPU / 24 GB ARM).
+#
+# What this replaces vs docker-compose.yml (local dev):
+#   postgres    → Oracle ADB 23ai       (managed, TLS)
+#   falkordb    → Oracle Graph / PGX    (pgx-server container + ADB SQL/PGQ)
+#   ollama      → OCI GenAI API         (Cohere Embed v3, Command R / R+)
+#   worker      → OCI Functions         (per-doc async, fire-and-forget)
+#
+# Prerequisites on the VM before first start:
+#   1. Copy .env with all ARYX_OCI_* vars filled (see docs/OCI_DEPLOYMENT_PLAN.md)
+#   2. docker login container-registry.oracle.com  (for pgx image)
+#
+# Usage:
+#   docker compose -f docker-compose-oci.yml up -d
+#
+# Memory budget (24 GB total):
+#   pgx-server   8 GB  (graph in-memory)
+#   api          3 GB
+#   mcp          1 GB
+#   web          1 GB
+#   OS + Docker  4 GB
+#   Buffer       7 GB
+
+services:
+
+  # ── Oracle PGX — in-memory graph analytics + OWL 2 RL reasoning ─────────────
+  # Optional: start with --profile pgx when OWL 2 RL reasoning is needed.
+  # Core stack (api/mcp/ui/web) boots without PGX.
+  pgx-server:
+    image: container-registry.oracle.com/database/pgx:latest
+    container_name: pgx-server
+    profiles: ["pgx"]
+    environment:
+      - PGX_HEAP_SIZE=8g
+    volumes:
+      - pgx-data:/pgx/data
+    ports:
+      # Port 7007 is internal-only — never expose to 0.0.0.0.
+      # Security list restricts 7007 to VCN CIDR (10.0.0.0/16) only.
+      - "127.0.0.1:7007:7007"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 9g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7007/version || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  # ── FastAPI — REST API + ingest dispatcher ───────────────────────────────────
+  # OCI Security List: port 8000 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
+  api:
+    build: .
+    env_file: .env
+    command: ["uvicorn", "aryx.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      # OCI global toggle — flips all unset backends to oci
+      - ARYX_OCI_MODE=true
+      - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
+      - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
+      # DB → Oracle ADB 23ai
+      - ARYX_DB_BACKEND=oci
+      - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_DB_USER=${ARYX_DB_USER}
+      - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
+      # Graph → Oracle Graph (ADB SQL/PGQ) + PGX for analytics/reasoning
+      - ARYX_GRAPH_BACKEND=oci_graph
+      - PGX_SERVER_URL=http://pgx-server:7007
+      # Worker → OCI Functions (per-doc async ingest)
+      - ARYX_WORKER_BACKEND=oci_functions
+      - ARYX_OCI_INGEST_FN_ID=${ARYX_OCI_INGEST_FN_ID}
+      # Parse → OCI Document Understanding
+      - ARYX_PARSE_BACKEND=oci
+      # Object Storage — Document Understanding output + RDF/OWL exports
+      - ARYX_OCI_OBJECT_STORAGE_NAMESPACE=${ARYX_OCI_OBJECT_STORAGE_NAMESPACE}
+      - ARYX_OCI_DOCUMENT_BUCKET=${ARYX_OCI_DOCUMENT_BUCKET:-aryx-doc-output}
+      - ARYX_OCI_RDF_BUCKET=${ARYX_OCI_RDF_BUCKET:-aryx-rdf-exports}
+      # Embed → OCI GenAI Cohere Embed v3
+      - ARYX_EMBED_BACKEND=oci
+      # LLM → OCI GenAI Cohere Command R (cheap) + Command R+ (frontier)
+      - ARYX_LLM_CHEAP_BACKEND=oci
+      - ARYX_LLM_FRONTIER_BACKEND=oci
+      # OCI API auth — env-var mode (no ~/.oci/config mount needed)
+      - ARYX_OCI_USER_OCID=${ARYX_OCI_USER_OCID}
+      - ARYX_OCI_TENANCY_OCID=${ARYX_OCI_TENANCY_OCID}
+      - ARYX_OCI_FINGERPRINT=${ARYX_OCI_FINGERPRINT}
+      - ARYX_OCI_PRIVATE_KEY_CONTENT=${ARYX_OCI_PRIVATE_KEY_CONTENT}
+      # Pipeline timeouts + concurrency
+      - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-900}
+      - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-7200}
+      - ARYX_JOB_TIMEOUT_MINUTES=${ARYX_JOB_TIMEOUT_MINUTES:-120}
+      - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
+      - ARYX_WORKER_THREADS=${ARYX_WORKER_THREADS:-4}
+      - ARYX_BATCH_SIZE=${ARYX_BATCH_SIZE:-500}
+      - ARYX_INGEST_WORKERS=${ARYX_INGEST_WORKERS:-3}
+      - ARYX_RELATE_WORKERS=${ARYX_RELATE_WORKERS:-4}
+      - ARYX_RELATE_MAX_ATTRS=${ARYX_RELATE_MAX_ATTRS:-15}
+      - ARYX_INGEST_RELATE=${ARYX_INGEST_RELATE:-true}
+      # Document chunking
+      - ARYX_CHUNK_SIZE=${ARYX_CHUNK_SIZE:-1000}
+      - ARYX_CHUNK_OVERLAP=${ARYX_CHUNK_OVERLAP:-100}
+      - ARYX_CSV_CHUNK_ROWS=${ARYX_CSV_CHUNK_ROWS:-0}
+      - ARYX_XML_MAX_ENTITY_TYPES=${ARYX_XML_MAX_ENTITY_TYPES:-20}
+      - ARYX_XML_MAX_ROWS_PER_TYPE=${ARYX_XML_MAX_ROWS_PER_TYPE:-500}
+      # Scalability caps
+      - ARYX_MAX_BLOCK_SIZE=${ARYX_MAX_BLOCK_SIZE:-5000}
+      - ARYX_MAX_PAIRS_PER_BLOCK=${ARYX_MAX_PAIRS_PER_BLOCK:-200}
+      - ARYX_MAX_RELATE_PAIRS=${ARYX_MAX_RELATE_PAIRS:-10}
+      - ARYX_GRAPH_QUERY_LIMIT=${ARYX_GRAPH_QUERY_LIMIT:-500}
+      - ARYX_TRANSITIVE_MAX_DEPTH=${ARYX_TRANSITIVE_MAX_DEPTH:-4}
+      - ARYX_RULES_DB_WARN_THRESHOLD=${ARYX_RULES_DB_WARN_THRESHOLD:-20}
+      # Entity resolution thresholds
+      - ARYX_ER_AUTO_MERGE=${ARYX_ER_AUTO_MERGE:-0.92}
+      - ARYX_ER_ADJUDICATE=${ARYX_ER_ADJUDICATE:-0.90}
+      - ARYX_ER_REVIEW=${ARYX_ER_REVIEW:-0.75}
+      - ARYX_EMBED_BATCH_SIZE=${ARYX_EMBED_BATCH_SIZE:-50}
+      - ARYX_EMBED_DIM=${ARYX_EMBED_DIM:-1024}
+      # LLM models
+      - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-oci}
+      - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-cohere.command-r-08-2024}
+      - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-cohere.command-r-plus-08-2024}
+      - ARYX_LLM_CHEAP_MODEL_OVERRIDE=${ARYX_LLM_CHEAP_MODEL_OVERRIDE:-cohere.command-r-08-2024}
+      - ARYX_LLM_FRONTIER_MODEL_OVERRIDE=${ARYX_LLM_FRONTIER_MODEL_OVERRIDE:-cohere.command-r-plus-08-2024}
+      - ARYX_EMBED_MODEL_OVERRIDE=${ARYX_EMBED_MODEL_OVERRIDE:-cohere.embed-multilingual-v3.0}
+      # Ontology interchange
+      - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
+      - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
+      # Observability
+      - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
+    ports:
+      - "8088:8000"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── MCP server — Model Context Protocol SSE endpoint ────────────────────────
+  # OCI Security List: port 8765 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
+  mcp:
+    build: .
+    env_file: .env
+    command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
+    environment:
+      - ARYX_OCI_MODE=true
+      - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
+      - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
+      - ARYX_DB_BACKEND=oci
+      - ARYX_OCI_ADB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_RDB_DSN=${ARYX_OCI_ADB_DSN}
+      - ARYX_DB_USER=${ARYX_DB_USER}
+      - ARYX_DB_PASSWORD=${ARYX_DB_PASSWORD}
+      - ARYX_GRAPH_BACKEND=oci_graph
+      - PGX_SERVER_URL=http://pgx-server:7007
+      # OCI API auth — env-var mode (no ~/.oci/config mount needed)
+      - ARYX_OCI_USER_OCID=${ARYX_OCI_USER_OCID}
+      - ARYX_OCI_TENANCY_OCID=${ARYX_OCI_TENANCY_OCID}
+      - ARYX_OCI_FINGERPRINT=${ARYX_OCI_FINGERPRINT}
+      - ARYX_OCI_PRIVATE_KEY_CONTENT=${ARYX_OCI_PRIVATE_KEY_CONTENT}
+    ports:
+      - "8765:8765"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+
+  # ── Next.js web UI ───────────────────────────────────────────────────────────
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+
+networks:
+  aryx-net:
+    driver: bridge
+
+volumes:
+  pgx-data:

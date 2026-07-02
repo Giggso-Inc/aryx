@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -52,6 +53,16 @@ def _recent(history: list[Turn], limit: int = 4) -> str:
     return "\n".join(f"{t.role}: {t.text}" for t in turns)
 
 
+# Minimum 3 chars ([A-Z][A-Z0-9]{2,}) prevents matching 2-char SQL/HTTP verbs
+# (OR, IN, ID, FK, ...).  Stopword set handles common uppercase words that are
+# not product codes and would fire spurious entity lookups.
+_CAP_PHRASE = re.compile(r'\b[A-Z][A-Z0-9]{2,}(?:\s+[A-Z][A-Z0-9]+)*\b')
+_CAP_STOPWORDS: frozenset[str] = frozenset({
+    "AND", "NOT", "FOR", "THE", "ARE", "GET", "PUT", "POST", "API",
+    "SQL", "URL", "IDS", "FAQ", "LOV", "BOM", "ERP", "CPQ", "CRM",
+})
+
+
 def _extract_terms(question: str, types: list[str], history: list[Turn]) -> tuple[list[str], int, int, int]:
     context = _recent(history)
     sys = "Extract the specific search terms a graph lookup needs."
@@ -71,7 +82,21 @@ def _extract_terms(question: str, types: list[str], history: list[Turn]) -> tupl
         terms = json.loads(text[s:e + 1]).get("terms", [])
     except (ValueError, json.JSONDecodeError):
         terms = []
-    return ([t for t in terms if t] or [question.strip()]), it, ot, ms
+    terms = [t for t in terms if t]
+
+    # Supplement: regex-extract capitalized product codes / model names from the
+    # question text.  Small menial models miss multi-word caps phrases like
+    # "APX NEXT" or "APX N70" — this ensures they always reach the entity search.
+    type_lower = {t.lower() for t in types}
+    terms_lower = {t.lower() for t in terms}
+    for phrase in _CAP_PHRASE.findall(question):
+        if phrase in _CAP_STOPWORDS:
+            continue
+        if phrase.lower() not in type_lower and phrase.lower() not in terms_lower:
+            terms.append(phrase)
+            terms_lower.add(phrase.lower())
+
+    return (terms or [question.strip()]), it, ot, ms
 
 
 def _synthesise(question: str, context: str, overview: str = "") -> tuple[str, int, int, int]:

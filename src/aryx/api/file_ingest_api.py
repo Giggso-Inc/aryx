@@ -6,6 +6,9 @@ Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→enti
 """
 from __future__ import annotations
 
+import csv as _csv
+import io
+import itertools
 import json
 import logging
 import threading
@@ -22,11 +25,10 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
-from aryx.pipeline.doc_discovery import _detect_fk_links, _xml_to_csvs
+from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xml_to_csvs
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ _executor_lock = threading.Lock()
 
 
 def _get_executor() -> ThreadPoolExecutor:
+    """Return the module-level ingest executor, creating it on first call."""
     global _executor
     with _executor_lock:
         if _executor is None:
@@ -75,9 +78,34 @@ def _save_tmp(data: bytes, suffix: str) -> Path:
 _FK_REQUIRED_KEYS = frozenset({"source_type", "target_type", "source_attr", "target_attr"})
 
 
+def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
+    """Split CSV bytes into chunks of at most chunk_rows data rows, repeating the header.
+
+    Streams rows via itertools.islice so the full file is never materialised
+    into a list — only one batch is held in memory at a time.
+    """
+    reader = _csv.reader(io.StringIO(data.decode("utf-8")))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return [data]
+    chunks: list[bytes] = []
+    while True:
+        batch = list(itertools.islice(reader, chunk_rows))
+        if not batch:
+            break
+        buf = io.StringIO()
+        writer = _csv.writer(buf)
+        writer.writerow(header)
+        writer.writerows(batch)
+        chunks.append(buf.getvalue().encode("utf-8"))
+    return chunks or [data]
+
+
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
+    """Run the ingest pipeline for a batch of files in a background thread."""
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
@@ -87,12 +115,46 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
+
+        # Pre-compute FK links for multi-file CSV uploads so that cross-file
+        # relationships are detected before any pipeline runs (mirrors XML path).
+        csv_data_files = [(d, n) for d, n in data_files if Path(n).suffix.lower() == ".csv"]
+        csv_auto_fk: list[dict] = []
+        csv_type_map: dict[str, str] = {}  # filename -> derived ontology type
+        if len(csv_data_files) > 1:
+            csv_plans = []
+            for csv_d, csv_n in csv_data_files:
+                derived = _stem_type(csv_n) or ontology_type
+                csv_type_map[csv_n] = derived
+                csv_plans.append({
+                    "data": csv_d,
+                    "filename": csv_n,
+                    "ontology_type": derived,
+                    "match_keys": match_keys or ["name"],
+                })
+            csv_auto_fk = _detect_fk_links(csv_plans)
+            if csv_auto_fk:
+                logger.info(
+                    "CSV multi-file: auto-detected %d fk-link spec(s): %s",
+                    len(csv_auto_fk), csv_auto_fk,
+                )
+
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
             if suffix == ".json":
                 tmp = _save_tmp(data, ".json")
                 tmp_paths.append(tmp)
-                connector = JsonConnector(tmp, system="json")
+                jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
+                run_pipeline(
+                    connector=JsonConnector(tmp, system="json"),
+                    dsn=settings.rdb_dsn,
+                    system="json", dataset=Path(name).stem,
+                    ontology_type=ontology_type, match_keys=match_keys,
+                    graph_url=settings.graph_url, broker=broker,
+                    on_progress=on_prog,
+                    fk_links=fk_links, workspace_id=workspace_id,
+                    relate=True,
+                )
             elif suffix == ".xml":
                 # Expand XML into one connector per top-3 element type.
                 # Each CSV gets its own ontology_type derived from the element
@@ -117,6 +179,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 for idx, (csv_data, csv_name, derived_type) in enumerate(xml_plans):
                     is_last = (idx == len(xml_plans) - 1)
                     jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
+                    # relate/skip_graph mirror ingest_confirmed() semantics:
+                    # - relate only on the last plan (full entity set visible)
+                    # - skip_graph on all but the last (project_graph clears+rebuilds the
+                    #   entire workspace graph; N rebuilds for N plans wastes wall-clock
+                    #   and causes the UI to flash with partial graphs mid-ingest)
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
@@ -127,21 +194,43 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         on_progress=on_prog,
                         fk_links=auto_fk if is_last else [],
                         workspace_id=workspace_id,
-                        relate=True,
+                        relate=is_last,
+                        skip_graph=not is_last,
                     )
                 continue
             else:
-                connector = CsvConnector(data, system="csv", dataset=Path(name).stem)
-            jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
-            run_pipeline(
-                connector=connector, dsn=settings.rdb_dsn,
-                system=suffix.lstrip("."), dataset=Path(name).stem,
-                ontology_type=ontology_type, match_keys=match_keys,
-                graph_url=settings.graph_url, broker=broker,
-                on_progress=on_prog,
-                fk_links=fk_links, workspace_id=workspace_id,
-                relate=True,
-            )
+                # Multi-file CSV: derive type per filename and apply auto FK links
+                # on the last file's last chunk (same pattern as XML sub-pipeline).
+                # Single-file CSV: preserve user-provided ontology_type and fk_links.
+                multi_csv = len(csv_data_files) > 1
+                is_last_csv = multi_csv and (name == csv_data_files[-1][1])
+                eff_type = csv_type_map.get(name, ontology_type) if multi_csv else ontology_type
+                eff_fk = csv_auto_fk if is_last_csv else (fk_links if not multi_csv else [])
+                eff_relate = is_last_csv if multi_csv else settings.ingest_relate
+
+                chunk_rows = settings.csv_chunk_rows
+                csv_chunks = _chunk_csv_bytes(data, chunk_rows) if chunk_rows > 0 else [data]
+                stem = Path(name).stem
+                total_chunks = len(csv_chunks)
+                for chunk_idx, chunk_data in enumerate(csv_chunks):
+                    is_last_chunk = (chunk_idx == total_chunks - 1)
+                    dataset = f"{stem}_c{chunk_idx:04d}" if total_chunks > 1 else stem
+                    jobs.update_stage(
+                        job_id, "Ingest", 20,
+                        f"Processing {name}" + (f" chunk {chunk_idx + 1}/{total_chunks}" if total_chunks > 1 else ""),
+                    )
+                    run_pipeline(
+                        connector=CsvConnector(chunk_data, system="csv", dataset=dataset),
+                        dsn=settings.rdb_dsn,
+                        system="csv", dataset=dataset,
+                        ontology_type=eff_type, match_keys=match_keys,
+                        graph_url=settings.graph_url, broker=broker,
+                        on_progress=on_prog,
+                        fk_links=eff_fk if is_last_chunk else [],
+                        workspace_id=workspace_id,
+                        relate=eff_relate and is_last_chunk,
+                        skip_graph=not is_last_chunk,
+                    )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
@@ -200,7 +289,6 @@ def file_ingest_router() -> APIRouter:
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
             items.append((data, f.filename or f"upload{suffix}"))
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)
         try:
@@ -208,20 +296,45 @@ def file_ingest_router() -> APIRouter:
         finally:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
+
         try:
             links = json.loads(fk_links) if fk_links else []
         except json.JSONDecodeError as exc:
             raise HTTPException(400, f"fk_links is not valid JSON: {exc}") from exc
-        for i, lnk in enumerate(links):
-            if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
-                raise HTTPException(400,
-                    f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
-        future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
-        future.add_done_callback(
-            lambda f: (exc := f.exception()) and logger.error(
-                "ingest job=%s raised unhandled exception: %s", job_id, exc
+        worker_backend = settings.effective_worker_backend()
+        if worker_backend == "oci_functions":
+            import base64
+            from aryx.worker.oci_functions_worker import submit_to_oci_function
+            for file_bytes, filename in items:
+                payload = {
+                    "job_id": job_id,
+                    "workspace_id": workspace_id,
+                    "ontology_type": ontology_type,
+                    "match_keys": keys,
+                    "fk_links": links,
+                    "filename": filename,
+                    "file_b64": base64.b64encode(file_bytes).decode(),
+                }
+                submit_to_oci_function(settings.oci_ingest_fn_id, payload)
+        elif worker_backend == "oci_dataflow":
+            from aryx.worker.oci_dataflow_worker import submit_to_dataflow
+            submit_to_dataflow(
+                settings.oci_dataflow_app_id,
+                args=["--job-id", job_id, "--workspace-id", str(workspace_id),
+                      "--ontology-type", ontology_type],
+                display_name=f"aryx-ingest-{job_id[:8]}",
             )
-        )
+        else:
+            for i, lnk in enumerate(links):
+                if not isinstance(lnk, dict) or not _FK_REQUIRED_KEYS.issubset(lnk):
+                    raise HTTPException(400,
+                        f"fk_links[{i}] missing required keys: {sorted(_FK_REQUIRED_KEYS)}")
+            future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+            future.add_done_callback(
+                lambda f: (exc := f.exception()) and logger.error(
+                    "ingest job=%s raised unhandled exception: %s", job_id, exc
+                )
+            )
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 

@@ -141,8 +141,7 @@ export const api = {
       .then((d) => d.axioms || []),
 
   getRules: (workspaceId: number) =>
-    fetchJSON<{ rules: Rule[] }>(`/ontology/rules?workspace_id=${workspaceId}`)
-      .then((d) => d.rules || []),
+    fetchJSON<Rule[]>(`/rules?workspace_id=${workspaceId}`),
 
   getSurvivorship: (workspaceId: number) =>
     fetchJSON<{ workspace_id: number; survivorship: SurvivorshipPolicy }>(
@@ -463,6 +462,12 @@ export const api = {
     fetchJSON<{ status: string }>("/admin/workspaces/nuke", {
       method: "POST", body: "{}",
     }),
+
+  autoLinkWorkspace: (workspaceId: number) =>
+    fetchJSON<{ links_created: number; specs: Array<Record<string, unknown>> }>(
+      `/admin/workspaces/${workspaceId}/auto-link`,
+      { method: "POST", body: "{}" },
+    ),
 
   // ── Ontology rules ────────────────────────────────────────────────────
   createRule: (workspaceId: number, rule: Omit<Rule, "enabled">) =>

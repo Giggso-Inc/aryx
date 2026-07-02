@@ -20,7 +20,6 @@ from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.pipeline.doc_discovery import DATA_EXTS, DOC_EXTS, ingest_confirmed, read_files
 from aryx.store.job_store import JobStore
-from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 _MAX_FILE = 50 * 1024 * 1024
@@ -70,7 +69,7 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str) -> N
                          data.get("workspace_id", 1))
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("doc confirm failed job=%s: %s", job_id, exc)
+        logger.warning("doc confirm failed job=%s: %s", job_id, exc, exc_info=True)
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()
@@ -84,7 +83,6 @@ def doc_discover_router() -> APIRouter:
                    files: list[UploadFile] = File(...), context: str = Form(""),
                    workspace_id: int = Form(1)) -> dict[str, Any]:
         settings = get_settings()
-        apply_migrations(settings.rdb_dsn)
         items: list[tuple[bytes, str]] = []
         for f in files:
             data = await f.read()

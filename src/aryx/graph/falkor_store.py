@@ -13,10 +13,9 @@ from urllib.parse import urlparse
 
 from falkordb import FalkorDB
 
-logger = logging.getLogger(__name__)
+from aryx.display_name import _GENERIC_NAMES, _NAME_KEYS, display_name as _dn
 
-_NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
-              "sku", "code", "email", "username")
+logger = logging.getLogger(__name__)
 
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_LABELS = 6  # cap to avoid label-bloat on deep hierarchies
@@ -45,19 +44,7 @@ def _safe_labels(labels: list[str] | None) -> list[str]:
 
 
 def _display_name(attributes: dict[str, Any]) -> str:
-    """Pick a human label for a node, working across arbitrary entity types.
-
-    Tries common identifying keys, then the first short string value, so a
-    ticket shows its ref/issue and a product shows its name — not a blank node.
-    """
-    for key in _NAME_KEYS:
-        value = attributes.get(key)
-        if value:
-            return str(value)
-    for value in attributes.values():
-        if isinstance(value, str) and 0 < len(value) <= 80:
-            return value
-    return ""
+    return _dn(attributes)
 
 
 class FalkorStore:
@@ -131,6 +118,13 @@ class FalkorStore:
             "MATCH (e:Entity {id: $id}) DETACH DELETE e", {"id": entity_id},
         )
 
+    def remove_entities_by_type(self, ontology_type: str) -> None:
+        """Delete all entity nodes of a given type and their edges."""
+        self._graph.query(
+            "MATCH (e:Entity {type: $type}) DETACH DELETE e",
+            {"type": ontology_type},
+        )
+
     def add_relationship(self, source_id: int, target_id: int, name: str) -> None:
         """Create a typed edge between two entities."""
         self._graph.query(
@@ -138,3 +132,26 @@ class FalkorStore:
             "MERGE (a)-[:REL {name: $name}]->(b)",
             {"src": source_id, "tgt": target_id, "name": name},
         )
+
+    def add_relationships_batch(
+        self,
+        rels: list[tuple[int, int, str]],
+        batch_size: int = 500,
+    ) -> int:
+        """Write multiple relationships in batched UNWIND queries.
+
+        Uses UNWIND so N relationships cost ceil(N/batch_size) round-trips
+        instead of N. Returns count of relationships written.
+        """
+        written = 0
+        for i in range(0, len(rels), batch_size):
+            chunk = rels[i : i + batch_size]
+            params = [{"src": s, "tgt": t, "name": n} for s, t, n in chunk]
+            self._graph.query(
+                "UNWIND $rels AS rel "
+                "MATCH (a:Entity {id: rel.src}), (b:Entity {id: rel.tgt}) "
+                "MERGE (a)-[:REL {name: rel.name}]->(b)",
+                {"rels": params},
+            )
+            written += len(chunk)
+        return written

@@ -13,21 +13,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-_NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
-              "sku", "code", "email", "username")
-
-
-def display_name(attributes: dict[str, Any] | None, entity_id: int) -> str:
-    """Pick a human label for an entity, falling back to #id."""
-    attrs = attributes or {}
-    for key in _NAME_KEYS:
-        val = attrs.get(key)
-        if val:
-            return str(val)
-    for val in attrs.values():
-        if isinstance(val, str) and 0 < len(val) <= 80:
-            return val
-    return f"#{entity_id}"
+from aryx.display_name import display_name  # noqa: F401 — re-exported for callers
 
 
 def _prov_by_entity(provenance: list[tuple[int, str, str, str]]) -> dict[int, list[dict]]:
