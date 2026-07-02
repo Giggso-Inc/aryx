@@ -38,6 +38,9 @@ _CONFLICT_RE = re.compile(r"\s+ON CONFLICT\b[^;]*", re.IGNORECASE | re.DOTALL)
 _LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\s+OFFSET\s+(:\w+|\d+)\b", re.IGNORECASE)
 _LIMIT_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\b", re.IGNORECASE)
 _NOW_RE = re.compile(r"\bNOW\(\)", re.IGNORECASE)
+# Extracts the ON clause body from a MERGE statement to identify comparison-key params.
+_MERGE_ON_RE = re.compile(r"\bMERGE\b.*?\bON\s*\(([^)]+)\)", re.IGNORECASE | re.DOTALL)
+_BIND_NAME_RE = re.compile(r":(\w+)")
 # Oracle override SQL files may carry "-- ORACLE:RETURNING col1, col2" to set up
 # out-vars for PL/SQL blocks where RETURNING ... INTO already appears in the SQL
 # (Oracle does not support RETURNING INTO on MERGE, so override files use the
@@ -175,6 +178,124 @@ def _read_lob(v: Any) -> Any:
     return v
 
 
+# ── CLOB size guard ──────────────────────────────────────────────────────────
+
+# Oracle thin client binds Python str as VARCHAR2 by default (max 32767 bytes).
+# Strings longer than this must be typed as DB_TYPE_CLOB via setinputsizes()
+# before execute(), otherwise the TTC layer raises ORA-03146.
+_ORACLE_VARCHAR2_MAX = 32767
+
+
+def _hint_clob(cursor: Any, params: Any, oracledb: Any) -> None:
+    """Call setinputsizes for any string param that exceeds VARCHAR2 max length.
+
+    Named params (dict): setinputsizes(**{name: DB_TYPE_CLOB, ...})
+    Positional params (list/tuple): setinputsizes(*[DB_TYPE_CLOB or None, ...])
+    No-op when params is None or contains no oversized strings.
+    """
+    if params is None:
+        return
+    if isinstance(params, dict):
+        hints = {
+            k: oracledb.DB_TYPE_CLOB
+            for k, v in params.items()
+            if isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX
+        }
+        if hints:
+            logger.debug("clob_hint named keys=%s", list(hints))
+            cursor.setinputsizes(**hints)
+    elif isinstance(params, (list, tuple)):
+        sizes = [
+            oracledb.DB_TYPE_CLOB
+            if isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX
+            else None
+            for v in params
+        ]
+        if any(s is not None for s in sizes):
+            logger.debug("clob_hint positional count=%d", sum(1 for s in sizes if s))
+            cursor.setinputsizes(*sizes)
+
+
+def _coerce_clob(
+    params: Any,
+    cursor: Any,
+    oracledb: Any,
+    force: bool = False,
+    exclude: "frozenset[str] | None" = None,
+) -> Any:
+    """Replace strings with oracledb CLOB var objects IN PLACE OF the value.
+
+    When force=False (default): only replaces strings >32767 bytes — sufficient for
+    plain INSERT/UPDATE where Oracle can coerce short VARCHAR2 to CLOB implicitly.
+
+    When force=True: replaces ALL strings regardless of length — required for MERGE
+    statements where Oracle analyses bind types across both UPDATE and INSERT branches
+    simultaneously.  VARCHAR2-typed binds to CLOB columns in MERGE trigger ORA-03146
+    even for short strings.
+
+    exclude: set of named param keys that must NOT be coerced (e.g. MERGE ON-clause
+    keys used as comparison predicates — Oracle raises ORA-22848 if they are CLOB).
+    """
+    if params is None:
+        return params
+    threshold = -1 if force else _ORACLE_VARCHAR2_MAX
+    excl = exclude or frozenset()
+    if isinstance(params, dict):
+        out: dict[str, Any] = {}
+        for k, v in params.items():
+            if k not in excl and isinstance(v, str) and len(v.encode("utf-8")) > threshold:
+                cvar = cursor.var(oracledb.DB_TYPE_CLOB)
+                cvar.setvalue(0, v)
+                out[k] = cvar
+            else:
+                out[k] = v
+        return out
+    if isinstance(params, (list, tuple)):
+        out_list: list[Any] = []
+        for v in params:
+            if isinstance(v, str) and len(v.encode("utf-8")) > threshold:
+                cvar = cursor.var(oracledb.DB_TYPE_CLOB)
+                cvar.setvalue(0, v)
+                out_list.append(cvar)
+            else:
+                out_list.append(v)
+        return tuple(out_list) if isinstance(params, tuple) else out_list
+    return params
+
+
+def _hint_clob_many(cursor: Any, seq: list[Any], oracledb: Any) -> None:
+    """Call setinputsizes for executemany: scans ALL rows to find oversized strings.
+
+    Necessary because different rows in the batch may have different payload sizes —
+    e.g. entity attributes where some rows carry large XML/JSON content and others don't.
+    One setinputsizes call covers the whole executemany batch.
+    """
+    if not seq:
+        return
+    first = seq[0]
+    if isinstance(first, dict):
+        clob_keys: set[str] = set()
+        for row in seq:
+            if isinstance(row, dict):
+                for k, v in row.items():
+                    if k not in clob_keys and isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX:
+                        clob_keys.add(k)
+        if clob_keys:
+            logger.debug("clob_hint_many named keys=%s", sorted(clob_keys))
+            cursor.setinputsizes(**{k: oracledb.DB_TYPE_CLOB for k in clob_keys})
+    elif isinstance(first, (list, tuple)):
+        n_cols = len(first)
+        sizes: list[Any] = [None] * n_cols
+        for row in seq:
+            if isinstance(row, (list, tuple)):
+                for i, v in enumerate(row):
+                    if sizes[i] is None and isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX:
+                        sizes[i] = oracledb.DB_TYPE_CLOB
+        if any(s is not None for s in sizes):
+            logger.debug("clob_hint_many positional count=%d", sum(1 for s in sizes if s))
+            cursor.setinputsizes(*sizes)
+
+
 # ── Cursor wrapper ────────────────────────────────────────────────────────────
 
 class OracleCursorWrapper:
@@ -204,6 +325,17 @@ class OracleCursorWrapper:
                 oracle_params = [oracle_params] + self._out_vars
         elif self._out_vars:
             oracle_params = self._out_vars
+        # ORA-03146 guard: MERGE requires ALL string params bound to CLOB columns to
+        # be typed as CLOB (Oracle analyses both branches before evaluating ON condition).
+        # ORA-22848 guard: ON-clause params are comparison keys — must stay VARCHAR2.
+        # For non-MERGE DML, only strings >32767 bytes need explicit CLOB coercion.
+        _is_merge = oracle_sql.lstrip().upper().startswith("MERGE ")
+        _on_excl: frozenset[str] = frozenset()
+        if _is_merge:
+            _m = _MERGE_ON_RE.search(oracle_sql)
+            if _m:
+                _on_excl = frozenset(_BIND_NAME_RE.findall(_m.group(1)))
+        oracle_params = _coerce_clob(oracle_params, self._cur, oracledb, force=_is_merge, exclude=_on_excl)
         logger.debug("execute sql=%s params=%s", oracle_sql[:120], oracle_params)
         try:
             self._cur.execute(oracle_sql, oracle_params)
@@ -225,6 +357,7 @@ class OracleCursorWrapper:
         oracle_seq = [_unwrap_params(p) for p in seq]
         if not oracle_seq:
             return
+        _hint_clob_many(self._cur, oracle_seq, oracledb)
         logger.debug("executemany sql=%s rows=%d", oracle_sql[:120], len(oracle_seq))
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
@@ -259,6 +392,7 @@ class OracleCursorWrapper:
         oracle_sql = _translate_sql(sql, self)
         if not self._out_vars:
             # No RETURNING clause detected — fall back to plain executemany
+            _hint_clob_many(self._cur, oracle_seq, oracledb)
             self._cur.executemany(oracle_sql, oracle_seq)
             return []
         # _translate_sql put single-value vars in self._out_vars for RETURNING INTO :5, …
@@ -274,6 +408,7 @@ class OracleCursorWrapper:
             for row in oracle_seq:
                 for i, av in enumerate(array_vars):
                     row[f"r{i}"] = av
+        _hint_clob_many(self._cur, oracle_seq, oracledb)
         logger.info(
             "executemany_returning sql=%r rows=%d row0_len=%d arraysize=%d",
             oracle_sql[:120], n, len(oracle_seq[0]), array_vars[0].size,

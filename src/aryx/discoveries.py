@@ -1,26 +1,56 @@
-"""In-memory store of document-discovery results awaiting user confirmation.
+"""DB-backed document-discovery store: persists /admin/docs/read results.
 
-The read step extracts mentions and stashes them here keyed by a discovery id;
-the confirm step retrieves and ingests the user-approved subset. Process memory
-only — nothing is written to disk.
+Replaces the previous in-memory dict; discoveries now survive container
+restarts and work correctly across multiple API instances.
 """
 from __future__ import annotations
 
 from typing import Any
 
-_STORE: dict[str, dict[str, Any]] = {}
+from aryx.config import get_settings
+from aryx.store.discovery_store import DiscoveryStore
 
 
-def put(discovery_id: str, data: dict[str, Any]) -> None:
-    """Store a discovery result."""
-    _STORE[discovery_id] = data
+def put(discovery_id: str, data: dict[str, Any], workspace_id: int = 1) -> None:
+    """Persist a discovery result."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.rdb_dsn)
+    try:
+        summary = data.get("summary", {})
+        file_count = (
+            len(data.get("tabular", [])) + len(data.get("mentions", []))
+        )
+        store.put(discovery_id, workspace_id, data, summary, file_count)
+    finally:
+        store.close()
 
 
-def get(discovery_id: str) -> dict[str, Any] | None:
-    """Return a discovery result, or None if unknown/expired."""
-    return _STORE.get(discovery_id)
+def get(discovery_id: str, workspace_id: int = 1) -> dict[str, Any] | None:
+    """Return a discovery result scoped to the calling workspace, or None."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.rdb_dsn)
+    try:
+        row = store.get(discovery_id, workspace_id)
+        return row["data"] if row else None
+    finally:
+        store.close()
 
 
 def drop(discovery_id: str) -> None:
-    """Forget a discovery result."""
-    _STORE.pop(discovery_id, None)
+    """Delete a discovery result."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.rdb_dsn)
+    try:
+        store.drop(discovery_id)
+    finally:
+        store.close()
+
+
+def mark_confirmed(discovery_id: str, job_id: str) -> None:
+    """Transition a discovery to confirmed status."""
+    settings = get_settings()
+    store = DiscoveryStore(settings.rdb_dsn)
+    try:
+        store.mark_confirmed(discovery_id, job_id)
+    finally:
+        store.close()

@@ -283,6 +283,17 @@ export interface DiscoverySummary {
   files: Array<{ filename: string; ontology_type: string }>;
 }
 
+export interface DiscoveryHistoryItem {
+  discovery_id: string;
+  status: "pending" | "partial" | "confirmed";
+  summary: DiscoverySummary;
+  file_count: number;
+  created_at: string;
+  confirmed_at: string | null;
+  /** Number of days since upload. Only set for status="pending"; null otherwise. */
+  pending_days: number | null;
+}
+
 // ── MCP tokens ───────────────────────────────────────────────────────────────
 
 export interface McpToken {

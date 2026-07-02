@@ -19,6 +19,7 @@ from aryx import discoveries
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.pipeline.doc_discovery import DATA_EXTS, DOC_EXTS, ingest_confirmed, read_files
+from aryx.store.discovery_store import DiscoveryStore
 from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ class ConfirmRequest(BaseModel):
     discovery_id: str
     approved_types: list[str] = []
     approved_files: list[str] = []
+    workspace_id: int = 1
+    resume_job_id: str | None = None
 
 
 def _save_tmp(data: bytes, suffix: str) -> Path:
@@ -49,7 +52,7 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         tabular = [(d, n) for d, n in items if Path(n).suffix.lower() in DATA_EXTS]
         result = read_files(doc_paths, tabular, _local_broker(), context)
         result["workspace_id"] = workspace_id
-        discoveries.put(did, result)
+        discoveries.put(did, result, workspace_id)
         jobs.finish(did, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
         logger.warning("doc read failed did=%s: %s", did, exc)
@@ -58,16 +61,23 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         jobs.close()
 
 
-def _confirm_job(did: str, types: list[str], files: list[str], job_id: str) -> None:
+def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
+                 workspace_id: int = 1) -> None:
     settings = get_settings()
     jobs = JobStore(settings.rdb_dsn)
-    data = discoveries.get(did)
     try:
+        data = discoveries.get(did, workspace_id)
         if not data:
-            raise ValueError("discovery expired — re-read the files")
+            logger.warning("confirm job=%s discovery not found did=%s workspace=%d",
+                           job_id, did, workspace_id)
+            jobs.finish(job_id, run_id=None, status="failed",
+                        error=f"discovery {did} not found or workspace mismatch")
+            return
+        confirm_state = data.get("_confirm_state", {})
         ingest_confirmed(data, types, files, _local_broker(), jobs, job_id,
-                         data.get("workspace_id", 1))
+                         workspace_id, confirm_state=confirm_state, discovery_id=did)
         jobs.finish(job_id, run_id=None, status="complete")
+        discoveries.mark_confirmed(did, job_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("doc confirm failed job=%s: %s", job_id, exc, exc_info=True)
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
@@ -99,23 +109,33 @@ def doc_discover_router() -> APIRouter:
         return {"discovery_id": did}
 
     @router.get("/summary/{did}")
-    def summary(did: str) -> dict[str, Any]:
-        data = discoveries.get(did)
+    def summary(did: str, workspace_id: int = 1) -> dict[str, Any]:
+        data = discoveries.get(did, workspace_id)
         return data["summary"] if data else {}
+
+    @router.get("/history")
+    def history(workspace_id: int = 1) -> list[dict[str, Any]]:
+        settings = get_settings()
+        store = DiscoveryStore(settings.rdb_dsn)
+        try:
+            return store.list_recent(workspace_id)
+        finally:
+            store.close()
 
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-        data = discoveries.get(req.discovery_id)
+        data = discoveries.get(req.discovery_id, req.workspace_id)
         if not data:
-            raise HTTPException(404, "unknown or expired discovery")
+            raise HTTPException(404, "unknown discovery or workspace mismatch")
         job_id = uuid.uuid4().hex
         jobs = JobStore(get_settings().rdb_dsn)
         try:
-            jobs.create(job_id, "documents", "confirmed entities", data.get("workspace_id", 1))
+            jobs.create(job_id, "documents", "confirmed entities", req.workspace_id)
         finally:
             jobs.close()
         background_tasks.add_task(_confirm_job, req.discovery_id,
-                                 req.approved_types, req.approved_files, job_id)
+                                  req.approved_types, req.approved_files,
+                                  job_id, req.workspace_id)
         return {"status": "queued", "job_id": job_id}
 
     return router
