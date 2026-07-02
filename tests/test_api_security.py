@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from starlette.requests import Request
 
-from aryx.api.security import _has_authenticated_header
+from aryx.api.security import _has_authenticated_header, _verify_key
 
 
 def _request(headers: dict[str, str]) -> Request:
@@ -31,3 +31,13 @@ def test_arbitrary_bearer_token_is_not_treated_as_authenticated():
 def test_verified_internal_api_key_is_authenticated():
     with patch("aryx.api.security._verify_key", return_value=True):
         assert _has_authenticated_header(_request({"x-aryx-api-key": "valid-key"})) is True
+
+
+def test_env_internal_api_key_is_authenticated(monkeypatch):
+    monkeypatch.setenv("ARYX_INTERNAL_API_KEY", "bridge-key")
+    assert _has_authenticated_header(_request({"x-aryx-api-key": "bridge-key"})) is True
+
+
+def test_verify_key_accepts_configured_internal_key(monkeypatch):
+    monkeypatch.setenv("ARYX_INTERNAL_API_KEY", "bridge-key")
+    assert _verify_key("bridge-key") is True

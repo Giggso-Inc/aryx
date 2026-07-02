@@ -103,7 +103,11 @@ def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
 
 
 def _verify_key(key: str) -> bool:
-    """Verify an API key against McpTokenStore. Fails closed on any error."""
+    """Verify an API key against the shared internal key or McpTokenStore."""
+    configured_internal_key = os.environ.get("ARYX_INTERNAL_API_KEY", "").strip()
+    if configured_internal_key and key == configured_internal_key:
+        return True
+
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore

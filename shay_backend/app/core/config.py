@@ -162,13 +162,22 @@ class Settings(BaseSettings):
     SSO_STATE_SECRET: str = os.environ.get("SSO_STATE_SECRET", "")
     
     # CORS
-    ALLOWED_ORIGINS: List[str] = _parse_env_list(
-        "ALLOWED_ORIGINS",
-        "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,"
-        "http://127.0.0.1:8000,https://dev-fourd.shay-ai.com,https://dev-accell.shay-ai.com,"
-        "https://dev-zaptag.shay-ai.com,https://alb.accsell.ai,https://app.accsell.ai",
+    # Read these as raw strings first so pydantic-settings does not require JSON
+    # arrays at startup; production deploys often provide comma-separated values.
+    ALLOWED_ORIGINS_RAW: str = Field(
+        default=(
+            "http://localhost:3000,http://localhost:8000,http://127.0.0.1:3000,"
+            "http://127.0.0.1:8000,https://aryx.shay-ai.com,https://aryx-oci.shay-ai.com,"
+            "https://aryx-r3.shay-ai.com"
+        ),
+        alias="ALLOWED_ORIGINS",
+        exclude=True,
     )
-    ALLOWED_HOSTS: List[str] = _parse_env_list("ALLOWED_HOSTS", "localhost,127.0.0.1,*")
+    ALLOWED_HOSTS_RAW: str = Field(
+        default="localhost,127.0.0.1,*",
+        alias="ALLOWED_HOSTS",
+        exclude=True,
+    )
     
     # File Upload
     # Allowed file types matching datasources supported formats: csv, xlsx, xls, json, pdf, docx, doc, txt, pptx, ppt
@@ -345,6 +354,16 @@ class Settings(BaseSettings):
     def BASE_URL(self) -> str:
         """Canonical public Shay API root."""
         return _append_path(self.SHAY_BE_PUBLIC_URL, "/api")
+
+    @property
+    def ALLOWED_ORIGINS(self) -> List[str]:
+        """Allowed CORS origins from either JSON-array or comma-separated env syntax."""
+        return _parse_env_list("ALLOWED_ORIGINS", self.ALLOWED_ORIGINS_RAW)
+
+    @property
+    def ALLOWED_HOSTS(self) -> List[str]:
+        """Allowed hosts from either JSON-array or comma-separated env syntax."""
+        return _parse_env_list("ALLOWED_HOSTS", self.ALLOWED_HOSTS_RAW)
 
 
     @property
