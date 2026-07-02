@@ -108,6 +108,32 @@ async def _delete_aryx_workspace_bridge(aryx_workspace_id: Any) -> None:
         response.raise_for_status()
 
 
+async def _update_aryx_workspace_bridge(
+    request: Request,
+    aryx_workspace_id: Any,
+    workspace: Workspace,
+) -> dict[str, Any]:
+    """Keep the bridged Aryx workspace metadata aligned with Shay workspace edits."""
+    headers = {}
+    authorization = request.headers.get("authorization")
+    if authorization:
+        headers["Authorization"] = authorization
+    headers["Content-Type"] = "application/json"
+
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.put(
+            f"{settings.ARYX_API_URL_INTERNAL}/admin/workspaces/{aryx_workspace_id}",
+            json={
+                "name": workspace.name,
+                "description": workspace.description or "",
+            },
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def _bridge_for_workspace(request: Request, workspace: Workspace) -> dict[str, Any] | None:
     """Return the Aryx bridge mapping for a Shay workspace, creating it when missing."""
     bridge = await _ensure_aryx_workspace_bridge(request, workspace)
@@ -285,6 +311,25 @@ async def update_workspace(
     await db.refresh(workspace)
     
     bridge = await _bridge_for_workspace(request, workspace)
+    try:
+        if bridge and bridge.get("aryx_workspace_id"):
+            await _update_aryx_workspace_bridge(
+                request,
+                bridge["aryx_workspace_id"],
+                workspace,
+            )
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx workspace update failed: {detail}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Aryx service unavailable: {exc}",
+        ) from exc
+
     payload = serialize_workspace(workspace).model_dump()
     payload["bridge"] = bridge
     return payload

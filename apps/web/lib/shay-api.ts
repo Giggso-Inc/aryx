@@ -20,7 +20,8 @@ import type {
 } from "./shay-types";
 
 const SHAY_BASE = "/shay/api/v1";
-const SHAY_WORKSPACE_PROXY_BASE = "/api/shay/workspaces";
+const SHAY_WORKSPACES_BASE = `${SHAY_BASE}/workspaces`;
+const SHAY_GG_WORKSPACES_BASE = `${SHAY_BASE}/gg-workspaces`;
 const ARYX_BASE = "/api";
 const SHAY_SESSION_STORAGE_KEY = "aryx.shay.session";
 
@@ -193,6 +194,12 @@ type CachedEntry = {
   value: Promise<unknown>;
 };
 
+type WorkspaceReference = {
+  requestedId: string;
+  shayWorkspaceId: string;
+  workspace?: ShayWorkspace;
+};
+
 const shayGetCache = new Map<string, CachedEntry>();
 
 function invalidateShayCache(prefix: string) {
@@ -229,11 +236,75 @@ function cachedRequestJSON<T>(
 
 async function listBridgedWorkspaces(token: string): Promise<ShayWorkspaceList> {
   return requestJSON<ShayWorkspaceList>(
-    SHAY_WORKSPACE_PROXY_BASE,
+    SHAY_WORKSPACES_BASE,
     "/",
     undefined,
     token,
   );
+}
+
+function matchesWorkspaceReference(workspace: ShayWorkspace, workspaceId: string) {
+  if (workspace.id === workspaceId) {
+    return true;
+  }
+  return String(workspace.bridge?.aryx_workspace_id ?? "") === workspaceId;
+}
+
+function isLegacyAryxWorkspaceId(workspaceId: string) {
+  return /^\d+$/.test(workspaceId);
+}
+
+function isWorkspaceLookupError(error: unknown) {
+  return error instanceof Error
+    && /not found|invalid workspace_id format|invalid workspace id format/i.test(error.message);
+}
+
+async function findWorkspaceReference(
+  workspaceId: string,
+  token: string,
+): Promise<WorkspaceReference | null> {
+  const list = await listBridgedWorkspaces(token);
+  const match = list.workspaces.find((workspace) => matchesWorkspaceReference(workspace, workspaceId));
+  if (!match) {
+    return null;
+  }
+  return {
+    requestedId: workspaceId,
+    shayWorkspaceId: match.id,
+    workspace: match,
+  };
+}
+
+async function withWorkspaceReference<T>(
+  workspaceId: string,
+  token: string,
+  execute: (reference: WorkspaceReference) => Promise<T>,
+): Promise<T> {
+  if (isLegacyAryxWorkspaceId(workspaceId)) {
+    const resolved = await findWorkspaceReference(workspaceId, token);
+    if (resolved) {
+      return execute(resolved);
+    }
+  }
+
+  const directReference: WorkspaceReference = {
+    requestedId: workspaceId,
+    shayWorkspaceId: workspaceId,
+  };
+
+  try {
+    return await execute(directReference);
+  } catch (error) {
+    if (!isWorkspaceLookupError(error)) {
+      throw error;
+    }
+
+    const resolved = await findWorkspaceReference(workspaceId, token);
+    if (!resolved || resolved.shayWorkspaceId === workspaceId) {
+      throw error;
+    }
+    return execute(resolved);
+  }
 }
 
 export const shayApi = {
@@ -504,36 +575,39 @@ export const shayApi = {
 
   listWorkspaces: (token: string) => listBridgedWorkspaces(token),
 
-  getWorkspace: async (workspaceId: string, token: string) => {
-    try {
-      return await cachedRequestJSON<ShayWorkspace>(
-        `workspace:${workspaceId}`,
-        10_000,
-        SHAY_WORKSPACE_PROXY_BASE,
-        `/${workspaceId}`,
-        token,
-      );
-    } catch (error) {
-      if (!(error instanceof Error) || !/not found/i.test(error.message)) {
-        throw error;
-      }
-
-      const list = await listBridgedWorkspaces(token);
-      const match = list.workspaces.find((workspace) => workspace.id === workspaceId);
-      if (match) {
+  getWorkspace: (workspaceId: string, token: string) =>
+    withWorkspaceReference(workspaceId, token, async (reference) => {
+      if (reference.workspace) {
         shayGetCache.set(`workspace:${workspaceId}`, {
           expiresAt: Date.now() + 10_000,
-          value: Promise.resolve(match),
+          value: Promise.resolve(reference.workspace),
         });
-        return match;
+        shayGetCache.set(`workspace:${reference.shayWorkspaceId}`, {
+          expiresAt: Date.now() + 10_000,
+          value: Promise.resolve(reference.workspace),
+        });
+        return reference.workspace;
       }
-      throw error;
-    }
-  },
+
+      const workspace = await cachedRequestJSON<ShayWorkspace>(
+        `workspace:${reference.shayWorkspaceId}`,
+        10_000,
+        SHAY_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}`,
+        token,
+      );
+      if (reference.shayWorkspaceId !== workspaceId) {
+        shayGetCache.set(`workspace:${workspaceId}`, {
+          expiresAt: Date.now() + 10_000,
+          value: Promise.resolve(workspace),
+        });
+      }
+      return workspace;
+    }),
 
   getWorkspaceDirect: (workspaceId: string, token: string) =>
     requestJSON<ShayWorkspace>(
-      SHAY_WORKSPACE_PROXY_BASE,
+      SHAY_WORKSPACES_BASE,
       `/${workspaceId}`,
       undefined,
       token,
@@ -544,7 +618,7 @@ export const shayApi = {
     token: string,
   ) =>
     requestJSON<ShayWorkspace>(
-      SHAY_WORKSPACE_PROXY_BASE,
+      SHAY_WORKSPACES_BASE,
       "/",
       {
         method: "POST",
@@ -568,20 +642,25 @@ export const shayApi = {
     workspaceId: string,
     payload: Partial<Pick<ShayWorkspace, "name" | "description" | "is_public" | "ai_enabled" | "ai_provider" | "ai_model" | "is_active">>,
     token: string,
-  ) => requestJSON<ShayWorkspace>(SHAY_WORKSPACE_PROXY_BASE, `/${workspaceId}`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  }, token).then((result) => {
+  ) => withWorkspaceReference(workspaceId, token, (reference) =>
+    requestJSON<ShayWorkspace>(SHAY_WORKSPACES_BASE, `/${reference.shayWorkspaceId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }, token),
+  ).then((result) => {
     invalidateShayCache(`workspace:${workspaceId}`);
+    invalidateShayCache(`workspace:${result.id}`);
     return result;
   }),
 
   deleteWorkspace: (workspaceId: string, token: string) =>
-    requestJSON<{ success?: boolean; message?: string }>(
-      SHAY_WORKSPACE_PROXY_BASE,
-      `/${workspaceId}`,
-      { method: "DELETE" },
-      token,
+    withWorkspaceReference(workspaceId, token, (reference) =>
+      requestJSON<{ success?: boolean; message?: string }>(
+        SHAY_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}`,
+        { method: "DELETE" },
+        token,
+      ),
     ).then((result) => {
       invalidateShayCache(`workspace:${workspaceId}`);
       invalidateShayCache(`workspace-members:${workspaceId}`);
@@ -590,37 +669,52 @@ export const shayApi = {
     }),
 
   purgeWorkspace: (workspaceId: string, token: string) =>
-    requestJSON<{ status: string }>(
-      SHAY_WORKSPACE_PROXY_BASE,
-      `/${workspaceId}/purge`,
-      { method: "POST", body: "{}" },
-      token,
+    withWorkspaceReference(workspaceId, token, (reference) =>
+      requestJSON<{ status: string }>(
+        SHAY_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}/purge`,
+        { method: "POST", body: "{}" },
+        token,
+      ),
     ),
 
   listWorkspaceMembers: (workspaceId: string, token: string) =>
-    cachedRequestJSON<ShayWorkspaceMemberList>(
-      `workspace-members:${workspaceId}`,
-      10_000,
-      SHAY_WORKSPACE_PROXY_BASE,
-      `/${workspaceId}/members`,
-      token,
-    ),
+    withWorkspaceReference(workspaceId, token, (reference) => {
+      const cacheKey = `workspace-members:${reference.shayWorkspaceId}`;
+      const request = cachedRequestJSON<ShayWorkspaceMemberList>(
+        cacheKey,
+        10_000,
+        SHAY_GG_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}/members`,
+        token,
+      );
+      if (reference.shayWorkspaceId !== workspaceId) {
+        shayGetCache.set(`workspace-members:${workspaceId}`, {
+          expiresAt: Date.now() + 10_000,
+          value: request,
+        });
+      }
+      return request;
+    }),
 
   addWorkspaceMember: (
     workspaceId: string,
     payload: { user_id: string; role: string },
     token: string,
   ) =>
-    requestJSON<ShayWorkspaceMember>(
-      SHAY_WORKSPACE_PROXY_BASE,
-      `/${workspaceId}/members`,
-      {
-        method: "POST",
-        body: JSON.stringify(payload),
-      },
-      token,
+    withWorkspaceReference(workspaceId, token, (reference) =>
+      requestJSON<ShayWorkspaceMember>(
+        SHAY_GG_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}/members`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+        token,
+      ),
     ).then((result) => {
       invalidateShayCache(`workspace-members:${workspaceId}`);
+      invalidateShayCache(`workspace-members:${result.workspace_id}`);
       return result;
     }),
 
@@ -630,25 +724,30 @@ export const shayApi = {
     payload: { role?: string; is_active?: boolean },
     token: string,
   ) =>
-    requestJSON<ShayWorkspaceMember>(
-      SHAY_WORKSPACE_PROXY_BASE,
-      `/${workspaceId}/members/${userId}`,
-      {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      },
-      token,
+    withWorkspaceReference(workspaceId, token, (reference) =>
+      requestJSON<ShayWorkspaceMember>(
+        SHAY_GG_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}/members/${userId}`,
+        {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        },
+        token,
+      ),
     ).then((result) => {
       invalidateShayCache(`workspace-members:${workspaceId}`);
+      invalidateShayCache(`workspace-members:${result.workspace_id}`);
       return result;
     }),
 
   removeWorkspaceMember: (workspaceId: string, userId: string, token: string) =>
-    requestJSON(
-      SHAY_WORKSPACE_PROXY_BASE,
-      `/${workspaceId}/members/${userId}`,
-      { method: "DELETE" },
-      token,
+    withWorkspaceReference(workspaceId, token, (reference) =>
+      requestJSON(
+        SHAY_GG_WORKSPACES_BASE,
+        `/${reference.shayWorkspaceId}/members/${userId}`,
+        { method: "DELETE" },
+        token,
+      ),
     ).then((result) => {
       invalidateShayCache(`workspace-members:${workspaceId}`);
       return result;

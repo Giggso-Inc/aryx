@@ -7,6 +7,7 @@ import { cn } from "@/lib/cn";
 import { getAvatarInitial } from "@/lib/avatar";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
+import { workspaceSectionHref } from "@/lib/workspace-route";
 import { formatWorkspaceName } from "@/lib/workspace-name";
 import type {
   ShayBridgeWorkspaceMap,
@@ -72,7 +73,17 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     setError(null);
     try {
       const nextWorkspace = await shayApi.getWorkspace(workspaceId, session.access_token);
-      const memberList = await shayApi.listWorkspaceMembers(workspaceId, session.access_token);
+      const resolvedWorkspaceId = nextWorkspace.id;
+      const memberList = await shayApi.listWorkspaceMembers(resolvedWorkspaceId, session.access_token);
+
+      if (resolvedWorkspaceId !== workspaceId) {
+        const params = searchParams.toString();
+        router.replace(
+          params
+            ? `${workspaceSectionHref(resolvedWorkspaceId, "settings")}?${params}`
+            : workspaceSectionHref(resolvedWorkspaceId, "settings"),
+        );
+      }
 
       setWorkspace(nextWorkspace);
       setBridge(nextWorkspace.bridge ?? null);
@@ -95,7 +106,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
 
   useEffect(() => {
     void load();
-  }, [session?.access_token, session?.company_id, workspaceId]);
+  }, [router, searchParams, session?.access_token, session?.company_id, workspaceId]);
 
   const displayMembers = useMemo(() => {
     const nextMembers = [...members] as DisplayWorkspaceMember[];
@@ -262,7 +273,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     if (!session) {
       return;
     }
-    if (workspaceId === "1") {
+    if (bridge?.aryx_workspace_id === 1) {
       setDangerError("Workspace 1 cannot be deleted.");
       return;
     }

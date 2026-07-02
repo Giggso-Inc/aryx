@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -150,10 +150,12 @@ def test_update_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
     mock_db.commit = AsyncMock()
     mock_db.refresh = AsyncMock()
     client = _make_client(mock_db)
+    aryx_sync = AsyncMock(return_value={"id": 7, "name": "Updated Workspace"})
 
     with (
         patch("app.routes.workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)),
         patch("app.routes.workspaces._bridge_for_workspace", new=AsyncMock(return_value={"aryx_workspace_id": 7})),
+        patch("app.routes.workspaces._update_aryx_workspace_bridge", new=aryx_sync),
     ):
         response = client.put(
             f"/api/v1/workspaces/{workspace_id}",
@@ -166,6 +168,7 @@ def test_update_workspace_coerces_workspace_id_to_uuid_before_query(mock_db, adm
     assert mock_workspace.name == "Updated Workspace"
     mock_db.commit.assert_awaited_once()
     mock_db.refresh.assert_awaited_once_with(mock_workspace)
+    aryx_sync.assert_awaited_once_with(ANY, 7, mock_workspace)
 
 
 @pytest.mark.unit

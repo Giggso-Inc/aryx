@@ -21,6 +21,11 @@ class WorkspaceRequest(BaseModel):
     context: str = ""
 
 
+class WorkspaceUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
 class ContextRequest(BaseModel):
     context: str = ""
 
@@ -55,6 +60,23 @@ def workspace_router() -> APIRouter:
             return store.create(req.name, req.description, req.context)
         except Exception as exc:  # noqa: BLE001 — duplicate name, etc.
             raise HTTPException(400, f"could not create workspace: {exc}") from exc
+        finally:
+            store.close()
+
+    @router.put("/{workspace_id}")
+    def update_workspace(workspace_id: int, req: WorkspaceUpdateRequest) -> dict[str, Any]:
+        apply_migrations(get_settings().rdb_dsn)
+        store = WorkspaceStore(get_settings().rdb_dsn)
+        try:
+            return store.update_metadata(
+                workspace_id,
+                name=req.name,
+                description=req.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"could not update workspace: {exc}") from exc
         finally:
             store.close()
 

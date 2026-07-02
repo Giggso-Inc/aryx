@@ -64,6 +64,31 @@ class WorkspaceStore:
         return {"id": row[0], "name": row[1], "description": row[2],
                 "context": row[3], "brief": {}, "created_at": row[4]}
 
+    def update_metadata(
+        self,
+        wid: int,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                load("update_workspace_metadata"),
+                (name, description, int(wid)),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise ValueError(f"workspace {wid} not found")
+        logger.info("workspace metadata updated id=%s", wid)
+        return {
+            "id": row[0],
+            "name": row[1],
+            "description": row[2],
+            "context": row[3],
+            "brief": row[4] or {},
+            "created_at": row[5],
+        }
+
     def set_brief(self, wid: int, brief: dict) -> dict[str, Any]:
         with self._conn.cursor() as cur:
             cur.execute(load("update_workspace_brief"),

@@ -9,6 +9,7 @@ import { ShayPageShell } from "./ShayPageShell";
 import { ShayWorkspaceTabs } from "./ShayWorkspaceTabs";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
+import { workspaceSectionHref } from "@/lib/workspace-route";
 import { formatWorkspaceName } from "@/lib/workspace-name";
 import type {
   ShayBridgeThread,
@@ -36,11 +37,15 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
       try {
         const nextWorkspace = await shayApi.getWorkspace(workspaceId, session.access_token);
         const bridge = nextWorkspace.bridge ?? null;
+        const resolvedWorkspaceId = nextWorkspace.id;
         const [datasourceList, threadList] = await Promise.all([
-          shayApi.listDatasources(workspaceId, session.access_token),
-          shayApi.listBridgeThreads(workspaceId),
+          shayApi.listDatasources(resolvedWorkspaceId, session.access_token),
+          shayApi.listBridgeThreads(resolvedWorkspaceId),
         ]);
         if (!active) return;
+        if (resolvedWorkspaceId !== workspaceId) {
+          router.replace(workspaceSectionHref(resolvedWorkspaceId, "home"));
+        }
         setWorkspace(nextWorkspace);
         setMapping(bridge);
         setDatasources(datasourceList.items);
@@ -56,10 +61,11 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
     return () => {
       active = false;
     };
-  }, [session?.access_token, workspaceId]);
+  }, [router, session?.access_token, workspaceId]);
 
   const openNewChat = () => {
-    router.push(`/workspaces/${workspaceId}/chats/${crypto.randomUUID()}`);
+    const resolvedWorkspaceId = workspace?.id ?? workspaceId;
+    router.push(`/workspaces/${resolvedWorkspaceId}/chats/${crypto.randomUUID()}`);
   };
 
   return (

@@ -33,9 +33,15 @@ class ShayBridgeStore:
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT shay_workspace_id::text, aryx_workspace_id, company_id::text, sync_state
+                SELECT
+                    aryx_shay_workspace_map.shay_workspace_id::text,
+                    aryx_shay_workspace_map.aryx_workspace_id,
+                    aryx_shay_workspace_map.company_id::text,
+                    aryx_shay_workspace_map.sync_state
                 FROM aryx_shay_workspace_map
-                WHERE shay_workspace_id = %s::uuid
+                JOIN gg_workspace ON gg_workspace.id = aryx_shay_workspace_map.shay_workspace_id
+                JOIN aryx_workspace ON aryx_workspace.id = aryx_shay_workspace_map.aryx_workspace_id
+                WHERE aryx_shay_workspace_map.shay_workspace_id = %s::uuid
                 """,
                 (shay_workspace_id,),
             )
@@ -59,7 +65,30 @@ class ShayBridgeStore:
     ) -> dict[str, Any]:
         existing = self.get_workspace_mapping(shay_workspace_id)
         if existing:
-            return {**existing, "created": False}
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE aryx_shay_workspace_map
+                    SET company_id = COALESCE(%s::uuid, company_id),
+                        sync_state = sync_state || %s::jsonb,
+                        updated_at = NOW()
+                    WHERE shay_workspace_id = %s::uuid
+                    RETURNING shay_workspace_id::text, aryx_workspace_id, company_id::text, sync_state
+                    """,
+                    (
+                        company_id,
+                        Json({"workspace_name": name}),
+                        shay_workspace_id,
+                    ),
+                )
+                row = cur.fetchone()
+            return {
+                "shay_workspace_id": row[0],
+                "aryx_workspace_id": row[1],
+                "company_id": row[2],
+                "sync_state": row[3] or {},
+                "created": False,
+            }
 
         workspace_store = WorkspaceStore(self._dsn)
         try:
