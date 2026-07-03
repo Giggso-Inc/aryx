@@ -106,7 +106,7 @@ class OracleGraphStore:
                     "typ": ontology_type,
                     "name": name,
                     "iri": iri or "",
-                    "attrs": json.dumps(attributes),
+                    "attrs": _safe_attrs_json(attributes),
                 },
             )
 
@@ -212,8 +212,7 @@ class OracleGraphStore:
                     cur.executemany(load("merge_graph_source"), chunk)
                 logger.info("graph sources merged count=%d — fetching source_ids", len(source_rows))
                 cur.execute(
-                    "SELECT source_id, system, dataset, record_id "
-                    "FROM aryx_graph_source WHERE workspace_id = :1",
+                    load("select_graph_sources_by_workspace"),
                     (self._workspace_id,),
                 )
                 source_map: dict[tuple[str, str, str], int] = {
