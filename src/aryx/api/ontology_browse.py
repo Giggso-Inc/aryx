@@ -6,11 +6,15 @@ vice-versa.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.models import OntologyType
 from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
+
+logger = logging.getLogger(__name__)
 
 
 def approve(name: str, workspace_id: int = 1) -> dict[str, Any]:
@@ -113,10 +117,6 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
     from distinct ontology_type values in the entity store and persist them
     as approved. Idempotent — uses ON CONFLICT DO NOTHING.
     """
-    from aryx.models import OntologyType as _OT
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-
     settings = get_settings()
     onto = OntologyStore(settings.rdb_dsn, workspace_id)
     try:
@@ -133,7 +133,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
     store = EntityStore(settings.rdb_dsn, workspace_id)
     try:
         ents = list(store.list_entities())
-        rels = store.list_relationships()
+        rels = list(store.list_relationships())
     finally:
         store.close()
 
@@ -151,12 +151,12 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
 
     # Auto-heal: seed missing type registry from entity store data.
     if not type_rows and per_type:
-        _log.info("ontology_browse: no types found for ws=%s but %d entity types exist — auto-seeding",
+        logger.info("ontology_browse: no types found for ws=%s but %d entity types exist — auto-seeding",
                   workspace_id, len(per_type))
         heal_onto = OntologyStore(settings.rdb_dsn, workspace_id)
         try:
             heal_onto.seed_types([
-                _OT(name=name, attributes=[], status="approved", source="entity-store")
+                OntologyType(name=name, attributes=[], status="approved", source="entity-store")
                 for name in per_type
             ])
             healed = heal_onto.list_types()
@@ -164,7 +164,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
             for row in type_rows:
                 row["ancestors"] = []
         except Exception:  # noqa: BLE001
-            _log.warning("ontology_browse: auto-heal seed failed for ws=%s", workspace_id, exc_info=True)
+            logger.warning("ontology_browse: auto-heal seed failed for ws=%s", workspace_id, exc_info=True)
         finally:
             heal_onto.close()
 
