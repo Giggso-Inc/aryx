@@ -133,7 +133,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
     store = EntityStore(settings.rdb_dsn, workspace_id)
     try:
         ents = list(store.list_entities())
-        rels = store.list_relationships()
+        rels = list(store.list_relationships())
     finally:
         store.close()
 
