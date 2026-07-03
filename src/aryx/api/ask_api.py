@@ -62,7 +62,8 @@ _CAP_STOPWORDS: frozenset[str] = frozenset({
 })
 
 
-def _extract_terms(question: str, types: list[str], history: list[Turn]) -> tuple[list[str], int, int, int]:
+def _extract_terms(question: str, types: list[str], history: list[Turn],
+                   workspace_id: int = 1) -> tuple[list[str], int, int, int]:
     context = _recent(history)
     sys = "Extract the specific search terms a graph lookup needs."
     user = (
@@ -74,7 +75,7 @@ def _extract_terms(question: str, types: list[str], history: list[Turn]) -> tupl
         f"CURRENT question: {question}"
     )
     start = time.monotonic()
-    text, it, ot = llm_runtime.chat("menial", sys, user)
+    text, it, ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
     ms = int((time.monotonic() - start) * 1000)
     try:
         s, e = text.find("{"), text.rfind("}")
@@ -98,7 +99,8 @@ def _extract_terms(question: str, types: list[str], history: list[Turn]) -> tupl
     return (terms or [question.strip()]), it, ot, ms
 
 
-def _synthesise(question: str, context: str, overview: str = "") -> tuple[str, int, int, int]:
+def _synthesise(question: str, context: str, overview: str = "",
+                workspace_id: int = 1) -> tuple[str, int, int, int]:
     sys = "You are Aryx, a knowledge-graph assistant."
     has_context = bool(context.strip())
     facts = context if has_context else "(none — no specific entity matched)"
@@ -111,7 +113,7 @@ def _synthesise(question: str, context: str, overview: str = "") -> tuple[str, i
         f"{overview}\n\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
     )
     start = time.monotonic()
-    text, it, ot = llm_runtime.chat("answer", sys, user)
+    text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
     ms = int((time.monotonic() - start) * 1000)
     return _strip_think(text), it, ot, ms
 
@@ -133,10 +135,12 @@ def ask_router() -> APIRouter:
         types = all_types(reader)
         overview = build_overview(reader, req.workspace_id)
         try:
-            terms, p_in, p_out, p_ms = _extract_terms(req.question, types, req.history)
+            terms, p_in, p_out, p_ms = _extract_terms(
+                req.question, types, req.history, workspace_id=req.workspace_id)
             entities, calls = gather(reader, terms)
             context = render_context(entities)
-            answer, s_in, s_out, s_ms = _synthesise(req.question, context, overview)
+            answer, s_in, s_out, s_ms = _synthesise(
+                req.question, context, overview, workspace_id=req.workspace_id)
             grounding = build_grounding(answer or "", entities)
         except Exception as exc:  # noqa: BLE001 — surface model/runtime errors to UI
             logger.warning("ask failed: %s", exc)
