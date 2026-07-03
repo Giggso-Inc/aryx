@@ -63,6 +63,7 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
 
 
 def _reset_discovery_status(discovery_id: str) -> None:
+    """Reset a discovery back to partial after a confirm job fails."""
     store = DiscoveryStore(get_settings().rdb_dsn)
     try:
         store.set_status(discovery_id, "partial")

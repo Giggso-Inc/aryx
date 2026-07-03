@@ -47,9 +47,10 @@ export default function IngestPage() {
   };
 
   const handleRestored = () => {
+    const id = restoreId;
     setRestoreId(null);
     setRestartFlag(false);
-    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== restoreId));
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
   };
 
   return (
