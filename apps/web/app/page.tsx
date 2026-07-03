@@ -13,6 +13,13 @@ import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
 import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
 
+const STARTERS = [
+  "What entities are in this workspace?",
+  "Summarize the key relationships",
+  "What data has been ingested?",
+  "Show me the most connected entities",
+];
+
 const FOLLOWUPS = [
   "What else do we know about that Customer?",
   "Show me the underlying records",
@@ -202,8 +209,6 @@ export default function HomePage() {
     }
   };
 
-  const empty = turns.length === 0;
-
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
@@ -230,25 +235,14 @@ export default function HomePage() {
         {/* Workspace peek — always at top */}
         <WorkspacePeek workspaceId={workspaceId} />
 
-        {empty ? (
-          <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
-            <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">
-              Ask your knowledge graph.
-            </h1>
-            <p className="mt-3 max-w-md text-[15px] text-subtle">
-              Questions naming a specific kind of record or entity work best.
-            </p>
-          </div>
-        ) : (
-          <div className="flex-1">
-            <MessageList turns={turns} />
-            {!busy && (
-              <div className="mt-6 pl-12">
-                <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
-              </div>
-            )}
-          </div>
-        )}
+        <div className="flex-1">
+          <MessageList turns={turns} />
+          {!busy && turns.length > 0 && (
+            <div className="mt-6 pl-12">
+              <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
+            </div>
+          )}
+        </div>
 
         <div className="sticky bottom-6 mt-8">
           <Composer
