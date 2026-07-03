@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def _log_llm_call(tier: str, model: str, provider: str,
-                  in_tok: int, out_tok: int, ms: int) -> None:
+                  in_tok: int, out_tok: int, ms: int,
+                  workspace_id: int = 1) -> None:
     """Best-effort persist to aryx_llm_call; no-op if DB unavailable."""
     try:
         from aryx.config import get_settings    # noqa: PLC0415
@@ -44,7 +45,8 @@ def _log_llm_call(tier: str, model: str, provider: str,
         with get_pool(dsn).connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("insert_llm_call"),
-                            (tier, model, provider, in_tok, out_tok, ms, "pipeline", None))
+                            (workspace_id, tier, model, provider,
+                             in_tok, out_tok, ms, "pipeline", None))
     except Exception:  # noqa: BLE001
         logger.debug("llm call log write failed", exc_info=True)
 

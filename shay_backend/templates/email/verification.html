@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verify Your Email - {platform_name}</title>
+</head>
+<body style="margin: 0; padding: 24px 12px; background-color: #F4F6FB; color: #0B1430; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #FFFFFF; border: 1px solid #D9DEEB; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 50px rgba(13, 27, 90, 0.10);">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #1E3A8A; background-image: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%); color: #FFFFFF;">
+      <tr>
+        <td style="width: 180px; padding: 24px 0 24px 24px; vertical-align: middle;">{logo_html}</td>
+        <td style="padding: 24px 24px 24px 12px; text-align: center; vertical-align: middle;">
+          <h1 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; color: #FFFFFF;">Verify your email</h1>
+          <p style="margin: 10px 0 0 0; font-size: 14px; line-height: 1.5; color: #DCE8FF;">Activate your Aryx workspace</p>
+        </td>
+        <td style="width: 72px;"></td>
+      </tr>
+    </table>
+
+    <div style="padding: 36px 32px;">
+      <p style="margin: 0 0 16px 0; font-size: 20px; line-height: 1.4; font-weight: 600; color: #0B1430;">Hello {user_name},</p>
+      <p style="margin: 0 0 18px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Thanks for joining <strong>{company_name}</strong> on <strong>{platform_name}</strong>.
+      </p>
+
+      <div style="margin: 0 0 24px 0; padding: 18px 20px; background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 16px;">
+        <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;">{product_intro_text}</p>
+      </div>
+
+      <p style="margin: 0 0 22px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Verify your email address to activate your Aryx workspace and continue setup.
+      </p>
+
+      <div style="text-align: center; margin: 0 0 20px 0;">
+        <a href="{verification_link}" style="display: inline-block; padding: 14px 30px; border-radius: 999px; background-color: #2D7DFF; color: #FFFFFF; text-decoration: none; font-size: 15px; line-height: 1.4; font-weight: 700;">Verify Email Address</a>
+      </div>
+
+      <div style="margin: 0 0 24px 0; padding: 16px 18px; background-color: #F8FAFE; border-radius: 14px; border: 1px dashed #BED1F8; font-size: 13px; line-height: 1.7; color: #0B1430; word-break: break-all;">
+        If the button does not work, use this link:
+        <br />
+        <a href="{verification_link}" style="color: #2D7DFF; text-decoration: underline;">{verification_link}</a>
+      </div>
+
+      <div style="margin: 0 0 22px 0; padding: 16px 18px; background-color: #FFF7E8; border-left: 4px solid #D4A72C; border-radius: 14px;">
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #6B4F00;"><strong>Important</strong></p>
+        <ul style="margin: 0; padding-left: 20px; color: #6B4F00;">
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;">This link expires in <strong>{expires_in_hours} hours</strong>.</li>
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;">Ignore this email if you did not create the account.</li>
+          <li style="margin: 0; font-size: 14px; line-height: 1.7;">The verification link can only be used once.</li>
+        </ul>
+      </div>
+
+      <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;">
+        Need help finishing setup? Contact <a href="mailto:{support_email}" style="color: #2D7DFF; text-decoration: underline;">{support_email}</a>.
+      </p>
+    </div>
+
+    <div style="padding: 24px 32px; background-color: #F8FAFE; border-top: 1px solid #D9DEEB; text-align: center;">
+      <p style="margin: 0 0 8px 0; font-size: 13px; line-height: 1.6; color: #4A5A7A;">This email was sent from {platform_name}.</p>
+      <p style="margin: 0; font-size: 13px; line-height: 1.6; font-weight: 600; color: #0D1B5A;">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{page_title} - {platform_name}</title>
+</head>
+<body style="margin: 0; padding: 24px 12px; background-color: #F4F6FB; color: #0B1430; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #FFFFFF; border: 1px solid #D9DEEB; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 50px rgba(13, 27, 90, 0.10);">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #1E3A8A; background-image: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%); color: #FFFFFF;">
+      <tr>
+        <td style="width: 180px; padding: 24px 0 24px 24px; vertical-align: middle;">{logo_html}</td>
+        <td style="padding: 24px 24px 24px 12px; text-align: center; vertical-align: middle;">{header_content}</td>
+        <td style="width: 72px;"></td>
+      </tr>
+    </table>
+
+    <div style="padding: 36px 32px;">
+      <p style="margin: 0 0 16px 0; font-size: 20px; line-height: 1.4; font-weight: 600; color: #0B1430;">Hello,</p>
+      <p style="margin: 0 0 22px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">{intro_message}</p>
+
+      <div style="margin: 0 0 24px 0; padding: 20px 22px; background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 16px;">
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #0B1430;"><strong style="color: #0D1B5A;">User:</strong> {user_name}</p>
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #0B1430;"><strong style="color: #0D1B5A;">Email:</strong> {user_email}</p>
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #0B1430;"><strong style="color: #0D1B5A;">Role:</strong> {user_role_display}</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;"><strong style="color: #0D1B5A;">Added by:</strong> {added_by}</p>
+      </div>
+
+      <p style="margin: 0 0 22px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">{access_paragraph}</p>
+      <div style="text-align: center;">{view_channel_block}</div>
+
+      <p style="margin: 22px 0 0 0; font-size: 14px; line-height: 1.7; color: #0B1430;">
+        If you have any questions, contact your workspace administrator.
+      </p>
+    </div>
+
+    <div style="padding: 24px 32px; background-color: #F8FAFE; border-top: 1px solid #D9DEEB; text-align: center;">
+      <p style="margin: 0 0 8px 0; font-size: 13px; line-height: 1.6; color: #4A5A7A;">This email was sent from {platform_name}.</p>
+      <p style="margin: 0; font-size: 13px; line-height: 1.6; font-weight: 600; color: #0D1B5A;">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>

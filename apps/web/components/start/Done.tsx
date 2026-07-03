@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   ArrowRight, Network, MessageCircle, RefreshCw, Loader2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { parseWorkspaceScope, workspaceModelHref, workspaceSectionHref } from "@/lib/workspace-route";
 import type { OntologyType } from "@/lib/types";
 import { StepShell } from "./StepShell";
 
@@ -19,6 +21,8 @@ const RUNNING_STATUSES = new Set(["queued", "running", "pending", "in_progress"]
 /** Screen 6 — what Aryx has learned so far. Auto-refreshes while any
  *  ingest job is still running so the counts catch up to reality. */
 export function Done({ workspaceId }: Props) {
+  const pathname = usePathname();
+  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
   const [types, setTypes] = useState<OntologyType[]>([]);
   const [entityCount, setEntityCount] = useState(0);
   const [relCount, setRelCount] = useState(0);
@@ -108,14 +112,14 @@ export function Done({ workspaceId }: Props) {
 
       <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
         <Link
-          href="/"
+          href={shayWorkspaceId ? workspaceSectionHref(shayWorkspaceId, "ask") : "/"}
           className="focus-ring inline-flex items-center gap-2 rounded-xl bg-navy-800 px-6 py-3 text-[15px] font-semibold text-white hover:bg-navy-700"
         >
           <MessageCircle size={15} /> Ask Aryx a question{" "}
           <ArrowRight size={15} />
         </Link>
         <Link
-          href="/model"
+          href={shayWorkspaceId ? workspaceModelHref(shayWorkspaceId) : "/model"}
           className="focus-ring inline-flex items-center gap-2 rounded-xl border border-navy-100 bg-white px-5 py-3 text-[14px] font-medium text-navy-700 hover:bg-navy-50"
         >
           <Network size={15} /> See the map

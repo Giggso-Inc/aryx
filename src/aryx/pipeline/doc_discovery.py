@@ -164,6 +164,11 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
         "ja_JP", "zh_CN", "zh_HK", "zh_TW", "zh_SG", "ko_KR", "da_DK",
         "pt_BR", "pt_PT", "fr_CA", "es_CO",
     })
+    # HTML/embedded tags whose text content must never become entity fields or
+    # entity types — script/style bodies are code, not data.
+    _SKIP_TAGS: frozenset[str] = frozenset({
+        "script", "style", "head", "meta", "link", "noscript",
+    })
 
     def _strip_ns(tag: str) -> str:
         return tag.split("}")[-1] if "}" in tag else tag
@@ -191,6 +196,8 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
                         return c.text.strip()
                 return None
             return None  # non-locale children → nested entity, not a scalar value
+        if _strip_ns(child.tag) in _SKIP_TAGS:
+            return None
         return child.text.strip() if child.text and child.text.strip() else None
 
     def _elem_id(elem: ET.Element) -> str | None:
@@ -280,6 +287,8 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
     def _walk(elem: ET.Element) -> None:
         for child in elem:
             ctag = _strip_ns(child.tag)
+            if ctag in _SKIP_TAGS:
+                continue
             if _is_container(ctag):
                 _walk(child)
             elif _is_entity(child):
@@ -326,7 +335,7 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
                 # Child element text values (e.g. <id>123</id>, multilingual)
                 for sub in child:
                     stag = _strip_ns(sub.tag)
-                    if _is_container(stag):
+                    if _is_container(stag) or stag in _SKIP_TAGS:
                         continue
                     val = _extract_field(sub)
                     if val is not None:

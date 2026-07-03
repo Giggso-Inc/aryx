@@ -96,36 +96,37 @@ export default function ObservabilityPage() {
     <div className="flex min-h-screen flex-col">
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="font-display text-2xl font-bold text-navy-900">Observability</h1>
-            <p className="mt-0.5 text-[13px] text-subtle">Pipeline health, LLM usage &amp; graph stats</p>
+      <div className="app-shell-offset flex-1">
+        <main className="mx-auto w-full max-w-6xl px-6 py-8">
+          <div className="mb-6 flex items-center justify-between">
+            <div>
+              <h1 className="font-display text-2xl font-bold text-navy-900">Observability</h1>
+              <p className="mt-0.5 text-[13px] text-subtle">Pipeline health, LLM usage &amp; graph stats</p>
+            </div>
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={refreshing}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-3 py-1.5 text-[13px] font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+              Refresh
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={refreshing}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-3 py-1.5 text-[13px] font-medium text-navy-700 hover:bg-navy-50 disabled:opacity-50"
-          >
-            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
-            Refresh
-          </button>
-        </div>
 
-        {error && (
-          <div className="mb-6 flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
-            <AlertCircle size={14} className="shrink-0" />
-            {error}
-          </div>
-        )}
+          {error && (
+            <div className="mb-6 flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
+              <AlertCircle size={14} className="shrink-0" />
+              {error}
+            </div>
+          )}
 
-        {loading && !data ? (
-          <div className="flex h-40 items-center justify-center text-[13px] text-subtle">
-            Loading…
-          </div>
-        ) : data && (
-          <>
+          {loading && !data ? (
+            <div className="flex h-40 items-center justify-center text-[13px] text-subtle">
+              Loading…
+            </div>
+          ) : data && (
+            <>
             {/* Metric cards */}
             <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Metric icon={<Database size={16} />} label="Entities" value={fmtNum(data.graph.entities)} color="navy" />
@@ -251,9 +252,10 @@ export default function ObservabilityPage() {
                 </div>
               </div>
             )}
-          </>
-        )}
-      </main>
+            </>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

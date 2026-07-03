@@ -5,7 +5,7 @@
 - **Docker & Docker Compose** — [Install](https://docs.docker.com/compose/install/)
 - **Git** — [Install](https://git-scm.com/)
 - **Python 3.13** (optional, for local dev without Docker)
-- **Ollama** (optional, for local LLM models; included in docker-compose)
+- **Shared dev-server Ollama URL** (required for localhost via `docker-compose.local.yml`)
 
 ## Local Setup (Docker Compose)
 
@@ -18,33 +18,32 @@ cd aryx
 
 ### 2. Configure Environment
 
-Copy `.env.example` to `.env` (if provided), or set defaults:
+Copy `.env.example` to `.env`, then set the shared dev-server Ollama URL:
 
 ```bash
-# .env (or set via shell)
-export POSTGRES_PASSWORD=aryx_dev_password
-export POSTGRES_DB=aryx
-export OLLAMA_NUM_PARALLEL=1
+POSTGRES_PASSWORD=aryx_dev_password
+ARYX_LLM_BASE_URL=http://<dev-server-host>:11434
+ARYX_EMBED_ENDPOINT=http://<dev-server-host>:11434
 ```
 
 ### 3. Start Services
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.local.yml up -d
 ```
 
 **Services:**
 - **UI** (Streamlit): http://localhost:8501
 - **API** (FastAPI): http://localhost:8088 (or http://localhost:8088/docs for OpenAPI)
-- **Postgres**: localhost:5432 (user: `aryx`, password from `.env`)
+- **Postgres**: localhost:55432 (user: `aryx`, password from `.env`)
 - **FalkorDB**: localhost:6379
-- **Ollama**: localhost:11434
+- **Ollama**: remote shared dev-server URL from `.env`
 
 ### 4. Verify
 
 ```bash
-docker compose ps
-# Should show: postgres, falkordb, ollama, api, ui all "Up"
+docker compose -f docker-compose.local.yml ps
+# Should show: postgres, falkordb, api, shay-api, mcp, ui, web all "Up"
 
 curl http://localhost:8088/health
 # Returns: {"status": "ok"}
@@ -64,11 +63,11 @@ curl http://localhost:8088/health
    - **Password:** (from `.env`)
 5. Click **"Connect & introspect"** → agent discovers tables → **Confirm & ingest**
 
-## EC2 Deployment
+## OCI / Dev-Server Deployment
 
 ### Prerequisites
 
-- **EC2 instance** (t3.large+, 4 vCPU, 8GB RAM, 50GB disk)
+- **OCI instance** (or equivalent Linux VM, 4 vCPU, 8GB RAM, 50GB disk)
 - **SSH key** (`~/.ssh/aryx-key.pem`)
 - **Security group** allows ports 22 (SSH), 80/443 (HTTP/S), 8501 (UI), 8088 (API)
 
@@ -98,6 +97,8 @@ EOF
 docker compose build --no-cache
 docker compose up -d
 ```
+
+This starts the in-compose `ollama` and `ollama-init` services automatically.
 
 ### 4. Verify
 
@@ -171,7 +172,7 @@ docker compose exec postgres pg_isready -U aryx
 docker logs aryx-postgres-1
 ```
 
-### Ollama Models Slow / Out of Memory
+### Ollama Models Slow / Out of Memory (OCI / dev server)
 
 Edit `docker-compose.yml`:
 ```yaml
@@ -210,7 +211,7 @@ python -m uvicorn src.aryx.api.main:app --reload --port 8088
 streamlit run src/aryx/ui/main.py --server.port=8501
 ```
 
-(Requires external Postgres + FalkorDB + Ollama. See `docker-compose.yml` for connection strings.)
+(Requires external Postgres + FalkorDB + Ollama. For localhost Docker, prefer `docker-compose.local.yml`.)
 
 ## Verification Checklist
 

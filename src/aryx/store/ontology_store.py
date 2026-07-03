@@ -33,9 +33,11 @@ class OntologyStore:
             with conn.cursor() as cur:
                 cur.executemany(
                     load("upsert_ontology_type"),
-                    [{"workspace_id": self._workspace_id, "name": t.name,
-                      "attributes": Json(t.attributes),
-                      "status": t.status, "source": t.source} for t in types],
+                    [
+                        (self._workspace_id, t.name, Json(t.attributes),
+                         t.status, t.source)
+                        for t in types
+                    ],
                 )
 
     def update_schema(self, name: str, schema: dict[str, Any]) -> None:

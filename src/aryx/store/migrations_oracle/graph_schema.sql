@@ -86,6 +86,27 @@ EXCEPTION WHEN OTHERS THEN IF SQLCODE != -1408 THEN NULL; END IF;
 END;
 /
 
+-- Unique constraints required for Oracle MERGE ON clause idempotency.
+-- Without these, duplicate rows cause ORA-30926 on any subsequent projection run.
+
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_graph_source ADD CONSTRAINT uq_graph_source UNIQUE (workspace_id, system, dataset, record_id)';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -2261 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_graph_provenance ADD CONSTRAINT pk_graph_prov PRIMARY KEY (workspace_id, entity_id, source_id)';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -2260 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_graph_edge ADD CONSTRAINT uq_graph_edge UNIQUE (workspace_id, src_id, tgt_id, name)';
+EXCEPTION WHEN OTHERS THEN IF SQLCODE != -2261 THEN RAISE; END IF;
+END;
+/
+
 -- Oracle Property Graph declaration (23ai SQL/PGQ).
 -- VERTEX TABLES and EDGE TABLES map directly to the backing tables above.
 BEGIN

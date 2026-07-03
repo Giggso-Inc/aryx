@@ -58,6 +58,35 @@ class DatasourceStore:
             return None
         return self._row(row, omit_cipher=True)
 
+    def update(
+        self,
+        datasource_id: int,
+        *,
+        name: str,
+        kind: str,
+        config: dict[str, Any],
+        secret: str | None = None,
+    ) -> dict[str, Any]:
+        """Update datasource metadata and optionally rotate the stored secret."""
+        params = {
+            "id": int(datasource_id),
+            "name": name,
+            "kind": kind,
+            "config_json": Json(config or {}),
+            "secret_cipher": None,
+            "secret_mask": None,
+        }
+        if secret is not None:
+            params["secret_cipher"] = datasource_secrets.encrypt(secret)
+            params["secret_mask"] = datasource_secrets.mask(secret)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(load("update_datasource"), params)
+            row = cur.fetchone()
+        if not row:
+            raise ValueError(f"datasource {datasource_id} not found")
+        logger.info("datasource updated id=%s kind=%s", datasource_id, kind)
+        return self._row(row, omit_cipher=True)
+
     def delete(self, datasource_id: int) -> None:
         """Hard-delete a datasource and its audit trail (FK cascades)."""
         with self._pool.connection() as conn, conn.cursor() as cur:

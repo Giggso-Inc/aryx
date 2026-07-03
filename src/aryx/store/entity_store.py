@@ -25,7 +25,7 @@ from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
 
-_entity_seq_name: str | None = None
+_entity_seq_cache: dict[str, str] = {}  # table_name → identity sequence name
 
 
 def _fetch_entity_ids(cur: Any, n: int) -> list[int]:
@@ -34,23 +34,20 @@ def _fetch_entity_ids(cur: Any, n: int) -> list[int]:
     Queries user_tab_identity_cols once to discover the sequence name, then
     uses CONNECT BY LEVEL to pull n NEXTVALs in a single SELECT.
     """
-    global _entity_seq_name
-    if _entity_seq_name is None:
-        cur.execute(
-            "SELECT sequence_name FROM user_tab_identity_cols"
-            " WHERE table_name = 'ARYX_ENTITY'",
-        )
+    if "ARYX_ENTITY" not in _entity_seq_cache:
+        cur.execute(load("select_entity_seq_name"))
         row = cur.fetchone()
         if row:
-            _entity_seq_name = row[0]
-            logger.info("entity identity sequence resolved name=%s", _entity_seq_name)
+            _entity_seq_cache["ARYX_ENTITY"] = row[0]
+            logger.info("entity identity sequence resolved name=%s", row[0])
         else:
             raise RuntimeError(
                 "user_tab_identity_cols returned no row for ARYX_ENTITY — "
                 "run migration 0032_entity_by_default_identity.sql"
             )
+    seq_name = _entity_seq_cache["ARYX_ENTITY"]
     cur.execute(
-        f"SELECT {_entity_seq_name}.NEXTVAL FROM dual CONNECT BY LEVEL <= %s",
+        f"SELECT {seq_name}.NEXTVAL FROM dual CONNECT BY LEVEL <= %s",
         (n,),
     )
     ids = [int(r[0]) for r in cur.fetchall()]
