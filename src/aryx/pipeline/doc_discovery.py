@@ -797,13 +797,35 @@ def _detect_fk_links_workspace(
     return links
 
 
+def _update_confirm_state(discovery_id: str, state: dict) -> None:
+    """Persist confirm_state to DB after each plan (crash-safe resume support)."""
+    from aryx.store.discovery_store import DiscoveryStore  # noqa: PLC0415 — lazy to avoid circular
+    settings = get_settings()
+    store = DiscoveryStore(settings.rdb_dsn)
+    try:
+        store.update_confirm_state(discovery_id, state)
+    finally:
+        store.close()
+
+
 def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      approved_files: list[str], broker: Broker, jobs, job_id: str,
-                     workspace_id: int = 1) -> None:
-    """Resolve + project the approved discovered types and tabular files."""
+                     workspace_id: int = 1,
+                     confirm_state: dict | None = None,
+                     discovery_id: str | None = None) -> None:
+    """Resolve + project the approved discovered types and tabular files.
+
+    confirm_state enables crash-safe resume: completed plans are skipped and
+    progress is persisted to DB after each plan so a restart picks up where
+    it left off.
+    """
     settings = get_settings()
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
+
+    state = confirm_state or {}
+    completed_plans: set[str] = set(state.get("completed_plans", []))
+    plan_run_ids: dict[str, str] = dict(state.get("plan_run_ids", {}))
 
     for otype in approved_types:
         step += 1
@@ -826,10 +848,16 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          workspace_id=workspace_id, relate=True, on_progress=_progress_otype)
 
     # Collect valid plans in approval order so FK detection sees the full picture.
-    valid_plans = [p for p in
-                   (next((p for p in data["tabular"] if p["filename"] == fn), None)
-                    for fn in approved_files)
-                   if p is not None]
+    # Filter out already-completed plans when resuming.
+    all_valid_plans = [p for p in
+                       (next((p for p in data["tabular"] if p["filename"] == fn), None)
+                        for fn in approved_files)
+                       if p is not None]
+    valid_plans = [p for p in all_valid_plans if p["filename"] not in completed_plans]
+    if len(valid_plans) < len(all_valid_plans):
+        logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
+                    job_id, len(all_valid_plans) - len(valid_plans),
+                    [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
     auto_fk = _detect_fk_links(valid_plans)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
@@ -897,10 +925,19 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          ontology_type=otype, match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=is_last and settings.ingest_relate, 
+                         relate=is_last and settings.ingest_relate,
                          skip_graph=not is_last,
                          on_progress=_progress_plan)
             logger.info("confirm job=%s file=%s done", job_id, fname)
+            # Persist progress after each plan so a restart can resume here.
+            if discovery_id:
+                completed_plans.add(fname)
+                _update_confirm_state(discovery_id, {
+                    "last_job_id": job_id,
+                    "completed_plans": list(completed_plans),
+                    "plan_run_ids": plan_run_ids,
+                    "failed_plans": [],
+                })
         finally:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)

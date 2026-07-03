@@ -1,13 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { Database, FileText, Globe } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Clock, Database, FileText, Globe } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/cn";
+import { api } from "@/lib/api";
 import { DatabaseTab } from "@/components/ingest/DatabaseTab";
 import { DocsTab } from "@/components/ingest/DocsTab";
 import { RestTab } from "@/components/ingest/RestTab";
+import type { DiscoveryHistoryItem } from "@/lib/types";
 
 type Tab = "database" | "docs" | "rest";
 
@@ -20,6 +22,36 @@ const TABS = [
 export default function IngestPage() {
   const { workspaceId, setWorkspaceId } = useWorkspace();
   const [tab, setTab] = useState<Tab>("database");
+  const [pendingItems, setPendingItems] = useState<DiscoveryHistoryItem[]>([]);
+  const [restoreId, setRestoreId] = useState<string | null>(null);
+  const [restartFlag, setRestartFlag] = useState(false);
+
+  useEffect(() => {
+    api.listDiscoveries(workspaceId)
+      .then((items) => setPendingItems(items.filter((i) => i.status !== "confirmed" && i.status !== "confirming")))
+      .catch(() => {});
+  }, [workspaceId]);
+
+  const handleConfirm = (id: string) => {
+    setRestartFlag(false);
+    setRestoreId(id);
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
+    setTab("docs");
+  };
+
+  const handleAction = (id: string, restart: boolean) => {
+    setRestartFlag(restart);
+    setRestoreId(id);
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
+    setTab("docs");
+  };
+
+  const handleRestored = () => {
+    const id = restoreId;
+    setRestoreId(null);
+    setRestartFlag(false);
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
+  };
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -32,6 +64,52 @@ export default function IngestPage() {
             Add data to your knowledge graph — database, documents or REST APIs
           </p>
         </div>
+
+        {pendingItems.length > 0 && (
+          <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+            <p className="mb-2 text-[12px] font-semibold text-amber-800">
+              {pendingItems.length === 1
+                ? "1 document discovery is waiting to be confirmed"
+                : `${pendingItems.length} document discoveries are waiting to be confirmed`}
+            </p>
+            <div className="max-h-[160px] overflow-y-auto space-y-1.5 pr-1">
+              {pendingItems.map((item) => (
+                <div key={item.discovery_id} className="flex items-center gap-3 text-[12px]">
+                  <Clock size={11} className="text-amber-600 shrink-0" />
+                  <span className="flex-1 truncate text-amber-900">
+                    {item.summary?.files?.map((f) => f.filename).join(", ") || `${item.file_count} file(s)`}
+                  </span>
+                  <span className="text-amber-700 whitespace-nowrap shrink-0">
+                    {item.status === "partial" ? "partially confirmed" : "pending"}
+                  </span>
+                  {item.status === "partial" ? (
+                    <span className="flex gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleAction(item.discovery_id, false)}
+                        className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap">
+                        Resume
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAction(item.discovery_id, true)}
+                        className="rounded-md border border-amber-700 px-2.5 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100 whitespace-nowrap">
+                        Restart
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleConfirm(item.discovery_id)}
+                      className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap shrink-0">
+                      Confirm
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="mb-6 flex gap-0.5 rounded-xl bg-navy-50 p-1">
           {TABS.map((t) => (
@@ -47,7 +125,7 @@ export default function IngestPage() {
         </div>
 
         {tab === "database" && <DatabaseTab />}
-        {tab === "docs" && <DocsTab />}
+        {tab === "docs" && <DocsTab restoreId={restoreId} restart={restartFlag} onRestored={handleRestored} />}
         {tab === "rest" && <RestTab />}
       </main>
     </div>
