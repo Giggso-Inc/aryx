@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: aryx
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: aryx
+    restart: unless-stopped
     # Host port 55432 avoids colliding with other stacks already on 5432.
     # In-network clients still reach this as postgres:5432.
     ports:
@@ -22,6 +23,7 @@ services:
 
   falkordb:
     image: falkordb/falkordb:latest
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
