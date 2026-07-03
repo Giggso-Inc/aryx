@@ -67,7 +67,7 @@ def project_graph(
     else:
         for eid, otype, attrs, labels, iri in entity_rows:
             graph.add_entity(eid, otype, attrs, labels=labels, iri=iri)
-            n_entities = len(entity_rows)
+        n_entities = len(entity_rows)
 
     prov_rows = list(store.list_members_provenance())
     if hasattr(graph, "add_provenance_batch"):
@@ -80,7 +80,7 @@ def project_graph(
 
     all_rels = list(store.list_relationships())
     if hasattr(graph, "add_relationships_batch"):
-        n_relationships = graph.add_relationships_batch(all_rels)
+        n_relationships = graph.add_relationships_batch(all_rels) or len(all_rels)
     else:
         for src, tgt, name in all_rels:
             graph.add_relationship(src, tgt, name)
