@@ -1,7 +1,7 @@
 """increase_file_type_column_length
 
 Revision ID: 774dd7aa5d39
-Revises: b69c8aa08790
+Revises: 91b4b06b5ac9
 Create Date: 2025-10-08 09:41:59.363103
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '774dd7aa5d39'
-down_revision = 'b69c8aa08790'
+down_revision = '91b4b06b5ac9'
 branch_labels = None
 depends_on = None
 

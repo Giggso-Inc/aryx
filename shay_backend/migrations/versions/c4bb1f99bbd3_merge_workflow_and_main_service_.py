@@ -1,7 +1,7 @@
 """merge workflow and main service migrations
 
 Revision ID: c4bb1f99bbd3
-Revises: 6a82ee6f5c3b, add_workflow_fields_to_tasks
+Revises: 6a82ee6f5c3b
 Create Date: 2025-09-11 12:20:31.340797
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'c4bb1f99bbd3'
-down_revision = ('6a82ee6f5c3b', 'add_workflow_fields_to_tasks')
+down_revision = '6a82ee6f5c3b'
 branch_labels = None
 depends_on = None
 

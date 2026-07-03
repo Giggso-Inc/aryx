@@ -187,9 +187,9 @@ async def create_workspace(
         role="admin",
     )
     try:
-        bridge = await _bridge_for_workspace(request, workspace)
         await db.commit()
         await db.refresh(workspace)
+        bridge = await _bridge_for_workspace(request, workspace)
     except httpx.HTTPStatusError as exc:
         await db.rollback()
         detail = exc.response.text or str(exc)
