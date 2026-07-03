@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from aryx import llm_runtime
+from aryx.api.security import require_api_key
 from aryx.config import get_settings
 from aryx.ports import ports
 from aryx.queries import load
@@ -57,7 +58,8 @@ def observability_router() -> APIRouter:
     router = APIRouter(prefix="/admin")
 
     @router.get("/observability")
-    def observability(workspace_id: int = 1) -> dict[str, Any]:
+    def observability(workspace_id: int = 1,
+                      _: str = Depends(require_api_key)) -> dict[str, Any]:
         with get_pool(get_settings().rdb_dsn).connection() as conn:
             return {
                 "jobs": _job_summary(conn, workspace_id),

@@ -10,7 +10,7 @@ import logging
 import re
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from aryx import llm_runtime
@@ -20,6 +20,7 @@ from aryx.config import get_settings
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
 from aryx.store.ask_history_store import AskHistoryStore
+from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,18 @@ class AskRequest(BaseModel):
     question: str
     history: list[Turn] = []
     workspace_id: int = 1
+
+
+def _validate_workspace(workspace_id: int) -> None:
+    """Raise 422 if workspace_id does not exist — prevents cross-workspace log pollution."""
+    with get_pool(get_settings().rdb_dsn).connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM aryx_workspace WHERE id = %s", (workspace_id,))
+            if cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"workspace {workspace_id} does not exist",
+                )
 
 
 def _strip_think(text: str) -> str:
@@ -131,6 +144,7 @@ def ask_router() -> APIRouter:
 
     @router.post("/ask")
     def ask(req: AskRequest) -> dict:
+        _validate_workspace(req.workspace_id)
         reader = _reader(req.workspace_id)
         types = all_types(reader)
         overview = build_overview(reader, req.workspace_id)
