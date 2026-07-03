@@ -31,7 +31,12 @@ def get(discovery_id: str, workspace_id: int = 1) -> dict[str, Any] | None:
     store = DiscoveryStore(settings.rdb_dsn)
     try:
         row = store.get(discovery_id, workspace_id)
-        return row["data"] if row else None
+        if not row:
+            return None
+        data = row["data"]
+        if row.get("confirm_state"):
+            data["_confirm_state"] = row["confirm_state"]
+        return data
     finally:
         store.close()
 

@@ -366,6 +366,7 @@ export const api = {
     approvedFiles: string[] = [],
     workspaceId = 1,
     resumeJobId?: string,
+    restart = false,
   ) =>
     fetchJSON<{ status: string; job_id: string }>("/admin/docs/confirm", {
       method: "POST",
@@ -374,6 +375,7 @@ export const api = {
         approved_types: approvedTypes,
         approved_files: approvedFiles,
         workspace_id: workspaceId,
+        restart,
         ...(resumeJobId ? { resume_job_id: resumeJobId } : {}),
       }),
     }),

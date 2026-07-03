@@ -11,10 +11,11 @@ import type { DiscoverySummary } from "@/lib/types";
 
 interface DocsTabProps {
   restoreId?: string | null;
+  restart?: boolean;
   onRestored?: () => void;
 }
 
-export function DocsTab({ restoreId, onRestored }: DocsTabProps = {}) {
+export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps = {}) {
   const { workspaceId } = useWorkspace();
   const [files, setFiles] = useState<File[]>([]);
   const [context, setContext] = useState("");
@@ -70,7 +71,7 @@ export function DocsTab({ restoreId, onRestored }: DocsTabProps = {}) {
     if (approved.size === 0 && approvedFiles.length === 0) return;
     setPhase("confirming"); setError(null);
     try {
-      const r = await api.confirmDiscovery(discoveryId, [...approved], approvedFiles, workspaceId);
+      const r = await api.confirmDiscovery(discoveryId, [...approved], approvedFiles, workspaceId, undefined, restart);
       setConfirmJobId(r.job_id);
     } catch (e) { setError(e instanceof Error ? e.message : "Confirm failed"); setPhase("error"); }
   };

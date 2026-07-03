@@ -525,6 +525,10 @@ class OraclePool:
             # PoolTimeout after wait_timeout milliseconds.
             getmode=oracledb.POOL_GETMODE_TIMEDWAIT,
             wait_timeout=30000,  # 30 s
+            # ping_interval=0: ping every connection before returning it from the
+            # pool — detects stale connections (DPY-4011 / broken pipe) that Oracle
+            # ADB closed server-side after idle timeout, before they reach user code.
+            ping_interval=0,
         )
 
     @contextmanager
@@ -545,8 +549,14 @@ class OraclePool:
         try:
             yield OracleConnectionWrapper(raw)
             raw.commit()
-        except Exception:
+        except Exception as exc:
             raw.rollback()
+            if "DPY-4011" in str(exc) or "Broken pipe" in str(exc):
+                logger.warning(
+                    "oracle_pool: connection dropped mid-query (DPY-4011) — "
+                    "ping_interval=0 should prevent this on acquire; "
+                    "if recurring, check ADB idle timeout or network MTU settings"
+                )
             raise
         finally:
             self._pool.release(raw)

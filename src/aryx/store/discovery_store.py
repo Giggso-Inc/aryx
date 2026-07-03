@@ -127,6 +127,15 @@ class DiscoveryStore:
             with conn.cursor() as cur:
                 cur.execute(load("delete_discovery"), (discovery_id,))
 
+    def set_status(self, discovery_id: str, status: str) -> None:
+        """Update the status column for a discovery row."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE aryx_discovery SET status = %s WHERE discovery_id = %s",
+                    (status, discovery_id),
+                )
+
     def mark_confirmed(self, discovery_id: str, job_id: str) -> None:
         """Transition status → confirmed and stamp confirmed_at."""
         with self._pool.connection() as conn:

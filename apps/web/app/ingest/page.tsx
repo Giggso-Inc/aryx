@@ -24,20 +24,31 @@ export default function IngestPage() {
   const [tab, setTab] = useState<Tab>("database");
   const [pendingItems, setPendingItems] = useState<DiscoveryHistoryItem[]>([]);
   const [restoreId, setRestoreId] = useState<string | null>(null);
+  const [restartFlag, setRestartFlag] = useState(false);
 
   useEffect(() => {
     api.listDiscoveries(workspaceId)
-      .then((items) => setPendingItems(items.filter((i) => i.status !== "confirmed")))
+      .then((items) => setPendingItems(items.filter((i) => i.status !== "confirmed" && i.status !== "confirming")))
       .catch(() => {});
   }, [workspaceId]);
 
   const handleConfirm = (id: string) => {
+    setRestartFlag(false);
     setRestoreId(id);
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
+    setTab("docs");
+  };
+
+  const handleAction = (id: string, restart: boolean) => {
+    setRestartFlag(restart);
+    setRestoreId(id);
+    setPendingItems((prev) => prev.filter((i) => i.discovery_id !== id));
     setTab("docs");
   };
 
   const handleRestored = () => {
     setRestoreId(null);
+    setRestartFlag(false);
     setPendingItems((prev) => prev.filter((i) => i.discovery_id !== restoreId));
   };
 
@@ -70,12 +81,29 @@ export default function IngestPage() {
                   <span className="text-amber-700 whitespace-nowrap shrink-0">
                     {item.status === "partial" ? "partially confirmed" : "pending"}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => handleConfirm(item.discovery_id)}
-                    className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap shrink-0">
-                    {item.status === "partial" ? "Resume" : "Confirm"}
-                  </button>
+                  {item.status === "partial" ? (
+                    <span className="flex gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleAction(item.discovery_id, false)}
+                        className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap">
+                        Resume
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAction(item.discovery_id, true)}
+                        className="rounded-md border border-amber-700 px-2.5 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100 whitespace-nowrap">
+                        Restart
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleConfirm(item.discovery_id)}
+                      className="rounded-md bg-amber-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-amber-800 whitespace-nowrap shrink-0">
+                      Confirm
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -96,7 +124,7 @@ export default function IngestPage() {
         </div>
 
         {tab === "database" && <DatabaseTab />}
-        {tab === "docs" && <DocsTab restoreId={restoreId} onRestored={handleRestored} />}
+        {tab === "docs" && <DocsTab restoreId={restoreId} restart={restartFlag} onRestored={handleRestored} />}
         {tab === "rest" && <RestTab />}
       </main>
     </div>

@@ -32,6 +32,7 @@ class ConfirmRequest(BaseModel):
     approved_files: list[str] = []
     workspace_id: int = 1
     resume_job_id: str | None = None
+    restart: bool = False
 
 
 def _save_tmp(data: bytes, suffix: str) -> Path:
@@ -61,8 +62,18 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         jobs.close()
 
 
+def _reset_discovery_status(discovery_id: str) -> None:
+    store = DiscoveryStore(get_settings().rdb_dsn)
+    try:
+        store.set_status(discovery_id, "partial")
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        store.close()
+
+
 def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
-                 workspace_id: int = 1) -> None:
+                 workspace_id: int = 1, restart: bool = False) -> None:
     settings = get_settings()
     jobs = JobStore(settings.rdb_dsn)
     try:
@@ -73,7 +84,7 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
             jobs.finish(job_id, run_id=None, status="failed",
                         error=f"discovery {did} not found or workspace mismatch")
             return
-        confirm_state = data.get("_confirm_state", {})
+        confirm_state: dict = {} if restart else data.get("_confirm_state", {})
         ingest_confirmed(data, types, files, _local_broker(), jobs, job_id,
                          workspace_id, confirm_state=confirm_state, discovery_id=did)
         jobs.finish(job_id, run_id=None, status="complete")
@@ -81,6 +92,7 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
     except Exception as exc:  # noqa: BLE001
         logger.warning("doc confirm failed job=%s: %s", job_id, exc, exc_info=True)
         jobs.finish(job_id, run_id=None, status="failed", error=str(exc))
+        _reset_discovery_status(did)
     finally:
         jobs.close()
 
@@ -133,9 +145,14 @@ def doc_discover_router() -> APIRouter:
             jobs.create(job_id, "documents", "confirmed entities", req.workspace_id)
         finally:
             jobs.close()
+        disc_store = DiscoveryStore(get_settings().rdb_dsn)
+        try:
+            disc_store.set_status(req.discovery_id, "confirming")
+        finally:
+            disc_store.close()
         background_tasks.add_task(_confirm_job, req.discovery_id,
                                   req.approved_types, req.approved_files,
-                                  job_id, req.workspace_id)
+                                  job_id, req.workspace_id, req.restart)
         return {"status": "queued", "job_id": job_id}
 
     return router

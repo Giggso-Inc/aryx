@@ -285,7 +285,7 @@ export interface DiscoverySummary {
 
 export interface DiscoveryHistoryItem {
   discovery_id: string;
-  status: "pending" | "partial" | "confirmed";
+  status: "pending" | "partial" | "confirming" | "confirmed";
   summary: DiscoverySummary;
   file_count: number;
   created_at: string;
