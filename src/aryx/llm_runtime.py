@@ -48,7 +48,8 @@ def _broker_for(model: str) -> Broker:
     return Broker(registry, TokenGovernor({}), secrets=_RuntimeSecrets())
 
 
-def _log_call(role: str, model: str, pt: int, ct: int, ms: int, err: str) -> None:
+def _log_call(role: str, model: str, pt: int, ct: int, ms: int, err: str,
+              workspace_id: int = 1) -> None:
     """Best-effort persist to aryx_llm_call (no-op if DB unavailable)."""
     dsn = os.environ.get("ARYX_RDB_DSN", "")
     if not dsn:
@@ -57,19 +58,21 @@ def _log_call(role: str, model: str, pt: int, ct: int, ms: int, err: str) -> Non
         with get_pool(dsn).connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("insert_llm_call"),
-                            (role, model, _state["provider"], pt, ct, ms, "ask", err or None))
+                            (workspace_id, role, model, _state["provider"],
+                             pt, ct, ms, "ask", err or None))
     except Exception:  # noqa: BLE001
         logger.debug("llm call log write failed", exc_info=True)
 
 
-def chat(role: str, system: str, user: str) -> tuple[str, int, int]:
+def chat(role: str, system: str, user: str,
+         workspace_id: int = 1) -> tuple[str, int, int]:
     """Run a completion for 'menial' or 'answer' using the configured model."""
     model = _state["menial_model"] if role == "menial" else _state["answer_model"]
     import time
     start = time.monotonic()
     text, pt, ct = complete_text(_broker_for(model), "cheap", system, user, think=False)
     ms = int((time.monotonic() - start) * 1000)
-    _log_call(role, model, pt, ct, ms, "")
+    _log_call(role, model, pt, ct, ms, "", workspace_id=workspace_id)
     return text, pt, ct
 
 
