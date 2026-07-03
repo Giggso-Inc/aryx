@@ -106,7 +106,17 @@ def delete_type(name: str, workspace_id: int = 1) -> dict[str, Any]:
 
 
 def list_browse(workspace_id: int) -> dict[str, Any]:
-    """Return ontology types + relationship counts for one workspace."""
+    """Return ontology types + relationship counts for one workspace.
+
+    Auto-heal: when the ontology type registry is empty but entities exist
+    (e.g. data ingested before type-seeding was introduced), derive types
+    from distinct ontology_type values in the entity store and persist them
+    as approved. Idempotent — uses ON CONFLICT DO NOTHING.
+    """
+    from aryx.models import OntologyType as _OT
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
     settings = get_settings()
     onto = OntologyStore(settings.rdb_dsn, workspace_id)
     try:
@@ -122,10 +132,11 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
         onto.close()
     store = EntityStore(settings.rdb_dsn, workspace_id)
     try:
-        ents = store.list_entities()
+        ents = list(store.list_entities())
         rels = store.list_relationships()
     finally:
         store.close()
+
     def _field(row: Any, key: str, idx: int) -> str:
         if isinstance(row, dict):
             return str(row.get(key) or row.get("ontology_type") or "?")
@@ -133,9 +144,30 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
             return str(row[idx])
         except (IndexError, TypeError):
             return "?"
+
     per_type: dict[str, int] = {}
     for e in ents:
         per_type[_field(e, "type", 1)] = per_type.get(_field(e, "type", 1), 0) + 1
+
+    # Auto-heal: seed missing type registry from entity store data.
+    if not type_rows and per_type:
+        _log.info("ontology_browse: no types found for ws=%s but %d entity types exist — auto-seeding",
+                  workspace_id, len(per_type))
+        heal_onto = OntologyStore(settings.rdb_dsn, workspace_id)
+        try:
+            heal_onto.seed_types([
+                _OT(name=name, attributes=[], status="approved", source="entity-store")
+                for name in per_type
+            ])
+            healed = heal_onto.list_types()
+            type_rows = [t.__dict__ if hasattr(t, "__dict__") else dict(t) for t in healed]
+            for row in type_rows:
+                row["ancestors"] = []
+        except Exception:  # noqa: BLE001
+            _log.warning("ontology_browse: auto-heal seed failed for ws=%s", workspace_id, exc_info=True)
+        finally:
+            heal_onto.close()
+
     for t in type_rows:
         t["instance_count"] = per_type.get(t.get("name"), 0)
     rel_types: dict[str, int] = {}
