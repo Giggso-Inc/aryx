@@ -32,7 +32,8 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
       off      — middleware is a no-op (useful for local dev)
       optional — missing/invalid key passes but sets X-Aryx-Auth-Warning header
       required — missing/invalid key returns 401 (production setting)
-    Default: required.
+    Default: required. Deployments that do not set ARYX_API_AUTH will enforce
+    authentication. Set ARYX_API_AUTH=off to disable in local dev environments.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -86,9 +87,9 @@ def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
       off      → passes through (no key required)
       optional → passes with a response warning header if key absent/invalid
       required → hard 401 if key absent/invalid (production setting)
-    Default: optional.
+    Default: required.
     """
-    mode = os.environ.get("ARYX_API_AUTH", "optional").lower()
+    mode = os.environ.get("ARYX_API_AUTH", "required").lower()
     if mode == "off":
         return None
     key = x_aryx_api_key.strip()

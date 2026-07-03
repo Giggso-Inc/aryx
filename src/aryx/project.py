@@ -55,18 +55,28 @@ def project_graph(
     graph.clear()
     logger.info("graph cleared — writing entities")
     ancestors_for = type_ancestors or {}
-    n_entities = 0
-    for entity_id, ontology_type, attributes in store.list_entities():
-        labels = ancestors_for.get(ontology_type, [])
-        iri = _entity_iri(base_uri, workspace_id, entity_id)
-        graph.add_entity(entity_id, ontology_type, attributes,
-                         labels=labels, iri=iri)
-        n_entities += 1
+    entity_rows = [
+        (eid, otype, attrs,
+         ancestors_for.get(otype, []),
+         _entity_iri(base_uri, workspace_id, eid))
+        for eid, otype, attrs in store.list_entities()
+    ]
+    if hasattr(graph, "add_entities_batch"):
+        graph.add_entities_batch(entity_rows)
+        n_entities = len(entity_rows)
+    else:
+        for eid, otype, attrs, labels, iri in entity_rows:
+            graph.add_entity(eid, otype, attrs, labels=labels, iri=iri)
+            n_entities = len(entity_rows)
 
-    n_provenance = 0
-    for entity_id, system, dataset, record_id in store.list_members_provenance():
-        graph.add_provenance(entity_id, system, dataset, record_id)
-        n_provenance += 1
+    prov_rows = list(store.list_members_provenance())
+    if hasattr(graph, "add_provenance_batch"):
+        graph.add_provenance_batch(prov_rows)
+        n_provenance = len(prov_rows)
+    else:
+        for entity_id, system, dataset, record_id in prov_rows:
+            graph.add_provenance(entity_id, system, dataset, record_id)
+        n_provenance = len(prov_rows)
 
     all_rels = list(store.list_relationships())
     if hasattr(graph, "add_relationships_batch"):
