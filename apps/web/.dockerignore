@@ -2,6 +2,9 @@ node_modules
 .next
 .git
 .env*
+*.tsbuildinfo
+coverage
+dist
 README.md
 Dockerfile
 .dockerignore

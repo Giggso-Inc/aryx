@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle, CheckCircle2, Copy, Globe, KeyRound, Loader2, Plus,
-  Settings2, Shield, Trash2, Cpu, RotateCcw,
+  Settings2, Shield, Trash2, Cpu,
 } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { api } from "@/lib/api";
@@ -501,45 +501,11 @@ function OntologyTab() {
 // ── Danger Tab ───────────────────────────────────────────────────────────────
 
 function DangerTab() {
-  const { workspaceId, workspaces, refresh, setWorkspaceId } = useWorkspace();
+  const { refresh, setWorkspaceId } = useWorkspace();
   const [confirmText, setConfirmText] = useState("");
   const [resetting, setResetting] = useState(false);
-  const [purging, setPurging] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const active = workspaces.find((w) => w.id === workspaceId);
-
-  const purge = async () => {
-    if (!confirm(`Purge all data from "${active?.name}"? Graph & entities will be deleted.`)) return;
-    setPurging(true); setError(null); setResult(null);
-    try {
-      await api.purgeWorkspace(workspaceId);
-      setResult(`Workspace "${active?.name}" data purged.`);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Purge failed");
-    } finally {
-      setPurging(false);
-    }
-  };
-
-  const deleteWs = async () => {
-    if (workspaceId === 1) return;
-    if (!confirm(`Delete workspace "${active?.name}" permanently?`)) return;
-    setDeleting(true); setError(null); setResult(null);
-    try {
-      await api.deleteWorkspace(workspaceId);
-      await refresh();
-      setWorkspaceId(1);
-      setResult("Workspace deleted.");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
-    } finally {
-      setDeleting(false);
-    }
-  };
 
   const nuke = async () => {
     if (confirmText !== "NUKE") return;
@@ -567,42 +533,6 @@ function DangerTab() {
       {result && (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-700">
           <CheckCircle2 size={13} /> {result}
-        </div>
-      )}
-
-      {/* Purge workspace */}
-      <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-5">
-        <h3 className="mb-1 font-semibold text-amber-900">Purge Workspace Data</h3>
-        <p className="mb-4 text-[12px] text-amber-800">
-          Deletes all entities, relationships and embeddings from <strong>{active?.name}</strong>. The workspace itself is kept. This cannot be undone.
-        </p>
-        <button
-          type="button"
-          onClick={purge}
-          disabled={purging}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-[13px] font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50"
-        >
-          {purging ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
-          Purge "{active?.name}"
-        </button>
-      </div>
-
-      {/* Delete workspace */}
-      {workspaceId !== 1 && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50/50 p-5">
-          <h3 className="mb-1 font-semibold text-rose-900">Delete Workspace</h3>
-          <p className="mb-4 text-[12px] text-rose-800">
-            Permanently deletes <strong>{active?.name}</strong> and all its data. Workspace 1 cannot be deleted.
-          </p>
-          <button
-            type="button"
-            onClick={deleteWs}
-            disabled={deleting}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
-          >
-            {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-            Delete "{active?.name}"
-          </button>
         </div>
       )}
 
@@ -657,35 +587,35 @@ export default function SettingsPage() {
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
-        <div className="mb-6">
-          <h1 className="font-display text-2xl font-bold text-navy-900">Settings</h1>
-          <p className="mt-0.5 text-[13px] text-subtle">LLM configuration, MCP tokens &amp; workspace management</p>
-        </div>
+        <section className="overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white shadow-soft">
+          <div className="border-b border-navy-100 bg-white">
+            <div className="flex flex-wrap items-end gap-0 px-5">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={cn(
+                    "inline-flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors",
+                    tab === t.id
+                      ? "border-navy-800 text-navy-900"
+                      : "border-transparent text-navy-500 hover:text-navy-800",
+                  )}
+                >
+                  {t.icon}
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-        {/* Tabs */}
-        <div className="mb-6 flex gap-0.5 rounded-xl bg-navy-50 p-1">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={cn(
-                "focus-ring flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-all",
-                tab === t.id
-                  ? "bg-white text-navy-900 shadow-soft"
-                  : "text-navy-600 hover:text-navy-900",
-              )}
-            >
-              {t.icon}
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {tab === "llm" && <LlmTab />}
-        {tab === "mcp" && <McpTab />}
-        {tab === "ontology" && <OntologyTab />}
-        {tab === "danger" && <DangerTab />}
+          <div className="px-5 py-5">
+            {tab === "llm" && <LlmTab />}
+            {tab === "mcp" && <McpTab />}
+            {tab === "ontology" && <OntologyTab />}
+            {tab === "danger" && <DangerTab />}
+          </div>
+        </section>
       </main>
     </div>
   );

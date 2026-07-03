@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import {
   AlertCircle, CheckCircle2, FileText, Loader2, Sparkles,
 } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { api } from "@/lib/api";
+import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import { useWorkspace } from "@/lib/workspace";
 import type { Brief } from "@/lib/types";
 
@@ -63,7 +65,10 @@ function Readiness({ filled }: { filled: number }) {
 }
 
 export default function BriefPage() {
-  const { workspaceId, workspaces, setWorkspaceId, refresh } = useWorkspace();
+  const { ready, workspaceId, workspaces, setWorkspaceId, refresh } = useWorkspace();
+  const router = useRouter();
+  const pathname = usePathname();
+  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
   const [domain, setDomain] = useState("");
   const [aim, setAim] = useState("");
   const [objectives, setObjectives] = useState("");
@@ -88,6 +93,12 @@ export default function BriefPage() {
 
   // Re-load when workspace changes or workspaces list updates.
   useEffect(() => { loadBrief(); }, [loadBrief]);
+
+  useEffect(() => {
+    if (ready && (workspaceId <= 0 || workspaces.length === 0)) {
+      router.replace(shayWorkspaceId ? workspaceStartHref(shayWorkspaceId) : "/start");
+    }
+  }, [ready, router, shayWorkspaceId, workspaceId, workspaces.length]);
 
   const filledCount = [domain, aim, objectives, scope, roles].filter(
     (v) => v.trim().length > 0,

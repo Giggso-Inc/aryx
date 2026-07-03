@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
+import { parseWorkspaceScope, workspaceModelHref, workspaceStartHref } from "@/lib/workspace-route";
 
 interface Props {
   workspaceId: number;
@@ -14,6 +16,8 @@ interface Props {
  *  whether any types are registered), surface a big "Start setup" CTA
  *  instead of pretending there's data to ask about. */
 export function WorkspacePeek({ workspaceId }: Props) {
+  const pathname = usePathname();
+  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
   const [entityCount, setEntityCount] = useState<number | null>(null);
 
   useEffect(() => {
@@ -35,7 +39,7 @@ export function WorkspacePeek({ workspaceId }: Props) {
           setup to bring in your data.
         </div>
         <Link
-          href="/start"
+          href={shayWorkspaceId ? workspaceStartHref(shayWorkspaceId) : "/start"}
           className="focus-ring mt-3 inline-flex items-center gap-2 rounded-xl bg-navy-800 px-4 py-2 text-[13px] font-semibold text-white hover:bg-navy-700"
         >
           <Sparkles size={14} /> Start guided setup
@@ -51,13 +55,12 @@ export function WorkspacePeek({ workspaceId }: Props) {
           In this workspace
         </div>
         <Link
-          href="/model"
+          href={shayWorkspaceId ? workspaceModelHref(shayWorkspaceId) : "/model"}
           className="text-[11px] font-medium text-steel-500 hover:text-steel-600"
         >
           See the map →
         </Link>
       </div>
-
     </div>
   );
 }
