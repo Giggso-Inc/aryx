@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
-  Activity, CheckCircle2, AlertTriangle, Loader2, X,
+  CheckCircle2, AlertTriangle, FolderDown, Loader2, X,
   ChevronDown, ChevronRight, Ban, RotateCcw,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/cn";
+import { parseWorkspaceScope } from "@/lib/workspace-route";
 
 const POLL_MS = 5_000;
 
@@ -22,19 +23,23 @@ const RUNNING = new Set(["queued", "running", "pending", "in_progress"]);
  *  doesn't have to know to click. No backdrop — the panel coexists with
  *  the page so they can keep working. */
 export function JobsBadge() {
-  const { workspaceId } = useWorkspace();
+  const { workspaceId, workspaces } = useWorkspace();
   const pathname = usePathname();
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
   const refresh = useCallback(async () => {
+    if (workspaceId <= 0 || workspaces.length === 0) {
+      setJobs([]);
+      return;
+    }
     try {
       setJobs(await api.listJobs(workspaceId));
     } catch {
       setJobs([]);
     }
-  }, [workspaceId]);
+  }, [workspaceId, workspaces.length]);
 
   useEffect(() => {
     refresh();
@@ -45,7 +50,11 @@ export function JobsBadge() {
   // Auto-open on Ask + Model when something is running and user hasn't
   // dismissed the panel for this session.
   const running = jobs.filter((j) => RUNNING.has(j.status)).length;
-  const onAskOrModel = pathname === "/" || pathname?.startsWith("/model");
+  const workspaceScope = parseWorkspaceScope(pathname);
+  const onAskOrModel = pathname === "/"
+    || pathname?.startsWith("/model")
+    || workspaceScope.section === "ask"
+    || workspaceScope.section === "ontology";
   useEffect(() => {
     if (running > 0 && onAskOrModel && !dismissed) setOpen(true);
     if (running === 0) setDismissed(false);
@@ -65,7 +74,7 @@ export function JobsBadge() {
       >
         {running > 0
           ? <Loader2 size={16} className="animate-spin text-steel-500" />
-          : <Activity size={16} />}
+          : <FolderDown size={16} />}
         {running > 0 && (
           <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-steel-500 px-1 text-[10px] font-semibold text-white shadow-sm">
             {running}
@@ -103,7 +112,7 @@ function JobsPanel({ open, jobs, onClose, onRefresh }: PanelProps) {
         >
           <header className="flex items-center justify-between border-b border-navy-100 px-5 py-3">
             <div className="flex items-center gap-2">
-              <Activity size={16} className="text-steel-500" />
+              <FolderDown size={16} className="text-steel-500" />
               <h2 className="font-display text-[1.05rem] text-navy-900">
                 Ingest jobs
               </h2>
@@ -313,5 +322,5 @@ function StatusIcon({
   if (failed) return <AlertTriangle size={13} className="text-rose-500" />;
   if (done) return <CheckCircle2 size={13} className="text-emerald-500" />;
   if (running) return <Loader2 size={13} className="animate-spin text-steel-500" />;
-  return <Activity size={13} className="text-subtle" />;
+  return <FolderDown size={13} className="text-subtle" />;
 }

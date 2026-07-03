@@ -148,6 +148,7 @@ services:
     env_file: .env
     command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
     environment:
+      - ARYX_API_URL=http://api:8000
       - ARYX_OCI_MODE=true
       - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
       - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
@@ -177,6 +178,11 @@ services:
       dockerfile: Dockerfile
     environment:
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
+      # OCI stack does not run shay-api in-compose; point this at the separately
+      # reachable Shay backend if Shay pages/routes are enabled in the web app.
+      - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}
       - NODE_ENV=production
       - HOSTNAME=0.0.0.0
     ports:

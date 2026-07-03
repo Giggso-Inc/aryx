@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to {platform_name}</title>
+</head>
+<body style="margin: 0; padding: 24px 12px; background-color: #F4F6FB; color: #0B1430; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #FFFFFF; border: 1px solid #D9DEEB; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 50px rgba(13, 27, 90, 0.10);">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #1E3A8A; background-image: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%); color: #FFFFFF;">
+      <tr>
+        <td style="width: 180px; padding: 24px 0 24px 24px; vertical-align: middle;">{logo_html}</td>
+        <td style="padding: 24px 24px 24px 12px; text-align: center; vertical-align: middle;">
+          <h1 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; color: #FFFFFF;">Welcome to {platform_name}</h1>
+          <p style="margin: 10px 0 0 0; font-size: 14px; line-height: 1.5; color: #DCE8FF;">Your Aryx workspace is ready</p>
+        </td>
+        <td style="width: 72px;"></td>
+      </tr>
+    </table>
+
+    <div style="padding: 36px 32px;">
+      <p style="margin: 0 0 16px 0; font-size: 20px; line-height: 1.4; font-weight: 600; color: #0B1430;">Hi {company_name},</p>
+      <p style="margin: 0 0 22px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Your <strong>{platform_name}</strong> workspace has been created and is ready for onboarding.
+      </p>
+
+      <div style="margin: 0 0 24px 0; padding: 20px 22px; background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 16px;">
+        <p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6; font-weight: 700; color: #0D1B5A;">Workspace details</p>
+        <ul style="margin: 0; padding-left: 20px; color: #0B1430;">
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;"><strong>Company:</strong> {company_name}</li>
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;"><strong>Plan:</strong> {plan_name} - ${monthly_price}/month</li>
+          <li style="margin: 0; font-size: 14px; line-height: 1.7;"><strong>Primary contact:</strong> {contact_email}</li>
+        </ul>
+      </div>
+
+      <p style="margin: 0 0 12px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Open your workspace to start connecting source data, reviewing discovered entities, and exploring Ask.
+      </p>
+      <div style="margin: 0 0 18px 0; padding: 16px 18px; background-color: #F8FAFE; border-radius: 14px; border: 1px dashed #BED1F8; font-size: 13px; line-height: 1.7; color: #0B1430; word-break: break-all;">
+        Workspace URL:
+        <br />
+        <a href="{app_link}" style="color: #2D7DFF; text-decoration: underline;">{app_link}</a>
+      </div>
+      <div style="text-align: center; margin: 0 0 24px 0;">
+        <a href="{app_link}" style="display: inline-block; padding: 14px 30px; border-radius: 999px; background-color: #2D7DFF; color: #FFFFFF; text-decoration: none; font-size: 15px; line-height: 1.4; font-weight: 700;">Launch Workspace</a>
+      </div>
+
+      <div style="margin: 0 0 22px 0; padding: 20px 22px; background-color: #F8FAFE; border-radius: 16px; border: 1px solid #D9DEEB;">
+        <p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6; font-weight: 700; color: #0D1B5A;">Suggested next steps</p>
+        <ul style="margin: 0; padding-left: 20px; color: #0B1430;">
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;">Connect a datasource or upload sample files.</li>
+          <li style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7;">Review the first entities and relationships Aryx proposes.</li>
+          <li style="margin: 0; font-size: 14px; line-height: 1.7;">Start asking questions against your workspace.</li>
+        </ul>
+      </div>
+
+      <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;">
+        If you need help during onboarding, reply to this email or contact your Aryx support team.
+      </p>
+    </div>
+
+    <div style="padding: 24px 32px; background-color: #F8FAFE; border-top: 1px solid #D9DEEB; text-align: center;">
+      <p style="margin: 0 0 8px 0; font-size: 13px; line-height: 1.6; color: #4A5A7A;">This message was sent to {contact_email}.</p>
+      <p style="margin: 0; font-size: 13px; line-height: 1.6; font-weight: 600; color: #0D1B5A;">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>

@@ -3,7 +3,8 @@
 > **This repo is Aryx Lite (v1)** — the fast, approachable front door:
 > point it at your data, and in minutes you have a deduplicated, linked
 > knowledge graph you can ask questions of. Bundled Postgres + FalkorDB +
-> Ollama; built for a single team's quick outcome mapping, not yet a
+> an Ollama-backed Ask layer for the shared dev server; built for a single
+> team's quick outcome mapping, not yet a
 > governed enterprise estate.
 >
 > **Editions:** **Aryx Lite** (v1, this repo — candidate for GPL) ·
@@ -42,7 +43,7 @@
 
 ### Platform
 - **Workspace isolation** — LIST-partitioned Postgres tables; independent graphs, ontologies, and policies per workspace
-- **Local + cloud models** — Ollama for cheap stages (tagging, scoring); Claude/OpenAI/Gemini for frontier decisions (~1-5% of volume)
+- **Shared + cloud models** — dev-server Ollama for cheap stages (tagging, scoring); Claude/OpenAI/Gemini for frontier decisions (~1-5% of volume)
 - **API-key auth** — Off/optional/required modes; fail-closed (exceptions reject, never pass)
 - **Connection pooling** — psycopg3 shared pool singleton; all 10 stores pooled
 - **23 idempotent migrations** — Auto-apply on API startup; zero manual migration steps
@@ -53,7 +54,7 @@
 ```bash
 git clone https://github.com/giggsoinc/aryx.git
 cd aryx
-docker compose up -d
+docker compose -f docker-compose.local.yml up -d
 # UI: http://localhost:8501
 # API: http://localhost:8088/docs
 ```
@@ -83,9 +84,9 @@ First time? **Ingest tab** → provide context (e.g., "Customer support accounts
 | **UI** | Streamlit |
 | **Database** | PostgreSQL 16 (source of truth, LIST-partitioned) |
 | **Graph** | FalkorDB (rebuildable projection) |
-| **LLM** | Ollama (local) + Anthropic Claude / OpenAI / Gemini (frontier) |
+| **LLM** | Shared/OCI Ollama + Anthropic Claude / OpenAI / Gemini (frontier) |
 | **Agent protocol** | MCP (list, ask, act) over SSE |
-| **Deployment** | Docker Compose (local + EC2) |
+| **Deployment** | Docker Compose (localhost + OCI dev server) |
 
 ## Contributing
 
