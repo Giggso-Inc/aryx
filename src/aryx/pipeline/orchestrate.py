@@ -170,6 +170,7 @@ def run_pipeline(
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):
+                logger.info("project stage — building type ancestors ws=%s", workspace_id)
                 type_ancestors = _build_type_ancestors(dsn)
                 cfg = get_settings()
                 if cfg.effective_graph_backend() == "oci_graph":
@@ -185,6 +186,7 @@ def run_pipeline(
                     from aryx.graph import FalkorStore  # noqa: PLC0415
                     from aryx.workspaces import ws_graph  # noqa: PLC0415
                     graph_inst = FalkorStore(graph_url, ws_graph(workspace_id))
+                logger.info("project stage — calling project_graph ws=%s", workspace_id)
                 counts = project_graph(
                     estore, graph_inst,
                     type_ancestors=type_ancestors, workspace_id=workspace_id,
