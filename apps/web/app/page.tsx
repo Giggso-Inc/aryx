@@ -14,6 +14,12 @@ import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
 
+const STARTERS = [
+  "Who are our top customers by revenue?",
+  "Show me all open tickets for a specific account",
+  "What products does this customer own?",
+];
+
 const FOLLOWUPS = [
   "What else do we know about that Customer?",
   "Show me the underlying records",
