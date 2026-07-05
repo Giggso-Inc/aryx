@@ -143,8 +143,9 @@ services:
       retries: 3
 
   # ── Shay API — AI sales assistant backend ───────────────────────────────────
-  # Requires a Postgres-compatible DATABASE_URL — set SHAY_DATABASE_URL in .env
-  # (e.g. an external Postgres, Neon, or a separate ADB schema with JDBC bridge).
+  # Shay uses asyncpg (Postgres) — it cannot connect to Oracle ADB.
+  # SHAY_DATABASE_URL must be a postgresql+asyncpg:// URL pointing at an
+  # external Postgres (Neon, Supabase, RDS, etc.) or a local postgres container.
   # SHAY_RUN_MIGRATIONS=false: Aryx migrations own the shared schema.
   shay-api:
     build:
@@ -152,7 +153,7 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      - DATABASE_URL=${SHAY_DATABASE_URL:-${ARYX_RDB_DSN}}
+      - DATABASE_URL=${SHAY_DATABASE_URL}
       - SHAY_RUN_MIGRATIONS=false
       - FRONTEND_URL=${FRONTEND_URL}
       - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL}
