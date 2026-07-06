@@ -9,7 +9,7 @@ from psycopg.types.json import Json
 from aryx.config import get_settings
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.pool import get_pool
-from aryx.workspaces import WorkspaceStore
+from aryx.workspaces import make_workspace_store
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class ShayBridgeStore:
                 "created": False,
             }
 
-        workspace_store = WorkspaceStore(self._dsn)
+        workspace_store = make_workspace_store(self._dsn)
         try:
             aryx_workspace = workspace_store.create(
                 _aryx_workspace_name(name, shay_workspace_id),
