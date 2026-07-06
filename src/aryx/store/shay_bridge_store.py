@@ -30,18 +30,19 @@ class ShayBridgeStore:
         """No-op: shared pool lifecycle is managed globally."""
 
     def get_workspace_mapping(self, shay_workspace_id: str) -> dict[str, Any] | None:
+        # No JOIN to gg_workspace — that table is owned by shay-api (cross-service).
+        # An INNER JOIN would return None for any mapping whose shay workspace was
+        # deleted or not yet visible, causing an unnecessary re-create attempt.
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT
-                    aryx_shay_workspace_map.shay_workspace_id::text,
-                    aryx_shay_workspace_map.aryx_workspace_id,
-                    aryx_shay_workspace_map.company_id::text,
-                    aryx_shay_workspace_map.sync_state
-                FROM aryx_shay_workspace_map
-                JOIN gg_workspace ON gg_workspace.id = aryx_shay_workspace_map.shay_workspace_id
-                JOIN aryx_workspace ON aryx_workspace.id = aryx_shay_workspace_map.aryx_workspace_id
-                WHERE aryx_shay_workspace_map.shay_workspace_id = %s::uuid
+                    m.shay_workspace_id::text,
+                    m.aryx_workspace_id,
+                    m.company_id::text,
+                    m.sync_state
+                FROM aryx_shay_workspace_map m
+                WHERE m.shay_workspace_id = %s::uuid
                 """,
                 (shay_workspace_id,),
             )
@@ -139,6 +140,18 @@ class ShayBridgeStore:
                 ),
             )
             row = cur.fetchone()
+
+        if row is None:
+            # ON CONFLICT: ORA-00001 was swallowed (Oracle has no DO UPDATE, conflict
+            # is silently ignored), leaving RETURNING out-vars unexecuted → fetchone()
+            # returns None.  The row already exists — SELECT it.
+            existing = self.get_workspace_mapping(shay_workspace_id)
+            if existing:
+                existing["created"] = False
+                return existing
+            raise RuntimeError(
+                f"bridge INSERT for {shay_workspace_id!r} silently failed and no row found"
+            )
         return {
             "shay_workspace_id": row[0],
             "aryx_workspace_id": row[1],
@@ -173,6 +186,17 @@ class ShayBridgeStore:
                 (shay_thread_id, int(aryx_workspace_id), shay_workspace_id, ask_session_key),
             )
             row = cur.fetchone()
+        if row is None:
+            # ON CONFLICT ORA-00001 was swallowed → SELECT existing row.
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT shay_thread_id::text, aryx_workspace_id, shay_workspace_id::text, ask_session_key"
+                    " FROM aryx_shay_chat_map WHERE shay_thread_id = %s::uuid",
+                    (shay_thread_id,),
+                )
+                row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(f"chat map INSERT for {shay_thread_id!r} silently failed and no row found")
         return {
             "shay_thread_id": row[0],
             "aryx_workspace_id": row[1],
