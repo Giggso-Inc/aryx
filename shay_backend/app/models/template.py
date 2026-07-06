@@ -31,10 +31,10 @@ class Template(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
     # Template identifier - auto-generated format TMPLT_INVITE_001
-    template_id = Column(String(255), nullable=False, unique=True, index=True)
+    template_id = Column(String(255), nullable=False, unique=True)
     
     # Template name (file name)
-    template_name = Column(String(500), nullable=False, index=True)
+    template_name = Column(String(500), nullable=False)
     
     # File path for storage
     file_path = Column(String(500), nullable=True)

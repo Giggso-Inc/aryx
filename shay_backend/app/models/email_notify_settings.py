@@ -33,7 +33,7 @@ class EmailNotifySettings(Base):
     routine = Column(BigInteger, nullable=True)
     
     # Resource ID (user identifier) - UUID reference to gg_users table (no FK constraint)
-    resource_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    resource_id = Column(UUID(as_uuid=True), nullable=True)
     
     # Master switch for all notifications (0 = disabled, 1 = enabled)
     is_notification_enabled = Column(Integer, nullable=False, default=0)

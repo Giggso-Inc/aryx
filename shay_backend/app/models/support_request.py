@@ -21,15 +21,15 @@ class SupportRequest(Base):
     id = Column(UUID(as_uuid=True), primary_key=True)
 
     # Company context (optional; when form is submitted from authenticated app context)
-    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True, index=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True)
     company_name = Column(String(255), nullable=True)
 
     # User context (optional; logged-in user who submitted the request)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True)
 
     # User-provided fields
     name = Column(String(255), nullable=False)
-    email = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
 
     # Optional subject/category (e.g. "Login", "Upload", "General")

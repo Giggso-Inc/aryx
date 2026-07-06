@@ -21,8 +21,8 @@ class AuditLog(Base):
     action = Column(String(80), nullable=False, index=True)  # e.g. task.assigned, approval.reassigned
     resource_type = Column(String(40), nullable=False, index=True)  # channel, thread, task, approval
     resource_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    channel_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    thread_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    channel_id = Column(UUID(as_uuid=True), nullable=True)
+    thread_id = Column(UUID(as_uuid=True), nullable=True)
     details = Column(JSONB, nullable=True)  # e.g. old_assignee_id, new_assignee_id
     created_at = Column(DateTime, default=func.current_timestamp(), nullable=False)
 

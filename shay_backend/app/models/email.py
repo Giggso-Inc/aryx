@@ -18,10 +18,10 @@ class GGEmail(Base):
     email_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Thread linkage — managed by messages.py cleanup SQL
-    thread_id = Column(UUID(as_uuid=True), ForeignKey("gg_threads.id"), nullable=True, index=True)
+    thread_id = Column(UUID(as_uuid=True), ForeignKey("gg_threads.id"), nullable=True)
 
     # External email identity
-    message_id = Column(String(500), nullable=True, index=True)
+    message_id = Column(String(500), nullable=True)
     sender = Column(String(500), nullable=True)
     recipient = Column(Text, nullable=True)
     subject = Column(Text, nullable=True)
@@ -39,9 +39,9 @@ class GGEmail(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.current_timestamp(), nullable=True)
 
     # Tenant associations
-    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True, index=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("gg_workspace.id"), nullable=True, index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True)
 
     __table_args__ = (
         Index("idx_gg_emails_thread", "thread_id"),

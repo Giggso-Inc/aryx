@@ -19,7 +19,7 @@ class SubscriptionPlan(Base):
 
     # Plan details
     name = Column(String(255), nullable=False, index=True)
-    plan_code = Column(String(50), nullable=False, unique=True, index=True)
+    plan_code = Column(String(50), nullable=False, unique=True)
     description = Column(String, nullable=True)
     
     # Pricing
@@ -44,7 +44,7 @@ class SubscriptionPlan(Base):
     zoho_billing_cycle = Column(String(50), nullable=True)
     
     # Platform name field for filtering plans by platform
-    platform_name = Column(String(50), nullable=True, index=True)
+    platform_name = Column(String(50), nullable=True)
     
     # Audit fields
     created_by = Column(UUID(as_uuid=True), nullable=True)

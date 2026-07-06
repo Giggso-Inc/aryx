@@ -79,7 +79,6 @@ class GGDatasource(Base):
         UUID(as_uuid=True),
         ForeignKey("gg_users.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
 
     # -----------------------------------------------------------------------
