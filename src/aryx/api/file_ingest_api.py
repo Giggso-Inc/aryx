@@ -119,7 +119,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
         for _, fname in items:
             kind = "docs" if Path(fname).suffix.lower() in _DOC_EXTS else "csv"
             try:
-                ds_store.ensure(workspace_id, fname, kind)
+                ds_store.ensure(workspace_id, fname[:255], kind)
             except Exception as ds_exc:
                 logger.warning("datasource ensure failed for %s: %s", fname, ds_exc)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
