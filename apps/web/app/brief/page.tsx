@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   AlertCircle, CheckCircle2, FileText, Loader2, Sparkles,
@@ -80,8 +80,15 @@ export default function BriefPage() {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const justSavedRef = useRef(false);
+
+  // Reset guard when workspace selection changes so the new workspace's brief loads.
+  useEffect(() => {
+    justSavedRef.current = false;
+  }, [workspaceId]);
 
   const loadBrief = useCallback(() => {
+    if (justSavedRef.current) return;
     const ws = workspaces.find((w) => w.id === workspaceId);
     const b = (ws?.brief ?? {}) as Partial<Brief>;
     setDomain(b.domain ?? "");
@@ -115,6 +122,7 @@ export default function BriefPage() {
       setObjectives((b.objectives ?? []).join("\n"));
       setScope(b.scope ?? "");
       setRoles((b.roles ?? []).join("\n"));
+      justSavedRef.current = true;
       setResult("Brief drafted — review and save below.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Draft failed");
@@ -134,6 +142,7 @@ export default function BriefPage() {
         roles: roles.split("\n").map((l) => l.trim()).filter(Boolean),
       };
       await api.saveBrief(workspaceId, brief);
+      justSavedRef.current = true;
       updateWorkspaceBrief(workspaceId, brief as Record<string, unknown>);
       setResult("Brief saved — Aryx will use it for extraction.");
     } catch (e) {
