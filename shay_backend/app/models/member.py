@@ -106,9 +106,11 @@ class GGMember(Base):
     __table_args__ = (
         # Exactly one scope FK must be set
         CheckConstraint(
-            "(level = 'workspace' AND workspace_id IS NOT NULL AND channel_id IS NULL   AND thread_id IS NULL) OR "
-            "(level = 'channel'   AND channel_id   IS NOT NULL AND workspace_id IS NULL AND thread_id IS NULL) OR "
-            "(level = 'thread'    AND thread_id    IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL)",
+            # "level" must be double-quoted in the SQL body: Oracle treats unquoted LEVEL
+            # as the CONNECT BY pseudocolumn and rejects it in CHECK constraints (ORA-00976).
+            "(\"level\" = 'workspace' AND workspace_id IS NOT NULL AND channel_id IS NULL   AND thread_id IS NULL) OR "
+            "(\"level\" = 'channel'   AND channel_id   IS NOT NULL AND workspace_id IS NULL AND thread_id IS NULL) OR "
+            "(\"level\" = 'thread'    AND thread_id    IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL)",
             name="chk_gg_members_exclusive_arc",
         ),
         # Uniqueness per scope (partial indexes enforce one membership per user per scope)
