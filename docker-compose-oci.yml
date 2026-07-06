@@ -132,6 +132,11 @@ services:
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
       # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      # Auth mode: optional lets the trusted web container's proxied browser
+      # requests through without an API key. The api port is VCN-restricted
+      # (not public internet). require_api_key on /admin/shay/* is a hard
+      # guard that ignores this flag — bridge auth stays enforced.
+      - ARYX_API_AUTH=${ARYX_API_AUTH:-optional}
     ports:
       - "8088:8000"
     networks:
