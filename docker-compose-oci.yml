@@ -130,6 +130,8 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       # Observability
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
+      # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
     ports:
       - "8088:8000"
     networks:
