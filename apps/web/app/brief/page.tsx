@@ -86,23 +86,14 @@ export default function BriefPage() {
   useEffect(() => {
     if (!workspaceId || workspaceId <= 0) return;
     setBriefLoading(true);
-    console.log("[brief] fetching brief for workspaceId=", workspaceId);
     api.listWorkspaces().then((list) => {
-      console.log("[brief] listWorkspaces returned", list.length, "workspaces");
-      console.log("[brief] all workspace ids=", list.map(w => `${w.id}(${typeof w.id})`));
-      console.log("[brief] looking for workspaceId=", workspaceId, "type=", typeof workspaceId);
       const ws = list.find((w) => w.id === Number(workspaceId));
-      console.log("[brief] workspace found=", ws ? `id=${ws.id} name=${ws.name}` : "NOT FOUND");
       const b = (ws?.brief ?? {}) as Partial<Brief>;
-      console.log("[brief] brief from API=", b);
       setDomain(b.domain ?? "");
       setAim(b.aim ?? "");
       setObjectives((b.objectives ?? []).join("\n"));
       setScope(b.scope ?? "");
       setRoles((b.roles ?? []).join("\n"));
-      console.log("[brief] form fields set — domain=", b.domain, "aim=", b.aim);
-    }).catch((err) => {
-      console.error("[brief] failed to load brief", err);
     }).finally(() => setBriefLoading(false));
   }, [workspaceId, pathname]);
 
@@ -145,9 +136,7 @@ export default function BriefPage() {
         scope: scope.trim(),
         roles: roles.split("\n").map((l) => l.trim()).filter(Boolean),
       };
-      console.log("[brief] saving brief workspaceId=", workspaceId, "brief=", brief);
       await api.saveBrief(workspaceId, brief);
-      console.log("[brief] save successful");
       setResult("Brief saved — Aryx will use it for extraction.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");

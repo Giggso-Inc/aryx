@@ -30,7 +30,7 @@ def _parse_brief(v: Any) -> dict:
             logger.warning("oracle brief: json.loads failed error=%s raw=%r", exc, v)
             return {}
     result = v or {}
-    logger.info("oracle brief: native %s → keys=%s", type(v).__name__,
+    logger.info("oracle brief: native %s keys=%s", type(v).__name__,
                 list(result.keys()) if isinstance(result, dict) else "non-dict")
     return result
 
