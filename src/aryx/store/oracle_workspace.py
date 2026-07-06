@@ -105,7 +105,7 @@ class OracleWorkspaceStore:
                 cur.execute(load("update_workspace_brief"),
                             (json.dumps(brief or {}), int(wid)))
                 row = cur.fetchone()
-        logger.info("workspace brief updated id=%s keys=%d", wid, len(brief))
+        logger.info("workspace brief updated id=%s keys=%d", wid, len(brief or {}))
         return {"id": row[0], "name": row[1], "description": row[2],
                 "context": row[3], "brief": _parse_brief(row[4]),
                 "created_at": row[5]}
