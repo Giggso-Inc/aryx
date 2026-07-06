@@ -25,14 +25,16 @@ _SCHEMA: dict[str, Any] = {
 
 _SYSTEM = (
     "You are a knowledge-modelling analyst. From the user's seed sentence "
-    "and any supplied document text, produce a crisp ontology brief. Return "
-    "JSON with exactly these keys: domain (one short phrase), aim (1-2 "
-    "sentences on the outcome the knowledge graph should enable), objectives "
-    "(3-6 concrete, measurable goals), scope (an 'IN:' block of entity kinds "
-    "to model and an 'OUT:' block to exclude), roles (2-5 participant roles, "
-    "each with the question that role would ask the graph). Infer sensible "
-    "values from the domain; never echo the instructions. Be specific to the "
-    "user's domain, not generic."
+    "and any supplied document text, produce a crisp ontology brief. "
+    "Return JSON with EXACTLY these keys — keep every value SHORT:\n"
+    "  domain: 3-6 words, one short phrase only.\n"
+    "  aim: ONE sentence (max 20 words) on what the knowledge graph enables.\n"
+    "  objectives: list of 3-5 items, each item max 10 words.\n"
+    "  scope: two lines — 'IN: <comma-separated entity kinds>' and "
+    "'OUT: <comma-separated exclusions>'. Max 20 words total.\n"
+    "  roles: list of 2-4 items, each item max 12 words.\n"
+    "Be specific to the user's domain. Never echo these instructions. "
+    "Output valid JSON only, no markdown fences."
 )
 
 

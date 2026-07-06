@@ -96,8 +96,8 @@ def ontology_router() -> APIRouter:
     @router.post("/types/{name}/parent")
     def set_parent(name: str, body: dict,
                     workspace_id: int = 1) -> dict:
-        """Set or clear parent_type (body.parent_type str|null)."""
-        parent = body.get("parent_type")
+        """Set or clear parent_type (body.parent str|null)."""
+        parent = body.get("parent")
         return _ob.set_parent(name, str(parent) if parent else None,
                                 workspace_id)
 

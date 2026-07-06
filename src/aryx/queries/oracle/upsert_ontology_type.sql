@@ -1,7 +1,7 @@
 -- Oracle ADB 23ai: upsert ontology type using MERGE with named bind vars.
--- Named vars (:workspace_id etc.) are deduplicated by name by oracledb thin,
+-- Named vars (workspace_id etc.) are deduplicated by name by oracledb thin,
 -- so reuse across ON + UPDATE + VALUES clauses counts as one binding each.
--- Positional (:N) vars count per occurrence, causing DPY-4009 on reuse.
+-- Positional (N) vars count per occurrence, causing DPY-4009 on reuse.
 MERGE INTO aryx_ontology_type t
 USING dual
 ON (t.workspace_id = :workspace_id AND t.name = :name)

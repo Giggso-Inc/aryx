@@ -169,6 +169,45 @@ def _unwrap_params(params: Any) -> Any:
     return params
 
 
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove -- line comments and /* */ block comments from SQL text."""
+    sql = _SQL_LINE_COMMENT_RE.sub("", sql)
+    sql = _SQL_BLOCK_COMMENT_RE.sub("", sql)
+    return sql
+
+
+def _tuple_seq_to_dict(oracle_sql: str, seq: list[Any]) -> list[Any]:
+    """Convert tuple rows → dicts for named-bind SQL (avoids DPY-4009).
+
+    oracledb thin counts each :name occurrence in the SQL as a separate
+    positional slot when data arrives as tuples — a MERGE with 5 named
+    params repeated across ON/UPDATE/INSERT branches = 10 expected binds,
+    5 provided → DPY-4009.  Dicts let oracledb deduplicate by name.
+    Returns seq unchanged for positional SQL (:1, :2, …) or dict rows.
+
+    Comments are stripped before scanning so that :name mentions inside
+    -- or /* */ comment blocks (e.g. "-- Positional (:N) vars…") are not
+    mistakenly treated as bind placeholders (would cause DPY-4008).
+    """
+    if not seq or isinstance(seq[0], dict):
+        return seq
+    sql_code = _strip_sql_comments(oracle_sql)
+    seen: set[str] = set()
+    names: list[str] = []
+    for m in _BIND_NAME_RE.finditer(sql_code):
+        n = m.group(1)
+        if n not in seen and not n.isdigit():
+            seen.add(n)
+            names.append(n)
+    if not names:
+        return seq  # positional SQL — tuples are correct
+    return [dict(zip(names, row)) if isinstance(row, (tuple, list)) else row for row in seq]
+
+
 def _read_lob(v: Any) -> Any:
     """Read oracledb LOB objects to plain Python strings on fetch.
 
@@ -266,25 +305,45 @@ def _coerce_clob(
     return params
 
 
-def _hint_clob_many(cursor: Any, seq: list[Any], oracledb: Any) -> None:
+def _hint_clob_many(
+    cursor: Any,
+    seq: list[Any],
+    oracledb: Any,
+    force_merge: bool = False,
+    on_excl: "frozenset[str]" = frozenset(),
+) -> None:
     """Call setinputsizes for executemany: scans ALL rows to find oversized strings.
 
     Necessary because different rows in the batch may have different payload sizes —
     e.g. entity attributes where some rows carry large XML/JSON content and others don't.
     One setinputsizes call covers the whole executemany batch.
+
+    force_merge=True: hint ALL string-valued named keys (except those in on_excl) as
+    DB_TYPE_CLOB regardless of length.  Required for MERGE statements — Oracle analyses
+    both UPDATE and INSERT branches simultaneously, so VARCHAR2-typed binds to CLOB/JSON
+    columns trigger ORA-03146 even for short strings.  on_excl must hold the ON-clause
+    bind names (ORA-22848 forbids CLOB in comparison predicates).
     """
     if not seq:
         return
     first = seq[0]
     if isinstance(first, dict):
         clob_keys: set[str] = set()
-        for row in seq:
-            if isinstance(row, dict):
-                for k, v in row.items():
-                    if k not in clob_keys and isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX:
-                        clob_keys.add(k)
+        if force_merge:
+            # Force-hint all string-valued keys that are not ON-clause keys.
+            for row in seq:
+                if isinstance(row, dict):
+                    for k, v in row.items():
+                        if k not in clob_keys and k not in on_excl and isinstance(v, str):
+                            clob_keys.add(k)
+        else:
+            for row in seq:
+                if isinstance(row, dict):
+                    for k, v in row.items():
+                        if k not in clob_keys and isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX:
+                            clob_keys.add(k)
         if clob_keys:
-            logger.debug("clob_hint_many named keys=%s", sorted(clob_keys))
+            logger.debug("clob_hint_many named keys=%s force_merge=%s", sorted(clob_keys), force_merge)
             cursor.setinputsizes(**{k: oracledb.DB_TYPE_CLOB for k in clob_keys})
     elif isinstance(first, (list, tuple)):
         n_cols = len(first)
@@ -305,9 +364,28 @@ class OracleCursorWrapper:
     """Wraps an oracledb cursor to match the psycopg3 cursor API."""
 
     def __init__(self, raw_cursor: Any) -> None:
+        import json as _json  # noqa: PLC0415
+        import oracledb  # noqa: PLC0415
+
         self._cur = raw_cursor
         self._out_vars: list[Any] = []  # filled by _translate_sql for RETURNING
         self._conflict_ignore: bool = False  # set when ON CONFLICT DO NOTHING was stripped
+
+        # Oracle 23ai native JSON columns may arrive as a Python str (JSON text)
+        # or as a Python dict (OSON binary), depending on how the value was stored.
+        # This handler normalises all DB_TYPE_JSON fetches to Python native types so
+        # callers never receive raw JSON strings from SELECT queries.
+        # Note: RETURNING INTO vars are typed as STRING explicitly — this handler
+        # does not fire for those; _parse_brief() handles that path.
+        def _json_output_handler(cursor: Any, metadata: Any) -> Any:
+            if metadata.type_code is oracledb.DB_TYPE_JSON:
+                return cursor.var(
+                    oracledb.DB_TYPE_JSON,
+                    arraysize=cursor.arraysize,
+                    outconverter=lambda v: _json.loads(v) if isinstance(v, str) else v,
+                )
+
+        self._cur.outputtypehandler = _json_output_handler
 
     def execute(self, sql: str, params: Any = None) -> None:
         """Execute a single SQL statement, translating psycopg3 → Oracle."""
@@ -360,7 +438,16 @@ class OracleCursorWrapper:
         oracle_seq = [_unwrap_params(p) for p in seq]
         if not oracle_seq:
             return
-        _hint_clob_many(self._cur, oracle_seq, oracledb)
+        oracle_seq = _tuple_seq_to_dict(oracle_sql, oracle_seq)
+        # Mirror execute()'s MERGE guard: force-hint all non-ON-clause string columns
+        # as DB_TYPE_CLOB so Oracle can type-check both MATCHED/NOT MATCHED branches.
+        _is_merge = oracle_sql.lstrip().upper().startswith("MERGE ")
+        _on_excl: frozenset[str] = frozenset()
+        if _is_merge:
+            _m = _MERGE_ON_RE.search(oracle_sql)
+            if _m:
+                _on_excl = frozenset(_BIND_NAME_RE.findall(_strip_sql_comments(_m.group(1))))
+        _hint_clob_many(self._cur, oracle_seq, oracledb, force_merge=_is_merge, on_excl=_on_excl)
         logger.debug("executemany sql=%s rows=%d", oracle_sql[:120], len(oracle_seq))
         try:
             self._cur.executemany(oracle_sql, oracle_seq)

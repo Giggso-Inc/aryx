@@ -66,6 +66,7 @@ from aryx.store.oracle_workspace import (  # noqa: E402
     _DELETE_PARTITION_SQLS,
     _PARTITIONED,
     _TRUNCATE_SQLS,
+    _parse_brief,
 )
 
 
@@ -286,6 +287,16 @@ class TestListAll(unittest.TestCase):
             result = store.list_all()
         self.assertEqual(result[0]["brief"], {})
 
+    def test_brief_parsed_when_oracle_returns_json_string(self) -> None:
+        """SELECT brief may return a JSON string on the thin client — _parse_brief handles it."""
+        brief = {"domain": "Sales", "aim": "Track pipeline"}
+        rows = [(1, "WS", "", "", json.dumps(brief), "2024-01-01")]
+        pool, _ = _make_pool_cursor(fetchall=rows)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.list_all()
+        self.assertEqual(result[0]["brief"], brief)
+
 
 class TestSetContext(unittest.TestCase):
     """set_context() updates the context field."""
@@ -311,9 +322,29 @@ class TestSetContext(unittest.TestCase):
 
 
 class TestSetBrief(unittest.TestCase):
-    """set_brief() persists the brief JSON and returns the updated workspace."""
+    """set_brief() persists the brief JSON and returns the updated workspace.
+
+    Oracle-specific concerns tested here:
+    - Brief dict is serialised with json.dumps() before the execute() call
+      (oracledb thin cannot bind Python dicts directly — DPY-3002).
+    - RETURNING clause returns brief as a JSON string via STRING var; _parse_brief()
+      must convert it back to a Python dict before the caller sees it.
+    - None brief is stored as '{}', not as NULL.
+    - Workspace ID is coerced to int.
+    """
+
+    _FULL_BRIEF = {
+        "domain": "CRM",
+        "aim": "Route support tickets to the right agent",
+        "objectives": ["improve CSAT", "reduce handle time"],
+        "scope": "Inbound support tickets only",
+        "roles": ["support agent", "tier-2 specialist"],
+    }
+
+    # ── bind-param shape ──────────────────────────────────────────────────────
 
     def test_brief_json_serialized_before_execute(self) -> None:
+        """Dict is json.dumps()'d — oracledb thin cannot bind plain dicts."""
         brief = {"domain": "HR", "aim": "match employees"}
         row = (1, "WS", "", "", brief, "2024-01-01")
         pool, cur = _make_pool_cursor(fetchone=row)
@@ -323,14 +354,38 @@ class TestSetBrief(unittest.TestCase):
         _, params = cur.execute.call_args[0]
         self.assertEqual(json.loads(params[0]), brief)
 
-    def test_returns_brief_from_db_row(self) -> None:
-        saved = {"domain": "HR", "aim": "test"}
-        row = (1, "WS", "", "", saved, "2024-01-01")
-        pool, _ = _make_pool_cursor(fetchone=row)
+    def test_workspace_id_is_second_execute_param(self) -> None:
+        """execute() params must be (json_string, int_workspace_id)."""
+        brief = {"domain": "Sales"}
+        row = (5, "WS", "", "", brief, "2024-01-01")
+        pool, cur = _make_pool_cursor(fetchone=row)
         store = _make_store(pool)
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
-            result = store.set_brief(1, saved)
-        self.assertEqual(result["brief"], saved)
+            store.set_brief(5, brief)
+        _, params = cur.execute.call_args[0]
+        self.assertEqual(params[1], 5)
+
+    def test_workspace_id_coerced_to_int(self) -> None:
+        """set_brief() calls int(wid) so float/numeric wid values work."""
+        brief = {"domain": "Finance"}
+        row = (3, "WS", "", "", brief, "2024-01-01")
+        pool, cur = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            store.set_brief(3.0, brief)  # type: ignore[arg-type]
+        _, params = cur.execute.call_args[0]
+        self.assertIsInstance(params[1], int)
+        self.assertEqual(params[1], 3)
+
+    def test_none_brief_stored_as_empty_json_object(self) -> None:
+        """None input must be stored as '{}', not as NULL."""
+        row = (1, "WS", "", "", {}, "2024-01-01")
+        pool, cur = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            store.set_brief(1, None)  # type: ignore[arg-type]
+        _, params = cur.execute.call_args[0]
+        self.assertEqual(json.loads(params[0]), {})
 
     def test_empty_brief_stored_as_empty_json_object(self) -> None:
         row = (1, "WS", "", "", {}, "2024-01-01")
@@ -340,6 +395,123 @@ class TestSetBrief(unittest.TestCase):
             store.set_brief(1, {})
         _, params = cur.execute.call_args[0]
         self.assertEqual(json.loads(params[0]), {})
+
+    def test_full_five_field_brief_round_trips_through_json(self) -> None:
+        """All 5 brief fields (including list-valued objectives/roles) survive json.dumps()."""
+        row = (1, "WS", "", "", self._FULL_BRIEF, "2024-01-01")
+        pool, cur = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            store.set_brief(1, self._FULL_BRIEF)
+        _, params = cur.execute.call_args[0]
+        self.assertEqual(json.loads(params[0]), self._FULL_BRIEF)
+
+    # ── Oracle RETURNING path: brief arrives as a JSON string ─────────────────
+    # oracledb thin allocates STRING vars for all RETURNING columns (_translate_sql
+    # line 112). So row[4] from fetchone() is a JSON string, not a dict.
+    # _parse_brief() must convert it back before the caller sees it.
+
+    def test_returns_dict_when_oracle_returning_gives_json_string(self) -> None:
+        """RETURNING brief as JSON text string → _parse_brief parses it to dict."""
+        saved = {"domain": "HR", "aim": "test"}
+        row = (1, "WS", "", "", json.dumps(saved), "2024-01-01")  # ← string, not dict
+        pool, _ = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.set_brief(1, saved)
+        self.assertEqual(result["brief"], saved)
+
+    def test_returns_dict_when_oracle_returning_gives_dict(self) -> None:
+        """RETURNING brief already a dict (OSON path) → returned as-is."""
+        saved = {"domain": "HR", "aim": "test"}
+        row = (1, "WS", "", "", saved, "2024-01-01")
+        pool, _ = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.set_brief(1, saved)
+        self.assertEqual(result["brief"], saved)
+
+    def test_returns_empty_dict_when_oracle_returning_gives_null(self) -> None:
+        """RETURNING brief as NULL → _parse_brief returns {}."""
+        row = (1, "WS", "", "", None, "2024-01-01")
+        pool, _ = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.set_brief(1, {})
+        self.assertEqual(result["brief"], {})
+
+    def test_full_brief_returned_correctly_from_json_string(self) -> None:
+        """Full 5-field brief round-trips through the RETURNING JSON string path."""
+        row = (1, "WS", "", "", json.dumps(self._FULL_BRIEF), "2024-01-01")
+        pool, _ = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.set_brief(1, self._FULL_BRIEF)
+        self.assertEqual(result["brief"]["objectives"], self._FULL_BRIEF["objectives"])
+        self.assertEqual(result["brief"]["roles"], self._FULL_BRIEF["roles"])
+
+    def test_returns_all_workspace_fields(self) -> None:
+        """Result dict must contain id, name, description, context, brief, created_at."""
+        brief = {"domain": "IT"}
+        row = (42, "Main", "desc", "ctx", json.dumps(brief), "2025-01-01")
+        pool, _ = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.set_brief(42, brief)
+        self.assertEqual(result["id"], 42)
+        self.assertEqual(result["name"], "Main")
+        self.assertEqual(result["description"], "desc")
+        self.assertEqual(result["context"], "ctx")
+        self.assertIsNotNone(result.get("created_at"))
+
+
+# ── _parse_brief unit tests ───────────────────────────────────────────────────
+
+class TestParseBrief(unittest.TestCase):
+    """_parse_brief() normalises the Oracle JSON column return value.
+
+    oracledb thin returns Oracle 23ai JSON columns as either a Python str
+    (JSON text — what we store via json.dumps()) or a Python dict (OSON binary).
+    _parse_brief must handle all cases so callers always receive a dict.
+    """
+
+    def test_dict_returned_unchanged(self) -> None:
+        d = {"domain": "Sales"}
+        self.assertIs(_parse_brief(d), d)
+
+    def test_none_returns_empty_dict(self) -> None:
+        self.assertEqual(_parse_brief(None), {})
+
+    def test_empty_dict_returned_unchanged(self) -> None:
+        self.assertEqual(_parse_brief({}), {})
+
+    def test_json_string_parsed_to_dict(self) -> None:
+        s = '{"domain": "CRM", "aim": "Route tickets"}'
+        self.assertEqual(_parse_brief(s), {"domain": "CRM", "aim": "Route tickets"})
+
+    def test_full_brief_json_string_parsed(self) -> None:
+        brief = {
+            "domain": "CRM", "aim": "Match",
+            "objectives": ["a", "b"], "scope": "Tickets", "roles": ["agent"],
+        }
+        self.assertEqual(_parse_brief(json.dumps(brief)), brief)
+
+    def test_empty_json_object_string_returns_empty_dict(self) -> None:
+        self.assertEqual(_parse_brief("{}"), {})
+
+    def test_invalid_json_string_returns_empty_dict(self) -> None:
+        self.assertEqual(_parse_brief("{not valid json}"), {})
+
+    def test_json_array_string_returns_empty_dict(self) -> None:
+        """Top-level array is not a valid brief dict — must return {}."""
+        self.assertEqual(_parse_brief("[1, 2, 3]"), {})
+
+    def test_json_scalar_string_returns_empty_dict(self) -> None:
+        self.assertEqual(_parse_brief('"just a string"'), {})
+
+    def test_nested_dict_preserved(self) -> None:
+        d = {"meta": {"version": 1}, "domain": "HR"}
+        self.assertEqual(_parse_brief(json.dumps(d)), d)
 
 
 class TestGetSurvivorship(unittest.TestCase):

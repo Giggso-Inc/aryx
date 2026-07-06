@@ -18,6 +18,9 @@ def _stub_oracledb() -> None:
         return
     mod = types.ModuleType("oracledb")
     mod.STRING = "STRING"
+    # Sentinel used in the JSON output type handler identity check (is DB_TYPE_JSON).
+    # object() is stable for the lifetime of the stub (sys.modules caches it).
+    mod.DB_TYPE_JSON = object()
 
     class _IntegrityError(Exception):
         pass
@@ -28,9 +31,11 @@ def _stub_oracledb() -> None:
     mod.IntegrityError = _IntegrityError
     mod.Error = _Error
 
-    def _var(typ: str) -> MagicMock:
+    def _var(typ: object, arraysize: int | None = None,
+             outconverter: object = None) -> MagicMock:
         v = MagicMock()
         v.getvalue.return_value = [None]
+        v._outconverter = outconverter
         return v
 
     # Fake cursor
@@ -39,9 +44,13 @@ def _stub_oracledb() -> None:
             self.arraysize = 100
             self.rowcount = 0
             self._rows: list = []
+            self.outputtypehandler = None  # set by OracleCursorWrapper.__init__
+            self._last_outconverter = None  # captured on var() — used by handler tests
 
-        def var(self, typ: str) -> MagicMock:
-            return _var(typ)
+        def var(self, typ: object, arraysize: int | None = None,
+                outconverter: object = None) -> MagicMock:
+            self._last_outconverter = outconverter
+            return _var(typ, arraysize=arraysize, outconverter=outconverter)
 
         def execute(self, sql: str, params: object = None) -> None:
             pass
@@ -826,6 +835,115 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         store, calls = self._make_store()
         store.add_entities_batch([])
         self.assertEqual(calls, [])
+
+
+# ── JSON output type handler tests ───────────────────────────────────────────
+
+class TestJsonOutputTypeHandler(unittest.TestCase):
+    """OracleCursorWrapper installs an outputtypehandler that normalises
+    Oracle native JSON columns (DB_TYPE_JSON) to Python dicts/lists on
+    every SELECT fetch — regardless of whether Oracle stored them as OSON
+    binary or JSON text (the latter is what our json.dumps() binding produces).
+    """
+
+    def _raw(self):
+        import oracledb
+        return oracledb._Cursor()
+
+    def _handler_and_raw(self):
+        raw = self._raw()
+        OracleCursorWrapper(raw)
+        return raw.outputtypehandler, raw
+
+    def _outconverter(self):
+        import oracledb
+        handler, raw = self._handler_and_raw()
+        meta = MagicMock()
+        meta.type_code = oracledb.DB_TYPE_JSON
+        handler(raw, meta)
+        return raw._last_outconverter
+
+    # ── installation ──────────────────────────────────────────────────────────
+
+    def test_handler_installed_on_raw_cursor(self) -> None:
+        raw = self._raw()
+        OracleCursorWrapper(raw)
+        self.assertTrue(callable(raw.outputtypehandler))
+
+    # ── non-JSON type → None (oracledb uses default behaviour) ───────────────
+
+    def test_handler_returns_none_for_non_json_type(self) -> None:
+        import oracledb
+        handler, raw = self._handler_and_raw()
+        meta = MagicMock()
+        meta.type_code = oracledb.STRING
+        self.assertIsNone(handler(raw, meta))
+
+    def test_handler_returns_none_for_unknown_type(self) -> None:
+        handler, raw = self._handler_and_raw()
+        meta = MagicMock()
+        meta.type_code = object()  # arbitrary unknown sentinel
+        self.assertIsNone(handler(raw, meta))
+
+    # ── DB_TYPE_JSON → returns a cursor.var() ─────────────────────────────────
+
+    def test_handler_returns_var_for_json_type(self) -> None:
+        import oracledb
+        handler, raw = self._handler_and_raw()
+        meta = MagicMock()
+        meta.type_code = oracledb.DB_TYPE_JSON
+        self.assertIsNotNone(handler(raw, meta))
+
+    def test_handler_registers_outconverter(self) -> None:
+        conv = self._outconverter()
+        self.assertTrue(callable(conv))
+
+    # ── outconverter: JSON text string → Python dict ──────────────────────────
+
+    def test_outconverter_parses_json_object_string(self) -> None:
+        conv = self._outconverter()
+        result = conv('{"domain": "Sales", "aim": "Match experts"}')
+        self.assertEqual(result, {"domain": "Sales", "aim": "Match experts"})
+
+    def test_outconverter_parses_full_brief_json(self) -> None:
+        import json
+        conv = self._outconverter()
+        brief = {
+            "domain": "CRM", "aim": "Route tickets",
+            "objectives": ["match", "score"],
+            "scope": "Support tickets only",
+            "roles": ["agent", "customer"],
+        }
+        self.assertEqual(conv(json.dumps(brief)), brief)
+
+    def test_outconverter_parses_json_array_string(self) -> None:
+        conv = self._outconverter()
+        self.assertEqual(conv('[1, 2, 3]'), [1, 2, 3])
+
+    def test_outconverter_parses_empty_object_string(self) -> None:
+        conv = self._outconverter()
+        self.assertEqual(conv('{}'), {})
+
+    # ── outconverter: already-Python value → pass through (OSON path) ────────
+
+    def test_outconverter_passes_through_dict(self) -> None:
+        conv = self._outconverter()
+        d = {"domain": "already parsed"}
+        self.assertIs(conv(d), d)
+
+    def test_outconverter_passes_through_list(self) -> None:
+        conv = self._outconverter()
+        lst = [1, 2, 3]
+        self.assertIs(conv(lst), lst)
+
+    def test_outconverter_passes_through_none(self) -> None:
+        conv = self._outconverter()
+        self.assertIsNone(conv(None))
+
+    def test_outconverter_passes_through_integer(self) -> None:
+        # JSON scalar values (rare for our columns, but handler must not crash)
+        conv = self._outconverter()
+        self.assertEqual(conv(42), 42)
 
 
 if __name__ == "__main__":

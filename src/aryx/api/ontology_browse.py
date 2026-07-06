@@ -164,7 +164,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
             for row in type_rows:
                 row["ancestors"] = []
         except Exception:  # noqa: BLE001
-            logger.warning("ontology_browse: auto-heal seed failed for ws=%s", workspace_id, exc_info=True)
+            logger.error("ontology_browse: auto-heal seed failed for ws=%s", workspace_id, exc_info=True)
         finally:
             heal_onto.close()
 

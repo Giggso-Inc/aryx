@@ -10,6 +10,31 @@ from aryx.store.oracle_pool import OracleConnectionWrapper, get_oracle_pool
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_brief(v: Any) -> dict:
+    """Return the brief column value as a Python dict.
+
+    oracledb thin may return Oracle 23ai JSON columns as either a Python dict
+    (native JSON type) or a plain str (JSON text). Handle both so the API
+    response always carries a JSON object, never a raw JSON-encoded string.
+    """
+    logger.info("oracle brief: raw type=%s", type(v).__name__)
+    logger.debug("oracle brief: raw value=%r", v)
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            result = parsed if isinstance(parsed, dict) else {}
+            logger.info("oracle brief: str → dict keys=%s", list(result.keys()))
+            return result
+        except Exception as exc:
+            logger.warning("oracle brief: json.loads failed error=%s raw=%r", exc, v)
+            return {}
+    result = v or {}
+    logger.info("oracle brief: native %s keys=%s", type(v).__name__,
+                list(result.keys()) if isinstance(result, dict) else "non-dict")
+    return result
+
+
 # Tables that used Postgres partitioning; on Oracle we use plain tables with
 # workspace_id as an indexed column — no partition DDL needed.
 _PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx_relationship"]
@@ -61,16 +86,21 @@ class OracleWorkspaceStore:
         wid = int(row[0])
         logger.info("workspace created id=%d name=%s", wid, name)
         return {"id": wid, "name": row[1], "description": row[2],
-                "context": row[3], "brief": row[4] or {}, "created_at": row[5]}
+                "context": row[3], "brief": _parse_brief(row[4]), "created_at": row[5]}
 
     def list_all(self) -> list[dict[str, Any]]:
         """Return all workspace rows ordered by id."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("select_workspaces"))
-                return [{"id": r[0], "name": r[1], "description": r[2],
-                         "context": r[3], "brief": r[4] or {}, "created_at": r[5]}
-                        for r in cur.fetchall()]
+                rows = cur.fetchall()
+        logger.debug("list_all: fetched %d workspace rows", len(rows))
+        for r in rows:
+            logger.debug("list_all: ws id=%s brief col type=%s value=%r",
+                         r[0], type(r[4]).__name__, r[4])
+        return [{"id": r[0], "name": r[1], "description": r[2],
+                 "context": r[3], "brief": _parse_brief(r[4]), "created_at": r[5]}
+                for r in rows]
 
     def set_context(self, wid: int, context: str) -> dict[str, Any]:
         """Update the free-text context string for workspace wid."""
@@ -79,18 +109,26 @@ class OracleWorkspaceStore:
                 cur.execute(load("update_workspace_context"), (context, int(wid)))
                 row = cur.fetchone()
         return {"id": row[0], "name": row[1], "description": row[2],
-                "context": row[3], "brief": {}, "created_at": row[4]}
+                "context": row[3], "brief": _parse_brief(None), "created_at": row[4]}
 
     def set_brief(self, wid: int, brief: dict) -> dict[str, Any]:
         """Persist the JSON brief (aim, description, key facts) for workspace wid."""
+        logger.info("set_brief: wid=%s input_keys=%s", wid,
+                    list(brief.keys()) if isinstance(brief, dict) else repr(brief))
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("update_workspace_brief"),
                             (json.dumps(brief or {}), int(wid)))
                 row = cur.fetchone()
-        logger.info("workspace brief updated id=%s keys=%d", wid, len(brief))
+        logger.info("set_brief: RETURNING row col types=%s",
+                    [type(c).__name__ for c in row] if row else None)
+        logger.info("set_brief: RETURNING brief (row[4]) type=%s",
+                    type(row[4]).__name__ if row else "no-row")
+        logger.debug("set_brief: RETURNING brief (row[4]) value=%r",
+                     row[4] if row else None)
+        logger.info("workspace brief updated id=%s keys=%d", wid, len(brief or {}))
         return {"id": row[0], "name": row[1], "description": row[2],
-                "context": row[3], "brief": row[4] or {},
+                "context": row[3], "brief": _parse_brief(row[4]),
                 "created_at": row[5]}
 
     def get_survivorship(self, wid: int) -> dict[str, Any]:
