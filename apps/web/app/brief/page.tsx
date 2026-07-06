@@ -91,13 +91,6 @@ export default function BriefPage() {
     setRoles((b.roles ?? []).join("\n"));
   }, [workspaceId, workspaces]);
 
-  // Re-fetch workspace list from DB whenever the active workspace changes
-  // (including on mount). Ensures the saved brief is always loaded from the
-  // current DB state, not a potentially stale in-memory context snapshot.
-  useEffect(() => {
-    if (workspaceId > 0) refresh().catch(() => {});
-  }, [workspaceId, refresh]);
-
   // Re-load form fields whenever the workspaces context is updated.
   useEffect(() => { loadBrief(); }, [loadBrief]);
 
