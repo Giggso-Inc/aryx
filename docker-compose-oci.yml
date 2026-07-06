@@ -143,18 +143,21 @@ services:
       retries: 3
 
   # ── Shay API — AI sales assistant backend ───────────────────────────────────
-  # Shay uses asyncpg (Postgres) — it cannot connect to Oracle ADB.
-  # SHAY_DATABASE_URL must be a postgresql+asyncpg:// URL pointing at an
-  # external Postgres (Neon, Supabase, RDS, etc.) or a local postgres container.
-  # SHAY_RUN_MIGRATIONS=false: Aryx migrations own the shared schema.
+  # Shay uses Oracle ADB 23ai (same instance as Aryx) via oracledb thin client.
+  # DATABASE_URL is built inline from the Aryx DB credentials — no separate
+  # Postgres sidecar required.
+  # SHAY_RUN_MIGRATIONS=false: Alembic migrations are Postgres-generated.
+  # SHAY_INIT_DB=true: init_db() creates Shay tables via SQLAlchemy create_all
+  #   on first boot, using the dialect-aware DialectUUID/DialectJSON types.
   shay-api:
     build:
       context: ./shay_backend
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      - DATABASE_URL=${SHAY_DATABASE_URL}
+      - DATABASE_URL=oracle+oracledb://${ARYX_DB_USER}:${ARYX_DB_PASSWORD}@localhost/?dsn=${ARYX_OCI_ADB_DSN}
       - SHAY_RUN_MIGRATIONS=false
+      - SHAY_INIT_DB=true
       - FRONTEND_URL=${FRONTEND_URL}
       - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}

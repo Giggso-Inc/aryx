@@ -33,16 +33,12 @@ target_metadata = Base.metadata
 
 def get_url():
     """Get database URL from environment or settings and convert to sync URL for Alembic"""
-    # Get the async URL from settings
     async_url = settings.DATABASE_URL
-    
-    # Convert asyncpg to psycopg2 for Alembic (synchronous)
     if "asyncpg" in async_url:
-        sync_url = async_url.replace("postgresql+asyncpg://", "postgresql://")
-    else:
-        sync_url = async_url
-    
-    return sync_url
+        return async_url.replace("postgresql+asyncpg://", "postgresql://")
+    if "oracledb_async" in async_url.lower():
+        return async_url.replace("oracle+oracledb_async", "oracle+oracledb", 1)
+    return async_url
 
 
 def run_migrations_offline() -> None:

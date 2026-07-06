@@ -74,6 +74,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Error during migration", exc_info=e)
             logger.warning("Continuing with application startup despite migration issues")
+    elif os.environ.get("SHAY_INIT_DB", "false").lower() == "true":
+        try:
+            from app.core.database import init_db
+            await init_db()
+            logger.info("Oracle schema initialised via init_db()")
+        except Exception as e:
+            logger.error("Error during init_db", exc_info=e)
+            logger.warning("Continuing with application startup despite init_db failure")
     else:
         logger.info("Skipping Shay migrations; shared schema is owned by Aryx migrations")
 
