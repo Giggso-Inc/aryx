@@ -18,19 +18,20 @@ def _parse_brief(v: Any) -> dict:
     (native JSON type) or a plain str (JSON text). Handle both so the API
     response always carries a JSON object, never a raw JSON-encoded string.
     """
-    logger.debug("oracle brief raw: type=%s value=%r", type(v).__name__, v)
+    logger.info("oracle brief: raw type=%s", type(v).__name__)
+    logger.debug("oracle brief: raw value=%r", v)
     if isinstance(v, str):
         try:
             parsed = json.loads(v)
             result = parsed if isinstance(parsed, dict) else {}
-            logger.debug("oracle brief parsed from str: keys=%s", list(result.keys()))
+            logger.info("oracle brief: str → dict keys=%s", list(result.keys()))
             return result
         except Exception as exc:
-            logger.warning("oracle brief json.loads failed: value=%r error=%s", v, exc)
+            logger.warning("oracle brief: json.loads failed error=%s raw=%r", exc, v)
             return {}
     result = v or {}
-    logger.debug("oracle brief native: type=%s keys=%s", type(v).__name__,
-                 list(result.keys()) if isinstance(result, dict) else "non-dict")
+    logger.info("oracle brief: native %s → keys=%s", type(v).__name__,
+                list(result.keys()) if isinstance(result, dict) else "non-dict")
     return result
 
 
@@ -93,10 +94,10 @@ class OracleWorkspaceStore:
             with conn.cursor() as cur:
                 cur.execute(load("select_workspaces"))
                 rows = cur.fetchall()
-        logger.debug("list_all: fetched %d workspace rows", len(rows))
+        logger.info("list_all: fetched %d workspace rows", len(rows))
         for r in rows:
-            logger.debug("list_all: ws id=%s brief raw type=%s value=%r",
-                         r[0], type(r[4]).__name__, r[4])
+            logger.info("list_all: ws id=%s brief col type=%s", r[0], type(r[4]).__name__)
+            logger.debug("list_all: ws id=%s brief col value=%r", r[0], r[4])
         return [{"id": r[0], "name": r[1], "description": r[2],
                  "context": r[3], "brief": _parse_brief(r[4]), "created_at": r[5]}
                 for r in rows]
@@ -112,17 +113,19 @@ class OracleWorkspaceStore:
 
     def set_brief(self, wid: int, brief: dict) -> dict[str, Any]:
         """Persist the JSON brief (aim, description, key facts) for workspace wid."""
-        logger.debug("set_brief: wid=%s input_keys=%s", wid,
-                     list(brief.keys()) if isinstance(brief, dict) else repr(brief))
+        logger.info("set_brief: wid=%s input_keys=%s", wid,
+                    list(brief.keys()) if isinstance(brief, dict) else repr(brief))
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("update_workspace_brief"),
                             (json.dumps(brief or {}), int(wid)))
                 row = cur.fetchone()
-        logger.debug("set_brief: returning row types=%s",
-                     [type(c).__name__ for c in row] if row else None)
-        logger.debug("set_brief: raw brief column (row[4]) type=%s value=%r",
-                     type(row[4]).__name__ if row else "no-row", row[4] if row else None)
+        logger.info("set_brief: RETURNING row col types=%s",
+                    [type(c).__name__ for c in row] if row else None)
+        logger.info("set_brief: RETURNING brief (row[4]) type=%s",
+                    type(row[4]).__name__ if row else "no-row")
+        logger.debug("set_brief: RETURNING brief (row[4]) value=%r",
+                     row[4] if row else None)
         logger.info("workspace brief updated id=%s keys=%d", wid, len(brief or {}))
         return {"id": row[0], "name": row[1], "description": row[2],
                 "context": row[3], "brief": _parse_brief(row[4]),
