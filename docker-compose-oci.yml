@@ -16,10 +16,11 @@
 # Memory budget (24 GB total):
 #   pgx-server   8 GB  (graph in-memory)
 #   api          3 GB
+#   shay-api     1 GB
 #   mcp          1 GB
 #   web          1 GB
 #   OS + Docker  4 GB
-#   Buffer       7 GB
+#   Buffer       6 GB
 
 services:
 
@@ -129,6 +130,13 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       # Observability
       - ARYX_LOG_LEVEL=${ARYX_LOG_LEVEL:-INFO}
+      # Shay bridge auth — key must match ARYX_INTERNAL_API_KEY in shay-api
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      # Auth mode: optional lets the trusted web container's proxied browser
+      # requests through without an API key. The api port is VCN-restricted
+      # (not public internet). require_api_key on /admin/shay/* is a hard
+      # guard that ignores this flag — bridge auth stays enforced.
+      - ARYX_API_AUTH=${ARYX_API_AUTH:-optional}
     ports:
       - "8088:8000"
     networks:
@@ -141,6 +149,46 @@ services:
       timeout: 5s
       retries: 3
 
+  # ── Shay API — AI sales assistant backend ───────────────────────────────────
+  # Shay uses Oracle ADB 23ai (same instance as Aryx) via oracledb thin client.
+  # DATABASE_URL is built inline from the Aryx DB credentials — no separate
+  # Postgres sidecar required.
+  # SHAY_RUN_MIGRATIONS=false: Alembic migrations are Postgres-generated.
+  # SHAY_INIT_DB=true: init_db() creates Shay tables via SQLAlchemy create_all
+  #   on first boot, using the dialect-aware DialectUUID/DialectJSON types.
+  shay-api:
+    build:
+      context: ./shay_backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      - DATABASE_URL=oracle+oracledb://${ARYX_DB_USER}:${ARYX_DB_PASSWORD}@localhost/?dsn=${ARYX_OCI_ADB_DSN}
+      - SHAY_RUN_MIGRATIONS=false
+      - SHAY_INIT_DB=true
+      # Aryx bridge — internal Docker network URL + shared API key
+      - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI}
+      - GOOGLE_GMAIL_REDIRECT_URI=${GOOGLE_GMAIL_REDIRECT_URI}
+      - SF_CONNECT_REDIRECT_URI=${SF_CONNECT_REDIRECT_URI}
+      - ZOHO_CRM_CONNECT_REDIRECT_URI=${ZOHO_CRM_CONNECT_REDIRECT_URI}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+    ports:
+      - "8090:8000"
+    networks:
+      - aryx-net
+    restart: unless-stopped
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
   # ── MCP server — Model Context Protocol SSE endpoint ────────────────────────
   # OCI Security List: port 8765 restricted to VCN CIDR (10.0.0.0/16) — not public internet.
   mcp:
@@ -148,6 +196,7 @@ services:
     env_file: .env
     command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
     environment:
+      - ARYX_API_URL=http://api:8000
       - ARYX_OCI_MODE=true
       - ARYX_OCI_REGION=${ARYX_OCI_REGION:-us-chicago-1}
       - ARYX_OCI_COMPARTMENT_ID=${ARYX_OCI_COMPARTMENT_ID}
@@ -177,12 +226,17 @@ services:
       dockerfile: Dockerfile
     environment:
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
+      - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}
       - NODE_ENV=production
       - HOSTNAME=0.0.0.0
     ports:
       - "3000:3000"
     depends_on:
       api:
+        condition: service_healthy
+      shay-api:
         condition: service_healthy
     networks:
       - aryx-net

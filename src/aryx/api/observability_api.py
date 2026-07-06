@@ -25,9 +25,9 @@ def _job_summary(conn: Any, workspace_id: int) -> dict[str, Any]:
     return {"total": total, **by_status}
 
 
-def _llm_stats(conn: Any) -> dict[str, Any]:
+def _llm_stats(conn: Any, workspace_id: int) -> dict[str, Any]:
     with conn.cursor() as cur:
-        cur.execute(load("select_llm_stats"))
+        cur.execute(load("select_llm_stats"), (workspace_id,))
         row = cur.fetchone()
     if not row:
         return {}
@@ -36,9 +36,9 @@ def _llm_stats(conn: Any) -> dict[str, Any]:
             "completion_tokens": row[4]}
 
 
-def _recent_llm(conn: Any) -> list[dict[str, Any]]:
+def _recent_llm(conn: Any, workspace_id: int) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
-        cur.execute(load("select_recent_llm_calls"))
+        cur.execute(load("select_recent_llm_calls"), (workspace_id,))
         cols = ["role", "model", "prompt_tokens", "completion_tokens",
                 "latency_ms", "source", "error", "ts"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -61,8 +61,8 @@ def observability_router() -> APIRouter:
         with get_pool(get_settings().rdb_dsn).connection() as conn:
             return {
                 "jobs": _job_summary(conn, workspace_id),
-                "llm": _llm_stats(conn),
-                "llm_recent": _recent_llm(conn),
+                "llm": _llm_stats(conn, workspace_id),
+                "llm_recent": _recent_llm(conn, workspace_id),
                 "graph": _graph_stats(workspace_id),
                 "model_config": llm_runtime.status(),
                 "platform": ports().describe(),

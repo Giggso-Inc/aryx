@@ -1,4 +1,4 @@
--- Oracle ADB 23ai: LLM call aggregate stats.
+-- Oracle ADB 23ai: LLM call aggregate stats — workspace-scoped.
 -- Replaces avg(latency_ms)::int (Postgres cast stripped by _translate_sql,
 -- leaving a FLOAT) with ROUND(AVG(...)) to return an integer.
 SELECT COUNT(*)                                            AS total_calls,
@@ -7,3 +7,4 @@ SELECT COUNT(*)                                            AS total_calls,
        COALESCE(SUM(prompt_tokens), 0)                     AS prompt_tokens,
        COALESCE(SUM(completion_tokens), 0)                 AS completion_tokens
 FROM   aryx_llm_call
+WHERE  workspace_id = :1

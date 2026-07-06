@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Clock, Download, X } from "lucide-react";
 import { Header } from "@/components/brand/Header";
 import { Composer } from "@/components/ask/Composer";
@@ -11,16 +11,13 @@ import { WorkspacePeek } from "@/components/ask/WorkspacePeek";
 import { api } from "@/lib/api";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
+import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
 
-// Starters tuned for the demo workspace (Customer · Site · Device · Agent · Ticket).
-// Each names a specific kind of record or a known field so term extraction
-// always has a noun to lock onto.
 const STARTERS = [
-  "Show me 5 Customers",
-  "Which Agents have resolved the most Tickets?",
-  "What firmware versions appear most often on Devices?",
-  "Tell me about the Customer NetOps Atlantic",
+  "Who are our top customers by revenue?",
+  "Show me all open tickets for a specific account",
+  "What products does this customer own?",
 ];
 
 const FOLLOWUPS = [
@@ -98,14 +95,24 @@ function HistoryDrawer({
         ) : history.length === 0 ? (
           <div className="py-8 text-center text-[12px] text-subtle italic">No history yet</div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-3">
             {history.map((h) => (
               <li key={h.id}
-                className="cursor-pointer rounded-xl border border-navy-100 p-3 hover:bg-navy-50"
+                className="cursor-pointer rounded-xl border border-navy-100 bg-white p-3 hover:border-steel-300 hover:bg-navy-50 transition-colors"
                 onClick={() => { onReplay(h.question); onClose(); }}>
-                <p className="text-[12px] font-medium text-navy-800 line-clamp-2">{h.question}</p>
-                <p className="mt-1 text-[11px] text-subtle line-clamp-2">{h.answer}</p>
-                <p className="mt-1 text-[10px] text-subtle">{new Date(h.ts).toLocaleString()}</p>
+                {/* Question */}
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 shrink-0 rounded-full bg-navy-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">Q</span>
+                  <p className="text-[12px] font-medium text-navy-800 line-clamp-2">{h.question}</p>
+                </div>
+                {/* Answer */}
+                {h.answer && (
+                  <div className="mt-2 flex items-start gap-2">
+                    <span className="mt-0.5 shrink-0 rounded-full bg-steel-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-steel-600">A</span>
+                    <p className="text-[11px] text-navy-600 line-clamp-3">{h.answer}</p>
+                  </div>
+                )}
+                <p className="mt-2 text-[10px] text-subtle">{new Date(h.ts).toLocaleString()}</p>
               </li>
             ))}
           </ul>
@@ -117,11 +124,13 @@ function HistoryDrawer({
 
 export default function HomePage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { workspaceId } = useWorkspace();
+  const { shayWorkspaceId } = parseWorkspaceScope(pathname);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [showHistory, setShowHistory] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
 
   // First-run redirect: empty workspace → guided setup. "Empty" means
   // zero records, regardless of whether stub types exist.
@@ -131,10 +140,12 @@ export default function HomePage() {
     api.getEntityGraph(workspaceId).then((d) => {
       const isEmpty = (d.entities || []).length === 0;
       setIsEmptyWorkspace(isEmpty);
-      if (isEmpty && turns.length === 0) router.replace("/start");
+      if (isEmpty && turns.length === 0) {
+        router.replace(shayWorkspaceId ? workspaceStartHref(shayWorkspaceId) : "/start");
+      }
     }).catch(() => setIsEmptyWorkspace(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [router, shayWorkspaceId, turns.length, workspaceId]);
 
   const send = async (question?: string) => {
     const q = (question ?? input).trim();
@@ -211,73 +222,75 @@ export default function HomePage() {
         <HistoryDrawer
           workspaceId={workspaceId}
           onClose={() => setShowHistory(false)}
-          onReplay={(q) => { setInput(q); }}
+          onReplay={(q) => { setInput(q); send(q); }}
         />
       )}
 
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-6 py-10">
-        <div className="mb-2 flex justify-end">
-          <button
-            type="button"
-            onClick={() => setShowHistory((v) => !v)}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
-          >
-            <Clock size={12} /> History
-          </button>
-        </div>
-        {empty ? (
-          <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
-            <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">
-              Ask your knowledge graph.
-            </h1>
-            <p className="mt-4 max-w-md text-[15px] text-subtle">
-              Questions naming a specific kind of record or an entity work
-              best. Try one of these to see how citations work.
-            </p>
-            <div className="mt-8 w-full">
-              <WorkspacePeek workspaceId={workspaceId} />
-            </div>
-            <div className="mt-2 w-full max-w-prose">
-              <FollowupChips
-                prompts={STARTERS}
-                onPick={(p) => send(p)}
-                className="justify-center"
-              />
-            </div>
+      <div className="app-shell-offset flex flex-1">
+        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-10 lg:px-5">
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowHistory((v) => !v)}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+            >
+              <Clock size={12} /> History
+            </button>
           </div>
-        ) : (
-          <div className="flex-1">
-            <WorkspacePeek workspaceId={workspaceId} />
-            <MessageList turns={turns} />
-            {!busy && (
-              <div className="mt-6 pl-12">
-                <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
+          {empty ? (
+            <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
+              <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">
+                Ask your knowledge graph.
+              </h1>
+              <p className="mt-4 max-w-md text-[15px] text-subtle">
+                Questions naming a specific kind of record or an entity work
+                best. Try one of these to see how citations work.
+              </p>
+              <div className="mt-8 w-full">
+                <WorkspacePeek workspaceId={workspaceId} />
               </div>
-            )}
-          </div>
-        )}
+              <div className="mt-2 w-full max-w-prose">
+                <FollowupChips
+                  prompts={STARTERS}
+                  onPick={(p) => send(p)}
+                  className="justify-center"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1">
+              <WorkspacePeek workspaceId={workspaceId} />
+              <MessageList turns={turns} />
+              {!busy && (
+                <div className="mt-6 pl-12">
+                  <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
+                </div>
+              )}
+            </div>
+          )}
 
-        <div className="sticky bottom-6 mt-8">
-          <Composer
-            value={input}
-            onChange={setInput}
-            onSubmit={() => send()}
-            busy={busy}
-            disabled={isEmptyWorkspace === true}
-            placeholder={
-              isEmptyWorkspace === true
-                ? "This workspace is empty — onboard data first to ask questions."
-                : turns.length === 0
-                ? "Ask Aryx about your knowledge graph…  (⌘K to focus)"
-                : "Continue the conversation…"
-            }
-          />
-          <p className="mt-2 text-center text-[11px] text-subtle">
-            Answers are grounded in the workspace's resolved entities.
-            Provenance shown beneath each response.
-          </p>
-        </div>
-      </main>
+          <div className="sticky bottom-6 mt-8">
+            <Composer
+              value={input}
+              onChange={setInput}
+              onSubmit={() => send()}
+              busy={busy}
+              disabled={isEmptyWorkspace === true}
+              placeholder={
+                isEmptyWorkspace === true
+                  ? "This workspace is empty — onboard data first to ask questions."
+                  : turns.length === 0
+                    ? "Ask Aryx about your knowledge graph…  (⌘K to focus)"
+                    : "Continue the conversation…"
+              }
+            />
+            <p className="mt-2 text-center text-[11px] text-subtle">
+              Answers are grounded in the workspace&apos;s resolved entities.
+              Provenance shown beneath each response.
+            </p>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

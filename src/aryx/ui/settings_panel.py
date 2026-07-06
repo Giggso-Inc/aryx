@@ -5,6 +5,8 @@ Keys are sent to the API and held in process memory, never written to disk/git.
 """
 from __future__ import annotations
 
+import os
+
 import streamlit as st
 
 from aryx.ui import api, ontology_client, settings_mcp, settings_tokens
@@ -16,7 +18,7 @@ _PROVIDERS = {
     "Gemini (OpenAI-compatible)": "google",
 }
 _DEFAULT_ENDPOINT = {
-    "ollama": "http://ollama:11434",
+    "ollama": os.environ.get("ARYX_LLM_BASE_URL", "http://ollama:11434"),
     "anthropic": "",
     "openai": "https://api.openai.com/v1",
     "google": "https://generativelanguage.googleapis.com/v1beta/openai",

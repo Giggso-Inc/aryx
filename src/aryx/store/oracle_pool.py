@@ -30,11 +30,14 @@ _oracle_pool_lock = threading.Lock()
 
 _NAMED_PARAM_RE = re.compile(r"%\((\w+)\)s")
 _POS_PARAM_RE = re.compile(r"%s")
-_CAST_RE = re.compile(r"::(jsonb|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
+_CAST_RE = re.compile(r"::(jsonb|uuid|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
 # Matches both ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE SET …
-# The DO UPDATE clause can span multiple lines, hence re.DOTALL.
-_CONFLICT_RE = re.compile(r"\s+ON CONFLICT\b[^;]*", re.IGNORECASE | re.DOTALL)
+# Uses a tempered greedy token to stop before RETURNING (or ;) so that
+# a trailing RETURNING clause is preserved for _RETURNING_RE to process.
+# Old [^;]* was too greedy — it ate through NOW()\nRETURNING, stripping
+# the RETURNING clause and leaving _out_vars empty → DPY-1003.
+_CONFLICT_RE = re.compile(r"\s+ON CONFLICT\b(?:(?!\bRETURNING\b)[^;])*", re.IGNORECASE | re.DOTALL)
 _LIMIT_OFFSET_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\s+OFFSET\s+(:\w+|\d+)\b", re.IGNORECASE)
 _LIMIT_RE = re.compile(r"\bLIMIT\s+(:\w+|\d+)\b", re.IGNORECASE)
 _NOW_RE = re.compile(r"\bNOW\(\)", re.IGNORECASE)

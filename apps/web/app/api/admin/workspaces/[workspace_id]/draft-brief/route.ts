@@ -16,9 +16,16 @@ export async function POST(
   if (secret && req.headers.get("x-aryx-key") !== secret) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
   }
+  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
+  if (!internalApiKey) {
+    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
+  }
 
   const { workspace_id } = await params;
-  const target = process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
+  const target =
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:8088"
+      : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
 
   try {
@@ -26,7 +33,10 @@ export async function POST(
       `${target}/admin/workspaces/${workspace_id}/draft-brief`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-aryx-api-key": internalApiKey,
+        },
         body,
         // undici (Node.js built-in fetch) has no default timeout — safe for
         // LLM calls that may take 30-90 s depending on model and hardware.

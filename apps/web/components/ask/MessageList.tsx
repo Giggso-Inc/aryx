@@ -20,6 +20,16 @@ export function MessageList({ turns }: Props) {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns.length, turns[turns.length - 1]?.content]);
 
+  const usageLabel = (turn: ChatTurn) => {
+    if (!turn.usage) return null;
+    const parts = [
+      turn.usage.answer_model,
+      `${(turn.usage.latency_ms / 1000).toFixed(1)}s`,
+      `${turn.usage.prompt_tokens + turn.usage.completion_tokens} tokens`,
+    ].filter(Boolean);
+    return parts.join(" · ");
+  };
+
   return (
     <div className="flex flex-col gap-7">
       {turns.map((t) => (
@@ -69,11 +79,9 @@ export function MessageList({ turns }: Props) {
             {t.role === "assistant" && (
               <>
                 {t.citations && <Citations citations={t.citations} />}
-                {t.usage && (
+                {usageLabel(t) && (
                   <div className="mt-2 text-[11px] text-subtle">
-                    {t.usage.answer_model} ·{" "}
-                    {(t.usage.latency_ms / 1000).toFixed(1)}s ·{" "}
-                    {t.usage.prompt_tokens + t.usage.completion_tokens} tokens
+                    {usageLabel(t)}
                   </div>
                 )}
               </>

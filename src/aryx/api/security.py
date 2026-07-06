@@ -15,6 +15,16 @@ _EXEMPT_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
 _EXEMPT_PREFIXES = ("/mcp",)
 
 
+def _has_authenticated_header(request: Request) -> bool:
+    """Allow only verified Aryx API keys or verified bearer tokens."""
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        return _verify_key(token) if token else False
+    key = request.headers.get("x-aryx-api-key", "").strip()
+    return _verify_key(key) if key else False
+
+
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     """Verify X-Aryx-Api-Key against McpTokenStore for non-exempt REST routes.
 
@@ -22,7 +32,8 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
       off      — middleware is a no-op (useful for local dev)
       optional — missing/invalid key passes but sets X-Aryx-Auth-Warning header
       required — missing/invalid key returns 401 (production setting)
-    Default: optional.
+    Default: required. Deployments that do not set ARYX_API_AUTH will enforce
+    authentication. Set ARYX_API_AUTH=off to disable in local dev environments.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -30,12 +41,11 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if path in _EXEMPT_EXACT or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
             return await call_next(request)
 
-        mode = os.environ.get("ARYX_API_AUTH", "optional").lower()
+        mode = os.environ.get("ARYX_API_AUTH", "required").lower()
         if mode == "off":
             return await call_next(request)
 
-        key = request.headers.get("x-aryx-api-key", "").strip()
-        valid = _verify_key(key) if key else False
+        valid = _has_authenticated_header(request)
 
         if mode == "required" and not valid:
             return JSONResponse(
@@ -50,12 +60,17 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def require_api_key(x_aryx_api_key: str = Header(default="")) -> str:
+def require_api_key(
+    request: Request,
+    x_aryx_api_key: str = Header(default=""),
+) -> str:
     """Hard route-level guard — fails closed regardless of ARYX_API_AUTH mode.
 
     Use as a FastAPI dependency on admin endpoints that must always require a
     valid key, even when the global middleware is in 'optional' or 'off' mode.
     """
+    if _has_authenticated_header(request):
+        return x_aryx_api_key or request.headers.get("authorization", "")
     if not x_aryx_api_key or not _verify_key(x_aryx_api_key):
         raise HTTPException(
             status_code=401,
@@ -72,9 +87,9 @@ def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
       off      → passes through (no key required)
       optional → passes with a response warning header if key absent/invalid
       required → hard 401 if key absent/invalid (production setting)
-    Default: optional.
+    Default: required.
     """
-    mode = os.environ.get("ARYX_API_AUTH", "optional").lower()
+    mode = os.environ.get("ARYX_API_AUTH", "required").lower()
     if mode == "off":
         return None
     key = x_aryx_api_key.strip()
@@ -89,7 +104,11 @@ def write_api_key(x_aryx_api_key: str = Header(default="")) -> str | None:
 
 
 def _verify_key(key: str) -> bool:
-    """Verify an API key against McpTokenStore. Fails closed on any error."""
+    """Verify an API key against the shared internal key or McpTokenStore."""
+    configured_internal_key = os.environ.get("ARYX_INTERNAL_API_KEY", "").strip()
+    if configured_internal_key and key == configured_internal_key:
+        return True
+
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore

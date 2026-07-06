@@ -58,12 +58,63 @@ class DatasourceStore:
             return None
         return self._row(row, omit_cipher=True)
 
+    def update(
+        self,
+        datasource_id: int,
+        *,
+        name: str,
+        kind: str,
+        config: dict[str, Any],
+        secret: str | None = None,
+    ) -> dict[str, Any]:
+        """Update datasource metadata and optionally rotate the stored secret."""
+        params = {
+            "id": int(datasource_id),
+            "name": name,
+            "kind": kind,
+            "config_json": Json(config or {}),
+            "secret_cipher": None,
+            "secret_mask": None,
+        }
+        if secret is not None:
+            params["secret_cipher"] = datasource_secrets.encrypt(secret)
+            params["secret_mask"] = datasource_secrets.mask(secret)
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(load("update_datasource"), params)
+            row = cur.fetchone()
+        if not row:
+            raise ValueError(f"datasource {datasource_id} not found")
+        logger.info("datasource updated id=%s kind=%s", datasource_id, kind)
+        return self._row(row, omit_cipher=True)
+
     def delete(self, datasource_id: int) -> None:
         """Hard-delete a datasource and its audit trail (FK cascades)."""
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(load("delete_datasource_row"),
                         {"id": int(datasource_id)})
         logger.info("datasource deleted id=%s", datasource_id)
+
+    def ensure(self, workspace_id: int, name: str, kind: str) -> dict[str, Any]:
+        """Return an existing datasource by (workspace_id, name) or create it."""
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(load("select_datasource_by_name"),
+                        {"workspace_id": int(workspace_id), "name": name})
+            row = cur.fetchone()
+        if row:
+            return self._row(row, omit_cipher=True)
+        try:
+            return self.add(workspace_id, name, kind, {}, "")
+        except Exception as exc:
+            _is_dup = "23505" in str(exc) or "ORA-00001" in str(exc)
+            if not _is_dup:
+                raise
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(load("select_datasource_by_name"),
+                            {"workspace_id": int(workspace_id), "name": name})
+                row = cur.fetchone()
+            if not row:
+                raise
+            return self._row(row, omit_cipher=True)
 
     def secret_of(self, datasource_id: int, actor: str) -> str:
         """Decrypt and return the secret; logs an audit row before returning."""

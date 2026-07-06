@@ -1,0 +1,58 @@
+# Core dependencies
+python-dotenv==1.0.0
+
+# Database - PostgreSQL (default) and Oracle
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.29.0  # Async PostgreSQL driver
+psycopg2-binary==2.9.9  # Sync PostgreSQL driver (Alembic)
+oracledb==2.0.0  # Oracle driver (optional; use when DATABASE_URL is oracle+oracledb://...)
+alembic==1.12.1
+
+# FastAPI and web framework
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# Authentication and security
+httpx==0.25.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.3.0  # Pin bcrypt version for compatibility
+cryptography==41.0.7
+
+# File handling
+aiofiles==23.2.1
+python-magic==0.4.27
+
+# Cloud storage
+boto3==1.40.1  # For AWS S3
+azure-storage-blob==12.19.0  # For Azure Blob Storage
+google-cloud-storage==2.14.0  # For GCP Cloud Storage
+oci==2.157.0  # For Oracle Cloud Object Storage
+
+# Data validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+email-validator==2.1.0
+
+# Utilities
+python-dateutil==2.8.2
+uuid==1.30
+
+# Email
+emails==0.6.0
+
+# Socket.IO and WebSocket support
+python-socketio[client]==5.10.0
+websockets==12.0
+aiohttp==3.9.0
+tenacity==8.2.3
+
+# Scheduler for background tasks
+APScheduler==3.10.4
+
+# LLM Integration
+openai==1.12.0  # For OpenAI and Azure OpenAI
+google-generativeai==0.3.2  # For Gemini
+langchain==0.1.0  # For cost tracking callbacks (optional)
+langchain-openai==0.0.5  # OpenAI integration for LangChain 
