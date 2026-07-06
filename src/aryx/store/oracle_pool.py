@@ -364,9 +364,28 @@ class OracleCursorWrapper:
     """Wraps an oracledb cursor to match the psycopg3 cursor API."""
 
     def __init__(self, raw_cursor: Any) -> None:
+        import json as _json  # noqa: PLC0415
+        import oracledb  # noqa: PLC0415
+
         self._cur = raw_cursor
         self._out_vars: list[Any] = []  # filled by _translate_sql for RETURNING
         self._conflict_ignore: bool = False  # set when ON CONFLICT DO NOTHING was stripped
+
+        # Oracle 23ai native JSON columns may arrive as a Python str (JSON text)
+        # or as a Python dict (OSON binary), depending on how the value was stored.
+        # This handler normalises all DB_TYPE_JSON fetches to Python native types so
+        # callers never receive raw JSON strings from SELECT queries.
+        # Note: RETURNING INTO vars are typed as STRING explicitly — this handler
+        # does not fire for those; _parse_brief() handles that path.
+        def _json_output_handler(cursor: Any, metadata: Any) -> Any:
+            if metadata.type_code is oracledb.DB_TYPE_JSON:
+                return cursor.var(
+                    oracledb.DB_TYPE_JSON,
+                    arraysize=cursor.arraysize,
+                    outconverter=lambda v: _json.loads(v) if isinstance(v, str) else v,
+                )
+
+        self._cur.outputtypehandler = _json_output_handler
 
     def execute(self, sql: str, params: Any = None) -> None:
         """Execute a single SQL statement, translating psycopg3 → Oracle."""
