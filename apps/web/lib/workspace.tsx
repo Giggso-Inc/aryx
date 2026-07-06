@@ -13,6 +13,7 @@ interface WorkspaceContext {
   workspaces: Workspace[];
   setWorkspaceId: (id: number) => void;
   refresh: () => Promise<void>;
+  updateWorkspaceBrief: (id: number, brief: Record<string, unknown>) => void;
 }
 
 const Ctx = createContext<WorkspaceContext | null>(null);
@@ -40,6 +41,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       // Keep existing workspaces on transient error — don't blank the UI
     }
   }, [session?.access_token]);
+
+  const updateWorkspaceBrief = useCallback((id: number, brief: Record<string, unknown>) => {
+    setWorkspaces(prev => prev.map(w => w.id === id ? { ...w, brief } : w));
+  }, []);
 
   useEffect(() => {
     if (!ready || !session?.access_token) {
@@ -84,7 +89,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ ready, workspaceId, workspaces, setWorkspaceId, refresh }}>
+    <Ctx.Provider value={{ ready, workspaceId, workspaces, setWorkspaceId, refresh, updateWorkspaceBrief }}>
       {children}
     </Ctx.Provider>
   );

@@ -65,7 +65,7 @@ function Readiness({ filled }: { filled: number }) {
 }
 
 export default function BriefPage() {
-  const { ready, workspaceId, workspaces, setWorkspaceId, refresh } = useWorkspace();
+  const { ready, workspaceId, workspaces, setWorkspaceId, updateWorkspaceBrief } = useWorkspace();
   const router = useRouter();
   const pathname = usePathname();
   const { shayWorkspaceId } = parseWorkspaceScope(pathname);
@@ -134,7 +134,7 @@ export default function BriefPage() {
         roles: roles.split("\n").map((l) => l.trim()).filter(Boolean),
       };
       await api.saveBrief(workspaceId, brief);
-      await refresh();
+      updateWorkspaceBrief(workspaceId, brief);
       setResult("Brief saved — Aryx will use it for extraction.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
