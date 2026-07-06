@@ -152,10 +152,12 @@ class GGDatasource(Base):
     __table_args__ = (
         # Exclusive arc: exactly one scope FK must be set and level must match
         CheckConstraint(
-            "(level = 'workspace' AND workspace_id IS NOT NULL AND channel_id IS NULL  AND thread_id IS NULL  AND message_id IS NULL) OR "
-            "(level = 'channel'   AND channel_id   IS NOT NULL AND workspace_id IS NULL AND thread_id IS NULL  AND message_id IS NULL) OR "
-            "(level = 'thread'    AND thread_id    IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL AND message_id IS NULL) OR "
-            "(level = 'message'   AND message_id   IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL AND thread_id IS NULL)",
+            # "level" must be double-quoted: Oracle treats unquoted LEVEL as the
+            # CONNECT BY pseudocolumn and rejects it in CHECK constraints (ORA-00976).
+            "(\"level\" = 'workspace' AND workspace_id IS NOT NULL AND channel_id IS NULL  AND thread_id IS NULL  AND message_id IS NULL) OR "
+            "(\"level\" = 'channel'   AND channel_id   IS NOT NULL AND workspace_id IS NULL AND thread_id IS NULL  AND message_id IS NULL) OR "
+            "(\"level\" = 'thread'    AND thread_id    IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL AND message_id IS NULL) OR "
+            "(\"level\" = 'message'   AND message_id   IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL AND thread_id IS NULL)",
             name="chk_gg_datasources_exclusive_arc",
         ),
         # Partial unique indexes: one datasource per (scope, name) per level
