@@ -30,7 +30,7 @@ _oracle_pool_lock = threading.Lock()
 
 _NAMED_PARAM_RE = re.compile(r"%\((\w+)\)s")
 _POS_PARAM_RE = re.compile(r"%s")
-_CAST_RE = re.compile(r"::(jsonb|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
+_CAST_RE = re.compile(r"::(jsonb|uuid|text|vector|int|bigint|regclass|real|float|boolean)\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\s+(.+)$", re.IGNORECASE | re.DOTALL)
 # Matches both ON CONFLICT DO NOTHING and ON CONFLICT DO UPDATE SET …
 # The DO UPDATE clause can span multiple lines, hence re.DOTALL.
