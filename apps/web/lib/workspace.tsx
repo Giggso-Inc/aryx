@@ -76,8 +76,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const def = list.find((w) => w.name === "Default") || list[0];
       if (def) setWorkspaceIdState(def.id);
     }).catch(() => {
-      setWorkspaceIdState(0);
-      setWorkspaces([]);
+      // Keep existing state on transient error — don't redirect to /start
     });
   }, [ready, session?.access_token]);
 
