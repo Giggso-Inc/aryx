@@ -9,6 +9,11 @@
 --   JSONB       → CLOB  (DEFAULT '{}' / DEFAULT '[]')
 --   TIMESTAMPTZ → TIMESTAMP WITH TIME ZONE
 --   NOW()       → SYSTIMESTAMP
+--
+-- Cross-service FKs (references to gg_workspace created by shay-api's create_all):
+--   NOT included inline — added via separate ALTER TABLE blocks below that swallow
+--   ORA-00942 (table not found). This prevents startup-order races between api and
+--   shay-api containers; the FK is added on whichever restart finds gg_workspace present.
 
 -- ── aryx_shay_workspace_map ───────────────────────────────────────────────────
 BEGIN
@@ -22,11 +27,20 @@ BEGIN
     CONSTRAINT pk_aryx_shay_workspace_map     PRIMARY KEY (shay_workspace_id),
     CONSTRAINT uq_aryx_shay_workspace_aryx_id UNIQUE      (aryx_workspace_id),
     CONSTRAINT fk_aryx_shay_wmap_aryx_ws
-        FOREIGN KEY (aryx_workspace_id) REFERENCES aryx_workspace(id) ON DELETE CASCADE,
-    CONSTRAINT fk_aryx_shay_wmap_gg_ws
-        FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id)   ON DELETE CASCADE
+        FOREIGN KEY (aryx_workspace_id) REFERENCES aryx_workspace(id) ON DELETE CASCADE
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
+END;
+/
+
+-- FK to gg_workspace (shay-api table) — added separately; swallow ORA-00942 if
+-- gg_workspace does not exist yet (api started before shay-api on this boot).
+-- Also swallow ORA-02275 (constraint already exists) for idempotency.
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_workspace_map ADD CONSTRAINT fk_aryx_shay_wmap_gg_ws
+    FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id) ON DELETE CASCADE';
+EXCEPTION WHEN OTHERS THEN
+  IF SQLCODE NOT IN (-942, -2275, -2264) THEN RAISE; END IF;
 END;
 /
 
@@ -40,16 +54,22 @@ BEGIN
     ingest_job_id       VARCHAR2(500),
     created_at          TIMESTAMP WITH TIME ZONE  DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at          TIMESTAMP WITH TIME ZONE  DEFAULT SYSTIMESTAMP NOT NULL,
-    CONSTRAINT pk_aryx_shay_datasource_map     PRIMARY KEY (shay_datasource_id),
-    CONSTRAINT uq_aryx_shay_ds_aryx_id         UNIQUE      (aryx_datasource_id),
+    CONSTRAINT pk_aryx_shay_datasource_map  PRIMARY KEY (shay_datasource_id),
+    CONSTRAINT uq_aryx_shay_ds_aryx_id      UNIQUE      (aryx_datasource_id),
     CONSTRAINT fk_aryx_shay_dsmap_aryx_ds
-        FOREIGN KEY (aryx_datasource_id) REFERENCES aryx_datasource(id)  ON DELETE CASCADE,
-    CONSTRAINT fk_aryx_shay_dsmap_gg_ws
-        FOREIGN KEY (shay_workspace_id)  REFERENCES gg_workspace(id)     ON DELETE CASCADE,
+        FOREIGN KEY (aryx_datasource_id) REFERENCES aryx_datasource(id) ON DELETE CASCADE,
     CONSTRAINT fk_aryx_shay_dsmap_aryx_ws
-        FOREIGN KEY (aryx_workspace_id)  REFERENCES aryx_workspace(id)   ON DELETE CASCADE
+        FOREIGN KEY (aryx_workspace_id)  REFERENCES aryx_workspace(id)  ON DELETE CASCADE
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_datasource_map ADD CONSTRAINT fk_aryx_shay_dsmap_gg_ws
+    FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id) ON DELETE CASCADE';
+EXCEPTION WHEN OTHERS THEN
+  IF SQLCODE NOT IN (-942, -2275, -2264) THEN RAISE; END IF;
 END;
 /
 
@@ -69,13 +89,19 @@ BEGIN
     ask_session_key     VARCHAR2(500)             NOT NULL,
     created_at          TIMESTAMP WITH TIME ZONE  DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at          TIMESTAMP WITH TIME ZONE  DEFAULT SYSTIMESTAMP NOT NULL,
-    CONSTRAINT pk_aryx_shay_chat_map    PRIMARY KEY (shay_thread_id),
+    CONSTRAINT pk_aryx_shay_chat_map PRIMARY KEY (shay_thread_id),
     CONSTRAINT fk_aryx_shay_cmap_aryx_ws
-        FOREIGN KEY (aryx_workspace_id) REFERENCES aryx_workspace(id) ON DELETE CASCADE,
-    CONSTRAINT fk_aryx_shay_cmap_gg_ws
-        FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id)   ON DELETE CASCADE
+        FOREIGN KEY (aryx_workspace_id) REFERENCES aryx_workspace(id) ON DELETE CASCADE
   )';
 EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
+END;
+/
+
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_chat_map ADD CONSTRAINT fk_aryx_shay_cmap_gg_ws
+    FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id) ON DELETE CASCADE';
+EXCEPTION WHEN OTHERS THEN
+  IF SQLCODE NOT IN (-942, -2275, -2264) THEN RAISE; END IF;
 END;
 /
 
@@ -91,7 +117,7 @@ BEGIN
     usage               CLOB                      DEFAULT ''{}'' NOT NULL,
     grounding           CLOB                      DEFAULT ''{}'' NOT NULL,
     created_at          TIMESTAMP WITH TIME ZONE  DEFAULT SYSTIMESTAMP NOT NULL,
-    CONSTRAINT pk_aryx_shay_chat_turn     PRIMARY KEY (id),
+    CONSTRAINT pk_aryx_shay_chat_turn PRIMARY KEY (id),
     CONSTRAINT fk_aryx_shay_cturn_thread
         FOREIGN KEY (shay_thread_id)    REFERENCES aryx_shay_chat_map(shay_thread_id) ON DELETE CASCADE,
     CONSTRAINT fk_aryx_shay_cturn_aryx_ws
