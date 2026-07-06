@@ -4,11 +4,14 @@ Equivalent to the JavaScript version for backend compatibility
 """
 
 import base64
+import logging
 import os
 import urllib.parse
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 SEPARATOR = '$@$'
 
@@ -54,7 +57,7 @@ def encrypt(data: str) -> str:
         return base64.b64encode(combined).decode('utf-8')
         
     except Exception as e:
-        print(f"Encryption error: {e}")
+        logger.error("Encryption failed: %s", e, exc_info=True)
         raise Exception("Encryption failed")
 
 def decrypt(encrypted_data: str) -> str:
