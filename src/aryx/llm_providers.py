@@ -207,7 +207,7 @@ def oci_genai_json(
     else:
         json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
     generated, in_tok, out_tok = _oci_chat_raw(
-        spec, system, user + json_instruction, max_tokens=2048
+        spec, system, user + json_instruction, max_tokens=4096
     )
 
     # Strip markdown code fences if the model ignores the instruction
@@ -221,8 +221,13 @@ def oci_genai_json(
     try:
         data = json.loads(generated)
     except json.JSONDecodeError as exc:
+        # Log the full raw output at DEBUG for diagnostics; surface a short
+        # excerpt in the RuntimeError so it appears in the job error field.
+        logger.debug("oci_genai_json parse failed model=%s raw=%r", spec.name, generated)
+        truncated = len(generated) >= 4090  # likely hit max_tokens ceiling
+        hint = " (response appears truncated — hit token limit)" if truncated else ""
         raise RuntimeError(
-            f"OCI GenAI returned non-JSON output (model={spec.name!r}): "
+            f"OCI GenAI returned non-JSON output (model={spec.name!r}){hint}: "
             f"{generated[:200]!r}"
         ) from exc
     return data, in_tok, out_tok
