@@ -10,10 +10,12 @@
 --   TIMESTAMPTZ → TIMESTAMP WITH TIME ZONE
 --   NOW()       → SYSTIMESTAMP
 --
--- Cross-service FKs (references to gg_workspace created by shay-api's create_all):
---   NOT included inline — added via separate ALTER TABLE blocks below that swallow
---   ORA-00942 (table not found). This prevents startup-order races between api and
---   shay-api containers; the FK is added on whichever restart finds gg_workspace present.
+-- Cross-service FKs to gg_workspace (owned by shay-api) are intentionally OMITTED.
+-- Adding them caused ORA-02291: the api service inserts bridge rows via an HTTP call
+-- from shay-api, but shay-api's SQLAlchemy async session may not have committed the
+-- gg_workspace row yet, making the parent key invisible to the api's Oracle connection.
+-- Data integrity across service boundaries is enforced at the application layer.
+-- The DROP blocks below clean up constraints added by earlier migration runs.
 
 -- ── aryx_shay_workspace_map ───────────────────────────────────────────────────
 BEGIN
@@ -33,14 +35,12 @@ EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;
 /
 
--- FK to gg_workspace (shay-api table) — added separately; swallow ORA-00942 if
--- gg_workspace does not exist yet (api started before shay-api on this boot).
--- Also swallow ORA-02275 (constraint already exists) for idempotency.
+-- Drop cross-service FK to gg_workspace if it was added by a prior migration run.
+-- ORA-02443 = constraint does not exist, ORA-00942 = table not found — both safe to skip.
 BEGIN
-  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_workspace_map ADD CONSTRAINT fk_aryx_shay_wmap_gg_ws
-    FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id) ON DELETE CASCADE';
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_workspace_map DROP CONSTRAINT fk_aryx_shay_wmap_gg_ws';
 EXCEPTION WHEN OTHERS THEN
-  IF SQLCODE NOT IN (-942, -2275, -2264) THEN RAISE; END IF;
+  IF SQLCODE NOT IN (-2443, -942) THEN RAISE; END IF;
 END;
 /
 
@@ -65,11 +65,11 @@ EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;
 /
 
+-- Drop cross-service FK to gg_workspace if it was added by a prior migration run.
 BEGIN
-  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_datasource_map ADD CONSTRAINT fk_aryx_shay_dsmap_gg_ws
-    FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id) ON DELETE CASCADE';
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_datasource_map DROP CONSTRAINT fk_aryx_shay_dsmap_gg_ws';
 EXCEPTION WHEN OTHERS THEN
-  IF SQLCODE NOT IN (-942, -2275, -2264) THEN RAISE; END IF;
+  IF SQLCODE NOT IN (-2443, -942) THEN RAISE; END IF;
 END;
 /
 
@@ -97,11 +97,11 @@ EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF;
 END;
 /
 
+-- Drop cross-service FK to gg_workspace if it was added by a prior migration run.
 BEGIN
-  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_chat_map ADD CONSTRAINT fk_aryx_shay_cmap_gg_ws
-    FOREIGN KEY (shay_workspace_id) REFERENCES gg_workspace(id) ON DELETE CASCADE';
+  EXECUTE IMMEDIATE 'ALTER TABLE aryx_shay_chat_map DROP CONSTRAINT fk_aryx_shay_cmap_gg_ws';
 EXCEPTION WHEN OTHERS THEN
-  IF SQLCODE NOT IN (-942, -2275, -2264) THEN RAISE; END IF;
+  IF SQLCODE NOT IN (-2443, -942) THEN RAISE; END IF;
 END;
 /
 
