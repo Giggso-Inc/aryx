@@ -9,6 +9,7 @@ Date: 2025-01-27
 Version: 1.0.0
 """
 
+import logging
 import re
 import os
 import smtplib
@@ -20,6 +21,8 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.services.template_service import template_service
+
+logger = logging.getLogger(__name__)
 
 
 class EmailService:
@@ -34,9 +37,15 @@ class EmailService:
         self.password = settings.SMTP_PASS
         self.from_email = settings.SMTP_FROM
         self.use_tls = settings.SMTP_SECURE
-        
+
         # Get default platform name from config
         self.default_platform_name = settings.PLATFORM_NAME
+
+        logger.info(
+            "EmailService initialised — host=%s port=%s from=%s tls=%s auth=%s",
+            self.host, self.port, self.from_email, self.use_tls,
+            bool(self.username),
+        )
         
         # Get template directory path
         self.template_dir = os.path.join(
@@ -116,8 +125,7 @@ class EmailService:
                     template_content = template_data['content']
                 except HTTPException as e:
                     if e.status_code == 404:
-                        # Template not found, use default fallback
-                        print(f"Template {template_id} not found, using default fallback template")
+                        logger.warning("Template %s not found, falling back to default", template_id)
                         template_content = self._get_default_invitation_template()
                     else:
                         raise e
@@ -153,7 +161,7 @@ class EmailService:
             try:
                 processed_html = template_service.process_template_content(template_content, template_variables)
             except ValueError as e:
-                print(f"Template processing error, using default: {e}")
+                logger.warning("Template processing error, falling back to default HTML: %s", e)
                 processed_html = self._create_invitation_html(invitation_data, platform_url)
             
             # Create plain text body first (should be attached before HTML)
@@ -167,7 +175,7 @@ class EmailService:
             return self._send_email(msg)
             
         except Exception as e:
-            print(f"Error sending template invitation email: {e}")
+            logger.error("Error sending template invitation email to %s: %s", to_email, e, exc_info=True)
             return False
     
     def _normalize_name(self, raw_name: Optional[str]) -> str:
@@ -575,7 +583,7 @@ class EmailService:
             return self._send_email(msg)
             
         except Exception as e:
-            print(f"Error sending invitation email: {e}")
+            logger.error("Error sending invitation email to %s: %s", to_email, e, exc_info=True)
             return False
     
     def send_bulk_invitation_emails(
@@ -707,61 +715,67 @@ class EmailService:
     
     def _send_email(self, msg: MIMEMultipart) -> bool:
         """Send email via SMTP"""
+        recipient = msg['To']
         try:
-            # Create SMTP connection
+            logger.debug("SMTP connect — host=%s port=%s", self.host, self.port)
             server = smtplib.SMTP(self.host, self.port)
-            
-            # For Gmail and most modern SMTP servers, we need to start TLS first
-            if self.use_tls or self.port == 587:  # Use TLS setting or standard TLS port
+
+            if self.use_tls or self.port == 587:
                 server.starttls()
-                print("✅ STARTTLS initiated successfully")
-            
-            # Try to login if credentials are provided
+                logger.debug("STARTTLS initiated")
+
             if self.username and self.password:
                 try:
                     server.login(self.username, self.password)
-                    print(f"✅ SMTP authentication successful with {self.username}")
+                    logger.debug("SMTP login OK — user=%s", self.username)
                 except smtplib.SMTPAuthenticationError as auth_error:
-                    print(f"❌ SMTP authentication failed: {auth_error}")
+                    logger.error(
+                        "SMTP authentication failed — user=%s error=%s",
+                        self.username, auth_error, exc_info=True,
+                    )
                     server.quit()
                     return False
                 except smtplib.SMTPException as smtp_error:
                     if "AUTH extension not supported" in str(smtp_error):
-                        print(f"⚠️ SMTP server doesn't support authentication, continuing without login")
+                        logger.warning("SMTP server does not support AUTH, skipping login")
                     else:
-                        print(f"❌ SMTP error: {smtp_error}")
+                        logger.error("SMTP login error: %s", smtp_error, exc_info=True)
                         server.quit()
                         return False
             else:
-                print("⚠️ No SMTP credentials provided")
-            
-            # Send email
-            text = msg.as_string()
-            server.sendmail(self.from_email, msg['To'], text)
-            
-            # Close connection
+                logger.warning("No SMTP credentials configured — sending unauthenticated")
+
+            server.sendmail(self.from_email, recipient, msg.as_string())
             server.quit()
-            
-            print(f"✅ Email sent successfully to {msg['To']}")
+            logger.info("Email sent OK — to=%s from=%s", recipient, self.from_email)
             return True
-            
+
         except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ SMTP authentication failed for {msg['To']}: {e}")
+            logger.error("SMTP auth failed — to=%s: %s", recipient, e, exc_info=True)
             return False
         except smtplib.SMTPConnectError as e:
-            print(f"❌ Failed to connect to SMTP server for {msg['To']}: {e}")
+            logger.error(
+                "SMTP connect error — host=%s port=%s to=%s: %s",
+                self.host, self.port, recipient, e, exc_info=True,
+            )
             return False
         except smtplib.SMTPRecipientsRefused as e:
-            print(f"❌ Recipient refused for {msg['To']}: {e}")
+            logger.error("SMTP recipient refused — to=%s: %s", recipient, e, exc_info=True)
             return False
         except smtplib.SMTPSenderRefused as e:
-            print(f"❌ Sender refused for {msg['To']}: {e}")
+            logger.error(
+                "SMTP sender refused — from=%s to=%s: %s",
+                self.from_email, recipient, e, exc_info=True,
+            )
             return False
         except smtplib.SMTPDataError as e:
-            print(f"❌ Data error for {msg['To']}: {e}")
+            logger.error("SMTP data error — to=%s: %s", recipient, e, exc_info=True)
             return False
         except Exception as e:
-            print(f"❌ Failed to send email to {msg['To']}: {e}")
+            logger.error(
+                "Unexpected error sending email — to=%s: %s",
+                recipient, e, exc_info=True,
+            )
             return False
     
     def test_connection(self) -> bool:

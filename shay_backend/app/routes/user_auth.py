@@ -11,10 +11,13 @@ Version: 1.0.0
 """
 
 # Standard library imports for UUID generation and date/time operations
+import logging
 import os
 import re
 import uuid
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 # Type hinting support for function parameters and return values
 from typing import List, Optional
@@ -239,8 +242,7 @@ async def invite_user(
         )
     
     if not email_sent:
-        # Log the error but don't fail the invitation creation
-        print(f"⚠️ Warning: Failed to send email to {invite_data.email}")
+        logger.warning("Invitation created but email delivery failed — to=%s", invite_data.email)
     
     return UserInviteResponse(
         message="Invitation sent successfully" + (" (Email sent)" if email_sent else " (Email failed)"),
