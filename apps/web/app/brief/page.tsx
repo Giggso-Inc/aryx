@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   AlertCircle, CheckCircle2, FileText, Loader2, Sparkles,
@@ -65,7 +65,7 @@ function Readiness({ filled }: { filled: number }) {
 }
 
 export default function BriefPage() {
-  const { ready, workspaceId, workspaces, setWorkspaceId, updateWorkspaceBrief } = useWorkspace();
+  const { ready, workspaceId, workspaces, setWorkspaceId } = useWorkspace();
   const router = useRouter();
   const pathname = usePathname();
   const { shayWorkspaceId } = parseWorkspaceScope(pathname);
@@ -76,30 +76,26 @@ export default function BriefPage() {
   const [roles, setRoles] = useState("");
 
   const [seed, setSeed] = useState("");
+  const [briefLoading, setBriefLoading] = useState(false);
   const [drafting, setDrafting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const justSavedRef = useRef(false);
 
-  // Reset guard when workspace selection changes so the new workspace's brief loads.
+  // Fetch brief directly from API on page visit or workspace switch.
   useEffect(() => {
-    justSavedRef.current = false;
-  }, [workspaceId]);
-
-  const loadBrief = useCallback(() => {
-    if (justSavedRef.current) return;
-    const ws = workspaces.find((w) => w.id === workspaceId);
-    const b = (ws?.brief ?? {}) as Partial<Brief>;
-    setDomain(b.domain ?? "");
-    setAim(b.aim ?? "");
-    setObjectives((b.objectives ?? []).join("\n"));
-    setScope(b.scope ?? "");
-    setRoles((b.roles ?? []).join("\n"));
-  }, [workspaceId, workspaces]);
-
-  // Re-load form fields whenever the workspaces context is updated.
-  useEffect(() => { loadBrief(); }, [loadBrief]);
+    if (!workspaceId || workspaceId <= 0) return;
+    setBriefLoading(true);
+    api.listWorkspaces().then((list) => {
+      const ws = list.find((w) => w.id === workspaceId);
+      const b = (ws?.brief ?? {}) as Partial<Brief>;
+      setDomain(b.domain ?? "");
+      setAim(b.aim ?? "");
+      setObjectives((b.objectives ?? []).join("\n"));
+      setScope(b.scope ?? "");
+      setRoles((b.roles ?? []).join("\n"));
+    }).finally(() => setBriefLoading(false));
+  }, [workspaceId, pathname]);
 
   useEffect(() => {
     if (ready && (workspaceId <= 0 || workspaces.length === 0)) {
@@ -122,7 +118,6 @@ export default function BriefPage() {
       setObjectives((b.objectives ?? []).join("\n"));
       setScope(b.scope ?? "");
       setRoles((b.roles ?? []).join("\n"));
-      justSavedRef.current = true;
       setResult("Brief drafted — review and save below.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Draft failed");
@@ -142,8 +137,6 @@ export default function BriefPage() {
         roles: roles.split("\n").map((l) => l.trim()).filter(Boolean),
       };
       await api.saveBrief(workspaceId, brief);
-      justSavedRef.current = true;
-      updateWorkspaceBrief(workspaceId, brief as Record<string, unknown>);
       setResult("Brief saved — Aryx will use it for extraction.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
@@ -214,61 +207,69 @@ export default function BriefPage() {
           <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-navy-500">
             Review and edit
           </div>
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-            <FieldGroup
-              label="1 · Domain of interest"
-              name="domain"
-              value={domain}
-              onChange={setDomain}
-            />
-            <FieldGroup
-              label="2 · Aim — purpose of the knowledge model"
-              name="aim"
-              value={aim}
-              onChange={setAim}
-              rows={3}
-            />
-            <FieldGroup
-              label="3 · Objectives (one per line)"
-              name="objectives"
-              value={objectives}
-              onChange={setObjectives}
-              rows={4}
-            />
-            <FieldGroup
-              label="5 · Participant roles (one per line)"
-              name="roles"
-              value={roles}
-              onChange={setRoles}
-              rows={4}
-            />
-          </div>
-          <FieldGroup
-            label="4 · Scope — what's IN, what's OUT"
-            name="scope"
-            value={scope}
-            onChange={setScope}
-            rows={2}
-          />
+          {briefLoading ? (
+            <div className="flex items-center justify-center py-8 text-[13px] text-subtle">
+              <Loader2 size={14} className="mr-2 animate-spin" /> Loading brief…
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <FieldGroup
+                  label="1 · Domain of interest"
+                  name="domain"
+                  value={domain}
+                  onChange={setDomain}
+                />
+                <FieldGroup
+                  label="2 · Aim — purpose of the knowledge model"
+                  name="aim"
+                  value={aim}
+                  onChange={setAim}
+                  rows={3}
+                />
+                <FieldGroup
+                  label="3 · Objectives (one per line)"
+                  name="objectives"
+                  value={objectives}
+                  onChange={setObjectives}
+                  rows={4}
+                />
+                <FieldGroup
+                  label="5 · Participant roles (one per line)"
+                  name="roles"
+                  value={roles}
+                  onChange={setRoles}
+                  rows={4}
+                />
+              </div>
+              <FieldGroup
+                label="4 · Scope — what's IN, what's OUT"
+                name="scope"
+                value={scope}
+                onChange={setScope}
+                rows={2}
+              />
 
-          <Readiness filled={filledCount} />
+              <Readiness filled={filledCount} />
 
-          <button
-            type="button"
-            onClick={saveBrief}
-            disabled={saving}
-            className="focus-ring inline-flex w-full items-center justify-center gap-2 rounded-lg bg-navy-800 py-2.5 text-[13px] font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
-          >
-            {saving ? (
-              <><Loader2 size={13} className="animate-spin" /> Saving…</>
-            ) : (
-              "Save Brief"
-            )}
-          </button>
+              <button
+                type="button"
+                onClick={saveBrief}
+                disabled={saving}
+                className="focus-ring inline-flex w-full items-center justify-center gap-2 rounded-lg bg-navy-800 py-2.5 text-[13px] font-semibold text-white hover:bg-navy-700 disabled:opacity-50"
+              >
+                {saving ? (
+                  <><Loader2 size={13} className="animate-spin" /> Saving…</>
+                ) : (
+                  "Save Brief"
+                )}
+              </button>
+            </>
+          )}
         </div>
 
         {/* Current brief summary */}
-        {filledCount > 0 && (
+        {!briefLoading && filledCount > 0 && (
           <div className="mt-5 rounded-xl border border-navy-100 bg-navy-50/40 p-5">
             <h3 className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-navy-500">
               Current brief
