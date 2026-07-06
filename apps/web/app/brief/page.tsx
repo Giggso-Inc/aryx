@@ -134,7 +134,7 @@ export default function BriefPage() {
         roles: roles.split("\n").map((l) => l.trim()).filter(Boolean),
       };
       await api.saveBrief(workspaceId, brief);
-      updateWorkspaceBrief(workspaceId, brief);
+      updateWorkspaceBrief(workspaceId, brief as Record<string, unknown>);
       setResult("Brief saved — Aryx will use it for extraction.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
