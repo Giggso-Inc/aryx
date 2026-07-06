@@ -169,6 +169,29 @@ def _unwrap_params(params: Any) -> Any:
     return params
 
 
+def _tuple_seq_to_dict(oracle_sql: str, seq: list[Any]) -> list[Any]:
+    """Convert tuple rows → dicts for named-bind SQL (avoids DPY-4009).
+
+    oracledb thin counts each :name occurrence in the SQL as a separate
+    positional slot when data arrives as tuples — a MERGE with 5 named
+    params repeated across ON/UPDATE/INSERT branches = 10 expected binds,
+    5 provided → DPY-4009.  Dicts let oracledb deduplicate by name.
+    Returns seq unchanged for positional SQL (:1, :2, …) or dict rows.
+    """
+    if not seq or isinstance(seq[0], dict):
+        return seq
+    seen: set[str] = set()
+    names: list[str] = []
+    for m in _BIND_NAME_RE.finditer(oracle_sql):
+        n = m.group(1)
+        if n not in seen and not n.isdigit():
+            seen.add(n)
+            names.append(n)
+    if not names:
+        return seq  # positional SQL — tuples are correct
+    return [dict(zip(names, row)) if isinstance(row, (tuple, list)) else row for row in seq]
+
+
 def _read_lob(v: Any) -> Any:
     """Read oracledb LOB objects to plain Python strings on fetch.
 
@@ -360,6 +383,7 @@ class OracleCursorWrapper:
         oracle_seq = [_unwrap_params(p) for p in seq]
         if not oracle_seq:
             return
+        oracle_seq = _tuple_seq_to_dict(oracle_sql, oracle_seq)
         _hint_clob_many(self._cur, oracle_seq, oracledb)
         logger.debug("executemany sql=%s rows=%d", oracle_sql[:120], len(oracle_seq))
         try:
