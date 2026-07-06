@@ -28,7 +28,7 @@ class Template(Base):
     __tablename__ = "gg_templates"
     
     # Primary key - UUID (Python default for PostgreSQL + Oracle compatibility)
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
     # Template identifier - auto-generated format TMPLT_INVITE_001
     template_id = Column(String(255), nullable=False, unique=True, index=True)

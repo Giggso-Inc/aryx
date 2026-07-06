@@ -16,7 +16,7 @@ class App(Base):
     __tablename__ = "gg_apps"
     
     # Primary key - Using native UUID for PostgreSQL
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # App information
     app_name = Column(String(255), nullable=False, index=True)

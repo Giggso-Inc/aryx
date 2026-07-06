@@ -40,7 +40,7 @@ class GGAppConnection(Base):
     # -----------------------------------------------------------------------
     # Primary key
     # -----------------------------------------------------------------------
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
 
     # -----------------------------------------------------------------------
     # Which app

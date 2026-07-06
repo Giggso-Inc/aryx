@@ -16,7 +16,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Foreign keys
     company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=False, index=True)

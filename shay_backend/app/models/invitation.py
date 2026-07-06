@@ -16,7 +16,7 @@ class Invitation(Base):
     __tablename__ = "gg_invitations"
     
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Invitation details
     email = Column(String(255), nullable=False, index=True)

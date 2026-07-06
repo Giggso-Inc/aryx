@@ -15,7 +15,7 @@ class ChannelMember(Base):
     __tablename__ = "gg_channel_members"
 
     # Primary key - native UUID for PostgreSQL
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
 
     # Foreign keys / associations
     channel_id = Column(UUID(as_uuid=True), ForeignKey("gg_channels.id"), nullable=False, index=True)

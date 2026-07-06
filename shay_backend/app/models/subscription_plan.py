@@ -15,7 +15,7 @@ class SubscriptionPlan(Base):
     __tablename__ = "subscription_plans"
 
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
 
     # Plan details
     name = Column(String(255), nullable=False, index=True)

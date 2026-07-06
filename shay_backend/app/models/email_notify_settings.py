@@ -27,7 +27,7 @@ class EmailNotifySettings(Base):
     
     # Primary key - Using native UUID for PostgreSQL with default generator
     # Note: We set id explicitly in routes, but keep default as fallback
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid_module.uuid4, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid_module.uuid4)
     
     # Routine setting (frequency or type of notification routine)
     routine = Column(BigInteger, nullable=True)

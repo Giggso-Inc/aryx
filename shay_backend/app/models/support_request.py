@@ -18,7 +18,7 @@ class SupportRequest(Base):
     __tablename__ = "gg_support_requests"
 
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
 
     # Company context (optional; when form is submitted from authenticated app context)
     company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True, index=True)
