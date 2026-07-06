@@ -90,13 +90,32 @@ class ShayBridgeStore:
                 "created": False,
             }
 
+        ws_name = _aryx_workspace_name(name, shay_workspace_id)
         workspace_store = make_workspace_store(self._dsn)
         try:
             aryx_workspace = workspace_store.create(
-                _aryx_workspace_name(name, shay_workspace_id),
+                ws_name,
                 description or f"Bridge for Shay workspace {name}",
                 f"shay_workspace_id={shay_workspace_id}",
             )
+        except Exception as exc:
+            # ORA-00001 / Postgres 23505: workspace was created by a prior attempt
+            # that succeeded here but failed on the bridge INSERT (e.g. FK violation).
+            # Recover by looking up the orphaned aryx_workspace row by name.
+            _is_dup = "ORA-00001" in str(exc) or getattr(exc, "pgcode", None) == "23505"
+            if not _is_dup:
+                raise
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM aryx_workspace WHERE name = %s",
+                    (ws_name,),
+                )
+                ws_row = cur.fetchone()
+            if not ws_row:
+                raise
+            aryx_workspace = {"id": ws_row[0]}
+            logger.info("ensure_workspace_mapping: reusing orphaned workspace id=%s name=%s",
+                        ws_row[0], ws_name)
         finally:
             workspace_store.close()
 
