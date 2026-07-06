@@ -169,6 +169,17 @@ def _unwrap_params(params: Any) -> Any:
     return params
 
 
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove -- line comments and /* */ block comments from SQL text."""
+    sql = _SQL_LINE_COMMENT_RE.sub("", sql)
+    sql = _SQL_BLOCK_COMMENT_RE.sub("", sql)
+    return sql
+
+
 def _tuple_seq_to_dict(oracle_sql: str, seq: list[Any]) -> list[Any]:
     """Convert tuple rows → dicts for named-bind SQL (avoids DPY-4009).
 
@@ -177,12 +188,17 @@ def _tuple_seq_to_dict(oracle_sql: str, seq: list[Any]) -> list[Any]:
     params repeated across ON/UPDATE/INSERT branches = 10 expected binds,
     5 provided → DPY-4009.  Dicts let oracledb deduplicate by name.
     Returns seq unchanged for positional SQL (:1, :2, …) or dict rows.
+
+    Comments are stripped before scanning so that :name mentions inside
+    -- or /* */ comment blocks (e.g. "-- Positional (:N) vars…") are not
+    mistakenly treated as bind placeholders (would cause DPY-4008).
     """
     if not seq or isinstance(seq[0], dict):
         return seq
+    sql_code = _strip_sql_comments(oracle_sql)
     seen: set[str] = set()
     names: list[str] = []
-    for m in _BIND_NAME_RE.finditer(oracle_sql):
+    for m in _BIND_NAME_RE.finditer(sql_code):
         n = m.group(1)
         if n not in seen and not n.isdigit():
             seen.add(n)
