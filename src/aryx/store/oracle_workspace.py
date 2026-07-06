@@ -103,7 +103,7 @@ class OracleWorkspaceStore:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("update_workspace_brief"),
-                            (brief or {}, int(wid)))
+                            (json.dumps(brief or {}), int(wid)))
                 row = cur.fetchone()
         logger.info("workspace brief updated id=%s keys=%d", wid, len(brief))
         return {"id": row[0], "name": row[1], "description": row[2],
