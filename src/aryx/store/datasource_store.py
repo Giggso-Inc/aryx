@@ -94,6 +94,28 @@ class DatasourceStore:
                         {"id": int(datasource_id)})
         logger.info("datasource deleted id=%s", datasource_id)
 
+    def ensure(self, workspace_id: int, name: str, kind: str) -> dict[str, Any]:
+        """Return an existing datasource by (workspace_id, name) or create it."""
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(load("select_datasource_by_name"),
+                        {"workspace_id": int(workspace_id), "name": name})
+            row = cur.fetchone()
+        if row:
+            return self._row(row, omit_cipher=True)
+        try:
+            return self.add(workspace_id, name, kind, {}, "")
+        except Exception as exc:
+            _is_dup = "23505" in str(exc) or "ORA-00001" in str(exc)
+            if not _is_dup:
+                raise
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(load("select_datasource_by_name"),
+                            {"workspace_id": int(workspace_id), "name": name})
+                row = cur.fetchone()
+            if not row:
+                raise
+            return self._row(row, omit_cipher=True)
+
     def secret_of(self, datasource_id: int, actor: str) -> str:
         """Decrypt and return the secret; logs an audit row before returning."""
         with self._pool.connection() as conn, conn.cursor() as cur:

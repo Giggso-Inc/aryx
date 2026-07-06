@@ -70,15 +70,16 @@ export function WorkspaceIndexPage() {
         ]);
 
         const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
-        const summary = aryxWorkspaceId
-          ? await api.dataSummary(aryxWorkspaceId).catch(() => null)
-          : null;
+        const [summary, aryxDatasources] = await Promise.all([
+          aryxWorkspaceId ? api.dataSummary(aryxWorkspaceId).catch(() => null) : Promise.resolve(null),
+          aryxWorkspaceId ? api.listDatasources(aryxWorkspaceId).catch(() => null) : Promise.resolve(null),
+        ]);
 
         return [workspace.id, {
           users: members.total ?? members.members.length,
           entities: summary?.total_entities ?? null,
           entityTypes: summary?.type_count ?? null,
-          dataSources: datasources.total ?? datasources.items.length,
+          dataSources: aryxDatasources?.length ?? datasources.total ?? datasources.items.length,
         }] as const;
       }));
 
