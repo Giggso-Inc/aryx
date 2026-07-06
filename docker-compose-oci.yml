@@ -158,6 +158,9 @@ services:
       - DATABASE_URL=oracle+oracledb://${ARYX_DB_USER}:${ARYX_DB_PASSWORD}@localhost/?dsn=${ARYX_OCI_ADB_DSN}
       - SHAY_RUN_MIGRATIONS=false
       - SHAY_INIT_DB=true
+      # Aryx bridge — internal Docker network URL + shared API key
+      - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
       - FRONTEND_URL=${FRONTEND_URL}
       - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
