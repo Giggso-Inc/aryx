@@ -107,7 +107,7 @@ class EmailService:
             msg = MIMEMultipart('alternative')
             msg['From'] = self.from_email
             msg['To'] = to_email
-            msg['Subject'] = f"Invitation to join {invitation_data.get('platform_name') or invitation_data.get('company_name', self.default_platform_name)}"
+            msg['Subject'] = "Invitation to join Aryx"
             
             # Get template content with fallback logic
             if template_id and db:
@@ -134,6 +134,7 @@ class EmailService:
             
             template_variables = {
                 'company_name': company_name,
+                'logo_html': self._get_embedded_logo_html(platform_name),
                 'user_name': user_name,
                 'user_nam': user_name,  # Support common placeholder typo
                 'invited_by': invited_by_display,
@@ -266,6 +267,7 @@ class EmailService:
                 user_name = user_email.split('@')[0] if user_email and '@' in user_email else 'there'
             
             template_variables = {
+                'logo_html': self._get_embedded_logo_html(platform_name),
                 'user_name': user_name,
                 'user_nam': user_name,  # Common typo in templates
                 'email': user_email,
@@ -365,7 +367,7 @@ class EmailService:
         try:
             template = self._load_template('password_reset.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(),
+                logo_html=self._get_embedded_logo_html(platform_name),
                 user_name=user_name,
                 platform_name=platform_name,
                 reset_url=reset_url,
@@ -487,7 +489,7 @@ class EmailService:
         try:
             template = self._load_template('verification.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(),
+                logo_html=self._get_embedded_logo_html(platform_name),
                 company_name=company_name,
                 user_name=user_name,
                 verification_link=verification_link,
@@ -561,7 +563,7 @@ class EmailService:
             msg = MIMEMultipart('alternative')
             msg['From'] = self.from_email
             msg['To'] = to_email
-            msg['Subject'] = f"Invitation to join {invitation_data.get('company_name', 'our platform')}"
+            msg['Subject'] = "Invitation to join Aryx"
             
             # Create plain text body first (should be attached before HTML)
             text_body = self._create_invitation_text(invitation_data, platform_url)
@@ -638,7 +640,7 @@ class EmailService:
         try:
             template = self._load_template('invitation.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(),
+                logo_html=self._get_embedded_logo_html(platform_name),
                 company_name=company_name,
                 registration_short_link=registration_short_link,
                 user_name=user_name,
@@ -816,7 +818,7 @@ class EmailService:
         try:
             template = self._load_template('welcome_email.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(),
+                logo_html=self._get_embedded_logo_html(platform_name),
                 company_name=company_name,
                 contact_email=contact_email,
                 plan_name=plan_name,
@@ -1148,7 +1150,7 @@ class EmailService:
         try:
             template = self._load_template('channel_member_notification.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(),
+                logo_html=self._get_embedded_logo_html(platform_name),
                 channel_name=channel_name,
                 user_name=user_name,
                 user_email=user_email,
@@ -1302,7 +1304,7 @@ class EmailService:
         try:
             template = self._load_template('error_notification.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(),
+                logo_html=self._get_embedded_logo_html(platform_name),
                 api_endpoint=api_endpoint,
                 error_message=error_message,
                 error_type=error_type,
@@ -1405,19 +1407,33 @@ class EmailService:
             template = template.replace("{" + key + "}", str(placeholders[key]))
         return template
 
-    def _get_embedded_logo_html(self) -> str:
-        """Return the embedded Aryx logo markup when the local base64 asset is available."""
+    def _get_embedded_logo_html(self, platform_name: Optional[str] = None) -> str:
+        """Return compact logo markup for emails without triggering Gmail clipping.
+
+        Large inline base64 images can push the MIME body past Gmail's clipping
+        threshold, which hides the real invitation content behind the clip link.
+        If the checked-in asset is too large, fall back to a lightweight text
+        badge instead of embedding the image.
+        """
+        brand = (platform_name or self.default_platform_name or "Aryx").strip() or "Aryx"
         logo_dir = os.path.join(os.path.dirname(__file__), "..", "..", "static", "email")
         logo_b64_path = os.path.join(logo_dir, "logo_base64.txt")
         try:
             if os.path.isfile(logo_b64_path):
                 with open(logo_b64_path, "r", encoding="utf-8") as f:
                     b64 = f.read().strip()
-                if b64:
+                # Gmail clips long MIME payloads at roughly 100KB. Keep inline
+                # assets tiny and use a text badge when the asset is oversized.
+                if b64 and len(b64) <= 12000:
                     return f'<img src="data:image/jpeg;base64,{b64}" alt="Aryx" style="max-width: 180px; max-height: 48px; display: block;" />'
         except Exception:
             pass
-        return ""
+        return (
+            f'<div style="display:inline-block;padding:10px 14px;border-radius:999px;'
+            f'background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);'
+            f'color:#FFFFFF;font-size:16px;line-height:1;font-weight:700;letter-spacing:0.04em;">'
+            f'{brand}</div>'
+        )
 
     def _create_support_request_html(self, support_data: dict, platform_url: str) -> str:
         """Build HTML for support request notification (blue header, info box). Logo is embedded in template as base64."""
@@ -1436,7 +1452,7 @@ class EmailService:
         current_year = datetime.now().year
         intro_message = f'A new support request has been submitted from {name}. Details are below.'
         placeholders = {
-            "logo_html": self._get_embedded_logo_html(),
+            "logo_html": self._get_embedded_logo_html(platform_name),
             "intro_message": intro_message,
             "ticket_ref": ticket_ref,
             "subject": subject,
@@ -1560,7 +1576,7 @@ This email was sent from {platform_name}
         support_email = getattr(settings, "SUPPORT_EMAIL", self.from_email)
         current_year = datetime.now().year
         placeholders = {
-            "logo_html": self._get_embedded_logo_html(),
+            "logo_html": self._get_embedded_logo_html(platform_name),
             "name": name,
             "ticket_ref": ticket_ref,
             "platform_name": platform_name,

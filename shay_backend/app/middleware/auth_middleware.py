@@ -70,6 +70,7 @@ class AuthMiddleware:
             "/api/v1/auth/refresh",
             "/api/v1/user-auth/login",  # Add user-auth login endpoint
             "/api/v1/user-auth/register",  # Add user-auth register endpoint
+            "/api/v1/user-auth/decrypt-registration",  # Allow invited users to prefill registration form
             "/api/v1/user-auth/forgot-password",  # Add forgot password endpoint
             "/api/v1/user-auth/reset-password",  # Add reset password endpoint
             "/api/v1/user-auth/set-password/request",  # Allow SSO users to request password setup.

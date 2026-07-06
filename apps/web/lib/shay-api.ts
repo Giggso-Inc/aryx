@@ -352,11 +352,25 @@ export const shayApi = {
     invite_id?: string;
     encrypted_param?: string;
     role?: string;
-  }) =>
+    }) =>
     requestJSON<ShaySession>(SHAY_BASE, "/user-auth/register", {
       method: "POST",
       body: JSON.stringify({ ...payload, encrypted: false }),
     }),
+
+  decryptRegistrationInvite: (encryptedParam: string) =>
+    requestJSON<{
+      email_id: string;
+      invite_id: string;
+      company_id: string;
+      role: string;
+    }>(
+      SHAY_BASE,
+      `/user-auth/decrypt-registration${query({ e: encryptedParam })}`,
+      {
+        method: "GET",
+      },
+    ),
 
   autoLogin: (email: string, password: string) =>
     requestJSON<ShaySession>(
