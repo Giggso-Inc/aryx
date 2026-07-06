@@ -21,7 +21,7 @@ function forwardHeaders(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const secret = process.env.ARYX_PROXY_SECRET;
-  if (!secret || req.headers.get("x-aryx-key") !== secret) {
+  if (secret && req.headers.get("x-aryx-key") !== secret) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
   }
   if (!process.env.ARYX_INTERNAL_API_KEY) {

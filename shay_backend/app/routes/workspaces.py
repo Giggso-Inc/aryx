@@ -412,6 +412,11 @@ async def delete_workspace(
                 detail=f"Aryx service unavailable: {exc}",
             ) from exc
 
+    # Delete members explicitly before deleting the workspace.
+    # db.delete(workspace) would cause SQLAlchemy to SET workspace_id=NULL
+    # on related GGMember rows, which violates the exclusive-arc CHECK constraint
+    # (level='workspace' requires workspace_id IS NOT NULL).
+    await db.execute(delete(GGMember).where(GGMember.workspace_id == workspace.id))
     await db.delete(workspace)
     await db.commit()
 
