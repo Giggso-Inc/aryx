@@ -37,7 +37,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const list = await api.listWorkspaces();
       setWorkspaces(list);
     } catch {
-      setWorkspaces([]);
+      // Keep existing workspaces on transient error — don't blank the UI
     }
   }, [session?.access_token]);
 
