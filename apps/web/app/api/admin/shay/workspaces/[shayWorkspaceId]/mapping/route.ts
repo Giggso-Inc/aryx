@@ -20,7 +20,10 @@ export async function GET(
   context: { params: Promise<{ shayWorkspaceId: string }> },
 ) {
   const secret = process.env.ARYX_PROXY_SECRET;
-  if (!secret || req.headers.get("x-aryx-key") !== secret) {
+  if (!secret) {
+    return NextResponse.json({ detail: "ARYX_PROXY_SECRET is not configured" }, { status: 500 });
+  }
+  if (req.headers.get("x-aryx-key") !== secret) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
   }
   if (!process.env.ARYX_INTERNAL_API_KEY) {

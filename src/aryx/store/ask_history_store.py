@@ -36,7 +36,7 @@ class AskHistoryStore:
                 cur.execute(load("insert_ask_history"), (
                     int(workspace_id), question, answer,
                     Json(tools_called or []),
-                    Json([int(x) for x in (entity_ids or [])]),
+                    [int(x) for x in (entity_ids or [])],
                     int(usage.get("prompt_tokens", 0)),
                     int(usage.get("completion_tokens", 0)),
                     int(usage.get("latency_ms", 0)),
@@ -53,7 +53,8 @@ class AskHistoryStore:
                             (int(workspace_id), int(limit)))
                 rows = cur.fetchall()
         return [{
-            "id": r[0], "workspace_id": r[1], "asked_at": r[2],
+            "id": r[0], "workspace_id": r[1],
+            "ts": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
             "question": r[3], "answer": r[4],
             "tools_called": _to_list(r[5]),
             "entity_ids": _to_list(r[6]),

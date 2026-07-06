@@ -14,13 +14,6 @@ import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
 
-const STARTERS = [
-  "What entities are in this workspace?",
-  "Summarize the key relationships",
-  "What data has been ingested?",
-  "Show me the most connected entities",
-];
-
 const FOLLOWUPS = [
   "What else do we know about that Customer?",
   "Show me the underlying records",
@@ -72,7 +65,7 @@ function HistoryDrawer({
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-30 flex w-96 flex-col border-l border-navy-100 bg-white shadow-soft animate-rise">
+    <div className="fixed top-[68px] right-0 bottom-0 z-30 flex w-96 flex-col border-l border-navy-100 bg-white shadow-soft animate-rise">
       <div className="flex items-center justify-between border-b border-navy-100 px-4 py-3">
         <h2 className="font-semibold text-navy-900">Ask History</h2>
         <div className="flex items-center gap-1">
@@ -228,7 +221,7 @@ export default function HomePage() {
       )}
 
       <div className="app-shell-offset flex flex-1">
-        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-10 lg:px-5">
+        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pt-4 pb-10 lg:px-5">
           <div className="mb-2 flex justify-end">
             <button
               type="button"
@@ -239,16 +232,9 @@ export default function HomePage() {
             </button>
           </div>
           {empty ? (
-            <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
-              <div className="mt-8 w-full">
+            <div className="flex flex-1 flex-col animate-fade-in">
+              <div className="w-full">
                 <WorkspacePeek workspaceId={workspaceId} />
-              </div>
-              <div className="mt-2 w-full max-w-prose">
-                <FollowupChips
-                  prompts={STARTERS}
-                  onPick={(p) => send(p)}
-                  className="justify-center"
-                />
               </div>
             </div>
           ) : (

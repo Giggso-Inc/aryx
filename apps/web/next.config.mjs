@@ -1,25 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Server-side proxy: the browser hits /api/... on the Next.js host; the
-  // Next server rewrites that to the FastAPI URL. In local dev we use the
-  // published localhost ports; in Docker we use service names. The browser
-  // never needs to know the API host — fixes CORS and keeps one bundle.
-  //
-  // Using afterFiles so that explicit app/api/.../route.ts handlers take
-  // precedence over this catch-all rewrite (e.g. the draft-brief route
-  // handler that avoids ECONNRESET on long LLM calls).
+  // Server-side proxy for Shay API. The /api/* paths are now handled by
+  // app/api/[...path]/route.ts which injects x-aryx-api-key before forwarding
+  // to the Aryx API. Only Shay routes remain as rewrites here.
   async rewrites() {
     const isDev = process.env.NODE_ENV === "development";
-    const target = isDev
-      ? "http://localhost:8088"
-      : process.env.ARYX_API_URL_INTERNAL || "http://api:8000";
     const shayTarget = isDev
       ? "http://localhost:8090"
       : process.env.SHAY_API_URL_INTERNAL || "http://shay-api:8000";
     return {
       beforeFiles: [],
       afterFiles: [
-        { source: "/api/:path*", destination: `${target}/:path*` },
         { source: "/shay/api/v1/workspaces", destination: `${shayTarget}/api/v1/workspaces/` },
         { source: "/shay/api/v1/gg-datasources", destination: `${shayTarget}/api/v1/gg-datasources/` },
         { source: "/shay/api/:path*", destination: `${shayTarget}/api/:path*` },
