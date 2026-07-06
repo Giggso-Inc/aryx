@@ -94,14 +94,14 @@ elif _database_url.strip().lower().startswith("oracle"):
                 _scheme = oracle_url.split("//", 1)[0]
                 oracle_url = f"{_scheme}//{_user_part}@localhost/"
     if not oracle_dsn:
-        parsed = urlparse(oracle_url)
-        if parsed.query:
-            qs = parse_qs(parsed.query, keep_blank_values=True)
+        # urlparse rejects '_' in scheme names (oracle+oracledb_async), so use plain string ops.
+        _q_idx = oracle_url.find("?")
+        if _q_idx != -1:
+            qs = parse_qs(oracle_url[_q_idx + 1:], keep_blank_values=True)
             if "dsn" in qs and qs["dsn"]:
                 oracle_dsn = qs["dsn"][0].strip()
                 qs_clean = {k: v for k, v in qs.items() if k != "dsn"}
-                new_query = urlencode(qs_clean, doseq=True)
-                oracle_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+                oracle_url = oracle_url[:_q_idx] + ("?" + urlencode(qs_clean, doseq=True) if qs_clean else "")
     engine_kw: dict = {
         "echo": settings.DEBUG,
         "pool_size": settings.DATABASE_POOL_SIZE,
@@ -283,13 +283,13 @@ def get_sync_engine():
                     _scheme = sync_oracle_url.split("//", 1)[0]
                     sync_oracle_url = f"{_scheme}//{_user_part}@localhost/"
         if not oracle_dsn_sync:
-            parsed = urlparse(sync_oracle_url)
-            if parsed.query:
-                qs = parse_qs(parsed.query, keep_blank_values=True)
+            _q_idx = sync_oracle_url.find("?")
+            if _q_idx != -1:
+                qs = parse_qs(sync_oracle_url[_q_idx + 1:], keep_blank_values=True)
                 if "dsn" in qs and qs["dsn"]:
                     oracle_dsn_sync = qs["dsn"][0].strip()
                     qs_clean = {k: v for k, v in qs.items() if k != "dsn"}
-                    sync_oracle_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs_clean, doseq=True), parsed.fragment))
+                    sync_oracle_url = sync_oracle_url[:_q_idx] + ("?" + urlencode(qs_clean, doseq=True) if qs_clean else "")
         sync_kw = {"echo": settings.DEBUG, "pool_size": settings.DATABASE_POOL_SIZE, "max_overflow": settings.DATABASE_MAX_OVERFLOW, "pool_pre_ping": True}
         if oracle_dsn_sync:
             sync_kw["connect_args"] = {"dsn": oracle_dsn_sync}
