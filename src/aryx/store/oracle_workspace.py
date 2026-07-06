@@ -10,6 +10,23 @@ from aryx.store.oracle_pool import OracleConnectionWrapper, get_oracle_pool
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_brief(v: Any) -> dict:
+    """Return the brief column value as a Python dict.
+
+    oracledb thin may return Oracle 23ai JSON columns as either a Python dict
+    (native JSON type) or a plain str (JSON text). Handle both so the API
+    response always carries a JSON object, never a raw JSON-encoded string.
+    """
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return v or {}
+
+
 # Tables that used Postgres partitioning; on Oracle we use plain tables with
 # workspace_id as an indexed column — no partition DDL needed.
 _PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx_relationship"]
@@ -61,7 +78,7 @@ class OracleWorkspaceStore:
         wid = int(row[0])
         logger.info("workspace created id=%d name=%s", wid, name)
         return {"id": wid, "name": row[1], "description": row[2],
-                "context": row[3], "brief": row[4] or {}, "created_at": row[5]}
+                "context": row[3], "brief": _parse_brief(row[4]), "created_at": row[5]}
 
     def list_all(self) -> list[dict[str, Any]]:
         """Return all workspace rows ordered by id."""
@@ -69,7 +86,7 @@ class OracleWorkspaceStore:
             with conn.cursor() as cur:
                 cur.execute(load("select_workspaces"))
                 return [{"id": r[0], "name": r[1], "description": r[2],
-                         "context": r[3], "brief": r[4] or {}, "created_at": r[5]}
+                         "context": r[3], "brief": _parse_brief(r[4]), "created_at": r[5]}
                         for r in cur.fetchall()]
 
     def set_context(self, wid: int, context: str) -> dict[str, Any]:
@@ -79,7 +96,7 @@ class OracleWorkspaceStore:
                 cur.execute(load("update_workspace_context"), (context, int(wid)))
                 row = cur.fetchone()
         return {"id": row[0], "name": row[1], "description": row[2],
-                "context": row[3], "brief": {}, "created_at": row[4]}
+                "context": row[3], "brief": _parse_brief(None), "created_at": row[4]}
 
     def set_brief(self, wid: int, brief: dict) -> dict[str, Any]:
         """Persist the JSON brief (aim, description, key facts) for workspace wid."""
@@ -90,7 +107,7 @@ class OracleWorkspaceStore:
                 row = cur.fetchone()
         logger.info("workspace brief updated id=%s keys=%d", wid, len(brief))
         return {"id": row[0], "name": row[1], "description": row[2],
-                "context": row[3], "brief": row[4] or {},
+                "context": row[3], "brief": _parse_brief(row[4]),
                 "created_at": row[5]}
 
     def get_survivorship(self, wid: int) -> dict[str, Any]:

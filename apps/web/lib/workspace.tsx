@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  createContext, useContext, useEffect, useState, type ReactNode,
+  createContext, useCallback, useContext, useEffect, useState, type ReactNode,
 } from "react";
 import { api } from "./api";
 import { useShayAuth } from "./shay-auth";
@@ -28,7 +28,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (!session?.access_token) {
       setWorkspaces([]);
       return;
@@ -39,7 +39,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     } catch {
       setWorkspaces([]);
     }
-  };
+  }, [session?.access_token]);
 
   useEffect(() => {
     if (!ready || !session?.access_token) {
