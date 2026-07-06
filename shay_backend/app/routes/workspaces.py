@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Query
 from fastapi.security import HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import and_, select, func
+from sqlalchemy import and_, select, func, delete
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -191,20 +191,27 @@ async def create_workspace(
         await db.refresh(workspace)
         bridge = await _bridge_for_workspace(request, workspace)
     except httpx.HTTPStatusError as exc:
-        await db.rollback()
+        # rollback is a no-op after commit; delete the orphaned rows explicitly
+        await db.execute(delete(GGMember).where(GGMember.workspace_id == workspace.id))
+        await db.execute(delete(Workspace).where(Workspace.id == workspace.id))
+        await db.commit()
         detail = exc.response.text or str(exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx workspace bridge creation failed: {detail}",
         ) from exc
     except httpx.RequestError as exc:
-        await db.rollback()
+        await db.execute(delete(GGMember).where(GGMember.workspace_id == workspace.id))
+        await db.execute(delete(Workspace).where(Workspace.id == workspace.id))
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Aryx service unavailable: {exc}",
         ) from exc
     except RuntimeError as exc:
-        await db.rollback()
+        await db.execute(delete(GGMember).where(GGMember.workspace_id == workspace.id))
+        await db.execute(delete(Workspace).where(Workspace.id == workspace.id))
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
