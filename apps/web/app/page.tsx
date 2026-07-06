@@ -14,6 +14,13 @@ import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
 
+const STARTERS = [
+  "What entities are in this workspace?",
+  "Summarize the key relationships",
+  "What data has been ingested?",
+  "Show me the most connected entities",
+];
+
 const FOLLOWUPS = [
   "What else do we know about that Customer?",
   "Show me the underlying records",
@@ -233,13 +240,6 @@ export default function HomePage() {
           </div>
           {empty ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center animate-fade-in">
-              <h1 className="font-display text-[2.6rem] leading-tight text-navy-900">
-                Ask your knowledge graph.
-              </h1>
-              <p className="mt-4 max-w-md text-[15px] text-subtle">
-                Questions naming a specific kind of record or an entity work
-                best. Try one of these to see how citations work.
-              </p>
               <div className="mt-8 w-full">
                 <WorkspacePeek workspaceId={workspaceId} />
               </div>
