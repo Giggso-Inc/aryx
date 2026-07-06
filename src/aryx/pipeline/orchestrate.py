@@ -121,7 +121,7 @@ def run_pipeline(
             finally:
                 onto.close()
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
-            logger.warning("ontology type seed failed for %s", ontology_type, exc_info=True)
+            logger.error("ontology type seed failed type=%s ws=%s", ontology_type, workspace_id, exc_info=True)
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 70, "Inferring relationships between entities")
             with runner.stage("relate"):

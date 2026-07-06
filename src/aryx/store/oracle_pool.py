@@ -305,25 +305,45 @@ def _coerce_clob(
     return params
 
 
-def _hint_clob_many(cursor: Any, seq: list[Any], oracledb: Any) -> None:
+def _hint_clob_many(
+    cursor: Any,
+    seq: list[Any],
+    oracledb: Any,
+    force_merge: bool = False,
+    on_excl: "frozenset[str]" = frozenset(),
+) -> None:
     """Call setinputsizes for executemany: scans ALL rows to find oversized strings.
 
     Necessary because different rows in the batch may have different payload sizes —
     e.g. entity attributes where some rows carry large XML/JSON content and others don't.
     One setinputsizes call covers the whole executemany batch.
+
+    force_merge=True: hint ALL string-valued named keys (except those in on_excl) as
+    DB_TYPE_CLOB regardless of length.  Required for MERGE statements — Oracle analyses
+    both UPDATE and INSERT branches simultaneously, so VARCHAR2-typed binds to CLOB/JSON
+    columns trigger ORA-03146 even for short strings.  on_excl must hold the ON-clause
+    bind names (ORA-22848 forbids CLOB in comparison predicates).
     """
     if not seq:
         return
     first = seq[0]
     if isinstance(first, dict):
         clob_keys: set[str] = set()
-        for row in seq:
-            if isinstance(row, dict):
-                for k, v in row.items():
-                    if k not in clob_keys and isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX:
-                        clob_keys.add(k)
+        if force_merge:
+            # Force-hint all string-valued keys that are not ON-clause keys.
+            for row in seq:
+                if isinstance(row, dict):
+                    for k, v in row.items():
+                        if k not in clob_keys and k not in on_excl and isinstance(v, str):
+                            clob_keys.add(k)
+        else:
+            for row in seq:
+                if isinstance(row, dict):
+                    for k, v in row.items():
+                        if k not in clob_keys and isinstance(v, str) and len(v.encode("utf-8")) > _ORACLE_VARCHAR2_MAX:
+                            clob_keys.add(k)
         if clob_keys:
-            logger.debug("clob_hint_many named keys=%s", sorted(clob_keys))
+            logger.debug("clob_hint_many named keys=%s force_merge=%s", sorted(clob_keys), force_merge)
             cursor.setinputsizes(**{k: oracledb.DB_TYPE_CLOB for k in clob_keys})
     elif isinstance(first, (list, tuple)):
         n_cols = len(first)
@@ -400,7 +420,15 @@ class OracleCursorWrapper:
         if not oracle_seq:
             return
         oracle_seq = _tuple_seq_to_dict(oracle_sql, oracle_seq)
-        _hint_clob_many(self._cur, oracle_seq, oracledb)
+        # Mirror execute()'s MERGE guard: force-hint all non-ON-clause string columns
+        # as DB_TYPE_CLOB so Oracle can type-check both MATCHED/NOT MATCHED branches.
+        _is_merge = oracle_sql.lstrip().upper().startswith("MERGE ")
+        _on_excl: frozenset[str] = frozenset()
+        if _is_merge:
+            _m = _MERGE_ON_RE.search(oracle_sql)
+            if _m:
+                _on_excl = frozenset(_BIND_NAME_RE.findall(_strip_sql_comments(_m.group(1))))
+        _hint_clob_many(self._cur, oracle_seq, oracledb, force_merge=_is_merge, on_excl=_on_excl)
         logger.debug("executemany sql=%s rows=%d", oracle_sql[:120], len(oracle_seq))
         try:
             self._cur.executemany(oracle_sql, oracle_seq)
