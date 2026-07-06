@@ -1466,15 +1466,17 @@ async def auto_login_after_signup(
             )
         
         # Generate tokens
-        access_token = create_access_token(
-            data={"sub": str(user.id), "company_id": str(user.company_id), "role": user.role}
-        )
-        
+        token_data = {"sub": str(user.id), "company_id": str(user.company_id), "role": user.role}
+        access_token = create_access_token(data=token_data)
+        refresh_token = create_refresh_token(token_data)
+
         return SuccessResponse(
             success=True,
             data=UserTokenResponse(
                 access_token=access_token,
+                refresh_token=refresh_token,
                 token_type="bearer",
+                expires_in=1800,
                 user_id=str(user.id),
                 email_id=user.email_id,
                 name=user.name,

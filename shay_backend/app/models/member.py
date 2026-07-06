@@ -113,13 +113,18 @@ class GGMember(Base):
             "(\"level\" = 'thread'    AND thread_id    IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL)",
             name="chk_gg_members_exclusive_arc",
         ),
-        # Uniqueness per scope (partial indexes enforce one membership per user per scope)
+        # PostgreSQL: partial unique indexes enforce one membership per user per scope level.
+        # Oracle: postgresql_where is silently ignored — plain unique indexes on (scope, user_id)
+        # would trigger ORA-00001 on NULL columns shared across scope levels (e.g. all
+        # workspace members have channel_id=NULL, colliding on uk_gg_members_channel).
+        # Oracle does not support filtered/partial indexes, so these are non-unique performance
+        # indexes there. The exclusive arc CHECK CONSTRAINT above enforces structural integrity.
         Index("uk_gg_members_workspace", "workspace_id", "user_id",
-              postgresql_where="level = 'workspace'", unique=True),
+              postgresql_where="level = 'workspace'", unique=False),
         Index("uk_gg_members_channel",   "channel_id",   "user_id",
-              postgresql_where="level = 'channel'",   unique=True),
+              postgresql_where="level = 'channel'",   unique=False),
         Index("uk_gg_members_thread",    "thread_id",    "user_id",
-              postgresql_where="level = 'thread'",    unique=True),
+              postgresql_where="level = 'thread'",    unique=False),
         # Performance indexes
         Index("idx_gg_members_user_active", "user_id", "is_active"),
         Index("idx_gg_members_level",       "level"),

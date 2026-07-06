@@ -144,13 +144,16 @@ class GGAppConnection(Base):
             "(\"level\" = 'thread'    AND thread_id    IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL)",
             name="chk_gg_app_connections_exclusive_arc",
         ),
-        # Partial unique indexes: one app connection per (scope FK, app_id) per level
+        # PostgreSQL: partial unique indexes (one app connection per scope+app per level).
+        # Oracle: postgresql_where is ignored — unique=True would cause ORA-00001 on NULL
+        # columns shared across levels (e.g. channel_id=NULL for all workspace connections).
+        # Oracle does not support filtered indexes; non-unique here, arc CHECK enforces integrity.
         Index("uk_gg_app_connections_workspace", "workspace_id", "app_id",
-              postgresql_where="level = 'workspace'", unique=True),
+              postgresql_where="level = 'workspace'", unique=False),
         Index("uk_gg_app_connections_channel",   "channel_id",   "app_id",
-              postgresql_where="level = 'channel'",   unique=True),
+              postgresql_where="level = 'channel'",   unique=False),
         Index("uk_gg_app_connections_thread",    "thread_id",    "app_id",
-              postgresql_where="level = 'thread'",    unique=True),
+              postgresql_where="level = 'thread'",    unique=False),
         # Performance indexes
         Index("idx_gg_app_connections_status_time",   "connection_status", "created_at"),
         Index("idx_gg_app_connections_sync_status",   "sync_status",       "last_sync_at"),

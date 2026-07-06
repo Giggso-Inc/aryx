@@ -159,15 +159,18 @@ class GGDatasource(Base):
             "(\"level\" = 'message'   AND message_id   IS NOT NULL AND workspace_id IS NULL AND channel_id IS NULL AND thread_id IS NULL)",
             name="chk_gg_datasources_exclusive_arc",
         ),
-        # Partial unique indexes: one datasource per (scope, name) per level
+        # PostgreSQL: partial unique indexes (one datasource per scope+name per level).
+        # Oracle: postgresql_where is ignored — unique=True would cause ORA-00001 on NULL
+        # columns shared across scope levels. Oracle does not support filtered indexes;
+        # non-unique here, arc CHECK CONSTRAINT enforces structural integrity.
         Index("uk_gg_datasources_workspace", "workspace_id", "name",
-              postgresql_where="level = 'workspace'", unique=True),
+              postgresql_where="level = 'workspace'", unique=False),
         Index("uk_gg_datasources_channel",   "channel_id",   "name",
-              postgresql_where="level = 'channel'",   unique=True),
+              postgresql_where="level = 'channel'",   unique=False),
         Index("uk_gg_datasources_thread",    "thread_id",    "name",
-              postgresql_where="level = 'thread'",    unique=True),
+              postgresql_where="level = 'thread'",    unique=False),
         Index("uk_gg_datasources_message",   "message_id",   "name",
-              postgresql_where="level = 'message'",   unique=True),
+              postgresql_where="level = 'message'",   unique=False),
         # Performance indexes
         Index("idx_gg_datasources_level",              "level"),
         Index("idx_gg_datasources_added_by",           "added_by"),

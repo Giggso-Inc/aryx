@@ -67,7 +67,6 @@ class RealtimeNotification(Base):
         Index('idx_realtime_notification_user_id', 'user_id'),
         Index('idx_realtime_notification_workspace_id', 'workspace_id'),
         Index('idx_realtime_notification_channel_id', 'channel_id'),
-        Index('idx_realtime_notification_user_channel', 'user_id', 'channel_id'),
     )
     
     def __repr__(self):
