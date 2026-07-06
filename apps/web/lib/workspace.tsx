@@ -81,7 +81,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [ready, session?.access_token]);
 
   const setWorkspaceId = (id: number) => {
-    setWorkspaceIdState(id);
+    setWorkspaceIdState(Number(id));
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, String(id));
     }
