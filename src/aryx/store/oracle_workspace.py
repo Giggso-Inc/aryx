@@ -94,10 +94,10 @@ class OracleWorkspaceStore:
             with conn.cursor() as cur:
                 cur.execute(load("select_workspaces"))
                 rows = cur.fetchall()
-        logger.info("list_all: fetched %d workspace rows", len(rows))
+        logger.debug("list_all: fetched %d workspace rows", len(rows))
         for r in rows:
-            logger.info("list_all: ws id=%s brief col type=%s", r[0], type(r[4]).__name__)
-            logger.debug("list_all: ws id=%s brief col value=%r", r[0], r[4])
+            logger.debug("list_all: ws id=%s brief col type=%s value=%r",
+                         r[0], type(r[4]).__name__, r[4])
         return [{"id": r[0], "name": r[1], "description": r[2],
                  "context": r[3], "brief": _parse_brief(r[4]), "created_at": r[5]}
                 for r in rows]
