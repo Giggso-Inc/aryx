@@ -151,9 +151,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db():
     """Initialize database tables"""
     async with engine.begin() as conn:
-        # Import all models so every table is registered with Base.metadata.
-        # Use wildcard (same as migrations/env.py) — avoids drift when new models are added.
-        from app.models import *  # noqa: F401,F403
+        import app.models  # noqa: F401 — importing the package registers all ORM classes with Base.metadata
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
