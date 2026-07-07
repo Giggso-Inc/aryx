@@ -95,18 +95,34 @@ def gather(reader: GraphReader, terms: list[str]) -> tuple[list[RetrievedEntity]
     return out, calls
 
 
-def render_context(entities: list[RetrievedEntity]) -> str:
-    """Project structured entities into the compact text the LLM reads."""
+def render_context(
+    entities: list[RetrievedEntity],
+    max_neighbors: int = 15,
+    max_chars: int = 12_000,
+) -> str:
+    """Project structured entities into the compact text the LLM reads.
+
+    Caps neighbors per entity and total context size so that large graphs
+    (tens of thousands of entities) do not produce prompts that exceed the
+    model's effective context window and cause multi-minute inference times.
+    """
     blocks: list[str] = []
+    total = 0
     for ent in entities:
         lines = [f"{ent.name} [{ent.type}] (id {ent.id})"]
-        for n in ent.neighbors:
+        for n in ent.neighbors[:max_neighbors]:
             arrow = "->" if n["direction"] == "out" else "<-"
             lines.append(f"  {arrow} {n['relationship']} {n['name']} [{n['type']}]")
+        if len(ent.neighbors) > max_neighbors:
+            lines.append(f"  ... ({len(ent.neighbors) - max_neighbors} more relationships truncated)")
         if ent.sources:
             srcs = ", ".join(f"{p['system']}.{p['dataset']}" for p in ent.sources)
             lines.append(f"  source: {srcs}")
-        blocks.append("\n".join(lines))
+        block = "\n".join(lines)
+        if total + len(block) > max_chars:
+            break
+        blocks.append(block)
+        total += len(block) + 2  # +2 for the "\n\n" join separator
     return "\n\n".join(blocks) if blocks else "No matching entities in the graph."
 
 
