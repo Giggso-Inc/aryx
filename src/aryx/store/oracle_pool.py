@@ -377,12 +377,23 @@ class OracleCursorWrapper:
         # callers never receive raw JSON strings from SELECT queries.
         # Note: RETURNING INTO vars are typed as STRING explicitly — this handler
         # does not fire for those; _parse_brief() handles that path.
+        def _convert_json(v: Any) -> Any:
+            if not isinstance(v, str):
+                return v
+            stripped = v.strip()
+            if not stripped:
+                return None
+            try:
+                return _json.loads(stripped)
+            except _json.JSONDecodeError:
+                return stripped
+
         def _json_output_handler(cursor: Any, metadata: Any) -> Any:
             if metadata.type_code is oracledb.DB_TYPE_JSON:
                 return cursor.var(
                     oracledb.DB_TYPE_JSON,
                     arraysize=cursor.arraysize,
-                    outconverter=lambda v: _json.loads(v) if isinstance(v, str) else v,
+                    outconverter=_convert_json,
                 )
 
         self._cur.outputtypehandler = _json_output_handler
