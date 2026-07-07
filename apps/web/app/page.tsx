@@ -221,7 +221,7 @@ export default function HomePage() {
       )}
 
       <div className="app-shell-offset flex flex-1">
-        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pt-4 pb-10 lg:px-5">
+        <main className="workspace-section-shell flex flex-1 flex-col pt-4 pb-10">
           <div className="mb-2 flex justify-end">
             <button
               type="button"

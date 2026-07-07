@@ -35,6 +35,15 @@ body:has([data-app-shell="sidebar"]) header[data-app-shell="sidebar"] {
   transition: margin-left 180ms ease, width 180ms ease;
 }
 
+.workspace-section-shell {
+  margin-left: auto;
+  margin-right: auto;
+  width: 100%;
+  max-width: 72rem;
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+
 /* The wordmark cap — used for ARYX header, mimics the logo's spacing. */
 .wordmark {
   font-family: var(--font-sans);

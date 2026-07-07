@@ -1,45 +1,45 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Database, ListTree, Loader2, Network, Table2 } from "lucide-react";
+import { Database, ListTree, Loader2, Network } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
-import type { DataSummary } from "@/lib/types";
+import type { DataSummary, Datasource } from "@/lib/types";
 import { GraphLens } from "./GraphLens";
-import { SummaryStrip } from "./SummaryStrip";
+import { SourcesLens } from "./SourcesLens";
 import { TreeLens } from "./TreeLens";
 
-type Lens = "tree" | "graph";
+type Lens = "sources" | "tree" | "graph";
 
-/** The Data tab: transparency over the workspace's resolved entities.
- *  Slice 1 ships the Tree lens; Table + Graph follow. */
+/** The Data tab: source registry first, then resolved-entity exploration. */
 export function DataExplorer() {
   const { workspaceId } = useWorkspace();
   const [summary, setSummary] = useState<DataSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [lens, setLens] = useState<Lens>("tree");
+  const [datasources, setDatasources] = useState<Datasource[]>([]);
+  const [sourceErr, setSourceErr] = useState<string | null>(null);
+  const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [lens, setLens] = useState<Lens>("sources");
 
   useEffect(() => {
     let live = true;
-    setSummary(null); setErr(null);
+    setSummary(null);
+    setErr(null);
+    setDatasources([]);
+    setSourceErr(null);
+    setSourcesLoading(true);
     api.dataSummary(workspaceId)
       .then((d) => { if (live) ("error" in d && d.error) ? setErr(d.error) : setSummary(d); })
       .catch((e) => { if (live) setErr(e instanceof Error ? e.message : "failed"); });
+    api.listDatasources(workspaceId)
+      .then((items) => { if (live) setDatasources(items); })
+      .catch((e) => { if (live) setSourceErr(e instanceof Error ? e.message : "failed"); })
+      .finally(() => { if (live) setSourcesLoading(false); });
     return () => { live = false; };
   }, [workspaceId]);
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
-      <div className="flex items-center gap-2 text-steel-600">
-        <Database size={18} />
-        <span className="text-[11px] font-bold uppercase tracking-[0.16em]">Data</span>
-      </div>
-      <h1 className="mt-2 font-display text-3xl text-navy-900">Where your data lives.</h1>
-      <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-subtle">
-        Every entity Aryx resolved, what type it is, and the exact source record
-        it came from — nothing hidden in a database you can&apos;t see.
-      </p>
-
+    <div className="workspace-section-shell pb-6 pt-6">
       {err && (
         <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
           {err}
@@ -53,18 +53,26 @@ export function DataExplorer() {
       )}
 
       {summary && (
-        <div className="mt-6 space-y-5">
-          <SummaryStrip summary={summary} />
-
+        <div className="mt-4 space-y-5">
           <div className="flex items-center gap-1 border-b border-navy-100">
+            <Tab icon={<Database size={15} />} label="Sources"
+                 active={lens === "sources"} onClick={() => setLens("sources")} />
             <Tab icon={<ListTree size={15} />} label="Tree"
                  active={lens === "tree"} onClick={() => setLens("tree")} />
-            <Tab icon={<Network size={15} />} label="Graph"
+            <Tab icon={<Network size={15} />} label="Graph Map"
                  active={lens === "graph"} onClick={() => setLens("graph")} />
-            <Soon icon={<Table2 size={15} />} label="Table" />
           </div>
 
-          {lens === "tree" ? <TreeLens types={summary.types} /> : <GraphLens />}
+          {lens === "sources" ? (
+            <SourcesLens
+              summary={summary}
+              datasources={datasources}
+              loading={sourcesLoading}
+              error={sourceErr}
+            />
+          ) : null}
+          {lens === "tree" ? <TreeLens types={summary.types} /> : null}
+          {lens === "graph" ? <GraphLens /> : null}
         </div>
       )}
     </div>
@@ -81,16 +89,5 @@ function Tab({ icon, label, active, onClick }: {
                 : "border-transparent text-subtle hover:text-navy-700")}>
       {icon} {label}
     </button>
-  );
-}
-
-function Soon({ icon, label }: { icon: React.ReactNode; label: string }) {
-  return (
-    <span className="flex cursor-default items-center gap-1.5 px-4 py-2 text-[13px] font-medium text-navy-300">
-      {icon} {label}
-      <span className="rounded-full bg-navy-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-400">
-        soon
-      </span>
-    </span>
   );
 }

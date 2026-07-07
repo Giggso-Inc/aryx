@@ -146,7 +146,8 @@ export default function BriefPage() {
   return (
     <div className="flex min-h-screen flex-col">
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
+      <div className="app-shell-offset flex-1">
+        <main className="workspace-section-shell pb-6 pt-6">
         <div className="mb-6 flex items-center gap-2">
           <FileText size={20} className="text-steel-600" />
           <div>
@@ -273,7 +274,8 @@ export default function BriefPage() {
             </dl>
           </div>
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
