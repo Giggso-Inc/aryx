@@ -98,13 +98,15 @@ def gather(reader: GraphReader, terms: list[str]) -> tuple[list[RetrievedEntity]
 def render_context(
     entities: list[RetrievedEntity],
     max_neighbors: int = 15,
+    max_sources: int = 5,
     max_chars: int = 12_000,
 ) -> str:
     """Project structured entities into the compact text the LLM reads.
 
-    Caps neighbors per entity and total context size so that large graphs
-    (tens of thousands of entities) do not produce prompts that exceed the
-    model's effective context window and cause multi-minute inference times.
+    Caps neighbors per entity, sources per entity, and total context size so
+    that large graphs (tens of thousands of entities) do not produce prompts
+    that exceed the model's effective context window and cause multi-minute
+    inference times.
     """
     blocks: list[str] = []
     total = 0
@@ -116,14 +118,31 @@ def render_context(
         if len(ent.neighbors) > max_neighbors:
             lines.append(f"  ... ({len(ent.neighbors) - max_neighbors} more relationships truncated)")
         if ent.sources:
-            srcs = ", ".join(f"{p['system']}.{p['dataset']}" for p in ent.sources)
+            capped = ent.sources[:max_sources]
+            srcs = ", ".join(f"{p['system']}.{p['dataset']}" for p in capped)
+            if len(ent.sources) > max_sources:
+                srcs += f" (+{len(ent.sources) - max_sources} more)"
             lines.append(f"  source: {srcs}")
         block = "\n".join(lines)
         if total + len(block) > max_chars:
+            if not blocks:
+                # First entity alone exceeds budget — include it truncated so
+                # we never return a misleading "no matching entities" result
+                # when a real match exists but is too large to fit whole.
+                blocks.append(block[:max_chars])
             break
         blocks.append(block)
         total += len(block) + 2  # +2 for the "\n\n" join separator
-    return "\n\n".join(blocks) if blocks else "No matching entities in the graph."
+
+    if not blocks:
+        return "No matching entities in the graph."
+
+    result = "\n\n".join(blocks)
+    dropped = len(entities) - len(blocks)
+    if dropped:
+        noun = "entity" if dropped == 1 else "entities"
+        result += f"\n\n[{dropped} additional {noun} omitted — context size limit reached]"
+    return result
 
 
 def retrieve(reader: GraphReader, terms: list[str]) -> tuple[str, list[str]]:
