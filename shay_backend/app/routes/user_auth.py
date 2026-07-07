@@ -61,7 +61,7 @@ from app.schemas.user import (
     BulkUserInviteRequest, BulkUserInviteResponse, BulkUserInviteItem, CurrentUserResponse, CurrentUserUpdateRequest,
     ProfileUpdateRequest, ProfileUpdateResponse, ProfileImageUploadResponse, ProfilePhotoRemoveResponse, PasswordUpdateResponse,
     SimplePasswordUpdateRequest, ForgetPasswordRequest, ForgetPasswordResponse,
-    ResetPasswordRequest, ResetPasswordResponse
+    ResetPasswordRequest, ResetPasswordResponse, RegistrationInviteResponse
 )
 from app.schemas.sso import (
     SetPasswordRequestBody,
@@ -151,7 +151,7 @@ async def invite_user(
     result = await db.execute(stmt)
     existing_user = result.scalar_one_or_none()
     
-    if existing_user:
+    if existing_user and existing_user.is_active:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="User with this email already exists"
@@ -251,6 +251,38 @@ async def invite_user(
     )
 
 
+@router.get("/decrypt-registration", response_model=RegistrationInviteResponse)
+async def decrypt_registration_invite(
+    e: str
+):
+    """Decrypt an encrypted invitation payload for the registration page."""
+    try:
+        encrypted_invite_data = decrypt_registration_params(e)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid encrypted invitation format"
+        )
+
+    email_id = (encrypted_invite_data.get("email") or "").strip()
+    invite_id = (encrypted_invite_data.get("invite_code") or "").strip()
+    company_id = (encrypted_invite_data.get("company_id") or "").strip()
+    role = (encrypted_invite_data.get("role") or "user").strip() or "user"
+
+    if not email_id or not invite_id or not company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid encrypted invitation format"
+        )
+
+    return RegistrationInviteResponse(
+        email_id=email_id,
+        invite_id=invite_id,
+        company_id=company_id,
+        role=role,
+    )
+
+
 @router.post("/bulk-invite", response_model=BulkUserInviteResponse)
 async def bulk_invite_users(
     bulk_invite_data: BulkUserInviteRequest,
@@ -306,7 +338,7 @@ async def bulk_invite_users(
             result = await db.execute(stmt)
             existing_user = result.scalar_one_or_none()
             
-            if existing_user:
+            if existing_user and existing_user.is_active:
                 failed_invitations.append({
                     "email_id": user_invite.email,
                     "reason": "User with this email already exists"
@@ -453,7 +485,12 @@ async def register_user(
     stmt = select(User).where(User.email_id == register_data.email_id)
     result = await db.execute(stmt)
     existing_user = result.scalar_one_or_none()
-    if existing_user:
+    if existing_user and existing_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User with this email already exists"
+        )
+    if existing_user and not register_data.invite_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="User with this email already exists"
@@ -526,8 +563,6 @@ async def register_user(
         
         company_id = register_data.company_id
     
-    # Create user
-    user_id = uuid.uuid4()
     password_hash = get_password_hash(password_to_use)
     
     # Determine user name: use provided name, or extract from email, or use default
@@ -541,17 +576,29 @@ async def register_user(
         # Fallback to default
         user_name = "User"
     
-    user = User(
-        id=user_id,
-        name=user_name,
-        email_id=register_data.email_id,
-        company_id=company_id,
-        role=role,
-        is_verified=True,
-        password_hash=password_hash
-    )
-    
-    db.add(user)
+    if existing_user:
+        user = existing_user
+        user.name = user_name
+        user.email_id = register_data.email_id
+        user.company_id = company_id
+        user.role = role
+        user.is_active = True
+        user.is_verified = True
+        user.password_hash = password_hash
+        user.updated_datetime = datetime.utcnow()
+    else:
+        user_id = uuid.uuid4()
+        user = User(
+            id=user_id,
+            name=user_name,
+            email_id=register_data.email_id,
+            company_id=company_id,
+            role=role,
+            is_verified=True,
+            password_hash=password_hash
+        )
+        db.add(user)
+
     await db.commit()
     await db.refresh(user)
     
@@ -892,9 +939,11 @@ async def confirm_set_password(
     """
     from app.models.email_verification_token import EmailVerificationToken
 
+    normalized_token = "".join(body.token.split())
+
     result = await db.execute(
         select(EmailVerificationToken).where(
-            EmailVerificationToken.token == body.token
+            EmailVerificationToken.token == normalized_token
         )
     )
     token_record = result.scalar_one_or_none()
@@ -1478,11 +1527,15 @@ async def forgot_password(
         db.add(reset_token)
         await db.flush()
 
+        # Persist the reset token before any optional email-link shortening work.
+        # The shortener uses the same DB session and can fail independently (for
+        # example, when its table is unavailable), but the reset token itself must
+        # still survive so the emailed link can be redeemed.
+        await db.commit()
+
         reset_url = f"{forgot_password_data.base_url.rstrip('/')}/reset-password?token={reset_token.token}"
         # Shorten reset link for email (in-platform; falls back to original URL if shortening fails)
         short_reset_url = await link_shortener_service.shorten(reset_url, db=db)
-        # Commit so ShortenedUrl row is persisted (get_db does not auto-commit)
-        await db.commit()
 
         # Prepare template variables (use short link in email)
         template_variables = {
@@ -1585,9 +1638,12 @@ async def reset_password(
     try:
         from app.models.email_verification_token import EmailVerificationToken
 
+        # Normalize whitespace so copied/wrapped email links don't fail exact matching.
+        reset_token = "".join(reset_data.token.split())
+
         result = await db.execute(
             select(EmailVerificationToken).where(
-                EmailVerificationToken.token == reset_data.token
+                EmailVerificationToken.token == reset_token
             )
         )
         token_record = result.scalar_one_or_none()

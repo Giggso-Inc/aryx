@@ -47,6 +47,15 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str],
                            delay, attempt + 2)
             time.sleep(delay)
             delay = min(delay * 2, 16.0)
+        except (urllib.error.URLError, OSError) as exc:
+            # Transient network errors (DNS blip, connection reset, ECONNREFUSED).
+            # Docker's embedded DNS occasionally fails under concurrent thread load.
+            if attempt == 4:
+                raise
+            logger.warning("network error — sleep %.1fs then retry (%d/5): %s",
+                           delay, attempt + 2, exc)
+            time.sleep(delay)
+            delay = min(delay * 2, 16.0)
     raise RuntimeError("unreachable")
 
 
