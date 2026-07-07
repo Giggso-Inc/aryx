@@ -19,7 +19,7 @@ class ShortenedUrl(Base):
     __tablename__ = "gg_shortened_urls"
 
     # Short code (e.g. 7-char) used in /redirect/{short_link}
-    short_link = Column(String(7), primary_key=True, index=True)
+    short_link = Column(String(7), primary_key=True)
     # Original long URL to redirect to
     original_url = Column(String(2048), nullable=False)
     # Set on first redirect (click); null until then

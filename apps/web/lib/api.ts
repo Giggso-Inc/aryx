@@ -1,8 +1,9 @@
 import type {
   AbResult, AskResponse, AskHistoryTurn, Axiom, Brief, DataEntitiesPage,
-  DataSummary, Datasource, DiscoverySummary, GraphView, IngestQuestion,
-  McpToken, McpTokenIssued, ObservabilityData, OntologyChange, OntologyDoc,
-  OntologyVersion, QuizSpec, ReasonerCheck, Rule, SurvivorshipPolicy, Workspace,
+  DataSummary, Datasource, DiscoveryHistoryItem, DiscoverySummary, GraphView,
+  IngestQuestion, McpToken, McpTokenIssued, ObservabilityData, OntologyChange,
+  OntologyDoc, OntologyVersion, QuizSpec, ReasonerCheck, Rule,
+  SurvivorshipPolicy, Workspace,
 } from "./types";
 import { SHAY_SESSION_STORAGE_KEY } from "./shay-auth";
 
@@ -395,16 +396,29 @@ export const api = {
     return res.json() as Promise<{ discovery_id: string }>;
   },
 
-  getDiscoverySummary: (discoveryId: string) =>
-    fetchJSON<DiscoverySummary>(`/admin/docs/summary/${discoveryId}`),
+  getDiscoverySummary: (discoveryId: string, workspaceId = 1) =>
+    fetchJSON<DiscoverySummary>(`/admin/docs/summary/${discoveryId}?workspace_id=${workspaceId}`),
 
-  confirmDiscovery: (discoveryId: string, approvedTypes: string[], approvedFiles: string[] = []) =>
+  listDiscoveries: (workspaceId = 1) =>
+    fetchJSON<DiscoveryHistoryItem[]>(`/admin/docs/history?workspace_id=${workspaceId}`),
+
+  confirmDiscovery: (
+    discoveryId: string,
+    approvedTypes: string[],
+    approvedFiles: string[] = [],
+    workspaceId = 1,
+    resumeJobId?: string,
+    restart = false,
+  ) =>
     fetchJSON<{ status: string; job_id: string }>("/admin/docs/confirm", {
       method: "POST",
       body: JSON.stringify({
         discovery_id: discoveryId,
         approved_types: approvedTypes,
         approved_files: approvedFiles,
+        workspace_id: workspaceId,
+        restart,
+        ...(resumeJobId ? { resume_job_id: resumeJobId } : {}),
       }),
     }),
 

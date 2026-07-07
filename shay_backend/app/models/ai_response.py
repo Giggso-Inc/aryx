@@ -16,7 +16,7 @@ class AIResponse(Base):
     __tablename__ = "gg_ai_responses"
     
     # Primary key - Using native UUID for PostgreSQL
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Message association
     message_id = Column(UUID(as_uuid=True), nullable=False, index=True)

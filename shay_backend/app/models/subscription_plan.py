@@ -2,7 +2,7 @@
 SubscriptionPlan model for managing different subscription plan types
 """
 
-from sqlalchemy import Column, String, DateTime, Boolean, Integer, Numeric, Index, UniqueConstraint
+from sqlalchemy import Column, String, Text, DateTime, Boolean, Integer, Numeric, Index, UniqueConstraint
 from app.core.db_types import UUID, JSONB
 from sqlalchemy.sql import func
 
@@ -15,12 +15,12 @@ class SubscriptionPlan(Base):
     __tablename__ = "subscription_plans"
 
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
 
     # Plan details
     name = Column(String(255), nullable=False, index=True)
-    plan_code = Column(String(50), nullable=False, unique=True, index=True)
-    description = Column(String, nullable=True)
+    plan_code = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
     
     # Pricing
     monthly_price = Column(Numeric(10, 2), nullable=False)
@@ -44,7 +44,7 @@ class SubscriptionPlan(Base):
     zoho_billing_cycle = Column(String(50), nullable=True)
     
     # Platform name field for filtering plans by platform
-    platform_name = Column(String(50), nullable=True, index=True)
+    platform_name = Column(String(50), nullable=True)
     
     # Audit fields
     created_by = Column(UUID(as_uuid=True), nullable=True)
@@ -57,7 +57,6 @@ class SubscriptionPlan(Base):
     __table_args__ = (
         Index("idx_subscription_plans_active", "is_active"),
         Index("idx_subscription_plans_sort_order", "sort_order"),
-        Index("idx_subscription_plans_plan_code", "plan_code"),
         Index("idx_subscription_plans_platform_name", "platform_name"),
         UniqueConstraint("plan_code", name="uq_subscription_plan_code"),
     )

@@ -28,6 +28,7 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xml_to_csvs
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
+from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,16 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     tmp_paths: list[Path] = []
     try:
         jobs = JobStore(settings.rdb_dsn)
+        # Register each uploaded file as a datasource so the workspace card shows
+        # an accurate file count regardless of whether files were ingested via the
+        # file upload page or through the Shay datasource flow.
+        ds_store = DatasourceStore(settings.rdb_dsn)
+        for _, fname in items:
+            kind = "docs" if Path(fname).suffix.lower() in _DOC_EXTS else "csv"
+            try:
+                ds_store.ensure(workspace_id, fname[:255], kind)
+            except Exception as ds_exc:
+                logger.warning("datasource ensure failed for %s: %s", fname, ds_exc)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]

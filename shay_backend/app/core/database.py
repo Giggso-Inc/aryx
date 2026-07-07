@@ -94,14 +94,14 @@ elif _database_url.strip().lower().startswith("oracle"):
                 _scheme = oracle_url.split("//", 1)[0]
                 oracle_url = f"{_scheme}//{_user_part}@localhost/"
     if not oracle_dsn:
-        parsed = urlparse(oracle_url)
-        if parsed.query:
-            qs = parse_qs(parsed.query, keep_blank_values=True)
+        # urlparse rejects '_' in scheme names (oracle+oracledb_async), so use plain string ops.
+        _q_idx = oracle_url.find("?")
+        if _q_idx != -1:
+            qs = parse_qs(oracle_url[_q_idx + 1:], keep_blank_values=True)
             if "dsn" in qs and qs["dsn"]:
                 oracle_dsn = qs["dsn"][0].strip()
                 qs_clean = {k: v for k, v in qs.items() if k != "dsn"}
-                new_query = urlencode(qs_clean, doseq=True)
-                oracle_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+                oracle_url = oracle_url[:_q_idx] + ("?" + urlencode(qs_clean, doseq=True) if qs_clean else "")
     engine_kw: dict = {
         "echo": settings.DEBUG,
         "pool_size": settings.DATABASE_POOL_SIZE,
@@ -148,22 +148,62 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+async def _oracle_repair_partial_unique_indexes(conn):
+    """
+    Drop global unique indexes that were incorrectly created on exclusive-arc tables.
+
+    SQLAlchemy partial unique indexes (unique=True, postgresql_where=...) silently
+    drop the WHERE clause on Oracle, producing global unique constraints that violate
+    when NULL columns are shared across scope levels — e.g. all workspace-level members
+    share channel_id=NULL, so UK_GG_MEMBERS_CHANNEL fires on the second insert.
+
+    This repair runs before create_all so that an existing Oracle schema created by a
+    previous boot gets fixed in-place without dropping any tables or losing data.
+    Safe to call repeatedly: queries user_indexes first, no-ops if already non-unique.
+    """
+    from sqlalchemy import text
+
+    # (index_name_uppercase, table_name_uppercase, column_list)
+    arc_indexes = [
+        ("UK_GG_MEMBERS_WORKSPACE",         "GG_MEMBERS",         "WORKSPACE_ID, USER_ID"),
+        ("UK_GG_MEMBERS_CHANNEL",           "GG_MEMBERS",         "CHANNEL_ID, USER_ID"),
+        ("UK_GG_MEMBERS_THREAD",            "GG_MEMBERS",         "THREAD_ID, USER_ID"),
+        ("UK_GG_APP_CONNECTIONS_WORKSPACE", "GG_APP_CONNECTIONS", "WORKSPACE_ID, APP_ID"),
+        ("UK_GG_APP_CONNECTIONS_CHANNEL",   "GG_APP_CONNECTIONS", "CHANNEL_ID, APP_ID"),
+        ("UK_GG_APP_CONNECTIONS_THREAD",    "GG_APP_CONNECTIONS", "THREAD_ID, APP_ID"),
+        ("UK_GG_DATASOURCES_WORKSPACE",     "DATASOURCES",        "WORKSPACE_ID, NAME"),
+        ("UK_GG_DATASOURCES_CHANNEL",       "DATASOURCES",        "CHANNEL_ID, NAME"),
+        ("UK_GG_DATASOURCES_THREAD",        "DATASOURCES",        "THREAD_ID, NAME"),
+        ("UK_GG_DATASOURCES_MESSAGE",       "DATASOURCES",        "MESSAGE_ID, NAME"),
+    ]
+    for idx_name, table_name, cols in arc_indexes:
+        result = await conn.execute(
+            text("SELECT uniqueness FROM user_indexes WHERE index_name = :n"),
+            {"n": idx_name},
+        )
+        row = result.fetchone()
+        if row and row[0] == "UNIQUE":
+            try:
+                await conn.execute(text(f'DROP INDEX "{idx_name}"'))
+                await conn.execute(text(f'CREATE INDEX "{idx_name}" ON "{table_name}" ({cols})'))
+                print(f"  repaired: {idx_name} (unique → non-unique)")
+            except Exception as e:
+                print(f"  warning: could not repair {idx_name}: {e}")
+
+
 async def init_db():
     """Initialize database tables"""
     async with engine.begin() as conn:
-        # Import all models to ensure they are registered
-        from app.models import (
-            User, Company, Workspace, Message, Thread, Attachment, AIResponse,
-            Invitation, App, AppAccount, Channel, Task, Approval, Datasource, GiggsoVault,
-            ChannelMember, Template, EmailVerificationToken, EmailNotifySettings,
-            ShortenedUrl, SupportRequest,
-        )
+        import app.models  # noqa: F401 — importing the package registers all ORM classes with Base.metadata
+
+        _url = settings.DATABASE_URL or ""
+        if _url.strip().lower().startswith("oracle"):
+            await _oracle_repair_partial_unique_indexes(conn)
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
 
         # Create PostgreSQL-specific indexes and optimizations
-        _url = settings.DATABASE_URL or ""
         if not _url.startswith("sqlite") and not _url.strip().lower().startswith("oracle"):
             await create_postgresql_optimizations(conn)
 
@@ -283,13 +323,13 @@ def get_sync_engine():
                     _scheme = sync_oracle_url.split("//", 1)[0]
                     sync_oracle_url = f"{_scheme}//{_user_part}@localhost/"
         if not oracle_dsn_sync:
-            parsed = urlparse(sync_oracle_url)
-            if parsed.query:
-                qs = parse_qs(parsed.query, keep_blank_values=True)
+            _q_idx = sync_oracle_url.find("?")
+            if _q_idx != -1:
+                qs = parse_qs(sync_oracle_url[_q_idx + 1:], keep_blank_values=True)
                 if "dsn" in qs and qs["dsn"]:
                     oracle_dsn_sync = qs["dsn"][0].strip()
                     qs_clean = {k: v for k, v in qs.items() if k != "dsn"}
-                    sync_oracle_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(qs_clean, doseq=True), parsed.fragment))
+                    sync_oracle_url = sync_oracle_url[:_q_idx] + ("?" + urlencode(qs_clean, doseq=True) if qs_clean else "")
         sync_kw = {"echo": settings.DEBUG, "pool_size": settings.DATABASE_POOL_SIZE, "max_overflow": settings.DATABASE_MAX_OVERFLOW, "pool_pre_ping": True}
         if oracle_dsn_sync:
             sync_kw["connect_args"] = {"dsn": oracle_dsn_sync}

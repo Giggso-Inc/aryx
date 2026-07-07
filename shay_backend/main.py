@@ -63,78 +63,80 @@ from app.services.daily_summary_scheduler import daily_summary_scheduler
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup
-    print("🚀 Starting Log Analyzer Backend...")
-    
+    logger.info("Starting Log Analyzer Backend...")
+
     # Run database migrations
     if os.environ.get("SHAY_RUN_MIGRATIONS", "true").lower() == "true":
         try:
             migration_success = await run_migrations()
             if not migration_success:
-                print("⚠️ Database migrations failed, but continuing with application startup")
+                logger.warning("Database migrations failed, but continuing with application startup")
         except Exception as e:
-            print(f"❌ Error during migration: {str(e)}")
-            print("⚠️ Continuing with application startup despite migration issues")
+            logger.error("Error during migration", exc_info=e)
+            logger.warning("Continuing with application startup despite migration issues")
+    elif os.environ.get("SHAY_INIT_DB", "false").lower() == "true":
+        from app.core.database import init_db
+        await init_db()
+        logger.info("Oracle schema initialised via init_db()")
     else:
-        print("⏭️ Skipping Shay migrations; shared schema is owned by Aryx migrations")
-    
+        logger.info("Skipping Shay migrations; shared schema is owned by Aryx migrations")
+
     # Initialize socket service
     socket_service = None
     event_handler = None
     try:
         socket_service, event_handler = await initialize_socket_service()
         if socket_service:
-            print("✅ Socket service initialized")
+            logger.info("Socket service initialized")
         else:
-            print("⚠️ Socket service initialization failed, continuing without socket support")
+            logger.warning("Socket service initialization failed, continuing without socket support")
     except Exception as e:
-        print(f"❌ Error initializing socket service: {str(e)}")
-        print("⚠️ Continuing without socket support")
-    
+        logger.error("Error initializing socket service", exc_info=e)
+        logger.warning("Continuing without socket support")
+
     # Initialize daily summary email scheduler
     try:
         # Get the current event loop for the scheduler
         import asyncio
         loop = asyncio.get_event_loop()
         daily_summary_scheduler.start()
-        print("✅ Daily summary email scheduler initialized")
-        
+        logger.info("Daily summary email scheduler initialized")
+
         # For first-time users, trigger immediately after a short delay
         # This ensures users with last_email_notify_time = NULL get their first email quickly
         async def trigger_first_run():
             await asyncio.sleep(30)  # Wait 30 seconds after startup
-            print("🔄 [SCHEDULER] Triggering first run check for new users...")
+            logger.info("[SCHEDULER] Triggering first run check for new users...")
             try:
                 await daily_summary_scheduler.process_daily_summaries()
             except Exception as e:
-                print(f"❌ Error in first run: {e}")
-        
+                logger.error("Error in first run", exc_info=e)
+
         # Schedule first run check
         asyncio.create_task(trigger_first_run())
-        
-    except Exception as e:
-        print(f"❌ Error initializing daily summary scheduler: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
-        print("⚠️ Continuing without daily summary email scheduler")
 
-    print("✅ Application startup complete")
-    
+    except Exception as e:
+        logger.error("Error initializing daily summary scheduler", exc_info=e)
+        logger.warning("Continuing without daily summary email scheduler")
+
+    logger.info("Application startup complete")
+
     yield
-    
+
     # Shutdown
-    print("🛑 Shutting down Log Analyzer Backend...")
+    logger.info("Shutting down Log Analyzer Backend...")
 
     # Stop daily summary email scheduler
     try:
         daily_summary_scheduler.stop()
-        print("✅ Daily summary email scheduler stopped")
+        logger.info("Daily summary email scheduler stopped")
     except Exception as e:
-        print(f"⚠️ Error stopping daily summary scheduler: {str(e)}")
+        logger.warning("Error stopping daily summary scheduler: %s", e)
 
     # Cleanup socket service
     if socket_service or event_handler:
         await cleanup_socket_service(socket_service, event_handler)
-        print("✅ Socket service cleaned up")
+        logger.info("Socket service cleaned up")
 
 
 # Create FastAPI application
@@ -287,11 +289,12 @@ app.add_middleware(AuthMiddleware)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler"""
+    logger.exception("Unhandled exception on %s", request.url.path, exc_info=exc)
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "message": str(exc),
+            "message": "An unexpected error occurred",
             "path": request.url.path
         }
     )
@@ -398,35 +401,6 @@ async def scheduler_health_check():
         "status": "healthy" if scheduler_status["is_running"] else "unhealthy",
         "scheduler": scheduler_status
     }
-
-
-# Test endpoint to manually trigger scheduler (for testing only)
-@app.post("/api/v1/test/scheduler/trigger")
-async def trigger_scheduler_manually():
-    """Manually trigger the daily summary scheduler for testing"""
-    from app.services.daily_summary_scheduler import daily_summary_scheduler
-    
-    try:
-        if not daily_summary_scheduler.is_running:
-            return {
-                "status": "error",
-                "message": "Scheduler is not running"
-            }
-        
-        # Manually trigger the process
-        await daily_summary_scheduler.process_daily_summaries()
-        
-        return {
-            "status": "success",
-            "message": "Scheduler triggered manually - check logs for details"
-        }
-    except Exception as e:
-        import traceback
-        return {
-            "status": "error",
-            "message": f"Error triggering scheduler: {str(e)}",
-            "traceback": traceback.format_exc()
-        }
 
 
 # Short link redirect and resolve (under /api/v1 so proxy forwards same as other APIs)

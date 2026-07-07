@@ -16,7 +16,6 @@ from aryx.project import project_graph
 from aryx.pipeline.enrich import _build_type_ancestors
 from aryx.relationships import infer_fk_links
 from aryx.store.entity_store import EntityStore
-from aryx.store.migrate import apply_migrations
 from aryx.store.ontology_store import OntologyStore
 from aryx.workspaces import WorkspaceStore, ws_graph
 from aryx.workspaces import WorkspaceStore, make_workspace_store, ws_graph
@@ -72,7 +71,6 @@ def workspace_router() -> APIRouter:
 
     @router.put("/{workspace_id}")
     def update_workspace(workspace_id: int, req: WorkspaceUpdateRequest) -> dict[str, Any]:
-        apply_migrations(get_settings().rdb_dsn)
         store = WorkspaceStore(get_settings().rdb_dsn)
         try:
             return store.update_metadata(

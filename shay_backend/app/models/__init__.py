@@ -7,6 +7,7 @@ from .company import Company
 from .workspace import Workspace
 from .message import Message, Thread
 from .attachment import Attachment
+from .email import GGEmail
 from .email_attachment import EmailAttachment
 from .ai_response import AIResponse
 from .invitation import Invitation
@@ -36,6 +37,7 @@ __all__ = [
     "Message",
     "Thread",
     "Attachment",
+    "GGEmail",
     "EmailAttachment",
     "AIResponse",
     "Invitation",

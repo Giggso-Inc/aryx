@@ -17,11 +17,11 @@ class Company(Base):
     __tablename__ = "gg_company"
     
     # Primary key - Using native UUID for PostgreSQL
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Company information
-    name = Column(String(255), nullable=False, index=True)
-    domain = Column(String(255), unique=True, nullable=True, index=True)
+    name = Column(String(255), nullable=False)
+    domain = Column(String(255), unique=True, nullable=True)
     description = Column(Text, nullable=True)
     website_url = Column(String(500), nullable=True)  # Added from DDL
     

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { useWorkspace } from "@/lib/workspace";
 import { api } from "@/lib/api";
@@ -9,7 +9,13 @@ import { DocsSummaryStep } from "./DocsSummaryStep";
 import type { DocPhase } from "./types";
 import type { DiscoverySummary } from "@/lib/types";
 
-export function DocsTab() {
+interface DocsTabProps {
+  restoreId?: string | null;
+  restart?: boolean;
+  onRestored?: () => void;
+}
+
+export function DocsTab({ restoreId, restart = false, onRestored }: DocsTabProps = {}) {
   const { workspaceId } = useWorkspace();
   const [files, setFiles] = useState<File[]>([]);
   const [context, setContext] = useState("");
@@ -21,13 +27,26 @@ export function DocsTab() {
   const [approved, setApproved] = useState<Set<string>>(new Set());
   const [confirmJobId, setConfirmJobId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!restoreId) return;
+    api.getDiscoverySummary(restoreId, workspaceId)
+      .then((s) => {
+        setDiscoveryId(restoreId);
+        setSummary(s);
+        setApproved(new Set((s.types || []).map((t) => t.type)));
+        setPhase("summary");
+        onRestored?.();
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load discovery"));
+  }, [restoreId, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const onReadDone = useCallback(async (ok: boolean) => {
     if (!ok || !discoveryId) { setPhase("error"); setError("Read job failed"); return; }
     try {
-      const s = await api.getDiscoverySummary(discoveryId);
+      const s = await api.getDiscoverySummary(discoveryId, workspaceId);
       setSummary(s); setApproved(new Set((s.types || []).map((t) => t.type))); setPhase("summary");
     } catch (e) { setError(e instanceof Error ? e.message : "Summary fetch failed"); setPhase("error"); }
-  }, [discoveryId]);
+  }, [discoveryId, workspaceId]);
 
   const onConfirmDone = useCallback((ok: boolean) => {
     if (!ok) { setPhase("error"); setError("Confirm job failed"); return; }
@@ -52,7 +71,7 @@ export function DocsTab() {
     if (approved.size === 0 && approvedFiles.length === 0) return;
     setPhase("confirming"); setError(null);
     try {
-      const r = await api.confirmDiscovery(discoveryId, [...approved], approvedFiles);
+      const r = await api.confirmDiscovery(discoveryId, [...approved], approvedFiles, workspaceId, undefined, restart);
       setConfirmJobId(r.job_id);
     } catch (e) { setError(e instanceof Error ? e.message : "Confirm failed"); setPhase("error"); }
   };

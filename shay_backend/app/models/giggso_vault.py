@@ -19,7 +19,7 @@ class GiggsoVault(Base):
     giggso_vault_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
     # Resource and vault information
-    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # User ID who created the vault entry
+    user_id = Column(UUID(as_uuid=True), nullable=True)  # User ID who created the vault entry
     vault_label = Column(String(50), nullable=True)
     vault_unique_id = Column(String(255), nullable=True, unique=True, index=True)
     
@@ -30,8 +30,8 @@ class GiggsoVault(Base):
     updated_by = Column(UUID(as_uuid=True), nullable=True)
     
     # Company and type information
-    company_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    vault_type = Column(String(50), nullable=True, index=True)  # e.g., "datasource_config", "azure_credentials", etc.
+    company_id = Column(UUID(as_uuid=True), nullable=True)
+    vault_type = Column(String(50), nullable=True)  # e.g., "datasource_config", "azure_credentials", etc.
     
     # PostgreSQL-specific indexes
     __table_args__ = (

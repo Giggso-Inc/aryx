@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  createContext, useContext, useEffect, useState, type ReactNode,
+  createContext, useCallback, useContext, useEffect, useState, type ReactNode,
 } from "react";
 import { api } from "./api";
 import { useShayAuth } from "./shay-auth";
@@ -28,7 +28,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (!session?.access_token) {
       setWorkspaces([]);
       return;
@@ -37,9 +37,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const list = await api.listWorkspaces();
       setWorkspaces(list);
     } catch {
-      setWorkspaces([]);
+      // Keep existing workspaces on transient error — don't blank the UI
     }
-  };
+  }, [session?.access_token]);
 
   useEffect(() => {
     if (!ready || !session?.access_token) {
@@ -71,13 +71,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const def = list.find((w) => w.name === "Default") || list[0];
       if (def) setWorkspaceIdState(def.id);
     }).catch(() => {
-      setWorkspaceIdState(0);
-      setWorkspaces([]);
+      // Keep existing state on transient error — don't redirect to /start
     });
   }, [ready, session?.access_token]);
 
   const setWorkspaceId = (id: number) => {
-    setWorkspaceIdState(id);
+    setWorkspaceIdState(Number(id));
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, String(id));
     }

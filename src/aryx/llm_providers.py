@@ -207,7 +207,7 @@ def oci_genai_json(
     else:
         json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
     generated, in_tok, out_tok = _oci_chat_raw(
-        spec, system, user + json_instruction, max_tokens=2048
+        spec, system, user + json_instruction, max_tokens=4096
     )
 
     # Strip markdown code fences if the model ignores the instruction
@@ -220,9 +220,36 @@ def oci_genai_json(
 
     try:
         data = json.loads(generated)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
+        # If the response looks like truncated JSON (starts with '{' but doesn't
+        # close), retry once with an explicit brevity constraint.  Truncation
+        # happens when the model produces verbose output that exceeds max_tokens.
+        logger.debug("oci_genai_json parse failed model=%s raw=%r", spec.name, generated)
+        if generated.lstrip().startswith("{") and not generated.rstrip().endswith("}"):
+            logger.warning(
+                "oci_genai_json truncated JSON detected model=%s len=%d — retrying with brevity constraint",
+                spec.name, len(generated),
+            )
+            brevity = (
+                "\n\nIMPORTANT: Be extremely concise. Each string value must be under 60 words."
+                " Respond with valid JSON only. Do not wrap in markdown code fences."
+            )
+            retry_generated, retry_in, retry_out = _oci_chat_raw(
+                spec, system, user + brevity, max_tokens=4096
+            )
+            if retry_generated.startswith("```"):
+                retry_generated = "\n".join(
+                    line for line in retry_generated.splitlines()
+                    if not line.startswith("```")
+                ).strip()
+            try:
+                data = json.loads(retry_generated)
+                logger.info("oci_genai_json retry succeeded model=%s", spec.name)
+                return data, in_tok + retry_in, out_tok + retry_out
+            except json.JSONDecodeError:
+                logger.debug("oci_genai_json retry also failed model=%s raw=%r", spec.name, retry_generated)
         raise RuntimeError(
             f"OCI GenAI returned non-JSON output (model={spec.name!r}): "
             f"{generated[:200]!r}"
-        ) from exc
+        )
     return data, in_tok, out_tok

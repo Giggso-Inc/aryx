@@ -16,12 +16,12 @@ class Invitation(Base):
     __tablename__ = "gg_invitations"
     
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Invitation details
-    email = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="user")
-    company_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    company_id = Column(UUID(as_uuid=True), nullable=False)
     invited_by = Column(UUID(as_uuid=True), nullable=False, index=True)
     status = Column(String(20), nullable=False, default="pending")
     message = Column(Text, nullable=True)

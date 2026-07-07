@@ -15,11 +15,11 @@ class EmailVerificationToken(Base):
     __tablename__ = "gg_email_verification_tokens"
     
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Token details
     email = Column(String(255), nullable=False, index=True)
-    token = Column(String(255), unique=True, nullable=False, index=True)
+    token = Column(String(255), unique=True, nullable=False)
     token_type = Column(String(50), nullable=False, default="company_signup")
     
     # Foreign keys
@@ -27,9 +27,9 @@ class EmailVerificationToken(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True, index=True)
     
     # Token status
-    expires_at = Column(DateTime, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
-    is_used = Column(Boolean, default=False, nullable=False, index=True)
+    is_used = Column(Boolean, default=False, nullable=False)
     
     # Timestamps
     created_at = Column(DateTime, default=func.current_timestamp(), nullable=False)

@@ -1,4 +1,4 @@
--- 0028 — Shay-as-skin shared schema on the Aryx Postgres.
+-- 0033 — Shay-as-skin shared schema on the Aryx Postgres.
 --
 -- Aryx remains the source of truth for partitioned ingest / graph data.
 -- Shay adds auth, company, workspace, membership, app connection, datasource,

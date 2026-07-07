@@ -31,16 +31,16 @@ class RealtimeNotification(Base):
     __tablename__ = "gg_realtime_notification"
     
     # Primary key - Using native UUID for PostgreSQL
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # User association - Foreign key to gg_users
-    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id", ondelete="CASCADE"), nullable=False)
     
     # Workspace association - Foreign key to gg_workspace (channels belong to workspaces)
-    workspace_id = Column(UUID(as_uuid=True), ForeignKey("gg_workspace.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("gg_workspace.id", ondelete="CASCADE"), nullable=False)
     
     # Channel association - Foreign key to gg_channels (notifications are channel-based)
-    channel_id = Column(UUID(as_uuid=True), ForeignKey("gg_channels.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel_id = Column(UUID(as_uuid=True), ForeignKey("gg_channels.id", ondelete="CASCADE"), nullable=False)
     
     # Master switch to enable/disable all notifications - If False, no notifications will be sent regardless of individual flags
     is_notifications_enabled = Column(Boolean, nullable=False, default=True)
@@ -67,7 +67,6 @@ class RealtimeNotification(Base):
         Index('idx_realtime_notification_user_id', 'user_id'),
         Index('idx_realtime_notification_workspace_id', 'workspace_id'),
         Index('idx_realtime_notification_channel_id', 'channel_id'),
-        Index('idx_realtime_notification_user_channel', 'user_id', 'channel_id'),
     )
     
     def __repr__(self):

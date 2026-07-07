@@ -43,13 +43,13 @@ class EmailAttachment(Base):
     attachment_metadata = Column(JSONB, nullable=True)
     
     # Channel, workspace, user, company associations
-    channel_id = Column(UUID(as_uuid=True), ForeignKey("gg_channels.id"), nullable=True, index=True)
+    channel_id = Column(UUID(as_uuid=True), ForeignKey("gg_channels.id"), nullable=True)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("gg_workspace.id"), nullable=True, index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True, index=True)
-    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("gg_users.id"), nullable=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=True)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, server_default=func.current_timestamp(), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, server_default=func.current_timestamp(), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.current_timestamp(), nullable=True)
     
     # Indexes

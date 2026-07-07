@@ -68,9 +68,28 @@ class DialectJSON(TypeDecorator):
         return dialect.type_descriptor(Text())
 
     def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == "postgresql":
+            return value
+        # Oracle oracledb driver cannot bind dict/list directly — serialize to JSON string
+        import json
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
         return value
 
     def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == "postgresql":
+            return value
+        # Oracle returns JSON column as string — deserialize back to Python object
+        import json
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (ValueError, TypeError):
+                return value
         return value
 
 
@@ -99,9 +118,10 @@ class DialectUUIDArray(TypeDecorator):
             return None
         if dialect.name == "postgresql":
             return value
-        # Oracle: store as list of UUID strings
+        # Oracle: serialize list of UUID strings to JSON — oracledb cannot bind list directly
+        import json
         if isinstance(value, list):
-            return [str(v) for v in value]
+            return json.dumps([str(v) for v in value])
         return value
 
     def process_result_value(self, value, dialect):
@@ -109,6 +129,13 @@ class DialectUUIDArray(TypeDecorator):
             return None
         if dialect.name == "postgresql":
             return value
+        import json
+        if isinstance(value, str):
+            try:
+                items = json.loads(value)
+                return [uuid.UUID(str(v)) if v else None for v in items]
+            except (ValueError, TypeError):
+                return value
         if isinstance(value, list):
             return [uuid.UUID(str(v)) if v else None for v in value]
         return value

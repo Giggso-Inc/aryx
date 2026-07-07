@@ -32,7 +32,7 @@ class Checklist(Base):
     __tablename__ = "gg_checklists"
     
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Task association
     task_id = Column(UUID(as_uuid=True), ForeignKey("gg_tasks.id"), nullable=False, index=True)
@@ -41,10 +41,10 @@ class Checklist(Base):
     text = Column(String(500), nullable=False)
     
     # Ordering and status
-    order_index = Column(Integer, nullable=False, index=True)  # For maintaining order
-    is_completed = Column(Boolean, default=False, nullable=False, index=True)
+    order_index = Column(Integer, nullable=False)  # For maintaining order
+    is_completed = Column(Boolean, default=False, nullable=False)
     completed_at = Column(DateTime, nullable=True)
-    completed_by = Column(UUID(as_uuid=True), nullable=True, index=True)  # User who completed it
+    completed_by = Column(UUID(as_uuid=True), nullable=True)  # User who completed it
     
     # Additional metadata
     checklist_metadata = Column(JSONB, nullable=True)  # For any additional data

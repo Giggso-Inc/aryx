@@ -11,6 +11,17 @@ const nextConfig = {
     return {
       beforeFiles: [],
       afterFiles: [
+        { source: "/api/shay/workspaces/:workspaceId/members/:path*",
+          destination: `${shayTarget}/api/v1/gg-workspaces/:workspaceId/members/:path*` },
+        { source: "/api/shay/workspaces/:workspaceId/members",
+          destination: `${shayTarget}/api/v1/gg-workspaces/:workspaceId/members` },
+        { source: "/api/shay/workspaces",
+          destination: `${shayTarget}/api/v1/workspaces/` },
+        { source: "/api/shay/gg-datasources",
+          destination: `${shayTarget}/api/v1/gg-datasources/` },
+        { source: "/api/shay/:path*",
+          destination: `${shayTarget}/api/v1/:path*` },
+        { source: "/api/:path*", destination: `${target}/:path*` },
         { source: "/shay/api/v1/workspaces", destination: `${shayTarget}/api/v1/workspaces/` },
         { source: "/shay/api/v1/gg-datasources", destination: `${shayTarget}/api/v1/gg-datasources/` },
         { source: "/shay/api/:path*", destination: `${shayTarget}/api/:path*` },

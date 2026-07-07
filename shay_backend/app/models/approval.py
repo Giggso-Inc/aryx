@@ -33,7 +33,7 @@ class Approval(Base):
     __tablename__ = "gg_approvals"
     
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Foreign keys — linked only via message_id
     message_id = Column(UUID(as_uuid=True), ForeignKey("gg_messages.id", ondelete="CASCADE"), nullable=True, index=True)

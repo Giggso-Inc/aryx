@@ -16,14 +16,14 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True)
     
     # Foreign keys
-    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=False, index=True)
-    plan_id = Column(UUID(as_uuid=True), ForeignKey("subscription_plans.id"), nullable=False, index=True)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("gg_company.id"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("subscription_plans.id"), nullable=False)
     
     # Subscription details
-    status = Column(String(50), nullable=False, default="active", index=True)
+    status = Column(String(50), nullable=False, default="active")
     subscription_status = Column(String(50), nullable=False, default="active")
     
     # Billing information

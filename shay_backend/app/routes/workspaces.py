@@ -89,6 +89,8 @@ def _aryx_headers() -> dict[str, str]:
 
 async def _ensure_aryx_workspace_bridge(_request: Request, workspace: Workspace) -> dict[str, Any]:
     """Create or reuse the Aryx bridge for a newly created Shay workspace."""
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
     timeout = httpx.Timeout(30.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
@@ -101,6 +103,11 @@ async def _ensure_aryx_workspace_bridge(_request: Request, workspace: Workspace)
             },
             headers=_aryx_headers(),
         )
+        if response.is_error:
+            _log.error(
+                "aryx bridge error status=%d workspace=%s body=%s",
+                response.status_code, workspace.id, response.text[:500],
+            )
         response.raise_for_status()
         return response.json()
 
