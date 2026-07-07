@@ -1,16 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Agent, fetch as undiciFetch } from "undici";
 
 /**
- * Proxy for /ask — CPU LLM inference (Ollama llama3.2:3b) takes 90+ seconds,
- * which exceeds Node.js fetch's default socket timeout and triggers a 502 in
- * deployed environments. AbortSignal.timeout(900_000) gives a 15-minute ceiling
- * so the request survives the full synthesis cycle.
+ * Proxy for /ask — CPU LLM inference (Ollama llama3.2:3b) takes 90–300+ seconds.
  *
- * Trust model: these routes are only accessible from the browser via
- * same-origin requests. For production deployments exposed publicly, set
- * ARYX_PROXY_SECRET and configure your reverse proxy to inject the
- * x-aryx-key header — unauthenticated direct calls will be rejected.
+ * WHY undici Agent instead of global fetch + AbortSignal:
+ * Node's global fetch (undici under the hood) has a hardcoded default
+ * headersTimeout of 300 s that AbortSignal.timeout() does NOT override.
+ * When the ask pipeline crosses 5 minutes (large graphs, complex questions),
+ * undici kills the socket and throws "fetch failed" (ECONNRESET) — even though
+ * FastAPI is still running and will eventually persist the answer to history.
+ *
+ * The fix: pass an explicit undici Agent with headersTimeout and bodyTimeout
+ * both raised to 900 s. AbortSignal is kept as the outer ceiling (15 min) so
+ * runaway requests are still cancelled.
+ *
+ * Trust model: for production deployments exposed via a reverse proxy, set
+ * ARYX_PROXY_SECRET and configure the proxy to inject the x-aryx-key header.
  */
+
+// Module-level singleton — allocated once, reused across requests.
+const slowLlmAgent = new Agent({
+  headersTimeout: 900_000,   // wait up to 15 min for first response byte
+  bodyTimeout: 900_000,      // wait up to 15 min for full response body
+  keepAliveTimeout: 10_000,
+});
+
 export async function POST(req: NextRequest) {
   const secret = process.env.ARYX_PROXY_SECRET;
   if (secret && req.headers.get("x-aryx-key") !== secret) {
@@ -27,7 +42,7 @@ export async function POST(req: NextRequest) {
       : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
   try {
-    const upstream = await fetch(`${target}/ask`, {
+    const upstream = await undiciFetch(`${target}/ask`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -35,6 +50,7 @@ export async function POST(req: NextRequest) {
       },
       body,
       signal: AbortSignal.timeout(900_000),
+      dispatcher: slowLlmAgent,
     });
     const data = await upstream.text();
     return new NextResponse(data, {
