@@ -41,12 +41,25 @@ class GraphReader:
                             port=parsed.port or 6379)
         self._graph = self._db.select_graph(graph)
 
+    def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
+        """Execute a Cypher query and log the input and output at INFO level."""
+        start = time.monotonic()
+        result = self._graph.query(cypher, params or {}).result_set
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        # Cap result preview to first 5 rows to keep logs readable.
+        preview = result[:5]
+        logger.info(
+            "cypher  query=%r  params=%r  rows=%d  ms=%d  preview=%r",
+            cypher, params or {}, len(result), elapsed_ms, preview,
+        )
+        return result
+
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name, or None if absent."""
-        rows = self._graph.query(
+        rows = self._query(
             "MATCH (e:Entity {id: $id}) RETURN e.id, e.type, e.name",
             {"id": entity_id},
-        ).result_set
+        )
         return _entity(rows[0]) if rows else None
 
     def find_entities(self, ontology_type: str | None = None,
@@ -71,10 +84,10 @@ class GraphReader:
             params["name"] = name
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
-        rows = self._graph.query(
+        rows = self._query(
             f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name LIMIT {capped}",
             params,
-        ).result_set
+        )
         return [_entity(r) for r in rows]
 
     def neighbors(self, entity_id: int) -> list[dict[str, Any]]:
@@ -83,7 +96,7 @@ class GraphReader:
         Each result carries the edge name, its direction ('out' or 'in')
         relative to the queried entity, and the connected entity's fields.
         """
-        rows = self._graph.query(
+        rows = self._query(
             "MATCH (e:Entity {id: $id})-[r:REL]->(n:Entity) "
             "RETURN n.id AS id, n.type AS type, n.name AS name, "
             "r.name AS rel, 'out' AS dir "
@@ -92,15 +105,15 @@ class GraphReader:
             "RETURN n.id AS id, n.type AS type, n.name AS name, "
             "r.name AS rel, 'in' AS dir",
             {"id": entity_id},
-        ).result_set
+        )
         return [{**_entity(r), "relationship": r[3], "direction": r[4]} for r in rows]
 
     def all_relationships(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Return relationship edges in the graph, optionally capped."""
         cap = f" LIMIT {max(1, int(limit))}" if limit else ""
-        rows = self._graph.query(
+        rows = self._query(
             f"MATCH (a:Entity)-[r:REL]->(b:Entity) RETURN a.id, b.id, r.name{cap}"
-        ).result_set
+        )
         return [{"source": r[0], "target": r[1], "name": r[2]} for r in rows]
 
     def subgraph(self, rel_limit: int = 2000) -> dict[str, Any]:
@@ -132,9 +145,9 @@ class GraphReader:
                 return result
 
         # Step 1 — entity types present in this graph.
-        etype_rows = self._graph.query(
+        etype_rows = self._query(
             "MATCH (e:Entity) RETURN DISTINCT e.type ORDER BY e.type"
-        ).result_set
+        )
         entity_types = [r[0] for r in etype_rows if r[0]]
 
         entity_map: dict[int, dict[str, Any]] = {}
@@ -149,9 +162,9 @@ class GraphReader:
             # Sampling by relationship type (not entity type) ensures connected
             # source→target pairs are loaded together, so their endpoints are
             # co-present and survive the per-type cap as a matched pair.
-            rtype_rows = self._graph.query(
+            rtype_rows = self._query(
                 "MATCH ()-[r:REL]->() RETURN DISTINCT r.name ORDER BY r.name"
-            ).result_set
+            )
             rel_types = [r[0] for r in rtype_rows if r[0]]
 
             # N rels per relationship type: enough to cover per_type entities
@@ -163,12 +176,12 @@ class GraphReader:
             raw_rels: list[tuple] = []   # (src_id, tgt_id, rname)
             entity_info: dict[int, dict[str, Any]] = {}
             for rname in rel_types:
-                rows = self._graph.query(
+                rows = self._query(
                     "MATCH (a:Entity)-[r:REL {name: $rname}]->(b:Entity) "
                     "RETURN a.id, a.type, a.name, b.id, b.type, b.name "
                     f"LIMIT {rels_per_rtype}",
                     {"rname": rname},
-                ).result_set
+                )
                 for row in rows:
                     aid, atype, aname, bid, btype, bname = row
                     entity_info[aid] = {"id": aid, "type": atype, "name": aname}
@@ -222,12 +235,12 @@ class GraphReader:
             # entity types appear on the canvas.
             for etype in entity_types:
                 if type_count.get(etype, 0) == 0:
-                    rows = self._graph.query(
+                    rows = self._query(
                         "MATCH (e:Entity {type: $type}) "
                         "RETURN e.id, e.type, e.name "
                         f"LIMIT {per_type}",
                         {"type": etype},
-                    ).result_set
+                    )
                     for row in rows:
                         eid, et, en = row
                         entity_map[eid] = {"id": eid, "type": et, "name": en}
@@ -246,12 +259,12 @@ class GraphReader:
             if isolated_eids:
                 found: dict[int, tuple] = {}
                 out_cap = len(isolated_eids) * 2 + 10
-                out_rows = self._graph.query(
+                out_rows = self._query(
                     "UNWIND $ids AS eid "
                     "MATCH (a:Entity {id: eid})-[r:REL]->(b:Entity) "
                     f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {out_cap}",
                     {"ids": isolated_eids},
-                ).result_set
+                )
                 for row in out_rows:
                     eid_ = row[0]
                     if eid_ not in found:
@@ -259,12 +272,12 @@ class GraphReader:
                 still_iso = [e for e in isolated_eids if e not in found]
                 if still_iso:
                     in_cap = len(still_iso) * 2 + 10
-                    in_rows = self._graph.query(
+                    in_rows = self._query(
                         "UNWIND $ids AS eid "
                         "MATCH (b:Entity)-[r:REL]->(a:Entity {id: eid}) "
                         f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {in_cap}",
                         {"ids": still_iso},
-                    ).result_set
+                    )
                     for row in in_rows:
                         eid_ = row[0]
                         if eid_ not in found:
@@ -283,10 +296,10 @@ class GraphReader:
         # in the subgraph view) for debugging visibility.
         remaining = capped - len(entity_map)
         if remaining > 0:
-            iso_rows = self._graph.query(
+            iso_rows = self._query(
                 "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
                 f"RETURN e.id, e.type, e.name LIMIT {remaining}"
-            ).result_set
+            )
             for row in iso_rows:
                 eid, etype, ename = row
                 if eid not in entity_map:
@@ -298,11 +311,11 @@ class GraphReader:
 
     def provenance(self, entity_id: int) -> list[dict[str, Any]]:
         """Return the source records an entity was projected from."""
-        rows = self._graph.query(
+        rows = self._query(
             "MATCH (e:Entity {id: $id})-[:FROM]->(s:Source) "
             "RETURN s.system, s.dataset, s.record_id",
             {"id": entity_id},
-        ).result_set
+        )
         return [{"system": r[0], "dataset": r[1], "record_id": r[2]} for r in rows]
 
     def shortest_path(self, src: int, dst: int, max_hops: int = 6) -> list[dict[str, Any]]:
@@ -312,14 +325,14 @@ class GraphReader:
         # and keep whichever is shorter.
         candidates: list[tuple[list, list]] = []
         for arrow_a, arrow_b in (("-", "->"), ("<-", "-")):
-            rows = self._graph.query(
+            rows = self._query(
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) "
                 f"WITH shortestPath((a){arrow_a}[:REL*1..{hops}]{arrow_b}(b)) AS p "
                 "WHERE p IS NOT NULL "
                 "RETURN [n IN nodes(p) | [n.id, n.type, n.name]] AS ns, "
                 "[r IN relationships(p) | r.name] AS rs",
                 {"a": src, "b": dst},
-            ).result_set
+            )
             if rows:
                 candidates.append((rows[0][0], rows[0][1]))
         if not candidates:
