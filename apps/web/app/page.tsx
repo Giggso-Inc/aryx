@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Clock, Download, X } from "lucide-react";
 import { Header } from "@/components/brand/Header";
@@ -125,6 +125,10 @@ export default function HomePage() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  // Cancels an in-flight recovery poll when the component unmounts or a new
+  // question is submitted before the previous recovery finishes.
+  const cancelRecoveryRef = useRef(false);
+  useEffect(() => () => { cancelRecoveryRef.current = true; }, []);
 
   // First-run redirect: empty workspace → guided setup. "Empty" means
   // zero records, regardless of whether stub types exist.
@@ -144,6 +148,15 @@ export default function HomePage() {
   const send = async (question?: string) => {
     const q = (question ?? input).trim();
     if (!q || busy) return;
+
+    // Stamp submit time (with 5 s clock-skew buffer) so the recovery poll
+    // never surfaces a stale answer from a prior identical question.
+    const requestStartMs = Date.now() - 5_000;
+    // Cancel any previous recovery poll that is still looping.
+    cancelRecoveryRef.current = true;
+    // Allow the new poll loop to run.
+    cancelRecoveryRef.current = false;
+
     setInput("");
     setBusy(true);
 
@@ -193,15 +206,17 @@ export default function HomePage() {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
 
-      // 502 / fetch-failed means the TCP connection dropped after the LLM finished
-      // but before the response reached the browser. The answer is already persisted
-      // in the history DB — poll for it rather than surfacing a raw error.
+      // 502 / fetch-failed: TCP connection dropped after the LLM finished but before
+      // the response reached the browser. FastAPI already persisted the answer to
+      // ask_history — poll for it rather than immediately surfacing the error.
+      // Skip recovery when the device is offline (those polls would also fail).
       const isFetchFailed =
         message.includes("fetch failed") ||
         message.includes("502") ||
         message.includes("Bad Gateway");
+      const isOnline = typeof navigator === "undefined" || navigator.onLine;
 
-      if (isFetchFailed) {
+      if (isFetchFailed && isOnline) {
         setTurns((prev) =>
           prev.map((t) =>
             t.id === assistantId
@@ -211,18 +226,29 @@ export default function HomePage() {
         );
 
         let recovered = false;
-        for (let attempt = 0; attempt < 20 && !recovered; attempt++) {
-          await new Promise((r) => setTimeout(r, 3000));
+        // Two-phase poll: fast (20 × 3 s = 60 s) for typical cases, then slow
+        // (56 × 15 s = 840 s) to cover the full 900 s headersTimeout window.
+        const schedule = [
+          ...Array(20).fill(3_000),
+          ...Array(56).fill(15_000),
+        ];
+        for (const interval of schedule) {
+          if (recovered || cancelRecoveryRef.current) break;
+          await new Promise((r) => setTimeout(r, interval));
+          if (cancelRecoveryRef.current) break;
           try {
-            const history = await api.getAskHistory(workspaceId, 5);
+            const history = await api.getAskHistory(workspaceId, 50);
             const match = history.find(
               (h) =>
                 h.question.trim().toLowerCase() === q.trim().toLowerCase() &&
-                h.answer,
+                h.answer &&
+                new Date(h.ts).getTime() >= requestStartMs,
             );
             if (match) {
               recovered = true;
-              const citations: Citation[] = ([] as Citation[]);
+              // History entries don't carry terms, so citations aren't available
+              // for recovered answers — the answer itself is still complete.
+              const recoveryCitations: Citation[] = [];
               streamReveal(match.answer, (full) => {
                 setTurns((prev) =>
                   prev.map((t) => (t.id === assistantId ? { ...t, content: full } : t)),
@@ -230,10 +256,11 @@ export default function HomePage() {
               }, { msPerChunk: 18, chunkSize: 5 });
               const totalMs = Math.ceil(match.answer.length / 5) * 18 + 250;
               setTimeout(() => {
+                if (cancelRecoveryRef.current) return;
                 setTurns((prev) =>
                   prev.map((t) =>
                     t.id === assistantId
-                      ? { ...t, content: match.answer, citations, streaming: false }
+                      ? { ...t, content: match.answer, citations: recoveryCitations, streaming: false }
                       : t,
                   ),
                 );
@@ -245,7 +272,7 @@ export default function HomePage() {
           }
         }
 
-        if (!recovered) {
+        if (!recovered && !cancelRecoveryRef.current) {
           setTurns((prev) =>
             prev.map((t) =>
               t.id === assistantId

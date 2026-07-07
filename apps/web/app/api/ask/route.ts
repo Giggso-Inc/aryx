@@ -26,6 +26,11 @@ const slowLlmAgent = new Agent({
   keepAliveTimeout: 10_000,
 });
 
+// Drain keep-alive sockets on graceful shutdown so in-flight LLM requests are
+// not cut mid-stream by Node's forced exit after SIGTERM.
+process.once("SIGTERM", () => slowLlmAgent.close());
+process.once("SIGINT",  () => slowLlmAgent.close());
+
 export async function POST(req: NextRequest) {
   const secret = process.env.ARYX_PROXY_SECRET;
   if (secret && req.headers.get("x-aryx-key") !== secret) {
