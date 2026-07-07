@@ -21,7 +21,6 @@ const nextConfig = {
           destination: `${shayTarget}/api/v1/gg-datasources/` },
         { source: "/api/shay/:path*",
           destination: `${shayTarget}/api/v1/:path*` },
-        { source: "/api/:path*", destination: `${target}/:path*` },
         { source: "/shay/api/v1/workspaces", destination: `${shayTarget}/api/v1/workspaces/` },
         { source: "/shay/api/v1/gg-datasources", destination: `${shayTarget}/api/v1/gg-datasources/` },
         { source: "/shay/api/:path*", destination: `${shayTarget}/api/:path*` },
