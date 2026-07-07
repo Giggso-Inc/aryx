@@ -192,18 +192,79 @@ export default function HomePage() {
       }, totalMs);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      setTurns((prev) =>
-        prev.map((t) =>
-          t.id === assistantId
-            ? {
-                ...t,
-                content: `Couldn't reach the API — ${message}`,
-                streaming: false,
-              }
-            : t,
-        ),
-      );
-      setBusy(false);
+
+      // 502 / fetch-failed means the TCP connection dropped after the LLM finished
+      // but before the response reached the browser. The answer is already persisted
+      // in the history DB — poll for it rather than surfacing a raw error.
+      const isFetchFailed =
+        message.includes("fetch failed") ||
+        message.includes("502") ||
+        message.includes("Bad Gateway");
+
+      if (isFetchFailed) {
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId
+              ? { ...t, content: "Still processing — recovering your answer…", streaming: true }
+              : t,
+          ),
+        );
+
+        let recovered = false;
+        for (let attempt = 0; attempt < 20 && !recovered; attempt++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          try {
+            const history = await api.getAskHistory(workspaceId, 5);
+            const match = history.find(
+              (h) =>
+                h.question.trim().toLowerCase() === q.trim().toLowerCase() &&
+                h.answer,
+            );
+            if (match) {
+              recovered = true;
+              const citations: Citation[] = ([] as Citation[]);
+              streamReveal(match.answer, (full) => {
+                setTurns((prev) =>
+                  prev.map((t) => (t.id === assistantId ? { ...t, content: full } : t)),
+                );
+              }, { msPerChunk: 18, chunkSize: 5 });
+              const totalMs = Math.ceil(match.answer.length / 5) * 18 + 250;
+              setTimeout(() => {
+                setTurns((prev) =>
+                  prev.map((t) =>
+                    t.id === assistantId
+                      ? { ...t, content: match.answer, citations, streaming: false }
+                      : t,
+                  ),
+                );
+                setBusy(false);
+              }, totalMs);
+            }
+          } catch {
+            // poll error — keep retrying
+          }
+        }
+
+        if (!recovered) {
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === assistantId
+                ? { ...t, content: `Couldn't reach the API — ${message}`, streaming: false }
+                : t,
+            ),
+          );
+          setBusy(false);
+        }
+      } else {
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId
+              ? { ...t, content: `Couldn't reach the API — ${message}`, streaming: false }
+              : t,
+          ),
+        );
+        setBusy(false);
+      }
     }
   };
 
