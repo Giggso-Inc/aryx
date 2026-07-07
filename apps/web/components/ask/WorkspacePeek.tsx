@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { parseWorkspaceScope, workspaceModelHref, workspaceStartHref } from "@/lib/workspace-route";
-import type { OntologyType } from "@/lib/types";
 
 interface Props {
   workspaceId: number;
@@ -19,14 +18,12 @@ interface Props {
 export function WorkspacePeek({ workspaceId }: Props) {
   const pathname = usePathname();
   const { shayWorkspaceId } = parseWorkspaceScope(pathname);
-  const [types, setTypes] = useState<OntologyType[]>([]);
   const [entityCount, setEntityCount] = useState<number | null>(null);
 
   useEffect(() => {
     api.getOntology(workspaceId).then((d) => {
-      setTypes(d.types || []);
       setEntityCount(d.entity_count || 0);
-    }).catch(() => { setTypes([]); setEntityCount(null); });
+    }).catch(() => { setEntityCount(null); });
   }, [workspaceId]);
 
   if (entityCount === null) return null;
@@ -63,19 +60,6 @@ export function WorkspacePeek({ workspaceId }: Props) {
         >
           See the map →
         </Link>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {types.map((t) => (
-          <span
-            key={t.name}
-            className="inline-flex items-center gap-1.5 rounded-full border border-navy-100 bg-navy-50/40 px-3 py-1 text-[12px]"
-          >
-            <span className="font-semibold text-navy-900">{t.name}</span>
-            <span className="font-mono text-[11px] text-subtle">
-              {t.instance_count ?? 0}
-            </span>
-          </span>
-        ))}
       </div>
     </div>
   );

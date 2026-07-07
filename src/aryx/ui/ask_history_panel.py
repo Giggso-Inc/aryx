@@ -17,7 +17,7 @@ def render() -> None:
         return
     st.markdown("**🗂 Past conversations in this workspace**")
     table = [{
-        "When": r.get("asked_at"),
+        "When": r.get("ts"),
         "Question": (r.get("question") or "")[:60],
         "Answer": (r.get("answer") or "")[:60],
         "Tokens": (r.get("prompt_tokens") or 0)

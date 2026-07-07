@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * Proxy for /ask — LLM-backed graph queries can take 10-30s, which exceeds
- * the default 30s TCP idle timeout in Docker WSL2 networking when routing
- * through the Next.js rewrite proxy. A proper route handler uses Node.js
- * undici fetch (no default timeout) and is not subject to socket reset.
+ * Proxy for /ask — CPU LLM inference (Ollama llama3.2:3b) takes 90+ seconds,
+ * which exceeds Node.js fetch's default socket timeout and triggers a 502 in
+ * deployed environments. AbortSignal.timeout(900_000) gives a 15-minute ceiling
+ * so the request survives the full synthesis cycle.
  *
  * Trust model: these routes are only accessible from the browser via
  * same-origin requests. For production deployments exposed publicly, set
@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
         "x-aryx-api-key": internalApiKey,
       },
       body,
+      signal: AbortSignal.timeout(900_000),
     });
     const data = await upstream.text();
     return new NextResponse(data, {

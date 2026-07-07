@@ -71,7 +71,10 @@ export function ShayAuthProvider({ children }: { children: ReactNode }) {
     const raw = localStorage.getItem(SHAY_SESSION_STORAGE_KEY);
     if (raw) {
       try {
-        setSessionState(JSON.parse(raw) as ShaySession);
+        const parsed = JSON.parse(raw);
+        // Guard against stale SuccessResponse-wrapped sessions (autoLogin used to wrap in {success, data})
+        const session = parsed?.data?.access_token ? parsed.data : parsed;
+        setSessionState(session as ShaySession);
       } catch {
         localStorage.removeItem(SHAY_SESSION_STORAGE_KEY);
       }
