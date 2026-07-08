@@ -216,6 +216,28 @@ class EntityStore:
                 cur.execute(load("select_entities_typed_sample"), (self._ws, n_per_type))
                 return [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
+    def conflict_aliases(self, attribute: str) -> dict[str, int]:
+        """Map every historical *losing* value of `attribute` to the entity
+        that absorbed it during survivorship merge.
+
+        Entity resolution can merge two records sharing a near-identical
+        `attribute` value into one entity, keeping only one winner
+        (aryx_attribute_conflict.winning_value) and discarding the rest as
+        losing_values. Anything that referenced a since-discarded value by
+        exact match (e.g. an FK column pointing at the old value) would
+        silently fail to link post-merge without this — see link_by_attribute.
+        """
+        aliases: dict[str, int] = {}
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_conflict_losing_values"), (self._ws, attribute))
+                for entity_id, losing_values in cur.fetchall():
+                    for lv in losing_values or []:
+                        val = lv.get("value") if isinstance(lv, dict) else None
+                        if val:
+                            aliases[str(val).strip().lower()] = entity_id
+        return aliases
+
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
 

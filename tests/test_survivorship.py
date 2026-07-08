@@ -111,6 +111,21 @@ def test_policy_from_json_ignores_unknown_keys() -> None:
     assert policy.strategy_for("x") == "first_non_empty"
 
 
+def test_conflict_row_shape_matches_entity_store_contract() -> None:
+    """Every conflict row has exactly the keys entity_store.py's insert code reads
+    (attribute, winning_value, losing_values, strategy) — this is what actually
+    lands in aryx_attribute_conflict once resolve_run() wires a policy in."""
+    policy = SurvivorshipPolicy(default_strategy="most_complete")
+    _, _, conflicts = golden_record_with_policy(_MEMBERS, policy)
+    assert conflicts, "expected at least one conflict for this fixture"
+    for c in conflicts:
+        assert set(c.keys()) == {"attribute", "winning_value", "losing_values", "strategy"}
+        assert isinstance(c["losing_values"], list)
+        assert c["strategy"] == "most_complete"
+        for loser in c["losing_values"]:
+            assert {"value", "source_system", "record_id"} <= set(loser.keys())
+
+
 def test_empty_members() -> None:
     """No members -> empty everything."""
     merged, prov, conflicts = golden_record_with_policy(

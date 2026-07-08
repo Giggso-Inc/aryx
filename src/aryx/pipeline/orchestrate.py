@@ -106,7 +106,8 @@ def run_pipeline(
             _emit(on_progress, "Resolve", 30, "Loading landed records for resolution")
             with runner.stage("resolve_cluster"):
                 entities = resolve_run(run_id, ontology_type, match_keys,
-                                       estore, broker, on_progress=on_progress)
+                                       estore, broker, on_progress=on_progress,
+                                       workspace_id=workspace_id)
             _emit(on_progress, "Resolve", 62, f"{entities} entities resolved")
         # Register the type in OntologyStore so the schema diagram populates.
         # seed_types is idempotent (ON CONFLICT DO NOTHING).

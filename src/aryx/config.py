@@ -135,6 +135,17 @@ class Settings(BaseSettings):
         default=0.75,
         description="Score in [er_review, er_adjudicate) queues the pair for human review.",
     )
+    er_exact_id_match: bool = Field(
+        default=True,
+        description=(
+            "When every match key is an opaque identifier (id/uuid/guid/key), "
+            "resolve by exact equality instead of fuzzy scoring. Fuzzy similarity "
+            "is semantically invalid for ids: sequential ids like 18722401146 vs "
+            "18722401147 score 0.909+ and transitively collapse whole id ranges "
+            "into one entity. Set ARYX_ER_EXACT_ID_MATCH=false to restore the "
+            "previous fuzzy behavior."
+        ),
+    )
     embed_batch_size: int = Field(
         default=50,
         description="Records per embedding batch during entity resolution.",

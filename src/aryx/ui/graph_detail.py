@@ -36,6 +36,10 @@ def detail(entities: list[dict], entity_id: int) -> None:
                 for n in items:
                     arrow = "→" if n["direction"] == "out" else "←"
                     st.markdown(f"{arrow} **{n['name']}** _({n['type']})_")
+                    attrs = n.get("attributes") or {}
+                    if attrs:
+                        with st.expander("attributes", expanded=False):
+                            st.json(attrs)
     else:
         st.caption("No connections recorded.")
 

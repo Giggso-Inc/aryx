@@ -41,13 +41,24 @@ def link_by_attribute(
         Number of relationships saved (existing edges are not deduped here).
     """
     entities = list(estore.list_entities())
+    target_ids: set[int] = set()
     targets: dict[str, list[int]] = {}
     for tid, ttype, payload in entities:
         if ttype != target_type:
             continue
+        target_ids.add(tid)
         key = _attr(payload, target_attr)
         if key:
             targets.setdefault(key.lower(), []).append(tid)
+
+    # Survivorship merge can discard the exact target_attr value another
+    # record's FK depends on (one winner is kept, the rest become
+    # aryx_attribute_conflict.losing_values). Alias those historical values
+    # back to the entity that absorbed them so a merge never silently
+    # orphans a relationship someone else points to.
+    for value, tid in estore.conflict_aliases(target_attr).items():
+        if tid in target_ids and tid not in targets.get(value, []):
+            targets.setdefault(value, []).append(tid)
 
     rels: list[Relationship] = []
     for sid, stype, payload in entities:

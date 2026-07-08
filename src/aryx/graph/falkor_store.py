@@ -6,6 +6,7 @@ provenance edges link entities to source records; REL edges connect entities.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -63,11 +64,24 @@ class FalkorStore:
         self._graph = self._db.select_graph(graph)
 
     def clear(self) -> None:
-        """Delete the whole graph for a clean rebuild."""
+        """Delete the whole graph for a clean rebuild.
+
+        Re-creates the index on Entity.id immediately after — delete() wipes
+        it along with everything else, and every add_entity() MERGE matches
+        on {id: $id}. Without the index, that MERGE does a full label scan
+        per call, so the entity-write loop degrades from O(1) to O(n) per
+        write (O(n^2) overall) as the graph grows — this is a pure write-
+        performance fix, not a behavior/correctness change.
+        """
         try:
             self._graph.delete()
         except Exception:  # graph may not exist yet  # noqa: BLE001
             pass
+        try:
+            self._graph.query("CREATE INDEX FOR (e:Entity) ON (e.id)")
+        except Exception as exc:  # noqa: BLE001 — perf optimization only; MERGE still works without it
+            logger.warning("falkor: failed to create index on Entity.id, "
+                           "writes will fall back to full-scan MERGE: %s", exc)
 
     def add_entity(self, entity_id: int, ontology_type: str,
                    attributes: dict[str, Any],
@@ -92,6 +106,12 @@ class FalkorStore:
         params: dict[str, Any] = {
             "id": entity_id, "type": ontology_type,
             "name": _display_name(attributes) or f"#{entity_id}",
+            # Opaque JSON blob, not individual Cypher properties — attribute
+            # schemas vary per ontology type, and Cypher isn't optimized for
+            # deep property access. Callers that need it parse it back with
+            # json.loads(); Postgres (aryx_entity.attributes) stays the
+            # queryable/authoritative copy.
+            "attrs": json.dumps(attributes, default=str),
         }
         set_iri = ""
         if iri:
@@ -99,7 +119,7 @@ class FalkorStore:
             set_iri = ", e.iri = $iri"
         self._graph.query(
             f"MERGE (e:Entity{label_clause} {{id: $id}}) "
-            f"SET e.type = $type, e.name = $name{set_iri}",
+            f"SET e.type = $type, e.name = $name, e.attrs = $attrs{set_iri}",
             params,
         )
 

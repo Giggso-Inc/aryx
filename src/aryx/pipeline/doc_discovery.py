@@ -107,7 +107,7 @@ def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
     return mk
 
 
-def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
+def _infer_type(sample: str, filename: str, context: str, did: str | None = None) -> dict[str, Any]:
     # Filename is a reliable signal for the entity type; use it unless it's generic.
     stype = _stem_type(filename)
     use_filename_type = bool(stype) and stype.lower() not in _GENERIC
@@ -134,13 +134,19 @@ def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
         mk = d.get("match_keys")
         if not mk:
             mk = [_guess_key_col(sample)]
-        return {"ontology_type": otype, "match_keys": _id_priority_mk(sample, mk)}
-    except Exception:  # noqa: BLE001
+        result = {"ontology_type": otype, "match_keys": _id_priority_mk(sample, mk)}
+        logger.info("infer_type did=%s file=%s otype=%s match_keys=%s source=%s",
+                    did, filename, result["ontology_type"], result["match_keys"],
+                    "filename" if use_filename_type else "llm")
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("infer_type did=%s file=%s LLM inference failed, falling back to otype=%s: %s",
+                        did, filename, fallback, exc)
         return {"ontology_type": fallback,
                 "match_keys": _id_priority_mk(sample, [_guess_key_col(sample)])}
 
 
-def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
+def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tuple[bytes, str]]:
     """Parse XML → one CSV per discovered entity element type.
 
     Handles three common XML patterns that the naive approach misses:
@@ -232,7 +238,9 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
 
     try:
         root = defused_ET.fromstring(data)
-    except ET.ParseError:
+    except ET.ParseError as exc:
+        logger.warning("xml_to_csvs log_id=%s stem=%s parse failed, treating as raw upload: %s",
+                        log_id, stem, exc)
         return [(data, stem + ".csv")]
 
     # Candidate fields to use as entity name when no ``name`` field exists.
@@ -298,6 +306,9 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
 
     _walk(root)
     if not counts:
+        logger.warning(
+            "xml_to_csvs log_id=%s stem=%s no entity elements detected "
+            "(all leaves/containers), falling back to raw upload", log_id, stem)
         return [(data, stem + ".csv")]
 
     # Prefer entity types that carry a human-readable name field over pure
@@ -360,6 +371,7 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
     # direct children of a root with no id, which is the correct behaviour.
     root_id = _elem_id(root)
     results: list[tuple[bytes, str]] = []
+    total_rows = 0
 
     for target_tag in top_tags:
         if target_tag == root_tag:
@@ -383,10 +395,11 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
             continue
         if len(records) > _xml_max_rows:
             logger.warning(
-                "xml: %s has %d rows, capping at %d (set ARYX_XML_MAX_ROWS_PER_TYPE to change)",
-                target_tag, len(records), _xml_max_rows,
+                "xml log_id=%s: %s has %d rows, capping at %d (set ARYX_XML_MAX_ROWS_PER_TYPE to change)",
+                log_id, target_tag, len(records), _xml_max_rows,
             )
             records = records[:_xml_max_rows]
+        total_rows += len(records)
         all_keys: list[str] = []
         seen_keys: set[str] = set()
         for rec in records:
@@ -401,10 +414,18 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
         csv_name = f"{stem}_{target_tag}.csv"
         results.append((buf.getvalue().encode("utf-8"), csv_name))
 
-    return results if results else [(data, stem + ".csv")]
+    if not results:
+        logger.warning(
+            "xml_to_csvs log_id=%s stem=%s %d candidate type(s) considered but 0 rows "
+            "collected, falling back to raw upload", log_id, stem, len(top_tags))
+        return [(data, stem + ".csv")]
+    logger.info(
+        "xml_to_csvs log_id=%s stem=%s detected_types=%d capped_to=%d output_csvs=%d rows_total=%d",
+        log_id, stem, len(counts), len(top_tags), len(results), total_rows)
+    return results
 
 
-def _consolidate_csv_names(data: bytes) -> bytes:
+def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
     """Merge multi-part name columns into a single ``name`` field.
 
     Handles patterns like COMPANY_NAME / COMPANY_NAME_2 … COMPANY_NAME_5
@@ -458,15 +479,21 @@ def _consolidate_csv_names(data: bytes) -> bytes:
                 if "name" not in row or not row["name"]:
                     row["name"] = full
             writer.writerow(row)
+        logger.info("consolidate_csv_names did=%s merged_groups=%d columns=%s rows=%d",
+                    did, len(base_names), list(base_names.keys()), len(rows))
         return buf.getvalue().encode("utf-8")
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("consolidate_csv_names did=%s failed, returning original data unmodified: %s",
+                        did, exc)
         return data
 
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
-               broker: Broker, context: str) -> dict[str, Any]:
+               broker: Broker, context: str, did: str | None = None) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing."""
     settings = get_settings()
+    logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
+                did, len(doc_paths), len(tabular), context)
     mentions = []
     if doc_paths:
         connector = DocumentRouterConnector(
@@ -482,13 +509,13 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     converted_tabular = []
     for d, n in tabular:
         if Path(n).suffix.lower() == ".xml":
-            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
+            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
                 converted_tabular.append((csv_bytes, csv_name))
         else:
-            converted_tabular.append((_consolidate_csv_names(d), n))
+            converted_tabular.append((_consolidate_csv_names(d, did=did), n))
 
     tab_plans = [{"filename": n, "data": d,
-                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
+                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context, did=did)}
                  for d, n in converted_tabular]
 
     by_type: dict[str, list[str]] = {}
@@ -497,11 +524,13 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     types = [{"type": t, "count": len(v), "examples": list(dict.fromkeys(v))[:5]}
              for t, v in sorted(by_type.items(), key=lambda kv: -len(kv[1]))]
     files = [{"filename": p["filename"], "ontology_type": p["ontology_type"]} for p in tab_plans]
+    logger.info("read_files done did=%s mentions=%d tabular_plans=%d types=%d files=%d",
+                did, len(mentions), len(tab_plans), len(types), len(files))
     return {"mentions": mentions, "tabular": tab_plans,
             "summary": {"types": types, "files": files}}
 
 
-def _detect_fk_links(plans: list[dict]) -> list[dict]:
+def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]:
     """Detect FK-style joins between tabular plans by column name patterns.
 
     For each pair of plans (A, B), looks for columns in A whose names follow
@@ -594,13 +623,16 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 src_upper = plan_a["ontology_type"].upper()
                 # Edge direction in link_by_attribute: target_type → source_type
                 # (parent has-child semantics). Name reflects that direction.
-                links.append({
+                link = {
                     "source_type": plan_a["ontology_type"],
                     "source_attr": col,
                     "target_type": type_b,
                     "target_attr": target_attr,
                     "name": f"{type_b.upper()}_HAS_{src_upper}",
-                })
+                }
+                links.append(link)
+                logger.info("fk-pass1 log_id=%s: %s.%s -> %s.%s (%s)",
+                            log_id, plan_a["ontology_type"], col, type_b, target_attr, link["name"])
                 break
 
     # ── Pass 2: code-keyed data (shared-suffix columns) ──────────────────────
@@ -655,6 +687,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "target_attr": mk_b,
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
+                    logger.info("fk-pass2-ruleA log_id=%s: %s.%s -> %s.%s",
+                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
                     continue
                 # Rule B: column contains B's match-key stem as a fragment AND has
                 # a key suffix — catches hierarchical/reference column patterns
@@ -670,6 +704,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "target_attr": mk_b,
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
+                    logger.info("fk-pass2-ruleB log_id=%s: %s.%s -> %s.%s",
+                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
                     continue
                 # Rule C: same key-suffix — both columns share a suffix like _CODE,
                 # signalling a replacement / alternate-entity reference.
@@ -690,6 +726,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "target_attr": mk_b,
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
+                    logger.info("fk-pass2-ruleC log_id=%s: %s.%s -> %s.%s",
+                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
 
     # ── Pass 3: XML element-type FK detection ─────────────────────────────────
     # _collect_tag injects {parent_tag}_id columns into child entity rows.
@@ -751,16 +789,18 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 "name": f"{plan_b['ontology_type'].upper()}_HAS_{plan_a['ontology_type'].upper()}",
             })
             logger.debug(
-                "fk-pass3: %s.%s → %s.%s",
-                plan_a["ontology_type"], actual_col,
+                "fk-pass3 log_id=%s: %s.%s → %s.%s",
+                log_id, plan_a["ontology_type"], actual_col,
                 plan_b["ontology_type"], target_attr,
             )
 
+    logger.info("detect_fk_links log_id=%s plans=%d links_found=%d", log_id, len(plans), len(links))
     return links
 
 
 def _detect_fk_links_workspace(
-    plan: dict, known_types: list[str], seen: set[tuple[str, str]] | None = None
+    plan: dict, known_types: list[str], seen: set[tuple[str, str]] | None = None,
+    job_id: str | None = None,
 ) -> list[dict]:
     """Detect FK links between one plan and workspace types already in OntologyStore.
 
@@ -773,7 +813,9 @@ def _detect_fk_links_workspace(
     try:
         line = plan["data"].split(b"\n")[0].decode("utf-8", "ignore")
         headers = next(csv.reader(io.StringIO(line)), [])
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("detect_fk_links_workspace job=%s file=%s header parse failed: %s",
+                        job_id, plan.get("filename"), exc)
         return []
 
     src_type = plan.get("ontology_type", "")
@@ -801,6 +843,8 @@ def _detect_fk_links_workspace(
                     "target_attr": match_key,
                     "name": f"{known.upper()}_HAS_{src_type.upper()}",
                 })
+                logger.info("fk-workspace job=%s: %s.%s -> %s.%s",
+                            job_id, src_type, col, known, match_key)
                 break
 
     return links
@@ -829,17 +873,21 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 logger.info("confirm job=%s otype=%s stage=%s pct=%d %s",
                             job_id, _otype, stage, pct, detail)
 
-            run_pipeline(connector=RecordsConnector(recs), dsn=settings.rdb_dsn,
+            # TODO: pass job_id=job_id once run_pipeline supports it
+            run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.rdb_dsn,
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
                          workspace_id=workspace_id, relate=True, on_progress=_progress_otype)
+        else:
+            logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
+                        job_id, step, total, otype)
 
     # Collect valid plans in approval order so FK detection sees the full picture.
     valid_plans = [p for p in
                    (next((p for p in data["tabular"] if p["filename"] == fn), None)
                     for fn in approved_files)
                    if p is not None]
-    auto_fk = _detect_fk_links(valid_plans)
+    auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
                     job_id, len(auto_fk), auto_fk)
@@ -853,13 +901,15 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 known_types = [t.name for t in onto.list_types()]
             finally:
                 onto.close()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("confirm job=%s OntologyStore lookup failed, skipping workspace FK "
+                           "detection: %s", job_id, exc, exc_info=True)
             known_types = []
         existing_pairs: set[tuple[str, str]] = {
             (lk["source_type"], lk["target_type"]) for lk in auto_fk
         }
         workspace_fk = _detect_fk_links_workspace(
-            valid_plans[-1], known_types, seen=existing_pairs
+            valid_plans[-1], known_types, seen=existing_pairs, job_id=job_id
         )
         if workspace_fk:
             auto_fk.extend(workspace_fk)
@@ -901,6 +951,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
             # it calls estore.list_entities() which covers ALL workspace entities.
+            # TODO: pass job_id=job_id once run_pipeline supports it
             run_pipeline(connector=conn, dsn=settings.rdb_dsn,
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=otype, match_keys=plan["match_keys"],
@@ -951,3 +1002,21 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         jobs.update_stage(job_id, f"{last_step}/{total} · FK links",
                           int(last_step * 90 / total), f"Finalising FK links for {last['filename']}…")
         _run_one_plan(last, is_last=True, plan_step=last_step)
+
+    # Zero-loss validation: prove every source record reached the graph.
+    # Best-effort by contract — validation surfaces problems, never fails the job.
+    if valid_plans:
+        try:
+            from aryx.pipeline.ingest_validation import (
+                ground_truth_from_tabular, validate_workspace,
+            )
+            gt = ground_truth_from_tabular(valid_plans)
+            report = validate_workspace(workspace_id, gt, settings.rdb_dsn,
+                                        settings.graph_url)
+            logger.info("confirm job=%s validation passed=%s %s",
+                        job_id, report.passed, report.summary_line())
+            for line in report.failures():
+                logger.warning("confirm job=%s validation FAIL %s", job_id, line)
+        except Exception as exc:  # noqa: BLE001 — never fail the ingest over validation
+            logger.warning("confirm job=%s validation crashed: %s", job_id, exc,
+                           exc_info=True)
