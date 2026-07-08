@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Database, ListTree, Loader2, Network } from "lucide-react";
+import { Database, ListTree, Loader2, Network, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 import type { DataSourceCatalogItem, DataSummary, XmlGeneratedAsset, XmlSourceDetail } from "@/lib/types";
@@ -465,7 +465,15 @@ function GenericSourcePreviewModal({
         className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white shadow-soft"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="border-b border-navy-100 px-5 py-4">
+        <div className="relative border-b border-navy-100 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close source preview"
+            className="focus-ring absolute right-5 top-5 rounded-full border border-navy-100 bg-white p-2 text-navy-500 transition-colors hover:border-navy-200 hover:bg-navy-50 hover:text-navy-800"
+          >
+            <X size={16} />
+          </button>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-subtle">
             Source Preview
           </p>
@@ -488,7 +496,7 @@ function GenericSourcePreviewModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.slice(0, 5).map((row, index) => (
+                  {rows.map((row, index) => (
                     <tr key={index} className="border-t border-navy-100">
                       {headers.map((header) => (
                         <td key={header} className="px-4 py-3 text-navy-800">

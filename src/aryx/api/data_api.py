@@ -142,7 +142,7 @@ def data_router() -> APIRouter:
         store = _store(workspace_id)
         try:
             source_system, source_dataset = _parse_generic_source_key(source_key)
-            rows = store.list_source_payloads(source_system, source_dataset, limit=5)
+            rows = store.list_source_payloads(source_system, source_dataset, limit=None)
             return {
                 "source_key": source_key,
                 "name": f"{source_system}.{source_dataset}",

@@ -64,11 +64,18 @@ class _FakeEntityStore:
         return list(self._provenance)
 
     def list_source_payloads(self, source_system: str, source_dataset: str, *,
-                             limit: int | None = None) -> list[dict]:
+                              limit: int | None = None) -> list[dict]:
         rows: dict[str, list[dict]] = {
             "Corporate_Data_Employees": [
                 {"employee_id": "1", "name": "Alice"},
                 {"employee_id": "2", "name": "Bob"},
+            ],
+            "shipments": [
+                {
+                    "shipment_id": str(9000 + index),
+                    "status": "Delayed" if index % 2 == 0 else "Pending Pickup",
+                }
+                for index in range(1, 31)
             ],
         }
         items = list(rows.get(source_dataset, []))
@@ -172,6 +179,20 @@ def test_download_xml_source_returns_xml_bytes(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/xml")
     assert response.content == b"<root/>"
+
+
+def test_source_preview_returns_all_rows_without_truncation(client: TestClient) -> None:
+    with (
+        patch("aryx.api.data_api.DatasourceStore", return_value=_FakeDatasourceStore([])),
+        patch("aryx.api.data_api._store", return_value=_FakeEntityStore([])),
+        patch("aryx.api.data_api.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.rdb_dsn = "postgresql://test"
+        response = client.get("/data/sources/csv:shipments/preview?workspace_id=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["rows"]) == 30
 
 
 def test_delete_generated_asset_marks_asset_deleted(client: TestClient) -> None:
