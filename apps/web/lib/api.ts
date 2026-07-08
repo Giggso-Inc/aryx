@@ -65,10 +65,10 @@ export const api = {
       body: JSON.stringify({ name, description, context }),
     }),
 
-  ask: (question: string, workspaceId: number, history: unknown[] = []) =>
+  ask: (question: string, workspaceId: number, history: unknown[] = [], sessionData: Record<string, unknown> = {}) =>
     fetchJSON<AskResponse>("/ask", {
       method: "POST",
-      body: JSON.stringify({ question, workspace_id: workspaceId, history }),
+      body: JSON.stringify({ question, workspace_id: workspaceId, history, session_data: sessionData }),
     }),
 
   // ── Accuracy Lab (v2) ────────────────────────────────────────────────
