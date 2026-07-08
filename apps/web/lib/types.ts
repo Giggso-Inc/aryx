@@ -25,6 +25,8 @@ export interface AskResponse {
   tools_called: unknown[];
   usage: Usage;
   grounding?: Grounding | null;
+  session_data?: Record<string, unknown>;
+  cpq_payload?: Record<string, unknown> | null;
 }
 
 // ── Accuracy Lab (v2) ───────────────────────────────────────────────────

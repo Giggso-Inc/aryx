@@ -7,6 +7,6 @@ conversation within the Ask pipeline.
 Ingestion is never touched here; all logic operates on already-stored data.
 """
 from aryx.cpq.engine import CpqEngine
-from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.cpq.state import ConfigAttr, CpqSession, HidingRule, MenuOption
 
-__all__ = ["CpqEngine", "CpqSession", "ConfigAttr", "MenuOption"]
+__all__ = ["CpqEngine", "CpqSession", "ConfigAttr", "HidingRule", "MenuOption"]

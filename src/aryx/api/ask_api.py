@@ -19,7 +19,7 @@ from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
-from aryx.cpq.engine import CpqEngine, _PRODUCT_PATTERNS
+from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, _PRODUCT_PATTERNS
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
@@ -183,12 +183,202 @@ def _enrich_with_attributes(
     return entities
 
 
-def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
-    """Execute one turn of the CPQ guided-configuration conversation.
 
-    Turn 1  — parse NL, load config attrs, auto-fill, ask first pending question.
-    Turn 2+ — apply user's answer to the pending attr, auto-fill remainder,
-              ask next pending question. Complete after MAX_TURNS or when done.
+def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
+    try:
+        hstore = AskHistoryStore(get_settings().rdb_dsn)
+        try:
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                     "menial_model": "cpq-engine", "answer_model": "cpq-engine"}
+            hstore.append(workspace_id, question, answer, [], [], usage)
+        finally:
+            hstore.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _handle_cpq_qa(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    reader: Any,
+    resume_review: bool = False,
+) -> dict[str, Any]:
+    """STEP 7 — Contextual Q&A: answer a graph question then resume configuration state.
+
+    Pauses the config loop, queries the graph for context, synthesises an LLM
+    answer, then appends the current config resume prompt so the user knows where
+    they were. The session state is preserved unchanged.
+    """
+    types = all_types(reader)
+    try:
+        terms, p_in, p_out, p_ms = _extract_terms(
+            req.question, types, req.history, workspace_id=req.workspace_id,
+        )
+        entities, calls = gather(reader, terms)
+        entities = _enrich_with_attributes(entities, req.workspace_id)
+        context = render_context(entities)
+        qa_answer, s_in, s_out, s_ms = _synthesise(
+            req.question, context, history=req.history, workspace_id=req.workspace_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cpq_qa synthesis failed: %s", exc)
+        qa_answer = f"Couldn't reach the graph: {exc}"
+        p_in = p_out = p_ms = s_in = s_out = s_ms = 0
+
+    # Append a resume prompt so the user knows where to continue
+    if resume_review:
+        resume = "\n\n---\n\n" + _cpq_engine.build_review_prompt(
+            session.product_name, attrs, session.display_filled,
+        )
+    elif session.pending_variables:
+        pending_attr = next(
+            (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+        )
+        if pending_attr:
+            resume = (
+                "\n\n---\n\n*Resuming your configuration...*\n\n"
+                + _cpq_engine.next_question_prompt(pending_attr)
+            )
+        else:
+            resume = ""
+    else:
+        resume = ""
+
+    answer = qa_answer + resume
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+
+    usage = {
+        "prompt_tokens": p_in + s_in,
+        "completion_tokens": p_out + s_out,
+        "latency_ms": p_ms + s_ms,
+        "menial_model": "cpq-qa",
+        "answer_model": "cpq-qa",
+    }
+    return {
+        "answer": answer,
+        "terms": [],
+        "tools_called": ["cpq_qa()"],
+        "usage": usage,
+        "grounding": None,
+        "session_data": session.to_dict(),
+        "cpq_payload": None,
+    }
+
+
+def _handle_cascade(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    changed_attr: Any,
+    new_value_hint: str,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> dict[str, Any]:
+    """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
+    by_eid = {a.entity_id: a for a in attrs}
+    hints = _cpq_engine.extract_hints(req.question)
+
+    # Find dependent attrs to invalidate
+    dependent_eids = _cpq_engine.find_cascade_dependents(
+        changed_attr, attrs, hiding_rules, rec_rules, con_rules,
+    )
+    dependent_labels = [
+        by_eid[eid].display_label for eid in dependent_eids if eid in by_eid
+    ]
+
+    # Strip changed attr + all dependents from filled
+    session.filled.pop(changed_attr.variable_name, None)
+    session.display_filled.pop(changed_attr.variable_name, None)
+    for eid in dependent_eids:
+        a = by_eid.get(eid)
+        if a:
+            session.filled.pop(a.variable_name, None)
+            session.display_filled.pop(a.variable_name, None)
+
+    # Lock in the new value for the changed attr
+    result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+    if result:
+        session.filled[changed_attr.variable_name] = result[0]
+        session.display_filled[changed_attr.variable_name] = result[1]
+    else:
+        # Could not parse new value — ask for clarification
+        opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
+        answer = (
+            f"I couldn't match that to a valid option for **{changed_attr.display_label}**. "
+            f"Please choose one:\n\n{opts_prompt}"
+        )
+        session.pending_variables = [changed_attr.variable_name] + [
+            v for v in session.pending_variables if v != changed_attr.variable_name
+        ]
+        session.status = "configuring"
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_cascade()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    # Re-run full rule evaluation loop with updated state
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+    )
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+    )
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+
+    # Build cascade notice
+    changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
+    cascade_note = f"Updated **{changed_attr.display_label}** → **{changed_disp}**."
+    if dependent_labels:
+        cascade_note += (
+            f" This invalidated: *{', '.join(dependent_labels)}* — re-evaluating."
+        )
+
+    if pending:
+        # New conflicts to resolve → back to configuring
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    else:
+        # All resolved → back to awaiting approval
+        session.status = "awaiting_approval"
+        review = _cpq_engine.build_review_prompt(
+            session.product_name, visible_attrs, display_filled,
+        )
+        answer = cascade_note + "\n\n" + review
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_cascade()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
+    """Execute one turn of the 8-step CPQ guided-configuration conversation.
+
+    Step 1 — Anchor validation: block until product_family + country present in NL.
+    Step 2 — API value mapping: NL hints → item_value via graph options.
+    Step 3 — Rule evaluation loop: hiding → recommendation → constraint, until stable.
+    Step 4 — Hybrid prompting: context sentence + numbered list of constrained options.
+    Step 5 — Lock & loop: apply user answer, re-enter rule evaluation loop.
+    Step 6 — Review & dynamic reconfiguration: show review; cascade on changes.
+    Step 7 — Contextual Q&A: answer graph questions mid-flow; resume config state.
+    Step 8 — JSON payload synthesis: generate BOM only after explicit user approval.
 
     The session_data dict is echoed back in every response so the client
     sends it on the next turn — no server-side session store needed.
@@ -201,14 +391,33 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     )
     session.turn += 1
 
-    # ── Load product config attrs (once per session) ──────────────────────────
+    # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
     hints = _cpq_engine.extract_hints(req.question)
 
-    # Extract product name from NL question using known product patterns
+    # ── STEP 1: Anchor validation — block before graph query ─────────────────
+    if not session.product_name:
+        missing_anchors = _cpq_engine.validate_anchors(req.question, hints)
+        if missing_anchors:
+            anchor_list = " and ".join(missing_anchors)
+            answer = (
+                f"To start the configuration I need {anchor_list}. "
+                f"Could you provide those details? "
+                f"For example: *\"Quote 25 APX Next XE radios for a US customer.\"*"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
+    # ── STEP 2: Resolve product name → item_value mapping ────────────────────
     if not session.product_name:
         q_lower = req.question.lower()
         product_name = next(
-            (label for pattern, label in _PRODUCT_PATTERNS if re.search(pattern, q_lower, re.IGNORECASE)),
+            (label for pattern, label in _PRODUCT_PATTERNS
+             if re.search(pattern, q_lower, re.IGNORECASE)),
             next((v for k, v in hints.items() if "product" in k), ""),
         ) or "APX NEXT"
     else:
@@ -221,84 +430,198 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         session.product_name = resolved_name
 
     if not attrs:
-        # No CPQ config data in graph yet — fall through to standard Ask
-        return {}
+        return {}  # no CPQ data in graph — fall through to standard Ask
 
-    # ── Apply user answer if this is a follow-up turn ─────────────────────────
+    # ── Load all rule sets (needed for Step 3, 6, 7) ─────────────────────────
+    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id)
+    rec_rules = _cpq_engine.load_recommendation_rules(req.workspace_id)
+    con_rules = _cpq_engine.load_constraint_rules(req.workspace_id)
+
+    # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
+    if session.status == "awaiting_approval":
+        # STEP 8: explicit approval → generate BOM payload
+        if _cpq_engine.detect_approval(req.question):
+            session.status = "approved"
+            session.complete = True
+            payload = _cpq_engine.build_payload(session.filled)
+            answer = (
+                f"✅ Configuration approved for **{session.product_name}**. "
+                f"Here is the BOM payload ready for the CPQ REST API:"
+                f"\n\n```json\n{json.dumps(payload, indent=2)}\n```"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": list(hints.values()),
+                "tools_called": ["cpq_payload_approved()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": payload,
+            }
+
+        # STEP 7: Q&A during review — answer graph question, then show review again
+        if _cpq_engine.detect_qa_question(req.question, strict=False):
+            return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
+
+        # STEP 6: change request → cascade
+        change_result = _cpq_engine.detect_change_request(req.question, attrs, session.filled)
+        if change_result:
+            changed_attr, new_value_hint = change_result
+            return _handle_cascade(
+                req, session, attrs, changed_attr, new_value_hint,
+                hiding_rules, rec_rules, con_rules,
+            )
+
+        # Could not parse as approval, Q&A, or change — nudge the user
+        review = _cpq_engine.build_review_prompt(
+            session.product_name, attrs, session.display_filled,
+        )
+        answer = (
+            f"I didn't quite catch that. {review}"
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_review_nudge()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    # ── Attribute option query: "what values are available for X?" ────────────
+    queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)
+    if queried_attr:
+        options_block = _cpq_engine.next_question_prompt(queried_attr)
+        current_val = session.filled.get(queried_attr.variable_name)
+        current_note = (
+            f"\n\n*Currently set to: **{session.display_filled.get(queried_attr.variable_name, current_val)}***"
+            if current_val else ""
+        )
+        answer = (
+            f"Here are the available values for **{queried_attr.display_label}**:"
+            f"\n\n{options_block}{current_note}"
+            f"\n\nReply with your choice and I'll update the configuration."
+        )
+        other_pending = [v for v in session.pending_variables if v != queried_attr.variable_name]
+        session.pending_variables = [queried_attr.variable_name] + other_pending
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [queried_attr.variable_name],
+            "tools_called": [f"cpq_attr_query({queried_attr.variable_name})"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    # ── STEP 7: Q&A during active config (strict — only ? or Q&A keywords) ───
     if session.pending_variables and session.turn > 1:
-        # Find the attr we asked about last turn
+        pending_var_for_qa = session.pending_variables[0]
+        pending_attr_for_qa = next(
+            (a for a in attrs if a.variable_name == pending_var_for_qa), None,
+        )
+        if _cpq_engine.detect_qa_question(req.question, pending_attr_for_qa, strict=True):
+            return _handle_cpq_qa(req, session, attrs, reader, resume_review=False)
+
+    # ── STEP 5: Lock user's answer from previous turn ────────────────────────
+    if session.pending_variables and session.turn > 1:
         pending_var = session.pending_variables[0]
         pending_attr = next(
             (a for a in attrs if a.variable_name == pending_var), None,
         )
         if pending_attr:
-            result = _cpq_engine.apply_answer(pending_attr, req.question)
+            vn_flat_pv = pending_var.lower().replace("_", "")
+            hint_val_for_attr = next(
+                (hv for hk, hv in hints.items()
+                 if hk.lower().replace("_", "") in vn_flat_pv
+                 or vn_flat_pv in hk.lower().replace("_", "")),
+                None,
+            )
+            answer_src = hint_val_for_attr or req.question
+            result = _cpq_engine.apply_answer(pending_attr, answer_src)
             if result:
                 iv, disp = result
                 session.filled[pending_var] = iv
                 session.display_filled[pending_var] = disp
+                pv_flat = pending_var.lower().replace("_", "")
+                matched_fragment = next(
+                    (dk for dk in DECISION_REQUIRED_KEYS if dk in pv_flat), None
+                )
+                if matched_fragment:
+                    for sibling in attrs:
+                        svn = sibling.variable_name
+                        if svn in session.filled or sibling.options:
+                            continue
+                        if matched_fragment in svn.lower().replace("_", ""):
+                            session.filled[svn] = iv
+                            session.display_filled[svn] = disp
+            elif pending_attr.options:
+                # Answer matched nothing — tell the user and re-show the options
+                opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
+                answer = (
+                    f"I didn't recognise **\"{req.question.strip()}\"** as a valid choice "
+                    f"for **{pending_attr.display_label}**. Please pick one:\n\n{opts_prompt}"
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_invalid_answer()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
 
-    # ── Auto-fill all remaining attrs ─────────────────────────────────────────
-    filled, display_filled, pending = _cpq_engine.auto_fill(
-        attrs, hints, already_filled=session.filled,
+    # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
     )
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+    )
+
     session.filled = filled
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
 
-    # ── Decide response ───────────────────────────────────────────────────────
-    filled_summary = _cpq_engine.render_filled_summary(display_filled)
+    filled_summary = _cpq_engine.render_filled_summary(display_filled, visible_attrs)
 
     if not pending or session.turn >= _cpq_engine.MAX_TURNS:
-        # Configuration complete
-        session.complete = True
-        payload = _cpq_engine.build_payload(filled)
-        answer_lines = [
-            f"Configuration complete for **{session.product_name}**.",
-            "",
-            filled_summary,
-            "",
-            "**CPQ Payload (ready for BOM API):**",
-            "```json",
-            json.dumps(payload, indent=2),
-            "```",
-        ]
-        answer = "\n".join(answer_lines)
+        # ── STEP 6: Present review for approval (no auto-payload) ─────────────
+        session.status = "awaiting_approval"
+        review = _cpq_engine.build_review_prompt(
+            session.product_name, visible_attrs, display_filled,
+        )
+        answer = (
+            f"Setting up **{session.product_name}** — all attributes resolved.\n\n"
+            + review
+        )
     else:
-        # Ask about the first pending attribute
+        # ── STEP 4: Hybrid prompting — context sentence + numbered list ───────
         next_attr = pending[0]
-        question_block = _cpq_engine.next_question_prompt(next_attr)
+        context_sentence = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        constrained_vals = constrained_opts.get(next_attr.entity_id)
+        question_block = _cpq_engine.next_question_prompt(
+            next_attr, context_sentence, constrained_vals,
+        )
         remaining = len(pending)
-        answer_lines = [
-            f"Setting up **{session.product_name}** for you.\n",
-            filled_summary,
-            "",
-            f"({remaining} attribute{'s' if remaining != 1 else ''} left — "
-            f"turn {session.turn} of {_cpq_engine.MAX_TURNS})\n",
-            question_block,
-        ]
-        answer = "\n".join(answer_lines)
+        parts = [f"Setting up **{session.product_name}** for you."]
+        if filled_summary:
+            parts.append(filled_summary)
+        parts.append(
+            f"*{remaining} attribute{'s' if remaining != 1 else ''} left "
+            f"— turn {session.turn} of {_cpq_engine.MAX_TURNS}*"
+        )
+        parts.append(question_block)
+        answer = "\n\n".join(parts)
 
-    # Persist usage (0 tokens — no LLM call in CPQ mode)
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-             "menial_model": "cpq-engine", "answer_model": "cpq-engine"}
-    try:
-        hstore = AskHistoryStore(get_settings().rdb_dsn)
-        try:
-            hstore.append(req.workspace_id, req.question, answer, [], [], usage)
-        finally:
-            hstore.close()
-    except Exception:  # noqa: BLE001
-        pass
-
+    _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer,
         "terms": list(hints.values()),
         "tools_called": [f"cpq_config_load(product={session.product_name})"],
-        "usage": usage,
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
         "grounding": None,
         "session_data": session.to_dict(),
-        "cpq_payload": _cpq_engine.build_payload(filled) if session.complete else None,
+        "cpq_payload": None,  # payload only generated on STEP 8 approval
     }
 
 
