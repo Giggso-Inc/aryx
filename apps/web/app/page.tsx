@@ -171,7 +171,12 @@ export default function HomePage() {
     setTurns((t) => [...t, userTurn, placeholder]);
 
     try {
-      const resp = await api.ask(q, workspaceId);
+      // Build conversation history from completed turns (exclude in-flight placeholder).
+      const history = turns
+        .filter((t) => t.role === "user" || (t.content && !t.streaming))
+        .slice(-8)
+        .map((t) => ({ role: t.role, text: t.content }));
+      const resp = await api.ask(q, workspaceId, history);
       // Lightweight citation extraction — V1: derive from terms.
       const citations: Citation[] = (resp.terms || [])
         .slice(0, 5)
