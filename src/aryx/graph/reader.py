@@ -62,6 +62,18 @@ class GraphReader:
         )
         return _entity(rows[0]) if rows else None
 
+    def distinct_types(self) -> list[str]:
+        """Every distinct entity type in the graph — deterministic, no sampling.
+
+        Callers that need "entities of a type matching X" must discover the
+        type name here first, then find_entities(ontology_type=...). Sampling
+        find_entities(limit=N) instead silently misses types on large graphs
+        (a 46k-entity workspace can return a 1000-row page containing only
+        2-3 dominant types).
+        """
+        rows = self._query("MATCH (e:Entity) RETURN DISTINCT e.type ORDER BY e.type")
+        return [r[0] for r in rows if r[0]]
+
     def find_entities(self, ontology_type: str | None = None,
                       name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """Find entities filtered by type and/or case-insensitive name match.

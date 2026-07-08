@@ -30,6 +30,17 @@ class OracleGraphReader:
                 row = cur.fetchone()
         return {"id": row[0], "type": row[1], "name": row[2]} if row else None
 
+    def distinct_types(self) -> list[str]:
+        """Every distinct entity type in this workspace — deterministic, no sampling."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT type FROM aryx_graph_vertex "
+                    "WHERE workspace_id = :1 ORDER BY type",
+                    (self._workspace_id,),
+                )
+                return [r[0] for r in cur.fetchall() if r[0]]
+
     def find_entities(self, ontology_type: str | None = None,
                       name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """Find entities filtered by type and/or case-insensitive name substring."""
