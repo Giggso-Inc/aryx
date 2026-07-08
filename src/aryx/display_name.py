@@ -28,7 +28,8 @@ _NAME_KEYS: tuple[str, ...] = (
     "NIIN", "niin",
     # XML / structured config fields
     "variable_name", "var_name", "bm_variable_name",
-    "item_text", "item_value",
+    # item_value (API code) must come before item_text (UI display label).
+    "item_value", "item_text",
     "prop_value", "property_value", "prop_type",
     "bm_name", "func_name", "rule_name",
     "java_class_name", "file_name", "relative_path",
