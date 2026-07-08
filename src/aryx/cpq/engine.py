@@ -281,20 +281,36 @@ class CpqEngine:
 
         Returns (attrs, resolved_product_name).
         """
-        # Step 1 — find config attr entities (XML ingestion produces CamelCase types)
-        attr_ents = reader.find_entities(ontology_type="BmConfigAttr", limit=500)
-        if not attr_ents:
-            # Fallback: snake_case or any type containing "attr"
-            attr_ents = reader.find_entities(ontology_type="bm_config_attr", limit=500)
-        if not attr_ents:
-            attr_ents = [
-                e for e in reader.find_entities(limit=1000)
-                if "configattr" in (e.get("type") or "").lower().replace("_", "")
-                and not self._is_layout_noise(e.get("type") or "")
+        # Step 1 — find config attr entities. XML ingestion prefixes type names
+        # per source (e.g. ApxNextConfigBmConfigAttr, Sl3500EDummyConfigBmConfigAttr),
+        # so discover the actual type name(s) first via DISTINCT types, then fetch
+        # by exact type. Sampling find_entities(limit=1000) instead is unreliable:
+        # on a 46k-entity graph the arbitrary first page can contain zero
+        # ConfigAttr rows even though hundreds exist.
+        def _norm(t: str) -> str:
+            return (t or "").lower().replace("_", "")
+
+        try:
+            all_type_names = reader.distinct_types()
+        except AttributeError:  # reader without distinct_types — legacy fallback
+            all_type_names = sorted({
+                e.get("type") or "" for e in reader.find_entities(limit=1000)
+            })
+        attr_types = [t for t in all_type_names if _norm(t).endswith("configattr")]
+        if not attr_types:
+            attr_types = [
+                t for t in all_type_names
+                if "configattr" in _norm(t) and not self._is_layout_noise(t)
             ]
 
+        attr_ents: list[dict] = []
+        for attr_type in attr_types:
+            attr_ents.extend(reader.find_entities(ontology_type=attr_type, limit=500))
+
         if not attr_ents:
-            logger.info("cpq: no bm_config_attr entities found in graph")
+            logger.info("cpq: no bm_config_attr entities found in graph "
+                        "(workspace_id=%s, types_seen=%d)",
+                        workspace_id, len(all_type_names))
             return [], product_hint
 
         # Step 2 — batch fetch PostgreSQL attributes
