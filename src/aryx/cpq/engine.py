@@ -72,7 +72,9 @@ _CPQ_TRIGGER = re.compile(
 # ── NL hint extraction patterns ────────────────────────────────────────────────
 _HINT_PATTERNS: list[tuple[str, str, str]] = [
     # (attr_key_fragment, regex, extracted_value)
-    # attr_key_fragment is matched word-by-word against the attribute's variable_name
+    # attr_key_fragment is matched word-by-word against the attribute's variable_name.
+    # ORDER MATTERS: more specific patterns must appear before generic ones — the first
+    # match for each key wins (extract_hints skips a key once it's set).
     ("hwversion", r"\b5g\b", "5G"),
     ("hwversion", r"\blte\b", "LTE"),
     ("hwversion", r"\b4g\b", "4G"),
@@ -80,7 +82,13 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     # Only list codes/aliases the DB display name won't spell out verbatim.
     ("country", r"\b(us|usa|u\.s\.)\b", "United States"),
     ("country", r"\b(uk|u\.k\.)\b", "United Kingdom"),
-    # Product name hints
+    # Product line variants — must come BEFORE the generic APX Next pattern so
+    # "APX NEXT XE" is never downgraded to the generic "APX Next" hint.
+    # Spec rule 3: if user says "APX NEXT XE", map to XE, not Single Band.
+    ("product", r"\bapx\s*next\s+xe\b", "APX NEXT XE"),
+    ("product", r"\bapx\s*next\s+xn\b", "APX NEXT XN"),
+    ("product", r"\bapx\s*next\s*enhanced\b", "APX NEXT Enhanced"),
+    # Generic fallback — fires only when no variant keyword was present
     ("product", r"\bapx\s*next\b", "APX Next"),
     ("product", r"\bapx\s+n\d+\b", "APX Next"),
     ("product", r"\bsl\s*3500\b", "SL3500e"),
@@ -176,9 +184,10 @@ class CpqEngine:
         """
         hints: dict[str, str] = {}
 
-        # Specific shortcut patterns (abbreviations/codes the DB won't spell out)
+        # Specific shortcut patterns — first match wins per key; more specific
+        # patterns must be listed first in _HINT_PATTERNS (see ordering comment there).
         for key, pattern, value in _HINT_PATTERNS:
-            if re.search(pattern, question, re.IGNORECASE):
+            if key not in hints and re.search(pattern, question, re.IGNORECASE):
                 hints[key] = value
 
         # Generic country extraction: "customer in Australia", "located in New Zealand"
