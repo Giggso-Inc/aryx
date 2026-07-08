@@ -17,9 +17,11 @@ from pydantic import BaseModel
 from aryx import llm_runtime
 from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
+from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
+from aryx.queries import load
 from aryx.store.ask_history_store import AskHistoryStore
 from aryx.store.pool import get_pool
 
@@ -79,12 +81,14 @@ _CAP_STOPWORDS: frozenset[str] = frozenset({
 def _extract_terms(question: str, types: list[str], history: list[Turn],
                    workspace_id: int = 1) -> tuple[list[str], int, int, int]:
     context = _recent(history)
-    sys = "Extract the specific search terms a graph lookup needs."
+    sys = "You are a precise search-term extractor for a knowledge-graph lookup engine."
     user = (
-        "Using the recent conversation to resolve pronouns (it, they, this), pull "
-        "1-3 specific names, ticket refs, or keywords from the CURRENT question. "
+        "Using the recent conversation to resolve pronouns (it, they, this), extract "
+        "1-5 specific entity names, codes, identifiers, or domain keywords from the "
+        "CURRENT question that will retrieve the most relevant graph entities. "
+        "Include multi-word product names, model codes, and requirement identifiers exactly as written. "
         f"Do NOT include generic category words like {', '.join(types)}. "
-        'Reply ONLY as JSON {"terms": ["..."]}.\n'
+        'Reply ONLY as JSON {"terms": ["..."]} with no other text.\n'
         f"{('Recent conversation:' + chr(10) + context + chr(10)) if context else ''}"
         f"CURRENT question: {question}"
     )
@@ -115,21 +119,59 @@ def _extract_terms(question: str, types: list[str], history: list[Turn],
 
 def _synthesise(question: str, context: str, overview: str = "",
                 workspace_id: int = 1) -> tuple[str, int, int, int]:
-    sys = "You are Aryx, a knowledge-graph assistant."
+    sys = (
+        "You are Aryx, a precise knowledge-graph assistant specialised in product "
+        "configuration, requirements management, and enterprise data. "
+        "Always answer from the GRAPH FACTS provided. "
+        "Cite entity names, attribute values, and relationship chains explicitly. "
+        "Synthesise across all entities shown when multiple are present. "
+        "Be direct and specific — never hedge when facts are in front of you."
+    )
     has_context = bool(context.strip())
     facts = context if has_context else "(none — no specific entity matched)"
     user = (
-        "Answer the question grounded in the workspace below. If GRAPH FACTS "
-        "contains a specific entity, ground the answer there. If GRAPH FACTS "
-        "is empty, use the OVERVIEW to describe what's in the workspace — "
-        "DO NOT say 'no matching entities' or 'not stored'; instead, tell "
-        "the user what is tracked and suggest the next concrete question.\n\n"
+        "Answer the QUESTION using only the evidence below.\n\n"
+        "Rules:\n"
+        "- GRAPH FACTS present → answer specifically, citing entity names, "
+        "attribute values, and relationship chains shown.\n"
+        "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
+        "and suggest a concrete follow-up question. "
+        "Do NOT say 'no matching entities' or 'not stored'.\n"
+        "- Do NOT invent facts not shown in GRAPH FACTS.\n"
+        "- Format: bullet list for multiple items; direct prose for single answers.\n\n"
         f"{overview}\n\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
     )
     start = time.monotonic()
     text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
     ms = int((time.monotonic() - start) * 1000)
     return _strip_think(text), it, ot, ms
+
+
+def _enrich_with_attributes(
+    entities: list[RetrievedEntity], workspace_id: int,
+) -> list[RetrievedEntity]:
+    """Fetch full entity attributes from PostgreSQL and attach to each entity.
+
+    FalkorDB only stores id/type/name; the complete attribute bag lives in the
+    relational store. Enriching here gives the synthesise LLM the actual field
+    values (descriptions, codes, requirement text, etc.) rather than just names.
+    """
+    if not entities:
+        return entities
+    try:
+        with get_pool(get_settings().rdb_dsn).connection() as conn:
+            with conn.cursor() as cur:
+                for ent in entities:
+                    cur.execute(load("select_entity_by_id"), (ent.id, workspace_id))
+                    row = cur.fetchone()
+                    if row:
+                        _, _, attributes = row
+                        if isinstance(attributes, str):
+                            attributes = json.loads(attributes)
+                        ent.attributes = attributes or {}
+    except Exception:  # noqa: BLE001
+        logger.debug("attribute enrichment skipped", exc_info=True)
+    return entities
 
 
 class LlmConfigRequest(BaseModel):
@@ -149,6 +191,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
         terms, p_in, p_out, p_ms = _extract_terms(
             req.question, types, req.history, workspace_id=req.workspace_id)
         entities, calls = gather(reader, terms)
+        entities = _enrich_with_attributes(entities, req.workspace_id)
         context = render_context(entities)
         answer, s_in, s_out, s_ms = _synthesise(
             req.question, context, overview, workspace_id=req.workspace_id)
