@@ -341,7 +341,7 @@ def _handle_cascade(
         )
 
     if pending:
-        # New conflicts to resolve → back to configuring
+        # New conflicts to resolve → FORMAT A (change notice + next question only)
         session.status = "configuring"
         next_attr = pending[0]
         ctx = _cpq_engine.build_context_sentence(
@@ -352,12 +352,15 @@ def _handle_cascade(
         )
         answer = cascade_note + "\n\n" + q_block
     else:
-        # All resolved → back to awaiting approval
+        # All resolved → FORMAT B JSON
         session.status = "awaiting_approval"
-        review = _cpq_engine.build_review_prompt(
-            session.product_name, visible_attrs, display_filled,
+        payload = _cpq_engine.build_payload(filled)
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
+            f"Say **confirm** to submit, or describe any changes."
         )
-        answer = cascade_note + "\n\n" + review
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -445,9 +448,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             session.complete = True
             payload = _cpq_engine.build_payload(session.filled)
             answer = (
-                f"✅ Configuration approved for **{session.product_name}**. "
-                f"Here is the BOM payload ready for the CPQ REST API:"
-                f"\n\n```json\n{json.dumps(payload, indent=2)}\n```"
+                f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
             _persist_cpq_history(req.workspace_id, req.question, answer)
             return {
@@ -471,12 +472,13 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hiding_rules, rec_rules, con_rules,
             )
 
-        # Could not parse as approval, Q&A, or change — nudge the user
-        review = _cpq_engine.build_review_prompt(
-            session.product_name, attrs, session.display_filled,
-        )
+        # Could not parse as approval, Q&A, or change — re-show FORMAT B
+        payload = _cpq_engine.build_payload(session.filled)
         answer = (
-            f"I didn't quite catch that. {review}"
+            f"I didn't quite catch that. Here is the current configuration for "
+            f"**{session.product_name}**:\n\n"
+            f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
+            f"Say **confirm** to submit, or describe what to change."
         )
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
@@ -585,48 +587,26 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
 
-    # CIRCUIT BREAKER (spec DIRECTIVE 1): suppress "Configured so far" block when
-    # Level-1 anchor (hwVersion) is unresolved — never dump a config list before
-    # the hardware variant is confirmed.
-    _hw_pending = any(
-        "hwversion" in v.lower().replace("_", "")
-        for v in session.pending_variables
-    )
-    filled_summary = (
-        "" if _hw_pending
-        else _cpq_engine.render_filled_summary(display_filled, visible_attrs)
-    )
-
     if not pending or session.turn >= _cpq_engine.MAX_TURNS:
-        # ── STEP 6: Present review for approval (no auto-payload) ─────────────
+        # ── STEP 6: FORMAT B — show complete BOM JSON, gate on confirm ────────
         session.status = "awaiting_approval"
-        review = _cpq_engine.build_review_prompt(
-            session.product_name, visible_attrs, display_filled,
-        )
+        payload = _cpq_engine.build_payload(filled)
         answer = (
-            f"Setting up **{session.product_name}** — all attributes resolved.\n\n"
-            + review
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
+            f"Say **confirm** to submit, or describe any changes."
         )
     else:
-        # ── STEP 4: Hybrid prompting — context sentence + numbered list ───────
+        # ── STEP 4: FORMAT A — context sentence + numbered options only ───────
         next_attr = pending[0]
         context_sentence = _cpq_engine.build_context_sentence(
             next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
         )
         constrained_vals = constrained_opts.get(next_attr.entity_id)
-        question_block = _cpq_engine.next_question_prompt(
+        # FORMAT A: pure options prompt — no background state, no counters
+        answer = _cpq_engine.next_question_prompt(
             next_attr, context_sentence, constrained_vals,
         )
-        remaining = len(pending)
-        parts = [f"Setting up **{session.product_name}** for you."]
-        if filled_summary:
-            parts.append(filled_summary)
-        parts.append(
-            f"*{remaining} attribute{'s' if remaining != 1 else ''} left "
-            f"— turn {session.turn} of {_cpq_engine.MAX_TURNS}*"
-        )
-        parts.append(question_block)
-        answer = "\n\n".join(parts)
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {

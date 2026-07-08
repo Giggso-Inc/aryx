@@ -855,8 +855,8 @@ class CpqEngine:
                     cond_attr.variable_name, filled[cond_attr.variable_name]
                 )
                 return (
-                    f"Since **{cond_attr.display_label}** was set to **{disp_val}**, "
-                    f"we now need **{pending_attr.display_label}**."
+                    f"Since we locked in **{disp_val}**, "
+                    f"please choose the **{pending_attr.display_label}**."
                 )
 
         # A recommendation rule targeted this attr (but had multiple valid options)
@@ -869,8 +869,8 @@ class CpqEngine:
                     cond_attr.variable_name, filled[cond_attr.variable_name]
                 )
                 return (
-                    f"For the selected **{cond_attr.display_label}** ({disp_val}), "
-                    f"please choose a **{pending_attr.display_label}**:"
+                    f"Since we locked in **{disp_val}**, "
+                    f"please choose the **{pending_attr.display_label}**."
                 )
 
         return ""
