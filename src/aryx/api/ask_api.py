@@ -534,8 +534,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                  or vn_flat_pv in hk.lower().replace("_", "")),
                 None,
             )
-            answer_src = hint_val_for_attr or req.question
-            result = _cpq_engine.apply_answer(pending_attr, answer_src)
+            # Try the user's full utterance first — they may have typed the exact
+            # option name (e.g. "APX NEXT (4G LTE+5G)"). Only fall back to the
+            # extracted hint if the full question produces no match; hints are
+            # coarse (e.g. "LTE") and can mis-match when multiple options share
+            # the same keyword.
+            result = _cpq_engine.apply_answer(pending_attr, req.question)
+            if not result and hint_val_for_attr:
+                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr)
             if result:
                 iv, disp = result
                 session.filled[pending_var] = iv

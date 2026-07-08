@@ -292,9 +292,14 @@ class CpqEngine:
         attr_ids = [e["id"] for e in attr_ents]
         attr_pg = self._batch_fetch(attr_ids, workspace_id)
 
-        # Step 3 — for each attr, get menu items from FalkorDB + PostgreSQL
-        menu_by_attr: dict[int, list[MenuOption]] = {}
-        for ent in attr_ents[:150]:  # cap to prevent timeout on large configs
+        # Step 3 — collect ALL menu item IDs from FalkorDB in one graph pass,
+        # then batch-fetch all PostgreSQL data in a single query.
+        # Previously this loop was capped at [:150], causing attrs beyond that
+        # position (e.g. hWVersion_astro at position 236) to silently get no
+        # options. Two-pass approach eliminates both the cap and the N+1 pattern.
+        neighbor_map: dict[int, list[int]] = {}  # attr_entity_id → [menu_entity_ids]
+        all_menu_ids: list[int] = []
+        for ent in attr_ents:
             eid = ent["id"]
             try:
                 neighbors = reader.neighbors(eid)
@@ -303,30 +308,33 @@ class CpqEngine:
                     if "menuitem" in (n.get("type") or "").lower().replace("_", "")
                 ]
                 if menu_ids:
-                    menu_pg = self._batch_fetch(menu_ids, workspace_id)
-                    opts: list[MenuOption] = []
-                    for mid in menu_ids:
-                        ma = menu_pg.get(mid, {})
-                        # Always use item_value (API code), item_text for display
-                        iv = str(ma.get("item_value") or "").strip()
-                        dt = str(ma.get("item_text") or ma.get("name") or iv).strip()
-                        order = int(ma.get("order_number") or ma.get("order") or 999)
-                        if iv:
-                            # Patch B: strip item_values/display_names containing
-                            # test/dummy/pager noise (spec §CRITICAL DIRECTIVE 4)
-                            iv_lo = iv.lower()
-                            dt_lo = dt.lower()
-                            if any(f in iv_lo for f in _NOISE_ITEM_FRAGMENTS):
-                                continue
-                            if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
-                                continue
-                            opts.append(MenuOption(
-                                item_value=iv, display_name=dt, order=order,
-                            ))
-                    opts.sort(key=lambda x: x.order)
-                    menu_by_attr[eid] = opts
+                    neighbor_map[eid] = menu_ids
+                    all_menu_ids.extend(menu_ids)
             except Exception:
-                logger.debug("cpq: menu item fetch failed for attr %d", eid, exc_info=True)
+                logger.debug("cpq: neighbor fetch failed for attr %d", eid, exc_info=True)
+
+        # Single batch fetch for all menu items across all attrs
+        all_menu_pg = self._batch_fetch(all_menu_ids, workspace_id) if all_menu_ids else {}
+
+        menu_by_attr: dict[int, list[MenuOption]] = {}
+        for eid, menu_ids in neighbor_map.items():
+            opts: list[MenuOption] = []
+            for mid in menu_ids:
+                ma = all_menu_pg.get(mid, {})
+                # Always use item_value (API code), item_text for display
+                iv = str(ma.get("item_value") or "").strip()
+                dt = str(ma.get("item_text") or ma.get("name") or iv).strip()
+                order = int(ma.get("order_number") or ma.get("order") or 999)
+                if iv:
+                    iv_lo = iv.lower()
+                    dt_lo = dt.lower()
+                    if any(f in iv_lo for f in _NOISE_ITEM_FRAGMENTS):
+                        continue
+                    if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
+                        continue
+                    opts.append(MenuOption(item_value=iv, display_name=dt, order=order))
+            opts.sort(key=lambda x: x.order)
+            menu_by_attr[eid] = opts
 
         # Step 4 — build ConfigAttr list
         config_attrs: list[ConfigAttr] = []
@@ -1290,6 +1298,14 @@ class CpqEngine:
         Returns (item_value, display_name) or None if no match found.
         """
         ua = user_answer.strip().lower()
+
+        # Numeric selection: user typed "1", "2", etc. → pick by position in the
+        # presented option list (only _presentable options, matching next_question_prompt).
+        if ua.isdigit():
+            presentable = [o for o in attr.options if _presentable(o.item_value)]
+            idx = int(ua) - 1
+            if 0 <= idx < len(presentable) and _valid(presentable[idx].item_value):
+                return presentable[idx].item_value, presentable[idx].display_name
 
         # Exact item_value match
         for opt in attr.options:
