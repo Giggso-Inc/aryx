@@ -1,22 +1,14 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useDeferredValue, useState } from "react";
-import { Database, EllipsisVertical, Filter, Plus, Search, Trash2 } from "lucide-react";
+import { Database, Download, Eye, FileCode2, FileSpreadsheet, Filter, Plus, Search, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import { typeColor } from "@/lib/typeColor";
-import type { DataSummary, Datasource } from "@/lib/types";
+import type { DataSourceCatalogItem, DataSummary } from "@/lib/types";
 import { useWorkspaceAwareHref } from "@/lib/workspace-route";
 
 type SourceFilter = "all" | "database" | "documents" | "api";
-type SourceRow = {
-  id: string;
-  name: string;
-  kind: string;
-  ready: boolean;
-  detail?: string;
-  count?: number;
-};
 
 const FILTER_LABELS: Record<SourceFilter, string> = {
   all: "All",
@@ -27,14 +19,22 @@ const FILTER_LABELS: Record<SourceFilter, string> = {
 
 export function SourcesLens({
   summary,
-  datasources,
+  sources,
   loading,
   error,
+  busyKey,
+  onViewSource,
+  onDownloadSource,
+  onDeleteSource,
 }: {
   summary: DataSummary;
-  datasources: Datasource[];
+  sources: DataSourceCatalogItem[];
   loading: boolean;
   error: string | null;
+  busyKey: string | null;
+  onViewSource: (source: DataSourceCatalogItem) => void;
+  onDownloadSource: (source: DataSourceCatalogItem) => void;
+  onDeleteSource: (source: DataSourceCatalogItem) => void;
 }) {
   const router = useRouter();
   const ingestHref = useWorkspaceAwareHref("/ingest", "ingest");
@@ -42,8 +42,7 @@ export function SourcesLens({
   const [filter, setFilter] = useState<SourceFilter>("all");
   const [filterOpen, setFilterOpen] = useState(false);
   const deferredQuery = useDeferredValue(query);
-  const rows = buildSourceRows(summary, datasources);
-  const visible = rows.filter((source) => matchesQuery(source, filter, deferredQuery));
+  const visible = sources.filter((source) => matchesQuery(source, filter, deferredQuery));
 
   return (
     <div className="space-y-5">
@@ -59,7 +58,7 @@ export function SourcesLens({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search sources by name or ID..."
+                placeholder="Search sources by name or type..."
                 className="w-full bg-transparent text-sm text-navy-900 outline-none placeholder:text-subtle"
               />
             </label>
@@ -140,70 +139,110 @@ export function SourcesLens({
         {!error && !loading && visible.length > 0 ? (
           <div className="mt-2">
             <div className="overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white">
-              <div className="hidden grid-cols-[minmax(0,1.6fr)_minmax(180px,0.9fr)_minmax(150px,0.8fr)_104px] gap-4 bg-navy-50 px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-subtle lg:grid">
+              <div className="hidden grid-cols-[minmax(0,1.6fr)_minmax(180px,0.9fr)_minmax(150px,0.8fr)_140px] gap-4 bg-navy-50 px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-subtle lg:grid">
                 <span>Source Name</span>
                 <span>Type</span>
                 <span>Status</span>
                 <span className="text-right">Actions</span>
               </div>
-              {visible.map((source) => (
-                <article
-                  key={source.id}
-                  className="border-t border-navy-100 bg-white px-4 py-4 first:border-t-0 lg:grid lg:grid-cols-[minmax(0,1.6fr)_minmax(180px,0.9fr)_minmax(150px,0.8fr)_104px] lg:items-center lg:gap-4 lg:px-5"
-                >
-                  <div className="min-w-0">
-                    <button
-                      type="button"
-                      onClick={() => router.push(ingestHref)}
-                      className="block truncate text-left text-base font-semibold text-navy-900 underline-offset-4 transition-colors hover:text-steel-600 hover:underline"
-                      title={source.name}
-                    >
-                      {source.name}
-                    </button>
-                  </div>
+              {visible.map((source) => {
+                const isBusy = busyKey?.startsWith(`${source.source_key}:`) ?? false;
+                const hasActions = source.actions.view || source.isXmlParent || source.actions.download || source.actions.delete;
+                return (
+                  <article
+                    key={source.source_key}
+                    className="border-t border-navy-100 bg-white px-4 py-4 first:border-t-0 lg:grid lg:grid-cols-[minmax(0,1.6fr)_minmax(180px,0.9fr)_minmax(150px,0.8fr)_140px] lg:items-center lg:gap-4 lg:px-5"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-start gap-3">
+                        <div className={cn(
+                          "mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-2xl bg-canvas",
+                          source.isXmlParent ? "text-steel-600" : "text-emerald-700",
+                        )}>
+                          {source.isXmlParent ? <FileCode2 size={18} /> : <FileSpreadsheet size={18} />}
+                        </div>
+                        <div className="min-w-0">
+                          {source.actions.view ? (
+                            <button
+                              type="button"
+                              onClick={() => onViewSource(source)}
+                              className="block truncate text-left text-base font-semibold text-navy-900 underline-offset-4 transition-colors hover:text-steel-600 hover:underline"
+                              title={source.name}
+                            >
+                              {source.name}
+                            </button>
+                          ) : (
+                            <span className="block truncate text-left text-base font-semibold text-navy-900" title={source.name}>
+                              {source.name}
+                            </span>
+                          )}
+                          <p className="mt-1 text-xs text-subtle">
+                            {source.record_count.toLocaleString()} record{source.record_count === 1 ? "" : "s"}
+                            {source.isXmlParent ? ` · ${source.generatedAssetCount} generated asset${source.generatedAssetCount === 1 ? "" : "s"} linked` : ""}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
 
-                  <div className="mt-3 lg:mt-0">
-                    <span className="inline-flex rounded-full bg-navy-50 px-3 py-1 text-xs font-semibold text-navy-700">
-                      {kindLabel(source.kind)}
-                    </span>
-                  </div>
-
-                  <div className="mt-3 lg:mt-0">
-                    <span
-                      className={cn(
+                    <div className="mt-3 lg:mt-0">
+                      <span className={cn(
                         "inline-flex rounded-full px-3 py-1 text-xs font-semibold",
-                        source.ready
-                          ? "bg-emerald-100 text-emerald-700"
-                          : "bg-amber-100 text-amber-700",
-                      )}
-                    >
-                      {source.ready ? "Ready" : "Configured"}
-                    </span>
-                  </div>
+                        source.isXmlParent
+                          ? "bg-[#E8F0FF] text-steel-700"
+                          : "bg-emerald-50 text-emerald-700",
+                      )}>
+                        {source.display_kind}
+                      </span>
+                    </div>
 
-                  <div className="mt-3 flex items-center gap-2 lg:mt-0 lg:justify-end">
-                    <button
-                      type="button"
-                      aria-label={`Delete ${source.name}`}
-                      className="focus-ring inline-flex size-9 items-center justify-center rounded-full text-subtle transition-colors hover:bg-navy-50 hover:text-navy-700"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`More actions for ${source.name}`}
-                      className="focus-ring inline-flex size-9 items-center justify-center rounded-full text-subtle transition-colors hover:bg-navy-50 hover:text-navy-700"
-                    >
-                      <EllipsisVertical size={16} />
-                    </button>
-                  </div>
-                </article>
-              ))}
+                    <div className="mt-3 lg:mt-0">
+                      <span
+                        className={cn(
+                          "inline-flex rounded-full px-3 py-1 text-xs font-semibold",
+                          source.ready
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-700",
+                        )}
+                      >
+                        {source.ready ? "Ready" : "Configured"}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 flex items-center gap-2 lg:mt-0 lg:justify-end">
+                      {hasActions ? (
+                        <>
+                          <IconAction
+                            label={`View ${source.name}`}
+                            icon={<Eye size={16} />}
+                            disabled={!source.actions.view || isBusy}
+                            onClick={() => onViewSource(source)}
+                          />
+                          <IconAction
+                            label={`Download ${source.name}`}
+                            icon={<Download size={16} />}
+                            disabled={isBusy || (!source.isXmlParent && !source.actions.download)}
+                            onClick={() => onDownloadSource(source)}
+                          />
+                          <IconAction
+                            label={`Delete ${source.name}`}
+                            icon={<Trash2 size={16} />}
+                            disabled={isBusy || (!source.isXmlParent && !source.actions.delete)}
+                            tone="danger"
+                            onClick={() => onDeleteSource(source)}
+                          />
+                        </>
+                      ) : (
+                        <span className="text-sm text-subtle">—</span>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
 
               <div className="flex items-center justify-between border-t border-navy-100 bg-navy-50 px-5 py-4 text-xs text-subtle">
                 <span>
-                  Showing {visible.length} of {rows.length} data source
-                  {rows.length === 1 ? "" : "s"}
+                  Showing {visible.length} of {sources.length} data source
+                  {sources.length === 1 ? "" : "s"}
                 </span>
                 <span>
                   {summary.source_records} source records feeding {summary.total_entities} resolved entities
@@ -236,11 +275,11 @@ export function SourcesLens({
             {summary.total_entities} entities · {summary.type_count} types
           </h3>
           <div className="mt-3 flex flex-wrap gap-2">
-            {summary.types.map((t, i) => (
+            {summary.types.map((t, index) => (
               <div
                 key={t.name}
                 className="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-white"
-                style={{ background: typeColor(i), minWidth: 116 }}
+                style={{ background: typeColor(index), minWidth: 116 }}
                 title={t.name}
               >
                 <div className="font-display text-2xl leading-none">{t.count}</div>
@@ -254,45 +293,16 @@ export function SourcesLens({
   );
 }
 
-function buildSourceRows(summary: DataSummary, datasources: Datasource[]): SourceRow[] {
-  const rows = new Map<string, SourceRow>();
-  for (const source of datasources) {
-    rows.set(source.name.toLowerCase(), {
-      id: String(source.id),
-      name: source.name,
-      kind: source.kind,
-      ready: source.ready,
-      detail: source.mask || undefined,
-    });
-  }
-  for (const source of summary.sources) {
-    const key = source.source.toLowerCase();
-    if (rows.has(key)) {
-      const current = rows.get(key)!;
-      current.count = source.count;
-      continue;
-    }
-    rows.set(key, {
-      id: `summary:${source.source}`,
-      name: source.source,
-      kind: inferKind(source.source),
-      ready: true,
-      count: source.count,
-    });
-  }
-  return Array.from(rows.values());
-}
-
-function matchesQuery(source: SourceRow, filter: SourceFilter, query: string) {
-  if (filter === "database" && !isDatabase(source.kind)) return false;
-  if (filter === "documents" && !isDocumentKind(source.kind, source.name)) return false;
-  if (filter === "api" && !isApiKind(source.kind)) return false;
+function matchesQuery(source: DataSourceCatalogItem, filter: SourceFilter, query: string) {
+  if (filter === "database" && !isDatabase(source)) return false;
+  if (filter === "documents" && !isDocument(source)) return false;
+  if (filter === "api" && !isApi(source)) return false;
 
   const haystack = [
     source.name,
     source.kind,
-    source.detail,
-    source.id,
+    source.display_kind,
+    source.source_key,
   ]
     .filter(Boolean)
     .join(" ")
@@ -300,45 +310,16 @@ function matchesQuery(source: SourceRow, filter: SourceFilter, query: string) {
   return haystack.includes(query.trim().toLowerCase());
 }
 
-function isDatabase(kind: string) {
-  return ["postgresql", "postgres", "mysql", "mariadb", "oracle", "sqlite", "csv"].includes(kind);
+function isDatabase(source: DataSourceCatalogItem) {
+  return ["postgresql", "postgres", "mysql", "mariadb", "oracle", "sqlite", "csv"].includes(source.kind);
 }
 
-function isDocumentKind(kind: string, name: string) {
-  return kind === "docs" || /\.(pdf|docx?|pptx?|rtf|txt|md|html?|xml)$/i.test(name);
+function isDocument(source: DataSourceCatalogItem) {
+  return source.kind === "xml" || source.display_kind === "Document";
 }
 
-function isApiKind(kind: string) {
-  return kind === "rest" || kind === "api";
-}
-
-function kindLabel(kind: string) {
-  switch (kind) {
-    case "csv":
-      return "Structured CSV";
-    case "docs":
-      return "Document";
-    case "api":
-    case "rest":
-      return "REST API";
-    case "postgres":
-    case "postgresql":
-    case "mysql":
-    case "mariadb":
-    case "oracle":
-    case "sqlite":
-      return "SQL Database";
-    default:
-      return kind.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-  }
-}
-
-function inferKind(sourceName: string) {
-  const lower = sourceName.toLowerCase();
-  if (lower.startsWith("csv.") || lower.endsWith(".csv")) return "csv";
-  if (lower.startsWith("api.") || lower.includes("rest")) return "api";
-  if (lower.endsWith(".pdf") || lower.endsWith(".doc") || lower.endsWith(".docx") || lower.endsWith(".xml")) return "docs";
-  return "postgresql";
+function isApi(source: DataSourceCatalogItem) {
+  return source.kind === "rest" || source.kind === "api";
 }
 
 function MetricCard({ value, label }: { value: number; label: string }) {
@@ -349,5 +330,36 @@ function MetricCard({ value, label }: { value: number; label: string }) {
         {label}
       </p>
     </div>
+  );
+}
+
+function IconAction({
+  label,
+  icon,
+  disabled,
+  tone = "default",
+  onClick,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  disabled: boolean;
+  tone?: "default" | "danger";
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "focus-ring inline-flex size-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35",
+        tone === "danger"
+          ? "text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+          : "text-navy-500 hover:bg-navy-50 hover:text-navy-800",
+      )}
+    >
+      {icon}
+    </button>
   );
 }
