@@ -108,10 +108,31 @@ def render_context(
     that exceed the model's effective context window and cause multi-minute
     inference times.
     """
+    # Keys that are internal bookkeeping — never helpful to the LLM.
+    _SKIP_ATTR_KEYS = frozenset({
+        "id", "_element_type", "name", "guid", "date_modified",
+        "last_update_date", "last_updated_by", "last_update_login",
+    })
+    # Values that carry no information.
+    _TRIVIAL_VALS = frozenset({"0", "1", "", "null", "none", "unknown"})
+
     blocks: list[str] = []
     total = 0
     for ent in entities:
         lines = [f"{ent.name} [{ent.type}] (id {ent.id})"]
+        # Include meaningful entity attributes so the LLM has real content.
+        if ent.attributes:
+            attr_lines: list[str] = []
+            for k, v in ent.attributes.items():
+                if k in _SKIP_ATTR_KEYS:
+                    continue
+                vs = str(v).strip()
+                if not vs or vs.lower() in _TRIVIAL_VALS or len(vs) > 300:
+                    continue
+                attr_lines.append(f"  {k}: {vs}")
+                if len(attr_lines) >= 12:
+                    break
+            lines.extend(attr_lines)
         for n in ent.neighbors[:max_neighbors]:
             arrow = "->" if n["direction"] == "out" else "<-"
             lines.append(f"  {arrow} {n['relationship']} {n['name']} [{n['type']}]")
