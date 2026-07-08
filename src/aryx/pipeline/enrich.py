@@ -163,17 +163,30 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
         return left[0], right[0], name, conf
 
     rels: list[Relationship] = []
+    infer_failures = 0
     with ThreadPoolExecutor(max_workers=relate_workers) as pool:
         futures = {
             pool.submit(_infer, left, right): (left[0], right[0])
             for left, right in candidates
         }
         for fut in as_completed(futures):
-            src_id, tgt_id, name, conf = fut.result()
+            pair = futures[fut]
+            try:
+                src_id, tgt_id, name, conf = fut.result()
+            except Exception as exc:  # noqa: BLE001 — one flaky LLM reply must not
+                # kill the run: FK-link and graph projection execute AFTER relate,
+                # so an uncaught error here silently destroys the whole ingest.
+                infer_failures += 1
+                logger.warning("_relate pair=%s inference failed, skipping: %s",
+                               pair, exc)
+                continue
             if name:
                 rels.append(Relationship(
                     source_entity_id=src_id, target_entity_id=tgt_id,
                     name=name, confidence=conf))
+    if infer_failures:
+        logger.warning("_relate %d/%d pair inference(s) failed and were skipped",
+                       infer_failures, len(candidates))
     store.save_relationships(rels)
     logger.info(
         "_relate evaluated %d pair(s) across %d type(s), found %d relationship(s) "

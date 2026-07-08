@@ -44,15 +44,19 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
     jobs = JobStore(settings.rdb_dsn)
     try:
         jobs.update_stage(did, "Reading", 30, f"Reading {len(items)} file(s)…")
+        logger.info("doc read start did=%s files=%d context=%r", did, len(items), context)
         doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in items
                      if Path(n).suffix.lower() in DOC_EXTS]
         tabular = [(d, n) for d, n in items if Path(n).suffix.lower() in DATA_EXTS]
-        result = read_files(doc_paths, tabular, _local_broker(), context)
+        result = read_files(doc_paths, tabular, _local_broker(), context, did=did)
         result["workspace_id"] = workspace_id
         discoveries.put(did, result)
+        logger.info("doc read complete did=%s mentions=%d tabular_files=%d types=%d",
+                    did, len(result.get("mentions", [])), len(result.get("tabular", [])),
+                    len(result.get("summary", {}).get("types", [])))
         jobs.finish(did, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("doc read failed did=%s: %s", did, exc)
+        logger.warning("doc read failed did=%s: %s", did, exc, exc_info=True)
         jobs.finish(did, run_id=None, status="failed", error=str(exc))
     finally:
         jobs.close()
@@ -65,6 +69,7 @@ def _confirm_job(did: str, types: list[str], files: list[str], job_id: str) -> N
     try:
         if not data:
             raise ValueError("discovery expired — re-read the files")
+        logger.info("doc confirm start did=%s job=%s types=%s files=%s", did, job_id, types, files)
         ingest_confirmed(data, types, files, _local_broker(), jobs, job_id,
                          data.get("workspace_id", 1))
         jobs.finish(job_id, run_id=None, status="complete")
@@ -87,6 +92,8 @@ def doc_discover_router() -> APIRouter:
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
+                logger.warning("doc read rejected filename=%s size=%d limit=%d",
+                                f.filename, len(data), _MAX_FILE)
                 raise HTTPException(400, f"{f.filename}: exceeds 50 MB limit")
             items.append((data, f.filename or "upload"))
         did = uuid.uuid4().hex
@@ -95,6 +102,7 @@ def doc_discover_router() -> APIRouter:
             jobs.create(did, "discovery", f"{len(items)} file(s)", workspace_id)
         finally:
             jobs.close()
+        logger.info("doc read queued did=%s files=%d workspace_id=%d", did, len(items), workspace_id)
         background_tasks.add_task(_read_job, items, context, did, workspace_id)
         return {"discovery_id": did}
 
@@ -107,6 +115,8 @@ def doc_discover_router() -> APIRouter:
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
         data = discoveries.get(req.discovery_id)
         if not data:
+            logger.warning("doc confirm rejected discovery_id=%s: unknown or expired",
+                            req.discovery_id)
             raise HTTPException(404, "unknown or expired discovery")
         job_id = uuid.uuid4().hex
         jobs = JobStore(get_settings().rdb_dsn)
@@ -114,6 +124,9 @@ def doc_discover_router() -> APIRouter:
             jobs.create(job_id, "documents", "confirmed entities", data.get("workspace_id", 1))
         finally:
             jobs.close()
+        logger.info("doc confirm queued did=%s job=%s types=%d files=%d workspace_id=%d",
+                    req.discovery_id, job_id, len(req.approved_types), len(req.approved_files),
+                    data.get("workspace_id", 1))
         background_tasks.add_task(_confirm_job, req.discovery_id,
                                  req.approved_types, req.approved_files, job_id)
         return {"status": "queued", "job_id": job_id}
