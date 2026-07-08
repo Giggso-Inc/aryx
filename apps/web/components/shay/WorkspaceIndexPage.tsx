@@ -64,21 +64,23 @@ export function WorkspaceIndexPage() {
 
     const loadMetrics = async () => {
       const metricResults = await Promise.allSettled(workspaces.map(async (workspace) => {
-        const [members, datasources] = await Promise.all([
+        const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
+        const [members, datasources, groupedSources, summary] = await Promise.all([
           shayApi.listWorkspaceMembers(workspace.id, session.access_token),
           shayApi.listDatasources(workspace.id, session.access_token),
+          aryxWorkspaceId
+            ? api.listDataSources(aryxWorkspaceId).catch(() => null)
+            : Promise.resolve(null),
+          aryxWorkspaceId
+            ? api.dataSummary(aryxWorkspaceId).catch(() => null)
+            : Promise.resolve(null),
         ]);
-
-        const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
-        const summary = aryxWorkspaceId
-          ? await api.dataSummary(aryxWorkspaceId).catch(() => null)
-          : null;
 
         return [workspace.id, {
           users: members.total ?? members.members.length,
           entities: summary?.total_entities ?? null,
           entityTypes: summary?.type_count ?? null,
-          dataSources: datasources.total ?? datasources.items.length,
+          dataSources: groupedSources?.length ?? datasources.total ?? datasources.items.length,
         }] as const;
       }));
 

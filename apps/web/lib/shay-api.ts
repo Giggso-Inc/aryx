@@ -202,6 +202,17 @@ type WorkspaceReference = {
 
 const shayGetCache = new Map<string, CachedEntry>();
 
+function normalizeDatasourceList(list: ShayDatasourceList): ShayDatasourceList {
+  const itemCount = Array.isArray(list.items) ? list.items.length : 0;
+  const reportedTotal = typeof list.total === "number" && Number.isFinite(list.total)
+    ? list.total
+    : itemCount;
+  return {
+    ...list,
+    total: Math.max(reportedTotal, itemCount),
+  };
+}
+
 function invalidateShayCache(prefix: string) {
   for (const key of shayGetCache.keys()) {
     if (key.startsWith(prefix)) {
@@ -846,7 +857,7 @@ export const shayApi = {
       SHAY_BASE,
       `/gg-datasources/${query({ level: "workspace", workspace_id: workspaceId, page_size: 100 })}`,
       token,
-    ),
+    ).then(normalizeDatasourceList),
 
   createDatasource: (
     payload: {
