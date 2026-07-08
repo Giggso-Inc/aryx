@@ -579,7 +579,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
 
-    filled_summary = _cpq_engine.render_filled_summary(display_filled, visible_attrs)
+    # CIRCUIT BREAKER (spec DIRECTIVE 1): suppress "Configured so far" block when
+    # Level-1 anchor (hwVersion) is unresolved — never dump a config list before
+    # the hardware variant is confirmed.
+    _hw_pending = any(
+        "hwversion" in v.lower().replace("_", "")
+        for v in session.pending_variables
+    )
+    filled_summary = (
+        "" if _hw_pending
+        else _cpq_engine.render_filled_summary(display_filled, visible_attrs)
+    )
 
     if not pending or session.turn >= _cpq_engine.MAX_TURNS:
         # ── STEP 6: Present review for approval (no auto-payload) ─────────────
