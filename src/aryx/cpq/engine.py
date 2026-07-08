@@ -144,6 +144,17 @@ _LAYOUT_TYPE_FRAGMENTS: frozenset[str] = frozenset({
     "layout", "prop", "css", "display_type", "view",
 })
 
+# Noise attr variable_name fragments — skip these entirely at load time.
+# Catches TestPager, TestPager2, Error, dummy_* etc.
+_NOISE_VAR_FRAGMENTS: frozenset[str] = frozenset({
+    "test", "pager", "error", "dummy",
+})
+
+# Noise item_value / display_name fragments — strip these options at load time.
+_NOISE_ITEM_FRAGMENTS: frozenset[str] = frozenset({
+    "test", "dummy", "pager",
+})
+
 
 class CpqEngine:
     """Drives guided CPQ configuration within the Ask conversation."""
@@ -301,6 +312,14 @@ class CpqEngine:
                         dt = str(ma.get("item_text") or ma.get("name") or iv).strip()
                         order = int(ma.get("order_number") or ma.get("order") or 999)
                         if iv:
+                            # Patch B: strip item_values/display_names containing
+                            # test/dummy/pager noise (spec §CRITICAL DIRECTIVE 4)
+                            iv_lo = iv.lower()
+                            dt_lo = dt.lower()
+                            if any(f in iv_lo for f in _NOISE_ITEM_FRAGMENTS):
+                                continue
+                            if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
+                                continue
                             opts.append(MenuOption(
                                 item_value=iv, display_name=dt, order=order,
                             ))
@@ -319,6 +338,12 @@ class CpqEngine:
                 pg.get("variable_name") or pg.get("name") or ent.get("name") or ""
             ).strip()
             if not var_name:
+                continue
+
+            # Patch C: skip noise attrs (TestPager, Error, dummy_* etc.)
+            vn_lo = var_name.lower()
+            if any(f in vn_lo for f in _NOISE_VAR_FRAGMENTS):
+                logger.debug("cpq: skipping noise attr %r", var_name)
                 continue
 
             hidden_raw = str(pg.get("hidden") or "0").strip().lower()
@@ -932,38 +957,38 @@ class CpqEngine:
                     attr.default_value,
                 )
 
-            # 3. First eligible option — only for non-decision attrs.
-            # Decision-required attrs (hwversion, country, region) must be
-            # hinted by the user or have an explicit default_value; if neither
-            # is present they go to pending so the user is prompted.
-            # When constrained_opts is active for this attr, only pick from
-            # the allowed set so constraint rules are respected.
+            # 3. Single-remaining-option auto-fill (NO EAGER EVALUATION).
+            # Only auto-select when exactly ONE valid option remains after
+            # constraint filtering — that is not a real user choice.
+            # Multi-option attrs with no recommendation rule go to pending so
+            # the user is prompted (spec §CRITICAL DIRECTIVE 1: STOP AND WAIT).
             is_decision_attr = any(
                 dk in vn_flat for dk in _DECISION_REQUIRED_KEYS
             )
-            if not value and not is_decision_attr:
+            if not value and attr.options:
                 allowed_for_attr = (
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
                 )
-                for opt in attr.options:
-                    if not _valid(opt.item_value):
-                        continue
-                    if allowed_for_attr is not None and opt.item_value not in allowed_for_attr:
-                        continue
-                    value = opt.item_value
-                    display = opt.display_name
-                    break
+                valid_opts = [
+                    o for o in attr.options
+                    if _valid(o.item_value)
+                    and (allowed_for_attr is None or o.item_value in allowed_for_attr)
+                ]
+                if len(valid_opts) == 1:
+                    # Exactly one choice — auto-fill, no user decision needed
+                    value = valid_opts[0].item_value
+                    display = valid_opts[0].display_name
+                # else: 0 or 2+ options → pending (user must choose)
 
             if value:
                 filled[vn] = value
                 display_filled[vn] = display or value
             elif attr.options or is_decision_attr:
-                # Only ask the user about attrs with a meaningful choice set
-                # (has menu options) or decision-required ones (region/country/
-                # hwversion). Free-text attrs with no options and no decision
-                # requirement are CRM/system fields populated by integration —
-                # skip them to avoid asking for internal system values.
+                # Attrs with a meaningful choice set OR decision-required free-text
+                # attrs (region/country/hwversion) go to pending for user input.
+                # Free-text CRM/system fields with no options and no decision
+                # requirement are skipped — they are filled by integration.
                 pending.append(attr)
 
         # Cascade fill: for any pending free-text attr that shares a decision
@@ -997,14 +1022,22 @@ class CpqEngine:
                 still_pending.append(attr)
         pending = still_pending
 
-        # Bubble decision-required attrs (hwversion, country, region) to the
-        # front of pending so they are asked before free-text / optional fields.
+        # Sort pending: hwversion first (Level 1 anchor per spec Step 2),
+        # then other decision-required attrs (country, region), then the rest.
+        _LEVEL1_KEY = "hwversion"
+        hw_pending = [
+            a for a in pending
+            if _LEVEL1_KEY in a.variable_name.lower().replace("_", "")
+        ]
         decision_pending = [
             a for a in pending
-            if any(dk in a.variable_name.lower().replace("_", "") for dk in _DECISION_REQUIRED_KEYS)
+            if a not in hw_pending
+            and any(dk in a.variable_name.lower().replace("_", "") for dk in _DECISION_REQUIRED_KEYS)
         ]
-        other_pending = [a for a in pending if a not in decision_pending]
-        pending = decision_pending + other_pending
+        other_pending = [
+            a for a in pending if a not in hw_pending and a not in decision_pending
+        ]
+        pending = hw_pending + decision_pending + other_pending
 
         return filled, display_filled, pending
 
