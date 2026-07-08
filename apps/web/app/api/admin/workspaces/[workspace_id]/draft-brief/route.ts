@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import {
+  aryxTarget,
+  requireInternalApiKey,
+  requireShayBearerAuth,
+} from "../../../../_aryxProxy";
+
 /**
  * Proxy handler for the long-running draft-brief endpoint.
  *
@@ -12,25 +18,21 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ workspace_id: string }> },
 ) {
-  const secret = process.env.ARYX_PROXY_SECRET;
-  if (secret && req.headers.get("x-aryx-key") !== secret) {
-    return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
+  const auth = await requireShayBearerAuth(req);
+  if (auth instanceof NextResponse) {
+    return auth;
   }
-  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
-  if (!internalApiKey) {
-    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
+  const internalApiKey = requireInternalApiKey();
+  if (internalApiKey instanceof NextResponse) {
+    return internalApiKey;
   }
 
   const { workspace_id } = await params;
-  const target =
-    process.env.NODE_ENV === "development"
-      ? "http://localhost:8088"
-      : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
 
   try {
     const upstream = await fetch(
-      `${target}/admin/workspaces/${workspace_id}/draft-brief`,
+      `${aryxTarget()}/admin/workspaces/${workspace_id}/draft-brief`,
       {
         method: "POST",
         headers: {

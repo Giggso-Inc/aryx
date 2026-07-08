@@ -321,9 +321,9 @@ export default function HomePage() {
         />
       )}
 
-      <div className="app-shell-offset flex flex-1">
-        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pt-4 pb-10 lg:px-5">
-          <div className="mb-2 flex justify-end">
+      <div className="app-shell-offset flex min-h-0 flex-1">
+        <main className="mx-auto flex h-[calc(100dvh-68px)] min-h-[calc(100vh-68px)] w-full max-w-5xl flex-1 flex-col overflow-hidden px-4 pt-4 pb-6 lg:px-5">
+          <div className="mb-2 flex shrink-0 justify-end">
             <button
               type="button"
               onClick={() => setShowHistory((v) => !v)}
@@ -332,14 +332,15 @@ export default function HomePage() {
               <Clock size={12} /> History
             </button>
           </div>
+
           {empty ? (
-            <div className="flex flex-1 flex-col animate-fade-in">
-              <div className="w-full">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto animate-fade-in">
+              <div className="w-full pb-6">
                 <WorkspacePeek workspaceId={workspaceId} />
               </div>
             </div>
           ) : (
-            <div className="flex-1">
+            <div className="min-h-0 flex-1 overflow-y-auto pb-6 pr-1">
               <WorkspacePeek workspaceId={workspaceId} />
               <MessageList turns={turns} />
               {!busy && (
@@ -350,7 +351,7 @@ export default function HomePage() {
             </div>
           )}
 
-          <div className="sticky bottom-6 mt-8">
+          <div className="shrink-0 border-t border-transparent bg-canvas/95 pt-4 backdrop-blur supports-[backdrop-filter]:bg-canvas/88">
             <Composer
               value={input}
               onChange={setInput}
