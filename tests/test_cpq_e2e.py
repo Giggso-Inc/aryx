@@ -245,6 +245,24 @@ class FakeCpqRdb:
                             f.get("value1", ""), self._int(f.get("function_id"))))
         return out
 
+    def fetch_marked_attrs(self, workspace_id):
+        out = []
+        for _i, f in self.fetch_entities_by_type(workspace_id, "bm_config_marked_attr"):
+            rid = self._int(f.get("bm_config_rule_id") or f.get("rule_id"), 0)
+            aid = self._int(f.get("attribute_id"), 0)
+            if rid and aid:
+                out.append((rid, aid))
+        return out
+
+    def fetch_rule_chain_links(self, workspace_id):
+        out = []
+        for _i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule_assoc"):
+            rid = self._int(f.get("bm_config_rule_id") or f.get("rule_id"), 0)
+            cid = self._int(f.get("child_rule_id"), 0)
+            if rid and cid:
+                out.append((rid, cid))
+        return out
+
     def fetch_function_scripts(self, workspace_id):
         scripts = {}
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_function"):
@@ -448,6 +466,92 @@ def test_s5_tier1_coverage_on_real_scripts(truth):
     idiomatic = [s for s in scripts if "returnVal" in s and "if" in s]
     if idiomatic:
         assert parsed > 0, "no script parsed despite returnVal/if idiom present"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S5b — §6a regression guard: hiding-rule target resolution via marked_attr
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s5b_hiding_rule_targets_resolve_via_marked_attr(truth, fake_rdb):
+    """load_hiding_rules must not regress to 0 when BmConfigRuleAction is
+    absent but BmConfigMarkedAttr carries the real target (docs/CPQ_GRAPH_FIX_PLAN.md §6a).
+
+    Picks ONE concrete example straight from ground truth — a declarative
+    rule (rule_type=11, condition_function_id=-1) with a real rule_input AND
+    a real marked_attr row — and asserts the engine's output contains that
+    exact (condition_attr, condition_value, target_attr) triple. A bare count
+    comparison would be a near-tautology; checking one traced instance
+    catches a broken join even if the aggregate count looks plausible.
+    """
+    from aryx.cpq.engine import CpqEngine
+
+    def _int(v):
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+
+    inputs_by_rule: dict[int, tuple[int, str]] = {}
+    for inp in truth.rule_inputs():
+        rid = _int(inp.get("bm_config_rule_id") or inp.get("rule_id"))
+        aid = _int(inp.get("attribute_id"))
+        if rid and aid:
+            inputs_by_rule[rid] = (aid, inp.get("value1", ""))
+
+    marked_by_rule: dict[int, list[int]] = {}
+    for m in truth.marked_attrs():
+        rid = _int(m.get("bm_config_rule_id") or m.get("rule_id"))
+        aid = _int(m.get("attribute_id"))
+        if rid and aid:
+            marked_by_rule.setdefault(rid, []).append(aid)
+
+    declarative_hiding = [
+        r for r in truth.rules()
+        if r.get("rule_type") == "11"
+        and r.get("condition_function_id", "-1") in ("-1", "")
+    ]
+
+    example = None
+    for r in declarative_hiding:
+        rid = _int(r.get("id"))
+        if rid in inputs_by_rule and rid in marked_by_rule:
+            example = (rid, inputs_by_rule[rid], marked_by_rule[rid])
+            break
+
+    if example is None:
+        pytest.skip("export has no declarative hiding rule with both a "
+                    "rule_input and a marked_attr row to trace")
+
+    rid, (cond_attr, cond_value), target_attrs = example
+    eng = CpqEngine()
+    hiding = eng.load_hiding_rules(1)
+
+    matches = [
+        h for h in hiding
+        if h.condition_attr_id == cond_attr
+        and h.condition_value == cond_value
+        and h.target_attr_id in target_attrs
+    ]
+    assert matches, (
+        f"traced rule {rid} (condition attr={cond_attr}=={cond_value!r}, "
+        f"marked targets={target_attrs}) produced no matching HidingRule — "
+        f"marked_attr-based resolution regressed. Got {len(hiding)} total "
+        f"hiding rules: {[(h.condition_attr_id, h.target_attr_id) for h in hiding][:5]}")
+
+    # Aggregate regression guard: recovery must be > 0 whenever ground truth
+    # has ANY declarative hiding rule resolvable via marked_attr (not just
+    # the one traced above), and must not silently drop below that count.
+    resolvable_rule_ids = {
+        rid for rid in (
+            _int(r.get("id")) for r in declarative_hiding
+        )
+        if rid in inputs_by_rule and rid in marked_by_rule
+    }
+    if resolvable_rule_ids:
+        assert len(hiding) > 0, (
+            f"{len(resolvable_rule_ids)} declarative hiding rules are "
+            "resolvable via marked_attr in ground truth, but load_hiding_rules "
+            "returned 0 — the §6a fix has regressed")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

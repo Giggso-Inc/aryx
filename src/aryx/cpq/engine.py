@@ -410,7 +410,8 @@ class CpqEngine:
         BmConfigRuleInput/Action rows reference their rule by the BM-native
         rule id (``bm_config_rule_id`` from the source XML), NOT by the aryx
         entity id — the join key is the rule entity's own attrs ``id``.
-        Returns (rdb, inputs_by_rule, actions_by_rule).
+        Returns (rdb, inputs_by_rule, actions_by_rule, marked_by_rule,
+        chain_by_rule).
         """
         rdb = get_cpq_rdb()
         inputs_by_rule: dict[int, tuple[int, str]] = {}
@@ -419,7 +420,57 @@ class CpqEngine:
         actions_by_rule: dict[int, list[tuple[int, int, str, int]]] = {}
         for rid, aid, at, val, fn in rdb.fetch_rule_actions(workspace_id):
             actions_by_rule.setdefault(rid, []).append((aid, at, val, fn))
-        return rdb, inputs_by_rule, actions_by_rule
+        # bm_config_marked_attr: the real target linkage for many declarative
+        # hiding rules — verified against real data where BmConfigRuleAction
+        # and the rule's own attr_id both carry no target (docs/CPQ_GRAPH_FIX_PLAN.md §6a).
+        marked_by_rule: dict[int, list[int]] = {}
+        for rid, aid in rdb.fetch_marked_attrs(workspace_id):
+            marked_by_rule.setdefault(rid, []).append(aid)
+        # bm_config_rule_assoc: some rules chain to a child rule rather than
+        # declaring their own target; the terminal rule holds the real one.
+        chain_by_rule: dict[int, int] = {}
+        for rid, cid in rdb.fetch_rule_chain_links(workspace_id):
+            chain_by_rule[rid] = cid
+        return rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule
+
+    @staticmethod
+    def _resolve_targets(
+        rule_key: int,
+        actions_by_rule: dict[int, list[tuple[int, int, str, int]]],
+        marked_by_rule: dict[int, list[int]],
+        chain_by_rule: dict[int, int],
+        max_hops: int = 3,
+    ) -> list[tuple[int, int]]:
+        """Resolve a rule's target attribute(s), following the real linkage.
+
+        Priority: (1) BmConfigRuleAction (still correct for exports that use
+        it), (2) BmConfigMarkedAttr — may yield multiple targets, one per
+        marked attribute, (3) BmConfigRuleAssoc chaining to a child rule,
+        re-resolved through (1)-(2) at the terminal rule (bounded depth).
+        Returns [(target_attr_id, action_type)] — action_type defaults to 2
+        (hide) for marked-attr-sourced targets since no hide/show signal has
+        ever been observed to vary in real data (see §6a).
+        """
+        acts = actions_by_rule.get(rule_key, [])
+        if acts:
+            return [(aid, at) for aid, at, _v, _f in acts]
+        marked = marked_by_rule.get(rule_key)
+        if marked:
+            return [(aid, 2) for aid in marked]
+        seen: set[int] = {rule_key}
+        current = chain_by_rule.get(rule_key)
+        hops = 0
+        while current is not None and current not in seen and hops < max_hops:
+            acts = actions_by_rule.get(current, [])
+            if acts:
+                return [(aid, at) for aid, at, _v, _f in acts]
+            marked = marked_by_rule.get(current)
+            if marked:
+                return [(aid, 2) for aid in marked]
+            seen.add(current)
+            current = chain_by_rule.get(current)
+            hops += 1
+        return []
 
     @staticmethod
     def _rule_key(entity_id: int, source_id: int | None,
@@ -439,8 +490,9 @@ class CpqEngine:
         """
         rules: list[HidingRule] = []
         script_backed = 0
+        unresolved = 0
         try:
-            rdb, inputs, actions = self._load_rule_join_data(workspace_id)
+            rdb, inputs, actions, marked, chain = self._load_rule_join_data(workspace_id)
             for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11"):
                 if fn_id != -1:
                     script_backed += 1
@@ -451,11 +503,19 @@ class CpqEngine:
                     continue
                 key = self._rule_key(eid, src_id, inputs, actions)
                 inp = inputs.get(key)
-                acts = actions.get(key, [])
-                act = next(((aid, at) for aid, at, _v, _f in acts), None)
-                if inp and act:
-                    cond_attr_id, cond_value = inp
-                    target_attr_id, action_type = act
+                if not inp:
+                    unresolved += 1
+                    continue
+                targets = self._resolve_targets(key, actions, marked, chain)
+                if not targets:
+                    unresolved += 1
+                    logger.info(
+                        "cpq: hiding rule %r (id=%s) has a condition but no "
+                        "resolvable target via action/marked_attr/chain — "
+                        "excluded, not silently guessed", rule_name, key)
+                    continue
+                cond_attr_id, cond_value = inp
+                for target_attr_id, action_type in targets:
                     rules.append(HidingRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
@@ -466,8 +526,9 @@ class CpqEngine:
         except Exception:
             logger.debug("cpq: hiding rule load failed", exc_info=True)
 
-        logger.info("cpq: loaded %d declarative hiding rules (%d script-backed logged)",
-                    len(rules), script_backed)
+        logger.info(
+            "cpq: loaded %d declarative hiding rules (%d script-backed logged, "
+            "%d unresolved)", len(rules), script_backed, unresolved)
         return rules
 
     @staticmethod
@@ -554,7 +615,7 @@ class CpqEngine:
         rules: list[RecommendationRule] = []
         script_backed = 0
         try:
-            rdb, inputs, actions = self._load_rule_join_data(workspace_id)
+            rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(workspace_id)
             for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "10"):
                 if fn_id != -1:
                     script_backed += 1
@@ -640,7 +701,7 @@ class CpqEngine:
         script_rules = 0
         cond_script_skipped = 0
         try:
-            rdb, inputs, actions = self._load_rule_join_data(workspace_id)
+            rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(workspace_id)
             scripts = rdb.fetch_function_scripts(workspace_id)
             for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "5"):
                 key = self._rule_key(eid, src_id, inputs, actions)
