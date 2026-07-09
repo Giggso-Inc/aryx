@@ -247,6 +247,55 @@ export interface Datasource {
   ready: boolean;
 }
 
+export interface SourceActionState {
+  view: boolean;
+  download: boolean;
+  delete: boolean;
+}
+
+export interface DataSourceCatalogItem {
+  source_key: string;
+  name: string;
+  display_kind: string;
+  kind: string;
+  ready: boolean;
+  record_count: number;
+  isXmlParent: boolean;
+  generatedAssetCount: number;
+  actions: SourceActionState;
+}
+
+export interface GenericSourcePreview {
+  source_key: string;
+  name: string;
+  rows: Record<string, unknown>[];
+}
+
+export interface XmlGeneratedAsset {
+  asset_key: string;
+  filename: string;
+  dataset: string;
+  ontology_type: string;
+  status: string;
+  record_count: number;
+  preview_rows: Record<string, string>[];
+  actions: SourceActionState;
+}
+
+export interface XmlSourceDetail {
+  source_key: string;
+  name: string;
+  status: string;
+  generatedAssetCount: number;
+  record_count: number;
+  primary: {
+    label: string;
+    status: string;
+    actions: SourceActionState;
+  };
+  assets: XmlGeneratedAsset[];
+}
+
 // ── Observability ────────────────────────────────────────────────────────────
 
 export interface ObservabilityData {

@@ -132,7 +132,6 @@ services:
     environment:
       - ARYX_API_URL_INTERNAL=http://api:8000
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
-      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
       - SHAY_API_URL_INTERNAL=http://shay-api:8000
       - NODE_ENV=production
     ports:

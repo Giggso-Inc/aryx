@@ -193,6 +193,67 @@ class PostgresCpqRdb:
             logger.debug("cpq rdb: rule-action fetch failed", exc_info=True)
         return rows
 
+    def fetch_marked_attrs(self, workspace_id: int) -> list[tuple[int, int]]:
+        """All BmConfigMarkedAttr rows: (rule_id, attribute_id).
+
+        This is the real target-linkage table for many declarative hiding
+        rules — verified against real data where ``BmConfigRuleAction`` and
+        the rule's own ``attr_id`` field both carry no target at all. One
+        rule can mark multiple attributes (one row per marked attribute).
+        """
+        rows: list[tuple[int, int]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(attributes->>'bm_config_rule_id',
+                                        attributes->>'rule_id'),
+                               attributes->>'attribute_id'
+                        FROM aryx_entity
+                        WHERE workspace_id = %s
+                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigmarkedattr'
+                        """,
+                        (workspace_id,),
+                    )
+                    for rid, aid in cur.fetchall():
+                        rid_i, aid_i = _as_int(rid), _as_int(aid)
+                        if rid_i and aid_i:
+                            rows.append((rid_i, aid_i))
+        except Exception:
+            logger.debug("cpq rdb: marked-attr fetch failed", exc_info=True)
+        return rows
+
+    def fetch_rule_chain_links(self, workspace_id: int) -> list[tuple[int, int]]:
+        """All BmConfigRuleAssoc rows: (rule_id, child_rule_id).
+
+        Some rules chain to another rule rather than declaring their own
+        target — the terminal rule in the chain is where the target
+        (BmConfigRuleAction or BmConfigMarkedAttr) actually lives.
+        """
+        rows: list[tuple[int, int]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(attributes->>'bm_config_rule_id',
+                                        attributes->>'rule_id'),
+                               attributes->>'child_rule_id'
+                        FROM aryx_entity
+                        WHERE workspace_id = %s
+                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigruleassoc'
+                        """,
+                        (workspace_id,),
+                    )
+                    for rid, cid in cur.fetchall():
+                        rid_i, cid_i = _as_int(rid), _as_int(cid)
+                        if rid_i and cid_i:
+                            rows.append((rid_i, cid_i))
+        except Exception:
+            logger.debug("cpq rdb: rule-chain fetch failed", exc_info=True)
+        return rows
+
     def fetch_function_scripts(self, workspace_id: int) -> dict[int, str]:
         """Map BM-native function id → raw BML script text.
 
@@ -344,6 +405,54 @@ class OracleCpqRdb(PostgresCpqRdb):
                                          val or "", _as_int(fn) or -1))
         except Exception:
             logger.debug("cpq rdb(oracle): rule-action fetch failed", exc_info=True)
+        return rows
+
+    def fetch_marked_attrs(self, workspace_id: int) -> list[tuple[int, int]]:
+        rows: list[tuple[int, int]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(JSON_VALUE(attributes, '$.bm_config_rule_id'),
+                                        JSON_VALUE(attributes, '$.rule_id')),
+                               JSON_VALUE(attributes, '$.attribute_id')
+                        FROM aryx_entity
+                        WHERE workspace_id = :1
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigmarkedattr'
+                        """,
+                        (workspace_id,),
+                    )
+                    for rid, aid in cur.fetchall():
+                        rid_i, aid_i = _as_int(rid), _as_int(aid)
+                        if rid_i and aid_i:
+                            rows.append((rid_i, aid_i))
+        except Exception:
+            logger.debug("cpq rdb(oracle): marked-attr fetch failed", exc_info=True)
+        return rows
+
+    def fetch_rule_chain_links(self, workspace_id: int) -> list[tuple[int, int]]:
+        rows: list[tuple[int, int]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(JSON_VALUE(attributes, '$.bm_config_rule_id'),
+                                        JSON_VALUE(attributes, '$.rule_id')),
+                               JSON_VALUE(attributes, '$.child_rule_id')
+                        FROM aryx_entity
+                        WHERE workspace_id = :1
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigruleassoc'
+                        """,
+                        (workspace_id,),
+                    )
+                    for rid, cid in cur.fetchall():
+                        rid_i, cid_i = _as_int(rid), _as_int(cid)
+                        if rid_i and cid_i:
+                            rows.append((rid_i, cid_i))
+        except Exception:
+            logger.debug("cpq rdb(oracle): rule-chain fetch failed", exc_info=True)
         return rows
 
 

@@ -30,7 +30,13 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
+from aryx.store.datasource_store import DatasourceStore
 from aryx.store.ontology_store import OntologyStore
+from aryx.source_catalog import (
+    restore_generic_source_entry,
+    upsert_xml_catalog_entry,
+    xml_asset_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -510,13 +516,24 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     for d, n in tabular:
         if Path(n).suffix.lower() == ".xml":
             for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
-                converted_tabular.append((csv_bytes, csv_name))
+                converted_tabular.append((csv_bytes, csv_name, n, d))
         else:
-            converted_tabular.append((_consolidate_csv_names(d, did=did), n))
+            converted_tabular.append((_consolidate_csv_names(d, did=did), n, None, None))
 
-    tab_plans = [{"filename": n, "data": d,
-                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context, did=did)}
-                 for d, n in converted_tabular]
+    tab_plans = []
+    for data, filename, source_filename, source_bytes in converted_tabular:
+        inferred = _infer_type(data[:800].decode("utf-8", "ignore"), filename, context, did=did)
+        plan = {"filename": filename, "data": data, **inferred}
+        if source_filename is not None and source_bytes is not None:
+            plan["source_filename"] = source_filename
+            plan["source_bytes"] = source_bytes
+            try:
+                headers = next(csv.reader(io.StringIO(data.decode("utf-8", "ignore"))))
+            except Exception:  # noqa: BLE001
+                headers = []
+            if "_text" in headers:
+                plan["match_keys"] = ["_text"]
+        tab_plans.append(plan)
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
@@ -855,6 +872,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      workspace_id: int = 1) -> None:
     """Resolve + project the approved discovered types and tabular files."""
     settings = get_settings()
+    datasource_store = DatasourceStore(settings.rdb_dsn)
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
 
@@ -887,6 +905,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                    (next((p for p in data["tabular"] if p["filename"] == fn), None)
                     for fn in approved_files)
                    if p is not None]
+    _persist_xml_sources(valid_plans, workspace_id, settings.rdb_dsn)
     auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
@@ -957,9 +976,17 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          ontology_type=otype, match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
                          fk_links=auto_fk if is_last else None,
-                         relate=is_last and settings.ingest_relate, 
+                         relate=is_last and settings.ingest_relate,
                          skip_graph=not is_last,
                          on_progress=_progress_plan)
+            suffix = Path(fname).suffix.lower()
+            if suffix in {".csv", ".json"}:
+                restore_generic_source_entry(
+                    datasource_store,
+                    workspace_id=workspace_id,
+                    source_system=suffix.lstrip("."),
+                    source_dataset=Path(fname).stem,
+                )
             logger.info("confirm job=%s file=%s done", job_id, fname)
         finally:
             if tmp_path is not None:
@@ -1020,3 +1047,31 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         except Exception as exc:  # noqa: BLE001 — never fail the ingest over validation
             logger.warning("confirm job=%s validation crashed: %s", job_id, exc,
                            exc_info=True)
+
+
+def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
+    """Persist XML parent metadata for the source catalog."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for plan in valid_plans:
+        source_filename = plan.get("source_filename")
+        source_bytes = plan.get("source_bytes")
+        if not source_filename or source_bytes is None:
+            continue
+        group = grouped.setdefault(source_filename, {"source_bytes": source_bytes, "assets": []})
+        group["assets"].append(xml_asset_record(
+            filename=plan["filename"],
+            dataset=Path(plan["filename"]).stem,
+            ontology_type=plan["ontology_type"],
+            content_bytes=plan["data"],
+        ))
+    if not grouped:
+        return
+    store = DatasourceStore(dsn)
+    for source_filename, payload in grouped.items():
+        upsert_xml_catalog_entry(
+            store,
+            workspace_id=workspace_id,
+            source_filename=source_filename,
+            xml_bytes=payload["source_bytes"],
+            assets=payload["assets"],
+        )

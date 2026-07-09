@@ -1,45 +1,217 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Database, ListTree, Loader2, Network, Table2 } from "lucide-react";
+import { Database, ListTree, Loader2, Network, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
-import type { DataSummary } from "@/lib/types";
+import type { DataSourceCatalogItem, DataSummary, XmlGeneratedAsset, XmlSourceDetail } from "@/lib/types";
 import { GraphLens } from "./GraphLens";
-import { SummaryStrip } from "./SummaryStrip";
+import { SourcesLens } from "./SourcesLens";
 import { TreeLens } from "./TreeLens";
+import { XmlSourceDetailView } from "./XmlSourceDetail";
 
-type Lens = "tree" | "graph";
+type Lens = "sources" | "tree" | "graph";
+type DeleteRequest =
+  | { kind: "source"; sourceKey: string; sourceName: string }
+  | { kind: "asset"; sourceKey: string; sourceName: string; assetKey: string; assetName: string };
 
-/** The Data tab: transparency over the workspace's resolved entities.
- *  Slice 1 ships the Tree lens; Table + Graph follow. */
+/** The Data tab: source registry first, then resolved-entity exploration. */
 export function DataExplorer() {
   const { workspaceId } = useWorkspace();
   const [summary, setSummary] = useState<DataSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [lens, setLens] = useState<Lens>("tree");
+  const [sources, setSources] = useState<DataSourceCatalogItem[]>([]);
+  const [sourceErr, setSourceErr] = useState<string | null>(null);
+  const [sourcesLoading, setSourcesLoading] = useState(true);
+  const [activeSourceKey, setActiveSourceKey] = useState<string | null>(null);
+  const [activeSourceDetail, setActiveSourceDetail] = useState<XmlSourceDetail | null>(null);
+  const [sourcePreview, setSourcePreview] = useState<{ name: string; rows: Record<string, unknown>[] } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
+  const [lens, setLens] = useState<Lens>("sources");
 
   useEffect(() => {
     let live = true;
-    setSummary(null); setErr(null);
+    setSummary(null);
+    setErr(null);
+    setSources([]);
+    setSourceErr(null);
+    setSourcesLoading(true);
+    setActiveSourceKey(null);
+    setActiveSourceDetail(null);
+    setSourcePreview(null);
+    setDetailLoading(false);
+    setBusyKey(null);
     api.dataSummary(workspaceId)
       .then((d) => { if (live) ("error" in d && d.error) ? setErr(d.error) : setSummary(d); })
       .catch((e) => { if (live) setErr(e instanceof Error ? e.message : "failed"); });
+    api.listDataSources(workspaceId)
+      .then((items) => { if (live) setSources(items); })
+      .catch((e) => { if (live) setSourceErr(e instanceof Error ? e.message : "failed"); })
+      .finally(() => { if (live) setSourcesLoading(false); });
     return () => { live = false; };
   }, [workspaceId]);
 
-  return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-8">
-      <div className="flex items-center gap-2 text-steel-600">
-        <Database size={18} />
-        <span className="text-[11px] font-bold uppercase tracking-[0.16em]">Data</span>
-      </div>
-      <h1 className="mt-2 font-display text-3xl text-navy-900">Where your data lives.</h1>
-      <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-subtle">
-        Every entity Aryx resolved, what type it is, and the exact source record
-        it came from — nothing hidden in a database you can&apos;t see.
-      </p>
+  const refreshSources = async () => {
+    setSourcesLoading(true);
+    try {
+      setSources(await api.listDataSources(workspaceId));
+    } catch (e) {
+      setSourceErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setSourcesLoading(false);
+    }
+  };
 
+  const openSource = async (source: DataSourceCatalogItem) => {
+    if (!source.actions.view) return;
+    if (!source.isXmlParent) {
+      setActiveSourceKey(null);
+      setActiveSourceDetail(null);
+      setSourcePreview(null);
+      setDetailLoading(true);
+      setSourceErr(null);
+      try {
+        const preview = await api.getDataSourcePreview(workspaceId, source.source_key);
+        setSourcePreview({ name: preview.name, rows: preview.rows });
+      } catch (e) {
+        setSourceErr(e instanceof Error ? e.message : "failed");
+      } finally {
+        setDetailLoading(false);
+      }
+      return;
+    }
+    setSourcePreview(null);
+    setActiveSourceKey(source.source_key);
+    setDetailLoading(true);
+    setSourceErr(null);
+    try {
+      const detail = await api.getDataSourceDetail(workspaceId, source.source_key);
+      setActiveSourceDetail(detail);
+    } catch (e) {
+      setActiveSourceKey(null);
+      setActiveSourceDetail(null);
+      setSourceErr(e instanceof Error ? e.message : "failed");
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const downloadSource = async (source: DataSourceCatalogItem) => {
+    await downloadSourceByKey(source.source_key, source.name);
+  };
+
+  const downloadSourceByKey = async (sourceKey: string, filename: string) => {
+    setBusyKey(`${sourceKey}:download`);
+    try {
+      const blob = await api.downloadDataSource(workspaceId, sourceKey);
+      triggerDownload(blob, filename);
+    } catch (e) {
+      setSourceErr(e instanceof Error ? e.message : "download failed");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const deleteSource = async (source: DataSourceCatalogItem) => {
+    setDeleteRequest({
+      kind: "source",
+      sourceKey: source.source_key,
+      sourceName: source.name,
+    });
+  };
+
+  const deleteSourceByKey = async (sourceKey: string) => {
+    setBusyKey(`${sourceKey}:delete`);
+    try {
+      await api.deleteDataSource(workspaceId, sourceKey);
+      setActiveSourceKey(null);
+      setActiveSourceDetail(null);
+      setSourcePreview(null);
+      await refreshSources();
+    } catch (e) {
+      setSourceErr(e instanceof Error ? e.message : "delete failed");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const downloadAsset = async (asset: XmlGeneratedAsset) => {
+    if (!activeSourceDetail) return;
+    const targetKey = `${activeSourceDetail.source_key}:${asset.asset_key}:download`;
+    setBusyKey(targetKey);
+    try {
+      const blob = await api.downloadGeneratedAsset(workspaceId, activeSourceDetail.source_key, asset.asset_key);
+      triggerDownload(blob, asset.filename);
+    } catch (e) {
+      setSourceErr(e instanceof Error ? e.message : "asset download failed");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const previewAsset = async (asset: XmlGeneratedAsset): Promise<Record<string, string>[]> => {
+    if (asset.preview_rows.length > 0 || !activeSourceDetail) return asset.preview_rows;
+    const targetKey = `${activeSourceDetail.source_key}:${asset.asset_key}:preview`;
+    setBusyKey(targetKey);
+    try {
+      const blob = await api.downloadGeneratedAsset(workspaceId, activeSourceDetail.source_key, asset.asset_key);
+      const text = await blob.text();
+      return parseCsvPreview(text);
+    } catch (e) {
+      setSourceErr(e instanceof Error ? e.message : "preview failed");
+      return [];
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const deleteAsset = async (asset: XmlGeneratedAsset) => {
+    if (!activeSourceDetail) return;
+    setDeleteRequest({
+      kind: "asset",
+      sourceKey: activeSourceDetail.source_key,
+      sourceName: activeSourceDetail.name,
+      assetKey: asset.asset_key,
+      assetName: asset.filename,
+    });
+  };
+
+  const deleteAssetByKey = async (
+    sourceKey: string,
+    assetKey: string,
+  ) => {
+    const targetKey = `${sourceKey}:${assetKey}:delete`;
+    setBusyKey(targetKey);
+    try {
+      await api.deleteGeneratedAsset(workspaceId, sourceKey, assetKey);
+      const [nextDetail, nextSources] = await Promise.all([
+        api.getDataSourceDetail(workspaceId, sourceKey),
+        api.listDataSources(workspaceId),
+      ]);
+      setActiveSourceDetail(nextDetail);
+      setSources(nextSources);
+    } catch (e) {
+      setSourceErr(e instanceof Error ? e.message : "asset delete failed");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteRequest) return;
+    const request = deleteRequest;
+    setDeleteRequest(null);
+    if (request.kind === "source") {
+      await deleteSourceByKey(request.sourceKey);
+      return;
+    }
+    await deleteAssetByKey(request.sourceKey, request.assetKey);
+  };
+
+  return (
+    <div className="workspace-section-shell pb-6 pt-6">
       {err && (
         <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
           {err}
@@ -53,22 +225,152 @@ export function DataExplorer() {
       )}
 
       {summary && (
-        <div className="mt-6 space-y-5">
-          <SummaryStrip summary={summary} />
-
+        <div className="mt-4 space-y-5">
           <div className="flex items-center gap-1 border-b border-navy-100">
+            <Tab icon={<Database size={15} />} label="Sources"
+                 active={lens === "sources"} onClick={() => setLens("sources")} />
             <Tab icon={<ListTree size={15} />} label="Tree"
                  active={lens === "tree"} onClick={() => setLens("tree")} />
-            <Tab icon={<Network size={15} />} label="Graph"
+            <Tab icon={<Network size={15} />} label="Graph Map"
                  active={lens === "graph"} onClick={() => setLens("graph")} />
-            <Soon icon={<Table2 size={15} />} label="Table" />
           </div>
 
-          {lens === "tree" ? <TreeLens types={summary.types} /> : <GraphLens />}
+          {lens === "sources" ? (
+            activeSourceKey && activeSourceDetail ? (
+              <XmlSourceDetailView
+                detail={activeSourceDetail}
+                busyTarget={busyKey}
+                onBack={() => {
+                  setActiveSourceKey(null);
+                  setActiveSourceDetail(null);
+                }}
+                onDownloadSource={() => { void downloadSourceByKey(activeSourceDetail.source_key, activeSourceDetail.name); }}
+                onDeleteSource={() => {
+                  setDeleteRequest({
+                    kind: "source",
+                    sourceKey: activeSourceDetail.source_key,
+                    sourceName: activeSourceDetail.name,
+                  });
+                }}
+                onDownloadAsset={(asset) => { void downloadAsset(asset); }}
+                onDeleteAsset={(asset) => { void deleteAsset(asset); }}
+                onPreviewAsset={(asset) => previewAsset(asset)}
+              />
+            ) : sourcePreview ? (
+              <GenericSourcePreviewModal
+                name={sourcePreview.name}
+                rows={sourcePreview.rows}
+                onClose={() => setSourcePreview(null)}
+              />
+            ) : detailLoading ? (
+              <div className="flex items-center gap-2 rounded-2xl border border-navy-100 bg-white px-5 py-10 text-sm text-subtle shadow-soft">
+                <Loader2 size={16} className="animate-spin" />
+                Loading XML source detail...
+              </div>
+            ) : (
+              <SourcesLens
+                summary={summary}
+                sources={sources}
+                loading={sourcesLoading}
+                error={sourceErr}
+                busyKey={busyKey}
+                onViewSource={(source) => { void openSource(source); }}
+                onDownloadSource={(source) => { void downloadSource(source); }}
+                onDeleteSource={(source) => { void deleteSource(source); }}
+              />
+            )
+          ) : null}
+          {lens === "tree" ? <TreeLens types={summary.types} /> : null}
+          {lens === "graph" ? <GraphLens types={summary.types} /> : null}
         </div>
       )}
+
+      {deleteRequest ? (
+        <DeleteConfirmModal
+          title={deleteRequest.kind === "source" ? "Delete Source" : "Delete Asset"}
+          message={
+            deleteRequest.kind === "source"
+              ? `Delete ${deleteRequest.sourceName} from the source catalog?`
+              : `Delete ${deleteRequest.assetName} from ${deleteRequest.sourceName}?`
+          }
+          onCancel={() => setDeleteRequest(null)}
+          onConfirm={() => { void confirmDelete(); }}
+        />
+      ) : null}
     </div>
   );
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function parseCsvPreview(text: string): Record<string, string>[] {
+  const rows = parseCsvRows(text).filter((row) => row.some((cell) => cell.trim() !== ""));
+  if (rows.length < 2) return [];
+  const headers = rows[0].map((cell) => cell.trim());
+  return rows.slice(1, 6).map((row) => {
+    const record: Record<string, string> = {};
+    headers.forEach((header, index) => {
+      record[header || `column_${index + 1}`] = row[index] ?? "";
+    });
+    return record;
+  });
+}
+
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentValue = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (char === "\"") {
+      if (inQuotes && next === "\"") {
+        currentValue += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      currentRow.push(currentValue);
+      currentValue = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") {
+        index += 1;
+      }
+      currentRow.push(currentValue);
+      rows.push(currentRow);
+      currentRow = [];
+      currentValue = "";
+      continue;
+    }
+
+    currentValue += char;
+  }
+
+  if (currentValue.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentValue);
+    rows.push(currentRow);
+  }
+
+  return rows;
 }
 
 function Tab({ icon, label, active, onClick }: {
@@ -84,13 +386,135 @@ function Tab({ icon, label, active, onClick }: {
   );
 }
 
-function Soon({ icon, label }: { icon: React.ReactNode; label: string }) {
+function DeleteConfirmModal({
+  title,
+  message,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  message: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
   return (
-    <span className="flex cursor-default items-center gap-1.5 px-4 py-2 text-[13px] font-medium text-navy-300">
-      {icon} {label}
-      <span className="rounded-full bg-navy-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-400">
-        soon
-      </span>
-    </span>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/45 px-4 py-8"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-confirm-title"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-lg rounded-[1.5rem] border border-navy-100 bg-white p-6 shadow-soft"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p
+          id="delete-confirm-title"
+          className="text-lg font-semibold text-navy-900"
+        >
+          {title}
+        </p>
+        <p className="mt-3 text-sm leading-6 text-subtle">
+          {message}
+        </p>
+        <p className="mt-2 text-sm text-rose-600">
+          This action cannot be undone.
+        </p>
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="focus-ring rounded-full border border-navy-100 bg-white px-4 py-2 text-sm font-semibold text-navy-700 transition-colors hover:bg-navy-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="focus-ring rounded-full bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-700"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GenericSourcePreviewModal({
+  name,
+  rows,
+  onClose,
+}: {
+  name: string;
+  rows: Record<string, unknown>[];
+  onClose: () => void;
+}) {
+  const headers = rows[0] ? Object.keys(rows[0]) : [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/45 px-4 py-8"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="generic-source-preview-title"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white shadow-soft"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="relative border-b border-navy-100 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close source preview"
+            className="focus-ring absolute right-5 top-5 rounded-full border border-navy-100 bg-white p-2 text-navy-500 transition-colors hover:border-navy-200 hover:bg-navy-50 hover:text-navy-800"
+          >
+            <X size={16} />
+          </button>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-subtle">
+            Source Preview
+          </p>
+          <h4 id="generic-source-preview-title" className="mt-1 text-xl font-semibold text-navy-900">
+            {name}
+          </h4>
+        </div>
+
+        <div className="max-h-[calc(85vh-84px)] overflow-auto p-5">
+          {rows.length > 0 ? (
+            <div className="overflow-x-auto rounded-2xl border border-navy-100 bg-white">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-navy-50 text-xs uppercase tracking-[0.14em] text-subtle">
+                  <tr>
+                    {headers.map((header) => (
+                      <th key={header} className="px-4 py-3 font-semibold">
+                        {header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, index) => (
+                    <tr key={index} className="border-t border-navy-100">
+                      {headers.map((header) => (
+                        <td key={header} className="px-4 py-3 text-navy-800">
+                          {String(row[header] ?? "—")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-navy-200 bg-canvas px-4 py-10 text-center text-sm text-subtle">
+              Preview is unavailable for this source.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

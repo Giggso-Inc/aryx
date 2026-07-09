@@ -97,7 +97,7 @@ export default function ObservabilityPage() {
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
 
       <div className="app-shell-offset flex-1">
-        <main className="mx-auto w-full max-w-6xl px-6 py-8">
+        <main className="workspace-section-shell pb-6 pt-6">
           <div className="mb-6 flex items-center justify-between">
             <div>
               <h1 className="font-display text-2xl font-bold text-navy-900">Observability</h1>

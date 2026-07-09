@@ -9,7 +9,7 @@ export default function DataPage() {
   return (
     <div className="flex min-h-screen flex-col">
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
-      <main className="flex-1">
+      <main className="app-shell-offset flex-1">
         <DataExplorer />
       </main>
     </div>
