@@ -140,7 +140,8 @@ class PostgresCpqRdb:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT attributes->>'bm_config_rule_id',
+                        SELECT COALESCE(attributes->>'bm_config_rule_id',
+                                        attributes->>'rule_id'),
                                attributes->>'attribute_id',
                                attributes->>'value1'
                         FROM aryx_entity
@@ -171,7 +172,8 @@ class PostgresCpqRdb:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT attributes->>'bm_config_rule_id',
+                        SELECT COALESCE(attributes->>'bm_config_rule_id',
+                                        attributes->>'rule_id'),
                                attributes->>'attribute_id',
                                attributes->>'action_type',
                                attributes->>'value1',
@@ -296,7 +298,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT JSON_VALUE(attributes, '$.bm_config_rule_id'),
+                        SELECT COALESCE(JSON_VALUE(attributes, '$.bm_config_rule_id'),
+                                        JSON_VALUE(attributes, '$.rule_id')),
                                JSON_VALUE(attributes, '$.attribute_id'),
                                JSON_VALUE(attributes, '$.value1')
                         FROM aryx_entity
@@ -322,7 +325,8 @@ class OracleCpqRdb(PostgresCpqRdb):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT JSON_VALUE(attributes, '$.bm_config_rule_id'),
+                        SELECT COALESCE(JSON_VALUE(attributes, '$.bm_config_rule_id'),
+                                        JSON_VALUE(attributes, '$.rule_id')),
                                JSON_VALUE(attributes, '$.attribute_id'),
                                JSON_VALUE(attributes, '$.action_type'),
                                JSON_VALUE(attributes, '$.value1'),
