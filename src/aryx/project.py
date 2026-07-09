@@ -76,6 +76,9 @@ def project_graph(
             graph.add_relationship(src, tgt, name)
         n_relationships = len(all_rels)
 
+    if hasattr(graph, "ensure_indexes"):
+        graph.ensure_indexes()
+
     counts = {"entities": n_entities, "provenance": n_provenance,
               "relationships": n_relationships}
     logger.info("graph projected %s labels_used=%d",
@@ -122,6 +125,8 @@ def project_incremental(
     tombstones = pstore.tombstones()
     for entity_id in tombstones:
         graph.remove_entity(entity_id)
+    if hasattr(graph, "ensure_indexes"):
+        graph.ensure_indexes()
     pstore.mark_projected(dirty_ids)
     pstore.unmark_projected(tombstones)
     pstore.advance_watermark()
