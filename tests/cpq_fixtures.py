@@ -125,6 +125,15 @@ class SampleTruth:
     def menu_items(self) -> list[dict[str, str]]:
         return self.rows("menu_item")
 
+    def marked_attrs(self) -> list[dict[str, str]]:
+        """bm_config_marked_attr rows — the real target linkage for many
+        declarative hiding rules (docs/CPQ_GRAPH_FIX_PLAN.md §6a)."""
+        return self.rows("config_marked_attr")
+
+    def rule_chain_links(self) -> list[dict[str, str]]:
+        """bm_config_rule_assoc rows — rule_id -> child_rule_id chaining."""
+        return self.rows("config_rule_assoc")
+
     def script_backed_rules(self) -> list[dict[str, str]]:
         """Rules whose condition or any action references a BML function."""
         rules_with_scripts: list[dict[str, str]] = []

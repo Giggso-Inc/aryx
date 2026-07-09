@@ -1,6 +1,6 @@
 # CPQ Graph-RAG Fix Plan — 6 Diagnostic Issues
 
-**Status:** Implemented on branch `feat/cpq-graph-fixes` — all 4 phases landed, S1–S7 green
+**Status:** Phases 1–4 implemented on branch `fix/cpq-graph-rag-issues` (PR #69) — S1–S7 green. **§6a (rule-target resolution follow-up) is a newly discovered, NOT-YET-implemented gap** — found via live audit against workspace 12, see §6a for details before treating this plan as fully closed.
 **Date:** 2026-07-09
 **Source:** "Aryx Graph-RAG Configuration Engine: Diagnostic Findings & Action Items" (customer debugging report)
 **Sample test asset:** `SL3500e_Dummy_Config.xml` (BigMachines `bm_config_zip_cache` export, ~6 MB) — used as the *default* test input only; nothing in the implementation or tests may hardcode values from this file.
@@ -289,6 +289,111 @@ Phase 3 (state/orchestration)   ──┘
   full fidelity.
 - **Reprojection cost:** full-graph rebuild per workspace; acceptable because
   projection is already a full rebuild (`graph.clear()` + re-add).
+
+---
+
+## 6a. Follow-up fix — `load_hiding_rules` misses marked-attribute-targeted rules
+
+**Discovered:** post-implementation audit against workspace 12 (real ingested
+data), while investigating why a production workspace (`CPQ_Quote_MSI`) was
+still prompting for 85 individual attributes.
+
+**Problem.** `load_hiding_rules` (§4, already shipped) assumes every
+declarative hiding rule (`rule_type=11`, `condition_function_id=-1`) has a
+matching `BmConfigRuleAction` row carrying the target `attribute_id`. On real
+data this assumption is wrong for the large majority of hiding rules.
+
+**Root cause — verified against workspace 12's real Postgres data, in two
+passes (the first hypothesis was wrong; corrected below):**
+
+- **0 of 35** declarative `rule_type=11` rows have a matching
+  `BmConfigRuleAction` row, and each rule's own `attr_id` field is the unused
+  sentinel `"-1"`.
+- **First hypothesis (wrong, ruled out by direct query):** `bm_config_layout_attr_assoc`
+  and `bm_config_rule_layout_assoc` were suspected as the real target
+  linkage. Checked directly — **0 of the 35 rules match either table**. These
+  tables exist and carry real data for *other* purposes (UI layout
+  membership), but are not how hiding-rule targets are actually encoded here.
+- **Real mechanism, confirmed by tracing one rule end-to-end and then
+  validating across all 35:** a broad search for the rule's own id anywhere
+  in the workspace's data surfaced **`bm_config_marked_attr`** — a table not
+  read anywhere in the current CPQ engine. Each row carries `rule_id` /
+  `bm_config_rule_id`, a target `attribute_id`, and a `mark_type` field. One
+  rule can mark **multiple** attributes (the traced rule marked 2).
+  - **32 of 35 (91%)** declarative hiding rules resolve a target via
+    `bm_config_marked_attr`.
+  - `bm_config_rule_assoc` (`rule_id → child_rule_id`, rule chaining) adds
+    **zero rules beyond that 32** in this dataset — every chain-resolved rule
+    was already resolved via `marked_attr` directly. Kept as a fallback path
+    for robustness on other exports, not because it added coverage here.
+  - **3 of 35 remain genuinely unresolved** by any mechanism found (no
+    marked_attr row, no chain, `attr_id="-1"`) — e.g. `"Rule to hide Billing
+    Option for EMEA"`, `"Hide OCC config attr"`. Not chased further with more
+    guesses; flagged as a residual to log and count, not silently swallow.
+    Plausibly incomplete rows in this dummy dataset specifically.
+  - `mark_type` is `"3"` for all 145 rows in this dataset — no observed
+    variability, so it cannot currently distinguish hide-vs-show. Every
+    `rule_action_type` on these 35 rules is also `"1"` uniformly. **Working
+    assumption, stated explicitly rather than silently baked in:** every
+    `HidingRule` sourced from `bm_config_marked_attr` defaults to `hide=True`
+    (matching the dataclass default) until an export is found where either
+    field varies and a real hide/show signal can be derived from data.
+
+**Impact.** Every hiding rule targeting via `bm_config_marked_attr` was
+silently treated as having no target — `load_hiding_rules` was returning 0
+usable rules where 32 genuinely exist. Any attribute whose visibility
+depends on one of these rules never gets governed by D2's rule-outcome
+eligibility test (`CPQ_CASCADE_CONVERSATION_PLAN.md` §2). This is very
+likely the real reason `CPQ_Quote_MSI` (APX NEXT) still shows 85 unresolved
+attributes even after the eager-payload fix (3c) landed.
+
+**Fix.** Extend `load_hiding_rules` to resolve a rule's target(s) through, in
+priority order: (1) existing `BmConfigRuleAction.attribute_id` (kept — still
+the right path for exports that do use it), (2) `bm_config_marked_attr` by
+`rule_id`/`bm_config_rule_id` — **may yield multiple targets per rule**, so
+`load_hiding_rules` emits one `HidingRule` per (rule, marked attribute) pair
+rather than changing `HidingRule`'s shape, (3) `bm_config_rule_assoc
+.child_rule_id`, followed recursively (bounded depth, e.g. 3 hops) and
+re-resolved through (1)–(2) at the terminal rule. Log rules that resolve via
+none of these — visible residual, not silent data loss.
+
+**Scope note — recommendation/constraint rules intentionally NOT touched.**
+This workspace has zero `rule_type=10`/`rule_type=5` rows at all (verified —
+not a join bug, a genuine data gap), so there is no real data to confirm
+whether `bm_config_marked_attr` applies the same way to those rule types.
+`mark_type`'s naming ("marked" as in UI-marked/hidden) suggests it may be
+hiding-specific. Extending this fix to recommendation/constraint without
+evidence would repeat the exact guessing mistake this whole investigation
+exists to avoid — defer until an export with real type-10/5 data surfaces the
+same gap, then re-run this same investigation method against it.
+
+**Re-ingestion required? No.** `bm_config_marked_attr` and
+`bm_config_rule_assoc` already exist in Postgres for workspace 12 with real
+data, from the original ingestion — nothing new needs to be extracted from
+the XML. This is a pure query/join change in `cpq/rdb.py` + `cpq/engine.py`;
+it takes effect the next time the updated code runs, no pipeline re-run, no
+reprojection.
+
+**Test addition:** a scenario deriving, from the resolved sample, how many
+declarative hiding rules resolve via each path (action / marked_attr / chain
+/ unresolved) — regression guard against silently losing coverage again, and
+a concrete "how many rules recovered" metric (32/35 here) to report
+before/after on any export.
+
+**Implemented and verified against workspace 12 (live, real data):**
+`load_hiding_rules(12)` now returns **81 usable `HidingRule` objects, up from
+0** before this fix — confirmed by direct execution against the running API
+container. One important, honestly-reported caveat found during this
+verification: **none of the 81 recovered rules target any of this dataset's
+15 formal `BmConfigAttr` entities** (checked directly — zero id overlap).
+They govern layout/property-level elements elsewhere in this bundled export,
+not the conversational attributes `load_product_config` surfaces for the
+"SL3500e" product specifically. So on *this* sample, Phase B of
+`CPQ_CASCADE_CONVERSATION_PLAN.md` will correctly show 0 rule-governed attrs
+for SL3500e — that is data reality, not a residual bug. The fix is proven
+correct at the rule-loading level; whether it actually reduces
+`CPQ_Quote_MSI`'s 85-attribute count can only be confirmed against that
+workspace's own data, which remains inaccessible from this environment.
 
 ---
 
