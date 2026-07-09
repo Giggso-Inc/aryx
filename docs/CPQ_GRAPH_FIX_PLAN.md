@@ -1,6 +1,6 @@
 # CPQ Graph-RAG Fix Plan — 6 Diagnostic Issues
 
-**Status:** Implemented on branch `feat/cpq-graph-fixes` — all 4 phases landed, S1–S7 green
+**Status:** Phases 1–4 implemented on branch `fix/cpq-graph-rag-issues` (PR #69) — S1–S7 green. **§6a (rule-target resolution follow-up) is a newly discovered, NOT-YET-implemented gap** — found via live audit against workspace 12, see §6a for details before treating this plan as fully closed.
 **Date:** 2026-07-09
 **Source:** "Aryx Graph-RAG Configuration Engine: Diagnostic Findings & Action Items" (customer debugging report)
 **Sample test asset:** `SL3500e_Dummy_Config.xml` (BigMachines `bm_config_zip_cache` export, ~6 MB) — used as the *default* test input only; nothing in the implementation or tests may hardcode values from this file.
@@ -289,6 +289,72 @@ Phase 3 (state/orchestration)   ──┘
   full fidelity.
 - **Reprojection cost:** full-graph rebuild per workspace; acceptable because
   projection is already a full rebuild (`graph.clear()` + re-add).
+
+---
+
+## 6a. Follow-up fix — `load_hiding_rules` misses chained/layout-targeted rules
+
+**Discovered:** post-implementation audit against workspace 12 (real ingested
+data), while investigating why a production workspace (`CPQ_Quote_MSI`) was
+still prompting for 85 individual attributes.
+
+**Problem.** `load_hiding_rules` (§4, already shipped) assumes every
+declarative hiding rule (`rule_type=11`, `condition_function_id=-1`) has a
+matching `BmConfigRuleAction` row carrying the target `attribute_id`. On real
+data this assumption is wrong for a meaningful share of hiding rules.
+
+**Root cause, verified against workspace 12's real Postgres data** (35
+declarative `rule_type=11` rows, checked directly):
+
+- **0 of 35** have a matching `BmConfigRuleAction` row — `action_type` join
+  returns nothing for any of them.
+- Each rule's own `attr_id` field is the unused sentinel `"-1"` — the target
+  isn't on the rule entity itself either.
+- The real target lives in tables neither `load_hiding_rules` nor
+  `_load_rule_join_data` (Phase 2·0) currently reads:
+  - **`bm_config_layout_attr_assoc`** (331 rows, already ingested) — carries
+    **both** `rule_id` and `attr_id` on the same row. This is the direct,
+    common-case link: rule → target attribute, via the layout-attribute
+    association rather than `BmConfigRuleAction`.
+  - **`bm_config_rule_layout_assoc`** (4 rows) — `rule_id → layout_id`, for
+    rules that hide/show an entire layout section rather than one attribute
+    (fans out to every attribute under that layout via the table above).
+  - **`bm_config_rule_assoc`** (26 rows) — `rule_id → child_rule_id`, for
+    rules that chain to another rule rather than declaring a target
+    themselves; the terminal rule in the chain is resolved the same way.
+
+**Impact.** Every hiding rule using one of these three patterns is silently
+treated as having no target — `load_hiding_rules` returns fewer usable rules
+than actually exist, and any attribute whose visibility depends on one of
+these rules never gets governed by D2's rule-outcome eligibility test
+(`CPQ_CASCADE_CONVERSATION_PLAN.md` §2). This is very likely the real reason
+`CPQ_Quote_MSI` (APX NEXT) still shows 85 unresolved attributes even after
+the eager-payload fix (3c) landed — most are probably hidden/revealed by
+layout- or chain-targeted rules, not simple attribute-action rules.
+
+**Fix.** Extend `load_hiding_rules` (and the equivalent joins in
+`load_recommendation_rules`/`load_constraint_rules` — the same three tables
+likely affect all three rule types, not just hiding) to resolve a rule's
+target through, in order: (1) existing `BmConfigRuleAction.attribute_id`,
+(2) `bm_config_layout_attr_assoc` by `rule_id` (direct attr_id on the row),
+(3) `bm_config_rule_layout_assoc.layout_id` expanded to every attribute under
+that layout via `bm_config_layout_attr_assoc`, (4) `bm_config_rule_assoc
+.child_rule_id` followed recursively (bounded depth) to the terminal rule,
+then re-resolved through (1)–(3).
+
+**Re-ingestion required? No.** Verified: all three tables
+(`bm_config_layout_attr_assoc`, `bm_config_rule_layout_assoc`,
+`bm_config_rule_assoc`) already exist in Postgres for workspace 12 with real
+data, from the original ingestion — nothing new needs to be extracted from
+the XML. This is a pure query/join change in `cpq/rdb.py` + `cpq/engine.py`;
+it takes effect the next time the updated code runs, no pipeline re-run, no
+reprojection.
+
+**Test addition:** new scenario deriving, from the resolved sample, how many
+declarative rules of each type resolve a target via each of the four paths
+above vs. resolve to nothing — regression guard against silently losing
+coverage again, and a concrete "how many rules did this recover" metric to
+report before/after.
 
 ---
 
