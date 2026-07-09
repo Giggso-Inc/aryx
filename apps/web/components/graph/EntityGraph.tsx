@@ -8,7 +8,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  AlertCircle, ChevronDown, GitMerge, Loader2, RefreshCw, Search, X,
+  AlertCircle, GitMerge, Loader2, RefreshCw, Search, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { autoLayout } from "@/lib/canvasLayout";
@@ -20,27 +20,48 @@ type EntityNode = {
   attributes?: Record<string, unknown>;
 };
 type EntityRel = { source: number; target: number; name: string };
+type NeighborNode = {
+  id: number;
+  type: string;
+  name: string;
+  attributes?: Record<string, unknown>;
+  relationship: string;
+  direction: "in" | "out";
+};
 
 interface DetailPanelProps {
   entity: EntityNode;
-  workspaceId: number;
+  neighbors: NeighborNode[];
+  loading: boolean;
+  error: string | null;
   onClose: () => void;
-  onNavigate: (id: number) => void;
-  onExpandOnCanvas: (entityId: number, neighbors: Array<{ id: number; type: string; name: string; relationship: string }>) => void;
+  onNavigate: (neighbor: NeighborNode) => void;
+  onExpandOnCanvas: (entityId: number, neighbors: NeighborNode[]) => void;
 }
 
-function DetailPanel({ entity, workspaceId, onClose, onNavigate, onExpandOnCanvas }: DetailPanelProps) {
-  const [neighbors, setNeighbors] = useState<Array<{ id: number; type: string; name: string; relationship: string }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [expanding, setExpanding] = useState(false);
+function formatAttributeValue(value: unknown): string {
+  if (value == null) return "—";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
 
-  useEffect(() => {
-    setLoading(true);
-    api.getEntityNeighbors(entity.id, workspaceId)
-      .then(setNeighbors)
-      .catch(() => setNeighbors([]))
-      .finally(() => setLoading(false));
-  }, [entity.id, workspaceId]);
+function DetailPanel({
+  entity,
+  neighbors,
+  loading,
+  error,
+  onClose,
+  onNavigate,
+  onExpandOnCanvas,
+}: DetailPanelProps) {
+  const [expanding, setExpanding] = useState(false);
+  const attributes = entity.attributes ?? {};
+  const hasAttributes = Object.keys(attributes).length > 0;
 
   return (
     <div className="absolute right-0 top-0 bottom-0 z-10 w-72 border-l border-navy-100 bg-white shadow-soft flex flex-col">
@@ -56,7 +77,7 @@ function DetailPanel({ entity, workspaceId, onClose, onNavigate, onExpandOnCanva
               type="button"
               disabled={expanding}
               title="Show all connections for this node on the canvas"
-              onClick={async () => {
+              onClick={() => {
                 setExpanding(true);
                 onExpandOnCanvas(entity.id, neighbors);
                 setExpanding(false);
@@ -74,19 +95,29 @@ function DetailPanel({ entity, workspaceId, onClose, onNavigate, onExpandOnCanva
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {entity.attributes && Object.keys(entity.attributes).length > 0 && (
-          <div>
-            <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-navy-500">Attributes</div>
+        <div>
+          <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-navy-500">Attributes</div>
+          {loading && !hasAttributes ? (
+            <div className="flex items-center gap-1 text-[12px] text-subtle">
+              <Loader2 size={11} className="animate-spin" />Loading details…
+            </div>
+          ) : hasAttributes ? (
             <div className="space-y-1">
-              {Object.entries(entity.attributes).map(([k, v]) => (
+              {Object.entries(attributes).map(([k, v]) => (
                 <div key={k} className="rounded-lg bg-navy-50 px-2.5 py-1.5">
                   <div className="text-[10px] text-subtle">{k}</div>
-                  <div className="truncate text-[12px] text-navy-800">{String(v)}</div>
+                  <div className="whitespace-pre-wrap break-words text-[12px] text-navy-800">
+                    {formatAttributeValue(v)}
+                  </div>
                 </div>
               ))}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="rounded-lg border border-dashed border-navy-100 bg-navy-50/50 px-2.5 py-2 text-[12px] italic text-subtle">
+              No attributes available for this node.
+            </div>
+          )}
+        </div>
         <div>
           <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-navy-500">
             Neighbors {loading ? "…" : `(${neighbors.length})`}
@@ -95,15 +126,19 @@ function DetailPanel({ entity, workspaceId, onClose, onNavigate, onExpandOnCanva
             <div className="flex items-center gap-1 text-[12px] text-subtle">
               <Loader2 size={11} className="animate-spin" />Loading…
             </div>
+          ) : error ? (
+            <div className="rounded-lg border border-rose-100 bg-rose-50 px-2.5 py-2 text-[12px] text-rose-700">
+              {error}
+            </div>
           ) : neighbors.length === 0 ? (
             <div className="text-[12px] text-subtle italic">No connections</div>
           ) : (
             <ul className="space-y-1">
               {neighbors.map((n) => (
-                <li key={n.id}>
+                <li key={`${n.id}-${n.relationship}-${n.direction}`}>
                   <button
                     type="button"
-                    onClick={() => onNavigate(n.id)}
+                    onClick={() => onNavigate(n)}
                     className="focus-ring w-full rounded-lg border border-navy-100 px-2.5 py-1.5 text-left hover:bg-navy-50"
                   >
                     <div className="text-[10px] text-steel-500">{n.type} · {n.relationship}</div>
@@ -188,11 +223,30 @@ function PathFinder({ entities, workspaceId, onPath }: PathFinderProps) {
 
 // ── Build ReactFlow nodes / edges ─────────────────────────────────────────────
 
+function edgeKey(source: number, target: number, name: string): string {
+  return `${source}->${target}:${name}`;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.replace("#", "");
+  const safeHex = normalized.length === 3
+    ? normalized.split("").map((char) => `${char}${char}`).join("")
+    : normalized;
+  const int = Number.parseInt(safeHex, 16);
+  const r = (int >> 16) & 255;
+  const g = (int >> 8) & 255;
+  const b = int & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function buildGraph(
   entities: EntityNode[],
   rels: EntityRel[],
   typeSet: Set<string>,
   nameFilter: string,
+  selectedId: number | null,
+  selectedNeighborIds: Set<number>,
+  selectedEdgeKeys: Set<string>,
   pathIds: Set<number>,
   typeIndex: Map<string, number>,
   schemaOnlyTypes: string[],
@@ -203,23 +257,51 @@ function buildGraph(
     (nameFilter === "" || e.name.toLowerCase().includes(nameFilter.toLowerCase())),
   );
   const shownIds = new Set(shown.map((e) => e.id));
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
   const instanceTypeNames = new Set(entities.map((e) => e.type));
+  const hasSelection = selectedId !== null;
+  const selectedAccentColor = selectedId == null
+    ? "#4068A8"
+    : typeColor(typeIndex.get(entityById.get(selectedId)?.type ?? "") ?? 0);
 
   const nodes: Node[] = shown.map((e) => {
     const idx = typeIndex.get(e.type) ?? 0;
     const color = typeColor(idx);
-    const highlighted = pathIds.size > 0 && pathIds.has(e.id);
+    const isSelected = selectedId === e.id;
+    const isNeighbor = !isSelected && selectedNeighborIds.has(e.id);
+    const pathHighlighted = !hasSelection && pathIds.size > 0 && pathIds.has(e.id);
     const isExpanded = expandedIds.has(e.id);
+    const isContextNode = isSelected || isNeighbor;
+    const isDimmed = hasSelection && !isContextNode;
+    const background = isSelected
+      ? hexToRgba(color, 0.18)
+      : isNeighbor
+        ? hexToRgba(color, 0.08)
+        : pathHighlighted
+          ? "#fef3c7"
+          : "#ffffff";
+    const borderWidth = isSelected ? 3 : isExpanded ? 3 : 2;
+    const typeLabelColor = isContextNode ? "#334155" : color;
+    const nodeOpacity = isDimmed ? 0.5 : 1;
+    const boxShadow = isSelected
+      ? `0 0 0 4px ${hexToRgba(color, 0.22)}, 0 10px 24px rgba(15, 23, 38, 0.14)`
+      : isNeighbor
+        ? `0 0 0 3px ${hexToRgba(color, 0.12)}, 0 4px 12px rgba(15, 23, 38, 0.08)`
+        : pathHighlighted
+          ? `0 0 0 3px ${hexToRgba(color, 0.18)}, 0 2px 8px rgba(0,0,0,0.12)`
+          : isExpanded
+            ? `0 0 0 3px ${hexToRgba(color, 0.16)}, 0 2px 8px rgba(0,0,0,0.10)`
+            : "0 1px 4px rgba(0,0,0,0.08)";
     return {
       id: String(e.id),
       type: "default",
       data: {
         label: (
           <div style={{ textAlign: "center", lineHeight: 1.3 }}>
-            <div style={{ fontWeight: highlighted ? 700 : 600, fontSize: 11, color: "#0F1726" }}>
+            <div style={{ fontWeight: isSelected || pathHighlighted ? 700 : 600, fontSize: 11, color: "#0F1726" }}>
               {e.name}
             </div>
-            <div style={{ fontSize: 10, color: color, marginTop: 1 }}>
+            <div style={{ fontSize: 10, color: typeLabelColor, marginTop: 1 }}>
               {e.type}
             </div>
             {isExpanded && (
@@ -230,16 +312,13 @@ function buildGraph(
       },
       position: { x: 0, y: 0 },
       style: {
-        background: highlighted ? "#fef3c7" : "#ffffff",
-        border: isExpanded ? `3px solid ${color}` : `2px solid ${color}`,
+        background,
+        border: `${borderWidth}px solid ${color}`,
         borderRadius: 8,
         padding: "6px 10px",
         width: 160,
-        boxShadow: highlighted
-          ? `0 0 0 3px ${color}55, 0 2px 8px rgba(0,0,0,0.12)`
-          : isExpanded
-            ? `0 0 0 3px ${color}44, 0 2px 8px rgba(0,0,0,0.10)`
-            : "0 1px 4px rgba(0,0,0,0.08)",
+        boxShadow,
+        opacity: nodeOpacity,
       },
     };
   });
@@ -282,24 +361,36 @@ function buildGraph(
   const edges: Edge[] = rels
     .filter((r) => shownIds.has(r.source) && shownIds.has(r.target))
     .map((r, i) => {
-      const highlighted = pathIds.has(r.source) && pathIds.has(r.target);
+      const selectedEdge = hasSelection && selectedEdgeKeys.has(edgeKey(r.source, r.target, r.name));
+      const highlighted = !hasSelection && pathIds.has(r.source) && pathIds.has(r.target);
+      const isDimmed = hasSelection && !selectedEdge;
+      const stroke = selectedEdge ? selectedAccentColor : highlighted ? "#D97706" : "#4068A8";
       return {
         id: `e${r.source}-${r.target}-${i}`,
         source: String(r.source),
         target: String(r.target),
         label: r.name,
         type: "smoothstep",
-        animated: highlighted,
+        animated: selectedEdge || highlighted,
         style: {
-          stroke: highlighted ? "#D97706" : "#4068A8",
-          strokeWidth: highlighted ? 2.5 : 1.5,
+          stroke,
+          strokeWidth: selectedEdge ? 2.8 : highlighted ? 2.5 : 1.5,
+          opacity: isDimmed ? 0.22 : 1,
         },
-        labelStyle: { fill: "#334155", fontSize: 10, fontWeight: 500 },
-        labelBgStyle: { fill: "#f8fafc", fillOpacity: 0.9 },
+        labelStyle: {
+          fill: selectedEdge ? "#0F1726" : "#334155",
+          fontSize: 10,
+          fontWeight: selectedEdge ? 600 : 500,
+          opacity: isDimmed ? 0.45 : 1,
+        },
+        labelBgStyle: {
+          fill: selectedEdge ? "#ffffff" : "#f8fafc",
+          fillOpacity: isDimmed ? 0.45 : 0.9,
+        },
         labelBgPadding: [4, 2] as [number, number],
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: highlighted ? "#D97706" : "#4068A8",
+          color: stroke,
           width: 14,
           height: 14,
         },
@@ -314,6 +405,7 @@ function buildGraph(
 export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const rfInstance = useRef<ReactFlowInstance | null>(null);
   const fitOnNextRender = useRef(true); // true only after a full load or reload
+  const detailRequestId = useRef(0);
   const [allEntities, setAllEntities] = useState<EntityNode[]>([]);
   const [allRels, setAllRels] = useState<EntityRel[]>([]);
   const [schemaTypes, setSchemaTypes] = useState<string[]>([]);
@@ -321,12 +413,60 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [nameFilter, setNameFilter] = useState("");
-  const [selected, setSelected] = useState<EntityNode | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedEntity, setSelectedEntity] = useState<EntityNode | null>(null);
+  const [selectedNeighbors, setSelectedNeighbors] = useState<NeighborNode[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [pathIds, setPathIds] = useState<Set<number>>(new Set());
   const [showPath, setShowPath] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  const clearSelection = useCallback(() => {
+    detailRequestId.current += 1;
+    setSelectedId(null);
+    setSelectedEntity(null);
+    setSelectedNeighbors([]);
+    setDetailLoading(false);
+    setDetailError(null);
+  }, []);
+
+  const mergeEntities = useCallback((entitiesToMerge: EntityNode[]) => {
+    if (entitiesToMerge.length === 0) return;
+    setAllEntities((prev) => {
+      const next = [...prev];
+      const indexById = new Map(next.map((entity, index) => [entity.id, index]));
+      for (const entity of entitiesToMerge) {
+        const existingIndex = indexById.get(entity.id);
+        if (existingIndex == null) {
+          indexById.set(entity.id, next.length);
+          next.push(entity);
+          continue;
+        }
+        const existing = next[existingIndex];
+        next[existingIndex] = {
+          ...existing,
+          ...entity,
+          attributes: entity.attributes ?? existing.attributes,
+        };
+      }
+      return next;
+    });
+  }, []);
+
+  const appendRelationship = useCallback((relationship: EntityRel) => {
+    setAllRels((prev) => (
+      prev.some((existing) => (
+        existing.source === relationship.source &&
+        existing.target === relationship.target &&
+        existing.name === relationship.name
+      ))
+        ? prev
+        : [...prev, relationship]
+    ));
+  }, []);
 
   // allTypes includes entity instance types; schema-only types are included
   // only when the workspace has at least one ingested entity so that a fresh
@@ -344,6 +484,27 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     allTypes.forEach((t, i) => m.set(t, i));
     return m;
   }, [allTypes]);
+
+  const selectedSummary = useMemo(() => (
+    selectedId == null
+      ? null
+      : allEntities.find((entity) => entity.id === selectedId) ?? null
+  ), [allEntities, selectedId]);
+
+  const panelEntity = selectedEntity ?? selectedSummary;
+
+  const selectedNeighborIds = useMemo(() => (
+    new Set(selectedNeighbors.map((neighbor) => neighbor.id))
+  ), [selectedNeighbors]);
+
+  const selectedEdgeKeys = useMemo(() => {
+    if (selectedId == null) return new Set<string>();
+    return new Set(selectedNeighbors.map((neighbor) => (
+      neighbor.direction === "out"
+        ? edgeKey(selectedId, neighbor.id, neighbor.relationship)
+        : edgeKey(neighbor.id, selectedId, neighbor.relationship)
+    )));
+  }, [selectedId, selectedNeighbors]);
 
   const load = useCallback(async () => {
     fitOnNextRender.current = true; // full reload → fit the new graph
@@ -368,6 +529,50 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   }, [workspaceId]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { clearSelection(); }, [clearSelection, workspaceId]);
+
+  const selectEntity = useCallback(async (id: number, preloadedEntity?: EntityNode) => {
+    const requestId = detailRequestId.current + 1;
+    detailRequestId.current = requestId;
+    const summary = preloadedEntity ?? allEntities.find((entity) => entity.id === id) ?? null;
+
+    setSelectedId(id);
+    setSelectedEntity(summary);
+    setSelectedNeighbors([]);
+    setDetailError(null);
+    setDetailLoading(true);
+    setPathIds(new Set());
+
+    try {
+      const [entity, neighbors] = await Promise.all([
+        preloadedEntity ? Promise.resolve(preloadedEntity) : api.getEntity(id, workspaceId),
+        api.getEntityNeighbors(id, workspaceId),
+      ]);
+
+      if (detailRequestId.current !== requestId) return;
+
+      mergeEntities([
+        entity,
+        ...neighbors.map((neighbor) => ({
+          id: neighbor.id,
+          type: neighbor.type,
+          name: neighbor.name,
+          attributes: neighbor.attributes,
+        })),
+      ]);
+      setSelectedEntity(entity);
+      setSelectedNeighbors(neighbors);
+    } catch (e) {
+      if (detailRequestId.current !== requestId) return;
+      setSelectedEntity(summary);
+      setSelectedNeighbors([]);
+      setDetailError(e instanceof Error ? e.message : "Failed to load node details.");
+    } finally {
+      if (detailRequestId.current === requestId) {
+        setDetailLoading(false);
+      }
+    }
+  }, [allEntities, mergeEntities, workspaceId]);
 
   // Rebuild graph whenever filters or data changes, then fit view
   useEffect(() => {
@@ -376,7 +581,17 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     // Schema-only placeholder nodes only make sense in empty workspaces; suppress
     // them when real entity instances exist so they don't clutter the canvas.
     const { nodes: n, edges: e } = buildGraph(
-      allEntities, allRels, typeFilter, nameFilter, pathIds, typeIndex, [], expandedIds,
+      allEntities,
+      allRels,
+      typeFilter,
+      nameFilter,
+      selectedId,
+      selectedNeighborIds,
+      selectedEdgeKeys,
+      pathIds,
+      typeIndex,
+      [],
+      expandedIds,
     );
     setNodes(n);
     setEdges(e);
@@ -387,49 +602,79 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
         rfInstance.current?.fitView({ padding: 0.15, duration: 300 });
       }, 80);
     }
-  }, [allEntities, allRels, schemaTypes, typeFilter, nameFilter, pathIds, typeIndex, expandedIds, loading, setNodes, setEdges]);
+  }, [
+    allEntities,
+    allRels,
+    schemaTypes,
+    typeFilter,
+    nameFilter,
+    selectedId,
+    selectedNeighborIds,
+    selectedEdgeKeys,
+    pathIds,
+    typeIndex,
+    expandedIds,
+    loading,
+    setNodes,
+    setEdges,
+  ]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     // schema:: nodes are type placeholders — not selectable entity instances
     if (node.id.startsWith("schema::")) return;
-    const entity = allEntities.find((e) => String(e.id) === node.id);
-    if (entity) { setSelected(entity); setPathIds(new Set()); }
-  }, [allEntities]);
+    void selectEntity(Number(node.id));
+  }, [selectEntity]);
 
   // Expand a node's 1-hop neighbors onto the canvas — adds missing entities and edges.
   // Called from the "Expand" button in the sidebar so there's no double-click race condition.
   const expandOnCanvas = useCallback((
     entityId: number,
-    neighbors: Array<{ id: number; type: string; name: string; relationship: string }>,
+    neighbors: NeighborNode[],
   ) => {
     setExpandedIds((prev) => new Set([...prev, entityId]));
-    setAllEntities((prev) => {
-      const existing = new Set(prev.map((e) => e.id));
-      const newOnes = neighbors
-        .filter((n) => !existing.has(n.id))
-        .map((n) => ({ id: n.id, type: n.type, name: n.name }));
-      return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+    mergeEntities(neighbors.map((neighbor) => ({
+      id: neighbor.id,
+      type: neighbor.type,
+      name: neighbor.name,
+      attributes: neighbor.attributes,
+    })));
+    neighbors.forEach((neighbor) => {
+      appendRelationship(
+        neighbor.direction === "out"
+          ? { source: entityId, target: neighbor.id, name: neighbor.relationship }
+          : { source: neighbor.id, target: entityId, name: neighbor.relationship },
+      );
     });
-    setAllRels((prev) => {
-      const existingKey = new Set(prev.map((r) => `${r.source}-${r.target}`));
-      const newRels = neighbors.flatMap((n) => {
-        const edges: EntityRel[] = [];
-        if (!existingKey.has(`${entityId}-${n.id}`)) {
-          edges.push({ source: entityId, target: n.id, name: n.relationship });
-        }
-        if (!existingKey.has(`${n.id}-${entityId}`)) {
-          edges.push({ source: n.id, target: entityId, name: n.relationship });
-        }
-        return edges;
-      });
-      return newRels.length > 0 ? [...prev, ...newRels] : prev;
-    });
-  }, []);
+  }, [appendRelationship, mergeEntities]);
 
-  const navigateTo = (id: number) => {
-    const entity = allEntities.find((e) => e.id === id);
-    if (entity) setSelected(entity);
-  };
+  const navigateTo = useCallback(async (neighbor: NeighborNode) => {
+    let resolvedEntity: EntityNode | undefined;
+    const isOnCanvas = allEntities.some((entity) => entity.id === neighbor.id);
+
+    if (!isOnCanvas) {
+      try {
+        resolvedEntity = await api.getEntity(neighbor.id, workspaceId);
+      } catch {
+        resolvedEntity = {
+          id: neighbor.id,
+          type: neighbor.type,
+          name: neighbor.name,
+          attributes: neighbor.attributes,
+        };
+      }
+
+      mergeEntities([resolvedEntity]);
+      if (selectedId != null) {
+        appendRelationship(
+          neighbor.direction === "out"
+            ? { source: selectedId, target: neighbor.id, name: neighbor.relationship }
+            : { source: neighbor.id, target: selectedId, name: neighbor.relationship },
+        );
+      }
+    }
+
+    await selectEntity(neighbor.id, resolvedEntity);
+  }, [allEntities, appendRelationship, mergeEntities, selectEntity, selectedId, workspaceId]);
 
   const toggleType = (t: string) => {
     setTypeFilter((prev) => {
@@ -471,7 +716,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           <Search size={13} className="text-subtle" />
           <input
             value={nameFilter}
-            onChange={(e) => { setNameFilter(e.target.value); setSelected(null); }}
+            onChange={(e) => { setNameFilter(e.target.value); clearSelection(); }}
             placeholder="Search entities…"
             className="w-40 bg-transparent text-[12px] text-navy-800 outline-none placeholder:text-subtle"
           />
@@ -548,7 +793,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
       </div>
 
       {/* ReactFlow canvas */}
-      <div className={cn("flex-1", selected ? "mr-72" : "")}>
+      <div className={cn("flex-1", panelEntity ? "mr-72" : "")}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -571,7 +816,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           <MiniMap
             nodeColor={(n) => {
               const borderStyle = n.style?.border as string | undefined;
-              return borderStyle?.replace("2px solid ", "")?.replace("2px dashed ", "") || "#4068A8";
+              return borderStyle?.match(/(#[0-9A-Fa-f]{6})/)?.[1] ?? "#4068A8";
             }}
             maskColor="rgba(248,249,252,0.8)"
             className="!bottom-3 !right-3"
@@ -580,11 +825,13 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
       </div>
 
       {/* Detail panel */}
-      {selected && (
+      {panelEntity && (
         <DetailPanel
-          entity={selected}
-          workspaceId={workspaceId}
-          onClose={() => setSelected(null)}
+          entity={panelEntity}
+          neighbors={selectedNeighbors}
+          loading={detailLoading}
+          error={detailError}
+          onClose={clearSelection}
           onNavigate={navigateTo}
           onExpandOnCanvas={expandOnCanvas}
         />
