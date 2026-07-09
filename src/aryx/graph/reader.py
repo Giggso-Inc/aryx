@@ -428,8 +428,17 @@ def _parse_attrs(raw: Any) -> dict[str, Any]:
         except (TypeError, ValueError):
             return {}
     if isinstance(raw, dict):
-        attrs = {k: v for k, v in raw.items()
-                 if k not in _INTERNAL_PROPS and k != "attrs"}
+        attrs: dict[str, Any] = {}
+        for k, v in raw.items():
+            if k in _INTERNAL_PROPS or k == "attrs":
+                continue
+            # Source attrs whose names collide with projection fields are
+            # written as src_id / src_name / ... — map them back so callers
+            # see the original attribute names.
+            if k.startswith("src_") and k[4:] in _INTERNAL_PROPS:
+                attrs.setdefault(k[4:], v)
+            else:
+                attrs[k] = v
         legacy = raw.get("attrs")
         if isinstance(legacy, str) and legacy:
             try:

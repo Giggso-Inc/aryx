@@ -61,8 +61,14 @@ def _lift_props(attributes: dict[str, Any]) -> dict[str, Any]:
     cap = settings.graph_attr_value_cap
     out: dict[str, Any] = {}
     for key, val in attributes.items():
-        if val is None or key in _RESERVED_PROPS:
+        if val is None:
             continue
+        if key in _RESERVED_PROPS:
+            # Source data legitimately carries its own id/name/type (e.g. the
+            # BigMachines-native `id` that rules join on). Those must stay
+            # queryable — store them under a src_ prefix instead of letting
+            # the projection's canonical fields shadow them.
+            key = f"src_{key}"
         if not _LABEL_RE.match(key):
             logger.debug("skipping attr %r: not a safe property name", key)
             continue

@@ -10,7 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Aryx runtime settings sourced from ARYX_-prefixed env variables."""
 
-    model_config = SettingsConfigDict(env_prefix="ARYX_", env_file=".env")
+    # extra="ignore": the .env file is shared with docker-compose services
+    # (SMTP, SSO, frontend URLs, ...) — keys that aren't Aryx settings must
+    # not fail validation.
+    model_config = SettingsConfigDict(env_prefix="ARYX_", env_file=".env",
+                                      extra="ignore")
 
     rdb_dsn: str = Field(
         default="postgresql://aryx:aryx@localhost:5432/aryx",
