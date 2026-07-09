@@ -64,21 +64,23 @@ export function WorkspaceIndexPage() {
 
     const loadMetrics = async () => {
       const metricResults = await Promise.allSettled(workspaces.map(async (workspace) => {
-        const [members, datasources] = await Promise.all([
+        const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
+        const [membersResult, datasourcesResult, summaryResult] = await Promise.allSettled([
           shayApi.listWorkspaceMembers(workspace.id, session.access_token),
           shayApi.listDatasources(workspace.id, session.access_token),
+          aryxWorkspaceId
+            ? api.dataSummary(aryxWorkspaceId)
+            : Promise.resolve(null),
         ]);
-
-        const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
-        const summary = aryxWorkspaceId
-          ? await api.dataSummary(aryxWorkspaceId).catch(() => null)
-          : null;
+        const members = membersResult.status === "fulfilled" ? membersResult.value : null;
+        const datasources = datasourcesResult.status === "fulfilled" ? datasourcesResult.value : null;
+        const summary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
 
         return [workspace.id, {
-          users: members.total ?? members.members.length,
+          users: members?.total ?? members?.members.length ?? null,
           entities: summary?.total_entities ?? null,
           entityTypes: summary?.type_count ?? null,
-          dataSources: datasources.total ?? datasources.items.length,
+          dataSources: datasources?.total ?? datasources?.items.length ?? null,
         }] as const;
       }));
 

@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Agent, fetch as undiciFetch } from "undici";
 
+import {
+  aryxTarget,
+  requireInternalApiKey,
+  requireShayBearerAuth,
+} from "../_aryxProxy";
+
 /**
  * Proxy for /ask — CPU LLM inference (Ollama llama3.2:3b) takes 90–300+ seconds.
  *
@@ -15,8 +21,9 @@ import { Agent, fetch as undiciFetch } from "undici";
  * both raised to 900 s. AbortSignal is kept as the outer ceiling (15 min) so
  * runaway requests are still cancelled.
  *
- * Trust model: for production deployments exposed via a reverse proxy, set
- * ARYX_PROXY_SECRET and configure the proxy to inject the x-aryx-key header.
+ * Trust model: browser calls must carry a valid Shay bearer token; this route
+ * validates that token and then forwards the request to Aryx with the internal
+ * service key only.
  */
 
 // Module-level singleton — allocated once, reused across requests.
@@ -32,22 +39,18 @@ process.once("SIGTERM", () => slowLlmAgent.close());
 process.once("SIGINT",  () => slowLlmAgent.close());
 
 export async function POST(req: NextRequest) {
-  const secret = process.env.ARYX_PROXY_SECRET;
-  if (secret && req.headers.get("x-aryx-key") !== secret) {
-    return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
+  const auth = await requireShayBearerAuth(req);
+  if (auth instanceof NextResponse) {
+    return auth;
   }
-  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
-  if (!internalApiKey) {
-    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
+  const internalApiKey = requireInternalApiKey();
+  if (internalApiKey instanceof NextResponse) {
+    return internalApiKey;
   }
 
-  const target =
-    process.env.NODE_ENV === "development"
-      ? "http://localhost:8088"
-      : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
   try {
-    const upstream = await undiciFetch(`${target}/ask`, {
+    const upstream = await undiciFetch(`${aryxTarget()}/ask`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

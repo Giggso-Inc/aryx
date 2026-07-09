@@ -39,18 +39,23 @@ class RecommendationRule:
 
 @dataclass
 class ConstraintRule:
-    """One declarative constraint rule (rule_type=5, condition_type=1).
+    """One constraint rule (rule_type=5).
 
-    When condition_attr equals condition_value, only allowed_values remain
-    valid item_values for target_attr. Multiple ConstraintRules for the same
-    target are intersected (AND semantics).
-    Only declarative rules (condition_function_id=-1) are loaded.
+    Declarative form: when condition_attr equals condition_value, only
+    allowed_values remain valid item_values for target_attr. Multiple
+    ConstraintRules for the same target are intersected (AND semantics).
+
+    Script form (BML): ``script`` holds the raw BML body from the referenced
+    BmFunction. At apply time the evaluator derives allowed_values from the
+    current filled variables; condition fields are unused (the script embeds
+    its own conditions on variable names).
     """
     rule_name: str
     condition_attr_id: int
     condition_value: str
     target_attr_id: int
     allowed_values: list[str]  # item_values that remain valid when condition fires
+    script: str | None = None  # raw BML — evaluated dynamically when set
 
 
 @dataclass
@@ -74,6 +79,10 @@ class ConfigAttr:
     options: list[MenuOption]  # empty → free-text input
     order: int = 999
     tier: str = "independent"  # "independent" | "dependent"
+    # Source-native id (e.g. BigMachines attribute id from the ingested XML).
+    # Rule inputs/actions reference attributes by THIS id, not by the aryx
+    # entity_id — rule joins must resolve through both.
+    source_id: int | None = None
 
 
 @dataclass
@@ -91,6 +100,12 @@ class CpqSession:
     filled: dict[str, str] = field(default_factory=dict)
     # variable_name → friendly display label (shown to user in summary)
     display_filled: dict[str, str] = field(default_factory=dict)
+    # variable_name → how the value was obtained:
+    # "user" (explicit answer) | "hint" (stated in NL) | "cascade" (copied from
+    # a validated sibling) | "rule" (recommendation rule) | "default" |
+    # "auto" (single-remaining-option). build_payload keeps none-like codes
+    # (e.g. Region="NA") for user-confirmed sources instead of dropping them.
+    filled_source: dict[str, str] = field(default_factory=dict)
     # variable_names not yet answered
     pending_variables: list[str] = field(default_factory=list)
     turn: int = 0

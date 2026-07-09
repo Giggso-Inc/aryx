@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import {
+  buildAryxForwardHeaders,
+  requireInternalApiKey,
+  requireShayBearerAuth,
+  aryxTarget,
+} from "../_aryxProxy";
+
 /**
  * Catch-all proxy for Aryx API calls. Specific route handlers (ask,
  * draft-brief, shay/*) take precedence over this handler because Next.js
@@ -14,35 +21,22 @@ async function proxy(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
-  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
-  if (!internalApiKey) {
-    return NextResponse.json(
-      { detail: "ARYX_INTERNAL_API_KEY is not configured" },
-      { status: 500 },
-    );
+  const auth = await requireShayBearerAuth(req);
+  if (auth instanceof NextResponse) {
+    return auth;
   }
-
-  const target =
-    process.env.NODE_ENV === "development"
-      ? "http://localhost:8088"
-      : (process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000");
+  const internalApiKey = requireInternalApiKey();
+  if (internalApiKey instanceof NextResponse) {
+    return internalApiKey;
+  }
 
   const { path: pathSegments } = await params;
   const path = pathSegments.join("/");
-  const url = `${target}/${path}${req.nextUrl.search}`;
-
-  const forwardHeaders: Record<string, string> = {
-    "x-aryx-api-key": internalApiKey,
-  };
-  // Do NOT forward Authorization — Aryx validates Bearer tokens as API keys
-  // (see security.py _has_authenticated_header). A Shay JWT forwarded here
-  // shadows the x-aryx-api-key check and causes 401.
-  const contentType = req.headers.get("Content-Type");
-  if (contentType) forwardHeaders["Content-Type"] = contentType;
+  const url = `${aryxTarget()}/${path}${req.nextUrl.search}`;
 
   const init: RequestInit = {
     method: req.method,
-    headers: forwardHeaders,
+    headers: buildAryxForwardHeaders(req, internalApiKey),
   };
   if (req.method !== "GET" && req.method !== "HEAD") {
     init.body = await req.arrayBuffer();

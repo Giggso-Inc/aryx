@@ -67,6 +67,41 @@ class OracleGraphReader:
                 )
                 return [r[0] for r in cur.fetchall() if r[0]]
 
+    def describe_schema(self, sample_per_type: int = 25) -> dict[str, Any]:
+        """Describe the actual stored schema for query generation (port parity).
+
+        Mirrors GraphReader.describe_schema: entity types, relationship names,
+        and observed attribute keys per type (sampled from the JSON column).
+        """
+        types = self.distinct_types()
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT name FROM aryx_graph_edge "
+                    "WHERE workspace_id = :1 ORDER BY name",
+                    (self._workspace_id,),
+                )
+                rel_names = [r[0] for r in cur.fetchall() if r[0]]
+                props_by_type: dict[str, list[str]] = {}
+                for t in types:
+                    cur.execute(
+                        "SELECT attributes FROM aryx_graph_vertex "
+                        "WHERE workspace_id = :1 AND type = :2 "
+                        "FETCH FIRST :3 ROWS ONLY",
+                        (self._workspace_id, t, max(1, int(sample_per_type))),
+                    )
+                    keys: set[str] = set()
+                    for (raw,) in cur.fetchall():
+                        keys.update(_parse_attrs(raw).keys())
+                    props_by_type[t] = sorted(keys)
+        return {
+            "node_pattern": "(e:Entity {type: $ontology_type})",
+            "edge_pattern": "(a:Entity)-[r:REL {name: $relationship_name}]->(b:Entity)",
+            "entity_types": types,
+            "relationship_names": rel_names,
+            "properties_by_type": props_by_type,
+        }
+
     def find_entities(self, ontology_type: str | None = None,
                       name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """Find entities filtered by type and/or case-insensitive name substring.

@@ -1,0 +1,112 @@
+Issues:
+1. Variable Names/Attribute are missing inside the folkerdb nodes/entities.
+2. Some entities are isolated and no relationship with other entities in the graph.
+3. Id value are getting change while ingesting data from xml file to folkerdb. In xml i.e 47 and folkerdb it is getting 57.
+4. Some relationship are missing between entities, there should be relationship between entity A -> B but it is missing.
+5. Item value is replaced with Item Variable while ingesting the data from xml file to folkerdb.
+
+Instructions:
+Debug this with andie, we can not have any data or entity missed in the ingestion, all the data MUST be in graph db. There has to be validation ensure no data getting missed. 
+IF there is some data is missing in the folker db, recheck it again and resolve the issue. 
+Create a separate workspace and test with xml. I will provide the xml for testing use this xml and test it i.e SL3500e_Dummy_Config.xml. This is SAMPLE TEST File. Don't do hardcoding using this xml file.
+I need full testing result at the end, how many entities got created and verify it with xml. And Also verify the relationship as well with the xml.
+
+/Andie Review the code and compare it with plan. Check the loop hole inside plan where it get failed or produce no result according to the expectation. In case of failure what are exit point and how mitigation will happen for the failure. Revisit the plan with all these action items.
+
+
+/Andie debug issue: when I ask a question in ask feature, after that cpq engine need to get trigger but it is not getting a response from cpq engine.
+
+pr 62
+conflict 1
+<<<<<<< feature/aryx-14453-data-source-page-ux-improvement
+            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
+                converted_tabular.append((csv_bytes, csv_name, n, d))
+        else:
+            converted_tabular.append((_consolidate_csv_names(d), n, None, None))
+
+    tab_plans = []
+    for data, filename, source_filename, source_bytes in converted_tabular:
+        inferred = _infer_type(data[:800].decode("utf-8", "ignore"), filename, context)
+        plan = {"filename": filename, "data": data, **inferred}
+        if source_filename is not None and source_bytes is not None:
+            plan["source_filename"] = source_filename
+            plan["source_bytes"] = source_bytes
+            try:
+                headers = next(csv.reader(io.StringIO(data.decode("utf-8", "ignore"))))
+            except Exception:  # noqa: BLE001
+                headers = []
+            if "_text" in headers:
+                plan["match_keys"] = ["_text"]
+        tab_plans.append(plan)
+=======
+            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
+                converted_tabular.append((csv_bytes, csv_name))
+        else:
+            converted_tabular.append((_consolidate_csv_names(d, did=did), n))
+
+    tab_plans = [{"filename": n, "data": d,
+                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context, did=did)}
+                 for d, n in converted_tabular]
+>>>>>>> dev
+
+
+
+conflict 2
+<<<<<<< feature/aryx-14453-data-source-page-ux-improvement
+    _persist_xml_sources(valid_plans, workspace_id, settings.rdb_dsn)
+    auto_fk = _detect_fk_links(valid_plans)
+=======
+    auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
+>>>>>>> dev
+
+conflict 3
+<<<<<<< feature/aryx-14453-data-source-page-ux-improvement
+
+def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
+    """Persist XML parent metadata for the source catalog."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for plan in valid_plans:
+        source_filename = plan.get("source_filename")
+        source_bytes = plan.get("source_bytes")
+        if not source_filename or source_bytes is None:
+            continue
+        group = grouped.setdefault(source_filename, {"source_bytes": source_bytes, "assets": []})
+        group["assets"].append(xml_asset_record(
+            filename=plan["filename"],
+            dataset=Path(plan["filename"]).stem,
+            ontology_type=plan["ontology_type"],
+            content_bytes=plan["data"],
+        ))
+    if not grouped:
+        return
+    store = DatasourceStore(dsn)
+    for source_filename, payload in grouped.items():
+        upsert_xml_catalog_entry(
+            store,
+            workspace_id=workspace_id,
+            source_filename=source_filename,
+            xml_bytes=payload["source_bytes"],
+            assets=payload["assets"],
+        )
+=======
+    # Zero-loss validation: prove every source record reached the graph.
+    # Best-effort by contract — validation surfaces problems, never fails the job.
+    if valid_plans:
+        try:
+            from aryx.pipeline.ingest_validation import (
+                ground_truth_from_tabular, validate_workspace,
+            )
+            gt = ground_truth_from_tabular(valid_plans)
+            report = validate_workspace(workspace_id, gt, settings.rdb_dsn,
+                                        settings.graph_url)
+            logger.info("confirm job=%s validation passed=%s %s",
+                        job_id, report.passed, report.summary_line())
+            for line in report.failures():
+                logger.warning("confirm job=%s validation FAIL %s", job_id, line)
+        except Exception as exc:  # noqa: BLE001 — never fail the ingest over validation
+            logger.warning("confirm job=%s validation crashed: %s", job_id, exc,
+                           exc_info=True)
+>>>>>>> dev
+
+
+_GRAPH_ATTR_STR_MAX

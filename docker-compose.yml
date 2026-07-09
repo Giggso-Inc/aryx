@@ -176,7 +176,6 @@ services:
       # Aryx API is proxied by Next.js route handlers / rewrites for local and container use.
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
-      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
       # Shay is publicly exposed by nginx in OCI dev, but these internal handlers still need
       # direct container access for workspace bridge routes under apps/web/app/api/shay/*.
       - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}
