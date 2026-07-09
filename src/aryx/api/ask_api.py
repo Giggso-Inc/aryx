@@ -291,17 +291,20 @@ def _handle_cascade(
     # Strip changed attr + all dependents from filled
     session.filled.pop(changed_attr.variable_name, None)
     session.display_filled.pop(changed_attr.variable_name, None)
+    session.filled_source.pop(changed_attr.variable_name, None)
     for eid in dependent_eids:
         a = by_eid.get(eid)
         if a:
             session.filled.pop(a.variable_name, None)
             session.display_filled.pop(a.variable_name, None)
+            session.filled_source.pop(a.variable_name, None)
 
     # Lock in the new value for the changed attr
     result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
     if result:
         session.filled[changed_attr.variable_name] = result[0]
         session.display_filled[changed_attr.variable_name] = result[1]
+        session.filled_source[changed_attr.variable_name] = "user"
     else:
         # Could not parse new value — ask for clarification
         opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
@@ -322,8 +325,10 @@ def _handle_cascade(
         }
 
     # Re-run full rule evaluation loop with updated state
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
     )
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
@@ -331,6 +336,9 @@ def _handle_cascade(
     session.filled = filled
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items() if k in filled
+    }
 
     # Build cascade notice
     changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
@@ -354,7 +362,7 @@ def _handle_cascade(
     else:
         # All resolved → FORMAT B JSON
         session.status = "awaiting_approval"
-        payload = _cpq_engine.build_payload(filled)
+        payload = _cpq_engine.build_payload(filled, session.filled_source)
         answer = (
             cascade_note + "\n\n"
             f"Configuration complete for **{session.product_name}**.\n\n"
@@ -446,7 +454,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_approval(req.question):
             session.status = "approved"
             session.complete = True
-            payload = _cpq_engine.build_payload(session.filled)
+            payload = _cpq_engine.build_payload(session.filled, session.filled_source)
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -473,7 +481,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             )
 
         # Could not parse as approval, Q&A, or change — re-show FORMAT B
-        payload = _cpq_engine.build_payload(session.filled)
+        payload = _cpq_engine.build_payload(session.filled, session.filled_source)
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
             f"**{session.product_name}**:\n\n"
@@ -548,6 +556,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 iv, disp = result
                 session.filled[pending_var] = iv
                 session.display_filled[pending_var] = disp
+                session.filled_source[pending_var] = "user"
                 pv_flat = pending_var.lower().replace("_", "")
                 matched_fragment = next(
                     (dk for dk in DECISION_REQUIRED_KEYS if dk in pv_flat), None
@@ -560,6 +569,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         if matched_fragment in svn.lower().replace("_", ""):
                             session.filled[svn] = iv
                             session.display_filled[svn] = disp
+                            session.filled_source[svn] = "cascade"
             elif pending_attr.options:
                 # Answer matched nothing — tell the user and re-show the options
                 opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
@@ -576,8 +586,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 }
 
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
     )
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
@@ -586,15 +598,36 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.filled = filled
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items() if k in filled
+    }
 
-    if not pending or session.turn >= _cpq_engine.MAX_TURNS:
+    if not pending:
         # ── STEP 6: FORMAT B — show complete BOM JSON, gate on confirm ────────
         session.status = "awaiting_approval"
-        payload = _cpq_engine.build_payload(filled)
+        payload = _cpq_engine.build_payload(filled, session.filled_source)
         answer = (
             f"Configuration complete for **{session.product_name}**.\n\n"
             f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
             f"Say **confirm** to submit, or describe any changes."
+        )
+    elif session.turn >= _cpq_engine.MAX_TURNS:
+        # Turn cap reached with attrs still unresolved. NEVER fabricate a
+        # complete BOM here — a payload presented as final must not contain
+        # guessed values. Emit an explicitly-incomplete state and keep the
+        # guided flow open on the next pending attribute.
+        unresolved = [a.display_label for a in pending]
+        next_attr = pending[0]
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, "", constrained_opts.get(next_attr.entity_id),
+        )
+        answer = (
+            f"⚠️ The configuration for **{session.product_name}** is "
+            f"**incomplete** — {len(unresolved)} attribute(s) still need "
+            f"your input: *{', '.join(unresolved[:8])}"
+            f"{'…' if len(unresolved) > 8 else ''}*.\n\n"
+            f"I won't generate a BOM with guessed values. Let's continue:"
+            f"\n\n{q_block}"
         )
     else:
         # ── STEP 4: FORMAT A — context sentence + numbered options only ───────

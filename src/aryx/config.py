@@ -10,7 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Aryx runtime settings sourced from ARYX_-prefixed env variables."""
 
-    model_config = SettingsConfigDict(env_prefix="ARYX_", env_file=".env")
+    # extra="ignore": the .env file is shared with docker-compose services
+    # (SMTP, SSO, frontend URLs, ...) — keys that aren't Aryx settings must
+    # not fail validation.
+    model_config = SettingsConfigDict(env_prefix="ARYX_", env_file=".env",
+                                      extra="ignore")
 
     rdb_dsn: str = Field(
         default="postgresql://aryx:aryx@localhost:5432/aryx",
@@ -33,6 +37,35 @@ class Settings(BaseSettings):
     graph_query_limit: int = Field(
         default=2000,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
+    )
+    graph_lift_mode: str = Field(
+        default="all_scalars",
+        description=(
+            "How entity attributes are projected onto graph nodes: "
+            "'all_scalars' lifts every scalar attribute as a native, queryable "
+            "node property; 'off' writes only id/type/name/iri. "
+            "Override with ARYX_GRAPH_LIFT_MODE."
+        ),
+    )
+    graph_attr_value_cap: int = Field(
+        default=500,
+        description=(
+            "Max characters for a string attribute value stored as a graph node "
+            "property. Longer values are truncated in the graph projection only "
+            "— the RDB (aryx_entity.attributes) keeps full fidelity. Key-like "
+            "attributes (*_id, guid, variable_name, ...) are exempt because a "
+            "truncated identifier silently breaks exact-match joins. "
+            "Override with ARYX_GRAPH_ATTR_VALUE_CAP."
+        ),
+    )
+    graph_lift_nested: bool = Field(
+        default=True,
+        description=(
+            "When lifting attributes to graph node properties, JSON-stringify "
+            "nested dict/list values per key (subject to the value cap). "
+            "False skips nested values entirely. "
+            "Override with ARYX_GRAPH_LIFT_NESTED."
+        ),
     )
     max_relate_pairs: int = Field(
         default=10,

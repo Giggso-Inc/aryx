@@ -24,11 +24,12 @@ import re
 from typing import Any
 
 from aryx.config import get_settings
+from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.rdb import get_cpq_rdb
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
     RecommendationRule,
 )
-from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -236,26 +237,8 @@ class CpqEngine:
     def _batch_fetch(
         self, entity_ids: list[int], workspace_id: int,
     ) -> dict[int, dict[str, Any]]:
-        """Batch-fetch entity attribute JSON from PostgreSQL."""
-        if not entity_ids:
-            return {}
-        result: dict[int, dict[str, Any]] = {}
-        try:
-            with get_pool(get_settings().rdb_dsn).connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, attributes FROM aryx_entity "
-                        "WHERE id = ANY(%s) AND workspace_id = %s",
-                        (entity_ids, workspace_id),
-                    )
-                    for row in cur.fetchall():
-                        eid, attrs = row
-                        if isinstance(attrs, str):
-                            attrs = json.loads(attrs)
-                        result[int(eid)] = attrs or {}
-        except Exception:
-            logger.debug("cpq batch-fetch failed", exc_info=True)
-        return result
+        """Batch-fetch entity attribute JSON from the RDB (dialect-agnostic)."""
+        return get_cpq_rdb().fetch_entity_attributes(entity_ids, workspace_id)
 
     # ── Graph loading ─────────────────────────────────────────────────────────
 
@@ -393,6 +376,18 @@ class CpqEngine:
             if self._is_layout_noise(ent.get("type") or ""):
                 continue
 
+            # ID bridge: rules reference attributes by the BM-native id from
+            # the source system, not by the aryx entity id. Keep both.
+            source_id: int | None = None
+            for id_key in ("id", "attribute_id", "bm_config_attr_id"):
+                raw_sid = pg.get(id_key)
+                if raw_sid is not None:
+                    try:
+                        source_id = int(str(raw_sid).strip())
+                        break
+                    except (TypeError, ValueError):
+                        continue
+
             config_attrs.append(ConfigAttr(
                 entity_id=eid,
                 variable_name=var_name,
@@ -401,230 +396,194 @@ class CpqEngine:
                 default_value=default_val,
                 options=menu_by_attr.get(eid, []),
                 order=order,
+                source_id=source_id,
             ))
 
         config_attrs.sort(key=lambda a: a.order)
         return config_attrs, product_hint
 
-    # ── Hiding rule loader ────────────────────────────────────────────────────
+    # ── Rule loaders (dialect-agnostic via cpq.rdb) ──────────────────────────
+
+    def _load_rule_join_data(self, workspace_id: int):
+        """Shared fetch for the rule loaders.
+
+        BmConfigRuleInput/Action rows reference their rule by the BM-native
+        rule id (``bm_config_rule_id`` from the source XML), NOT by the aryx
+        entity id — the join key is the rule entity's own attrs ``id``.
+        Returns (rdb, inputs_by_rule, actions_by_rule).
+        """
+        rdb = get_cpq_rdb()
+        inputs_by_rule: dict[int, tuple[int, str]] = {}
+        for rid, aid, val in rdb.fetch_rule_inputs(workspace_id):
+            inputs_by_rule[rid] = (aid, val)
+        actions_by_rule: dict[int, list[tuple[int, int, str, int]]] = {}
+        for rid, aid, at, val, fn in rdb.fetch_rule_actions(workspace_id):
+            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn))
+        return rdb, inputs_by_rule, actions_by_rule
+
+    @staticmethod
+    def _rule_key(entity_id: int, source_id: int | None,
+                  inputs: dict, actions: dict) -> int:
+        """Pick the id that BmConfigRuleInput/Action rows actually reference."""
+        if source_id is not None and (source_id in inputs or source_id in actions):
+            return source_id
+        return entity_id
 
     def load_hiding_rules(self, workspace_id: int) -> list[HidingRule]:
-        """Load declarative hiding rules (rule_type=11, condition_type=1) from PostgreSQL.
+        """Load hiding rules (rule_type=11) from the RDB.
 
-        Only simple rules with BmConfigRuleInput records are loaded — script-based
-        rules (condition_function_id != -1) require a BML evaluator and are skipped.
-
-        Returns a list of HidingRule objects. Empty if none found or on error.
+        Declarative rules become HidingRule objects. Script-backed rules
+        (condition_function_id != -1) cannot be expressed as a simple
+        hide/show pair — they are counted and logged (never silently
+        dropped) so coverage is visible per workspace.
         """
         rules: list[HidingRule] = []
+        script_backed = 0
         try:
-            with get_pool(get_settings().rdb_dsn).connection() as conn:
-                with conn.cursor() as cur:
-                    # Step 1: get simple hiding rules
-                    cur.execute(
-                        """
-                        SELECT id,
-                               attributes->>'name'              AS rule_name,
-                               (attributes->>'condition_function_id')::int AS fn_id
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRule'
-                          AND (attributes->>'rule_type') = '11'
-                        """,
-                        (workspace_id,),
-                    )
-                    simple_rules = {
-                        row[0]: row[1]
-                        for row in cur.fetchall()
-                        if row[2] == -1  # no function → declarative only
-                    }
-
-                    if not simple_rules:
-                        return rules
-
-                    # Step 2: get BmConfigRuleInput for these rules
-                    cur.execute(
-                        """
-                        SELECT
-                            (attributes->>'bm_config_rule_id')::bigint  AS rule_id,
-                            (attributes->>'attribute_id')::bigint        AS cond_attr_id,
-                            attributes->>'value1'                        AS cond_value
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRuleInput'
-                        """,
-                        (workspace_id,),
-                    )
-                    inputs: dict[int, tuple[int, str]] = {}
-                    for rule_id, cond_attr_id, cond_value in cur.fetchall():
-                        if rule_id and cond_attr_id:
-                            inputs[int(rule_id)] = (int(cond_attr_id), cond_value or "")
-
-                    # Step 3: get BmConfigRuleAction for these rules (target attr + action)
-                    cur.execute(
-                        """
-                        SELECT
-                            (attributes->>'bm_config_rule_id')::bigint AS rule_id,
-                            (attributes->>'attribute_id')::bigint       AS target_attr_id,
-                            (attributes->>'action_type')::int           AS action_type
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRuleAction'
-                        """,
-                        (workspace_id,),
-                    )
-                    actions: dict[int, tuple[int, int]] = {}
-                    for rule_id, target_attr_id, action_type in cur.fetchall():
-                        if rule_id and target_attr_id:
-                            # action_type=2 → hide; action_type=1 → show
-                            actions[int(rule_id)] = (int(target_attr_id), int(action_type or 2))
-
-                    # Step 4: join inputs + actions to build HidingRule objects
-                    for rule_entity_id, rule_name in simple_rules.items():
-                        inp = inputs.get(rule_entity_id)
-                        act = actions.get(rule_entity_id)
-                        if inp and act:
-                            cond_attr_id, cond_value = inp
-                            target_attr_id, action_type = act
-                            rules.append(HidingRule(
-                                rule_name=rule_name or str(rule_entity_id),
-                                condition_attr_id=cond_attr_id,
-                                condition_value=cond_value,
-                                target_attr_id=target_attr_id,
-                                hide=(action_type == 2),
-                            ))
+            rdb, inputs, actions = self._load_rule_join_data(workspace_id)
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11"):
+                if fn_id != -1:
+                    script_backed += 1
+                    logger.info(
+                        "cpq: hiding rule %r is script-backed (function_id=%d) — "
+                        "hide/show semantics not derivable from BML, rule visible "
+                        "in coverage but not evaluated", rule_name, fn_id)
+                    continue
+                key = self._rule_key(eid, src_id, inputs, actions)
+                inp = inputs.get(key)
+                acts = actions.get(key, [])
+                act = next(((aid, at) for aid, at, _v, _f in acts), None)
+                if inp and act:
+                    cond_attr_id, cond_value = inp
+                    target_attr_id, action_type = act
+                    rules.append(HidingRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        target_attr_id=target_attr_id,
+                        hide=(int(action_type or 2) == 2),
+                    ))
         except Exception:
             logger.debug("cpq: hiding rule load failed", exc_info=True)
 
-        logger.info("cpq: loaded %d declarative hiding rules", len(rules))
+        logger.info("cpq: loaded %d declarative hiding rules (%d script-backed logged)",
+                    len(rules), script_backed)
         return rules
+
+    @staticmethod
+    def _attr_index(attrs: list[ConfigAttr]) -> dict[int, ConfigAttr]:
+        """Index attrs by BOTH ids rules may reference.
+
+        Rule inputs/actions carry BM-native attribute ids from the source
+        system (ConfigAttr.source_id); legacy data may reference the aryx
+        entity id directly. source_id wins on collision because that is what
+        BigMachines rules actually use.
+        """
+        idx: dict[int, ConfigAttr] = {}
+        for a in attrs:
+            idx.setdefault(a.entity_id, a)
+        for a in attrs:
+            if a.source_id is not None:
+                idx[a.source_id] = a
+        return idx
+
+    @staticmethod
+    def _filled_by_rule_id(
+        attrs: list[ConfigAttr], filled: dict[str, str],
+    ) -> dict[int, str]:
+        """Map every id a rule may reference → the attr's filled value."""
+        out: dict[int, str] = {}
+        for a in attrs:
+            if a.variable_name in filled:
+                val = filled[a.variable_name]
+                out[a.entity_id] = val
+                if a.source_id is not None:
+                    out[a.source_id] = val
+        return out
 
     def apply_hiding_rules(
         self,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         rules: list[HidingRule],
-    ) -> tuple[list[ConfigAttr], list[str]]:
+    ) -> tuple[list[ConfigAttr], list[str], set[str]]:
         """Apply hiding rules against current filled values.
 
         Returns:
           filtered_attrs — attrs still visible after rules are applied
           rule_messages  — human-readable list of rules that fired (for reporting)
+          hidden_vns     — variable_names explicitly hidden by a fired rule
         """
         if not rules:
-            return attrs, []
+            return attrs, [], set()
 
-        # Build entity_id → ConfigAttr map for fast lookup
-        by_eid: dict[int, ConfigAttr] = {a.entity_id: a for a in attrs}
-        # Build variable_name → filled_value for condition evaluation
-        filled_by_eid: dict[int, str] = {}
-        for attr in attrs:
-            if attr.variable_name in filled:
-                filled_by_eid[attr.entity_id] = filled[attr.variable_name]
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
 
         hidden_eids: set[int] = set()
         messages: list[str] = []
 
         for rule in rules:
-            current_val = filled_by_eid.get(rule.condition_attr_id)
+            current_val = filled_by_rule_id.get(rule.condition_attr_id)
             if current_val is None:
                 continue  # condition attr not filled yet — rule doesn't fire
             if current_val.lower() == rule.condition_value.lower():
-                target = by_eid.get(rule.target_attr_id)
+                target = by_rule_id.get(rule.target_attr_id)
                 if target:
                     if rule.hide:
-                        hidden_eids.add(rule.target_attr_id)
+                        hidden_eids.add(target.entity_id)
                         messages.append(
                             f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
                         )
                     else:
-                        hidden_eids.discard(rule.target_attr_id)
+                        hidden_eids.discard(target.entity_id)
 
+        hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}
         filtered = [a for a in attrs if a.entity_id not in hidden_eids]
-        return filtered, messages
+        return filtered, messages, hidden_vns
 
     # ── Recommendation rule loader ────────────────────────────────────────────
 
     def load_recommendation_rules(self, workspace_id: int) -> list[RecommendationRule]:
-        """Load declarative recommendation rules (rule_type=10) from PostgreSQL.
+        """Load recommendation rules (rule_type=10) from the RDB.
 
         When a condition attribute equals a specific value, the engine
         auto-selects the recommended item_value for the target attribute
-        without asking the user. Only declarative rules (condition_function_id=-1)
-        are loaded; BML-script rules are skipped.
+        without asking the user. Script-backed rules are counted and logged.
         """
         rules: list[RecommendationRule] = []
+        script_backed = 0
         try:
-            with get_pool(get_settings().rdb_dsn).connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT id, attributes->>'name'
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRule'
-                          AND (attributes->>'rule_type') = '10'
-                          AND (attributes->>'condition_function_id')::int = -1
-                        """,
-                        (workspace_id,),
-                    )
-                    simple_rules = {row[0]: row[1] for row in cur.fetchall()}
-                    if not simple_rules:
-                        logger.debug("cpq: no declarative recommendation rules found")
-                        return rules
-
-                    cur.execute(
-                        """
-                        SELECT
-                            (attributes->>'bm_config_rule_id')::bigint AS rule_id,
-                            (attributes->>'attribute_id')::bigint       AS cond_attr_id,
-                            attributes->>'value1'                       AS cond_value
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRuleInput'
-                        """,
-                        (workspace_id,),
-                    )
-                    inputs: dict[int, tuple[int, str]] = {}
-                    for rule_id, cond_attr_id, cond_value in cur.fetchall():
-                        if rule_id and cond_attr_id:
-                            inputs[int(rule_id)] = (int(cond_attr_id), cond_value or "")
-
-                    # action_type=3 → set/recommend; value1 holds the recommended item_value
-                    cur.execute(
-                        """
-                        SELECT
-                            (attributes->>'bm_config_rule_id')::bigint AS rule_id,
-                            (attributes->>'attribute_id')::bigint       AS target_attr_id,
-                            attributes->>'value1'                       AS recommended_value
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRuleAction'
-                          AND (attributes->>'action_type') = '3'
-                        """,
-                        (workspace_id,),
-                    )
-                    actions: dict[int, tuple[int, str]] = {}
-                    for rule_id, target_attr_id, rec_val in cur.fetchall():
-                        if rule_id and target_attr_id and rec_val:
-                            actions[int(rule_id)] = (int(target_attr_id), rec_val)
-
-                    for rule_entity_id, rule_name in simple_rules.items():
-                        inp = inputs.get(rule_entity_id)
-                        act = actions.get(rule_entity_id)
-                        if inp and act:
-                            cond_attr_id, cond_value = inp
-                            target_attr_id, rec_val = act
-                            rules.append(RecommendationRule(
-                                rule_name=rule_name or str(rule_entity_id),
-                                condition_attr_id=cond_attr_id,
-                                condition_value=cond_value,
-                                target_attr_id=target_attr_id,
-                                recommended_value=rec_val,
-                            ))
+            rdb, inputs, actions = self._load_rule_join_data(workspace_id)
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "10"):
+                if fn_id != -1:
+                    script_backed += 1
+                    logger.info(
+                        "cpq: recommendation rule %r is script-backed "
+                        "(function_id=%d) — logged, not evaluated", rule_name, fn_id)
+                    continue
+                key = self._rule_key(eid, src_id, inputs, actions)
+                inp = inputs.get(key)
+                # action_type=3 → set/recommend; value1 holds the recommended item_value
+                act = next(
+                    ((aid, val) for aid, at, val, _f in actions.get(key, [])
+                     if at == 3 and val),
+                    None,
+                )
+                if inp and act:
+                    cond_attr_id, cond_value = inp
+                    target_attr_id, rec_val = act
+                    rules.append(RecommendationRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        target_attr_id=target_attr_id,
+                        recommended_value=rec_val,
+                    ))
         except Exception:
             logger.debug("cpq: recommendation rule load failed", exc_info=True)
-        logger.info("cpq: loaded %d recommendation rules", len(rules))
+        logger.info("cpq: loaded %d recommendation rules (%d script-backed logged)",
+                    len(rules), script_backed)
         return rules
 
     def apply_recommendation_rules(
@@ -640,18 +599,15 @@ class CpqEngine:
         """
         if not rules:
             return {}
-        by_eid: dict[int, ConfigAttr] = {a.entity_id: a for a in attrs}
-        filled_by_eid: dict[int, str] = {
-            a.entity_id: filled[a.variable_name]
-            for a in attrs if a.variable_name in filled
-        }
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
-            if rule.condition_attr_id not in filled_by_eid:
+            if rule.condition_attr_id not in filled_by_rule_id:
                 continue
-            if filled_by_eid[rule.condition_attr_id].lower() != rule.condition_value.lower():
+            if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
                 continue
-            target = by_eid.get(rule.target_attr_id)
+            target = by_rule_id.get(rule.target_attr_id)
             if not target or target.variable_name in filled:
                 continue
             matched_display = next(
@@ -668,129 +624,140 @@ class CpqEngine:
     # ── Constraint rule loader ────────────────────────────────────────────────
 
     def load_constraint_rules(self, workspace_id: int) -> list[ConstraintRule]:
-        """Load declarative constraint rules (rule_type=5) from PostgreSQL.
+        """Load constraint rules (rule_type=5) from the RDB — declarative AND script.
 
-        When a condition attribute equals a specific value, only the listed
-        item_values remain valid for the target attribute. Multiple rules for
-        the same target are intersected. Only declarative rules are loaded.
+        Declarative form: when the condition attribute equals condition_value,
+        only the listed item_values (action_type=4) remain valid for the
+        target attribute. Multiple rules for one target are intersected.
+
+        Script form: actions whose logic lives in a BML function
+        (function_id != -1) get the raw script attached; allowed values are
+        derived at apply time by the BML evaluator from the current filled
+        variables. These rules were previously dropped entirely — the direct
+        cause of illegal configurations (e.g. hardware/frequency mismatches).
         """
         rules: list[ConstraintRule] = []
+        script_rules = 0
+        cond_script_skipped = 0
         try:
-            with get_pool(get_settings().rdb_dsn).connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT id, attributes->>'name'
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRule'
-                          AND (attributes->>'rule_type') = '5'
-                          AND (attributes->>'condition_function_id')::int = -1
-                        """,
-                        (workspace_id,),
-                    )
-                    simple_rules = {row[0]: row[1] for row in cur.fetchall()}
-                    if not simple_rules:
-                        logger.debug("cpq: no declarative constraint rules found")
-                        return rules
+            rdb, inputs, actions = self._load_rule_join_data(workspace_id)
+            scripts = rdb.fetch_function_scripts(workspace_id)
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "5"):
+                key = self._rule_key(eid, src_id, inputs, actions)
+                inp = inputs.get(key)
+                acts = actions.get(key, [])
 
-                    cur.execute(
-                        """
-                        SELECT
-                            (attributes->>'bm_config_rule_id')::bigint AS rule_id,
-                            (attributes->>'attribute_id')::bigint       AS cond_attr_id,
-                            attributes->>'value1'                       AS cond_value
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRuleInput'
-                        """,
-                        (workspace_id,),
-                    )
-                    inputs: dict[int, tuple[int, str]] = {}
-                    for rule_id, cond_attr_id, cond_value in cur.fetchall():
-                        if rule_id and cond_attr_id:
-                            inputs[int(rule_id)] = (int(cond_attr_id), cond_value or "")
+                # Script-backed actions: the BML function returns the allowed
+                # list; the script embeds its own conditions on variable names.
+                for aid, _at, _val, act_fn in acts:
+                    if act_fn != -1:
+                        script = scripts.get(act_fn)
+                        if script:
+                            rules.append(ConstraintRule(
+                                rule_name=rule_name or str(eid),
+                                condition_attr_id=(inp[0] if inp else 0),
+                                condition_value="",
+                                target_attr_id=aid,
+                                allowed_values=[],
+                                script=script,
+                            ))
+                            script_rules += 1
+                        else:
+                            logger.warning(
+                                "cpq: constraint rule %r references function_id=%d "
+                                "but no BmFunction script was found", rule_name, act_fn)
 
-                    # action_type 4 = include (only these values valid)
-                    # action_type 5 = exclude (these values removed)
-                    # Multiple actions per rule → multiple allowed values for same target
-                    cur.execute(
-                        """
-                        SELECT
-                            (attributes->>'bm_config_rule_id')::bigint AS rule_id,
-                            (attributes->>'attribute_id')::bigint       AS target_attr_id,
-                            (attributes->>'action_type')::int           AS action_type,
-                            attributes->>'value1'                       AS value1
-                        FROM aryx_entity
-                        WHERE workspace_id = %s
-                          AND ontology_type = 'BmConfigRuleAction'
-                          AND (attributes->>'action_type')::int IN (4, 5)
-                        """,
-                        (workspace_id,),
-                    )
-                    # rule_id → {target_attr_id → [(action_type, value)]}
-                    action_groups: dict[int, dict[int, list[tuple[int, str]]]] = {}
-                    for rule_id, target_attr_id, action_type, val in cur.fetchall():
-                        if rule_id and target_attr_id and val:
-                            action_groups.setdefault(
-                                int(rule_id), {}
-                            ).setdefault(int(target_attr_id), []).append(
-                                (int(action_type), val)
-                            )
+                if fn_id != -1:
+                    # Condition itself is a script (boolean BML) — not derivable
+                    # by the value-list evaluator; logged for coverage.
+                    cond_script_skipped += 1
+                    logger.info(
+                        "cpq: constraint rule %r has a script condition "
+                        "(condition_function_id=%d) — declarative actions for it "
+                        "are not gated", rule_name, fn_id)
+                    continue
 
-                    for rule_entity_id, rule_name in simple_rules.items():
-                        inp = inputs.get(rule_entity_id)
-                        rule_actions = action_groups.get(rule_entity_id, {})
-                        if not inp or not rule_actions:
-                            continue
-                        cond_attr_id, cond_value = inp
-                        for target_attr_id, av_list in rule_actions.items():
-                            # action_type=4 → include these values only
-                            allowed = [v for at, v in av_list if at == 4]
-                            if allowed:
-                                rules.append(ConstraintRule(
-                                    rule_name=rule_name or str(rule_entity_id),
-                                    condition_attr_id=cond_attr_id,
-                                    condition_value=cond_value,
-                                    target_attr_id=target_attr_id,
-                                    allowed_values=allowed,
-                                ))
+                if not inp:
+                    continue
+                cond_attr_id, cond_value = inp
+                # Declarative include-actions grouped per target attribute
+                by_target: dict[int, list[str]] = {}
+                for aid, at, val, act_fn in acts:
+                    if act_fn == -1 and at == 4 and val:
+                        by_target.setdefault(aid, []).append(val)
+                for target_attr_id, allowed in by_target.items():
+                    rules.append(ConstraintRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        target_attr_id=target_attr_id,
+                        allowed_values=allowed,
+                    ))
         except Exception:
             logger.debug("cpq: constraint rule load failed", exc_info=True)
-        logger.info("cpq: loaded %d constraint rules", len(rules))
+        logger.info(
+            "cpq: loaded %d constraint rules (%d script-backed, %d script-condition logged)",
+            len(rules), script_rules, cond_script_skipped)
         return rules
+
+    def build_bml_evaluator(self, workspace_id: int) -> BmlEvaluator:
+        """BML evaluator over this workspace's BmFunction scripts."""
+        try:
+            scripts = get_cpq_rdb().fetch_function_scripts(workspace_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("cpq: function script fetch failed", exc_info=True)
+            scripts = {}
+        return BmlEvaluator(scripts)
 
     def apply_constraint_rules(
         self,
         attrs: list[ConfigAttr],
         rules: list[ConstraintRule],
         filled: dict[str, str],
+        bml_eval: BmlEvaluator | None = None,
     ) -> dict[int, list[str]]:
         """Return {attr_entity_id: [allowed_item_values]} for attrs with active constraints.
 
         Multiple rules for the same target are intersected (AND semantics) so
         only values permitted by ALL active constraint rules remain valid.
+
+        Script-backed rules (rule.script set) derive their allowed list from
+        the BML evaluator using the current filled variables (keyed by
+        variable_name — BML scripts compare variable names directly). An
+        unknown script outcome (None) applies no constraint rather than
+        allowing everything.
         """
         if not rules:
             return {}
-        by_eid: dict[int, ConfigAttr] = {a.entity_id: a for a in attrs}
-        filled_by_eid: dict[int, str] = {
-            a.entity_id: filled[a.variable_name]
-            for a in attrs if a.variable_name in filled
-        }
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
         constrained: dict[int, list[str]] = {}
-        for rule in rules:
-            if rule.condition_attr_id not in filled_by_eid:
-                continue
-            if filled_by_eid[rule.condition_attr_id].lower() != rule.condition_value.lower():
-                continue
-            if rule.target_attr_id in constrained:
-                existing = set(constrained[rule.target_attr_id])
-                constrained[rule.target_attr_id] = [v for v in rule.allowed_values if v in existing]
+
+        def _intersect(target_eid: int, allowed: list[str]) -> None:
+            if target_eid in constrained:
+                existing = set(constrained[target_eid])
+                constrained[target_eid] = [v for v in allowed if v in existing]
             else:
-                constrained[rule.target_attr_id] = list(rule.allowed_values)
+                constrained[target_eid] = list(allowed)
+
+        for rule in rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if target is None:
+                continue
+            if rule.script is not None:
+                if bml_eval is None:
+                    continue
+                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                if allowed:
+                    _intersect(target.entity_id, allowed)
+                continue
+            if rule.condition_attr_id not in filled_by_rule_id:
+                continue
+            if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
+                continue
+            _intersect(target.entity_id, rule.allowed_values)
         if constrained:
-            names = [by_eid[eid].variable_name for eid in constrained if eid in by_eid]
+            names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
             logger.info("cpq: constraint rules active for %s", names)
         return constrained
 
@@ -804,6 +771,8 @@ class CpqEngine:
         hiding_rules: list[HidingRule],
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
+        bml_eval: BmlEvaluator | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -814,37 +783,45 @@ class CpqEngine:
           4. Apply constraint rules → update constrained option sets
 
         Iterates until neither the filled set nor the visible attr set changes.
-        Returns (visible_attrs, filled, display_filled, constrained_opts).
+        filled_source (variable_name → provenance) is updated in place when
+        supplied. Returns (visible_attrs, filled, display_filled, constrained_opts).
         """
         _MAX_LOOPS = 8
         display_filled: dict[str, str] = {}
         constrained_opts: dict[int, list[str]] = {}
+        sources = filled_source if filled_source is not None else {}
 
         for _ in range(_MAX_LOOPS):
             prev_filled_keys = set(filled.keys())
             prev_visible_ids = {a.entity_id for a in attrs}
 
             # Apply hiding rules first so auto_fill only fills visible attrs
-            attrs, _ = self.apply_hiding_rules(attrs, filled, hiding_rules)
+            attrs, _msgs, hidden_vns = self.apply_hiding_rules(attrs, filled, hiding_rules)
 
-            # Strip values for attrs that hiding rules just removed from view.
-            # Without this, hidden attrs bleed into the BOM payload.
-            visible_vns = {a.variable_name for a in attrs}
-            hidden_keys = [k for k in filled if k not in visible_vns]
-            for k in hidden_keys:
+            # Strip values ONLY for attrs an explicit hiding rule removed from
+            # view. Popping everything not currently visible (the old
+            # behaviour) also destroyed confirmed answers whose attr merely
+            # wasn't part of this load — dropping user data from the payload.
+            for k in hidden_vns:
                 filled.pop(k, None)
                 display_filled.pop(k, None)
+                sources.pop(k, None)
 
             filled, display_filled, _ = self.auto_fill(
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+                filled_source=sources,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
             if new_fills:
                 filled.update({k: iv for k, (iv, _d) in new_fills.items()})
                 display_filled.update({k: d for k, (_iv, d) in new_fills.items()})
+                for k in new_fills:
+                    sources.setdefault(k, "rule")
 
-            constrained_opts = self.apply_constraint_rules(attrs, con_rules, filled)
+            constrained_opts = self.apply_constraint_rules(
+                attrs, con_rules, filled, bml_eval=bml_eval,
+            )
 
             if (set(filled.keys()) == prev_filled_keys
                     and {a.entity_id for a in attrs} == prev_visible_ids):
@@ -868,13 +845,16 @@ class CpqEngine:
         Returns a sentence like "Since X was set to Y, we now need Z." or ""
         when no rule relationship is found (attribute is independently required).
         """
-        by_eid: dict[int, ConfigAttr] = {a.entity_id: a for a in attrs}
+        by_rule_id = self._attr_index(attrs)
+        pending_ids = {pending_attr.entity_id}
+        if pending_attr.source_id is not None:
+            pending_ids.add(pending_attr.source_id)
 
         # A show-type hiding rule revealed this attr
         for rule in hiding_rules:
-            if rule.target_attr_id != pending_attr.entity_id or rule.hide:
+            if rule.target_attr_id not in pending_ids or rule.hide:
                 continue
-            cond_attr = by_eid.get(rule.condition_attr_id)
+            cond_attr = by_rule_id.get(rule.condition_attr_id)
             if cond_attr and cond_attr.variable_name in filled:
                 disp_val = display_filled.get(
                     cond_attr.variable_name, filled[cond_attr.variable_name]
@@ -886,9 +866,9 @@ class CpqEngine:
 
         # A recommendation rule targeted this attr (but had multiple valid options)
         for rule in rec_rules:
-            if rule.target_attr_id != pending_attr.entity_id:
+            if rule.target_attr_id not in pending_ids:
                 continue
-            cond_attr = by_eid.get(rule.condition_attr_id)
+            cond_attr = by_rule_id.get(rule.condition_attr_id)
             if cond_attr and cond_attr.variable_name in filled:
                 disp_val = display_filled.get(
                     cond_attr.variable_name, filled[cond_attr.variable_name]
@@ -908,6 +888,7 @@ class CpqEngine:
         hints: dict[str, str],
         already_filled: dict[str, str] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -930,6 +911,7 @@ class CpqEngine:
         filled: dict[str, str] = dict(already_filled or {})
         display_filled: dict[str, str] = {}
         pending: list[ConfigAttr] = []
+        sources = filled_source if filled_source is not None else {}
 
         for attr in attrs:
             vn = attr.variable_name
@@ -946,6 +928,7 @@ class CpqEngine:
 
             value: str | None = None
             display: str | None = None
+            source: str = "auto"
 
             # 1. User hint matching — strip underscores/case, check fragment containment
             vn_flat = vn.lower().replace("_", "")
@@ -979,11 +962,14 @@ class CpqEngine:
                     if not value and not attr.options and _valid(hint_val):
                         value = hint_val
                         display = hint_val
+                    if value:
+                        source = "hint"
                     break
 
             # 2. Default value
             if not value and _valid(attr.default_value):
                 value = attr.default_value
+                source = "default"
                 display = next(
                     (o.display_name for o in attr.options
                      if o.item_value == attr.default_value),
@@ -1017,6 +1003,7 @@ class CpqEngine:
             if value:
                 filled[vn] = value
                 display_filled[vn] = display or value
+                sources.setdefault(vn, source)
             elif attr.options or is_decision_attr:
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country/hwversion) go to pending for user input.
@@ -1051,6 +1038,7 @@ class CpqEngine:
             if cascaded:
                 filled[attr.variable_name] = cascaded
                 display_filled[attr.variable_name] = cascaded
+                sources.setdefault(attr.variable_name, "cascade")
             else:
                 still_pending.append(attr)
         pending = still_pending
@@ -1189,16 +1177,24 @@ class CpqEngine:
           - Free-text cascade siblings (attrs sharing a decision key fragment with changed_attr).
         """
         dependents: set[int] = set()
+        changed_ids = {changed_attr.entity_id}
+        if changed_attr.source_id is not None:
+            changed_ids.add(changed_attr.source_id)
+        by_rule_id = self._attr_index(all_attrs)
+
+        def _target_eid(target_attr_id: int) -> int:
+            target = by_rule_id.get(target_attr_id)
+            return target.entity_id if target else target_attr_id
 
         for rule in hiding_rules:
-            if rule.condition_attr_id == changed_attr.entity_id:
-                dependents.add(rule.target_attr_id)
+            if rule.condition_attr_id in changed_ids:
+                dependents.add(_target_eid(rule.target_attr_id))
         for rule in rec_rules:
-            if rule.condition_attr_id == changed_attr.entity_id:
-                dependents.add(rule.target_attr_id)
+            if rule.condition_attr_id in changed_ids:
+                dependents.add(_target_eid(rule.target_attr_id))
         for rule in con_rules:
-            if rule.condition_attr_id == changed_attr.entity_id:
-                dependents.add(rule.target_attr_id)
+            if rule.condition_attr_id in changed_ids:
+                dependents.add(_target_eid(rule.target_attr_id))
 
         # Cascade-fill siblings (free-text attrs that mirror this attr's value)
         changed_vn_flat = changed_attr.variable_name.lower().replace("_", "")
@@ -1370,16 +1366,33 @@ class CpqEngine:
         s = val.strip()
         return s.startswith("<") and ">" in s
 
-    def build_payload(self, filled: dict[str, str]) -> dict[str, str]:
+    # Provenance classes whose values are kept even when they collide with a
+    # none-sentinel spelling: the user (or a value validated against the menu
+    # of a sibling attr) explicitly chose them. Region="NA" (North America)
+    # and quantity "0" are legitimate API codes, not empty selections.
+    _CONFIRMED_SOURCES: frozenset[str] = frozenset({"user", "hint", "cascade"})
+
+    def build_payload(
+        self,
+        filled: dict[str, str],
+        filled_source: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         """Return the final CPQ BOM API payload {variable_name: item_value}.
 
         Excludes HTML template values — those are layout/display fields, not
-        real configuration inputs for the BOM API.
+        real configuration inputs for the BOM API. A value confirmed by the
+        user against a real menu option is valid BY DEFINITION: none-like
+        codes (``NA``, ``0``, ...) survive when their provenance is a
+        confirmed source; only unconfirmed auto-fills are dropped.
         """
-        return {
-            k: v for k, v in filled.items()
-            if _valid(v) and not self._is_html_value(v)
-        }
+        sources = filled_source or {}
+        out: dict[str, str] = {}
+        for k, v in filled.items():
+            if not v or self._is_html_value(v):
+                continue
+            if _valid(v) or sources.get(k) in self._CONFIRMED_SOURCES:
+                out[k] = v
+        return out
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
