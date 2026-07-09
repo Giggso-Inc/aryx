@@ -28,7 +28,13 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xml_to_csvs
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
+from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
+from aryx.source_catalog import (
+    restore_generic_source_entry,
+    upsert_xml_catalog_entry,
+    xml_asset_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +115,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
+    datasource_store = DatasourceStore(settings.rdb_dsn)
     try:
         jobs = JobStore(settings.rdb_dsn)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
@@ -155,6 +162,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     fk_links=fk_links, workspace_id=workspace_id,
                     relate=True,
                 )
+                restore_generic_source_entry(
+                    datasource_store,
+                    workspace_id=workspace_id,
+                    source_system="json",
+                    source_dataset=Path(name).stem,
+                )
             elif suffix == ".xml":
                 # Expand XML into one connector per top-3 element type.
                 # Each CSV gets its own ontology_type derived from the element
@@ -197,6 +210,22 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         relate=is_last,
                         skip_graph=not is_last,
                     )
+                asset_rows = [
+                    xml_asset_record(
+                        filename=csv_name,
+                        dataset=Path(csv_name).stem,
+                        ontology_type=derived_type,
+                        content_bytes=csv_data,
+                    )
+                    for csv_data, csv_name, derived_type in xml_plans
+                ]
+                upsert_xml_catalog_entry(
+                    datasource_store,
+                    workspace_id=workspace_id,
+                    source_filename=name,
+                    xml_bytes=data,
+                    assets=asset_rows,
+                )
                 continue
             else:
                 # Multi-file CSV: derive type per filename and apply auto FK links
@@ -231,6 +260,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         relate=eff_relate and is_last_chunk,
                         skip_graph=not is_last_chunk,
                     )
+                restore_generic_source_entry(
+                    datasource_store,
+                    workspace_id=workspace_id,
+                    source_system="csv",
+                    source_dataset=stem,
+                )
         if doc_files:
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]

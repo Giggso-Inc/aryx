@@ -1,8 +1,10 @@
 import type {
   AbResult, AskResponse, AskHistoryTurn, Axiom, Brief, DataEntitiesPage,
-  DataSummary, Datasource, DiscoverySummary, GraphView, IngestQuestion,
-  McpToken, McpTokenIssued, ObservabilityData, OntologyChange, OntologyDoc,
-  OntologyVersion, QuizSpec, ReasonerCheck, Rule, SurvivorshipPolicy, Workspace,
+  DataSourceCatalogItem, DataSummary, Datasource, DiscoverySummary, GraphView,
+  IngestQuestion, McpToken, McpTokenIssued, ObservabilityData, OntologyChange,
+  OntologyDoc, OntologyVersion, QuizSpec, ReasonerCheck, Rule,
+  GenericSourcePreview,
+  SurvivorshipPolicy, Workspace, XmlSourceDetail,
 } from "./types";
 import { SHAY_SESSION_STORAGE_KEY } from "./shay-auth";
 
@@ -55,6 +57,21 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function fetchBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const headers = new Headers(init?.headers);
+  applyAuthHeader(headers);
+  const res = await fetch(`${BASE}${path}`, {
+    cache: "no-store",
+    ...init,
+    headers,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+  }
+  return res.blob();
+}
+
 export const api = {
   listWorkspaces: () =>
     fetchJSON<Workspace[]>("/admin/workspaces"),
@@ -100,6 +117,39 @@ export const api = {
   dataGraph: (workspaceId: number) =>
     fetchJSON<GraphView & { error?: string }>(
       `/data/graph?workspace_id=${workspaceId}`,
+    ),
+
+  listDataSources: (workspaceId: number) =>
+    fetchJSON<DataSourceCatalogItem[]>(`/data/sources?workspace_id=${workspaceId}`),
+
+  getDataSourceDetail: (workspaceId: number, sourceKey: string) =>
+    fetchJSON<XmlSourceDetail>(
+      `/data/sources/${encodeURIComponent(sourceKey)}?workspace_id=${workspaceId}`,
+    ),
+
+  getDataSourcePreview: (workspaceId: number, sourceKey: string) =>
+    fetchJSON<GenericSourcePreview>(
+      `/data/sources/${encodeURIComponent(sourceKey)}/preview?workspace_id=${workspaceId}`,
+    ),
+
+  downloadDataSource: (workspaceId: number, sourceKey: string) =>
+    fetchBlob(`/data/sources/${encodeURIComponent(sourceKey)}/download?workspace_id=${workspaceId}`),
+
+  deleteDataSource: (workspaceId: number, sourceKey: string) =>
+    fetchJSON<{ status: string; source_key: string }>(
+      `/data/sources/${encodeURIComponent(sourceKey)}?workspace_id=${workspaceId}`,
+      { method: "DELETE" },
+    ),
+
+  downloadGeneratedAsset: (workspaceId: number, sourceKey: string, assetKey: string) =>
+    fetchBlob(
+      `/data/sources/${encodeURIComponent(sourceKey)}/assets/${encodeURIComponent(assetKey)}/download?workspace_id=${workspaceId}`,
+    ),
+
+  deleteGeneratedAsset: (workspaceId: number, sourceKey: string, assetKey: string) =>
+    fetchJSON<{ status: string; source_key: string; asset_key: string }>(
+      `/data/sources/${encodeURIComponent(sourceKey)}/assets/${encodeURIComponent(assetKey)}?workspace_id=${workspaceId}`,
+      { method: "DELETE" },
     ),
 
   // ── Ontology / modelling ──────────────────────────────────────────────

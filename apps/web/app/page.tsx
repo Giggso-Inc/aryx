@@ -322,7 +322,7 @@ export default function HomePage() {
       )}
 
       <div className="app-shell-offset flex min-h-0 flex-1">
-        <main className="mx-auto flex h-[calc(100dvh-68px)] min-h-[calc(100vh-68px)] w-full max-w-5xl flex-1 flex-col overflow-hidden px-4 pt-4 pb-6 lg:px-5">
+        <main className="workspace-section-shell flex h-[calc(100dvh-68px)] min-h-[calc(100vh-68px)] flex-1 flex-col overflow-hidden pt-4 pb-6">
           <div className="mb-2 flex shrink-0 justify-end">
             <button
               type="button"

@@ -296,6 +296,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
         title="Workspace settings"
         description="Manage workspace access and maintenance actions while keeping the Aryx workspace mapping aligned."
         showHero={false}
+        contentCard={false}
       >
         {loading ? (
           <div className="rounded-[1.5rem] border border-navy-100 bg-white px-5 py-12 text-center text-sm text-subtle shadow-soft">

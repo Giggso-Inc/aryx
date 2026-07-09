@@ -264,6 +264,41 @@ class EntityStore:
                 while batch := cur.fetchmany(batch_size):
                     yield from ((r[0], r[1], r[2], r[3]) for r in batch)
 
+    def list_source_payloads(
+        self,
+        source_system: str,
+        source_dataset: str,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return landed payloads for one source dataset."""
+        query_name = "select_landed_by_source_limited" if limit is not None else "select_landed_by_source"
+        params: tuple[Any, ...]
+        if limit is None:
+            params = (self._ws, source_system, source_dataset)
+        else:
+            params = (self._ws, source_system, source_dataset, int(limit))
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load(query_name), params)
+                rows = cur.fetchall()
+        payloads: list[dict[str, Any]] = []
+        for _record_id, payload, _system, _dataset, _source_record_id in rows:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            payloads.append(payload or {})
+        return payloads
+
+    def list_source_activity(self) -> dict[tuple[str, str], Any]:
+        """Return the latest landed-record timestamp per source dataset."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_latest_source_activity"), (self._ws,))
+                return {
+                    (str(row[0]), str(row[1])): row[2]
+                    for row in cur.fetchall()
+                }
+
     def list_isolated_entities(self) -> list[tuple[int, str, dict]]:
         """Return entities that have no relationship edges (source or target).
 
