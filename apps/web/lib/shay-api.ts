@@ -914,10 +914,12 @@ export const shayApi = {
       token,
     ),
 
-  getWorkspaceBridge: (shayWorkspaceId: string) =>
+  getWorkspaceBridge: (shayWorkspaceId: string, token?: string) =>
     requestJSON<ShayBridgeWorkspaceMap>(
       ARYX_BASE,
       `/admin/shay/workspaces/${shayWorkspaceId}/mapping`,
+      withBearerAuth(token),
+      token,
     ),
 
   syncDatasourceBridge: (payload: {
