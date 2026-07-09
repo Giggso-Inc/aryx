@@ -19,7 +19,7 @@ from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
-from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, _PRODUCT_PATTERNS
+from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
@@ -326,18 +326,36 @@ def _handle_cascade(
 
     # Re-run full rule evaluation loop with updated state
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
+    prev_filled_snapshot = dict(session.filled)
+    dropped_multi: dict[str, list[str]] = {}
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
     )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi,
     )
+    for var, new_val in filled.items():
+        old_val = prev_filled_snapshot.get(var)
+        if old_val != new_val:
+            session.cascade_log.append({
+                "var": var, "old": old_val, "new": new_val,
+                "rule": "cascade" if var == changed_attr.variable_name else "cascade-dependent",
+                "turn": session.turn,
+            })
     session.filled = filled
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
         k: v for k, v in session.filled_source.items() if k in filled
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
     }
 
     # Build cascade notice
@@ -346,6 +364,13 @@ def _handle_cascade(
     if dependent_labels:
         cascade_note += (
             f" This invalidated: *{', '.join(dependent_labels)}* — re-evaluating."
+        )
+    for dvar, dvals in dropped_multi.items():
+        dattr = next((a for a in attrs if a.variable_name == dvar), None)
+        dlabel = dattr.display_label if dattr else dvar
+        cascade_note += (
+            f" Removed **{', '.join(dvals)}** from **{dlabel}** — "
+            f"no longer valid after this change."
         )
 
     if pending:
@@ -362,7 +387,7 @@ def _handle_cascade(
     else:
         # All resolved → FORMAT B JSON
         session.status = "awaiting_approval"
-        payload = _cpq_engine.build_payload(filled, session.filled_source)
+        payload = _cpq_engine.build_payload(filled, session.filled_source, session.filled_multi)
         answer = (
             cascade_note + "\n\n"
             f"Configuration complete for **{session.product_name}**.\n\n"
@@ -405,15 +430,28 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
     hints = _cpq_engine.extract_hints(req.question)
 
-    # ── STEP 1: Anchor validation — block before graph query ─────────────────
+    # A direct reply to an anchor question we JUST asked (e.g. a bare "United
+    # States") won't match extract_hints' preposition-requiring patterns —
+    # when we know exactly what we asked for, treat the raw reply as the
+    # answer (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
+    if session.pending_anchor == "country" and "country" not in hints:
+        hints["country"] = req.question.strip()
+    if "country" in hints and not session.country:
+        session.country = hints["country"]
+
+    # ── STEP 1: Sequential anchor prompting — product first, then country.
+    # hwVersion is no longer an anchor (D1); it resolves through the normal
+    # rule cascade like any other dependent variable, once product+country
+    # are known. ───────────────────────────────────────────────────────────
     if not session.product_name:
-        missing_anchors = _cpq_engine.validate_anchors(req.question, hints)
-        if missing_anchors:
-            anchor_list = " and ".join(missing_anchors)
+        detected = _cpq_engine.detect_product_mention(req.question, hints)
+        if not detected and session.pending_anchor == "product":
+            detected = req.question.strip()
+        if not detected:
+            session.pending_anchor = "product"
             answer = (
-                f"To start the configuration I need {anchor_list}. "
-                f"Could you provide those details? "
-                f"For example: *\"Quote 25 APX Next XE radios for a US customer.\"*"
+                "To start the configuration I need the **product family** "
+                "(e.g., *APX Next*, *MOTOTRBO*, *SL3500e*). Could you provide that?"
             )
             _persist_cpq_history(req.workspace_id, req.question, answer)
             return {
@@ -422,17 +460,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                           "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
+        session.product_name = detected
+
+    if not session.country:
+        session.pending_anchor = "country"
+        answer = (
+            "Thanks — and what's the **destination country** for this "
+            "quote? (e.g., *United States*, *Canada*, *Germany*)"
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    session.pending_anchor = ""
 
     # ── STEP 2: Resolve product name → item_value mapping ────────────────────
-    if not session.product_name:
-        q_lower = req.question.lower()
-        product_name = next(
-            (label for pattern, label in _PRODUCT_PATTERNS
-             if re.search(pattern, q_lower, re.IGNORECASE)),
-            next((v for k, v in hints.items() if "product" in k), ""),
-        ) or "APX NEXT"
-    else:
-        product_name = session.product_name
+    # session.product_name is always set by this point (Step 1 guarantees
+    # it) — load_product_config below may still overwrite it with the
+    # graph-resolved canonical name once the product is actually loaded.
+    product_name = session.product_name
 
     attrs, resolved_name = _cpq_engine.load_product_config(
         reader, req.workspace_id, product_name,
@@ -454,7 +504,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_approval(req.question):
             session.status = "approved"
             session.complete = True
-            payload = _cpq_engine.build_payload(session.filled, session.filled_source)
+            payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -481,7 +531,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             )
 
         # Could not parse as approval, Q&A, or change — re-show FORMAT B
-        payload = _cpq_engine.build_payload(session.filled, session.filled_source)
+        payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
             f"**{session.product_name}**:\n\n"
@@ -495,6 +545,12 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                       "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         }
+
+    # ── §6: explicit response-mode request detected early — must win over
+    # Step 5's answer-locking, same reason the Q&A strict check already runs
+    # first: a message like "show me the json so far" doesn't match any
+    # menu option and would otherwise be rejected as an invalid answer. ────
+    mode_request = _cpq_engine.detect_response_mode_request(req.question)
 
     # ── Attribute option query: "what values are available for X?" ────────────
     queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)
@@ -531,7 +587,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=False)
 
     # ── STEP 5: Lock user's answer from previous turn ────────────────────────
-    if session.pending_variables and session.turn > 1:
+    if session.pending_variables and session.turn > 1 and not mode_request:
         pending_var = session.pending_variables[0]
         pending_attr = next(
             (a for a in attrs if a.variable_name == pending_var), None,
@@ -587,12 +643,24 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
 
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
+    prev_filled_snapshot = dict(session.filled)
+    dropped_multi: dict[str, list[str]] = {}
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
     )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi,
+    )
+    dropped_note = "".join(
+        f" Removed **{', '.join(dvals)}** from **"
+        f"{next((a.display_label for a in attrs if a.variable_name == dvar), dvar)}"
+        f"** — no longer valid after this change."
+        for dvar, dvals in dropped_multi.items()
     )
 
     session.filled = filled
@@ -601,12 +669,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.filled_source = {
         k: v for k, v in session.filled_source.items() if k in filled
     }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+    # Cascade delta log (§7): record every value this pass introduced or
+    # changed, tagged with its provenance, so later turns can explain "why"
+    # from what actually happened rather than re-deriving it from the
+    # current rule set alone.
+    for var, new_val in filled.items():
+        old_val = prev_filled_snapshot.get(var)
+        if old_val != new_val:
+            session.cascade_log.append({
+                "var": var, "old": old_val, "new": new_val,
+                "rule": session.filled_source.get(var, ""), "turn": session.turn,
+            })
 
     if not pending:
         # ── STEP 6: FORMAT B — show complete BOM JSON, gate on confirm ────────
         session.status = "awaiting_approval"
-        payload = _cpq_engine.build_payload(filled, session.filled_source)
+        payload = _cpq_engine.build_payload(filled, session.filled_source, session.filled_multi)
         answer = (
+            f"{dropped_note.strip()}\n\n" if dropped_note else ""
+        ) + (
             f"Configuration complete for **{session.product_name}**.\n\n"
             f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
             f"Say **confirm** to submit, or describe any changes."
@@ -630,16 +715,46 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             f"\n\n{q_block}"
         )
     else:
-        # ── STEP 4: FORMAT A — context sentence + numbered options only ───────
-        next_attr = pending[0]
-        context_sentence = _cpq_engine.build_context_sentence(
-            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
-        )
-        constrained_vals = constrained_opts.get(next_attr.entity_id)
-        # FORMAT A: pure options prompt — no background state, no counters
-        answer = _cpq_engine.next_question_prompt(
-            next_attr, context_sentence, constrained_vals,
-        )
+        # ── §6: explicit on-request presentation — JSON preview or the full
+        # batch of pending questions — otherwise FORMAT A (one question).
+        # mode_request was detected early (before Step 5) so an explicit
+        # request never gets rejected as an invalid menu answer. ─────────
+        if mode_request == "json":
+            preview_payload = _cpq_engine.build_payload(
+                filled, session.filled_source, session.filled_multi)
+            summary = _cpq_engine.render_filled_summary(display_filled, visible_attrs)
+            still_need = ", ".join(a.display_label for a in pending)
+            answer = (
+                (f"{dropped_note.strip()}\n\n" if dropped_note else "")
+                + (f"{summary}\n\n" if summary else "")
+                + f"Here's the configuration so far — **preview, not final**:\n\n"
+                f"```json\n{json.dumps(preview_payload, indent=2)}\n```\n\n"
+                f"Still need: {still_need}."
+            )
+        elif mode_request == "batch":
+            blocks = []
+            for a in pending:
+                ctx = _cpq_engine.build_context_sentence(
+                    a, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+                )
+                blocks.append(_cpq_engine.next_question_prompt(
+                    a, ctx, constrained_opts.get(a.entity_id)))
+            answer = (
+                (f"{dropped_note.strip()}\n\n" if dropped_note else "")
+                + f"Here's everything still needed ({len(pending)} item(s)):\n\n"
+                + "\n\n---\n\n".join(blocks)
+            )
+        else:
+            # ── STEP 4: FORMAT A — context sentence + numbered options only ──
+            next_attr = pending[0]
+            context_sentence = dropped_note + _cpq_engine.build_context_sentence(
+                next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+            )
+            constrained_vals = constrained_opts.get(next_attr.entity_id)
+            # FORMAT A: pure options prompt — no background state, no counters
+            answer = _cpq_engine.next_question_prompt(
+                next_attr, context_sentence, constrained_vals,
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -651,6 +766,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         "grounding": None,
         "session_data": session.to_dict(),
         "cpq_payload": None,  # payload only generated on STEP 8 approval
+        "preview": mode_request == "json",
     }
 
 

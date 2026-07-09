@@ -83,6 +83,11 @@ class ConfigAttr:
     # Rule inputs/actions reference attributes by THIS id, not by the aryx
     # entity_id — rule joins must resolve through both.
     source_id: int | None = None
+    # "single" (dropdown/radio, one value) | "multi" (checkbox, allowed set
+    # from rules) | "boolean" (fixed Yes/No, no menu options at all).
+    # Derived from BM attribute metadata — see classify_select_type() in
+    # engine.py (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
+    select_type: str = "single"
 
 
 @dataclass
@@ -98,6 +103,11 @@ class CpqSession:
     product_entity_id: int = 0
     # variable_name → item_value (API code stored, never display label)
     filled: dict[str, str] = field(default_factory=dict)
+    # variable_name → list of item_values, for select_type=="multi" attrs.
+    # Kept separate from `filled` (str-only) rather than widening its type —
+    # multi-select is a minority case; touching every _valid()/apply_answer()/
+    # build_payload() call site for it was rejected (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
+    filled_multi: dict[str, list[str]] = field(default_factory=dict)
     # variable_name → friendly display label (shown to user in summary)
     display_filled: dict[str, str] = field(default_factory=dict)
     # variable_name → how the value was obtained:
@@ -114,6 +124,28 @@ class CpqSession:
     # "awaiting_approval" → all attrs filled; showing Step 6 review; user must confirm or change
     # "approved" → user confirmed; BOM payload generated (Step 8)
     status: str = "configuring"
+    # "" | "product" | "country" — which anchor Step 1 is currently waiting
+    # on, so the NEXT turn's raw reply can be treated as a direct answer for
+    # that anchor even when it doesn't match the general NL hint patterns
+    # (e.g. a bare "United States" with no "customer in ..." wrapper).
+    pending_anchor: str = ""
+    # Resolved destination country (anchor). Persisted separately from
+    # `filled` because it's needed for the anchor gate itself, before any
+    # config attrs are even loaded.
+    country: str = ""
+    # "verbose" (default) | "json_only" — content axis: JSON is shown ONLY
+    # when the client explicitly asks for it; verbose is always the default,
+    # never inferred the other way (CPQ_CASCADE_CONVERSATION_PLAN.md §6.1).
+    response_mode: str = "verbose"
+    # "sequential" (default) | "batched" — delivery axis: pending questions
+    # are shown one at a time unless the client explicitly asks to see all
+    # of them at once. Per-turn, not sticky (§6.2).
+    question_mode: str = "sequential"
+    # Cascade delta log — one entry per value change, so later turns can
+    # explain "why" from what actually happened rather than re-deriving it
+    # from the current rule set alone (§7). Each entry:
+    # {"var": ..., "old": ..., "new": ..., "rule": ..., "turn": ...}.
+    cascade_log: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

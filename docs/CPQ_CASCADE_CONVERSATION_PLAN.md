@@ -1,6 +1,6 @@
 # CPQ Cascade Conversation Plan — Seed → Cascade → Change → Re-cascade
 
-**Status:** Design complete (Andie Drama session), pending implementation
+**Status:** Implemented on branch `feat/cpq-cascade-conversation` — Phases A-F landed, S8/S9/S12/S12b/S14a/S14b green
 **Date:** 2026-07-09
 **Depends on:** `docs/CPQ_GRAPH_FIX_PLAN.md` (all 4 phases landed on `fix/cpq-graph-rag-issues`) — this plan extends the same engine, it does not replace it.
 

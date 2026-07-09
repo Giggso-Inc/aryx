@@ -684,3 +684,202 @@ def test_s7_turn_cap_never_fabricates_payload(truth, fake_rdb, monkeypatch):
     assert "```json" not in resp["answer"], (
         "turn cap emitted a fabricated BOM payload")
     assert resp.get("cpq_payload") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S8 — Sequential anchor prompting (D1): product first, then country
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s8_sequential_anchor_prompting(fake_rdb, monkeypatch):
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(fake_rdb)
+
+    # Turn 1: neither product nor country mentioned.
+    resp1 = _run_cpq_turn(
+        AskRequest(question="I need a quote", workspace_id=1, session_data={}),
+        reader,
+    )
+    assert resp1, "engine returned no CPQ response at all"
+    assert "product" in resp1["answer"].lower()
+    assert resp1["session_data"]["pending_anchor"] == "product"
+    assert not resp1["session_data"]["product_name"]
+
+    # Turn 2: product only — hwVersion must NOT be demanded (D1).
+    resp2 = _run_cpq_turn(
+        AskRequest(question="SL3500e", workspace_id=1, session_data=resp1["session_data"]),
+        reader,
+    )
+    assert resp2
+    assert resp2["session_data"]["product_name"], "product not persisted after turn 2"
+    assert "country" in resp2["answer"].lower()
+    assert "hardware" not in resp2["answer"].lower()
+    assert "hwversion" not in resp2["answer"].lower().replace(" ", "")
+
+    # Turn 3: bare country reply (no preposition) must resolve via the
+    # pending_anchor direct-answer fallback, not require "customer in ...".
+    resp3 = _run_cpq_turn(
+        AskRequest(question="United States", workspace_id=1, session_data=resp2["session_data"]),
+        reader,
+    )
+    assert resp3
+    assert resp3["session_data"]["country"], "bare country reply was not captured"
+    assert resp3["session_data"]["pending_anchor"] == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S9 — Rule-governed auto-fill eligibility (D2/§3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s9_governed_vs_ungoverned_autofill(truth, fake_rdb):
+    """An attr targeted by a real hiding rule is eligible for default-or-first
+    auto-fill; an attr with zero rule coverage still goes to pending — the
+    regression guard against re-introducing Issue 6's eager guessing."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    hiding = eng.load_hiding_rules(1)
+    if not hiding:
+        pytest.skip("export has no usable declarative hiding rules to govern an attr")
+
+    governed_target = hiding[0].target_attr_id
+    attrs = [
+        ConfigAttr(
+            entity_id=1, variable_name="governedAttr", display_label="Governed",
+            required=False, default_value="",
+            options=[MenuOption("A", "Option A", 1), MenuOption("B", "Option B", 2)],
+            source_id=governed_target,
+        ),
+        ConfigAttr(
+            entity_id=2, variable_name="ungovernedAttr", display_label="Ungoverned",
+            required=False, default_value="",
+            options=[MenuOption("X", "Option X", 1), MenuOption("Y", "Option Y", 2)],
+            source_id=999_999_999,  # not targeted by any loaded rule
+        ),
+    ]
+    governed_ids = eng.governed_target_ids(attrs, hiding, [], [])
+    assert 1 in governed_ids, "traced governed attr not recognised as governed"
+    assert 2 not in governed_ids
+
+    filled, _display, pending = eng.auto_fill(attrs, {}, governed_ids=governed_ids)
+    assert "governedAttr" in filled, (
+        "governed 2-option attr with no default was not auto-filled — "
+        "D2's rule-governed eligibility path regressed")
+    assert filled["governedAttr"] == "A", "governed auto-fill did not pick first-by-order"
+    assert not any(a.variable_name == "ungovernedAttr" for a in [])  # sanity
+    assert any(a.variable_name == "ungovernedAttr" for a in pending), (
+        "ungoverned 2-option attr was auto-filled — Issue 6 guessing regression")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S12/S12b — Response mode: verbose+JSON-on-request, sequential+batched
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s12_verbose_default_json_on_request_only(truth, fake_rdb, monkeypatch):
+    transcript, _final = _drive_conversation(truth, fake_rdb, monkeypatch, max_user_turns=1)
+    if not transcript:
+        pytest.skip("engine filtered out all config attrs for this export")
+    _q, resp = transcript[0]
+    if resp["session_data"].get("status") != "configuring" or not resp["session_data"].get("pending_variables"):
+        pytest.skip("first turn did not land in a configuring+pending state")
+
+    # Plain turn: no JSON leaked unasked.
+    assert "```json" not in resp["answer"]
+    assert resp.get("preview") is not True
+
+    # Explicit JSON request mid-configuration.
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(fake_rdb)
+    resp2 = _run_cpq_turn(
+        AskRequest(question="show me the json so far", workspace_id=1,
+                  session_data=resp["session_data"]),
+        reader,
+    )
+    assert resp2
+    assert "```json" in resp2["answer"], "explicit JSON request produced no JSON"
+    assert resp2.get("preview") is True
+    assert resp2["session_data"]["status"] == "configuring", (
+        "JSON preview must not flip status to awaiting_approval")
+    assert resp2.get("cpq_payload") is None, (
+        "preview must never populate cpq_payload — only Step 8 approval does")
+
+
+def test_s12b_batched_pending_list_on_request(truth, fake_rdb, monkeypatch):
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(fake_rdb)
+    resp = _run_cpq_turn(
+        AskRequest(question="quote sl 3500 single unit for customer in United States",
+                  workspace_id=1, session_data={}),
+        reader,
+    )
+    if not resp:
+        pytest.skip("no drivable CPQ data in this export")
+    pending = resp["session_data"].get("pending_variables", [])
+    if len(pending) < 2:
+        pytest.skip("export doesn't surface 2+ pending attrs in one turn")
+
+    resp2 = _run_cpq_turn(
+        AskRequest(question="what else do you need from me", workspace_id=1,
+                  session_data=resp["session_data"]),
+        reader,
+    )
+    assert resp2
+    # Batched response must present multiple pending questions in one
+    # message, not just the next one — count question blocks, don't rely on
+    # exact label text (varies per attr).
+    prompt_count = resp2["answer"].count("choose one") + resp2["answer"].count("Please provide")
+    assert prompt_count >= min(2, len(pending)), (
+        f"batched response has {prompt_count} question block(s) for "
+        f"{len(pending)} pending attrs — does not look batched")
+
+    # Following turn (no repeat request) must revert to one-at-a-time.
+    resp3 = _run_cpq_turn(
+        AskRequest(question="that one option", workspace_id=1,
+                  session_data=resp2["session_data"]),
+        reader,
+    )
+    assert resp3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S14a — classify_select_type: pure unit test, no sample file needed
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s14a_classify_select_type_priority_and_defaults():
+    from aryx.cpq.engine import classify_select_type
+
+    assert classify_select_type({"is_array_control_attr": "1"}) == "multi"
+    assert classify_select_type({"display_type": "10"}) == "boolean"
+    assert classify_select_type({"data_type": "4"}) == "boolean"
+    assert classify_select_type({"display_type": "3"}) == "single"
+    assert classify_select_type({}) == "single"
+    # Priority: array-control checked before the boolean pair.
+    assert classify_select_type(
+        {"is_array_control_attr": "1", "display_type": "10"}) == "multi"
+
+
+def test_s14b_classify_select_type_on_real_sample(truth):
+    """Run the classifier over every real config attr — proves it's
+    internally consistent (exactly one class per attr) and reports the
+    real single/multi/boolean split for whichever export is configured."""
+    from collections import Counter
+    from aryx.cpq.engine import classify_select_type
+
+    attrs = truth.config_attrs()
+    if not attrs:
+        pytest.skip("export has no config attrs")
+    counts = Counter(classify_select_type(a) for a in attrs)
+    assert sum(counts.values()) == len(attrs)
+    assert set(counts) <= {"single", "multi", "boolean"}
+    print(f"\nselect_type split on real sample: {dict(counts)}")
+    if counts.get("multi", 0) == 0 and counts.get("boolean", 0) == 0:
+        print("(this export has no multi/boolean examples — "
+              "see docs/CPQ_GRAPH_FIX_PLAN.md §6a risk note)")

@@ -113,10 +113,15 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\blatin\s+america\b", "LA"),
 ]
 
-# Attr key fragments that represent "decision-required" choices — never auto-fill
-# via first-option fallback. Only filled via explicit hint or valid default_value.
+# Attr key fragments that represent "decision-required" choices — never
+# auto-fill via first-option fallback or rule-governed default-or-first (D2),
+# regardless of rule coverage. Only filled via explicit hint or valid
+# default_value. hwVersion was removed per D1
+# (CPQ_CASCADE_CONVERSATION_PLAN.md §2) — it's no longer a special-cased
+# anchor, it resolves through the normal rule cascade like any other
+# dependent variable.
 _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
-    "hwversion", "country", "region",
+    "country", "region",
 })
 
 # Public alias so ask_api can access it without importing a private name.
@@ -133,21 +138,6 @@ _PRODUCT_PATTERNS: list[tuple[str, str]] = [
     (r"\bmototrbo\b", "MOTOTRBO"),
 ]
 
-# ── Anchor extraction ─────────────────────────────────────────────────────────
-# Step 1: the 3 mandatory independent attributes that must be present in the
-# user's NL request before the CPQ configuration loop can begin. Without a
-# known product family and destination country the graph query is underdetermined.
-_ANCHOR_PRODUCT_RE = re.compile(
-    r"\b(apx\s*next|mototrbo|sl\s*3500e?|dpx\s*\d+|xpr\s*\d+)\b",
-    re.IGNORECASE,
-)
-# Product-line variant keywords (XE / XN / SINGLE / ENHANCED) — when present,
-# resolved from NL; when absent, resolved through Step 4 config flow from DB options.
-_ANCHOR_LINE_RE = re.compile(
-    r"\b(xe|xn|single|enhanced)\b",
-    re.IGNORECASE,
-)
-
 # CPQ layout-noise types — exclude from configuration conversation.
 _LAYOUT_TYPE_FRAGMENTS: frozenset[str] = frozenset({
     "layout", "prop", "css", "display_type", "view",
@@ -163,6 +153,28 @@ _NOISE_VAR_FRAGMENTS: frozenset[str] = frozenset({
 _NOISE_ITEM_FRAGMENTS: frozenset[str] = frozenset({
     "test", "dummy", "pager",
 })
+
+
+def classify_select_type(attrs: dict[str, Any]) -> str:
+    """Classify a config attr's UI/selection shape from its raw BM attrs.
+
+    Confirmed derivation (CPQ_CASCADE_CONVERSATION_PLAN.md §4), verified
+    against the full real config-attr population of the reference sample
+    (all 15 attrs: is_array_control_attr uniformly "0", data_type uniformly
+    "1", display_type never "10" in that export — so this classifier is
+    logic-confirmed but not yet exercised end-to-end on a real multi/boolean
+    example; treat those two branches as higher-risk until one does).
+
+    Priority matters: array-control checked first, then the boolean pair,
+    else default to "single" — dropdowns (display_type=="3") and any other
+    shape (free-text, etc.) both fall through to "single" safely.
+    """
+    if str(attrs.get("is_array_control_attr", "")).strip() == "1":
+        return "multi"
+    if (str(attrs.get("display_type", "")).strip() == "10"
+            or str(attrs.get("data_type", "")).strip() == "4"):
+        return "boolean"
+    return "single"
 
 
 class CpqEngine:
@@ -207,30 +219,21 @@ class CpqEngine:
 
         return hints
 
-    def validate_anchors(
-        self, question: str, hints: dict[str, str],
-    ) -> list[str]:
-        """Return labels of missing mandatory anchors, or [] if all present.
+    def detect_product_mention(self, question: str, hints: dict[str, str]) -> str:
+        """Best-effort product display label from NL text, or "" if none found.
 
-        Step 1 guard: blocks the CPQ config loop until all three anchors are
-        extractable — product_family, product_line, and ultimate_destination_country.
-        product_line (XE / XN / Single / Enhanced) must be stated up front so the
-        correct model variant is loaded from the graph before any rule evaluation.
+        D1 (CPQ_CASCADE_CONVERSATION_PLAN.md §2): the anchor gate is now
+        sequential (product, then country) rather than a single-shot block
+        requiring product+line+country together — hwVersion (formerly the
+        "product line" anchor) resolves through the normal rule cascade
+        instead, like any other dependent variable.
         """
-        missing: list[str] = []
-        if not _ANCHOR_PRODUCT_RE.search(question):
-            missing.append(
-                "the **product family** (e.g., *APX Next*, *MOTOTRBO*, *SL3500e*)"
-            )
-        if not _ANCHOR_LINE_RE.search(question):
-            missing.append(
-                "the **product line** (e.g., *XE*, *XN*, *Single*, *Enhanced*)"
-            )
-        if "country" not in hints:
-            missing.append(
-                "the **destination country** (e.g., *United States*, *Canada*, *Germany*)"
-            )
-        return missing
+        q_lower = question.lower()
+        return next(
+            (label for pattern, label in _PRODUCT_PATTERNS
+             if re.search(pattern, q_lower, re.IGNORECASE)),
+            next((v for k, v in hints.items() if "product" in k), ""),
+        )
 
     # ── PostgreSQL attribute fetch ────────────────────────────────────────────
 
@@ -397,6 +400,7 @@ class CpqEngine:
                 options=menu_by_attr.get(eid, []),
                 order=order,
                 source_id=source_id,
+                select_type=classify_select_type(pg),
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -834,6 +838,8 @@ class CpqEngine:
         con_rules: list[ConstraintRule],
         bml_eval: BmlEvaluator | None = None,
         filled_source: dict[str, str] | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+        dropped_multi: dict[str, list[str]] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -844,13 +850,17 @@ class CpqEngine:
           4. Apply constraint rules → update constrained option sets
 
         Iterates until neither the filled set nor the visible attr set changes.
-        filled_source (variable_name → provenance) is updated in place when
-        supplied. Returns (visible_attrs, filled, display_filled, constrained_opts).
+        filled_source (variable_name → provenance) and filled_multi
+        (variable_name → selected item_values, for select_type=="multi"
+        attrs) are updated in place when supplied. Returns (visible_attrs,
+        filled, display_filled, constrained_opts).
         """
         _MAX_LOOPS = 8
         display_filled: dict[str, str] = {}
         constrained_opts: dict[int, list[str]] = {}
         sources = filled_source if filled_source is not None else {}
+        multi = filled_multi if filled_multi is not None else {}
+        dropped = dropped_multi if dropped_multi is not None else {}
 
         for _ in range(_MAX_LOOPS):
             prev_filled_keys = set(filled.keys())
@@ -867,10 +877,13 @@ class CpqEngine:
                 filled.pop(k, None)
                 display_filled.pop(k, None)
                 sources.pop(k, None)
+                multi.pop(k, None)
 
+            governed_ids = self.governed_target_ids(attrs, hiding_rules, rec_rules, con_rules)
             filled, display_filled, _ = self.auto_fill(
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
-                filled_source=sources,
+                filled_source=sources, governed_ids=governed_ids,
+                already_filled_multi=multi, dropped_multi=dropped,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
@@ -943,6 +956,36 @@ class CpqEngine:
 
     # ── Auto-fill ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def governed_target_ids(
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+    ) -> set[int]:
+        """Entity ids of attrs targeted by at least one loaded rule.
+
+        D2 (CPQ_CASCADE_CONVERSATION_PLAN.md §2): an attribute only counts as
+        a "dependent variable" eligible for default-or-first auto-fill if a
+        hiding, recommendation, or constraint rule actually targets it —
+        everything else keeps the existing ask-the-user safeguard (Issue 6).
+        """
+        by_rule_id = CpqEngine._attr_index(attrs)
+        governed: set[int] = set()
+        for rule in hiding_rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if target:
+                governed.add(target.entity_id)
+        for rule in rec_rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if target:
+                governed.add(target.entity_id)
+        for rule in con_rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if target:
+                governed.add(target.entity_id)
+        return governed
+
     def auto_fill(
         self,
         attrs: list[ConfigAttr],
@@ -950,6 +993,9 @@ class CpqEngine:
         already_filled: dict[str, str] | None = None,
         constrained_opts: dict[int, list[str]] | None = None,
         filled_source: dict[str, str] | None = None,
+        governed_ids: set[int] | None = None,
+        already_filled_multi: dict[str, list[str]] | None = None,
+        dropped_multi: dict[str, list[str]] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -957,22 +1003,48 @@ class CpqEngine:
           1. Already filled in a prior turn.
           2. User-stated value matched from NL hints.
           3. Valid default_value from XML (not None/null/0).
-          4. First eligible item_value by order_number (respects constrained_opts).
+          4. Rule-governed default-or-first (D2/§3) — only for attrs in
+             `governed_ids`; everything else falls through to (5).
+          5. First eligible item_value by order_number, but ONLY when exactly
+             one option remains after constraint filtering (NO EAGER
+             EVALUATION — Issue 6's "Stop and Wait" safeguard for anything
+             not rule-governed).
 
         constrained_opts — {entity_id: [allowed_item_values]} from active
           ConstraintRules. When set, first-option fallback only picks from the
           allowed set; hint/default paths ignore constraints (they were validated
           by the rule that produced the recommendation).
+        governed_ids — entity_ids eligible for step 4 (see _governed_target_ids).
+
+        select_type handling within step 4:
+          - single/boolean: default_value if present, else first option by
+            order (boolean's "first option" is well-defined — only two states).
+          - multi: the allowed set from an active constraint rule IS the
+            selected set (written to the returned filled_multi); with no
+            active constraint and no default, left unselected — auto-picking
+            several options with nothing to justify the choice is the same
+            guessing risk D2 exists to prevent.
 
         Returns:
           filled         — {variable_name: item_value} for API payload
           display_filled — {variable_name: display_name} shown to sales rep
           pending        — attrs that still need a human answer
+
+        filled_multi is updated in place (via the `filled_source` pattern) if
+        `already_filled_multi` is supplied; otherwise multi-select governed
+        auto-fills are silently skipped (caller opted out of multi-select).
+        An existing multi-selection is re-validated against a NEW active
+        constraint each call — members no longer allowed are dropped and
+        named in `dropped_multi` (in place) rather than silently vanishing
+        (§5 — same bug class as the Region=NA payload-drop fix).
         """
         filled: dict[str, str] = dict(already_filled or {})
+        filled_multi = already_filled_multi if already_filled_multi is not None else {}
         display_filled: dict[str, str] = {}
         pending: list[ConfigAttr] = []
         sources = filled_source if filled_source is not None else {}
+        governed = governed_ids or set()
+        dropped = dropped_multi if dropped_multi is not None else {}
 
         for attr in attrs:
             vn = attr.variable_name
@@ -986,6 +1058,26 @@ class CpqEngine:
                 )
                 display_filled[vn] = matched_display
                 continue
+            if vn in filled_multi:
+                allowed_now = constrained_opts.get(attr.entity_id) if constrained_opts else None
+                if allowed_now is not None:
+                    allowed_set = set(allowed_now)
+                    kept = [v for v in filled_multi[vn] if v in allowed_set]
+                    lost = [v for v in filled_multi[vn] if v not in allowed_set]
+                    if lost:
+                        dropped[vn] = lost
+                        filled_multi[vn] = kept
+                if not filled_multi.get(vn):
+                    filled_multi.pop(vn, None)
+                    sources.pop(vn, None)
+                    # Falls through to normal resolution below — the drop may
+                    # have emptied the selection entirely.
+                else:
+                    display_filled[vn] = ", ".join(
+                        next((o.display_name for o in attr.options if o.item_value == v), v)
+                        for v in filled_multi[vn]
+                    )
+                    continue
 
             value: str | None = None
             display: str | None = None
@@ -1037,14 +1129,17 @@ class CpqEngine:
                     attr.default_value,
                 )
 
-            # 3. Single-remaining-option auto-fill (NO EAGER EVALUATION).
-            # Only auto-select when exactly ONE valid option remains after
-            # constraint filtering — that is not a real user choice.
-            # Multi-option attrs with no recommendation rule go to pending so
-            # the user is prompted (spec §CRITICAL DIRECTIVE 1: STOP AND WAIT).
+            # 3/4. Rule-governed default-or-first (D2/§3), else the
+            # conservative single-remaining-option fallback (NO EAGER
+            # EVALUATION — Issue 6's "Stop and Wait" safeguard for anything
+            # not rule-governed). Decision-required attrs (country/region —
+            # hwVersion removed per D1, it's a normal dependent now) always
+            # ask regardless of governance.
             is_decision_attr = any(
                 dk in vn_flat for dk in _DECISION_REQUIRED_KEYS
             )
+            is_governed = attr.entity_id in governed
+            filled_multi_now = False
             if not value and attr.options:
                 allowed_for_attr = (
                     set(constrained_opts.get(attr.entity_id, []))
@@ -1059,15 +1154,42 @@ class CpqEngine:
                     # Exactly one choice — auto-fill, no user decision needed
                     value = valid_opts[0].item_value
                     display = valid_opts[0].display_name
-                # else: 0 or 2+ options → pending (user must choose)
+                elif is_governed and not is_decision_attr and valid_opts:
+                    if attr.select_type == "multi":
+                        # The allowed set from an active constraint IS the
+                        # selected set — never guess a subset with nothing
+                        # to justify it (allowed_for_attr is None → no
+                        # active constraint narrowed this attr → leave
+                        # unselected, ask the user).
+                        if allowed_for_attr is not None:
+                            filled_multi[vn] = [o.item_value for o in valid_opts]
+                            display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
+                            sources.setdefault(vn, "rule")
+                            filled_multi_now = True
+                    else:
+                        # single/boolean, 2+ options, no default: first by
+                        # menu order — well-defined for boolean (only two
+                        # states) and safe here because a rule REQUIRES this
+                        # attr to be resolved for the cascade to proceed.
+                        value = valid_opts[0].item_value
+                        display = valid_opts[0].display_name
+                # else: 0 or 2+ options, ungoverned → pending (user must choose)
+            elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
+                # Governed boolean with no menu options at all: default to
+                # "false" (unchecked) rather than leaving it perpetually
+                # pending — a boolean's absent-default state is well-defined.
+                value = "false"
+                display = "No"
 
+            if filled_multi_now:
+                continue
             if value:
                 filled[vn] = value
                 display_filled[vn] = display or value
                 sources.setdefault(vn, source)
             elif attr.options or is_decision_attr:
                 # Attrs with a meaningful choice set OR decision-required free-text
-                # attrs (region/country/hwversion) go to pending for user input.
+                # attrs (region/country) go to pending for user input.
                 # Free-text CRM/system fields with no options and no decision
                 # requirement are skipped — they are filled by integration.
                 pending.append(attr)
@@ -1124,6 +1246,37 @@ class CpqEngine:
         return filled, display_filled, pending
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────
+
+    # §6.1/§6.2 explicit-request detectors — shared "did the client ask for a
+    # different presentation" pattern. Biased toward returning None (the rich
+    # default: verbose narrative, one question at a time) on ambiguity — a
+    # false negative just stays verbose; a false positive leaks JSON or a
+    # batch dump the client didn't ask for.
+    _JSON_REQUEST_RE = re.compile(
+        r"\b(show|give|see|what'?s)\b[^.?!]{0,30}\b(json|payload|bom)\b|"
+        r"\bjson\b[^.?!]{0,20}\b(so\s+far|now|please)\b",
+        re.IGNORECASE,
+    )
+    _BATCH_REQUEST_RE = re.compile(
+        r"\bwhat\s+else\b|\bwhat'?s\s+left\b|"
+        r"\bshow\s+(me\s+)?(all|everything)\b|"
+        r"\blist\s+(all|the)\s+(remaining|pending)\b|"
+        r"\bwhat\s+do\s+you\s+(still\s+)?need\b",
+        re.IGNORECASE,
+    )
+
+    def detect_response_mode_request(self, question: str) -> str | None:
+        """Return "json" | "batch" | None for an explicit presentation request.
+
+        CPQ_CASCADE_CONVERSATION_PLAN.md §6: the client gets the rich default
+        (verbose narrative, one question at a time) unless they explicitly
+        ask for the JSON payload or the full batch of pending questions.
+        """
+        if self._JSON_REQUEST_RE.search(question):
+            return "json"
+        if self._BATCH_REQUEST_RE.search(question):
+            return "batch"
+        return None
 
     # Approval keywords — user is confirming the configuration (Step 8 trigger)
     _APPROVAL_RE = re.compile(
@@ -1437,7 +1590,8 @@ class CpqEngine:
         self,
         filled: dict[str, str],
         filled_source: dict[str, str] | None = None,
-    ) -> dict[str, str]:
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> dict[str, str | list[str]]:
         """Return the final CPQ BOM API payload {variable_name: item_value}.
 
         Excludes HTML template values — those are layout/display fields, not
@@ -1445,14 +1599,20 @@ class CpqEngine:
         user against a real menu option is valid BY DEFINITION: none-like
         codes (``NA``, ``0``, ...) survive when their provenance is a
         confirmed source; only unconfirmed auto-fills are dropped.
+
+        filled_multi (select_type=="multi" attrs) merges in as JSON arrays —
+        CpqSession.filled stays str-only (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
         """
         sources = filled_source or {}
-        out: dict[str, str] = {}
+        out: dict[str, str | list[str]] = {}
         for k, v in filled.items():
             if not v or self._is_html_value(v):
                 continue
             if _valid(v) or sources.get(k) in self._CONFIRMED_SOURCES:
                 out[k] = v
+        for k, vals in (filled_multi or {}).items():
+            if vals:
+                out[k] = list(vals)
         return out
 
     # ── Summary renderer ──────────────────────────────────────────────────────
