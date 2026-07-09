@@ -58,7 +58,7 @@ class GraphReader:
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name/attributes, or None if absent."""
         rows = self._query(
-            "MATCH (e:Entity {id: $id}) RETURN e.id, e.type, e.name, e.attrs",
+            "MATCH (e:Entity {id: $id}) RETURN e.id, e.type, e.name, properties(e)",
             {"id": entity_id},
         )
         return _entity(rows[0]) if rows else None
@@ -74,6 +74,47 @@ class GraphReader:
         """
         rows = self._query("MATCH (e:Entity) RETURN DISTINCT e.type ORDER BY e.type")
         return [r[0] for r in rows if r[0]]
+
+    def describe_schema(self, sample_per_type: int = 25) -> dict[str, Any]:
+        """Describe the graph schema as it actually exists, for query generation.
+
+        The instance data uses generic ``:Entity`` nodes (ontology type in the
+        ``type`` property and as an extra label) connected by ``:REL`` edges
+        whose semantic name lives in the ``name`` property. Cypher written
+        against the theoretical ontology (semantic edge types, no ``type``
+        filter) returns nothing — callers generating queries must use this
+        description instead.
+
+        Returns:
+            node_pattern / edge_pattern: canonical MATCH fragments.
+            entity_types: every distinct ``type`` value.
+            relationship_names: every distinct ``r.name`` value.
+            properties_by_type: observed native property names per type
+                (sampled, so rarely-populated properties may be missing).
+        """
+        types = self.distinct_types()
+        rel_rows = self._query(
+            "MATCH ()-[r:REL]->() RETURN DISTINCT r.name ORDER BY r.name")
+        rel_names = [r[0] for r in rel_rows if r[0]]
+        props_by_type: dict[str, list[str]] = {}
+        for t in types:
+            rows = self._query(
+                "MATCH (e:Entity {type: $type}) RETURN properties(e) "
+                f"LIMIT {max(1, int(sample_per_type))}",
+                {"type": t},
+            )
+            keys: set[str] = set()
+            for r in rows:
+                if isinstance(r[0], dict):
+                    keys.update(r[0].keys())
+            props_by_type[t] = sorted(keys)
+        return {
+            "node_pattern": "(e:Entity {type: $ontology_type})",
+            "edge_pattern": "(a:Entity)-[r:REL {name: $relationship_name}]->(b:Entity)",
+            "entity_types": types,
+            "relationship_names": rel_names,
+            "properties_by_type": props_by_type,
+        }
 
     def find_entities(self, ontology_type: str | None = None,
                       name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -98,7 +139,7 @@ class GraphReader:
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
         rows = self._query(
-            f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, e.attrs LIMIT {capped}",
+            f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, properties(e) LIMIT {capped}",
             params,
         )
         return [_entity(r) for r in rows]
@@ -111,11 +152,11 @@ class GraphReader:
         """
         rows = self._query(
             "MATCH (e:Entity {id: $id})-[r:REL]->(n:Entity) "
-            "RETURN n.id AS id, n.type AS type, n.name AS name, n.attrs AS attrs, "
+            "RETURN n.id AS id, n.type AS type, n.name AS name, properties(n) AS attrs, "
             "r.name AS rel, 'out' AS dir "
             "UNION "
             "MATCH (e:Entity {id: $id})<-[r:REL]-(n:Entity) "
-            "RETURN n.id AS id, n.type AS type, n.name AS name, n.attrs AS attrs, "
+            "RETURN n.id AS id, n.type AS type, n.name AS name, properties(n) AS attrs, "
             "r.name AS rel, 'in' AS dir",
             {"id": entity_id},
         )
@@ -191,7 +232,7 @@ class GraphReader:
             for rname in rel_types:
                 rows = self._query(
                     "MATCH (a:Entity)-[r:REL {name: $rname}]->(b:Entity) "
-                    "RETURN a.id, a.type, a.name, a.attrs, b.id, b.type, b.name, b.attrs "
+                    "RETURN a.id, a.type, a.name, properties(a), b.id, b.type, b.name, properties(b) "
                     f"LIMIT {rels_per_rtype}",
                     {"rname": rname},
                 )
@@ -250,7 +291,7 @@ class GraphReader:
                 if type_count.get(etype, 0) == 0:
                     rows = self._query(
                         "MATCH (e:Entity {type: $type}) "
-                        "RETURN e.id, e.type, e.name, e.attrs "
+                        "RETURN e.id, e.type, e.name, properties(e) "
                         f"LIMIT {per_type}",
                         {"type": etype},
                     )
@@ -279,7 +320,7 @@ class GraphReader:
                     "UNWIND $ids AS eid "
                     "MATCH (a:Entity {id: eid})-[r:REL]->(b:Entity) "
                     "WITH eid, collect({bid: b.id, btype: b.type, bname: b.name, "
-                    "battrs: b.attrs, rname: r.name})[0] AS pick "
+                    "battrs: properties(b), rname: r.name})[0] AS pick "
                     "RETURN eid, pick.bid, pick.btype, pick.bname, pick.battrs, pick.rname",
                     {"ids": isolated_eids},
                 )
@@ -293,7 +334,7 @@ class GraphReader:
                         "UNWIND $ids AS eid "
                         "MATCH (b:Entity)-[r:REL]->(a:Entity {id: eid}) "
                         "WITH eid, collect({bid: b.id, btype: b.type, bname: b.name, "
-                        "battrs: b.attrs, rname: r.name})[0] AS pick "
+                        "battrs: properties(b), rname: r.name})[0] AS pick "
                         "RETURN eid, pick.bid, pick.btype, pick.bname, pick.battrs, pick.rname",
                         {"ids": still_iso},
                     )
@@ -317,7 +358,7 @@ class GraphReader:
         if remaining > 0:
             iso_rows = self._query(
                 "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
-                f"RETURN e.id, e.type, e.name, e.attrs LIMIT {remaining}"
+                f"RETURN e.id, e.type, e.name, properties(e) LIMIT {remaining}"
             )
             for row in iso_rows:
                 if row[0] not in entity_map:
@@ -347,7 +388,7 @@ class GraphReader:
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) "
                 f"WITH shortestPath((a){arrow_a}[:REL*1..{hops}]{arrow_b}(b)) AS p "
                 "WHERE p IS NOT NULL "
-                "RETURN [n IN nodes(p) | [n.id, n.type, n.name, n.attrs]] AS ns, "
+                "RETURN [n IN nodes(p) | [n.id, n.type, n.name, properties(n)]] AS ns, "
                 "[r IN relationships(p) | r.name] AS rs",
                 {"a": src, "b": dst},
             )
@@ -366,14 +407,37 @@ class GraphReader:
         return steps
 
 
+# Node properties written by the projection itself, not entity attributes.
+_INTERNAL_PROPS = frozenset({"id", "type", "name", "iri"})
+
+
 def _parse_attrs(raw: Any) -> dict[str, Any]:
-    """Best-effort JSON decode of a stored attributes blob; {} on absence/failure."""
+    """Extract entity attributes from a node's property map.
+
+    Current graphs store attributes as individual native node properties, so
+    ``raw`` is the properties() map minus the internal projection fields.
+    Graphs projected before the native-property lift carry a single
+    stringified JSON blob under ``attrs`` — decode and merge it so reads work
+    against both generations without a reprojection.
+    """
     if not raw:
         return {}
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
+    if isinstance(raw, str):  # legacy: bare attrs blob
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if isinstance(raw, dict):
+        attrs = {k: v for k, v in raw.items()
+                 if k not in _INTERNAL_PROPS and k != "attrs"}
+        legacy = raw.get("attrs")
+        if isinstance(legacy, str) and legacy:
+            try:
+                attrs = {**json.loads(legacy), **attrs}
+            except (TypeError, ValueError):
+                pass
+        return attrs
+    return {}
 
 
 def _entity(row: list[Any]) -> dict[str, Any]:

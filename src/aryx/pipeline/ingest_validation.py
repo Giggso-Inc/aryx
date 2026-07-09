@@ -383,8 +383,14 @@ def _check_projection_parity(report: ValidationReport, workspace_id: int, dsn: s
         graph_by_type = {r[0]: r[1] for r in node_rows}
         edge_rows = reader._query("MATCH ()-[r:REL]->() RETURN count(r)")  # noqa: SLF001
         graph_edges = edge_rows[0][0] if edge_rows else 0
+        # Attributes are individual native node properties (post-lift), so a
+        # node "carrying attrs" means it has at least one property beyond the
+        # projection internals (id/type/name/iri). Legacy graphs carry the old
+        # stringified blob under `attrs`, which also counts.
         no_attrs = reader._query(  # noqa: SLF001
-            "MATCH (e:Entity) WHERE e.attrs IS NULL OR e.attrs = '' RETURN count(e)")
+            "MATCH (e:Entity) "
+            "WHERE size([k IN keys(e) WHERE NOT k IN ['id','type','name','iri']]) = 0 "
+            "RETURN count(e)")
         n_no_attrs = no_attrs[0][0] if no_attrs else 0
 
         pool = get_pool(dsn)
