@@ -7,6 +7,7 @@ raw Node objects) so callers get plain, serializable dicts.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import Counter
@@ -55,12 +56,24 @@ class GraphReader:
         return result
 
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
-        """Return a single entity's id/type/name, or None if absent."""
+        """Return a single entity's id/type/name/attributes, or None if absent."""
         rows = self._query(
-            "MATCH (e:Entity {id: $id}) RETURN e.id, e.type, e.name",
+            "MATCH (e:Entity {id: $id}) RETURN e.id, e.type, e.name, e.attrs",
             {"id": entity_id},
         )
         return _entity(rows[0]) if rows else None
+
+    def distinct_types(self) -> list[str]:
+        """Every distinct entity type in the graph — deterministic, no sampling.
+
+        Callers that need "entities of a type matching X" must discover the
+        type name here first, then find_entities(ontology_type=...). Sampling
+        find_entities(limit=N) instead silently misses types on large graphs
+        (a 46k-entity workspace can return a 1000-row page containing only
+        2-3 dominant types).
+        """
+        rows = self._query("MATCH (e:Entity) RETURN DISTINCT e.type ORDER BY e.type")
+        return [r[0] for r in rows if r[0]]
 
     def find_entities(self, ontology_type: str | None = None,
                       name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -72,7 +85,7 @@ class GraphReader:
             limit: Maximum rows to return (coerced to int, capped at ARYX_GRAPH_QUERY_LIMIT).
 
         Returns:
-            A list of {id, type, name} dicts.
+            A list of {id, type, name, attributes} dicts.
         """
         clauses: list[str] = []
         params: dict[str, Any] = {}
@@ -85,7 +98,7 @@ class GraphReader:
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
         rows = self._query(
-            f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name LIMIT {capped}",
+            f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, e.attrs LIMIT {capped}",
             params,
         )
         return [_entity(r) for r in rows]
@@ -98,15 +111,15 @@ class GraphReader:
         """
         rows = self._query(
             "MATCH (e:Entity {id: $id})-[r:REL]->(n:Entity) "
-            "RETURN n.id AS id, n.type AS type, n.name AS name, "
+            "RETURN n.id AS id, n.type AS type, n.name AS name, n.attrs AS attrs, "
             "r.name AS rel, 'out' AS dir "
             "UNION "
             "MATCH (e:Entity {id: $id})<-[r:REL]-(n:Entity) "
-            "RETURN n.id AS id, n.type AS type, n.name AS name, "
+            "RETURN n.id AS id, n.type AS type, n.name AS name, n.attrs AS attrs, "
             "r.name AS rel, 'in' AS dir",
             {"id": entity_id},
         )
-        return [{**_entity(r), "relationship": r[3], "direction": r[4]} for r in rows]
+        return [{**_entity(r[:4]), "relationship": r[4], "direction": r[5]} for r in rows]
 
     def all_relationships(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Return relationship edges in the graph, optionally capped."""
@@ -129,7 +142,7 @@ class GraphReader:
            that connect across types.
         4. Seed any entity type with zero rels so all types appear on canvas.
         5. Post-linking pass: for any entity still without a visible edge, run
-           a LIMIT 1 query to find one real neighbor and add it.  Guarantees
+           a batched query to find one real neighbor and add it.  Guarantees
            zero isolated nodes in the rendered canvas.
         6. Add truly isolated FalkorDB entities (no edges at all) for debugging.
 
@@ -178,14 +191,14 @@ class GraphReader:
             for rname in rel_types:
                 rows = self._query(
                     "MATCH (a:Entity)-[r:REL {name: $rname}]->(b:Entity) "
-                    "RETURN a.id, a.type, a.name, b.id, b.type, b.name "
+                    "RETURN a.id, a.type, a.name, a.attrs, b.id, b.type, b.name, b.attrs "
                     f"LIMIT {rels_per_rtype}",
                     {"rname": rname},
                 )
                 for row in rows:
-                    aid, atype, aname, bid, btype, bname = row
-                    entity_info[aid] = {"id": aid, "type": atype, "name": aname}
-                    entity_info[bid] = {"id": bid, "type": btype, "name": bname}
+                    aid, atype, aname, aattrs, bid, btype, bname, battrs = row
+                    entity_info[aid] = _entity([aid, atype, aname, aattrs])
+                    entity_info[bid] = _entity([bid, btype, bname, battrs])
                     key = (aid, bid, rname)
                     if key not in seen_rels:
                         seen_rels.add(key)
@@ -237,14 +250,13 @@ class GraphReader:
                 if type_count.get(etype, 0) == 0:
                     rows = self._query(
                         "MATCH (e:Entity {type: $type}) "
-                        "RETURN e.id, e.type, e.name "
+                        "RETURN e.id, e.type, e.name, e.attrs "
                         f"LIMIT {per_type}",
                         {"type": etype},
                     )
                     for row in rows:
-                        eid, et, en = row
-                        entity_map[eid] = {"id": eid, "type": et, "name": en}
-                        valid_ids.add(eid)
+                        entity_map[row[0]] = _entity(row)
+                        valid_ids.add(row[0])
 
         # Step 5 — post-linking pass (batched): guarantee every entity has a
         # visible edge.  Two UNWIND queries replace N×LIMIT 1 round-trips.
@@ -257,33 +269,40 @@ class GraphReader:
                 connected_ids.add(r["target"])
             isolated_eids = [eid for eid in entity_map if eid not in connected_ids]
             if isolated_eids:
+                # Group by eid and take one neighbor per entity (collect(...)[0])
+                # *before* returning, so the row count is naturally bounded by
+                # len(ids) regardless of any single entity's degree. A flat
+                # LIMIT here would let one high-degree hub in the batch consume
+                # the entire cap and starve every other id of a result.
                 found: dict[int, tuple] = {}
-                out_cap = len(isolated_eids) * 2 + 10
                 out_rows = self._query(
                     "UNWIND $ids AS eid "
                     "MATCH (a:Entity {id: eid})-[r:REL]->(b:Entity) "
-                    f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {out_cap}",
+                    "WITH eid, collect({bid: b.id, btype: b.type, bname: b.name, "
+                    "battrs: b.attrs, rname: r.name})[0] AS pick "
+                    "RETURN eid, pick.bid, pick.btype, pick.bname, pick.battrs, pick.rname",
                     {"ids": isolated_eids},
                 )
                 for row in out_rows:
                     eid_ = row[0]
                     if eid_ not in found:
-                        found[eid_] = (row[1], row[2], row[3], row[4], "out")
+                        found[eid_] = (row[1], row[2], row[3], row[4], row[5], "out")
                 still_iso = [e for e in isolated_eids if e not in found]
                 if still_iso:
-                    in_cap = len(still_iso) * 2 + 10
                     in_rows = self._query(
                         "UNWIND $ids AS eid "
                         "MATCH (b:Entity)-[r:REL]->(a:Entity {id: eid}) "
-                        f"RETURN eid, b.id, b.type, b.name, r.name LIMIT {in_cap}",
+                        "WITH eid, collect({bid: b.id, btype: b.type, bname: b.name, "
+                        "battrs: b.attrs, rname: r.name})[0] AS pick "
+                        "RETURN eid, pick.bid, pick.btype, pick.bname, pick.battrs, pick.rname",
                         {"ids": still_iso},
                     )
                     for row in in_rows:
                         eid_ = row[0]
                         if eid_ not in found:
-                            found[eid_] = (row[1], row[2], row[3], row[4], "in")
-                for eid, (bid, btype, bname, rname, direction) in found.items():
-                    entity_map[bid] = {"id": bid, "type": btype, "name": bname}
+                            found[eid_] = (row[1], row[2], row[3], row[4], row[5], "in")
+                for eid, (bid, btype, bname, battrs, rname, direction) in found.items():
+                    entity_map[bid] = _entity([bid, btype, bname, battrs])
                     valid_ids.add(bid)
                     if direction == "out":
                         rels.append({"source": eid, "target": bid, "name": rname})
@@ -298,12 +317,11 @@ class GraphReader:
         if remaining > 0:
             iso_rows = self._query(
                 "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
-                f"RETURN e.id, e.type, e.name LIMIT {remaining}"
+                f"RETURN e.id, e.type, e.name, e.attrs LIMIT {remaining}"
             )
             for row in iso_rows:
-                eid, etype, ename = row
-                if eid not in entity_map:
-                    entity_map[eid] = {"id": eid, "type": etype, "name": ename}
+                if row[0] not in entity_map:
+                    entity_map[row[0]] = _entity(row)
 
         result = {"entities": list(entity_map.values()), "relationships": rels}
         _subgraph_cache[cache_key] = (now, result)
@@ -329,7 +347,7 @@ class GraphReader:
                 "MATCH (a:Entity {id: $a}), (b:Entity {id: $b}) "
                 f"WITH shortestPath((a){arrow_a}[:REL*1..{hops}]{arrow_b}(b)) AS p "
                 "WHERE p IS NOT NULL "
-                "RETURN [n IN nodes(p) | [n.id, n.type, n.name]] AS ns, "
+                "RETURN [n IN nodes(p) | [n.id, n.type, n.name, n.attrs]] AS ns, "
                 "[r IN relationships(p) | r.name] AS rs",
                 {"a": src, "b": dst},
             )
@@ -344,11 +362,23 @@ class GraphReader:
         nodes, rels = rows[0]
         steps: list[dict[str, Any]] = []
         for i, n in enumerate(nodes):
-            steps.append({"id": n[0], "type": n[1], "name": n[2],
-                          "relationship": rels[i - 1] if i > 0 else None})
+            steps.append({**_entity(n), "relationship": rels[i - 1] if i > 0 else None})
         return steps
 
 
+def _parse_attrs(raw: Any) -> dict[str, Any]:
+    """Best-effort JSON decode of a stored attributes blob; {} on absence/failure."""
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+
+
 def _entity(row: list[Any]) -> dict[str, Any]:
-    """Map an (id, type, name) result row to an entity dict."""
-    return {"id": row[0], "type": row[1], "name": row[2]}
+    """Map an (id, type, name[, attrs]) result row to an entity dict."""
+    entity: dict[str, Any] = {"id": row[0], "type": row[1], "name": row[2]}
+    if len(row) > 3:
+        entity["attributes"] = _parse_attrs(row[3])
+    return entity

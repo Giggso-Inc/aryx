@@ -39,8 +39,9 @@ def test_above_auto_merge_merges_without_queue() -> None:
     """score >= 0.92 -> merge, nothing queued."""
     left, right, union = _pair()
     sink = FakeSink()
-    _route_pair(left, right, 0.95, MagicMock(), union, sink)
+    decision = _route_pair(left, right, 0.95, MagicMock(), union, sink)
     assert _merged(union) and sink.offers == []
+    assert decision == "merge"
 
 
 def test_band_llm_accept_merges_and_logs_auto_llm() -> None:
@@ -48,10 +49,11 @@ def test_band_llm_accept_merges_and_logs_auto_llm() -> None:
     left, right, union = _pair()
     sink = FakeSink()
     with patch("aryx.resolution.run.adjudicate", return_value=True):
-        _route_pair(left, right, 0.91, MagicMock(), union, sink)
+        decision = _route_pair(left, right, 0.91, MagicMock(), union, sink)
     assert _merged(union)
     assert sink.offers[0]["status"] == "auto_llm"
     assert sink.offers[0]["llm_verdict"] is True
+    assert decision == "adjudicate_merge"
 
 
 def test_band_llm_failure_queues_pending_no_merge() -> None:
@@ -60,34 +62,60 @@ def test_band_llm_failure_queues_pending_no_merge() -> None:
     sink = FakeSink()
     with patch("aryx.resolution.run.adjudicate",
                side_effect=RuntimeError("llm down")):
-        _route_pair(left, right, 0.91, MagicMock(), union, sink)
+        decision = _route_pair(left, right, 0.91, MagicMock(), union, sink)
     assert not _merged(union)
     assert sink.offers[0]["status"] == "pending"
+    assert decision == "adjudicate_no_merge"
 
 
 def test_review_band_queues_pending() -> None:
     """[0.75, 0.90) -> human queue, treated as non-merge for this run."""
     left, right, union = _pair()
     sink = FakeSink()
-    _route_pair(left, right, 0.80, MagicMock(), union, sink)
+    decision = _route_pair(left, right, 0.80, MagicMock(), union, sink)
     assert not _merged(union)
     assert sink.offers[0]["status"] == "pending"
     assert sink.offers[0]["llm_verdict"] is None
+    assert decision == "review"
 
 
 def test_below_review_rejected_silently() -> None:
     """score < 0.75 -> auto-reject: no merge, no queue row."""
     left, right, union = _pair()
     sink = FakeSink()
-    _route_pair(left, right, 0.60, MagicMock(), union, sink)
+    decision = _route_pair(left, right, 0.60, MagicMock(), union, sink)
     assert not _merged(union) and sink.offers == []
+    assert decision == "reject"
 
 
 def test_no_sink_band_pair_skipped_quietly() -> None:
     """review=None (queue not wired) keeps the funnel working."""
     left, right, union = _pair()
-    _route_pair(left, right, 0.80, MagicMock(), union, None)
+    decision = _route_pair(left, right, 0.80, MagicMock(), union, None)
     assert not _merged(union)
+    assert decision == "review_dropped"
+
+
+def test_review_sink_failure_does_not_abort_run() -> None:
+    """A review-queue write failure must not raise — pair is dropped, run continues."""
+    class RaisingSink:
+        def offer(self, *args, **kwargs) -> None:
+            raise RuntimeError("db down")
+
+    left, right, union = _pair()
+    decision = _route_pair(left, right, 0.80, MagicMock(), union, RaisingSink())
+    assert not _merged(union)
+    assert decision == "review_dropped"
+
+
+def test_run_id_threaded_into_route_pair_log(caplog) -> None:
+    """run_id passed to _route_pair appears in its log line for correlation."""
+    import logging
+    left, right, union = _pair()
+    sink = FakeSink()
+    with caplog.at_level(logging.INFO, logger="aryx.resolution.run"):
+        _route_pair(left, right, 0.95, MagicMock(), union, sink, run_id=42)
+    assert any("run_id=42" in r.getMessage() for r in caplog.records)
 
 
 def test_apply_decision_approve_merges_entities() -> None:

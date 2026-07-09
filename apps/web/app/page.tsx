@@ -125,6 +125,9 @@ export default function HomePage() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  // CPQ session state — echoed back to the API on every turn so the engine
+  // can continue the guided configuration without a server-side session store.
+  const [sessionData, setSessionData] = useState<Record<string, unknown>>({});
   // Cancels an in-flight recovery poll when the component unmounts or a new
   // question is submitted before the previous recovery finishes.
   const cancelRecoveryRef = useRef(false);
@@ -171,11 +174,21 @@ export default function HomePage() {
     setTurns((t) => [...t, userTurn, placeholder]);
 
     try {
-      const resp = await api.ask(q, workspaceId);
+      // Build conversation history from completed turns (exclude in-flight placeholder).
+      const history = turns
+        .filter((t) => t.role === "user" || (t.content && !t.streaming))
+        .slice(-8)
+        .map((t) => ({ role: t.role, text: t.content }));
+      const resp = await api.ask(q, workspaceId, history, sessionData);
       // Lightweight citation extraction — V1: derive from terms.
       const citations: Citation[] = (resp.terms || [])
         .slice(0, 5)
         .map((label, i) => ({ entity_id: i, label }));
+
+      // Persist CPQ session state so the next turn continues the configuration.
+      if (resp.session_data && Object.keys(resp.session_data).length > 0) {
+        setSessionData(resp.session_data);
+      }
 
       streamReveal(resp.answer, (full) => {
         setTurns((prev) =>

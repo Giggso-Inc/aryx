@@ -121,6 +121,7 @@ class Broker:
             return []
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError(f"broker: Ollama endpoint must be http(s)://: {endpoint!r}")
+        logger.debug("ollama_embed model=%s texts=%d endpoint=%s", self._embed["model"], len(texts), endpoint)
         body = json.dumps({"model": self._embed["model"], "input": texts}).encode("utf-8")
         req = urllib.request.Request(
             endpoint.rstrip("/") + "/api/embed",
@@ -128,7 +129,9 @@ class Broker:
         )
         with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8"))
-        return payload.get("embeddings", [])
+        embeddings = payload.get("embeddings", [])
+        logger.debug("ollama_embed ok vectors=%d dim=%d", len(embeddings), len(embeddings[0]) if embeddings else 0)
+        return embeddings
 
     def _oci_embed(self, texts: list[str], settings: object,
                   input_type: str = "SEARCH_DOCUMENT") -> list[list[float]]:
