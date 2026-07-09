@@ -1,6 +1,6 @@
 # CPQ Graph-RAG Fix Plan — 6 Diagnostic Issues
 
-**Status:** Approved plan, pending implementation
+**Status:** Implemented on branch `feat/cpq-graph-fixes` — all 4 phases landed, S1–S7 green
 **Date:** 2026-07-09
 **Source:** "Aryx Graph-RAG Configuration Engine: Diagnostic Findings & Action Items" (customer debugging report)
 **Sample test asset:** `SL3500e_Dummy_Config.xml` (BigMachines `bm_config_zip_cache` export, ~6 MB) — used as the *default* test input only; nothing in the implementation or tests may hardcode values from this file.
