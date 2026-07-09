@@ -16,6 +16,10 @@ const MIN_GRAPH_HEIGHT = 540;
 const NODE_LABEL_LIMIT = 16;
 const EDGE_LABEL_LIMIT = 24;
 
+interface GraphLayoutNodeData {
+  color: string;
+}
+
 function truncateLabel(label: string, limit: number): string {
   return label.length <= limit ? label : `${label.slice(0, Math.max(1, limit - 1))}\u2026`;
 }
@@ -36,7 +40,7 @@ function edgePath(points: Array<{ x: number; y: number }>): string {
 }
 
 function buildGraphLayout(nodes: GraphTypeNode[], edges: GraphTypeEdge[], types: DataTypeCount[]) {
-  const graph = new dagre.graphlib.Graph({ multigraph: true });
+  const graph = new dagre.graphlib.Graph<GraphLayoutNodeData>({ multigraph: true });
   graph.setGraph({
     rankdir: "LR",
     align: "UL",
