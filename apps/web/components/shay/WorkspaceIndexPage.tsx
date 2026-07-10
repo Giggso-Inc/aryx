@@ -13,6 +13,7 @@ import { ShayPageShell } from "./ShayPageShell";
 import { api } from "@/lib/api";
 import { getShayAccessToken, shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
+import { storeShaySession } from "@/lib/shay-session";
 import type { ShayWorkspace } from "@/lib/shay-types";
 import { workspaceSectionHref } from "@/lib/workspace-route";
 
@@ -175,12 +176,10 @@ export function WorkspaceIndexPage() {
     setSaving(true);
     setModalError(null);
     try {
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("aryx.shay.session", JSON.stringify({
-          ...(session ?? {}),
-          access_token: accessToken,
-        }));
-      }
+      storeShaySession({
+        ...(session ?? {}),
+        access_token: accessToken,
+      });
       const workspace = await shayApi.createWorkspace({
         name: name.trim(),
         description: description.trim(),

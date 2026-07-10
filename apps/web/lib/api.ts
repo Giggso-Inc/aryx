@@ -6,37 +6,16 @@ import type {
   GenericSourcePreview,
   SurvivorshipPolicy, Workspace, XmlSourceDetail,
 } from "./types";
-import { SHAY_SESSION_STORAGE_KEY } from "./shay-auth";
+import {
+  createHttpStatusError,
+  fetchWithShayAuth,
+  readErrorDetail,
+} from "./shay-session";
 
 // Same-origin relative path. Next.js rewrites /api/* → FastAPI internally
 // (see next.config.mjs). Works in dev (proxies to localhost:8088) and in
 // production (proxies to api:8000) without any client-side knowledge.
 const BASE = "/api";
-
-function getAccessTokenFromSessionStorage(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const raw = window.localStorage.getItem(SHAY_SESSION_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-  try {
-    const session = JSON.parse(raw) as { access_token?: string };
-    return typeof session.access_token === "string" && session.access_token
-      ? session.access_token
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function applyAuthHeader(headers: Headers) {
-  const token = getAccessTokenFromSessionStorage();
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-}
 
 /** Throw on non-2xx; return parsed JSON otherwise. */
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
@@ -44,30 +23,22 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  applyAuthHeader(headers);
-  const res = await fetch(`${BASE}${path}`, {
-    cache: "no-store",
+  const res = await fetchWithShayAuth(`${BASE}${path}`, {
     ...init,
     headers,
   });
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+    const detail = await readErrorDetail(res);
+    throw createHttpStatusError(res.status, res.statusText, detail);
   }
   return res.json() as Promise<T>;
 }
 
 async function fetchBlob(path: string, init?: RequestInit): Promise<Blob> {
-  const headers = new Headers(init?.headers);
-  applyAuthHeader(headers);
-  const res = await fetch(`${BASE}${path}`, {
-    cache: "no-store",
-    ...init,
-    headers,
-  });
+  const res = await fetchWithShayAuth(`${BASE}${path}`, init);
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+    const detail = await readErrorDetail(res);
+    throw createHttpStatusError(res.status, res.statusText, detail);
   }
   return res.blob();
 }
@@ -345,16 +316,13 @@ export const api = {
     form.append("ontology_type", ontologyType);
     form.append("match_keys", matchKeys);
     form.append("workspace_id", String(workspaceId));
-    const headers = new Headers();
-    applyAuthHeader(headers);
-    const res = await fetch(`${BASE}/admin/ingest/file`, {
+    const res = await fetchWithShayAuth(`${BASE}/admin/ingest/file`, {
       method: "POST",
       body: form,
-      headers,
     });
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      const detail = await readErrorDetail(res);
+      throw createHttpStatusError(res.status, res.statusText, detail);
     }
     return res.json() as Promise<{ status: string; job_id: string }>;
   },
@@ -431,16 +399,13 @@ export const api = {
     for (const f of files) form.append("files", f);
     form.append("context", context);
     form.append("workspace_id", String(workspaceId));
-    const headers = new Headers();
-    applyAuthHeader(headers);
-    const res = await fetch("/api/admin/docs/read", {
+    const res = await fetchWithShayAuth("/api/admin/docs/read", {
       method: "POST",
       body: form,
-      headers,
     });
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      const detail = await readErrorDetail(res);
+      throw createHttpStatusError(res.status, res.statusText, detail);
     }
     return res.json() as Promise<{ discovery_id: string }>;
   },
@@ -575,13 +540,13 @@ export const api = {
     ),
 
   exportOntology: async (workspaceId: number, format: string): Promise<Blob> => {
-    const res = await fetch(
+    const res = await fetchWithShayAuth(
       `${BASE}/ontology/export?workspace_id=${workspaceId}&format=${encodeURIComponent(format)}`,
-      { cache: "no-store" },
+      undefined,
     );
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      const detail = await readErrorDetail(res);
+      throw createHttpStatusError(res.status, res.statusText, detail);
     }
     return res.blob();
   },
