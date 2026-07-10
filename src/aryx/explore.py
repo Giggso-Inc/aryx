@@ -10,10 +10,18 @@ attributes AND the source records it traces back to.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
 from aryx.display_name import display_name  # noqa: F401 — re-exported for callers
+
+_STOPWORDS = {
+    "a", "an", "and", "by", "for", "from", "in", "of", "on", "or",
+    "the", "to", "with",
+}
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+_CAMEL_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
 def _prov_by_entity(provenance: list[tuple[int, str, str, str]]) -> dict[int, list[dict]]:
@@ -93,6 +101,166 @@ def graph_view(entities, relationships) -> dict[str, Any]:
                        for t, c in type_counts.most_common()],
         "type_edges": [{"source": s, "target": t, "name": n, "count": c}
                        for (s, t, n), c in edge_agg.most_common()],
+        "entity_count": len(entities),
+        "relationship_count": len(relationships),
+    }
+
+
+def _normalise_text(text: str) -> str:
+    """Lowercase + split camel case so brief text can match ontology labels."""
+    split = _CAMEL_RE.sub(" ", str(text or ""))
+    return " ".join(part.lower() for part in _WORD_RE.findall(split))
+
+
+def _tokens(text: str) -> set[str]:
+    """Tokenise a label, dropping tiny/common words that drown the match signal."""
+    return {
+        tok for tok in _normalise_text(text).split()
+        if (len(tok) > 1 or tok.isdigit()) and tok not in _STOPWORDS
+    }
+
+
+def _matches(query_text: str, candidate: str) -> bool:
+    """Return True when text overlaps by phrase or meaningful token."""
+    q_norm = _normalise_text(query_text)
+    c_norm = _normalise_text(candidate)
+    if not q_norm or not c_norm:
+        return False
+    if q_norm in c_norm or c_norm in q_norm:
+        return True
+    return bool(_tokens(query_text) & _tokens(candidate))
+
+
+def _entity_match_text(entity_id: int, entity_type: str, attrs: dict[str, Any]) -> str:
+    """Build a compact text block used to decide if an entity matches the brief."""
+    parts = [entity_type, display_name(attrs or {}, entity_id)]
+    for value in (attrs or {}).values():
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return " ".join(parts)
+
+
+def _domain_matches(
+    entities: list[tuple[int, str, dict[str, Any]]], query_text: str,
+) -> tuple[set[int], set[str]]:
+    """Match the query against entity types first, then against entity text."""
+    if not _tokens(query_text):
+        return set(), set()
+
+    ids_by_type: dict[str, set[int]] = defaultdict(set)
+    for entity_id, entity_type, _attrs in entities:
+        ids_by_type[entity_type].add(entity_id)
+
+    matched_types = {
+        entity_type for entity_type in ids_by_type
+        if _matches(query_text, entity_type)
+    }
+    matched_ids = {
+        entity_id for entity_type in matched_types
+        for entity_id in ids_by_type[entity_type]
+    }
+
+    for entity_id, entity_type, attrs in entities:
+        if _matches(query_text, _entity_match_text(entity_id, entity_type, attrs or {})):
+            matched_ids.add(entity_id)
+            matched_types.add(entity_type)
+
+    return matched_ids, matched_types
+
+
+def domain_overview_view(
+    entities,
+    relationships,
+    brief: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a brief-driven overview graph plus highlight metadata.
+
+    The overview is focused by the workspace brief's domain text. If that text
+    produces no graph match, the function optionally enriches the query with the
+    brief aim/objectives. If the graph still has no match, callers get the
+    global type-level overview as a safe fallback.
+    """
+    entities = list(entities)
+    relationships = list(relationships)
+    brief = brief or {}
+    domain = str(brief.get("domain") or "").strip()
+
+    def _fallback() -> dict[str, Any]:
+        base = graph_view(entities, relationships)
+        return {
+            "domain": domain,
+            "overview_nodes": [
+                {
+                    "id": f"overview::{node['type']}",
+                    "type": node["type"],
+                    "count": node["count"],
+                    "entity_ids": [],
+                }
+                for node in base["type_nodes"]
+            ],
+            "overview_edges": base["type_edges"],
+            "matched_entity_ids": [],
+            "matched_edge_pairs": [],
+            "matched_types": [],
+            "fallback_used": True,
+            "entity_count": base["entity_count"],
+            "relationship_count": base["relationship_count"],
+        }
+
+    if not domain:
+        return _fallback()
+
+    matched_ids, matched_types = _domain_matches(entities, domain)
+    if not matched_ids:
+        aim = str(brief.get("aim") or "").strip()
+        objectives = [
+            str(item).strip() for item in (brief.get("objectives") or [])
+            if str(item).strip()
+        ]
+        enrichment = " ".join([domain, aim, *objectives]).strip()
+        matched_ids, matched_types = _domain_matches(entities, enrichment)
+
+    if not matched_ids:
+        return _fallback()
+
+    selected = [(eid, etype, attrs) for eid, etype, attrs in entities if eid in matched_ids]
+    type_counts = Counter(etype for _eid, etype, _attrs in selected)
+    type_entity_ids: dict[str, list[int]] = defaultdict(list)
+    for entity_id, entity_type, _attrs in selected:
+        type_entity_ids[entity_type].append(entity_id)
+
+    id_type = {entity_id: entity_type for entity_id, entity_type, _attrs in selected}
+    edge_agg: Counter[tuple[str, str, str]] = Counter()
+    matched_edge_pairs: list[dict[str, int]] = []
+    for src, tgt, name in relationships:
+        stype = id_type.get(src)
+        ttype = id_type.get(tgt)
+        if not stype or not ttype:
+            continue
+        edge_agg[(stype, ttype, name)] += 1
+        matched_edge_pairs.append({"source": src, "target": tgt})
+
+    overview_nodes = [
+        {
+            "id": f"overview::{entity_type}",
+            "type": entity_type,
+            "count": count,
+            "entity_ids": sorted(type_entity_ids[entity_type]),
+        }
+        for entity_type, count in type_counts.most_common()
+    ]
+    overview_edges = [
+        {"source": src, "target": tgt, "name": name, "count": count}
+        for (src, tgt, name), count in edge_agg.most_common()
+    ]
+    return {
+        "domain": domain,
+        "overview_nodes": overview_nodes,
+        "overview_edges": overview_edges,
+        "matched_entity_ids": sorted(matched_ids),
+        "matched_edge_pairs": matched_edge_pairs,
+        "matched_types": sorted(matched_types),
+        "fallback_used": False,
         "entity_count": len(entities),
         "relationship_count": len(relationships),
     }

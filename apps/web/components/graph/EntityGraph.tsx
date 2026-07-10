@@ -20,6 +20,20 @@ type EntityNode = {
   attributes?: Record<string, unknown>;
 };
 type EntityRel = { source: number; target: number; name: string };
+type OverviewNode = { id: string; type: string; count: number; entity_ids: number[] };
+type OverviewEdge = { source: string; target: string; name: string; count: number };
+type GraphOverview = {
+  domain: string;
+  overview_nodes: OverviewNode[];
+  overview_edges: OverviewEdge[];
+  matched_entity_ids: number[];
+  matched_edge_pairs: Array<{ source: number; target: number }>;
+  matched_types: string[];
+  fallback_used: boolean;
+  entity_count: number;
+  relationship_count: number;
+};
+type GraphMode = "overview" | "focused" | "full";
 type NeighborNode = {
   id: number;
   type: string;
@@ -28,6 +42,14 @@ type NeighborNode = {
   relationship: string;
   direction: "in" | "out";
 };
+
+function resolveFocusSourceEntityIds(
+  focusedEntityIds: Set<number> | null,
+  domainEntityIds: Set<number>,
+): Set<number> | null {
+  if (focusedEntityIds && focusedEntityIds.size > 0) return focusedEntityIds;
+  return domainEntityIds.size > 0 ? domainEntityIds : null;
+}
 
 interface DetailPanelProps {
   entity: EntityNode;
@@ -227,6 +249,10 @@ function edgeKey(source: number, target: number, name: string): string {
   return `${source}->${target}:${name}`;
 }
 
+function edgePairKey(source: number, target: number): string {
+  return `${Math.min(source, target)}::${Math.max(source, target)}`;
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   const normalized = hex.replace("#", "");
   const safeHex = normalized.length === 3
@@ -250,6 +276,9 @@ function buildGraph(
   pathIds: Set<number>,
   typeIndex: Map<string, number>,
   schemaOnlyTypes: string[],
+  graphMode: GraphMode,
+  focusedEntityIds: Set<number> | null,
+  focusedEdgePairs: Set<string>,
   expandedIds: Set<number> = new Set(),
 ): { nodes: Node[]; edges: Edge[] } {
   const shown = entities.filter((e) =>
@@ -260,6 +289,8 @@ function buildGraph(
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
   const instanceTypeNames = new Set(entities.map((e) => e.type));
   const hasSelection = selectedId !== null;
+  const selectionContextActive = hasSelection;
+  const focusActive = graphMode === "focused" && focusedEntityIds !== null && focusedEntityIds.size > 0;
   const selectedAccentColor = selectedId == null
     ? "#4068A8"
     : typeColor(typeIndex.get(entityById.get(selectedId)?.type ?? "") ?? 0);
@@ -272,23 +303,32 @@ function buildGraph(
     const pathHighlighted = !hasSelection && pathIds.size > 0 && pathIds.has(e.id);
     const isExpanded = expandedIds.has(e.id);
     const isContextNode = isSelected || isNeighbor;
-    const isDimmed = hasSelection && !isContextNode;
+    const isFocusMatched = focusActive && focusedEntityIds.has(e.id);
+    const isDimmed = selectionContextActive
+      ? !isContextNode
+      : focusActive && !isFocusMatched;
     const background = isSelected
       ? hexToRgba(color, 0.18)
       : isNeighbor
         ? hexToRgba(color, 0.08)
         : pathHighlighted
           ? "#fef3c7"
-          : "#ffffff";
-    const borderWidth = isSelected ? 3 : isExpanded ? 3 : 2;
-    const typeLabelColor = isContextNode ? "#334155" : color;
-    const nodeOpacity = isDimmed ? 0.5 : 1;
+          : isFocusMatched
+            ? hexToRgba(color, 0.08)
+            : "#ffffff";
+    const borderWidth = isSelected ? 4 : isNeighbor ? 3 : isExpanded ? 3 : 2;
+    const typeLabelColor = isSelected ? "#0F1726" : isContextNode ? "#334155" : color;
+    const nodeOpacity = selectionContextActive
+      ? isSelected ? 1 : isNeighbor ? 0.96 : isDimmed ? 0.12 : 0.72
+      : focusActive && !isFocusMatched ? 0.42 : 1;
     const boxShadow = isSelected
-      ? `0 0 0 4px ${hexToRgba(color, 0.22)}, 0 10px 24px rgba(15, 23, 38, 0.14)`
+      ? `0 0 0 6px ${hexToRgba(color, 0.28)}, 0 14px 30px rgba(15, 23, 38, 0.18)`
       : isNeighbor
-        ? `0 0 0 3px ${hexToRgba(color, 0.12)}, 0 4px 12px rgba(15, 23, 38, 0.08)`
+        ? `0 0 0 4px ${hexToRgba(color, 0.18)}, 0 8px 18px rgba(15, 23, 38, 0.12)`
         : pathHighlighted
           ? `0 0 0 3px ${hexToRgba(color, 0.18)}, 0 2px 8px rgba(0,0,0,0.12)`
+          : isFocusMatched
+            ? `0 0 0 3px rgba(45, 212, 191, 0.18), 0 4px 12px rgba(15, 23, 38, 0.08)`
           : isExpanded
             ? `0 0 0 3px ${hexToRgba(color, 0.16)}, 0 2px 8px rgba(0,0,0,0.10)`
             : "0 1px 4px rgba(0,0,0,0.08)";
@@ -363,29 +403,38 @@ function buildGraph(
     .map((r, i) => {
       const selectedEdge = hasSelection && selectedEdgeKeys.has(edgeKey(r.source, r.target, r.name));
       const highlighted = !hasSelection && pathIds.has(r.source) && pathIds.has(r.target);
-      const isDimmed = hasSelection && !selectedEdge;
-      const stroke = selectedEdge ? selectedAccentColor : highlighted ? "#D97706" : "#4068A8";
+      const focusHighlighted = focusActive &&
+        focusedEntityIds.has(r.source) &&
+        focusedEntityIds.has(r.target) &&
+        focusedEdgePairs.has(edgePairKey(r.source, r.target));
+      const stroke = selectedEdge
+        ? selectedAccentColor
+        : highlighted
+          ? "#D97706"
+          : focusHighlighted
+            ? "#0F9D8B"
+            : "#4068A8";
       return {
         id: `e${r.source}-${r.target}-${i}`,
         source: String(r.source),
         target: String(r.target),
         label: r.name,
         type: "smoothstep",
-        animated: selectedEdge || highlighted,
+        animated: selectedEdge || highlighted || focusHighlighted,
         style: {
           stroke,
-          strokeWidth: selectedEdge ? 2.8 : highlighted ? 2.5 : 1.5,
-          opacity: isDimmed ? 0.22 : 1,
+          strokeWidth: selectedEdge ? 3.8 : highlighted ? 2.5 : focusHighlighted ? 2.3 : 1.5,
+          opacity: selectionContextActive ? (selectedEdge ? 1 : 0.1) : focusActive && !focusHighlighted ? 0.18 : 1,
         },
         labelStyle: {
           fill: selectedEdge ? "#0F1726" : "#334155",
           fontSize: 10,
-          fontWeight: selectedEdge ? 600 : 500,
-          opacity: isDimmed ? 0.45 : 1,
+          fontWeight: selectedEdge ? 700 : 500,
+          opacity: selectionContextActive ? (selectedEdge ? 1 : 0.18) : focusActive && !focusHighlighted ? 0.38 : 1,
         },
         labelBgStyle: {
           fill: selectedEdge ? "#ffffff" : "#f8fafc",
-          fillOpacity: isDimmed ? 0.45 : 0.9,
+          fillOpacity: selectionContextActive ? (selectedEdge ? 0.98 : 0.18) : focusActive && !focusHighlighted ? 0.4 : 0.9,
         },
         labelBgPadding: [4, 2] as [number, number],
         markerEnd: {
@@ -400,6 +449,60 @@ function buildGraph(
   return autoLayout(nodes, edges, "LR");
 }
 
+function buildOverviewGraph(
+  overviewNodes: OverviewNode[],
+  overviewEdges: OverviewEdge[],
+  typeIndex: Map<string, number>,
+): { nodes: Node[]; edges: Edge[] } {
+  const nodes: Node[] = overviewNodes.map((node) => {
+    const color = typeColor(typeIndex.get(node.type) ?? 0);
+    return {
+      id: node.id,
+      type: "default",
+      data: {
+        label: (
+          <div style={{ textAlign: "center", lineHeight: 1.3 }}>
+            <div style={{ fontWeight: 700, fontSize: 12, color: "#0F1726" }}>
+              {node.type}
+            </div>
+            <div style={{ fontSize: 10, color: "#0F9D8B", marginTop: 2 }}>
+              {node.count} matched entities
+            </div>
+          </div>
+        ),
+      },
+      position: { x: 0, y: 0 },
+      style: {
+        background: hexToRgba(color, 0.08),
+        border: `2px solid ${color}`,
+        borderRadius: 10,
+        padding: "8px 12px",
+        width: 190,
+        boxShadow: "0 8px 24px rgba(15, 23, 38, 0.08)",
+      },
+    };
+  });
+
+  const edges: Edge[] = overviewEdges.map((edge, index) => ({
+    id: `overview-edge-${edge.source}-${edge.target}-${index}`,
+    source: `overview::${edge.source}`,
+    target: `overview::${edge.target}`,
+    label: `${edge.name} (${edge.count})`,
+    type: "smoothstep",
+    style: { stroke: "#0F9D8B", strokeWidth: 2.4 },
+    labelStyle: { fill: "#334155", fontSize: 10, fontWeight: 600 },
+    labelBgStyle: { fill: "#ffffff", fillOpacity: 0.95 },
+    labelBgPadding: [4, 2] as [number, number],
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color: "#0F9D8B",
+      width: 14,
+      height: 14,
+    },
+  }));
+
+  return autoLayout(nodes, edges, "LR");
+}
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function EntityGraph({ workspaceId }: { workspaceId: number }) {
@@ -408,9 +511,12 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   const detailRequestId = useRef(0);
   const [allEntities, setAllEntities] = useState<EntityNode[]>([]);
   const [allRels, setAllRels] = useState<EntityRel[]>([]);
+  const [graphOverview, setGraphOverview] = useState<GraphOverview | null>(null);
   const [schemaTypes, setSchemaTypes] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [graphMode, setGraphMode] = useState<GraphMode>("overview");
+  const [focusedEntityIds, setFocusedEntityIds] = useState<Set<number> | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [nameFilter, setNameFilter] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -432,6 +538,22 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     setDetailLoading(false);
     setDetailError(null);
   }, []);
+
+  const focusOverviewSelection = useCallback((entityIds: number[]) => {
+    fitOnNextRender.current = true;
+    setFocusedEntityIds(new Set(entityIds));
+    setGraphMode("focused");
+    clearSelection();
+    setPathIds(new Set());
+  }, [clearSelection]);
+
+  const resetToOverview = useCallback(() => {
+    fitOnNextRender.current = true;
+    setGraphMode("overview");
+    setFocusedEntityIds(null);
+    setPathIds(new Set());
+    clearSelection();
+  }, [clearSelection]);
 
   const mergeEntities = useCallback((entitiesToMerge: EntityNode[]) => {
     if (entitiesToMerge.length === 0) return;
@@ -506,21 +628,44 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     )));
   }, [selectedId, selectedNeighbors]);
 
+  const overviewNodeById = useMemo(() => (
+    new Map((graphOverview?.overview_nodes ?? []).map((node) => [node.id, node]))
+  ), [graphOverview]);
+
+  const domainEntityIds = useMemo(() => (
+    new Set(graphOverview?.matched_entity_ids ?? [])
+  ), [graphOverview]);
+
+  const domainEdgePairs = useMemo(() => (
+    new Set((graphOverview?.matched_edge_pairs ?? []).map((edge) => edgePairKey(edge.source, edge.target)))
+  ), [graphOverview]);
+
+  const focusSourceEntityIds = useMemo(() => (
+    resolveFocusSourceEntityIds(focusedEntityIds, domainEntityIds)
+  ), [domainEntityIds, focusedEntityIds]);
+
+  const effectiveGraphMode = graphMode;
+
   const load = useCallback(async () => {
     fitOnNextRender.current = true; // full reload → fit the new graph
     setLoading(true); setError(null);
     try {
-      const [g, onto] = await Promise.all([
+      const [g, onto, overview] = await Promise.all([
         api.getEntityGraph(workspaceId),
         api.getOntology(workspaceId).catch(() => ({ types: [], relationships: [] })),
+        api.getEntityGraphOverview(workspaceId),
       ]);
       setAllEntities(g.entities);
       setAllRels(g.relationships);
+      setGraphOverview(overview);
       // Collect approved ontology type names to show as schema nodes when no instances exist
       const approvedNames = (onto.types ?? [])
         .filter((t) => !t.status || t.status === "approved")
         .map((t) => t.name);
       setSchemaTypes(approvedNames);
+      setGraphMode("overview");
+      setFocusedEntityIds(null);
+      setPathIds(new Set());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load graph");
     } finally {
@@ -529,7 +674,11 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   }, [workspaceId]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { clearSelection(); }, [clearSelection, workspaceId]);
+  useEffect(() => {
+    clearSelection();
+    setGraphMode("overview");
+    setFocusedEntityIds(null);
+  }, [clearSelection, workspaceId]);
 
   const selectEntity = useCallback(async (id: number, preloadedEntity?: EntityNode) => {
     const requestId = detailRequestId.current + 1;
@@ -578,21 +727,28 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   useEffect(() => {
     if (loading) return;
     if (allEntities.length === 0) return;
-    // Schema-only placeholder nodes only make sense in empty workspaces; suppress
-    // them when real entity instances exist so they don't clutter the canvas.
-    const { nodes: n, edges: e } = buildGraph(
-      allEntities,
-      allRels,
-      typeFilter,
-      nameFilter,
-      selectedId,
-      selectedNeighborIds,
-      selectedEdgeKeys,
-      pathIds,
-      typeIndex,
-      [],
-      expandedIds,
-    );
+    const effectiveFocusedEntityIds = effectiveGraphMode === "focused"
+      ? focusSourceEntityIds
+      : null;
+    const graphData = effectiveGraphMode === "overview" && graphOverview
+      ? buildOverviewGraph(graphOverview.overview_nodes, graphOverview.overview_edges, typeIndex)
+      : buildGraph(
+        allEntities,
+        allRels,
+        typeFilter,
+        nameFilter,
+        selectedId,
+        selectedNeighborIds,
+        selectedEdgeKeys,
+        pathIds,
+        typeIndex,
+        [],
+        effectiveGraphMode,
+        effectiveFocusedEntityIds,
+        domainEdgePairs,
+        expandedIds,
+      );
+    const { nodes: n, edges: e } = graphData;
     setNodes(n);
     setEdges(e);
     // fitView only on full load/reload — not on incremental expand or filter changes.
@@ -613,6 +769,11 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     selectedEdgeKeys,
     pathIds,
     typeIndex,
+    effectiveGraphMode,
+    graphOverview,
+    domainEntityIds,
+    domainEdgePairs,
+    focusSourceEntityIds,
     expandedIds,
     loading,
     setNodes,
@@ -620,10 +781,17 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   ]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
+    if (node.id.startsWith("overview::")) {
+      const overviewNode = overviewNodeById.get(node.id);
+      if (overviewNode && overviewNode.entity_ids.length > 0) {
+        focusOverviewSelection(overviewNode.entity_ids);
+      }
+      return;
+    }
     // schema:: nodes are type placeholders — not selectable entity instances
     if (node.id.startsWith("schema::")) return;
     void selectEntity(Number(node.id));
-  }, [selectEntity]);
+  }, [focusOverviewSelection, overviewNodeById, selectEntity]);
 
   // Expand a node's 1-hop neighbors onto the canvas — adds missing entities and edges.
   // Called from the "Expand" button in the sidebar so there's no double-click race condition.
@@ -706,76 +874,120 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   );
 
   const visibleCount = nodes.length;
+  const showPathTools = effectiveGraphMode !== "overview";
+  const hasFocusSource = focusSourceEntityIds !== null;
+  const modeButtonClass = (mode: GraphMode) => cn(
+    "focus-ring rounded-lg border px-2.5 py-1.5 text-[11px] font-medium shadow-soft backdrop-blur-sm transition-colors",
+    graphMode === mode
+      ? "border-teal-200 bg-teal-50 text-teal-800"
+      : "border-navy-100 bg-white/90 text-navy-700 hover:bg-navy-50",
+  );
 
   return (
     <div className="relative flex flex-1 overflow-hidden">
-      {/* Toolbar */}
-      <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
-        {/* Search */}
-        <div className="flex items-center gap-2 rounded-xl border border-navy-100 bg-white/90 px-3 py-2 shadow-soft backdrop-blur-sm">
-          <Search size={13} className="text-subtle" />
-          <input
-            value={nameFilter}
-            onChange={(e) => { setNameFilter(e.target.value); clearSelection(); }}
-            placeholder="Search entities…"
-            className="w-40 bg-transparent text-[12px] text-navy-800 outline-none placeholder:text-subtle"
-          />
-          {nameFilter && (
-            <button type="button" onClick={() => setNameFilter("")}
-              className="text-subtle hover:text-navy-700"><X size={11} /></button>
-          )}
-        </div>
-
-        {/* Type filter */}
-        <div className="rounded-xl border border-navy-100 bg-white/90 p-2 shadow-soft backdrop-blur-sm max-h-52 overflow-y-auto">
-          <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-navy-500">Filter by type</div>
-          {allTypes.map((t, i) => {
-            const isSchemaOnly = !allEntities.some((e) => e.type === t);
-            return (
-              <button
-                key={t}
-                type="button"
-                onClick={() => toggleType(t)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors",
-                  typeFilter.size > 0 && !typeFilter.has(t) ? "text-subtle" : "text-navy-800",
-                )}
-              >
-                <span className="size-2.5 rounded-full shrink-0"
-                  style={{ background: isSchemaOnly ? "transparent" : typeColor(i), border: `2px ${isSchemaOnly ? "dashed" : "solid"} ${typeColor(i)}` }} />
-                <span className={isSchemaOnly ? "italic text-subtle" : ""}>{t}</span>
-              </button>
-            );
-          })}
-          {typeFilter.size > 0 && (
-            <button type="button" onClick={() => setTypeFilter(new Set())}
-              className="mt-1 w-full rounded-lg px-2 py-1 text-[10px] text-steel-600 hover:bg-steel-50">
-              Clear filter
+      {!panelEntity && (
+        <div className="absolute top-3 left-3 z-10 flex w-[248px] flex-col gap-2">
+        <div className="rounded-xl border border-navy-100 bg-white/90 p-2 shadow-soft backdrop-blur-sm">
+          <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wider text-navy-500">Graph mode</div>
+          <div className="flex flex-wrap gap-1">
+            <button type="button" onClick={resetToOverview} className={modeButtonClass("overview")}>
+              Overview
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => {
+                if (!hasFocusSource) return;
+                fitOnNextRender.current = true;
+                setGraphMode("focused");
+                clearSelection();
+              }}
+              disabled={!hasFocusSource}
+              className={cn(modeButtonClass("focused"), !hasFocusSource && "opacity-50")}
+            >
+              Focused
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                fitOnNextRender.current = true;
+                setGraphMode("full");
+              }}
+              className={modeButtonClass("full")}
+            >
+              Full View
+            </button>
+          </div>
         </div>
 
-        {/* Stats */}
+        {effectiveGraphMode !== "overview" && (
+          <div className="flex items-center gap-2 rounded-xl border border-navy-100 bg-white/90 px-3 py-2 shadow-soft backdrop-blur-sm">
+            <Search size={13} className="text-subtle" />
+            <input
+              value={nameFilter}
+              onChange={(e) => { setNameFilter(e.target.value); clearSelection(); }}
+              placeholder="Search entities…"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-navy-800 outline-none placeholder:text-subtle"
+            />
+            {nameFilter && (
+              <button type="button" onClick={() => setNameFilter("")}
+                className="text-subtle hover:text-navy-700"><X size={11} /></button>
+            )}
+          </div>
+        )}
+
+        {effectiveGraphMode !== "overview" && (
+          <div className="rounded-xl border border-navy-100 bg-white/90 p-2 shadow-soft backdrop-blur-sm max-h-52 overflow-y-auto">
+            <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-navy-500">Filter by type</div>
+            {allTypes.map((t, i) => {
+              const isSchemaOnly = !allEntities.some((e) => e.type === t);
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleType(t)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors",
+                    typeFilter.size > 0 && !typeFilter.has(t) ? "text-subtle" : "text-navy-800",
+                  )}
+                >
+                  <span className="size-2.5 rounded-full shrink-0"
+                    style={{ background: isSchemaOnly ? "transparent" : typeColor(i), border: `2px ${isSchemaOnly ? "dashed" : "solid"} ${typeColor(i)}` }} />
+                  <span className={isSchemaOnly ? "italic text-subtle" : ""}>{t}</span>
+                </button>
+              );
+            })}
+            {typeFilter.size > 0 && (
+              <button type="button" onClick={() => setTypeFilter(new Set())}
+                className="mt-1 w-full rounded-lg px-2 py-1 text-[10px] text-steel-600 hover:bg-steel-50">
+                Clear filter
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="rounded-xl border border-navy-100 bg-white/90 px-3 py-2 shadow-soft backdrop-blur-sm text-[11px] text-subtle">
-          {visibleCount} / {allEntities.length} entities · {edges.length} rel{edges.length !== 1 ? "s" : ""}
+          {effectiveGraphMode === "overview"
+            ? `${visibleCount} overview node${visibleCount !== 1 ? "s" : ""} · ${edges.length} overview rel${edges.length !== 1 ? "s" : ""}`
+            : `${visibleCount} / ${allEntities.length} entities · ${edges.length} rel${edges.length !== 1 ? "s" : ""}`}
         </div>
 
-        {/* Controls */}
         <div className="flex gap-1">
           <button type="button" onClick={load}
             className="focus-ring flex items-center gap-1 rounded-lg border border-navy-100 bg-white/90 px-2 py-1.5 text-[11px] text-navy-700 hover:bg-navy-50 shadow-soft backdrop-blur-sm">
             <RefreshCw size={11} /> Reload
           </button>
-          <button type="button" onClick={() => { setShowPath((v) => !v); setPathIds(new Set()); }}
-            className={cn(
-              "focus-ring flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] shadow-soft backdrop-blur-sm",
-              showPath ? "border-steel-200 bg-steel-50 text-steel-700" : "border-navy-100 bg-white/90 text-navy-700 hover:bg-navy-50",
-            )}>
-            Path finder
-          </button>
+          {showPathTools && (
+            <button type="button" onClick={() => { setShowPath((v) => !v); setPathIds(new Set()); }}
+              className={cn(
+                "focus-ring flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] shadow-soft backdrop-blur-sm",
+                showPath ? "border-steel-200 bg-steel-50 text-steel-700" : "border-navy-100 bg-white/90 text-navy-700 hover:bg-navy-50",
+              )}>
+              Path finder
+            </button>
+          )}
         </div>
 
-        {showPath && (
+        {showPathTools && showPath && (
           <div className="rounded-xl border border-navy-100 bg-white/90 p-3 shadow-soft backdrop-blur-sm">
             <PathFinder
               entities={allEntities}
@@ -790,10 +1002,10 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
             )}
           </div>
         )}
-      </div>
+        </div>
+      )}
 
-      {/* ReactFlow canvas */}
-      <div className={cn("flex-1", panelEntity ? "mr-72" : "")}>
+      <div className={cn("flex-1", effectiveGraphMode !== "overview" && panelEntity ? "mr-72" : "")}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -824,8 +1036,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
         </ReactFlow>
       </div>
 
-      {/* Detail panel */}
-      {panelEntity && (
+      {effectiveGraphMode !== "overview" && panelEntity && (
         <DetailPanel
           entity={panelEntity}
           neighbors={selectedNeighbors}

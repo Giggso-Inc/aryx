@@ -386,6 +386,19 @@ export const api = {
       relationships: Array<{ source: number; target: number; name: string }>;
     }>(`/graph?workspace_id=${workspaceId}`),
 
+  getEntityGraphOverview: (workspaceId: number) =>
+    fetchJSON<{
+      domain: string;
+      overview_nodes: Array<{ id: string; type: string; count: number; entity_ids: number[] }>;
+      overview_edges: Array<{ source: string; target: string; name: string; count: number }>;
+      matched_entity_ids: number[];
+      matched_edge_pairs: Array<{ source: number; target: number }>;
+      matched_types: string[];
+      fallback_used: boolean;
+      entity_count: number;
+      relationship_count: number;
+    }>(`/graph/overview?workspace_id=${workspaceId}`),
+
   getEntityNeighbors: (entityId: number, workspaceId: number) =>
     fetchJSON<Array<{
       id: number;
