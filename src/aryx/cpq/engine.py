@@ -127,6 +127,40 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Country -> standard sales-region abbreviation. Deliberately covers only
+# the unambiguous majority; countries not listed here fall through to the
+# normal "ask" behavior rather than guess. Two catalog-observed codes are
+# intentionally NOT targeted by this map: "AP" and "EA" overlap with APAC
+# for Asian countries with no reliable way to disambiguate from country
+# name alone — Asian countries resolve to "APAC" (the more universal code)
+# and AP/EA stay reachable only by explicit user answer. This is a business
+# judgment call, not a technical limitation; revisit if wrong.
+_COUNTRY_TO_REGION: dict[str, str] = {
+    # North America
+    "united states": "NA", "us": "NA", "usa": "NA", "u.s.": "NA", "u.s.a.": "NA",
+    "canada": "NA", "mexico": "NA",
+    # Latin America
+    "brazil": "LA", "argentina": "LA", "chile": "LA", "colombia": "LA", "peru": "LA",
+    "venezuela": "LA", "ecuador": "LA", "uruguay": "LA", "paraguay": "LA", "bolivia": "LA",
+    "costa rica": "LA", "panama": "LA", "guatemala": "LA", "honduras": "LA",
+    "el salvador": "LA", "nicaragua": "LA", "dominican republic": "LA", "jamaica": "LA",
+    # EMEA (Europe + Africa — Middle East kept separate, see below)
+    "united kingdom": "EMEA", "uk": "EMEA", "germany": "EMEA", "france": "EMEA",
+    "italy": "EMEA", "spain": "EMEA", "netherlands": "EMEA", "belgium": "EMEA",
+    "switzerland": "EMEA", "austria": "EMEA", "sweden": "EMEA", "norway": "EMEA",
+    "denmark": "EMEA", "finland": "EMEA", "poland": "EMEA", "ireland": "EMEA",
+    "portugal": "EMEA", "greece": "EMEA", "czech republic": "EMEA", "romania": "EMEA",
+    "south africa": "EMEA", "nigeria": "EMEA", "kenya": "EMEA", "egypt": "EMEA",
+    # Middle East
+    "saudi arabia": "ME", "united arab emirates": "ME", "uae": "ME", "qatar": "ME",
+    "israel": "ME", "kuwait": "ME", "bahrain": "ME", "oman": "ME", "jordan": "ME",
+    # Asia Pacific
+    "china": "APAC", "japan": "APAC", "india": "APAC", "australia": "APAC",
+    "singapore": "APAC", "south korea": "APAC", "korea": "APAC", "indonesia": "APAC",
+    "malaysia": "APAC", "thailand": "APAC", "philippines": "APAC", "vietnam": "APAC",
+    "new zealand": "APAC", "taiwan": "APAC", "hong kong": "APAC",
+}
+
 # Product name extraction patterns for display
 _PRODUCT_PATTERNS: list[tuple[str, str]] = [
     (r"\bapx\s*next\s+xe\b", "APX NEXT XE"),
@@ -840,6 +874,7 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
+        country: str | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -885,7 +920,7 @@ class CpqEngine:
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
-                rule_governed_ids=rule_ids,
+                rule_governed_ids=rule_ids, country=country,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
@@ -1020,6 +1055,31 @@ class CpqEngine:
             governed.add(attr.entity_id)
         return governed
 
+    @staticmethod
+    def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
+        """Resolve a region attr's value from a known country, without
+        inventing a code the catalog doesn't actually offer.
+
+        Looks up `country` in `_COUNTRY_TO_REGION` for a standard region
+        abbreviation, then matches that abbreviation against `attr`'s real
+        menu options (exact item_value first, then display_name) — a
+        country with no mapping, or a catalog whose Region attr doesn't
+        offer the derived code, returns None so the caller falls back to
+        asking rather than guessing.
+        """
+        if not country:
+            return None
+        region_code = _COUNTRY_TO_REGION.get(country.strip().lower())
+        if not region_code:
+            return None
+        for opt in attr.options:
+            if opt.item_value.upper() == region_code:
+                return opt.item_value, opt.display_name
+        for opt in attr.options:
+            if region_code in opt.display_name.upper():
+                return opt.item_value, opt.display_name
+        return None
+
     def auto_fill(
         self,
         attrs: list[ConfigAttr],
@@ -1031,6 +1091,7 @@ class CpqEngine:
         already_filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
         rule_governed_ids: set[int] | None = None,
+        country: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -1055,6 +1116,12 @@ class CpqEngine:
           "optional" (Phase N/K) for step-4 fills. Defaults to governed_ids
           itself when omitted, i.e. every step-4 fill is tagged "rule" —
           the pre-Phase-N behavior for callers not yet passing it.
+        country — confirmed country text (session.country), used ONLY to
+          derive region-pattern decision-key attrs via `derive_region()`
+          before they fall to the normal "always ask" path. "country"
+          itself is unaffected — it's still asked as before (D1). No match
+          (unmapped country, or catalog offers no matching code) falls
+          through to asking, same as if `country` were omitted.
 
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
@@ -1197,6 +1264,17 @@ class CpqEngine:
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
             filled_multi_now = False
+
+            # Region-from-country derivation: region is a decision-required
+            # key (always ask, D2/§Phase M-adjacent) UNLESS the confirmed
+            # country resolves to one of this attr's real options — country
+            # itself is untouched, still always asked (D1).
+            if not value and "region" in vn_flat and country and attr.options:
+                derived = self.derive_region(country, attr)
+                if derived:
+                    value, display = derived
+                    source = "country_derived"
+
             if not value and attr.options:
                 allowed_for_attr = (
                     set(constrained_opts.get(attr.entity_id, []))
@@ -1702,52 +1780,99 @@ class CpqEngine:
         head = variable_name.split("_", 1)[0]
         return len(head) >= 2 and head.isalpha() and head.isupper()
 
+    # Displayed values that carry no information on their own — a line like
+    # "Opt-Out? → false" or "Ruggedized Housing → Yes" restates a toggle, it
+    # doesn't communicate a configuration choice.
+    _BOOLEAN_DISPLAY_VALUES: frozenset[str] = frozenset({"yes", "no", "true", "false"})
+
+    # Duration-shaped values ("1 Year", "3 Years", "10 Years (Federal ...)")
+    # — subscription/service term lines the summary should not list.
+    _YEAR_VALUE_RE: re.Pattern[str] = re.compile(r"\byears?\b", re.IGNORECASE)
+
+    def _is_summary_excluded(
+        self, variable_name: str, display_label: str, value: str,
+        attr: "ConfigAttr | None",
+    ) -> bool:
+        """True when a filled attr should not get a summary line.
+
+        Boolean-shaped values (yes/no/true/false, or select_type=="boolean")
+        are excluded even when user-chosen — the ask was to only surface
+        substantive selections. Secondary-* attrs (inactive duplicates like
+        the secondary SIM) and warranty attrs are excluded by name; warranty
+        must also match the VALUE ("Service Type → 1 Year Standard
+        Warranty" carries the word only there). Product/product-line attrs
+        are excluded too — the summary header already names the product, so
+        those lines are redundant; they must match the VARIABLE NAME as
+        well (`productLineName`, `bm_prd_level_product_line`, ...) because
+        several carry labels without the word. Duration-shaped values
+        ("1 Year", "3 Years") are excluded as well — subscription terms,
+        not configuration choices.
+        """
+        if value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
+            return True
+        if self._YEAR_VALUE_RE.search(value):
+            return True
+        if attr is not None and attr.select_type == "boolean":
+            return True
+        label_l = display_label.lower()
+        if "secondary" in label_l:
+            return True
+        if "warranty" in label_l or "warranty" in value.lower():
+            return True
+        return "product" in label_l or "product" in variable_name.lower()
+
+    def filled_summary_pairs(
+        self,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Filtered (display_label, value) pairs worth summarising.
+
+        Uses display_label (human name) as the key when attrs are supplied,
+        falling back to variable_name only when the attr is not found.
+        Skips HTML template values (layout/display fields), system/
+        integration noise (`_is_noise_var`, §3e), and low-signal lines
+        (`_is_summary_excluded`: boolean values, secondary attrs, warranty
+        attrs, product/product-line attrs, year-duration values).
+
+        rule_governed_ids — when supplied (see `rule_governed_ids()`), only
+        attrs a hiding, recommendation, or constraint rule actually
+        reasoned about survive (Phase K/§3g). The rest are silently
+        omitted — no count of remaining auto-configured fields.
+        """
+        if not display_filled:
+            return []
+        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
+        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
+        items = [
+            (var, label) for var, label in display_filled.items()
+            if not self._is_html_value(label)
+            and not self._is_noise_var(var)
+            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+        ]
+        if rule_governed_ids is not None:
+            items = [
+                (var, label) for var, label in items
+                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
+            ]
+        return [(label_map.get(var, var), label) for var, label in items]
+
     def render_filled_summary(
         self,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
     ) -> str:
-        """Compact human-readable summary of what has been auto-filled.
+        """Deterministic bullet-list summary of what has been auto-filled.
 
-        Uses display_label (human name) as the key when attrs are supplied,
-        falling back to variable_name only when the attr is not found.
-        Skips HTML template values (layout/display fields) and system/
-        integration noise (`_is_noise_var`, §3e).
-
-        rule_governed_ids — when supplied (see `rule_governed_ids()`),
-        splits the narrative into "Key decisions" (attrs a hiding,
-        recommendation, or constraint rule actually reasoned about) vs. a
-        terse count for the rest (Phase K/§3g) — a rule-driven Region
-        choice and an arbitrarily-defaulted cosmetic toggle should not read
-        as equally significant.
+        Formats `filled_summary_pairs()` (which owns ALL the filtering) as
+        markdown bullets. Used directly as the fallback whenever the
+        LLM-narrated paragraph (ask_api `_cpq_summary_text`) is
+        unavailable or fails.
         """
-        if not display_filled:
+        pairs = self.filled_summary_pairs(display_filled, attrs, rule_governed_ids)
+        if not pairs:
             return ""
-        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
-        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
-        items = [
-            (var, label) for var, label in display_filled.items()
-            if not self._is_html_value(label) and not self._is_noise_var(var)
-        ]
-        if not items:
-            return ""
-        if rule_governed_ids is None:
-            lines = [f"- **{label_map.get(var, var)}** → {label}" for var, label in items]
-            return "**Configured so far:**\n" + "\n".join(lines)
-
-        key_lines: list[str] = []
-        other_count = 0
-        for var, label in items:
-            attr = by_vn.get(var)
-            if attr and attr.entity_id in rule_governed_ids:
-                key_lines.append(f"- **{label_map.get(var, var)}** → {label}")
-            else:
-                other_count += 1
-        if not key_lines and not other_count:
-            return ""
-        parts = ["**Key decisions:**"] if key_lines else []
-        parts.extend(key_lines)
-        if other_count:
-            parts.append(f"\n*+{other_count} other field(s) auto-configured.*")
-        return "\n".join(parts)
+        heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
+        return "\n".join([heading, *(f"- **{label}** → {value}" for label, value in pairs)])

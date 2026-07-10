@@ -1372,3 +1372,227 @@ def test_s26_cascade_refill_uses_widened_eligibility_symmetrically():
         "re-fill after cascade did not use the same widened eligibility as "
         "the first fill — dependent stranded as pending on re-resolution")
     assert not pending2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S27/S28 — Country -> region auto-derivation (new capability, approved via
+# Andie HITL this session). Pure unit tests against derive_region/auto_fill
+# directly — no sample-file dependency, no hardcoded catalog codes beyond
+# the standard region abbreviations the feature itself defines.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s27_region_derived_from_known_country():
+    """A country with a mapping, on an attr that actually offers the
+    derived code, auto-fills without asking — tagged "country_derived"
+    so it's distinguishable from a rule-driven or optional-path fill."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    region_attr = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionRegion_astro",
+        display_label="Region", required=False, default_value="",
+        options=[
+            MenuOption("APAC", "APAC", 1), MenuOption("EMEA", "EMEA", 2),
+            MenuOption("LA", "LA", 3), MenuOption("NA", "NA", 4),
+            MenuOption("EA", "EA", 5), MenuOption("AP", "AP", 6),
+            MenuOption("ME", "ME", 7),
+        ],
+    )
+    sources: dict[str, str] = {}
+    filled, display, pending = eng.auto_fill(
+        [region_attr], {}, filled_source=sources, country="United States",
+    )
+    assert filled.get("modelSelectionRegion_astro") == "NA", (
+        f"expected NA for United States, got {filled.get('modelSelectionRegion_astro')!r}")
+    assert sources.get("modelSelectionRegion_astro") == "country_derived"
+    assert not pending, "region attr should not be pending once derived"
+
+    # country itself is untouched by this feature — still asked normally.
+    country_attr = ConfigAttr(
+        entity_id=2, variable_name="ultimateDestinationCountry",
+        display_label="Country", required=False, default_value="", options=[],
+    )
+    _f2, _d2, pending2 = eng.auto_fill(
+        [country_attr], {}, country="United States",
+    )
+    assert any(a.variable_name == "ultimateDestinationCountry" for a in pending2), (
+        "country attr must still always ask — Phase N/region-derivation must not "
+        "silently extend to country itself")
+
+
+def test_s28_unmapped_country_falls_back_to_asking():
+    """A country with no mapping entry — or one whose derived code isn't
+    actually offered by this attr's menu — must fall back to asking, never
+    guess wrong or invent a code the catalog doesn't have."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    region_attr = ConfigAttr(
+        entity_id=1, variable_name="packageRegion", display_label="Region",
+        required=False, default_value="",
+        options=[MenuOption("APAC", "APAC", 1), MenuOption("EMEA", "EMEA", 2)],
+    )
+
+    # Unmapped country entirely.
+    filled, _display, pending = eng.auto_fill(
+        [region_attr], {}, country="Atlantis",
+    )
+    assert "packageRegion" not in filled
+    assert any(a.variable_name == "packageRegion" for a in pending)
+
+    # Mapped country, but this catalog's Region attr doesn't offer that code.
+    filled2, _display2, pending2 = eng.auto_fill(
+        [region_attr], {}, country="United States",  # maps to "NA", not offered above
+    )
+    assert "packageRegion" not in filled2
+    assert any(a.variable_name == "packageRegion" for a in pending2)
+
+    # No country at all — unchanged pre-existing behavior.
+    filled3, _display3, pending3 = eng.auto_fill([region_attr], {})
+    assert "packageRegion" not in filled3
+    assert any(a.variable_name == "packageRegion" for a in pending3)
+
+
+def test_s29_verbose_summary_excludes_low_signal_lines():
+    """Boolean-shaped values (Yes/No/true/false), secondary attrs, warranty
+    attrs (matched in label OR value), and product/product-line attrs
+    (matched in label OR variable name — the header already names the
+    product) get no summary line — even when rule-governed. Substantive
+    selections still render."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+
+    def _attr(eid, vn, label, select_type="single"):
+        return ConfigAttr(
+            entity_id=eid, variable_name=vn, display_label=label,
+            required=False, default_value="",
+            options=[MenuOption("A", "Option A", 1)], select_type=select_type,
+        )
+
+    attrs = [
+        _attr(1, "region", "Region"),
+        _attr(2, "ruggedized", "Ruggedized Housing"),
+        _attr(3, "optOut", "Opt-Out?"),
+        _attr(4, "boolCont", "BoolContinue1", select_type="boolean"),
+        _attr(5, "secondarySim", "Select Secondary SIM Card (Note: not activated)"),
+        _attr(6, "warrantyDuration", "Warranty Duration"),
+        _attr(7, "svcType", "Service Type"),
+        _attr(8, "baseModel", "Base Model"),
+        _attr(9, "packageProduct", "Product"),
+        _attr(10, "prodHelp", "Product Selection helptext"),
+        _attr(11, "productLineName", "APX Family"),
+        _attr(12, "smartConnect", "SmartConnect"),
+        _attr(13, "svcDuration", "Duration"),
+    ]
+    display_filled = {
+        "region": "NA",
+        "ruggedized": "Yes",                       # yes/no value → excluded
+        "optOut": "false",                         # true/false value → excluded
+        "boolCont": "Continue",                    # boolean select_type → excluded
+        "secondarySim": "ATT/FirstNet",            # secondary label → excluded
+        "warrantyDuration": "3 Years",             # warranty in label → excluded
+        "svcType": "1 Year Standard Warranty",     # warranty in VALUE → excluded
+        "baseModel": "H45TGU9PW8AN",
+        "packageProduct": "APX NEXT Single Band",  # product label → excluded
+        "prodHelp": "APX Next",                    # product in label → excluded
+        "productLineName": "APX",                  # product in VARIABLE NAME → excluded
+        "smartConnect": "1 Year",                  # year-duration value → excluded
+        "svcDuration": "10 Years (Federal P25 NMSO use only)",  # years in value → excluded
+    }
+    all_ids = {a.entity_id for a in attrs}
+    summary = eng.render_filled_summary(display_filled, attrs, rule_governed_ids=all_ids)
+
+    assert "Region" in summary and "NA" in summary
+    assert "Base Model" in summary and "H45TGU9PW8AN" in summary
+    assert "Ruggedized Housing" not in summary
+    assert "Opt-Out?" not in summary
+    assert "BoolContinue1" not in summary
+    assert "Secondary" not in summary
+    assert "Warranty Duration" not in summary
+    assert "Standard Warranty" not in summary
+    assert "APX NEXT Single Band" not in summary
+    assert "helptext" not in summary
+    assert "APX Family" not in summary
+    assert "SmartConnect" not in summary
+    assert "NMSO" not in summary
+
+    # The un-grouped "Configured so far" branch applies the same filters.
+    plain = eng.render_filled_summary(display_filled, attrs)
+    assert "Ruggedized Housing" not in plain and "Region" in plain
+
+
+def test_s30_verbose_summary_has_no_other_fields_count():
+    """The '+N other field(s) auto-configured' tail is gone: attrs outside
+    the key-decision set are silently omitted, not counted."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    attrs = [
+        ConfigAttr(
+            entity_id=i, variable_name=f"attr{i}", display_label=f"Attr {i}",
+            required=False, default_value="",
+            options=[MenuOption("A", "Option A", 1)],
+        )
+        for i in (1, 2, 3)
+    ]
+    display_filled = {f"attr{i}": f"Value {i}" for i in (1, 2, 3)}
+
+    summary = eng.render_filled_summary(display_filled, attrs, rule_governed_ids={1})
+    assert "Attr 1" in summary
+    assert "other field" not in summary and "auto-configured" not in summary
+
+    # No key decisions at all → empty summary, not a bare count line.
+    assert eng.render_filled_summary(display_filled, attrs, rule_governed_ids=set()) == ""
+
+
+def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
+    """_cpq_summary_text sends only the FILTERED pairs to the menial model
+    and returns its prose; on LLM failure or empty reply it falls back to
+    the deterministic bullet summary instead of blocking the flow."""
+    from aryx.api import ask_api
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    attrs = [
+        ConfigAttr(
+            entity_id=1, variable_name="region", display_label="Region",
+            required=False, default_value="",
+            options=[MenuOption("NA", "NA", 1)],
+        ),
+        ConfigAttr(
+            entity_id=2, variable_name="ruggedized", display_label="Ruggedized Housing",
+            required=False, default_value="",
+            options=[MenuOption("Y", "Yes", 1)],
+        ),
+    ]
+    display_filled = {"region": "NA", "ruggedized": "Yes"}
+
+    captured: dict[str, str] = {}
+
+    def fake_chat(role, sys, user, workspace_id=1):
+        captured["role"], captured["user"] = role, user
+        return "The radio is configured for the NA region.", 10, 20
+
+    monkeypatch.setattr(ask_api.llm_runtime, "chat", fake_chat)
+    text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    assert text == "The radio is configured for the NA region."
+    assert captured["role"] == "menial"
+    assert "Region: NA" in captured["user"]
+    assert "Ruggedized" not in captured["user"], (
+        "filtered-out pairs must never reach the narrator prompt")
+
+    def boom_chat(role, sys, user, workspace_id=1):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
+    fallback = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    assert "Key decisions" in fallback and "Region" in fallback, (
+        "LLM failure must fall back to the deterministic bullet summary")
+
+    # Nothing survives filtering → no LLM call, empty string.
+    monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
+    assert ask_api._cpq_summary_text({"ruggedized": "Yes"}, attrs, {1, 2}, "APX NEXT", 1) == ""
