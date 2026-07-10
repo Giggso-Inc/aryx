@@ -880,10 +880,12 @@ class CpqEngine:
                 multi.pop(k, None)
 
             governed_ids = self.governed_target_ids(attrs, hiding_rules, rec_rules, con_rules)
+            rule_ids = self.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
             filled, display_filled, _ = self.auto_fill(
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
+                rule_governed_ids=rule_ids,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
@@ -957,7 +959,7 @@ class CpqEngine:
     # ── Auto-fill ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def governed_target_ids(
+    def rule_governed_ids(
         attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],
         rec_rules: list[RecommendationRule],
@@ -969,6 +971,8 @@ class CpqEngine:
         a "dependent variable" eligible for default-or-first auto-fill if a
         hiding, recommendation, or constraint rule actually targets it —
         everything else keeps the existing ask-the-user safeguard (Issue 6).
+        This is the strict subset `auto_fill` tags `filled_source="rule"`;
+        see `governed_target_ids` for the wider Phase N eligibility set.
         """
         by_rule_id = CpqEngine._attr_index(attrs)
         governed: set[int] = set()
@@ -986,6 +990,36 @@ class CpqEngine:
                 governed.add(target.entity_id)
         return governed
 
+    @staticmethod
+    def governed_target_ids(
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+    ) -> set[int]:
+        """Entity ids eligible for default-or-first auto-fill.
+
+        Widened per CPQ_APX_NEXT_ISSUES_PLAN.md Phase N: rule coverage alone
+        left ~29 attrs pending on a richer catalog (APX Next) where most
+        attrs simply carry no rule at all in the source data — far short of
+        the client's <=2-3-prompt requirement. Attrs marked `required=False`
+        in the source are also eligible (a source-asserted "safe to default"
+        signal), excluding decision-required attrs (country/region), which
+        always ask regardless of governance. See `rule_governed_ids` for the
+        strict rule-only subset (used to tag `filled_source`).
+        """
+        governed = set(
+            CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        )
+        for attr in attrs:
+            if attr.required:
+                continue
+            vn_flat = attr.variable_name.lower().replace("_", "")
+            if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
+                continue
+            governed.add(attr.entity_id)
+        return governed
+
     def auto_fill(
         self,
         attrs: list[ConfigAttr],
@@ -996,6 +1030,7 @@ class CpqEngine:
         governed_ids: set[int] | None = None,
         already_filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
+        rule_governed_ids: set[int] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -1014,7 +1049,12 @@ class CpqEngine:
           ConstraintRules. When set, first-option fallback only picks from the
           allowed set; hint/default paths ignore constraints (they were validated
           by the rule that produced the recommendation).
-        governed_ids — entity_ids eligible for step 4 (see _governed_target_ids).
+        governed_ids — entity_ids eligible for step 4 (see governed_target_ids).
+        rule_governed_ids — the strict rule-only subset of governed_ids (see
+          rule_governed_ids()); used only to tag filled_source as "rule" vs
+          "optional" (Phase N/K) for step-4 fills. Defaults to governed_ids
+          itself when omitted, i.e. every step-4 fill is tagged "rule" —
+          the pre-Phase-N behavior for callers not yet passing it.
 
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
@@ -1044,20 +1084,36 @@ class CpqEngine:
         pending: list[ConfigAttr] = []
         sources = filled_source if filled_source is not None else {}
         governed = governed_ids or set()
+        rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
         dropped = dropped_multi if dropped_multi is not None else {}
 
         for attr in attrs:
             vn = attr.variable_name
 
             if vn in filled:
-                # Already answered in a prior turn
-                matched_display = next(
-                    (o.display_name for o in attr.options
-                     if o.item_value == filled[vn]),
-                    filled[vn],
+                # Already answered in a prior turn — but a cascade may have
+                # narrowed this attr's allowed set since then (single-select
+                # counterpart of the multi-select re-validation below, §5/
+                # Phase J). If the locked value is no longer allowed, clear
+                # it and fall through to re-resolution instead of keeping a
+                # stale, now-invalid answer.
+                allowed_single = (
+                    constrained_opts.get(attr.entity_id) if constrained_opts else None
                 )
-                display_filled[vn] = matched_display
-                continue
+                if allowed_single is not None and filled[vn] not in allowed_single:
+                    stale_display = display_filled.get(vn, filled[vn])
+                    dropped[vn] = [stale_display]
+                    filled.pop(vn, None)
+                    display_filled.pop(vn, None)
+                    sources.pop(vn, None)
+                else:
+                    matched_display = next(
+                        (o.display_name for o in attr.options
+                         if o.item_value == filled[vn]),
+                        filled[vn],
+                    )
+                    display_filled[vn] = matched_display
+                    continue
             if vn in filled_multi:
                 allowed_now = constrained_opts.get(attr.entity_id) if constrained_opts else None
                 if allowed_now is not None:
@@ -1139,6 +1195,7 @@ class CpqEngine:
                 dk in vn_flat for dk in _DECISION_REQUIRED_KEYS
             )
             is_governed = attr.entity_id in governed
+            governed_source = "rule" if attr.entity_id in rule_governed else "optional"
             filled_multi_now = False
             if not value and attr.options:
                 allowed_for_attr = (
@@ -1164,7 +1221,7 @@ class CpqEngine:
                         if allowed_for_attr is not None:
                             filled_multi[vn] = [o.item_value for o in valid_opts]
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
-                            sources.setdefault(vn, "rule")
+                            sources.setdefault(vn, governed_source)
                             filled_multi_now = True
                     else:
                         # single/boolean, 2+ options, no default: first by
@@ -1173,6 +1230,7 @@ class CpqEngine:
                         # attr to be resolved for the cascade to proceed.
                         value = valid_opts[0].item_value
                         display = valid_opts[0].display_name
+                        source = governed_source
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
                 # Governed boolean with no menu options at all: default to
@@ -1180,6 +1238,7 @@ class CpqEngine:
                 # pending — a boolean's absent-default state is well-defined.
                 value = "false"
                 display = "No"
+                source = governed_source
 
             if filled_multi_now:
                 continue
@@ -1527,48 +1586,59 @@ class CpqEngine:
         self,
         attr: ConfigAttr,
         user_answer: str,
+        constrained_item_values: list[str] | None = None,
     ) -> tuple[str, str] | None:
         """Match the user's natural-language answer to a valid option.
+
+        constrained_item_values — when active constraint rules apply (same
+        set passed to `next_question_prompt`), only these item_values may
+        match — an answer for an option outside the currently-allowed set
+        is rejected rather than silently accepted (Phase I).
 
         Returns (item_value, display_name) or None if no match found.
         """
         ua = user_answer.strip().lower()
+        allowed = set(constrained_item_values) if constrained_item_values is not None else None
+        options = (
+            [o for o in attr.options if o.item_value in allowed]
+            if allowed is not None else attr.options
+        )
 
         # Numeric selection: user typed "1", "2", etc. → pick by position in the
         # presented option list (only _presentable options, matching next_question_prompt).
         if ua.isdigit():
-            presentable = [o for o in attr.options if _presentable(o.item_value)]
+            presentable = [o for o in options if _presentable(o.item_value)]
             idx = int(ua) - 1
             if 0 <= idx < len(presentable) and _valid(presentable[idx].item_value):
                 return presentable[idx].item_value, presentable[idx].display_name
 
         # Exact item_value match
-        for opt in attr.options:
+        for opt in options:
             if opt.item_value.lower() == ua:
                 return opt.item_value, opt.display_name
 
         # Exact display-name match
-        for opt in attr.options:
+        for opt in options:
             if opt.display_name.lower() == ua:
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
         # User answer contained in option's display name (user typed a prefix)
-        for opt in attr.options:
+        for opt in options:
             if ua in opt.display_name.lower():
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
         # Option display name found as a whole WORD in user answer — word-boundary
         # prevents "me" (Middle East code) from matching in "north a*me*rica".
-        for opt in attr.options:
+        for opt in options:
             dn_lower = opt.display_name.lower()
             if re.search(r"\b" + re.escape(dn_lower) + r"\b", ua):
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
         # Free-text field
-        if not attr.options and _valid(user_answer):
+        if not attr.options and allowed is None and _valid(user_answer):
             return user_answer.strip(), user_answer.strip()
 
         return None
@@ -1617,27 +1687,67 @@ class CpqEngine:
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_noise_var(variable_name: str) -> bool:
+        """True for underscore-prefixed or integration/system-prefixed vars.
+
+        Structural, not name-list-based (§3e): an underscore prefix, or a
+        leading `_`-delimited segment that is fully uppercase (e.g.
+        `CRM_BILL_COUNTRY`) — the same shape live data showed for
+        integration fields, derived from casing convention rather than a
+        hardcoded prefix list.
+        """
+        if variable_name.startswith("_"):
+            return True
+        head = variable_name.split("_", 1)[0]
+        return len(head) >= 2 and head.isalpha() and head.isupper()
+
     def render_filled_summary(
         self,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
     ) -> str:
         """Compact human-readable summary of what has been auto-filled.
 
         Uses display_label (human name) as the key when attrs are supplied,
         falling back to variable_name only when the attr is not found.
-        Skips HTML template values (layout/display fields).
+        Skips HTML template values (layout/display fields) and system/
+        integration noise (`_is_noise_var`, §3e).
+
+        rule_governed_ids — when supplied (see `rule_governed_ids()`),
+        splits the narrative into "Key decisions" (attrs a hiding,
+        recommendation, or constraint rule actually reasoned about) vs. a
+        terse count for the rest (Phase K/§3g) — a rule-driven Region
+        choice and an arbitrarily-defaulted cosmetic toggle should not read
+        as equally significant.
         """
         if not display_filled:
             return ""
-        label_map: dict[str, str] = (
-            {a.variable_name: a.display_label for a in attrs} if attrs else {}
-        )
+        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
+        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
         items = [
-            f"- **{label_map.get(var, var)}** → {label}"
-            for var, label in display_filled.items()
-            if not self._is_html_value(label)
+            (var, label) for var, label in display_filled.items()
+            if not self._is_html_value(label) and not self._is_noise_var(var)
         ]
         if not items:
             return ""
-        return "**Configured so far:**\n" + "\n".join(items)
+        if rule_governed_ids is None:
+            lines = [f"- **{label_map.get(var, var)}** → {label}" for var, label in items]
+            return "**Configured so far:**\n" + "\n".join(lines)
+
+        key_lines: list[str] = []
+        other_count = 0
+        for var, label in items:
+            attr = by_vn.get(var)
+            if attr and attr.entity_id in rule_governed_ids:
+                key_lines.append(f"- **{label_map.get(var, var)}** → {label}")
+            else:
+                other_count += 1
+        if not key_lines and not other_count:
+            return ""
+        parts = ["**Key decisions:**"] if key_lines else []
+        parts.extend(key_lines)
+        if other_count:
+            parts.append(f"\n*+{other_count} other field(s) auto-configured.*")
+        return "\n".join(parts)

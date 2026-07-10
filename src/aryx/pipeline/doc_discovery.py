@@ -615,9 +615,21 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
             type_b = plan_b["ontology_type"]
             type_b_l = type_b.lower()
             singular_b = _singular(type_b_l)
+            # Candidate stems: every trailing-word-run of the de-camelCased
+            # type name (not just the last word), in both snake_case and
+            # joined form, singular and plural. Catches columns whose FK
+            # prefix carries more context than the last word alone, e.g.
+            # "attr_set_id" -> BmConfigAttrSet ("attr"+"set" suffix) or
+            # "config_attr_id" -> BmConfigAttr ("config"+"attr" suffix) —
+            # purely derived from the type name, no hardcoded column list.
             _words = re.findall(r'[A-Z][a-z0-9]*', type_b)
-            tag_word = _words[-1].lower() if _words else type_b_l
-            tag_singular = _singular(tag_word)
+            tag_candidates: set[str] = {type_b_l, singular_b}
+            for k in range(1, len(_words) + 1):
+                suffix_words = _words[-k:]
+                for form in ("_".join(w.lower() for w in suffix_words),
+                             "".join(w.lower() for w in suffix_words)):
+                    tag_candidates.add(form)
+                    tag_candidates.add(_singular(form))
             headers_b = plan_headers[j]
             id_col = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
             name_col = next((c for c in headers_b if c.lower() in ("name", "full_name", "title")), None)
@@ -626,11 +638,9 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
             for col in plan_headers[i]:
                 col_l = col.lower()
                 target_attr: str | None = None
-                if col_l in (f"{type_b_l}_id", f"{singular_b}_id",
-                             f"{tag_word}_id", f"{tag_singular}_id"):
+                if col_l.endswith("_id") and col_l[:-3] in tag_candidates:
                     target_attr = id_col or mk0
-                elif col_l in (f"{type_b_l}_name", f"{singular_b}_name",
-                               f"{tag_word}_name", f"{tag_singular}_name"):
+                elif col_l.endswith("_name") and col_l[:-5] in tag_candidates:
                     target_attr = name_col or mk0
                 elif col_l in (type_b_l, singular_b) and (id_col or name_col):
                     target_attr = id_col or name_col

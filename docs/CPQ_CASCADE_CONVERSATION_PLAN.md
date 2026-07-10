@@ -40,6 +40,16 @@ or `ConstraintRule` (resolvable via the existing `_attr_index` ID bridge,
 `engine.py`). Attributes with no rule coverage, and the two anchors
 (product/country), always keep the existing ask-the-user behavior.
 
+> **Amended by `docs/CPQ_APX_NEXT_ISSUES_PLAN.md` §3g/Phase N (2026-07-10).**
+> Live testing against a real, richer catalog (APX Next, 427 attrs) showed
+> rule-governance alone leaves ~29 attrs pending after anchors resolve —
+> nowhere near a usable prompt count, and 28 of those 29 have no governing
+> rule at all in the source data. `governed_target_ids()` was widened to
+> **also** admit attrs where source `required == False` (still excluding
+> decision-keys). The rule-governed path above is unchanged; this is an
+> additional eligibility path, not a replacement. See that doc for the
+> live evidence and the exact eligibility formula.
+
 ## 3. Auto-fill policy (per rule type, in priority order)
 
 For a rule-governed dependent, once revealed/visible:
