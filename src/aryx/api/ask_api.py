@@ -255,21 +255,38 @@ def _handle_cpq_qa(
     answer, then appends the current config resume prompt so the user knows where
     they were. The session state is preserved unchanged.
     """
-    types = all_types(reader)
-    try:
-        terms, p_in, p_out, p_ms = _extract_terms(
-            req.question, types, req.history, workspace_id=req.workspace_id,
+    # Fast path: question asks about a specific attribute's available options.
+    # Uses attr.options already in memory from BmMenuItem — no graph query,
+    # no LLM synthesis, no schema leakage possible.
+    _attr_q = _cpq_engine.detect_attr_query(req.question, attrs)
+    _presentable = (
+        [o for o in _attr_q.options if o.display_name.strip()]
+        if _attr_q else []
+    )
+    if _presentable:
+        _numbered = "\n".join(
+            f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
         )
-        entities, calls = gather(reader, terms)
-        entities = _enrich_with_attributes(entities, req.workspace_id)
-        context = render_context(entities)
-        qa_answer, s_in, s_out, s_ms = _synthesise(
-            req.question, context, history=req.history, workspace_id=req.workspace_id,
+        qa_answer = (
+            f"The available options for **{_attr_q.display_label}** are:\n\n{_numbered}"
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("cpq_qa synthesis failed: %s", exc)
-        qa_answer = f"Couldn't reach the graph: {exc}"
         p_in = p_out = p_ms = s_in = s_out = s_ms = 0
+    else:
+        types = all_types(reader)
+        try:
+            terms, p_in, p_out, p_ms = _extract_terms(
+                req.question, types, req.history, workspace_id=req.workspace_id,
+            )
+            entities, calls = gather(reader, terms)
+            entities = _enrich_with_attributes(entities, req.workspace_id)
+            context = render_context(entities)
+            qa_answer, s_in, s_out, s_ms = _synthesise(
+                req.question, context, history=req.history, workspace_id=req.workspace_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cpq_qa synthesis failed: %s", exc)
+            qa_answer = f"Couldn't reach the graph: {exc}"
+            p_in = p_out = p_ms = s_in = s_out = s_ms = 0
 
     # Append a resume prompt so the user knows where to continue
     if resume_review:
