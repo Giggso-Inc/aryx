@@ -1441,7 +1441,8 @@ class CpqEngine:
     # Conjugated forms ("-ing", "-e") are included so "i am changing" / "switching"
     # / "replacing" all fire has_change_verb=True and activate the attr-name guard.
     _CHANGE_VERB_RE = re.compile(
-        r"\b(swapp?(?:ing)?|chang(?:e|ing)|switch(?:ing)?|replac(?:e|ing)|"
+        r"\b(choos(?:e|ing)|select(?:ing)?|pick(?:ing)?|"
+        r"swapp?(?:ing)?|chang(?:e|ing)|switch(?:ing)?|replac(?:e|ing)|"
         r"updat(?:e|ing)|modif(?:y|ying)|actually|instead|"
         r"make\s+it|i\s+want|use\s+.+\s+instead)\b",
         re.IGNORECASE,
@@ -1726,12 +1727,16 @@ class CpqEngine:
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
-        # Option display name appears verbatim as a substring of the user answer.
-        # Sorted longest-first so "APX NEXT (4G LTE Only)" wins over plain "APX NEXT"
-        # when both appear. Also handles names ending with ")" where the word-boundary
-        # \b check below fails (non-word char at end of string has no boundary).
+        # Option display name found in user answer with word boundaries on both sides.
+        # Uses (?<!\w)…(?!\w) rather than \b because standard \b fails at the end
+        # of names like "APX NEXT (4G LTE Only)" where the trailing ")" is a
+        # non-word char with no \b transition. Sorted longest-first so
+        # "APX NEXT (4G LTE Only)" wins over "APX NEXT" when both could match.
+        # The right-side (?!\w) also blocks short codes like "AP" from matching
+        # inside "APX" — "ap" followed by "x" fails (?!\w).
         for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
-            if opt.display_name.lower() in ua:
+            dn = opt.display_name.lower()
+            if re.search(r"(?<!\w)" + re.escape(dn) + r"(?!\w)", ua):
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
