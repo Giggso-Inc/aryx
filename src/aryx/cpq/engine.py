@@ -1431,9 +1431,12 @@ class CpqEngine:
         re.IGNORECASE,
     )
 
-    # Change-request verbs — user wants to modify a filled attr (Step 6 cascade)
+    # Change-request verbs — user wants to modify a filled attr (Step 6 cascade).
+    # Conjugated forms ("-ing", "-e") are included so "i am changing" / "switching"
+    # / "replacing" all fire has_change_verb=True and activate the attr-name guard.
     _CHANGE_VERB_RE = re.compile(
-        r"\b(swap|change|switch|replace|update|modify|actually|instead|"
+        r"\b(swapp?(?:ing)?|chang(?:e|ing)|switch(?:ing)?|replac(?:e|ing)|"
+        r"updat(?:e|ing)|modif(?:y|ying)|actually|instead|"
         r"make\s+it|i\s+want|use\s+.+\s+instead)\b",
         re.IGNORECASE,
     )
@@ -1506,10 +1509,14 @@ class CpqEngine:
                     if hv.lower() != filled.get(attr.variable_name, "").lower():
                         return attr, hv
 
-            # Direct apply_answer match with a different value
-            result = self.apply_answer(attr, question)
-            if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
-                return attr, question
+            # Direct apply_answer match with a different value.
+            # Guard: skip option-less (free-text) attrs — apply_answer's free-text
+            # fallback would accept ANY string, turning a raw change-request sentence
+            # into a spurious "value" for attrs like CRM_BILL_COUNTRY.
+            if attr.options:
+                result = self.apply_answer(attr, question)
+                if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
+                    return attr, question
 
         return None
 
