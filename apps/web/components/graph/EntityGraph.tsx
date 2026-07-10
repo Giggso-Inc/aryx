@@ -81,7 +81,6 @@ function DetailPanel({
   onNavigate,
   onExpandOnCanvas,
 }: DetailPanelProps) {
-  const [expanding, setExpanding] = useState(false);
   const attributes = entity.attributes ?? {};
   const hasAttributes = Object.keys(attributes).length > 0;
 
@@ -97,16 +96,11 @@ function DetailPanel({
           {!loading && neighbors.length > 0 && (
             <button
               type="button"
-              disabled={expanding}
               title="Show all connections for this node on the canvas"
-              onClick={() => {
-                setExpanding(true);
-                onExpandOnCanvas(entity.id, neighbors);
-                setExpanding(false);
-              }}
-              className="focus-ring flex items-center gap-1 rounded-md border border-steel-200 bg-steel-50 px-2 py-1 text-[10px] font-medium text-steel-700 hover:bg-steel-100 disabled:opacity-50"
+              onClick={() => onExpandOnCanvas(entity.id, neighbors)}
+              className="focus-ring flex items-center gap-1 rounded-md border border-steel-200 bg-steel-50 px-2 py-1 text-[10px] font-medium text-steel-700 hover:bg-steel-100"
             >
-              {expanding ? <Loader2 size={10} className="animate-spin" /> : <GitMerge size={10} />}
+              <GitMerge size={10} />
               Expand
             </button>
           )}
@@ -644,8 +638,6 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     resolveFocusSourceEntityIds(focusedEntityIds, domainEntityIds)
   ), [domainEntityIds, focusedEntityIds]);
 
-  const effectiveGraphMode = graphMode;
-
   const load = useCallback(async () => {
     fitOnNextRender.current = true; // full reload → fit the new graph
     setLoading(true); setError(null);
@@ -727,10 +719,10 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   useEffect(() => {
     if (loading) return;
     if (allEntities.length === 0) return;
-    const effectiveFocusedEntityIds = effectiveGraphMode === "focused"
+    const effectiveFocusedEntityIds = graphMode === "focused"
       ? focusSourceEntityIds
       : null;
-    const graphData = effectiveGraphMode === "overview" && graphOverview
+    const graphData = graphMode === "overview" && graphOverview
       ? buildOverviewGraph(graphOverview.overview_nodes, graphOverview.overview_edges, typeIndex)
       : buildGraph(
         allEntities,
@@ -743,7 +735,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
         pathIds,
         typeIndex,
         [],
-        effectiveGraphMode,
+        graphMode,
         effectiveFocusedEntityIds,
         domainEdgePairs,
         expandedIds,
@@ -769,7 +761,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
     selectedEdgeKeys,
     pathIds,
     typeIndex,
-    effectiveGraphMode,
+    graphMode,
     graphOverview,
     domainEntityIds,
     domainEdgePairs,
@@ -874,7 +866,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
   );
 
   const visibleCount = nodes.length;
-  const showPathTools = effectiveGraphMode !== "overview";
+  const showPathTools = graphMode !== "overview";
   const hasFocusSource = focusSourceEntityIds !== null;
   const modeButtonClass = (mode: GraphMode) => cn(
     "focus-ring rounded-lg border px-2.5 py-1.5 text-[11px] font-medium shadow-soft backdrop-blur-sm transition-colors",
@@ -885,8 +877,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
 
   return (
     <div className="relative flex flex-1 overflow-hidden">
-      {!panelEntity && (
-        <div className="absolute top-3 left-3 z-10 flex w-[248px] flex-col gap-2">
+      <div className="absolute top-3 left-3 z-10 flex w-[248px] flex-col gap-2">
         <div className="rounded-xl border border-navy-100 bg-white/90 p-2 shadow-soft backdrop-blur-sm">
           <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wider text-navy-500">Graph mode</div>
           <div className="flex flex-wrap gap-1">
@@ -919,7 +910,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           </div>
         </div>
 
-        {effectiveGraphMode !== "overview" && (
+        {!panelEntity && graphMode !== "overview" && (
           <div className="flex items-center gap-2 rounded-xl border border-navy-100 bg-white/90 px-3 py-2 shadow-soft backdrop-blur-sm">
             <Search size={13} className="text-subtle" />
             <input
@@ -935,7 +926,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           </div>
         )}
 
-        {effectiveGraphMode !== "overview" && (
+        {!panelEntity && graphMode !== "overview" && (
           <div className="rounded-xl border border-navy-100 bg-white/90 p-2 shadow-soft backdrop-blur-sm max-h-52 overflow-y-auto">
             <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-navy-500">Filter by type</div>
             {allTypes.map((t, i) => {
@@ -965,29 +956,33 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           </div>
         )}
 
-        <div className="rounded-xl border border-navy-100 bg-white/90 px-3 py-2 shadow-soft backdrop-blur-sm text-[11px] text-subtle">
-          {effectiveGraphMode === "overview"
+        {!panelEntity && (
+          <div className="rounded-xl border border-navy-100 bg-white/90 px-3 py-2 shadow-soft backdrop-blur-sm text-[11px] text-subtle">
+            {graphMode === "overview"
             ? `${visibleCount} overview node${visibleCount !== 1 ? "s" : ""} · ${edges.length} overview rel${edges.length !== 1 ? "s" : ""}`
             : `${visibleCount} / ${allEntities.length} entities · ${edges.length} rel${edges.length !== 1 ? "s" : ""}`}
-        </div>
+          </div>
+        )}
 
-        <div className="flex gap-1">
-          <button type="button" onClick={load}
-            className="focus-ring flex items-center gap-1 rounded-lg border border-navy-100 bg-white/90 px-2 py-1.5 text-[11px] text-navy-700 hover:bg-navy-50 shadow-soft backdrop-blur-sm">
-            <RefreshCw size={11} /> Reload
-          </button>
-          {showPathTools && (
-            <button type="button" onClick={() => { setShowPath((v) => !v); setPathIds(new Set()); }}
-              className={cn(
-                "focus-ring flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] shadow-soft backdrop-blur-sm",
-                showPath ? "border-steel-200 bg-steel-50 text-steel-700" : "border-navy-100 bg-white/90 text-navy-700 hover:bg-navy-50",
-              )}>
-              Path finder
+        {!panelEntity && (
+          <div className="flex gap-1">
+            <button type="button" onClick={load}
+              className="focus-ring flex items-center gap-1 rounded-lg border border-navy-100 bg-white/90 px-2 py-1.5 text-[11px] text-navy-700 hover:bg-navy-50 shadow-soft backdrop-blur-sm">
+              <RefreshCw size={11} /> Reload
             </button>
-          )}
-        </div>
+            {showPathTools && (
+              <button type="button" onClick={() => { setShowPath((v) => !v); setPathIds(new Set()); }}
+                className={cn(
+                  "focus-ring flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] shadow-soft backdrop-blur-sm",
+                  showPath ? "border-steel-200 bg-steel-50 text-steel-700" : "border-navy-100 bg-white/90 text-navy-700 hover:bg-navy-50",
+                )}>
+                Path finder
+              </button>
+            )}
+          </div>
+        )}
 
-        {showPathTools && showPath && (
+        {!panelEntity && showPathTools && showPath && (
           <div className="rounded-xl border border-navy-100 bg-white/90 p-3 shadow-soft backdrop-blur-sm">
             <PathFinder
               entities={allEntities}
@@ -1002,10 +997,9 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
             )}
           </div>
         )}
-        </div>
-      )}
+      </div>
 
-      <div className={cn("flex-1", effectiveGraphMode !== "overview" && panelEntity ? "mr-72" : "")}>
+      <div className={cn("flex-1", graphMode !== "overview" && panelEntity ? "mr-72" : "")}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -1036,7 +1030,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
         </ReactFlow>
       </div>
 
-      {effectiveGraphMode !== "overview" && panelEntity && (
+      {graphMode !== "overview" && panelEntity && (
         <DetailPanel
           entity={panelEntity}
           neighbors={selectedNeighbors}

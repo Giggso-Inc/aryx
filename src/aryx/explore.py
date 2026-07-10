@@ -126,9 +126,9 @@ def _matches(query_text: str, candidate: str) -> bool:
     c_norm = _normalise_text(candidate)
     if not q_norm or not c_norm:
         return False
-    if q_norm in c_norm or c_norm in q_norm:
+    if _tokens(query_text) & _tokens(candidate):
         return True
-    return bool(_tokens(query_text) & _tokens(candidate))
+    return len(q_norm) >= 4 and len(c_norm) >= 4 and (q_norm in c_norm or c_norm in q_norm)
 
 
 def _entity_match_text(entity_id: int, entity_type: str, attrs: dict[str, Any]) -> str:
@@ -184,6 +184,9 @@ def domain_overview_view(
     relationships = list(relationships)
     brief = brief or {}
     domain = str(brief.get("domain") or "").strip()
+    entity_ids_by_type: dict[str, list[int]] = defaultdict(list)
+    for entity_id, entity_type, _attrs in entities:
+        entity_ids_by_type[entity_type].append(entity_id)
 
     def _fallback() -> dict[str, Any]:
         base = graph_view(entities, relationships)
@@ -194,7 +197,7 @@ def domain_overview_view(
                     "id": f"overview::{node['type']}",
                     "type": node["type"],
                     "count": node["count"],
-                    "entity_ids": [],
+                    "entity_ids": sorted(entity_ids_by_type[node["type"]]),
                 }
                 for node in base["type_nodes"]
             ],
@@ -231,6 +234,7 @@ def domain_overview_view(
 
     id_type = {entity_id: entity_type for entity_id, entity_type, _attrs in selected}
     edge_agg: Counter[tuple[str, str, str]] = Counter()
+    matched_edge_pair_keys: set[tuple[int, int]] = set()
     matched_edge_pairs: list[dict[str, int]] = []
     for src, tgt, name in relationships:
         stype = id_type.get(src)
@@ -238,6 +242,10 @@ def domain_overview_view(
         if not stype or not ttype:
             continue
         edge_agg[(stype, ttype, name)] += 1
+        pair = (src, tgt)
+        if pair in matched_edge_pair_keys:
+            continue
+        matched_edge_pair_keys.add(pair)
         matched_edge_pairs.append({"source": src, "target": tgt})
 
     overview_nodes = [

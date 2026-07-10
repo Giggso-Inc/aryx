@@ -27,29 +27,18 @@ def test_graph_overview_returns_domain_focused_payload(client: TestClient) -> No
         def __init__(self, dsn: str, workspace_id: int = 1) -> None:
             self.workspace_id = workspace_id
 
-        def list_entities(self):
-            return iter([
+        def overview_inputs(self):
+            return ([
                 (1, "SupportTicket", {"name": "Ticket-100"}),
                 (2, "SupportTicket", {"name": "Ticket-200"}),
                 (3, "Person", {"name": "Alex Agent"}),
-            ])
-
-        def list_relationships(self):
-            return iter([(1, 2, "RELATED_TO"), (1, 3, "ASSIGNED_TO")])
-
-        def close(self) -> None:
-            return None
-
-    class FakeWorkspaceStore:
-        def list_all(self):
-            return [{"id": 1, "brief": {"domain": "support tickets"}}]
+            ], [(1, 2, "RELATED_TO"), (1, 3, "ASSIGNED_TO")], {"domain": "support tickets"})
 
         def close(self) -> None:
             return None
 
     with (
         patch("aryx.api.graph_api.EntityStore", FakeEntityStore),
-        patch("aryx.api.graph_api.make_workspace_store", return_value=FakeWorkspaceStore()),
         patch("aryx.api.graph_api.get_settings") as mock_cfg,
     ):
         mock_cfg.return_value.rdb_dsn = "postgresql://test"
@@ -69,28 +58,17 @@ def test_graph_overview_falls_back_when_domain_has_no_match(client: TestClient) 
         def __init__(self, dsn: str, workspace_id: int = 1) -> None:
             self.workspace_id = workspace_id
 
-        def list_entities(self):
-            return iter([
+        def overview_inputs(self):
+            return ([
                 (1, "Customer", {"name": "Acme"}),
                 (2, "Device", {"name": "SM-3000"}),
-            ])
-
-        def list_relationships(self):
-            return iter([(1, 2, "HAS_DEVICE")])
-
-        def close(self) -> None:
-            return None
-
-    class FakeWorkspaceStore:
-        def list_all(self):
-            return [{"id": 1, "brief": {"domain": "benefits"}}]
+            ], [(1, 2, "HAS_DEVICE")], {"domain": "benefits"})
 
         def close(self) -> None:
             return None
 
     with (
         patch("aryx.api.graph_api.EntityStore", FakeEntityStore),
-        patch("aryx.api.graph_api.make_workspace_store", return_value=FakeWorkspaceStore()),
         patch("aryx.api.graph_api.get_settings") as mock_cfg,
     ):
         mock_cfg.return_value.rdb_dsn = "postgresql://test"
@@ -101,3 +79,35 @@ def test_graph_overview_falls_back_when_domain_has_no_match(client: TestClient) 
     assert payload["fallback_used"] is True
     assert payload["matched_entity_ids"] == []
     assert payload["overview_nodes"][0]["type"] == "Customer"
+    assert payload["overview_nodes"][0]["entity_ids"] == [1]
+
+
+def test_neighbors_response_includes_direction_field() -> None:
+    from aryx.api.graph_api import _reader, graph_router
+
+    class FakeReader:
+        def neighbors(self, entity_id: int) -> list[dict[str, object]]:
+            assert entity_id == 7
+            return [{
+                "id": 3,
+                "type": "Device",
+                "name": "Scanner",
+                "relationship": "ASSIGNED_TO",
+                "direction": "out",
+            }]
+
+    app = FastAPI()
+    app.dependency_overrides[_reader] = lambda: FakeReader()
+    app.include_router(graph_router())
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get("/entities/7/neighbors")
+
+    assert response.status_code == 200
+    assert response.json() == [{
+        "id": 3,
+        "type": "Device",
+        "name": "Scanner",
+        "relationship": "ASSIGNED_TO",
+        "direction": "out",
+    }]

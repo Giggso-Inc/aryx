@@ -10,7 +10,6 @@ from aryx.config import get_settings
 from aryx.graph import GraphReader
 from aryx.ports import ports
 from aryx.store.entity_store import EntityStore
-from aryx.workspaces import make_workspace_store
 
 
 def _reader(workspace_id: int = 1) -> GraphReader:
@@ -20,26 +19,15 @@ def _reader(workspace_id: int = 1) -> GraphReader:
     return ports().graph_reader(workspace_id)  # type: ignore[return-value]
 
 
-def _brief_for(workspace_id: int) -> dict[str, Any]:
-    """Return the saved workspace brief so overview mode can stay in sync."""
-    store = make_workspace_store(get_settings().rdb_dsn)
-    try:
-        for workspace in store.list_all():
-            if int(workspace.get("id", 0)) == int(workspace_id):
-                return workspace.get("brief") or {}
-    finally:
-        store.close()
-    return {}
-
-
 def _overview_payload(workspace_id: int) -> dict[str, Any]:
     """Build the brief-driven graph overview from the relational truth."""
     store = EntityStore(get_settings().rdb_dsn, workspace_id)
     try:
+        entities, relationships, brief = store.overview_inputs()
         return explore.domain_overview_view(
-            store.list_entities(),
-            store.list_relationships(),
-            _brief_for(workspace_id),
+            entities,
+            relationships,
+            brief,
         )
     finally:
         store.close()
