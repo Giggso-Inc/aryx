@@ -76,6 +76,12 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     # attr_key_fragment is matched word-by-word against the attribute's variable_name.
     # ORDER MATTERS: more specific patterns must appear before generic ones — the first
     # match for each key wins (extract_hints skips a key once it's set).
+    #
+    # Full option-name patterns MUST come before the generic "lte"/"5g"/"4g" tokens so
+    # "4G LTE Only" is never collapsed to the ambiguous "LTE" hint that cannot
+    # distinguish "APX NEXT (4G LTE Only)" from "APX NEXT (4G LTE+5G)".
+    ("hwversion", r"\b4g\s+lte\s+only\b", "APX NEXT (4G LTE Only)"),
+    ("hwversion", r"\b4g\s+lte\s*\+\s*5g\b", "APX NEXT (4G LTE+5G)"),
     ("hwversion", r"\b5g\b", "5G"),
     ("hwversion", r"\blte\b", "LTE"),
     ("hwversion", r"\b4g\b", "4G"),
@@ -126,6 +132,40 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
+
+# Country -> standard sales-region abbreviation. Deliberately covers only
+# the unambiguous majority; countries not listed here fall through to the
+# normal "ask" behavior rather than guess. Two catalog-observed codes are
+# intentionally NOT targeted by this map: "AP" and "EA" overlap with APAC
+# for Asian countries with no reliable way to disambiguate from country
+# name alone — Asian countries resolve to "APAC" (the more universal code)
+# and AP/EA stay reachable only by explicit user answer. This is a business
+# judgment call, not a technical limitation; revisit if wrong.
+_COUNTRY_TO_REGION: dict[str, str] = {
+    # North America
+    "united states": "NA", "us": "NA", "usa": "NA", "u.s.": "NA", "u.s.a.": "NA",
+    "canada": "NA", "mexico": "NA",
+    # Latin America
+    "brazil": "LA", "argentina": "LA", "chile": "LA", "colombia": "LA", "peru": "LA",
+    "venezuela": "LA", "ecuador": "LA", "uruguay": "LA", "paraguay": "LA", "bolivia": "LA",
+    "costa rica": "LA", "panama": "LA", "guatemala": "LA", "honduras": "LA",
+    "el salvador": "LA", "nicaragua": "LA", "dominican republic": "LA", "jamaica": "LA",
+    # EMEA (Europe + Africa — Middle East kept separate, see below)
+    "united kingdom": "EMEA", "uk": "EMEA", "germany": "EMEA", "france": "EMEA",
+    "italy": "EMEA", "spain": "EMEA", "netherlands": "EMEA", "belgium": "EMEA",
+    "switzerland": "EMEA", "austria": "EMEA", "sweden": "EMEA", "norway": "EMEA",
+    "denmark": "EMEA", "finland": "EMEA", "poland": "EMEA", "ireland": "EMEA",
+    "portugal": "EMEA", "greece": "EMEA", "czech republic": "EMEA", "romania": "EMEA",
+    "south africa": "EMEA", "nigeria": "EMEA", "kenya": "EMEA", "egypt": "EMEA",
+    # Middle East
+    "saudi arabia": "ME", "united arab emirates": "ME", "uae": "ME", "qatar": "ME",
+    "israel": "ME", "kuwait": "ME", "bahrain": "ME", "oman": "ME", "jordan": "ME",
+    # Asia Pacific
+    "china": "APAC", "japan": "APAC", "india": "APAC", "australia": "APAC",
+    "singapore": "APAC", "south korea": "APAC", "korea": "APAC", "indonesia": "APAC",
+    "malaysia": "APAC", "thailand": "APAC", "philippines": "APAC", "vietnam": "APAC",
+    "new zealand": "APAC", "taiwan": "APAC", "hong kong": "APAC",
+}
 
 # Product name extraction patterns for display
 _PRODUCT_PATTERNS: list[tuple[str, str]] = [
@@ -840,6 +880,7 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
+        country: str | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -880,10 +921,12 @@ class CpqEngine:
                 multi.pop(k, None)
 
             governed_ids = self.governed_target_ids(attrs, hiding_rules, rec_rules, con_rules)
+            rule_ids = self.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
             filled, display_filled, _ = self.auto_fill(
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
+                rule_governed_ids=rule_ids, country=country,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
@@ -957,7 +1000,7 @@ class CpqEngine:
     # ── Auto-fill ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def governed_target_ids(
+    def rule_governed_ids(
         attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],
         rec_rules: list[RecommendationRule],
@@ -969,6 +1012,8 @@ class CpqEngine:
         a "dependent variable" eligible for default-or-first auto-fill if a
         hiding, recommendation, or constraint rule actually targets it —
         everything else keeps the existing ask-the-user safeguard (Issue 6).
+        This is the strict subset `auto_fill` tags `filled_source="rule"`;
+        see `governed_target_ids` for the wider Phase N eligibility set.
         """
         by_rule_id = CpqEngine._attr_index(attrs)
         governed: set[int] = set()
@@ -986,6 +1031,61 @@ class CpqEngine:
                 governed.add(target.entity_id)
         return governed
 
+    @staticmethod
+    def governed_target_ids(
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+    ) -> set[int]:
+        """Entity ids eligible for default-or-first auto-fill.
+
+        Widened per CPQ_APX_NEXT_ISSUES_PLAN.md Phase N: rule coverage alone
+        left ~29 attrs pending on a richer catalog (APX Next) where most
+        attrs simply carry no rule at all in the source data — far short of
+        the client's <=2-3-prompt requirement. Attrs marked `required=False`
+        in the source are also eligible (a source-asserted "safe to default"
+        signal), excluding decision-required attrs (country/region), which
+        always ask regardless of governance. See `rule_governed_ids` for the
+        strict rule-only subset (used to tag `filled_source`).
+        """
+        governed = set(
+            CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        )
+        for attr in attrs:
+            if attr.required:
+                continue
+            vn_flat = attr.variable_name.lower().replace("_", "")
+            if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
+                continue
+            governed.add(attr.entity_id)
+        return governed
+
+    @staticmethod
+    def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
+        """Resolve a region attr's value from a known country, without
+        inventing a code the catalog doesn't actually offer.
+
+        Looks up `country` in `_COUNTRY_TO_REGION` for a standard region
+        abbreviation, then matches that abbreviation against `attr`'s real
+        menu options (exact item_value first, then display_name) — a
+        country with no mapping, or a catalog whose Region attr doesn't
+        offer the derived code, returns None so the caller falls back to
+        asking rather than guessing.
+        """
+        if not country:
+            return None
+        region_code = _COUNTRY_TO_REGION.get(country.strip().lower())
+        if not region_code:
+            return None
+        for opt in attr.options:
+            if opt.item_value.upper() == region_code:
+                return opt.item_value, opt.display_name
+        for opt in attr.options:
+            if region_code in opt.display_name.upper():
+                return opt.item_value, opt.display_name
+        return None
+
     def auto_fill(
         self,
         attrs: list[ConfigAttr],
@@ -996,6 +1096,8 @@ class CpqEngine:
         governed_ids: set[int] | None = None,
         already_filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
+        rule_governed_ids: set[int] | None = None,
+        country: str | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -1014,7 +1116,18 @@ class CpqEngine:
           ConstraintRules. When set, first-option fallback only picks from the
           allowed set; hint/default paths ignore constraints (they were validated
           by the rule that produced the recommendation).
-        governed_ids — entity_ids eligible for step 4 (see _governed_target_ids).
+        governed_ids — entity_ids eligible for step 4 (see governed_target_ids).
+        rule_governed_ids — the strict rule-only subset of governed_ids (see
+          rule_governed_ids()); used only to tag filled_source as "rule" vs
+          "optional" (Phase N/K) for step-4 fills. Defaults to governed_ids
+          itself when omitted, i.e. every step-4 fill is tagged "rule" —
+          the pre-Phase-N behavior for callers not yet passing it.
+        country — confirmed country text (session.country), used ONLY to
+          derive region-pattern decision-key attrs via `derive_region()`
+          before they fall to the normal "always ask" path. "country"
+          itself is unaffected — it's still asked as before (D1). No match
+          (unmapped country, or catalog offers no matching code) falls
+          through to asking, same as if `country` were omitted.
 
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
@@ -1044,20 +1157,36 @@ class CpqEngine:
         pending: list[ConfigAttr] = []
         sources = filled_source if filled_source is not None else {}
         governed = governed_ids or set()
+        rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
         dropped = dropped_multi if dropped_multi is not None else {}
 
         for attr in attrs:
             vn = attr.variable_name
 
             if vn in filled:
-                # Already answered in a prior turn
-                matched_display = next(
-                    (o.display_name for o in attr.options
-                     if o.item_value == filled[vn]),
-                    filled[vn],
+                # Already answered in a prior turn — but a cascade may have
+                # narrowed this attr's allowed set since then (single-select
+                # counterpart of the multi-select re-validation below, §5/
+                # Phase J). If the locked value is no longer allowed, clear
+                # it and fall through to re-resolution instead of keeping a
+                # stale, now-invalid answer.
+                allowed_single = (
+                    constrained_opts.get(attr.entity_id) if constrained_opts else None
                 )
-                display_filled[vn] = matched_display
-                continue
+                if allowed_single is not None and filled[vn] not in allowed_single:
+                    stale_display = display_filled.get(vn, filled[vn])
+                    dropped[vn] = [stale_display]
+                    filled.pop(vn, None)
+                    display_filled.pop(vn, None)
+                    sources.pop(vn, None)
+                else:
+                    matched_display = next(
+                        (o.display_name for o in attr.options
+                         if o.item_value == filled[vn]),
+                        filled[vn],
+                    )
+                    display_filled[vn] = matched_display
+                    continue
             if vn in filled_multi:
                 allowed_now = constrained_opts.get(attr.entity_id) if constrained_opts else None
                 if allowed_now is not None:
@@ -1139,7 +1268,19 @@ class CpqEngine:
                 dk in vn_flat for dk in _DECISION_REQUIRED_KEYS
             )
             is_governed = attr.entity_id in governed
+            governed_source = "rule" if attr.entity_id in rule_governed else "optional"
             filled_multi_now = False
+
+            # Region-from-country derivation: region is a decision-required
+            # key (always ask, D2/§Phase M-adjacent) UNLESS the confirmed
+            # country resolves to one of this attr's real options — country
+            # itself is untouched, still always asked (D1).
+            if not value and "region" in vn_flat and country and attr.options:
+                derived = self.derive_region(country, attr)
+                if derived:
+                    value, display = derived
+                    source = "country_derived"
+
             if not value and attr.options:
                 allowed_for_attr = (
                     set(constrained_opts.get(attr.entity_id, []))
@@ -1164,7 +1305,7 @@ class CpqEngine:
                         if allowed_for_attr is not None:
                             filled_multi[vn] = [o.item_value for o in valid_opts]
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
-                            sources.setdefault(vn, "rule")
+                            sources.setdefault(vn, governed_source)
                             filled_multi_now = True
                     else:
                         # single/boolean, 2+ options, no default: first by
@@ -1173,6 +1314,7 @@ class CpqEngine:
                         # attr to be resolved for the cascade to proceed.
                         value = valid_opts[0].item_value
                         display = valid_opts[0].display_name
+                        source = governed_source
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
                 # Governed boolean with no menu options at all: default to
@@ -1180,6 +1322,7 @@ class CpqEngine:
                 # pending — a boolean's absent-default state is well-defined.
                 value = "false"
                 display = "No"
+                source = governed_source
 
             if filled_multi_now:
                 continue
@@ -1294,9 +1437,13 @@ class CpqEngine:
         re.IGNORECASE,
     )
 
-    # Change-request verbs — user wants to modify a filled attr (Step 6 cascade)
+    # Change-request verbs — user wants to modify a filled attr (Step 6 cascade).
+    # Conjugated forms ("-ing", "-e") are included so "i am changing" / "switching"
+    # / "replacing" all fire has_change_verb=True and activate the attr-name guard.
     _CHANGE_VERB_RE = re.compile(
-        r"\b(swap|change|switch|replace|update|modify|actually|instead|"
+        r"\b(choos(?:e|ing)|select(?:ing)?|pick(?:ing)?|"
+        r"swapp?(?:ing)?|chang(?:e|ing)|switch(?:ing)?|replac(?:e|ing)|"
+        r"updat(?:e|ing)|modif(?:y|ying)|actually|instead|"
         r"make\s+it|i\s+want|use\s+.+\s+instead)\b",
         re.IGNORECASE,
     )
@@ -1361,18 +1508,28 @@ class CpqEngine:
             if has_change_verb and vn_flat not in q_lower.replace("_", "") and label_lower not in q_lower:
                 continue
 
-            # Check hint extraction for this attr's key fragment
-            hints = self.extract_hints(question)
-            for hk, hv in hints.items():
+            # Direct apply_answer match — checked FIRST so the full NL question
+            # (with verbatim display-name substring matching) wins over the coarse
+            # hint token. Without this ordering, "4G LTE Only" collapsed to "LTE"
+            # by _HINT_PATTERNS can't be distinguished from "4G LTE+5G".
+            # Guard: skip option-less (free-text) attrs — apply_answer's free-text
+            # fallback would accept ANY string as a spurious "value".
+            if attr.options:
+                result = self.apply_answer(attr, question)
+                if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
+                    return attr, question
+
+            # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
+            # the attr is mentioned but may not identify the exact option. Only reached
+            # when apply_answer found no specific match (e.g. "make it LTE" with no
+            # full option name in the message). Returns full question so _handle_cascade
+            # can try apply_answer again with more context.
+            hints_dcr = self.extract_hints(question)
+            for hk, hv in hints_dcr.items():
                 hk_flat = hk.lower().replace("_", "")
                 if hk_flat in vn_flat or vn_flat in hk_flat:
                     if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        return attr, hv
-
-            # Direct apply_answer match with a different value
-            result = self.apply_answer(attr, question)
-            if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
-                return attr, question
+                        return attr, question
 
         return None
 
@@ -1527,48 +1684,72 @@ class CpqEngine:
         self,
         attr: ConfigAttr,
         user_answer: str,
+        constrained_item_values: list[str] | None = None,
     ) -> tuple[str, str] | None:
         """Match the user's natural-language answer to a valid option.
+
+        constrained_item_values — when active constraint rules apply (same
+        set passed to `next_question_prompt`), only these item_values may
+        match — an answer for an option outside the currently-allowed set
+        is rejected rather than silently accepted (Phase I).
 
         Returns (item_value, display_name) or None if no match found.
         """
         ua = user_answer.strip().lower()
+        allowed = set(constrained_item_values) if constrained_item_values is not None else None
+        options = (
+            [o for o in attr.options if o.item_value in allowed]
+            if allowed is not None else attr.options
+        )
 
         # Numeric selection: user typed "1", "2", etc. → pick by position in the
         # presented option list (only _presentable options, matching next_question_prompt).
         if ua.isdigit():
-            presentable = [o for o in attr.options if _presentable(o.item_value)]
+            presentable = [o for o in options if _presentable(o.item_value)]
             idx = int(ua) - 1
             if 0 <= idx < len(presentable) and _valid(presentable[idx].item_value):
                 return presentable[idx].item_value, presentable[idx].display_name
 
         # Exact item_value match
-        for opt in attr.options:
+        for opt in options:
             if opt.item_value.lower() == ua:
                 return opt.item_value, opt.display_name
 
         # Exact display-name match
-        for opt in attr.options:
+        for opt in options:
             if opt.display_name.lower() == ua:
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
         # User answer contained in option's display name (user typed a prefix)
-        for opt in attr.options:
+        for opt in options:
             if ua in opt.display_name.lower():
+                if _valid(opt.item_value):
+                    return opt.item_value, opt.display_name
+
+        # Option display name found in user answer with word boundaries on both sides.
+        # Uses (?<!\w)…(?!\w) rather than \b because standard \b fails at the end
+        # of names like "APX NEXT (4G LTE Only)" where the trailing ")" is a
+        # non-word char with no \b transition. Sorted longest-first so
+        # "APX NEXT (4G LTE Only)" wins over "APX NEXT" when both could match.
+        # The right-side (?!\w) also blocks short codes like "AP" from matching
+        # inside "APX" — "ap" followed by "x" fails (?!\w).
+        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
+            dn = opt.display_name.lower()
+            if re.search(r"(?<!\w)" + re.escape(dn) + r"(?!\w)", ua):
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
         # Option display name found as a whole WORD in user answer — word-boundary
         # prevents "me" (Middle East code) from matching in "north a*me*rica".
-        for opt in attr.options:
+        for opt in options:
             dn_lower = opt.display_name.lower()
             if re.search(r"\b" + re.escape(dn_lower) + r"\b", ua):
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
         # Free-text field
-        if not attr.options and _valid(user_answer):
+        if not attr.options and allowed is None and _valid(user_answer):
             return user_answer.strip(), user_answer.strip()
 
         return None
@@ -1617,27 +1798,114 @@ class CpqEngine:
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_noise_var(variable_name: str) -> bool:
+        """True for underscore-prefixed or integration/system-prefixed vars.
+
+        Structural, not name-list-based (§3e): an underscore prefix, or a
+        leading `_`-delimited segment that is fully uppercase (e.g.
+        `CRM_BILL_COUNTRY`) — the same shape live data showed for
+        integration fields, derived from casing convention rather than a
+        hardcoded prefix list.
+        """
+        if variable_name.startswith("_"):
+            return True
+        head = variable_name.split("_", 1)[0]
+        return len(head) >= 2 and head.isalpha() and head.isupper()
+
+    # Displayed values that carry no information on their own — a line like
+    # "Opt-Out? → false" or "Ruggedized Housing → Yes" restates a toggle, it
+    # doesn't communicate a configuration choice.
+    _BOOLEAN_DISPLAY_VALUES: frozenset[str] = frozenset({"yes", "no", "true", "false"})
+
+    # Duration-shaped values ("1 Year", "3 Years", "10 Years (Federal ...)")
+    # — subscription/service term lines the summary should not list.
+    _YEAR_VALUE_RE: re.Pattern[str] = re.compile(r"\byears?\b", re.IGNORECASE)
+
+    def _is_summary_excluded(
+        self, variable_name: str, display_label: str, value: str,
+        attr: "ConfigAttr | None",
+    ) -> bool:
+        """True when a filled attr should not get a summary line.
+
+        Boolean-shaped values (yes/no/true/false, or select_type=="boolean")
+        are excluded even when user-chosen — the ask was to only surface
+        substantive selections. Secondary-* attrs (inactive duplicates like
+        the secondary SIM) and warranty attrs are excluded by name; warranty
+        must also match the VALUE ("Service Type → 1 Year Standard
+        Warranty" carries the word only there). Product/product-line attrs
+        are excluded too — the summary header already names the product, so
+        those lines are redundant; they must match the VARIABLE NAME as
+        well (`productLineName`, `bm_prd_level_product_line`, ...) because
+        several carry labels without the word. Duration-shaped values
+        ("1 Year", "3 Years") are excluded as well — subscription terms,
+        not configuration choices.
+        """
+        if value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
+            return True
+        if self._YEAR_VALUE_RE.search(value):
+            return True
+        if attr is not None and attr.select_type == "boolean":
+            return True
+        label_l = display_label.lower()
+        if "secondary" in label_l:
+            return True
+        if "warranty" in label_l or "warranty" in value.lower():
+            return True
+        return "product" in label_l or "product" in variable_name.lower()
+
+    def filled_summary_pairs(
+        self,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Filtered (display_label, value) pairs worth summarising.
+
+        Uses display_label (human name) as the key when attrs are supplied,
+        falling back to variable_name only when the attr is not found.
+        Skips HTML template values (layout/display fields), system/
+        integration noise (`_is_noise_var`, §3e), and low-signal lines
+        (`_is_summary_excluded`: boolean values, secondary attrs, warranty
+        attrs, product/product-line attrs, year-duration values).
+
+        rule_governed_ids — when supplied (see `rule_governed_ids()`), only
+        attrs a hiding, recommendation, or constraint rule actually
+        reasoned about survive (Phase K/§3g). The rest are silently
+        omitted — no count of remaining auto-configured fields.
+        """
+        if not display_filled:
+            return []
+        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
+        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
+        items = [
+            (var, label) for var, label in display_filled.items()
+            if not self._is_html_value(label)
+            and not self._is_noise_var(var)
+            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+        ]
+        if rule_governed_ids is not None:
+            items = [
+                (var, label) for var, label in items
+                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
+            ]
+        return [(label_map.get(var, var), label) for var, label in items]
+
     def render_filled_summary(
         self,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
     ) -> str:
-        """Compact human-readable summary of what has been auto-filled.
+        """Deterministic bullet-list summary of what has been auto-filled.
 
-        Uses display_label (human name) as the key when attrs are supplied,
-        falling back to variable_name only when the attr is not found.
-        Skips HTML template values (layout/display fields).
+        Formats `filled_summary_pairs()` (which owns ALL the filtering) as
+        markdown bullets. Used directly as the fallback whenever the
+        LLM-narrated paragraph (ask_api `_cpq_summary_text`) is
+        unavailable or fails.
         """
-        if not display_filled:
+        pairs = self.filled_summary_pairs(display_filled, attrs, rule_governed_ids)
+        if not pairs:
             return ""
-        label_map: dict[str, str] = (
-            {a.variable_name: a.display_label for a in attrs} if attrs else {}
-        )
-        items = [
-            f"- **{label_map.get(var, var)}** → {label}"
-            for var, label in display_filled.items()
-            if not self._is_html_value(label)
-        ]
-        if not items:
-            return ""
-        return "**Configured so far:**\n" + "\n".join(items)
+        heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
+        return "\n".join([heading, *(f"- **{label}** → {value}" for label, value in pairs)])

@@ -197,6 +197,51 @@ def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
         pass
 
 
+def _cpq_summary_text(
+    display_filled: dict[str, str],
+    attrs: list[ConfigAttr],
+    rule_governed_ids: set[int],
+    product_name: str,
+    workspace_id: int,
+) -> str:
+    """Natural-language paragraph summarising the filtered configuration.
+
+    The engine's `filled_summary_pairs` owns ALL filtering (booleans,
+    secondary/warranty/product attrs, year durations, rule-governed set);
+    the menial model only rewrites the surviving facts as prose. Any LLM
+    failure or empty reply falls back to the deterministic bullet summary
+    (`render_filled_summary`) — the CPQ flow must never block on the
+    narrator.
+    """
+    pairs = _cpq_engine.filled_summary_pairs(
+        display_filled, attrs, rule_governed_ids=rule_governed_ids)
+    if not pairs:
+        return ""
+    sys = (
+        "You summarise product configurations for sales reps in natural, "
+        "plain-English prose."
+    )
+    user = (
+        f"Write ONE flowing paragraph (3-6 sentences, plain text) describing "
+        f"this {product_name or 'product'} configuration. Group related "
+        "choices naturally, the way a person would describe the build. "
+        "No lists, no markdown, no headings, and do not restate 'label: value' "
+        "pairs verbatim — write real sentences. Use ONLY the facts below; "
+        "never invent values that are not listed.\n\nCONFIGURATION:\n"
+        + "\n".join(f"- {label}: {value}" for label, value in pairs)
+    )
+    try:
+        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        text = _strip_think(text).strip()
+        if text:
+            return text
+    except Exception:  # noqa: BLE001
+        logger.debug("cpq: summary narration failed — using bullet fallback",
+                     exc_info=True)
+    return _cpq_engine.render_filled_summary(
+        display_filled, attrs, rule_governed_ids=rule_governed_ids)
+
+
 def _handle_cpq_qa(
     req: "AskRequest",
     session: Any,
@@ -210,21 +255,38 @@ def _handle_cpq_qa(
     answer, then appends the current config resume prompt so the user knows where
     they were. The session state is preserved unchanged.
     """
-    types = all_types(reader)
-    try:
-        terms, p_in, p_out, p_ms = _extract_terms(
-            req.question, types, req.history, workspace_id=req.workspace_id,
+    # Fast path: question asks about a specific attribute's available options.
+    # Uses attr.options already in memory from BmMenuItem — no graph query,
+    # no LLM synthesis, no schema leakage possible.
+    _attr_q = _cpq_engine.detect_attr_query(req.question, attrs)
+    _presentable = (
+        [o for o in _attr_q.options if o.display_name.strip()]
+        if _attr_q else []
+    )
+    if _presentable:
+        _numbered = "\n".join(
+            f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
         )
-        entities, calls = gather(reader, terms)
-        entities = _enrich_with_attributes(entities, req.workspace_id)
-        context = render_context(entities)
-        qa_answer, s_in, s_out, s_ms = _synthesise(
-            req.question, context, history=req.history, workspace_id=req.workspace_id,
+        qa_answer = (
+            f"The available options for **{_attr_q.display_label}** are:\n\n{_numbered}"
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("cpq_qa synthesis failed: %s", exc)
-        qa_answer = f"Couldn't reach the graph: {exc}"
         p_in = p_out = p_ms = s_in = s_out = s_ms = 0
+    else:
+        types = all_types(reader)
+        try:
+            terms, p_in, p_out, p_ms = _extract_terms(
+                req.question, types, req.history, workspace_id=req.workspace_id,
+            )
+            entities, calls = gather(reader, terms)
+            entities = _enrich_with_attributes(entities, req.workspace_id)
+            context = render_context(entities)
+            qa_answer, s_in, s_out, s_ms = _synthesise(
+                req.question, context, history=req.history, workspace_id=req.workspace_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cpq_qa synthesis failed: %s", exc)
+            qa_answer = f"Couldn't reach the graph: {exc}"
+            p_in = p_out = p_ms = s_in = s_out = s_ms = 0
 
     # Append a resume prompt so the user knows where to continue
     if resume_review:
@@ -332,12 +394,14 @@ def _handle_cascade(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
-        dropped_multi=dropped_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
     )
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
@@ -385,14 +449,18 @@ def _handle_cascade(
         )
         answer = cascade_note + "\n\n" + q_block
     else:
-        # All resolved → FORMAT B JSON
+        # All resolved → verbose summary, JSON only on request (§6/Phase K)
         session.status = "awaiting_approval"
-        payload = _cpq_engine.build_payload(filled, session.filled_source, session.filled_multi)
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id,
+        )
         answer = (
             cascade_note + "\n\n"
             f"Configuration complete for **{session.product_name}**.\n\n"
-            f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
-            f"Say **confirm** to submit, or describe any changes."
+            + (f"{summary}\n\n" if summary else "")
+            + f"Say **show me the json** to see the full payload, "
+              f"**confirm** to submit, or describe any changes."
         )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
@@ -493,13 +561,44 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if not attrs:
         return {}  # no CPQ data in graph — fall through to standard Ask
 
-    # ── Load all rule sets (needed for Step 3, 6, 7) ─────────────────────────
+    # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id)
     rec_rules = _cpq_engine.load_recommendation_rules(req.workspace_id)
     con_rules = _cpq_engine.load_constraint_rules(req.workspace_id)
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":
+        # Explicit JSON request while awaiting approval — checked BEFORE
+        # approval/Q&A/change detection so "show me the json" is never
+        # misread as one of those (same reasoning as the early mode_request
+        # check in the configuring flow below). JSON stays on-demand only —
+        # this does not submit anything, cpq_payload stays unset.
+        if _cpq_engine.detect_response_mode_request(req.question) == "json":
+            preview_payload = _cpq_engine.build_payload(
+                session.filled, session.filled_source, session.filled_multi)
+            rule_ids_preview = _cpq_engine.rule_governed_ids(
+                attrs, hiding_rules, rec_rules, con_rules)
+            summary = _cpq_summary_text(
+                session.display_filled, attrs, rule_ids_preview,
+                session.product_name, req.workspace_id,
+            )
+            answer = (
+                (f"{summary}\n\n" if summary else "")
+                + f"Here's the full configuration for **{session.product_name}** — "
+                  f"**preview, not final**:\n\n"
+                f"```json\n{json.dumps(preview_payload, indent=2)}\n```\n\n"
+                f"Say **confirm** to submit, or describe any changes."
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_json_preview()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                "preview": True,
+            }
+
         # STEP 8: explicit approval → generate BOM payload
         if _cpq_engine.detect_approval(req.question):
             session.status = "approved"
@@ -530,13 +629,20 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hiding_rules, rec_rules, con_rules,
             )
 
-        # Could not parse as approval, Q&A, or change — re-show FORMAT B
-        payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
+        # Could not parse as approval, Q&A, change, or JSON request — nudge
+        # with the verbose summary, NOT the raw JSON (§6/Phase K: JSON stays
+        # on-demand only; misreading input isn't a request for it).
+        rule_ids_nudge = _cpq_engine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        summary = _cpq_summary_text(
+            session.display_filled, attrs, rule_ids_nudge,
+            session.product_name, req.workspace_id,
+        )
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
             f"**{session.product_name}**:\n\n"
-            f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
-            f"Say **confirm** to submit, or describe what to change."
+            + (f"{summary}\n\n" if summary else "")
+            + f"Say **show me the json** to see the full payload, "
+              f"**confirm** to submit, or describe what to change."
         )
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
@@ -600,14 +706,21 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                  or vn_flat_pv in hk.lower().replace("_", "")),
                 None,
             )
+            # Constraints active when this attr was presented last turn —
+            # session.filled hasn't changed since then (this turn's answer
+            # is applied below), so recomputing now reflects exactly what
+            # the user was shown (Phase I).
+            pending_constrained = _cpq_engine.apply_constraint_rules(
+                attrs, con_rules, session.filled, bml_eval=bml_eval,
+            ).get(pending_attr.entity_id)
             # Try the user's full utterance first — they may have typed the exact
             # option name (e.g. "APX NEXT (4G LTE+5G)"). Only fall back to the
             # extracted hint if the full question produces no match; hints are
             # coarse (e.g. "LTE") and can mis-match when multiple options share
             # the same keyword.
-            result = _cpq_engine.apply_answer(pending_attr, req.question)
+            result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
             if not result and hint_val_for_attr:
-                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr)
+                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
             if result:
                 iv, disp = result
                 session.filled[pending_var] = iv
@@ -642,19 +755,20 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 }
 
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
-    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
-        dropped_multi=dropped_multi,
+        dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
     )
     dropped_note = "".join(
         f" Removed **{', '.join(dvals)}** from **"
@@ -686,15 +800,21 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             })
 
     if not pending:
-        # ── STEP 6: FORMAT B — show complete BOM JSON, gate on confirm ────────
+        # ── STEP 6: FORMAT B — verbose summary, JSON only on request ─────────
+        # (§6/Phase K: JSON is never shown unasked, even at completion —
+        # only the earlier "still configuring" responses honored this
+        # before; this branch previously dumped the full BOM immediately.)
         session.status = "awaiting_approval"
-        payload = _cpq_engine.build_payload(filled, session.filled_source, session.filled_multi)
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id,
+        )
         answer = (
-            f"{dropped_note.strip()}\n\n" if dropped_note else ""
-        ) + (
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            f"```json\n{json.dumps(payload, indent=2)}\n```\n\n"
-            f"Say **confirm** to submit, or describe any changes."
+            (f"{dropped_note.strip()}\n\n" if dropped_note else "")
+            + f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Say **show me the json** to see the full payload, "
+              f"**confirm** to submit, or describe any changes."
         )
     elif session.turn >= _cpq_engine.MAX_TURNS:
         # Turn cap reached with attrs still unresolved. NEVER fabricate a
@@ -722,7 +842,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if mode_request == "json":
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi)
-            summary = _cpq_engine.render_filled_summary(display_filled, visible_attrs)
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id,
+            )
             still_need = ", ".join(a.display_label for a in pending)
             answer = (
                 (f"{dropped_note.strip()}\n\n" if dropped_note else "")

@@ -166,7 +166,10 @@ def ground_truth_from_tabular(plans: list[dict]) -> GroundTruth:
             fk = FkTruth(child_dataset=dataset, fk_column=col, parent_dataset=parent)
             for r in rows:
                 val = str(r.get(col, "")).strip()
-                if not val:
+                if not val or val == "-1":
+                    # "-1" is BM's own "not set" convention (mirrors the
+                    # condition_function_id == -1 checks elsewhere) — not a
+                    # broken reference, so it must not count as dangling.
                     continue
                 if val in parent_ids:
                     child_id = str(r.get(child_id_col, "")).strip() if child_id_col else ""
