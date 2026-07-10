@@ -493,10 +493,11 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if not attrs:
         return {}  # no CPQ data in graph — fall through to standard Ask
 
-    # ── Load all rule sets (needed for Step 3, 6, 7) ─────────────────────────
+    # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id)
     rec_rules = _cpq_engine.load_recommendation_rules(req.workspace_id)
     con_rules = _cpq_engine.load_constraint_rules(req.workspace_id)
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":
@@ -600,14 +601,21 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                  or vn_flat_pv in hk.lower().replace("_", "")),
                 None,
             )
+            # Constraints active when this attr was presented last turn —
+            # session.filled hasn't changed since then (this turn's answer
+            # is applied below), so recomputing now reflects exactly what
+            # the user was shown (Phase I).
+            pending_constrained = _cpq_engine.apply_constraint_rules(
+                attrs, con_rules, session.filled, bml_eval=bml_eval,
+            ).get(pending_attr.entity_id)
             # Try the user's full utterance first — they may have typed the exact
             # option name (e.g. "APX NEXT (4G LTE+5G)"). Only fall back to the
             # extracted hint if the full question produces no match; hints are
             # coarse (e.g. "LTE") and can mis-match when multiple options share
             # the same keyword.
-            result = _cpq_engine.apply_answer(pending_attr, req.question)
+            result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
             if not result and hint_val_for_attr:
-                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr)
+                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
             if result:
                 iv, disp = result
                 session.filled[pending_var] = iv
@@ -642,7 +650,6 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 }
 
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
-    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
@@ -651,10 +658,11 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
-        dropped_multi=dropped_multi,
+        dropped_multi=dropped_multi, rule_governed_ids=rule_ids,
     )
     dropped_note = "".join(
         f" Removed **{', '.join(dvals)}** from **"
@@ -722,7 +730,9 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if mode_request == "json":
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi)
-            summary = _cpq_engine.render_filled_summary(display_filled, visible_attrs)
+            summary = _cpq_engine.render_filled_summary(
+                display_filled, visible_attrs, rule_governed_ids=rule_ids,
+            )
             still_need = ", ".join(a.display_label for a in pending)
             answer = (
                 (f"{dropped_note.strip()}\n\n" if dropped_note else "")
