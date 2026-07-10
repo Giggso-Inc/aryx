@@ -1501,13 +1501,16 @@ class CpqEngine:
             if has_change_verb and vn_flat not in q_lower.replace("_", "") and label_lower not in q_lower:
                 continue
 
-            # Check hint extraction for this attr's key fragment
+            # Check hint extraction for this attr's key fragment.
+            # Return the FULL QUESTION as the value hint — not the coarse extracted
+            # token (e.g. "LTE") which can't distinguish between option variants like
+            # "APX NEXT (4G LTE Only)" vs "APX NEXT (4G LTE+5G)".
             hints = self.extract_hints(question)
             for hk, hv in hints.items():
                 hk_flat = hk.lower().replace("_", "")
                 if hk_flat in vn_flat or vn_flat in hk_flat:
                     if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        return attr, hv
+                        return attr, question
 
             # Direct apply_answer match with a different value.
             # Guard: skip option-less (free-text) attrs — apply_answer's free-text
@@ -1711,6 +1714,15 @@ class CpqEngine:
         # User answer contained in option's display name (user typed a prefix)
         for opt in options:
             if ua in opt.display_name.lower():
+                if _valid(opt.item_value):
+                    return opt.item_value, opt.display_name
+
+        # Option display name appears verbatim as a substring of the user answer.
+        # Sorted longest-first so "APX NEXT (4G LTE Only)" wins over plain "APX NEXT"
+        # when both appear. Also handles names ending with ")" where the word-boundary
+        # \b check below fails (non-word char at end of string has no boundary).
+        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
+            if opt.display_name.lower() in ua:
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
 
