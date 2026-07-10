@@ -30,12 +30,14 @@ from sqlalchemy import and_, func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.middleware.auth_middleware import get_current_user_required
 from app.models.app import App
 from app.models.gg_app_connections import GGAppConnection
 from app.models.member import GGMember
 from app.models.user import User
 from app.models.workspace import Workspace
+from app.services.email_service import email_service
 from app.schemas.gg_workspace import (
     GGWorkspaceAppConnectionCreate,
     GGWorkspaceAppConnectionList,
@@ -194,7 +196,7 @@ async def add_workspace_member(
     user = await get_current_user_required(request, db)
 
     ws_uuid = _to_uuid(workspace_id, "workspace_id")
-    await _get_workspace_or_404(db, ws_uuid)
+    ws = await _get_workspace_or_404(db, ws_uuid)
 
     await require_active_workspace_role(
         db,
@@ -223,6 +225,30 @@ async def add_workspace_member(
         if "unique" in str(exc).lower():
             raise HTTPException(status_code=409, detail="User already has a workspace membership.")
         raise
+
+    try:
+        added_user = (
+            await db.execute(select(User).where(User.id == data.user_id))
+        ).scalar_one_or_none()
+        if added_user and added_user.email_id:
+            inviter_display = getattr(user, "name", None) or getattr(user, "email_id", None) or "A workspace administrator"
+            workspace_home_url = f"{settings.PLATFORM_URL.rstrip('/')}/workspaces/{ws.id}/home"
+            email_service.send_workspace_access_email(
+                to_email=added_user.email_id,
+                workspace_access_data={
+                    "workspace_name": ws.name,
+                    "user_name": added_user.name,
+                    "role": data.role,
+                    "added_by": inviter_display,
+                    "platform_name": email_service.default_platform_name,
+                    "support_email": settings.SUPPORT_EMAIL,
+                },
+                platform_url=workspace_home_url,
+            )
+        else:
+            print(f"⚠️ Workspace member added without notification email: user={data.user_id}")
+    except Exception as email_error:
+        print(f"⚠️ Error sending workspace member email (non-critical): {email_error}")
 
     return _member_resp(member)
 

@@ -218,7 +218,10 @@ class TestAddWorkspaceMember:
         """Workspace found, accessible → 201 with member created."""
         ws = _make_ws_mock()
         member = _make_member_mock()
-        mock_db.execute = AsyncMock(return_value=_scalar(ws))
+        mock_db.execute = AsyncMock(side_effect=[
+            _scalar(ws),    # workspace lookup
+            _scalar(None),  # added user lookup for email
+        ])
         mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
         client = _make_ws_client(mock_db)
         with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
@@ -228,6 +231,30 @@ class TestAddWorkspaceMember:
                     json={"user_id": _USER_ID, "role": "member"},
                 )
         assert resp.status_code == 201
+
+    @pytest.mark.unit
+    def test_add_success_sends_workspace_access_email(self, mock_db, admin_user):
+        """Workspace member creation should notify the added user by email."""
+        ws = _make_ws_mock(name="Revenue Ops")
+        member = _make_member_mock()
+        target_user = _make_user_mock()
+        mock_db.execute = AsyncMock(side_effect=[
+            _scalar(ws),          # workspace lookup
+            _scalar(target_user), # added user lookup for email
+        ])
+        mock_db.refresh = AsyncMock(side_effect=lambda obj: None)
+        client = _make_ws_client(mock_db)
+        with patch("app.routes.gg_workspaces.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+            with patch("app.routes.gg_workspaces.GGMember", return_value=member):
+                with patch("app.routes.gg_workspaces.email_service.send_workspace_access_email", return_value=True) as mock_send:
+                    resp = client.post(
+                        f"/gg-workspaces/{_WS_ID}/members",
+                        json={"user_id": _USER_ID, "role": "member"},
+                    )
+        assert resp.status_code == 201
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs["workspace_access_data"]["workspace_name"] == "Revenue Ops"
+        assert mock_send.call_args.kwargs["platform_url"] == f"http://localhost:3000/workspaces/{_WS_ID}/home"
 
     @pytest.mark.unit
     def test_add_workspace_not_found(self, mock_db, admin_user):
