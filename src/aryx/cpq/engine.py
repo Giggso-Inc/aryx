@@ -76,6 +76,12 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     # attr_key_fragment is matched word-by-word against the attribute's variable_name.
     # ORDER MATTERS: more specific patterns must appear before generic ones — the first
     # match for each key wins (extract_hints skips a key once it's set).
+    #
+    # Full option-name patterns MUST come before the generic "lte"/"5g"/"4g" tokens so
+    # "4G LTE Only" is never collapsed to the ambiguous "LTE" hint that cannot
+    # distinguish "APX NEXT (4G LTE Only)" from "APX NEXT (4G LTE+5G)".
+    ("hwversion", r"\b4g\s+lte\s+only\b", "APX NEXT (4G LTE Only)"),
+    ("hwversion", r"\b4g\s+lte\s*\+\s*5g\b", "APX NEXT (4G LTE+5G)"),
     ("hwversion", r"\b5g\b", "5G"),
     ("hwversion", r"\blte\b", "LTE"),
     ("hwversion", r"\b4g\b", "4G"),
@@ -1501,25 +1507,28 @@ class CpqEngine:
             if has_change_verb and vn_flat not in q_lower.replace("_", "") and label_lower not in q_lower:
                 continue
 
-            # Check hint extraction for this attr's key fragment.
-            # Return the FULL QUESTION as the value hint — not the coarse extracted
-            # token (e.g. "LTE") which can't distinguish between option variants like
-            # "APX NEXT (4G LTE Only)" vs "APX NEXT (4G LTE+5G)".
-            hints = self.extract_hints(question)
-            for hk, hv in hints.items():
-                hk_flat = hk.lower().replace("_", "")
-                if hk_flat in vn_flat or vn_flat in hk_flat:
-                    if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        return attr, question
-
-            # Direct apply_answer match with a different value.
+            # Direct apply_answer match — checked FIRST so the full NL question
+            # (with verbatim display-name substring matching) wins over the coarse
+            # hint token. Without this ordering, "4G LTE Only" collapsed to "LTE"
+            # by _HINT_PATTERNS can't be distinguished from "4G LTE+5G".
             # Guard: skip option-less (free-text) attrs — apply_answer's free-text
-            # fallback would accept ANY string, turning a raw change-request sentence
-            # into a spurious "value" for attrs like CRM_BILL_COUNTRY.
+            # fallback would accept ANY string as a spurious "value".
             if attr.options:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
                     return attr, question
+
+            # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
+            # the attr is mentioned but may not identify the exact option. Only reached
+            # when apply_answer found no specific match (e.g. "make it LTE" with no
+            # full option name in the message). Returns full question so _handle_cascade
+            # can try apply_answer again with more context.
+            hints_dcr = self.extract_hints(question)
+            for hk, hv in hints_dcr.items():
+                hk_flat = hk.lower().replace("_", "")
+                if hk_flat in vn_flat or vn_flat in hk_flat:
+                    if hv.lower() != filled.get(attr.variable_name, "").lower():
+                        return attr, question
 
         return None
 
