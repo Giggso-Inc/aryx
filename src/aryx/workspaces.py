@@ -55,12 +55,15 @@ class WorkspaceStore:
                     child=sql.Identifier(f"{base}_ws{wid}"),
                     parent=sql.Identifier(base), wid=sql.Literal(wid)))
 
-    def _drop_partitions(self, wid: int) -> None:
+    def _drop_partitions_with_conn(self, conn: Any, wid: int) -> None:
         template = load("drop_partition")
+        for base in _PARTITIONED:
+            conn.execute(sql.SQL(template).format(
+                child=sql.Identifier(f"{base}_ws{wid}")))
+
+    def _drop_partitions(self, wid: int) -> None:
         with self._pool.connection() as conn:
-            for base in _PARTITIONED:
-                conn.execute(sql.SQL(template).format(
-                    child=sql.Identifier(f"{base}_ws{wid}")))
+            self._drop_partitions_with_conn(conn, wid)
 
     def create(self, name: str, description: str = "", context: str = "",
                brief: dict | None = None) -> dict[str, Any]:
@@ -184,7 +187,7 @@ class WorkspaceStore:
                 load("select_non_default_workspace_ids"),
             ).fetchall()
             for (wid,) in non_default:
-                self._drop_partitions(wid)
+                self._drop_partitions_with_conn(conn, wid)
             conn.execute(load("delete_non_default_workspaces"))
             conn.execute(load("reset_workspace_context"), {"wid": 1})
         logger.info("system nuked — factory reset complete")
