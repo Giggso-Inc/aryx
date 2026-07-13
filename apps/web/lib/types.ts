@@ -27,6 +27,16 @@ export interface AskResponse {
   grounding?: Grounding | null;
   session_data?: Record<string, unknown>;
   cpq_payload?: Record<string, unknown> | null;
+  // CPQ action buttons — populated once the guided config has enough
+  // substance (3+ answered attrs, or past the configuring stage). No
+  // second LLM call: these are projections of session state the engine
+  // already computed this turn.
+  json_response?: Record<string, unknown> | null;
+  json_button_flag?: boolean;
+  beautify?: string;
+  beautify_button_flag?: boolean;
+  api_share?: Record<string, unknown> | null;
+  api_share_button_flag?: boolean;
 }
 
 // ── Accuracy Lab (v2) ───────────────────────────────────────────────────
@@ -144,6 +154,11 @@ export interface ChatTurn {
   citations?: Citation[];
   usage?: Usage;
   streaming?: boolean;
+  jsonResponse?: Record<string, unknown> | null;
+  jsonButtonFlag?: boolean;
+  beautify?: string;
+  beautifyButtonFlag?: boolean;
+  apiShareButtonFlag?: boolean;
 }
 
 // ─── Ontology / modelling layer ───────────────────────────────────────────

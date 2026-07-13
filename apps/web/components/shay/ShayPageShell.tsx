@@ -11,6 +11,7 @@ interface ShayPageShellProps {
   children: ReactNode;
   showHero?: boolean;
   contentCard?: boolean;
+  contentWidth?: "detail" | "wide";
 }
 
 export function ShayPageShell({
@@ -21,8 +22,12 @@ export function ShayPageShell({
   children,
   showHero = true,
   contentCard = true,
+  contentWidth = "detail",
 }: ShayPageShellProps) {
   const shouldWrapInCard = showHero || contentCard;
+  const shellWidthClassName = contentWidth === "wide"
+    ? "mx-auto flex w-full max-w-[96rem] flex-col gap-5 px-5 lg:px-6"
+    : "mx-auto flex w-full max-w-[72rem] flex-col gap-5 px-5";
   const content = (
     <>
       {showHero ? (
@@ -51,7 +56,7 @@ export function ShayPageShell({
     <div className="min-h-screen bg-canvas">
       <Header />
       <main className="app-shell-offset w-full pb-6 pt-6">
-        <div className="workspace-section-shell flex flex-col gap-5">
+        <div className={shellWidthClassName}>
           {shouldWrapInCard ? (
             <section className="overflow-hidden rounded-[0.75rem] border border-navy-100 bg-white shadow-soft">
               {content}

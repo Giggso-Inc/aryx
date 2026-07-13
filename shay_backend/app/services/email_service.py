@@ -9,6 +9,8 @@ Date: 2025-01-27
 Version: 1.0.0
 """
 
+import asyncio
+import logging
 import re
 import os
 import smtplib
@@ -16,10 +18,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from urllib.parse import urlsplit
 from fastapi import HTTPException
 
 from app.core.config import settings
 from app.services.template_service import template_service
+
+logger = logging.getLogger(__name__)
 
 
 class EmailService:
@@ -134,7 +139,7 @@ class EmailService:
             
             template_variables = {
                 'company_name': company_name,
-                'logo_html': self._get_embedded_logo_html(platform_name),
+                'logo_html': self._get_embedded_logo_html(platform_name, platform_url),
                 'user_name': user_name,
                 'user_nam': user_name,  # Support common placeholder typo
                 'invited_by': invited_by_display,
@@ -267,7 +272,7 @@ class EmailService:
                 user_name = user_email.split('@')[0] if user_email and '@' in user_email else 'there'
             
             template_variables = {
-                'logo_html': self._get_embedded_logo_html(platform_name),
+                'logo_html': self._get_embedded_logo_html(platform_name, platform_url),
                 'user_name': user_name,
                 'user_nam': user_name,  # Common typo in templates
                 'email': user_email,
@@ -367,7 +372,7 @@ class EmailService:
         try:
             template = self._load_template('password_reset.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(platform_name),
+                logo_html=self._get_embedded_logo_html(platform_name, platform_url),
                 user_name=user_name,
                 platform_name=platform_name,
                 reset_url=reset_url,
@@ -489,7 +494,7 @@ class EmailService:
         try:
             template = self._load_template('verification.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(platform_name),
+                logo_html=self._get_embedded_logo_html(platform_name, platform_url),
                 company_name=company_name,
                 user_name=user_name,
                 verification_link=verification_link,
@@ -623,6 +628,133 @@ class EmailService:
                 })
         
         return results
+
+    async def send_workspace_access_email(
+        self,
+        to_email: str,
+        workspace_access_data: dict,
+        platform_url: str = "http://localhost:3000",
+    ) -> bool:
+        """Notify an existing user that they were added to a workspace."""
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["From"] = self.from_email
+            msg["To"] = to_email
+            msg["Subject"] = "You have been added to an Aryx workspace"
+
+            text_body = self._create_workspace_access_text(workspace_access_data, platform_url)
+            msg.attach(MIMEText(text_body, "plain"))
+
+            html_body = self._create_workspace_access_html(workspace_access_data, platform_url)
+            msg.attach(MIMEText(html_body, "html"))
+
+            return await asyncio.to_thread(self._send_email, msg)
+        except Exception:
+            logger.exception("Error sending workspace access email")
+            return False
+
+    def _create_workspace_access_html(self, workspace_access_data: dict, platform_url: str) -> str:
+        """Create HTML for the workspace access notification email."""
+        workspace_name = workspace_access_data.get("workspace_name", "your workspace")
+        user_name = workspace_access_data.get("user_name") or "there"
+        role = workspace_access_data.get("role", "member")
+        added_by = workspace_access_data.get("added_by", "A workspace administrator")
+        platform_name = workspace_access_data.get("platform_name", self.default_platform_name)
+        support_email = workspace_access_data.get("support_email") or self.from_email
+        current_year = datetime.now().year
+
+        return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>You have been added to {workspace_name}</title>
+</head>
+<body style="margin: 0; padding: 24px 12px; background-color: #F4F6FB; color: #0B1430; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, Arial, Helvetica, sans-serif;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #FFFFFF; border: 1px solid #D9DEEB; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 50px rgba(13, 27, 90, 0.10);">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #1E3A8A; background-image: linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%); color: #FFFFFF;">
+      <tr>
+        <td style="padding: 28px 24px 12px 24px; text-align: center;">{self._get_embedded_logo_html(platform_name, platform_url)}</td>
+      </tr>
+      <tr>
+        <td style="padding: 0 24px 28px 24px; text-align: center;">
+          <h1 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; color: #FFFFFF;">You have been added to a workspace</h1>
+          <p style="margin: 10px 0 0 0; font-size: 14px; line-height: 1.5; color: #DCE8FF;">{self._brand_header_tagline(platform_name)}</p>
+        </td>
+      </tr>
+    </table>
+
+    <div style="padding: 36px 32px;">
+      <p style="margin: 0 0 16px 0; font-size: 20px; line-height: 1.4; font-weight: 600; color: #0B1430;">Hello {user_name},</p>
+
+      <p style="margin: 0 0 18px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        <strong>{added_by}</strong> added you to the <strong>{workspace_name}</strong> workspace in <strong>{platform_name}</strong>.
+      </p>
+
+      <div style="margin: 0 0 24px 0; padding: 20px 22px; background-color: #F4F6FB; border: 1px solid #D9DEEB; border-radius: 16px;">
+        <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.7; color: #0B1430;"><strong style="color: #0D1B5A;">Workspace:</strong> {workspace_name}</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;"><strong style="color: #0D1B5A;">Role:</strong> {role.capitalize()}</p>
+      </div>
+
+      <p style="margin: 0 0 22px 0; font-size: 15px; line-height: 1.8; color: #0B1430;">
+        Sign in to open your workspace and start collaborating with your team.
+      </p>
+
+      <div style="text-align: center; margin: 0 0 20px 0;">
+        <a href="{platform_url}" style="display: inline-block; padding: 14px 30px; border-radius: 999px; background-color: #2D7DFF; color: #FFFFFF; text-decoration: none; font-size: 15px; line-height: 1.4; font-weight: 700;">Open Workspace</a>
+      </div>
+
+      <div style="margin: 0 0 24px 0; padding: 16px 18px; background-color: #F8FAFE; border-radius: 14px; border: 1px dashed #BED1F8; font-size: 13px; line-height: 1.7; color: #0B1430; word-break: break-all;">
+        If the button does not work, use this link:
+        <br />
+        <a href="{platform_url}" style="color: #2D7DFF; text-decoration: underline;">{platform_url}</a>
+      </div>
+
+      <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #0B1430;">
+        Need help getting started? Contact your workspace administrator or <a href="mailto:{support_email}" style="color: #2D7DFF; text-decoration: underline;">{support_email}</a>.
+      </p>
+    </div>
+
+    <div style="padding: 24px 32px; background-color: #F8FAFE; border-top: 1px solid #D9DEEB; text-align: center;">
+      <p style="margin: 0 0 8px 0; font-size: 13px; line-height: 1.6; color: #4A5A7A;">This email was sent from {platform_name}.</p>
+      <p style="margin: 0; font-size: 13px; line-height: 1.6; font-weight: 600; color: #0D1B5A;">© {current_year} {platform_name}. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+        """
+
+    def _create_workspace_access_text(self, workspace_access_data: dict, platform_url: str) -> str:
+        """Create plain text for the workspace access notification email."""
+        workspace_name = workspace_access_data.get("workspace_name", "your workspace")
+        user_name = workspace_access_data.get("user_name") or "there"
+        role = workspace_access_data.get("role", "member")
+        added_by = workspace_access_data.get("added_by", "A workspace administrator")
+        platform_name = workspace_access_data.get("platform_name", self.default_platform_name)
+        support_email = workspace_access_data.get("support_email") or self.from_email
+        current_year = datetime.now().year
+
+        return f"""
+        YOU HAVE BEEN ADDED TO {platform_name.upper()}
+        ===================
+
+        Hello {user_name},
+
+        {added_by} added you to the {workspace_name} workspace in {platform_name}.
+
+        Workspace: {workspace_name}
+        Role: {role}
+
+        Sign in to open your workspace:
+        {platform_url}
+
+        If you need help, contact your workspace administrator or {support_email}.
+
+        This email was sent from {platform_name}
+        © {current_year} {platform_name}. All rights reserved.
+        """
     
     def _create_invitation_html(self, invitation_data: dict, platform_url: str) -> str:
         """Create HTML version of invitation email using template file"""
@@ -640,7 +772,7 @@ class EmailService:
         try:
             template = self._load_template('invitation.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(platform_name),
+                logo_html=self._get_embedded_logo_html(platform_name, platform_url),
                 company_name=company_name,
                 registration_short_link=registration_short_link,
                 user_name=user_name,
@@ -818,7 +950,7 @@ class EmailService:
         try:
             template = self._load_template('welcome_email.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(platform_name),
+                logo_html=self._get_embedded_logo_html(platform_name, app_link),
                 company_name=company_name,
                 contact_email=contact_email,
                 plan_name=plan_name,
@@ -1132,7 +1264,7 @@ class EmailService:
             intro_message = f'A new user has been added to the channel <strong>"{channel_name}"</strong> on {platform_name}.'
             access_paragraph = 'The user now has access to this channel and can participate in conversations and collaborate with the team.'
             view_channel_block = ''
-        # Header: title/tagline only (logo is embedded in template as base64)
+        # Header: title/tagline only (logo markup is injected by the shared email helper)
         if send_to_added_user:
             header_content = (
                 '<h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">You have been added to the channel</h1>'
@@ -1150,7 +1282,7 @@ class EmailService:
         try:
             template = self._load_template('channel_member_notification.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(platform_name),
+                logo_html=self._get_embedded_logo_html(platform_name, platform_url),
                 channel_name=channel_name,
                 user_name=user_name,
                 user_email=user_email,
@@ -1304,7 +1436,7 @@ class EmailService:
         try:
             template = self._load_template('error_notification.html')
             return template.format(
-                logo_html=self._get_embedded_logo_html(platform_name),
+                logo_html=self._get_embedded_logo_html(platform_name, platform_url),
                 api_endpoint=api_endpoint,
                 error_message=error_message,
                 error_type=error_type,
@@ -1407,27 +1539,67 @@ class EmailService:
             template = template.replace("{" + key + "}", str(placeholders[key]))
         return template
 
-    def _get_embedded_logo_html(self, platform_name: Optional[str] = None) -> str:
-        """Return compact logo markup for emails without triggering Gmail clipping.
+    def _is_public_logo_url(self, value: Optional[str]) -> bool:
+        """Return True when a configured logo value is a usable public HTTP(S) URL."""
+        if not value:
+            return False
+        return value.startswith("https://") or value.startswith("http://")
 
-        Large inline base64 images can push the MIME body past Gmail's clipping
-        threshold, which hides the real invitation content behind the clip link.
-        If the checked-in asset is too large, fall back to a lightweight text
-        badge instead of embedding the image.
-        """
+    def _url_origin(self, value: Optional[str]) -> Optional[str]:
+        """Return scheme + host origin for a public URL, dropping any path/query."""
+        if not self._is_public_logo_url(value):
+            return None
+        parts = urlsplit(value)
+        if not parts.scheme or not parts.netloc:
+            return None
+        return f"{parts.scheme}://{parts.netloc}"
+
+    def _get_default_logo_url(self, platform_url: Optional[str] = None) -> Optional[str]:
+        """Return the shared Aryx logo URL when a public static asset is available."""
+        logo_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "static",
+            "email",
+            "logo.png",
+        )
+        if not os.path.isfile(logo_path):
+            return None
+
+        candidate_bases: List[str] = []
+        public_backend_origin = self._url_origin(settings.SHAY_BE_PUBLIC_URL)
+        if public_backend_origin:
+            candidate_bases.append(public_backend_origin)
+        if platform_url:
+            platform_origin = self._url_origin(platform_url)
+            if platform_origin:
+                candidate_bases.append(platform_origin)
+
+        for candidate_base in candidate_bases:
+            return f"{candidate_base}/static/email/logo.png"
+        return None
+
+    def _get_email_logo_url(
+        self, platform_name: Optional[str] = None, platform_url: Optional[str] = None
+    ) -> Optional[str]:
+        """Return the safest public logo URL for email clients."""
+        platform_logo_url = self._get_platform_logo_url(platform_name)
+        if self._is_public_logo_url(platform_logo_url):
+            return platform_logo_url
+        return self._get_default_logo_url(platform_url)
+
+    def _get_embedded_logo_html(
+        self, platform_name: Optional[str] = None, platform_url: Optional[str] = None
+    ) -> str:
+        """Return compact hosted-logo markup for emails without Gmail clipping."""
         brand = (platform_name or self.default_platform_name or "Aryx").strip() or "Aryx"
-        logo_dir = os.path.join(os.path.dirname(__file__), "..", "..", "static", "email")
-        logo_b64_path = os.path.join(logo_dir, "logo_base64.txt")
-        try:
-            if os.path.isfile(logo_b64_path):
-                with open(logo_b64_path, "r", encoding="utf-8") as f:
-                    b64 = f.read().strip()
-                # Gmail clips long MIME payloads at roughly 100KB. Keep inline
-                # assets tiny and use a text badge when the asset is oversized.
-                if b64 and len(b64) <= 12000:
-                    return f'<img src="data:image/jpeg;base64,{b64}" alt="Aryx" style="max-width: 180px; max-height: 48px; display: block;" />'
-        except Exception:
-            pass
+        logo_url = self._get_email_logo_url(platform_name, platform_url)
+        if logo_url:
+            return (
+                f'<img src="{logo_url}" alt="{brand}" '
+                'style="max-width: 180px; max-height: 48px; width: auto; height: auto; display: inline-block;" />'
+            )
         return (
             f'<div style="display:inline-block;padding:10px 14px;border-radius:999px;'
             f'background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.18);'
@@ -1436,7 +1608,7 @@ class EmailService:
         )
 
     def _create_support_request_html(self, support_data: dict, platform_url: str) -> str:
-        """Build HTML for support request notification (blue header, info box). Logo is embedded in template as base64."""
+        """Build HTML for support request notification (blue header, info box)."""
         import html as html_module
         name = support_data.get("name", "N/A")
         email = support_data.get("email", "N/A")
@@ -1452,7 +1624,7 @@ class EmailService:
         current_year = datetime.now().year
         intro_message = f'A new support request has been submitted from {name}. Details are below.'
         placeholders = {
-            "logo_html": self._get_embedded_logo_html(platform_name),
+            "logo_html": self._get_embedded_logo_html(platform_name, platform_url),
             "intro_message": intro_message,
             "ticket_ref": ticket_ref,
             "subject": subject,
@@ -1569,14 +1741,14 @@ This email was sent from {platform_name}
             return False
 
     def _create_support_confirmation_html(self, support_data: dict, platform_url: str) -> str:
-        """Build HTML for user confirmation (blue header, info box). Logo is embedded in template as base64."""
+        """Build HTML for user confirmation (blue header, info box)."""
         name = support_data.get("name", "User")
         ticket_ref = support_data.get("ticket_reference", "N/A")
         platform_name = support_data.get("platform_name", self.default_platform_name)
         support_email = getattr(settings, "SUPPORT_EMAIL", self.from_email)
         current_year = datetime.now().year
         placeholders = {
-            "logo_html": self._get_embedded_logo_html(platform_name),
+            "logo_html": self._get_embedded_logo_html(platform_name, platform_url),
             "name": name,
             "ticket_ref": ticket_ref,
             "platform_name": platform_name,

@@ -17,6 +17,35 @@ import { storeShaySession } from "@/lib/shay-session";
 import type { ShayWorkspace } from "@/lib/shay-types";
 import { workspaceSectionHref } from "@/lib/workspace-route";
 
+function resolveWorkspaceDataSourceCount({
+  summarySourceCount,
+  catalogSourceCount,
+  datasourceTotal,
+  datasourceItemsCount,
+}: {
+  summarySourceCount: number | null;
+  catalogSourceCount: number | null;
+  datasourceTotal: number | null;
+  datasourceItemsCount: number | null;
+}) {
+  const candidates = [
+    summarySourceCount,
+    catalogSourceCount,
+    datasourceTotal,
+    datasourceItemsCount,
+  ];
+  const firstPositive = candidates.find(
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
+  );
+  if (typeof firstPositive === "number") {
+    return firstPositive;
+  }
+  const firstKnown = candidates.find(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  return firstKnown ?? null;
+}
+
 export function WorkspaceIndexPage() {
   const router = useRouter();
   const { session } = useShayAuth();
@@ -66,22 +95,31 @@ export function WorkspaceIndexPage() {
     const loadMetrics = async () => {
       const metricResults = await Promise.allSettled(workspaces.map(async (workspace) => {
         const aryxWorkspaceId = workspace.bridge?.aryx_workspace_id;
-        const [membersResult, datasourcesResult, summaryResult] = await Promise.allSettled([
+        const [membersResult, datasourcesResult, groupedSourcesResult, summaryResult] = await Promise.allSettled([
           shayApi.listWorkspaceMembers(workspace.id, session.access_token),
           shayApi.listDatasources(workspace.id, session.access_token),
+          aryxWorkspaceId
+            ? api.listDataSources(aryxWorkspaceId)
+            : Promise.resolve(null),
           aryxWorkspaceId
             ? api.dataSummary(aryxWorkspaceId)
             : Promise.resolve(null),
         ]);
         const members = membersResult.status === "fulfilled" ? membersResult.value : null;
         const datasources = datasourcesResult.status === "fulfilled" ? datasourcesResult.value : null;
+        const groupedSources = groupedSourcesResult.status === "fulfilled" ? groupedSourcesResult.value : null;
         const summary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
 
         return [workspace.id, {
           users: members?.total ?? members?.members.length ?? null,
           entities: summary?.total_entities ?? null,
           entityTypes: summary?.type_count ?? null,
-          dataSources: datasources?.total ?? datasources?.items.length ?? null,
+          dataSources: resolveWorkspaceDataSourceCount({
+            summarySourceCount: summary?.sources.length ?? null,
+            catalogSourceCount: groupedSources?.length ?? null,
+            datasourceTotal: datasources?.total ?? null,
+            datasourceItemsCount: datasources?.items.length ?? null,
+          }),
         }] as const;
       }));
 
@@ -218,6 +256,7 @@ export function WorkspaceIndexPage() {
         title="Workspaces"
         description="Create and manage workspaces."
         showHero={false}
+        contentWidth="wide"
       >
         <div className="space-y-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

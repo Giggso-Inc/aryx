@@ -1891,6 +1891,22 @@ class CpqEngine:
             ]
         return [(label_map.get(var, var), label) for var, label in items]
 
+    def beautify_text(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+    ) -> str:
+        """Human-readable ``Label : Value`` block for the Beautify button.
+
+        Reuses filled_summary_pairs' noise/low-signal filtering (§ above) so
+        Beautify shows the same substantive fields as the conversational
+        summary — as aligned key:value lines instead of prose, no LLM call.
+        """
+        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
+        width = max(len(label) for label, _ in pairs)
+        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+
     def render_filled_summary(
         self,
         display_filled: dict[str, str],
