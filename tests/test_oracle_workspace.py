@@ -80,6 +80,10 @@ _SQL_STUBS: dict[str, str] = {
         "SELECT id, name, description, context, brief, created_at "
         "FROM aryx_workspace ORDER BY id"
     ),
+    "select_workspace_by_id": (
+        "SELECT id, name, description, context, brief, created_at "
+        "FROM aryx_workspace WHERE id = %s"
+    ),
     "update_workspace_context": (
         "UPDATE aryx_workspace SET context = %s WHERE id = %s "
         "RETURNING id, name, description, context, created_at"
@@ -285,6 +289,32 @@ class TestListAll(unittest.TestCase):
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             result = store.list_all()
         self.assertEqual(result[0]["brief"], {})
+
+
+class TestGet(unittest.TestCase):
+    """get() returns a single workspace row without scanning the full table."""
+
+    def test_returns_workspace_dict_when_row_exists(self) -> None:
+        row = (2, "WS", "desc", "ctx", {"domain": "support"}, "2024-01-01")
+        pool, _ = _make_pool_cursor(fetchone=row)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.get(2)
+        self.assertEqual(result, {
+            "id": 2,
+            "name": "WS",
+            "description": "desc",
+            "context": "ctx",
+            "brief": {"domain": "support"},
+            "created_at": "2024-01-01",
+        })
+
+    def test_returns_none_when_workspace_missing(self) -> None:
+        pool, _ = _make_pool_cursor(fetchone=None)
+        store = _make_store(pool)
+        with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
+            result = store.get(9)
+        self.assertIsNone(result)
 
 
 class TestSetContext(unittest.TestCase):
