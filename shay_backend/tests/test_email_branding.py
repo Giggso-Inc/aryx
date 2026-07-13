@@ -225,6 +225,39 @@ def test_password_reset_rendering_is_aryx_branded(email_service: EmailService) -
     assert_no_legacy_branding(text)
 
 
+def test_workspace_access_email_is_async_and_uses_fixed_subject(
+    email_service: EmailService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_access_data = {
+        "workspace_name": "Revenue Ops",
+        "user_name": "Alex",
+        "role": "member",
+        "added_by": "Sara Admin",
+        "support_email": "support@aryx.example.com",
+        "platform_name": "Aryx",
+    }
+
+    captured = {}
+
+    def fake_send_email(msg):
+        captured["subject"] = msg["Subject"]
+        return True
+
+    monkeypatch.setattr(email_service, "_send_email", fake_send_email)
+
+    result = asyncio.run(
+        email_service.send_workspace_access_email(
+            "alex@example.com",
+            workspace_access_data,
+            "https://aryx.example.com/workspaces/revenue-ops/home",
+        )
+    )
+
+    assert result is True
+    assert captured["subject"] == "You have been added to an Aryx workspace"
+
+
 def test_welcome_rendering_is_aryx_branded(email_service: EmailService) -> None:
     welcome_data = {
         "companyName": "Acme Corp",

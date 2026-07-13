@@ -20,6 +20,7 @@ Endpoints
     DELETE /{workspace_id}/app-connections/{connection_id}
 """
 
+import logging
 from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
@@ -50,6 +51,9 @@ from app.schemas.gg_workspace import (
     GGWorkspaceMemberUpdate,
 )
 from app.utils.permissions import get_effective_role, require_active_workspace_role
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 security = HTTPBearer()
 
@@ -231,9 +235,13 @@ async def add_workspace_member(
             await db.execute(select(User).where(User.id == data.user_id))
         ).scalar_one_or_none()
         if added_user and added_user.email_id:
-            inviter_display = getattr(user, "name", None) or getattr(user, "email_id", None) or "A workspace administrator"
+            inviter_display = (
+                getattr(user, "name", None)
+                or getattr(user, "email_id", None)
+                or "A workspace administrator"
+            )
             workspace_home_url = f"{settings.PLATFORM_URL.rstrip('/')}/workspaces/{ws.id}/home"
-            email_service.send_workspace_access_email(
+            await email_service.send_workspace_access_email(
                 to_email=added_user.email_id,
                 workspace_access_data={
                     "workspace_name": ws.name,
@@ -246,9 +254,15 @@ async def add_workspace_member(
                 platform_url=workspace_home_url,
             )
         else:
-            print(f"⚠️ Workspace member added without notification email: user={data.user_id}")
+            logger.warning(
+                "Workspace member added without notification email: user=%s",
+                data.user_id,
+            )
     except Exception as email_error:
-        print(f"⚠️ Error sending workspace member email (non-critical): {email_error}")
+        logger.exception(
+            "Error sending workspace member email (non-critical): %s",
+            email_error,
+        )
 
     return _member_resp(member)
 

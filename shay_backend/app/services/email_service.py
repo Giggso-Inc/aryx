@@ -9,6 +9,8 @@ Date: 2025-01-27
 Version: 1.0.0
 """
 
+import asyncio
+import logging
 import re
 import os
 import smtplib
@@ -21,6 +23,8 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.services.template_service import template_service
+
+logger = logging.getLogger(__name__)
 
 
 class EmailService:
@@ -625,7 +629,7 @@ class EmailService:
         
         return results
 
-    def send_workspace_access_email(
+    async def send_workspace_access_email(
         self,
         to_email: str,
         workspace_access_data: dict,
@@ -644,9 +648,9 @@ class EmailService:
             html_body = self._create_workspace_access_html(workspace_access_data, platform_url)
             msg.attach(MIMEText(html_body, "html"))
 
-            return self._send_email(msg)
-        except Exception as e:
-            print(f"Error sending workspace access email: {e}")
+            return await asyncio.to_thread(self._send_email, msg)
+        except Exception:
+            logger.exception("Error sending workspace access email")
             return False
 
     def _create_workspace_access_html(self, workspace_access_data: dict, platform_url: str) -> str:
