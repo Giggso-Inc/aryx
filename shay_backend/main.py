@@ -441,7 +441,7 @@ if os.path.isdir(upload_dir):
 else:
     logger.warning("Upload directory %s not found; not mounting /app/uploads static files", upload_dir)
 
-# Serve email logo from repo; support logo.png and logo.jpg (e.g. Gradient BM as logo.jpg)
+# Serve email logo from repo for email templates.
 _EMAIL_LOGO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "email")
 
 @app.get("/static/email/logo.jpg", include_in_schema=False)
@@ -450,6 +450,15 @@ def serve_email_logo_jpg():
     path = os.path.join(_EMAIL_LOGO_DIR, "logo.jpg")
     if os.path.isfile(path):
         return FileResponse(path, media_type="image/jpeg")
+    return Response(status_code=404)
+
+
+@app.get("/static/email/logo.png", include_in_schema=False)
+def serve_email_logo_png():
+    """Serve platform logo (PNG) for email templates."""
+    path = os.path.join(_EMAIL_LOGO_DIR, "logo.png")
+    if os.path.isfile(path):
+        return FileResponse(path, media_type="image/png")
     return Response(status_code=404)
 
 # Include API routes

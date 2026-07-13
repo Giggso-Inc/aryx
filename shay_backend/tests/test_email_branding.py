@@ -14,6 +14,8 @@ from app.services.email_service import EmailService
 
 
 EXPECTED_GRADIENT = "linear-gradient(135deg, #0D1B5A 0%, #1E3A8A 60%, #2D7DFF 100%)"
+EXPECTED_CENTERED_LOGO_ROW = "padding: 28px 24px 12px 24px; text-align: center;"
+EXPECTED_CENTERED_TITLE_ROW = "padding: 0 24px 28px 24px; text-align: center;"
 FORBIDDEN_BRAND_STRINGS = (
     "Prism 7",
     "Prism7",
@@ -34,9 +36,12 @@ def assert_no_legacy_branding(content: str) -> None:
 def assert_aryx_html_branding(content: str) -> None:
     """Ensure rendered HTML uses the Aryx brand frame."""
     assert EXPECTED_GRADIENT in content
+    assert EXPECTED_CENTERED_LOGO_ROW in content
+    assert EXPECTED_CENTERED_TITLE_ROW in content
     assert "#2D7DFF" in content
     assert "#0D1B5A" in content
     assert "Aryx" in content
+    assert "data:image" not in content
     assert_no_legacy_branding(content)
 
 
@@ -52,7 +57,13 @@ def test_all_checked_in_email_templates_use_aryx_branding() -> None:
     for template_path in template_dir.glob("*.html"):
         content = template_path.read_text(encoding="utf-8")
         assert EXPECTED_GRADIENT in content, template_path.name
+        assert EXPECTED_CENTERED_LOGO_ROW in content, template_path.name
+        assert EXPECTED_CENTERED_TITLE_ROW in content, template_path.name
         assert "#2D7DFF" in content, template_path.name
+        assert "{logo_html}" in content, template_path.name
+        assert "width: 180px" not in content, template_path.name
+        assert "width: 72px" not in content, template_path.name
+        assert "data:image" not in content, template_path.name
         assert_no_legacy_branding(content)
 
 
@@ -72,12 +83,10 @@ def test_invitation_rendering_is_aryx_branded(email_service: EmailService) -> No
     text = email_service._create_invitation_text(invitation_data, "https://aryx.example.com")
 
     assert_aryx_html_branding(html)
-    assert 'width: 180px; padding: 24px 24px 24px 0;' in html
-    assert 'padding: 24px 12px; text-align: center; vertical-align: middle;' in html
+    assert "/static/email/logo.png" in html
     assert "Acme Corp" in html
     assert "Accept Invitation" in html
     assert "searchable knowledge graph" in text
-    assert "data:image" not in html
     assert len(html) < 20_000
     assert_no_legacy_branding(text)
 
@@ -147,11 +156,35 @@ def test_template_invitation_subject_is_fixed_to_aryx(email_service: EmailServic
 
 
 def test_embedded_logo_falls_back_when_asset_is_large(email_service: EmailService) -> None:
-    """Large inline logo assets should not be embedded into email bodies."""
-    logo_html = email_service._get_embedded_logo_html("Aryx")
+    """The shared email logo should come from a hosted asset, not inline base64."""
+    logo_html = email_service._get_embedded_logo_html("Aryx", "https://aryx.example.com")
+
+    assert "/static/email/logo.png" in logo_html
+    assert 'alt="Aryx"' in logo_html
+
+
+def test_embedded_logo_falls_back_to_text_badge_without_public_asset(
+    email_service: EmailService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fallback stays lightweight when no public logo URL is available."""
+    monkeypatch.setattr(email_service, "_get_email_logo_url", lambda platform_name, platform_url=None: None)
+
+    logo_html = email_service._get_embedded_logo_html("Aryx", "https://aryx.example.com")
 
     assert "data:image" not in logo_html
+    assert "<img" not in logo_html
     assert "Aryx" in logo_html
+
+
+def test_embedded_logo_uses_origin_not_action_path(email_service: EmailService) -> None:
+    """Hosted logo URLs should ignore login or deep-link paths in CTA URLs."""
+    logo_html = email_service._get_embedded_logo_html(
+        "Aryx",
+        "https://aryx.example.com/workspaces/abc/home",
+    )
+
+    assert 'src="https://aryx.example.com/static/email/logo.png"' in logo_html
+    assert "/workspaces/abc/home/static/email/logo.png" not in logo_html
 
 
 def test_verification_rendering_is_aryx_branded(email_service: EmailService) -> None:
@@ -190,6 +223,39 @@ def test_password_reset_rendering_is_aryx_branded(email_service: EmailService) -
     assert "Reset Password" in html
     assert "continue working in Aryx" in text
     assert_no_legacy_branding(text)
+
+
+def test_workspace_access_email_is_async_and_uses_fixed_subject(
+    email_service: EmailService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_access_data = {
+        "workspace_name": "Revenue Ops",
+        "user_name": "Alex",
+        "role": "member",
+        "added_by": "Sara Admin",
+        "support_email": "support@aryx.example.com",
+        "platform_name": "Aryx",
+    }
+
+    captured = {}
+
+    def fake_send_email(msg):
+        captured["subject"] = msg["Subject"]
+        return True
+
+    monkeypatch.setattr(email_service, "_send_email", fake_send_email)
+
+    result = asyncio.run(
+        email_service.send_workspace_access_email(
+            "alex@example.com",
+            workspace_access_data,
+            "https://aryx.example.com/workspaces/revenue-ops/home",
+        )
+    )
+
+    assert result is True
+    assert captured["subject"] == "You have been added to an Aryx workspace"
 
 
 def test_welcome_rendering_is_aryx_branded(email_service: EmailService) -> None:
