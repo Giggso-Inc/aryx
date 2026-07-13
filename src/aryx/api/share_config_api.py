@@ -2,8 +2,10 @@
 
 Unlike a fixed server-side integration, the destination is supplied by the
 caller per share (endpoint URL + auth header) — the same trust model already
-used by the REST API ingest form (components/ingest/RestConfigForm.tsx):
-the browser collects it, our backend relays it, nothing is persisted.
+used by the REST API ingest form (components/ingest/RestConfigForm.tsx),
+including the same SSRF guard: endpoint_url and extra_headers are validated
+by the shared aryx.api.ssrf_guard checks, not just a non-empty check. The
+browser collects the destination, our backend relays it, nothing is persisted.
 """
 from __future__ import annotations
 
@@ -12,8 +14,9 @@ import urllib.error
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from aryx.api.ssrf_guard import BLOCKED_HEADERS, check_outbound_headers, check_outbound_url
 from aryx.llm_providers import post_json
 
 logger = logging.getLogger(__name__)
@@ -28,14 +31,31 @@ class ShareConfigRequest(BaseModel):
     auth_header_value: str = ""
     extra_headers: dict[str, str] = {}
 
+    @field_validator("endpoint_url")
+    @classmethod
+    def _no_ssrf(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("endpoint_url is required")
+        return check_outbound_url(v)
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _safe_extra_headers(cls, v: dict[str, str]) -> dict[str, str]:
+        return check_outbound_headers(v)
+
+    @field_validator("auth_header_name")
+    @classmethod
+    def _safe_auth_header_name(cls, v: str) -> str:
+        if v.strip().lower() in BLOCKED_HEADERS:
+            raise ValueError(f"auth_header_name may not be: {v}")
+        return v
+
 
 def share_config_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("/share-config")
     def share_config(req: ShareConfigRequest) -> dict:
-        if not req.endpoint_url.strip():
-            raise HTTPException(422, "endpoint_url is required")
         headers = dict(req.extra_headers)
         if req.auth_header_value:
             headers[req.auth_header_name or "Authorization"] = req.auth_header_value

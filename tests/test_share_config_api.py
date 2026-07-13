@@ -36,6 +36,40 @@ def test_returns_422_when_endpoint_url_missing(client):
     assert resp.status_code == 422
 
 
+@pytest.mark.parametrize("url", [
+    "http://localhost/steal",
+    "http://127.0.0.1/steal",
+    "http://169.254.169.254/latest/meta-data/",  # cloud IMDS — the classic SSRF target
+    "http://10.0.0.5/internal",
+    "ftp://partner.example/ingest",
+])
+def test_returns_422_for_ssrf_targeting_urls(client, url):
+    """Reject the exact SSRF vector Raven review flagged — endpoint_url must
+    go through the same blocklist as the REST API ingest form, not just a
+    non-empty check."""
+    resp = client.post("/share-config", json=_body(endpoint_url=url))
+    assert resp.status_code == 422
+
+
+def test_returns_422_for_host_header_override_via_auth_header_name(client):
+    resp = client.post("/share-config", json=_body(auth_header_name="Host"))
+    assert resp.status_code == 422
+
+
+def test_returns_422_for_blocked_extra_header(client):
+    resp = client.post("/share-config", json=_body(extra_headers={"Connection": "close"}))
+    assert resp.status_code == 422
+
+
+def test_ssrf_rejection_happens_before_any_outbound_call(client):
+    """The blocked request must never reach post_json — confirms this is a
+    validation-time rejection, not a caught-and-ignored runtime error."""
+    with patch("aryx.api.share_config_api.post_json") as mock_post:
+        resp = client.post("/share-config", json=_body(endpoint_url="http://127.0.0.1/steal"))
+    assert resp.status_code == 422
+    mock_post.assert_not_called()
+
+
 def test_forwards_payload_with_user_supplied_auth_header(client):
     with patch("aryx.api.share_config_api.post_json") as mock_post:
         mock_post.return_value = {"ok": True}
