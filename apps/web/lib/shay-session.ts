@@ -3,6 +3,7 @@
 import type { ShaySession } from "./shay-types";
 
 export const SHAY_SESSION_STORAGE_KEY = "aryx.shay.session";
+export const SHAY_SESSION_EVENT_STORAGE_KEY = "aryx.shay.session.event";
 
 export type SessionClearReason = "logout" | "expired";
 export type ShayAuthState = "authenticated" | "signed_out" | "expired";
@@ -28,8 +29,24 @@ type SessionListener = (
 ) => void;
 
 const SHAY_REFRESH_PATH = "/shay/api/v1/auth/refresh";
+const SHAY_REFRESH_LOCK_STORAGE_KEY = "aryx.shay.refresh.lock";
+const REFRESH_LOCK_TTL_MS = 15_000;
+const REFRESH_WAIT_TIMEOUT_MS = 16_000;
+const REFRESH_POLL_INTERVAL_MS = 200;
 const listeners = new Set<SessionListener>();
 let refreshPromise: Promise<ShaySession | null> | null = null;
+
+interface SessionStorageEventPayload {
+  type: "stored" | "cleared";
+  reason?: SessionClearReason;
+  timestamp: number;
+}
+
+interface RefreshLockState {
+  owner: string;
+  refreshToken: string;
+  startedAt: number;
+}
 
 export class HttpStatusError extends Error {
   status: number;
@@ -65,6 +82,120 @@ function normalizeStoredSession(raw: unknown): ShaySession | null {
     return null;
   }
   return candidate as unknown as ShaySession;
+}
+
+function parseSessionStorageEvent(raw: string | null): SessionStorageEventPayload | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<SessionStorageEventPayload>;
+    if (parsed?.type !== "stored" && parsed?.type !== "cleared") {
+      return null;
+    }
+    if (typeof parsed.timestamp !== "number" || !Number.isFinite(parsed.timestamp)) {
+      return null;
+    }
+    if (parsed.reason && parsed.reason !== "logout" && parsed.reason !== "expired") {
+      return null;
+    }
+    return parsed as SessionStorageEventPayload;
+  } catch {
+    return null;
+  }
+}
+
+function readRefreshLockState(): RefreshLockState | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const raw = window.localStorage.getItem(SHAY_REFRESH_LOCK_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<RefreshLockState>;
+    if (
+      typeof parsed.owner !== "string"
+      || typeof parsed.refreshToken !== "string"
+      || typeof parsed.startedAt !== "number"
+      || !Number.isFinite(parsed.startedAt)
+    ) {
+      return null;
+    }
+    return parsed as RefreshLockState;
+  } catch {
+    return null;
+  }
+}
+
+function isRefreshLockActive(lock: RefreshLockState | null, refreshToken?: string | null) {
+  if (!lock) {
+    return false;
+  }
+  if (refreshToken && lock.refreshToken !== refreshToken) {
+    return false;
+  }
+  return Date.now() - lock.startedAt < REFRESH_LOCK_TTL_MS;
+}
+
+function createRefreshLockOwner() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function tryAcquireRefreshLock(refreshToken: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const activeLock = readRefreshLockState();
+  if (isRefreshLockActive(activeLock, refreshToken)) {
+    return null;
+  }
+  const owner = createRefreshLockOwner();
+  const nextLock: RefreshLockState = {
+    owner,
+    refreshToken,
+    startedAt: Date.now(),
+  };
+  window.localStorage.setItem(SHAY_REFRESH_LOCK_STORAGE_KEY, JSON.stringify(nextLock));
+  const confirmedLock = readRefreshLockState();
+  return confirmedLock?.owner === owner ? owner : null;
+}
+
+function releaseRefreshLock(owner: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const activeLock = readRefreshLockState();
+  if (activeLock?.owner === owner) {
+    window.localStorage.removeItem(SHAY_REFRESH_LOCK_STORAGE_KEY);
+  }
+}
+
+function writeSessionStorageEvent(type: "stored" | "cleared", reason?: SessionClearReason) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const payload: SessionStorageEventPayload = {
+    type,
+    reason,
+    timestamp: Date.now(),
+  };
+  window.localStorage.setItem(SHAY_SESSION_EVENT_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function didSessionChange(previous: ShaySession, current: ShaySession) {
+  return previous.access_token !== current.access_token
+    || previous.refresh_token !== current.refresh_token;
 }
 
 function notifyListeners(session: ShaySession | null, reason?: SessionClearReason) {
@@ -114,6 +245,15 @@ export function getStoredShaySession(): ShaySession | null {
   }
 }
 
+export function getStoredShaySessionEvent() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return parseSessionStorageEvent(
+    window.localStorage.getItem(SHAY_SESSION_EVENT_STORAGE_KEY),
+  );
+}
+
 export function getShayAccessToken() {
   return getStoredShaySession()?.access_token ?? null;
 }
@@ -127,6 +267,7 @@ export function storeShaySession(session: StoredShaySession | ShaySession) {
     return;
   }
   window.localStorage.setItem(SHAY_SESSION_STORAGE_KEY, JSON.stringify(normalized));
+  writeSessionStorageEvent("stored");
   notifyListeners(normalized);
 }
 
@@ -135,6 +276,7 @@ export function clearStoredShaySession(reason: SessionClearReason = "logout") {
     return;
   }
   window.localStorage.removeItem(SHAY_SESSION_STORAGE_KEY);
+  writeSessionStorageEvent("cleared", reason);
   notifyListeners(null, reason);
 }
 
@@ -199,9 +341,75 @@ async function performRefresh(): Promise<ShaySession | null> {
   return nextSession;
 }
 
+async function waitForCrossTabRefresh(previousSession: ShaySession) {
+  const startedAt = Date.now();
+  const initialEventTimestamp = getStoredShaySessionEvent()?.timestamp ?? 0;
+
+  while (Date.now() - startedAt < REFRESH_WAIT_TIMEOUT_MS) {
+    const currentSession = getStoredShaySession();
+    if (!currentSession) {
+      const latestEvent = getStoredShaySessionEvent();
+      if (latestEvent?.type === "cleared") {
+        return null;
+      }
+    } else if (didSessionChange(previousSession, currentSession)) {
+      return currentSession;
+    } else {
+      const latestEvent = getStoredShaySessionEvent();
+      if (latestEvent?.type === "stored" && latestEvent.timestamp > initialEventTimestamp) {
+        return currentSession;
+      }
+    }
+
+    const lock = readRefreshLockState();
+    if (!isRefreshLockActive(lock, previousSession.refresh_token)) {
+      return undefined;
+    }
+
+    await delay(REFRESH_POLL_INTERVAL_MS);
+  }
+
+  return undefined;
+}
+
+async function refreshAcrossTabs(): Promise<ShaySession | null> {
+  const initialSession = getStoredShaySession();
+  if (!initialSession?.refresh_token) {
+    if (initialSession?.access_token) {
+      clearStoredShaySession("expired");
+    }
+    return null;
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const session = getStoredShaySession();
+    if (!session?.refresh_token) {
+      return null;
+    }
+
+    const lockOwner = tryAcquireRefreshLock(session.refresh_token);
+    if (lockOwner) {
+      try {
+        return await performRefresh();
+      } catch {
+        return null;
+      } finally {
+        releaseRefreshLock(lockOwner);
+      }
+    }
+
+    const refreshedSession = await waitForCrossTabRefresh(session);
+    if (refreshedSession !== undefined) {
+      return refreshedSession;
+    }
+  }
+
+  return null;
+}
+
 export async function refreshShayAccessToken() {
   if (!refreshPromise) {
-    refreshPromise = performRefresh().finally(() => {
+    refreshPromise = refreshAcrossTabs().finally(() => {
       refreshPromise = null;
     });
   }

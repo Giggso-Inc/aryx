@@ -13,9 +13,11 @@ import { shayApi } from "./shay-api";
 import {
   clearStoredShaySession,
   getStoredShaySession,
+  getStoredShaySessionEvent,
   isHttpStatusError,
   type SessionClearReason,
   type ShayAuthState,
+  SHAY_SESSION_EVENT_STORAGE_KEY,
   SHAY_SESSION_STORAGE_KEY,
   storeShaySession,
   subscribeToShaySession,
@@ -83,10 +85,16 @@ export function ShayAuthProvider({ children }: { children: ReactNode }) {
 
     const unsubscribe = subscribeToShaySession(syncSession);
     const onStorage = (event: StorageEvent) => {
-      if (event.key && event.key !== SHAY_SESSION_STORAGE_KEY) {
+      if (
+        event.key
+        && event.key !== SHAY_SESSION_STORAGE_KEY
+        && event.key !== SHAY_SESSION_EVENT_STORAGE_KEY
+      ) {
         return;
       }
-      syncSession(getStoredShaySession());
+      const latestEvent = getStoredShaySessionEvent();
+      const reason = latestEvent?.type === "cleared" ? latestEvent.reason : undefined;
+      syncSession(getStoredShaySession(), reason);
     };
 
     window.addEventListener("storage", onStorage);
