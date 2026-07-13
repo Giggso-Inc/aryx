@@ -88,6 +88,17 @@ class ConfigAttr:
     # Derived from BM attribute metadata — see classify_select_type() in
     # engine.py (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
     select_type: str = "single"
+    # Source-derived catalog prefix (see engine._catalog_prefix), e.g.
+    # "ApxNextConfig" or "Sl3500EConfig" — "" when unresolved. Lets rule
+    # loaders scope to the same ingested catalog this attr came from, so a
+    # workspace holding more than one product's XML export never lets one
+    # catalog's rules act on another's attributes.
+    catalog_prefix: str = ""
+    # True for BM attrs flagged hidden=1 in the source XML — never shown to
+    # the customer or added to `pending`, but still eligible for its own
+    # default_value (BML scripts elsewhere may reference it) instead of
+    # being dropped from the graph entirely.
+    hidden: bool = False
 
 
 @dataclass
