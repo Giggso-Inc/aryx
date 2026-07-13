@@ -853,6 +853,48 @@ def test_s12b_batched_pending_list_on_request(truth, fake_rdb, monkeypatch):
     assert resp3
 
 
+def test_s13_share_flags_appear_via_run_ask_after_three_answers(truth, fake_rdb, monkeypatch):
+    """End-to-end proof of the Streamlit UI's wiring contract: the panel calls
+    run_ask() (not _run_cpq_turn directly), threading session_data turn to
+    turn exactly like api.ask()/_attach_share_flags expect. Replays a real,
+    fixture-driven transcript through run_ask() and asserts the JSON/Beautify
+    button flags track the 3-filled readiness gate with real (non-placeholder)
+    data, and that wrapping the response never changes the underlying answer.
+    """
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest
+
+    transcript, _final = _drive_conversation(truth, fake_rdb, monkeypatch)
+    if not transcript:
+        pytest.skip("engine filtered out all config attrs for this export")
+
+    monkeypatch.setattr(api, "_reader", lambda workspace_id=1: FakeReader(fake_rdb))
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+
+    saw_ready = False
+    prior_session: dict = {}
+    for question, expected_resp in transcript:
+        resp = api.run_ask(AskRequest(question=question, workspace_id=1, session_data=prior_session))
+        assert resp["answer"] == expected_resp["answer"], (
+            "run_ask must reproduce _run_cpq_turn's answer unchanged — "
+            "attaching button flags must never alter existing behaviour")
+
+        session = resp["session_data"]
+        filled_count = len(session.get("filled", {})) + len(session.get("filled_multi", {}))
+        ready = filled_count >= 3 or session.get("status") != "configuring"
+
+        assert bool(resp.get("json_button_flag")) == ready
+        assert bool(resp.get("beautify_button_flag")) == ready
+        if ready:
+            saw_ready = True
+            assert resp["json_response"], "json_response must carry real filled data once ready"
+            assert resp["beautify"], "beautify text must not be empty once ready"
+        prior_session = session
+
+    if not saw_ready:
+        pytest.skip("conversation never reached the 3-filled readiness threshold for this export")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S14a — classify_select_type: pure unit test, no sample file needed
 # ─────────────────────────────────────────────────────────────────────────────

@@ -459,8 +459,8 @@ def _handle_cascade(
             cascade_note + "\n\n"
             f"Configuration complete for **{session.product_name}**.\n\n"
             + (f"{summary}\n\n" if summary else "")
-            + f"Say **show me the json** to see the full payload, "
-              f"**confirm** to submit, or describe any changes."
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
         )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
@@ -641,8 +641,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             f"I didn't quite catch that. Here is the current configuration for "
             f"**{session.product_name}**:\n\n"
             + (f"{summary}\n\n" if summary else "")
-            + f"Say **show me the json** to see the full payload, "
-              f"**confirm** to submit, or describe what to change."
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe what to change."
         )
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
@@ -813,8 +813,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
             + f"Configuration complete for **{session.product_name}**.\n\n"
             + (f"{summary}\n\n" if summary else "")
-            + f"Say **show me the json** to see the full payload, "
-              f"**confirm** to submit, or describe any changes."
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
         )
     elif session.turn >= _cpq_engine.MAX_TURNS:
         # Turn cap reached with attrs still unresolved. NEVER fabricate a
@@ -901,6 +901,37 @@ class LlmConfigRequest(BaseModel):
     api_key: str = ""
 
 
+# Readiness gate for the JSON/Beautify/Share buttons: don't expose them
+# until there's enough substance to be worth showing (3 answered attrs),
+# or the session has already reached review/approval regardless of count.
+_SHARE_READY_MIN_FILLED = 3
+
+
+def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) -> None:
+    """Splice json/beautify/api_share fields into a CPQ turn's response, in place.
+
+    Single wrap point (called once from run_ask, not from every _run_cpq_turn
+    return site) — recomputed every ready turn from current session state, never
+    cached, since cascade can invalidate previously-filled attrs mid-conversation.
+    """
+    session_data = result.get("session_data")
+    if not session_data:
+        return
+    session = CpqSession.from_dict(session_data)
+    filled_count = len(session.filled) + len(session.filled_multi)
+    ready = filled_count >= _SHARE_READY_MIN_FILLED or session.status != "configuring"
+    if not ready or not session.product_name:
+        return
+    attrs, _ = _cpq_engine.load_product_config(reader, req.workspace_id, session.product_name)
+    payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
+    result["json_response"] = payload
+    result["json_button_flag"] = True
+    result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)
+    result["beautify_button_flag"] = True
+    result["api_share"] = payload if session.status != "configuring" else {}
+    result["api_share_button_flag"] = session.status != "configuring"
+
+
 def run_ask(req: AskRequest) -> dict[str, Any]:
     """Execute the Aryx Ask pipeline for a request payload.
 
@@ -920,6 +951,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     if is_cpq:
         result = _run_cpq_turn(req, reader)
         if result:  # non-empty → CPQ engine handled it
+            _attach_share_flags(result, req, reader)
             return result
         # empty → no CPQ data in graph yet, fall through to standard Ask
 

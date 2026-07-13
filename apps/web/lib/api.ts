@@ -88,6 +88,24 @@ export const api = {
       body: JSON.stringify({ question, workspace_id: workspaceId, history, session_data: sessionData }),
     }),
 
+  shareConfig: (args: {
+    workspaceId: number; conversationId: string; configJson: Record<string, unknown>;
+    endpointUrl: string; authHeaderName: string; authHeaderValue: string;
+    extraHeaders?: Record<string, string>;
+  }) =>
+    fetchJSON<{ shared: boolean; partner_response: unknown }>("/share-config", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: args.workspaceId,
+        conversation_id: args.conversationId,
+        config_json: args.configJson,
+        endpoint_url: args.endpointUrl,
+        auth_header_name: args.authHeaderName,
+        auth_header_value: args.authHeaderValue,
+        extra_headers: args.extraHeaders ?? {},
+      }),
+    }),
+
   // ── Accuracy Lab (v2) ────────────────────────────────────────────────
   labAb: (question: string, workspaceId: number) =>
     fetchJSON<AbResult & { error?: string }>("/lab/ab", {
