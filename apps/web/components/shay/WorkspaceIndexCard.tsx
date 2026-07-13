@@ -42,10 +42,15 @@ export function WorkspaceIndexCard({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={handleKeyDown}
-      className="group rounded-[1.75rem] border border-navy-100 bg-white p-6 text-left shadow-soft transition-all hover:-translate-y-0.5 hover:shadow-md"
+      className="group flex h-full flex-col rounded-[1.75rem] border border-navy-100 bg-white p-6 text-left shadow-soft transition-all hover:-translate-y-0.5 hover:shadow-md"
     >
-      <div className="flex items-start justify-between gap-4">
-        <h3 className="text-2xl font-semibold text-navy-900">{displayName}</h3>
+      <div className="flex min-w-0 items-start justify-between gap-4">
+        <h3
+          title={displayName}
+          className="min-w-0 flex-1 truncate text-2xl font-semibold text-navy-900"
+        >
+          {displayName}
+        </h3>
         <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           <ActionIcon
             label={`Edit ${displayName}`}
@@ -92,7 +97,7 @@ export function WorkspaceIndexCard({
         />
       </div>
 
-      <div className="mt-6">
+      <div className="mt-auto pt-6">
         <button
           type="button"
           onClick={(event) => {
