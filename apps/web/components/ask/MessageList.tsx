@@ -1,19 +1,97 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { Sparkles, User } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Braces, Sparkles, User, Wand2, Share2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/cn";
 import { Citations } from "./Citation";
 import { Markdown } from "./Markdown";
+import { ShareConfigDialog } from "./ShareConfigDialog";
 import type { ChatTurn } from "@/lib/types";
 
 interface Props {
   turns: ChatTurn[];
+  // Optional: only the live Aryx Ask page (numeric workspace id) can safely
+  // fire the Share button. Read-only surfaces (e.g. the Shay bridge history
+  // view) omit these — JSON/Beautify still render, Share stays hidden.
+  workspaceId?: number;
+  conversationId?: string;
+}
+
+type SharePanel = "json" | "beautify" | null;
+
+/** JSON / Beautify / Share buttons — driven entirely by flags the backend
+ * already computed from session state; clicking JSON or Beautify just reveals
+ * data already in the response. Share opens a dialog where the destination
+ * endpoint + auth are supplied per share (no button here ever triggers
+ * another LLM call). */
+function CpqActions({ turn, workspaceId, conversationId }: {
+  turn: ChatTurn; workspaceId?: number; conversationId?: string;
+}) {
+  const [panel, setPanel] = useState<SharePanel>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+
+  const canShare = Boolean(turn.apiShareButtonFlag && workspaceId !== undefined && conversationId);
+  if (!turn.jsonButtonFlag && !turn.beautifyButtonFlag && !canShare) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap gap-2">
+        {turn.jsonButtonFlag && (
+          <button
+            type="button"
+            onClick={() => setPanel((p) => (p === "json" ? null : "json"))}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+          >
+            <Braces size={12} /> JSON
+          </button>
+        )}
+        {turn.beautifyButtonFlag && (
+          <button
+            type="button"
+            onClick={() => setPanel((p) => (p === "beautify" ? null : "beautify"))}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+          >
+            <Wand2 size={12} /> Beautify
+          </button>
+        )}
+        {canShare && (
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
+          >
+            <Share2 size={12} /> Share
+          </button>
+        )}
+      </div>
+      {panel === "json" && (
+        <pre className="mt-2 max-w-prose overflow-x-auto rounded-xl border border-navy-100 bg-navy-50 p-3 text-[12px]">
+          {JSON.stringify(turn.jsonResponse ?? {}, null, 2)}
+        </pre>
+      )}
+      {panel === "beautify" && (
+        <pre className="mt-2 max-w-prose overflow-x-auto rounded-xl border border-navy-100 bg-navy-50 p-3 text-[12px]">
+          {turn.beautify}
+        </pre>
+      )}
+      {canShare && (
+        <ShareConfigDialog
+          open={shareOpen}
+          workspaceId={workspaceId!}
+          conversationId={conversationId!}
+          configJson={turn.jsonResponse ?? {}}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+    </div>
+  );
 }
 
 /** Conversation transcript — alternating user / assistant turns. */
-export function MessageList({ turns }: Props) {
+export function MessageList({ turns, workspaceId, conversationId }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -79,6 +157,7 @@ export function MessageList({ turns }: Props) {
             {t.role === "assistant" && (
               <>
                 {t.citations && <Citations citations={t.citations} />}
+                <CpqActions turn={t} workspaceId={workspaceId} conversationId={conversationId} />
                 {usageLabel(t) && (
                   <div className="mt-2 text-[11px] text-subtle">
                     {usageLabel(t)}
