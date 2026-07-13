@@ -128,6 +128,9 @@ export default function HomePage() {
   // CPQ session state — echoed back to the API on every turn so the engine
   // can continue the guided configuration without a server-side session store.
   const [sessionData, setSessionData] = useState<Record<string, unknown>>({});
+  // Stable id for the lifetime of this chat — correlates Share-button posts
+  // to /share-config with the conversation they came from.
+  const conversationIdRef = useRef(uid());
   // Cancels an in-flight recovery poll when the component unmounts or a new
   // question is submitted before the previous recovery finishes.
   const cancelRecoveryRef = useRef(false);
@@ -210,6 +213,11 @@ export default function HomePage() {
                   citations,
                   usage: resp.usage,
                   streaming: false,
+                  jsonResponse: resp.json_response ?? null,
+                  jsonButtonFlag: resp.json_button_flag ?? false,
+                  beautify: resp.beautify ?? "",
+                  beautifyButtonFlag: resp.beautify_button_flag ?? false,
+                  apiShareButtonFlag: resp.api_share_button_flag ?? false,
                 }
               : t,
           ),
@@ -342,7 +350,11 @@ export default function HomePage() {
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto pb-6 pr-1">
               <WorkspacePeek workspaceId={workspaceId} />
-              <MessageList turns={turns} />
+              <MessageList
+                turns={turns}
+                workspaceId={workspaceId}
+                conversationId={conversationIdRef.current}
+              />
               {!busy && (
                 <div className="mt-6 pl-12">
                   <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
