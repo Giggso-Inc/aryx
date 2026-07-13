@@ -18,64 +18,25 @@ import type {
   ShayWorkspaceMember,
   ShayWorkspaceMemberList,
 } from "./shay-types";
+export { getShayAccessToken } from "./shay-session";
+import {
+  createHttpStatusError,
+  getStoredShaySession,
+  readErrorDetail,
+  refreshShayAccessToken,
+  storeShaySession,
+} from "./shay-session";
 
 const SHAY_BASE = "/shay/api/v1";
 const SHAY_WORKSPACES_BASE = `${SHAY_BASE}/workspaces`;
 const SHAY_GG_WORKSPACES_BASE = `${SHAY_BASE}/gg-workspaces`;
 const ARYX_BASE = "/api";
-const SHAY_SESSION_STORAGE_KEY = "aryx.shay.session";
-
-interface StoredShaySession {
-  access_token?: string;
-  refresh_token?: string;
-  token_type?: string;
-  expires_in?: number;
-  user_id?: string;
-  email_id?: string;
-  role?: string;
-  company_id?: string;
-  name?: string | null;
-  avatar_url?: string | null;
-  company_name?: string | null;
-  default_workspace_id?: string | null;
-}
 
 function resolvePlatformUrl(): string {
   if (typeof window !== "undefined" && window.location.origin) {
     return window.location.origin;
   }
   return "http://localhost:3000";
-}
-
-function detailFromPayload(payload: unknown): string {
-  if (typeof payload === "string") return payload;
-  if (!payload || typeof payload !== "object") return "Request failed";
-  const value = payload as Record<string, unknown>;
-  if (typeof value.message === "string") return value.message;
-  if (typeof value.detail === "string") return value.detail;
-  if (value.detail && typeof value.detail === "object") {
-    return detailFromPayload(value.detail);
-  }
-  return JSON.stringify(payload);
-}
-
-function getStoredShaySession(): StoredShaySession | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const raw = window.localStorage.getItem(SHAY_SESSION_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-  try {
-    return JSON.parse(raw) as StoredShaySession;
-  } catch {
-    return null;
-  }
-}
-
-export function getShayAccessToken() {
-  return getStoredShaySession()?.access_token ?? null;
 }
 
 function withBearerAuth(token?: string, init?: RequestInit): RequestInit | undefined {
@@ -88,58 +49,6 @@ function withBearerAuth(token?: string, init?: RequestInit): RequestInit | undef
     ...init,
     headers,
   };
-}
-
-function storeShaySession(session: StoredShaySession) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(SHAY_SESSION_STORAGE_KEY, JSON.stringify(session));
-}
-
-async function refreshShayAccessToken(): Promise<string | null> {
-  const session = getStoredShaySession();
-  if (!session?.refresh_token) {
-    return null;
-  }
-
-  const res = await fetch(`${SHAY_BASE}/auth/refresh`, {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ refresh_token: session.refresh_token }),
-  });
-
-  if (!res.ok) {
-    return null;
-  }
-
-  const refreshed = await res.json() as {
-    access_token: string;
-    refresh_token: string;
-    token_type?: string;
-    expires_in?: number;
-    user_id?: string;
-    email?: string;
-    role?: string;
-    company_id?: string;
-  };
-
-  storeShaySession({
-    ...session,
-    access_token: refreshed.access_token,
-    refresh_token: refreshed.refresh_token,
-    token_type: refreshed.token_type ?? session.token_type ?? "bearer",
-    expires_in: refreshed.expires_in ?? session.expires_in,
-    user_id: refreshed.user_id ?? session.user_id,
-    email_id: session.email_id ?? refreshed.email,
-    role: refreshed.role ?? session.role,
-    company_id: refreshed.company_id ?? session.company_id,
-  });
-
-  return refreshed.access_token;
 }
 
 async function requestJSON<T>(
@@ -167,14 +76,8 @@ async function requestJSON<T>(
         return requestJSON<T>(base, path, init, refreshedToken, true);
       }
     }
-    const text = await res.text().catch(() => "");
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(text || `${res.status} ${res.statusText}`);
-    }
-    throw new Error(detailFromPayload(parsed));
+    const detail = await readErrorDetail(res);
+    throw createHttpStatusError(res.status, res.statusText, detail);
   }
   return res.json() as Promise<T>;
 }
