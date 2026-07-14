@@ -16,6 +16,7 @@ interface Props {
   // view) omit these — JSON/Beautify still render, Share stays hidden.
   workspaceId?: number;
   conversationId?: string;
+  autoScroll?: boolean;
 }
 
 type SharePanel = "json" | "beautify" | null;
@@ -90,23 +91,41 @@ function CpqActions({ turn, workspaceId, conversationId }: {
   );
 }
 
+function UsageMeta({ turn }: { turn: ChatTurn }) {
+  if (!turn.usage) return null;
+  const totalTokens = (turn.usage.prompt_tokens ?? 0) + (turn.usage.completion_tokens ?? 0);
+  const parts = [
+    turn.usage.answer_model,
+    `${(turn.usage.latency_ms / 1000).toFixed(1)}s`,
+    `${totalTokens.toLocaleString()} Tokens`,
+  ].filter(Boolean);
+
+  if (!parts.length) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {parts.map((part) => (
+        <span
+          key={part}
+          className="inline-flex items-center gap-1.5 rounded-full border border-steel-200 bg-white px-2.5 py-1 text-[11px] font-medium text-navy-700 shadow-sm"
+        >
+          <span className="size-1.5 rounded-full bg-steel-500" />
+          <span>{part}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** Conversation transcript — alternating user / assistant turns. */
-export function MessageList({ turns, workspaceId, conversationId }: Props) {
+export function MessageList({ turns, workspaceId, conversationId, autoScroll = true }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [turns.length, turns[turns.length - 1]?.content]);
-
-  const usageLabel = (turn: ChatTurn) => {
-    if (!turn.usage) return null;
-    const parts = [
-      turn.usage.answer_model,
-      `${(turn.usage.latency_ms / 1000).toFixed(1)}s`,
-      `${turn.usage.prompt_tokens + turn.usage.completion_tokens} tokens`,
-    ].filter(Boolean);
-    return parts.join(" · ");
-  };
+    if (autoScroll) {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [autoScroll, turns.length, turns[turns.length - 1]?.content]);
 
   return (
     <div className="flex flex-col gap-7">
@@ -158,11 +177,7 @@ export function MessageList({ turns, workspaceId, conversationId }: Props) {
               <>
                 {t.citations && <Citations citations={t.citations} />}
                 <CpqActions turn={t} workspaceId={workspaceId} conversationId={conversationId} />
-                {usageLabel(t) && (
-                  <div className="mt-2 text-[11px] text-subtle">
-                    {usageLabel(t)}
-                  </div>
-                )}
+                <UsageMeta turn={t} />
               </>
             )}
           </div>
