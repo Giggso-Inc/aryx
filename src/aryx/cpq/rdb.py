@@ -41,6 +41,20 @@ def _as_attrs(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _type_pattern(catalog_prefix: str, suffix: str) -> str:
+    """Normalized-ontology-type LIKE pattern for a rule/function query.
+
+    suffix is the lowercase, no-underscore tag stem (e.g. "bmconfigrule").
+    catalog_prefix, when set, restricts the match to ontology types from one
+    ingested source (see CpqEngine._catalog_prefix) — needed whenever a
+    workspace holds more than one product's XML export, since BM-native ids
+    (rule/function/attribute ids from the source system) are only unique
+    WITHIN one export and do collide across catalogs sharing a workspace.
+    Empty catalog_prefix preserves the original workspace-wide match.
+    """
+    return f"{catalog_prefix.lower()}%{suffix}" if catalog_prefix else f"%{suffix}"
+
+
 class PostgresCpqRdb:
     """Postgres implementation — JSONB operators over aryx_entity."""
 
@@ -70,14 +84,22 @@ class PostgresCpqRdb:
         return result
 
     def fetch_entities_by_type(
-        self, workspace_id: int, type_suffix: str,
+        self, workspace_id: int, type_suffix: str, catalog_prefix: str = "",
     ) -> list[tuple[int, dict[str, Any]]]:
         """All entities whose ontology_type ends with type_suffix (normalized).
 
         Normalization strips underscores and lowercases, so ``bmfunction``
         matches both ``BmFunction`` and ``ApxNextConfigBmFunction``.
+
+        catalog_prefix — when set, restricts to ontology types beginning
+        with this source-derived prefix (see _type_pattern) instead of any
+        source ending in type_suffix.
         """
         rows: list[tuple[int, dict[str, Any]]] = []
+        pattern = (
+            _type_pattern(catalog_prefix, type_suffix.lower().replace("_", ""))
+            if catalog_prefix else f"%{type_suffix.lower().replace('_', '')}"
+        )
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -85,7 +107,7 @@ class PostgresCpqRdb:
                         "SELECT id, attributes FROM aryx_entity "
                         "WHERE workspace_id = %s "
                         "AND replace(lower(ontology_type), '_', '') LIKE %s",
-                        (workspace_id, f"%{type_suffix.lower().replace('_', '')}"),
+                        (workspace_id, pattern),
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
@@ -94,7 +116,7 @@ class PostgresCpqRdb:
         return rows
 
     def fetch_rules(
-        self, workspace_id: int, rule_type: str,
+        self, workspace_id: int, rule_type: str, catalog_prefix: str = "",
     ) -> list[tuple[int, int | None, str, int]]:
         """All BmConfigRule entities of one rule_type.
 
@@ -105,8 +127,12 @@ class PostgresCpqRdb:
         declarative rules and the BML function reference otherwise.
         Script-backed rules are INCLUDED; callers route them to the BML
         evaluator instead of silently dropping them.
+
+        catalog_prefix — see _type_pattern; restricts to one ingested
+        catalog when the workspace holds more than one product's export.
         """
         rows: list[tuple[int, int | None, str, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -118,10 +144,10 @@ class PostgresCpqRdb:
                                attributes->>'condition_function_id'
                         FROM aryx_entity
                         WHERE workspace_id = %s
-                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigrule'
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
                           AND (attributes->>'rule_type') = %s
                         """,
-                        (workspace_id, rule_type),
+                        (workspace_id, type_pattern, rule_type),
                     )
                     for eid, src_id, name, fn_id in cur.fetchall():
                         rows.append((int(eid), _as_int(src_id), name or "",
@@ -130,11 +156,54 @@ class PostgresCpqRdb:
             logger.debug("cpq rdb: rule fetch failed", exc_info=True)
         return rows
 
+    def fetch_value_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int | None, str, str, int]]:
+        """All BmConfigRule entities EXCEPT hiding rules (rule_type=11).
+
+        Returns (entity_id, source_rule_id, rule_name, rule_type,
+        condition_function_id). Recommendation/constraint rules can't be
+        reliably selected by rule_type — that field is tenant/catalog-
+        specific numbering (confirmed: two different ingested catalogs use
+        different rule_type codes for the same semantic rule categories,
+        and some codes appear in only one of them). rule_type=11 (hiding) is
+        the one code that HAS proven consistent across catalogs and is
+        handled separately by fetch_rules(); everything else is fetched
+        here and classified downstream by inspecting each rule's actions
+        (see CpqEngine._load_value_rules).
+        """
+        rows: list[tuple[int, int | None, str, str, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id,
+                               attributes->>'id',
+                               attributes->>'name',
+                               attributes->>'rule_type',
+                               attributes->>'condition_function_id'
+                        FROM aryx_entity
+                        WHERE workspace_id = %s
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
+                          AND (attributes->>'rule_type') IS DISTINCT FROM '11'
+                        """,
+                        (workspace_id, type_pattern),
+                    )
+                    for eid, src_id, name, rule_type, fn_id in cur.fetchall():
+                        rows.append((int(eid), _as_int(src_id), name or "",
+                                     rule_type or "", _as_int(fn_id) or -1))
+        except Exception:
+            logger.debug("cpq rdb: value-rule fetch failed", exc_info=True)
+        return rows
+
     def fetch_rule_inputs(
-        self, workspace_id: int,
+        self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[tuple[int, int, str]]:
         """All BmConfigRuleInput rows: (rule_id, condition_attr_id, value1)."""
         rows: list[tuple[int, int, str]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleinput")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -146,9 +215,9 @@ class PostgresCpqRdb:
                                attributes->>'value1'
                         FROM aryx_entity
                         WHERE workspace_id = %s
-                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigruleinput'
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
                     for rid, aid, val in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
@@ -159,14 +228,20 @@ class PostgresCpqRdb:
         return rows
 
     def fetch_rule_actions(
-        self, workspace_id: int,
-    ) -> list[tuple[int, int, int, str, int]]:
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, int, str, int, int]]:
         """All BmConfigRuleAction rows.
 
-        Returns (rule_id, target_attr_id, action_type, value1, function_id) —
-        function_id is -1 unless the action's logic lives in a BML function.
+        Returns (rule_id, target_attr_id, action_type, value1, function_id,
+        set_type). function_id is -1 unless the action's logic lives in a
+        BML function. set_type is the reliable signal for whether a
+        declarative action restricts values (-1) or assigns one (any other
+        value) — see CpqEngine._load_value_rules; action_type itself only
+        ever takes the values 1/2 in real exports and does not distinguish
+        these two cases.
         """
-        rows: list[tuple[int, int, int, str, int]] = []
+        rows: list[tuple[int, int, int, str, int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleaction")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -177,23 +252,27 @@ class PostgresCpqRdb:
                                attributes->>'attribute_id',
                                attributes->>'action_type',
                                attributes->>'value1',
-                               attributes->>'function_id'
+                               attributes->>'function_id',
+                               attributes->>'set_type'
                         FROM aryx_entity
                         WHERE workspace_id = %s
-                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigruleaction'
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
-                    for rid, aid, at, val, fn in cur.fetchall():
+                    for rid, aid, at, val, fn, st in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, _as_int(at) or 0,
-                                         val or "", _as_int(fn) or -1))
+                                         val or "", _as_int(fn) or -1,
+                                         _as_int(st) if _as_int(st) is not None else 0))
         except Exception:
             logger.debug("cpq rdb: rule-action fetch failed", exc_info=True)
         return rows
 
-    def fetch_marked_attrs(self, workspace_id: int) -> list[tuple[int, int]]:
+    def fetch_marked_attrs(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int]]:
         """All BmConfigMarkedAttr rows: (rule_id, attribute_id).
 
         This is the real target-linkage table for many declarative hiding
@@ -202,6 +281,7 @@ class PostgresCpqRdb:
         rule can mark multiple attributes (one row per marked attribute).
         """
         rows: list[tuple[int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigmarkedattr")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -212,9 +292,9 @@ class PostgresCpqRdb:
                                attributes->>'attribute_id'
                         FROM aryx_entity
                         WHERE workspace_id = %s
-                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigmarkedattr'
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
                     for rid, aid in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
@@ -224,7 +304,9 @@ class PostgresCpqRdb:
             logger.debug("cpq rdb: marked-attr fetch failed", exc_info=True)
         return rows
 
-    def fetch_rule_chain_links(self, workspace_id: int) -> list[tuple[int, int]]:
+    def fetch_rule_chain_links(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int]]:
         """All BmConfigRuleAssoc rows: (rule_id, child_rule_id).
 
         Some rules chain to another rule rather than declaring their own
@@ -232,6 +314,7 @@ class PostgresCpqRdb:
         (BmConfigRuleAction or BmConfigMarkedAttr) actually lives.
         """
         rows: list[tuple[int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleassoc")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -242,9 +325,9 @@ class PostgresCpqRdb:
                                attributes->>'child_rule_id'
                         FROM aryx_entity
                         WHERE workspace_id = %s
-                          AND replace(lower(ontology_type), '_', '') LIKE '%%bmconfigruleassoc'
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
                     for rid, cid in cur.fetchall():
                         rid_i, cid_i = _as_int(rid), _as_int(cid)
@@ -254,16 +337,21 @@ class PostgresCpqRdb:
             logger.debug("cpq rdb: rule-chain fetch failed", exc_info=True)
         return rows
 
-    def fetch_function_scripts(self, workspace_id: int) -> dict[int, str]:
+    def fetch_function_scripts(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> dict[int, str]:
         """Map BM-native function id → raw BML script text.
 
         Scripts are read from the RDB (never the graph) because the graph
         projection truncates long string values by design. The BM-native id
         comes from the function entity's own attrs, since rules reference
-        functions by that id.
+        functions by that id — and, like rule ids, function ids are only
+        unique WITHIN one ingested export (confirmed colliding across
+        catalogs sharing a workspace), so catalog_prefix must be passed
+        whenever more than one product's XML is ingested into one workspace.
         """
         scripts: dict[int, str] = {}
-        for _eid, attrs in self.fetch_entities_by_type(workspace_id, "bmfunction"):
+        for _eid, attrs in self.fetch_entities_by_type(workspace_id, "bmfunction", catalog_prefix):
             fn_id = _as_int(attrs.get("id") or attrs.get("bm_function_id"))
             script = attrs.get("script_text") or attrs.get("script") or ""
             if fn_id and isinstance(script, str) and script.strip():
@@ -305,9 +393,13 @@ class OracleCpqRdb(PostgresCpqRdb):
         return result
 
     def fetch_entities_by_type(
-        self, workspace_id: int, type_suffix: str,
+        self, workspace_id: int, type_suffix: str, catalog_prefix: str = "",
     ) -> list[tuple[int, dict[str, Any]]]:
         rows: list[tuple[int, dict[str, Any]]] = []
+        pattern = (
+            _type_pattern(catalog_prefix, type_suffix.lower().replace("_", ""))
+            if catalog_prefix else f"%{type_suffix.lower().replace('_', '')}"
+        )
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -315,7 +407,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                         "SELECT id, attributes FROM aryx_entity "
                         "WHERE workspace_id = :1 "
                         "AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2",
-                        (workspace_id, f"%{type_suffix.lower().replace('_', '')}"),
+                        (workspace_id, pattern),
                     )
                     for eid, attrs in cur.fetchall():
                         rows.append((int(eid), _as_attrs(attrs)))
@@ -324,9 +416,10 @@ class OracleCpqRdb(PostgresCpqRdb):
         return rows
 
     def fetch_rules(
-        self, workspace_id: int, rule_type: str,
+        self, workspace_id: int, rule_type: str, catalog_prefix: str = "",
     ) -> list[tuple[int, int | None, str, int]]:
         rows: list[tuple[int, int | None, str, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -338,10 +431,10 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.condition_function_id')
                         FROM aryx_entity
                         WHERE workspace_id = :1
-                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigrule'
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :3
                           AND JSON_VALUE(attributes, '$.rule_type') = :2
                         """,
-                        (workspace_id, rule_type),
+                        (workspace_id, rule_type, type_pattern),
                     )
                     for eid, src_id, name, fn_id in cur.fetchall():
                         rows.append((int(eid), _as_int(src_id), name or "",
@@ -350,10 +443,41 @@ class OracleCpqRdb(PostgresCpqRdb):
             logger.debug("cpq rdb(oracle): rule fetch failed", exc_info=True)
         return rows
 
+    def fetch_value_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int | None, str, str, int]]:
+        rows: list[tuple[int, int | None, str, str, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id,
+                               JSON_VALUE(attributes, '$.id'),
+                               JSON_VALUE(attributes, '$.name'),
+                               JSON_VALUE(attributes, '$.rule_type'),
+                               JSON_VALUE(attributes, '$.condition_function_id')
+                        FROM aryx_entity
+                        WHERE workspace_id = :1
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
+                          AND (JSON_VALUE(attributes, '$.rule_type') IS NULL
+                               OR JSON_VALUE(attributes, '$.rule_type') != '11')
+                        """,
+                        (workspace_id, type_pattern),
+                    )
+                    for eid, src_id, name, rule_type, fn_id in cur.fetchall():
+                        rows.append((int(eid), _as_int(src_id), name or "",
+                                     rule_type or "", _as_int(fn_id) or -1))
+        except Exception:
+            logger.debug("cpq rdb(oracle): value-rule fetch failed", exc_info=True)
+        return rows
+
     def fetch_rule_inputs(
-        self, workspace_id: int,
+        self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[tuple[int, int, str]]:
         rows: list[tuple[int, int, str]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleinput")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -365,9 +489,9 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.value1')
                         FROM aryx_entity
                         WHERE workspace_id = :1
-                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigruleinput'
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
                     for rid, aid, val in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
@@ -378,9 +502,10 @@ class OracleCpqRdb(PostgresCpqRdb):
         return rows
 
     def fetch_rule_actions(
-        self, workspace_id: int,
-    ) -> list[tuple[int, int, int, str, int]]:
-        rows: list[tuple[int, int, int, str, int]] = []
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, int, str, int, int]]:
+        rows: list[tuple[int, int, int, str, int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleaction")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -391,24 +516,29 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.attribute_id'),
                                JSON_VALUE(attributes, '$.action_type'),
                                JSON_VALUE(attributes, '$.value1'),
-                               JSON_VALUE(attributes, '$.function_id')
+                               JSON_VALUE(attributes, '$.function_id'),
+                               JSON_VALUE(attributes, '$.set_type')
                         FROM aryx_entity
                         WHERE workspace_id = :1
-                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigruleaction'
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
-                    for rid, aid, at, val, fn in cur.fetchall():
+                    for rid, aid, at, val, fn, st in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, _as_int(at) or 0,
-                                         val or "", _as_int(fn) or -1))
+                                         val or "", _as_int(fn) or -1,
+                                         _as_int(st) if _as_int(st) is not None else 0))
         except Exception:
             logger.debug("cpq rdb(oracle): rule-action fetch failed", exc_info=True)
         return rows
 
-    def fetch_marked_attrs(self, workspace_id: int) -> list[tuple[int, int]]:
+    def fetch_marked_attrs(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int]]:
         rows: list[tuple[int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigmarkedattr")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -419,9 +549,9 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.attribute_id')
                         FROM aryx_entity
                         WHERE workspace_id = :1
-                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigmarkedattr'
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
                     for rid, aid in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
@@ -431,8 +561,11 @@ class OracleCpqRdb(PostgresCpqRdb):
             logger.debug("cpq rdb(oracle): marked-attr fetch failed", exc_info=True)
         return rows
 
-    def fetch_rule_chain_links(self, workspace_id: int) -> list[tuple[int, int]]:
+    def fetch_rule_chain_links(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int]]:
         rows: list[tuple[int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfigruleassoc")
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -443,9 +576,9 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.child_rule_id')
                         FROM aryx_entity
                         WHERE workspace_id = :1
-                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE '%bmconfigruleassoc'
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                         """,
-                        (workspace_id,),
+                        (workspace_id, type_pattern),
                     )
                     for rid, cid in cur.fetchall():
                         rid_i, cid_i = _as_int(rid), _as_int(cid)

@@ -278,6 +278,22 @@ def _handle_cpq_qa(
                 req.question, types, req.history, workspace_id=req.workspace_id,
             )
             entities, calls = gather(reader, terms)
+            # Two ingested product catalogs can share one workspace (e.g. an
+            # APX Next export and an SL3500e export). When the fast path
+            # above didn't resolve the question to one attribute, this
+            # generic graph search has no attribute list to scope it, so it
+            # can otherwise return nodes from BOTH catalogs for a name that
+            # happens to appear in each (confirmed live: "carry solutions"
+            # matched a menu item in both catalogs at once). Restrict to the
+            # active session's catalog whenever one is known.
+            catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+            if catalog_prefix:
+                entities = [e for e in entities if e.type.startswith(catalog_prefix)]
+                for e in entities:
+                    e.neighbors = [
+                        n for n in e.neighbors
+                        if n.get("type", "").startswith(catalog_prefix)
+                    ]
             entities = _enrich_with_attributes(entities, req.workspace_id)
             context = render_context(entities)
             qa_answer, s_in, s_out, s_ms = _synthesise(
@@ -387,7 +403,8 @@ def _handle_cascade(
         }
 
     # Re-run full rule evaluation loop with updated state
-    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
@@ -562,10 +579,15 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         return {}  # no CPQ data in graph — fall through to standard Ask
 
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
-    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id)
-    rec_rules = _cpq_engine.load_recommendation_rules(req.workspace_id)
-    con_rules = _cpq_engine.load_constraint_rules(req.workspace_id)
-    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
+    # catalog_prefix scopes every rule/function load to the same ingested
+    # catalog attrs came from, so a workspace holding more than one
+    # product's XML export never lets one catalog's rules act on another's
+    # attributes (see CpqEngine._scope_to_catalog).
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
+        req.workspace_id, catalog_prefix)
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":
