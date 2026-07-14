@@ -357,8 +357,12 @@ def _handle_cascade(
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
     by_eid = {a.entity_id: a for a in attrs}
     hints = _cpq_engine.extract_hints(req.question)
-    for vn, iv in _cpq_engine.extract_catalog_hints(req.question, attrs).items():
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
         hints.setdefault(vn, iv)
+    # Accumulate across turns (not just this one) — see CpqSession.negated_vns.
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
 
     # Find dependent attrs to invalidate
     dependent_eids = _cpq_engine.find_cascade_dependents(
@@ -413,7 +417,7 @@ def _handle_cascade(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
-        country=session.country,
+        country=session.country, negated_vns=negated_vns,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -421,6 +425,7 @@ def _handle_cascade(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns,
     )
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
@@ -585,8 +590,12 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # 3-concept pattern list has no coverage for (battery, multikey, carry
     # solution, DMS tier, ...). setdefault so the curated patterns still win
     # where both mechanisms independently find the same attr.
-    for vn, iv in _cpq_engine.extract_catalog_hints(req.question, attrs).items():
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
         hints.setdefault(vn, iv)
+    # Accumulate across turns (not just this one) — see CpqSession.negated_vns.
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
 
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     # catalog_prefix scopes every rule/function load to the same ingested
@@ -793,7 +802,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
-        country=session.country,
+        country=session.country, negated_vns=negated_vns,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -801,6 +810,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
+        negated_vns=negated_vns,
     )
     dropped_note = "".join(
         f" Removed **{', '.join(dvals)}** from **"
