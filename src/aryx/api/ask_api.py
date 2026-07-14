@@ -357,6 +357,8 @@ def _handle_cascade(
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
     by_eid = {a.entity_id: a for a in attrs}
     hints = _cpq_engine.extract_hints(req.question)
+    for vn, iv in _cpq_engine.extract_catalog_hints(req.question, attrs).items():
+        hints.setdefault(vn, iv)
 
     # Find dependent attrs to invalidate
     dependent_eids = _cpq_engine.find_cascade_dependents(
@@ -577,6 +579,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
 
     if not attrs:
         return {}  # no CPQ data in graph — fall through to standard Ask
+
+    # Catalog-aware hints — now that attrs (and their real options) are
+    # loaded, scan the question for real option text extract_hints()'s fixed
+    # 3-concept pattern list has no coverage for (battery, multikey, carry
+    # solution, DMS tier, ...). setdefault so the curated patterns still win
+    # where both mechanisms independently find the same attr.
+    for vn, iv in _cpq_engine.extract_catalog_hints(req.question, attrs).items():
+        hints.setdefault(vn, iv)
 
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     # catalog_prefix scopes every rule/function load to the same ingested

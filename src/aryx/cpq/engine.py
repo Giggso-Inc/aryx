@@ -153,6 +153,21 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     ("product", r"\bsl\s*3500\b", "SL3500e"),
 ]
 
+# Reverse of the country entries above — a country-fragment attribute whose
+# real options are abbreviation codes rather than full names (e.g.
+# chargerCountryPlug_apcr offers "US"/"UK", not "United States"/"United
+# Kingdom") can never match the "United States" hint via substring search:
+# a longer needle can't be found inside a shorter haystack. Confirmed live:
+# ultimateDestinationCountry (whose own option IS "United States"... actually
+# whose display name matches directly) resolves fine via Priority 2/3, but
+# chargerCountryPlug_apcr kept re-asking because "united states" can never be
+# found inside its own "US" option text — the customer had already answered
+# with the country, typed it again for this attribute, and got rejected.
+_COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
+    "united states": ("US", "USA"),
+    "united kingdom": ("UK", "GB"),
+}
+
 # Generic country extraction — captures any proper-noun country name from NL
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
 # The extracted name is matched word-boundary against DB option display names,
@@ -170,6 +185,20 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\bapac\b", "APAC"),
     (r"\blatin\s+america\b", "LA"),
 ]
+
+# catalog-hint matching (extract_catalog_hints): a real menu option's own
+# text (item_value/display_name) found verbatim in the question — punctuation
+# and casing stripped so "AT&T/FirstNet" matches item_value "ATT/FIRSTNET" and
+# "no multikey" matches "NO MULTIKEY". Deliberately glued (no word-boundary
+# anchors survive stripping), so a minimum cleaned length keeps accidental
+# substring collisions (e.g. "essential" inside "quintessential") negligible.
+_HINT_MIN_PHRASE_LEN = 5
+_HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
+
+
+def _normalize_for_hint(text: str) -> str:
+    return _HINT_STRIP_RE.sub("", text.lower())
+
 
 # Attr key fragments that represent "decision-required" choices — never
 # auto-fill via first-option fallback or rule-governed default-or-first (D2),
@@ -309,6 +338,100 @@ class CpqEngine:
                     hints["region"] = value
                     break
 
+        return hints
+
+    def extract_catalog_hints(
+        self, question: str, attrs: list["ConfigAttr"],
+    ) -> dict[str, str]:
+        """Extract hints by matching real menu-option text against the question.
+
+        Complements extract_hints()'s fixed 3-concept pattern list (hwversion/
+        country/product) — confirmed live, that list silently drops anything
+        outside those three concepts. A customer saying "no multikey" or
+        "Essential DMS" or "AT&T/FirstNet SIM" got zero hint for
+        multikeyType_astro / serviceTypeAdditionalDMSCoverage_astro /
+        sIMCardSelection_astro, and those attrs then resolved via whatever
+        rule/default governs them — in one case landing the OPPOSITE of what
+        was asked (multikeyType_astro → "MULTIKEY").
+
+        Rather than adding a hardcoded pattern per concept, this scans every
+        visible, single/boolean attr's real options and checks whether that
+        option's own text (item_value or display_name) appears verbatim in
+        the question, punctuation/casing stripped. Returns
+        {variable_name: item_value} — keyed by the exact variable_name
+        (unlike extract_hints()'s fragment keys) since the match already
+        identifies the specific attribute, no fuzzy fragment lookup needed.
+
+        Never guesses (D2), two ways:
+          - If the same option text is real for two or more different attrs,
+            neither is hinted. A tie-break using a distinguishing word from
+            the attr's own variable_name was tried and REJECTED after
+            confirmed false positives: "software" in "baseline release
+            software" incorrectly anchored softwareBundlesBundleType_astro
+            (self-referential — the word only overlapped because it's also
+            in that attr's own name, unrelated to what the customer meant),
+            and "SIM" incorrectly anchored selectSecondarySIMCard_astro over
+            the intended sIMCardSelection_astro (an artifact of how the
+            latter's leading lowercase "s" splits under camelCase parsing).
+            A heuristic that's already produced two confirmed wrong guesses
+            in normal testing isn't safe to keep — better to leave both
+            unresolved than guess wrong.
+          - A candidate phrase must be multi-word (its real item_value or
+            display_name contains a space) to be trusted at all, even with
+            a single owner. A lone single word is too easily a coincidence
+            (e.g. "SOFTWARE" is a real, sole-owner option for
+            relatedServicesType_astro, but appearing inside "baseline
+            release software" has nothing to do with related services).
+            Multi-word phrases ("NO MULTIKEY", "BASELINE RELEASE") aren't at
+            meaningful risk of this — a specific multi-word phrase appearing
+            verbatim is not the kind of thing that happens by accident.
+
+        Longer/more specific option text is tried first so a short phrase
+        can't shadow a longer, more specific one that also appears in the
+        question. Options coded by a generic boolean item_value (YES/NO) are
+        excluded even when their display_name is elaborate (e.g.
+        item_value="YES", display_name="Baseline Release") — matching those
+        via display text alone is exactly the ambiguous-duplicate case D2
+        exists to avoid; the real, specifically-named option should win.
+        """
+        q_norm = _normalize_for_hint(question)
+        candidates: dict[str, list[tuple[str, str]]] = {}
+        for attr in attrs:
+            if attr.hidden or attr.select_type == "multi":
+                continue
+            for opt in attr.options:
+                if opt.item_value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
+                    continue
+                for text in (opt.item_value, opt.display_name):
+                    stripped = text.strip()
+                    is_code = any(c.isdigit() for c in stripped)
+                    if len(stripped.split()) < 2 and not is_code:
+                        # Single-word options are never trusted alone UNLESS
+                        # they're a code/SKU (contains a digit) rather than a
+                        # dictionary word — "H55TGT9PW8BN" appearing verbatim
+                        # in a sentence is not the coincidental-collision risk
+                        # a common word like "software" is; English prose
+                        # essentially never contains an alphanumeric code by
+                        # accident.
+                        continue
+                    norm = _normalize_for_hint(text)
+                    if len(norm) < _HINT_MIN_PHRASE_LEN:
+                        continue
+                    candidates.setdefault(norm, []).append(
+                        (attr.variable_name, opt.item_value))
+
+        hints: dict[str, str] = {}
+        for phrase in sorted(candidates, key=len, reverse=True):
+            if phrase not in q_norm:
+                continue
+            entries = candidates[phrase]
+            owners = {vn for vn, _iv in entries}
+            if len(owners) > 1:
+                continue  # real option for 2+ different attrs — never guess
+            vn, item_value = entries[0]
+            if vn in hints:
+                continue  # a longer, more specific phrase already matched this attr
+            hints[vn] = item_value
         return hints
 
     def detect_product_mention(self, question: str, hints: dict[str, str]) -> str:
@@ -1541,6 +1664,19 @@ class CpqEngine:
                                          opt.display_name.lower()):
                                 value = opt.item_value
                                 display = opt.display_name
+                                break
+                    # Priority 4: country full-name → abbreviation shorthand.
+                    # Only for the "country" hint key — a full country name
+                    # can never substring-match a shorter code-only option
+                    # (chargerCountryPlug_apcr's "US", not "United States").
+                    if not value and hint_key == "country":
+                        for code in _COUNTRY_HINT_SHORTHAND.get(hv_lower, ()):
+                            for opt in attr.options:
+                                if opt.item_value.upper() == code or opt.display_name.upper() == code:
+                                    value = opt.item_value
+                                    display = opt.display_name
+                                    break
+                            if value:
                                 break
                     if not value and not attr.options and _valid(hint_val):
                         value = hint_val
