@@ -1844,3 +1844,41 @@ def test_s36_hidden_attr_with_default_fills_but_never_asked():
     assert "hiddenUISequenceForModelSelection_astro" not in filled
     assert all(a.variable_name != "hiddenRowSeparator_allFamily" for a in pending)
     assert all(a.variable_name != "hiddenUISequenceForModelSelection_astro" for a in pending)
+
+
+def test_s37_country_hint_resolves_abbreviation_only_attrs():
+    """A country-fragment attr whose real options are abbreviation codes
+    only ("US", not "United States") must still resolve from the confirmed
+    country hint — confirmed live: chargerCountryPlug_apcr kept re-asking
+    "Country Plug" forever because "united states" (the hint) can never be
+    found as a substring inside its own shorter "US" option text, no matter
+    how the matching runs. The primary country anchor (whose own option
+    genuinely IS "United States") must keep resolving via the ordinary
+    exact-match path, untouched by the new shorthand fallback."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    charger_plug = ConfigAttr(
+        entity_id=1, variable_name="chargerCountryPlug_apcr",
+        display_label="Country Plug", required=False, default_value="",
+        options=[
+            MenuOption("US", "US", 1), MenuOption("UK", "UK", 2),
+            MenuOption("LA", "LA", 3), MenuOption("EU", "EU", 4),
+        ],
+    )
+    country_anchor = ConfigAttr(
+        entity_id=2, variable_name="ultimateDestinationCountry",
+        display_label="Ultimate Destination Country", required=False, default_value="",
+        options=[
+            MenuOption("US", "United States", 1),
+            MenuOption("GB", "United Kingdom", 2),
+        ],
+    )
+    filled, display_filled, _pending = eng.auto_fill(
+        [charger_plug, country_anchor], hints={"country": "United States"},
+        governed_ids={charger_plug.entity_id, country_anchor.entity_id},
+    )
+    assert filled.get("chargerCountryPlug_apcr") == "US"
+    assert filled.get("ultimateDestinationCountry") == "US"
+    assert display_filled.get("ultimateDestinationCountry") == "United States"

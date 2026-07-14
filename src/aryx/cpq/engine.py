@@ -153,6 +153,21 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     ("product", r"\bsl\s*3500\b", "SL3500e"),
 ]
 
+# Reverse of the country entries above — a country-fragment attribute whose
+# real options are abbreviation codes rather than full names (e.g.
+# chargerCountryPlug_apcr offers "US"/"UK", not "United States"/"United
+# Kingdom") can never match the "United States" hint via substring search:
+# a longer needle can't be found inside a shorter haystack. Confirmed live:
+# ultimateDestinationCountry (whose own option IS "United States"... actually
+# whose display name matches directly) resolves fine via Priority 2/3, but
+# chargerCountryPlug_apcr kept re-asking because "united states" can never be
+# found inside its own "US" option text — the customer had already answered
+# with the country, typed it again for this attribute, and got rejected.
+_COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
+    "united states": ("US", "USA"),
+    "united kingdom": ("UK", "GB"),
+}
+
 # Generic country extraction — captures any proper-noun country name from NL
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
 # The extracted name is matched word-boundary against DB option display names,
@@ -170,6 +185,76 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\bapac\b", "APAC"),
     (r"\blatin\s+america\b", "LA"),
 ]
+
+# catalog-hint matching (extract_catalog_hints): a real menu option's own
+# text (item_value/display_name) found verbatim in the question — punctuation
+# and casing stripped so "AT&T/FirstNet" matches item_value "ATT/FIRSTNET" and
+# "no multikey" matches "NO MULTIKEY". Deliberately glued (no word-boundary
+# anchors survive stripping), so a minimum cleaned length keeps accidental
+# substring collisions (e.g. "essential" inside "quintessential") negligible.
+_HINT_MIN_PHRASE_LEN = 5
+_HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
+
+
+def _normalize_for_hint(text: str) -> str:
+    return _HINT_STRIP_RE.sub("", text.lower())
+
+
+def _normalize_for_hint_with_map(text: str) -> tuple[str, list[int]]:
+    """Same stripping as _normalize_for_hint, but also returns index_map
+    where index_map[i] is the original `text` position that the i-th
+    character of the normalized string came from — lets a match found in
+    the glued/stripped string be traced back to its real location, e.g. to
+    inspect the words that precede it (see _is_negated_before)."""
+    lowered = text.lower()
+    kept: list[str] = []
+    index_map: list[int] = []
+    for i, ch in enumerate(lowered):
+        if ch.isalnum():
+            kept.append(ch)
+            index_map.append(i)
+    return "".join(kept), index_map
+
+
+# Cue words that flip a literal option-text match into an exclusion rather
+# than a selection — "exclude any... carry solutions" contains the exact
+# text of the real option "Carry Solutions", but means the opposite
+# (confirmed live: accessoriesSolutionSet_astro was auto-filled to "CARRY
+# SOLUTIONS" from that sentence). Word-bounded so short cues ("no", "not")
+# don't fire inside unrelated words ("know", "notification").
+_NEGATION_RE = re.compile(
+    r"\b(exclud\w*|without|no|not|never|omit\w*|remov\w*|minus)\b",
+    re.IGNORECASE,
+)
+_NEGATION_WINDOW_CHARS = 40
+
+
+def _is_negated_before(question_lower: str, orig_pos: int) -> bool:
+    window_start = max(0, orig_pos - _NEGATION_WINDOW_CHARS)
+    return bool(_NEGATION_RE.search(question_lower[window_start:orig_pos]))
+
+
+def _find_plural_tolerant(q_norm: str, phrase: str) -> int:
+    """q_norm.find(phrase), tolerating a missing/extra trailing "s".
+
+    Confirmed live: option text "CARRY SOLUTIONS" (normalized
+    "carrysolutions") never matched a customer writing "no carry solution"
+    (singular) — an exact-substring search on "carrysolution" fails against
+    "carrysolutions" by exactly one character, so the negation guard never
+    saw it and accessoriesSolutionSet_astro was silently auto-filled with
+    the very thing the customer excluded. Trying the phrase with its
+    trailing "s" added/removed catches this without weakening the
+    real length/ambiguity guards elsewhere (this only changes WHERE a
+    phrase is found in the question, not which attrs are eligible).
+    """
+    idx = q_norm.find(phrase)
+    if idx != -1:
+        return idx
+    variant = phrase[:-1] if phrase.endswith("s") else phrase + "s"
+    if len(variant) < _HINT_MIN_PHRASE_LEN:
+        return -1
+    return q_norm.find(variant)
+
 
 # Attr key fragments that represent "decision-required" choices — never
 # auto-fill via first-option fallback or rule-governed default-or-first (D2),
@@ -310,6 +395,134 @@ class CpqEngine:
                     break
 
         return hints
+
+    def extract_catalog_hints(
+        self, question: str, attrs: list["ConfigAttr"],
+    ) -> tuple[dict[str, str], set[str]]:
+        """Extract hints by matching real menu-option text against the question.
+
+        Complements extract_hints()'s fixed 3-concept pattern list (hwversion/
+        country/product) — confirmed live, that list silently drops anything
+        outside those three concepts.
+
+        Rather than adding a hardcoded pattern per concept, this scans every
+        visible, single/boolean attr's real options and checks whether that
+        option's own text (item_value or display_name) appears verbatim in
+        the question, punctuation/casing stripped. Returns
+        (hints, negated_vns):
+          - hints — {variable_name: item_value}, keyed by the exact
+            variable_name (unlike extract_hints()'s fragment keys) since the
+            match already identifies the specific attribute, no fuzzy
+            fragment lookup needed.
+          - negated_vns — variable_names whose concept appeared in the
+            question immediately after a negation cue ("exclude", "no",
+            "without", ...) rather than as a positive selection. Callers
+            must not silently auto-fill these via blind first-by-order —
+            confirmed live: "exclude any multikey capability" produced zero
+            positive hint for multikeyType_astro (see single-word rule
+            below), so it fell through to auto_fill's ungoverned fallback
+            and landed on the literal opposite, "MULTIKEY", even though a
+            "No Multikey" option exists. Only auto_fill() consults this —
+            it does not affect `hints` itself.
+
+        Never guesses (D2), several ways:
+          - If the same option text is real for two or more different attrs,
+            neither is hinted. A tie-break using a distinguishing word from
+            the attr's own variable_name was tried and REJECTED after
+            confirmed false positives: "software" in "baseline release
+            software" incorrectly anchored softwareBundlesBundleType_astro
+            (self-referential — the word only overlapped because it's also
+            in that attr's own name, unrelated to what the customer meant),
+            and "SIM" incorrectly anchored selectSecondarySIMCard_astro over
+            the intended sIMCardSelection_astro (an artifact of how the
+            latter's leading lowercase "s" splits under camelCase parsing).
+            A heuristic that's already produced two confirmed wrong guesses
+            in normal testing isn't safe to keep — better to leave both
+            unresolved than guess wrong.
+          - A candidate phrase must be multi-word (its real item_value or
+            display_name contains a space) OR contain a digit/slash to be
+            trusted as a positive hint, even with a single owner. A lone
+            single word is too easily a coincidence (e.g. "SOFTWARE" is a
+            real, sole-owner option for relatedServicesType_astro, but
+            appearing inside "baseline release software" has nothing to do
+            with related services). Multi-word phrases ("NO MULTIKEY",
+            "BASELINE RELEASE") aren't at meaningful risk of this — a
+            specific multi-word phrase appearing verbatim is not the kind of
+            thing that happens by accident. Neither is a punctuation-joined
+            code like "ATT/FIRSTNET" (confirmed live: excluding it as a bare
+            "single word" dropped the hint for wirelessCarrier_astro even
+            though the customer wrote "AT&T/FirstNet" verbatim) — English
+            prose essentially never contains a digit or an internal slash by
+            accident, unlike a common dictionary word.
+          - A positive-looking match is discarded (never turned into a
+            hint) if a negation cue sits in the ~40 chars right before it in
+            the real question text — "exclude ... carry solutions" must not
+            select "Carry Solutions" just because that literal phrase
+            appears in the sentence.
+
+        Longer/more specific option text is tried first so a short phrase
+        can't shadow a longer, more specific one that also appears in the
+        question. Options coded by a generic boolean item_value (YES/NO) are
+        excluded even when their display_name is elaborate (e.g.
+        item_value="YES", display_name="Baseline Release") — matching those
+        via display text alone is exactly the ambiguous-duplicate case D2
+        exists to avoid; the real, specifically-named option should win.
+        """
+        q_norm, q_index_map = _normalize_for_hint_with_map(question)
+        q_lower = question.lower()
+        candidates: dict[str, list[tuple[str, str]]] = {}
+        # Every real option's normalized text and its owning attr(s) — used
+        # for negation-suppression below regardless of word count or
+        # ambiguity (suppressing a blind fallback is low-risk: worst case is
+        # an extra question asked, not a wrong value silently picked, so
+        # it's fine to be broader here than the positive-hint match below).
+        all_owners: dict[str, set[str]] = {}
+        for attr in attrs:
+            if attr.hidden or attr.select_type == "multi":
+                continue
+            for opt in attr.options:
+                if opt.item_value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
+                    continue
+                for text in (opt.item_value, opt.display_name):
+                    stripped = text.strip()
+                    is_code = any(c.isdigit() for c in stripped) or "/" in stripped
+                    norm = _normalize_for_hint(text)
+                    if len(norm) < _HINT_MIN_PHRASE_LEN:
+                        continue
+                    all_owners.setdefault(norm, set()).add(attr.variable_name)
+                    if len(stripped.split()) < 2 and not is_code:
+                        # Single-word dictionary-style options are never
+                        # trusted as a positive hint (see docstring) — still
+                        # recorded above for negation-suppression, just not
+                        # added to `candidates` below.
+                        continue
+                    candidates.setdefault(norm, []).append(
+                        (attr.variable_name, opt.item_value))
+
+        hints: dict[str, str] = {}
+        for phrase in sorted(candidates, key=len, reverse=True):
+            idx = _find_plural_tolerant(q_norm, phrase)
+            if idx == -1:
+                continue
+            entries = candidates[phrase]
+            owners = {vn for vn, _iv in entries}
+            if len(owners) > 1:
+                continue  # real option for 2+ different attrs — never guess
+            vn, item_value = entries[0]
+            if vn in hints:
+                continue  # a longer, more specific phrase already matched this attr
+            if _is_negated_before(q_lower, q_index_map[idx]):
+                continue  # "exclude ... <phrase>" — not a selection
+            hints[vn] = item_value
+
+        negated_vns: set[str] = set()
+        for phrase, owners in all_owners.items():
+            idx = _find_plural_tolerant(q_norm, phrase)
+            if idx == -1:
+                continue
+            if _is_negated_before(q_lower, q_index_map[idx]):
+                negated_vns.update(owners)
+        return hints, negated_vns
 
     def detect_product_mention(self, question: str, hints: dict[str, str]) -> str:
         """Best-effort product display label from NL text, or "" if none found.
@@ -1119,6 +1332,7 @@ class CpqEngine:
         filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
         country: str | None = None,
+        negated_vns: set[str] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -1165,6 +1379,7 @@ class CpqEngine:
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
+                negated_vns=negated_vns,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
@@ -1337,6 +1552,7 @@ class CpqEngine:
         rule_governed_ids: set[int] | None = None,
         country: str | None = None,
         rec_rules: list[RecommendationRule] | None = None,
+        negated_vns: set[str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -1378,6 +1594,11 @@ class CpqEngine:
           itself is unaffected — it's still asked as before (D1). No match
           (unmapped country, or catalog offers no matching code) falls
           through to asking, same as if `country` were omitted.
+        negated_vns — variable_names from extract_catalog_hints() whose
+          concept was explicitly negated in the question (see that method's
+          docstring). Step 4's blind first-by-order fallback is skipped for
+          these — ask instead of risking the literal opposite of what was
+          requested.
 
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
@@ -1542,6 +1763,19 @@ class CpqEngine:
                                 value = opt.item_value
                                 display = opt.display_name
                                 break
+                    # Priority 4: country full-name → abbreviation shorthand.
+                    # Only for the "country" hint key — a full country name
+                    # can never substring-match a shorter code-only option
+                    # (chargerCountryPlug_apcr's "US", not "United States").
+                    if not value and hint_key == "country":
+                        for code in _COUNTRY_HINT_SHORTHAND.get(hv_lower, ()):
+                            for opt in attr.options:
+                                if opt.item_value.upper() == code or opt.display_name.upper() == code:
+                                    value = opt.item_value
+                                    display = opt.display_name
+                                    break
+                            if value:
+                                break
                     if not value and not attr.options and _valid(hint_val):
                         value = hint_val
                         display = hint_val
@@ -1614,6 +1848,14 @@ class CpqEngine:
                         # pick a competing value for what's very likely the
                         # same hardware/accessory slot (§ surveillance-package
                         # double-fill). Ask instead of guessing which one wins.
+                        pass
+                    elif vn in (negated_vns or ()):
+                        # The customer explicitly negated this attr's concept
+                        # (e.g. "exclude any multikey capability") but no
+                        # option text let extract_catalog_hints resolve which
+                        # specific option that means — first-by-order has no
+                        # way to know either, and confirmed live it picked
+                        # the literal opposite ("MULTIKEY"). Ask instead.
                         pass
                     else:
                         # Check for an already-satisfied recommendation before
