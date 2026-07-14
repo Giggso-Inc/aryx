@@ -47,6 +47,13 @@ body:has([data-app-shell="sidebar"]) header[data-app-shell="sidebar"] {
   padding-right: 1.25rem;
 }
 
+[data-workspace-detail-route="true"] .workspace-section-shell,
+[data-workspace-detail-route="true"] .shay-page-shell {
+  max-width: 96rem;
+  padding-left: clamp(1rem, 2vw, 2rem);
+  padding-right: clamp(1rem, 2vw, 2rem);
+}
+
 /* The wordmark cap — used for ARYX header, mimics the logo's spacing. */
 .wordmark {
   font-family: var(--font-sans);
