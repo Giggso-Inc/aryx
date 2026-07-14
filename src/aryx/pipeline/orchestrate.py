@@ -198,12 +198,12 @@ def run_pipeline(
                 )
         else:
             logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
-            _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('vertices', 0)} nodes, {counts.get('edges', 0)} edges")
+            _emit(on_progress, "Project", 95, f"Graph updated — {counts.get('entities', 0)} nodes, {counts.get('relationships', 0)} edges")
     finally:
         estore.close()
 
     summary = {"run_id": run_id, "entities": entities,
                "relationships": relationships, **counts}
-    _emit(on_progress, "Done", 100, f"{entities} entities · {relationships} relationships · {counts.get('vertices', 0)} graph nodes")
+    _emit(on_progress, "Done", 100, f"{entities} entities · {relationships} relationships · {counts.get('entities', 0)} graph nodes")
     logger.info("pipeline complete %s", summary)
     return summary
