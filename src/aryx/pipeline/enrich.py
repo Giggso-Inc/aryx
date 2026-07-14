@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from typing import Any, Iterator
 
 from aryx.broker import Broker
 from aryx.config import get_settings
@@ -14,6 +14,34 @@ from aryx.store.entity_store import EntityStore
 from aryx.store.ontology_store import OntologyStore
 
 logger = logging.getLogger(__name__)
+
+
+def _drain_with_timeout(
+    futures: dict[Future, Any], idle_timeout: float, label: str,
+) -> Iterator[tuple[Future, Any]]:
+    """Yield (future, key) pairs as they complete; abandon the rest if none
+    completes within idle_timeout seconds instead of blocking indefinitely.
+
+    Relate is best-effort enrichment — _relate_isolated() (or a later
+    ingest run) still connects anything left isolated — so a single stuck
+    LLM call must never hang the whole ingest for the full ARYX_LLM_TIMEOUT.
+    Abandoned futures keep running in their worker thread in the background;
+    their eventual result is simply discarded (caller must NOT use the
+    ThreadPoolExecutor as a `with` block, which would block on exit waiting
+    for them — shut it down via `pool.shutdown(wait=False, cancel_futures=True)`).
+    """
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, timeout=idle_timeout, return_when=FIRST_COMPLETED)
+        if not done:
+            logger.warning(
+                "%s: %d pair(s) still running after %.0fs with no completion — "
+                "abandoning the rest of this stage (a later safety net can "
+                "still connect them)", label, len(pending), idle_timeout,
+            )
+            return
+        for fut in done:
+            yield fut, futures[fut]
 
 
 def _build_type_ancestors(dsn: str, workspace_id: int = 1) -> dict[str, list[str]]:
@@ -164,13 +192,13 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
 
     rels: list[Relationship] = []
     infer_failures = 0
-    with ThreadPoolExecutor(max_workers=relate_workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=relate_workers)
+    try:
         futures = {
             pool.submit(_infer, left, right): (left[0], right[0])
             for left, right in candidates
         }
-        for fut in as_completed(futures):
-            pair = futures[fut]
+        for fut, pair in _drain_with_timeout(futures, cfg.relate_pair_timeout, "_relate"):
             try:
                 src_id, tgt_id, name, conf = fut.result()
             except Exception as exc:  # noqa: BLE001 — one flaky LLM reply must not
@@ -184,6 +212,10 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
                 rels.append(Relationship(
                     source_entity_id=src_id, target_entity_id=tgt_id,
                     name=name, confidence=conf))
+    finally:
+        # wait=False: don't block on any pair abandoned by _drain_with_timeout —
+        # they finish in the background and their result is simply discarded.
+        pool.shutdown(wait=False, cancel_futures=True)
     if infer_failures:
         logger.warning("_relate %d/%d pair inference(s) failed and were skipped",
                        infer_failures, len(candidates))
@@ -358,13 +390,23 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
 
     # ONE LLM call per isolated type (not per entity).
     rels: list[Relationship] = []
-    with ThreadPoolExecutor(max_workers=cfg.relate_workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=cfg.relate_workers)
+    try:
         futures = {
             pool.submit(_infer_type, iso_type, entities[0]): iso_type
             for iso_type, entities in isolated_by_type.items()
         }
-        for fut in as_completed(futures):
-            iso_type, anchor_id, name, conf = fut.result()
+        # This IS the safety net (runs regardless of the best-effort _relate()
+        # stage), so it must be at least as resilient as _relate() itself: one
+        # flaky/stuck type must not stop the rest of the isolated types from
+        # being connected, or block the run indefinitely.
+        for fut, iso_type in _drain_with_timeout(futures, cfg.relate_pair_timeout, "_relate_isolated"):
+            try:
+                iso_type, anchor_id, name, conf = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("_relate_isolated type=%s inference failed, skipping: %s",
+                               iso_type, exc)
+                continue
             if name and anchor_id != -1:
                 # Create one edge per isolated entity of this type → anchor.
                 for iso_id, _, _ in isolated_by_type[iso_type]:
@@ -378,6 +420,8 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
                     "_relate_isolated: type=%s linked %d entity(ies) via '%s'",
                     iso_type, len(isolated_by_type[iso_type]), name,
                 )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     if rels:
         store.save_relationships(rels)
