@@ -163,10 +163,16 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
-        if relate and not runner.skip("relate_isolated"):
+        if not runner.skip("relate_isolated"):
             # Final safety net: any entity still isolated after FK linking and
             # sampled-pair inference gets one LLM call against the nearest anchor.
             # Enforces the rule: no FK link -> LLM inference, for any file type.
+            # Deliberately NOT gated on `relate` — this is what guarantees zero
+            # isolated nodes, so it must run even when the best-effort _relate()
+            # pass above was skipped (ARYX_INGEST_RELATE=false) or only partially
+            # completed (e.g. it hit relate_pair_timeout on a stuck LLM call).
+            # _relate_isolated() is self-contained (queries isolated entities
+            # itself) and a safe no-op when nothing is isolated.
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
                 relationships += _relate_isolated(estore, broker)

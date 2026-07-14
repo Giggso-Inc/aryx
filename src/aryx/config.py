@@ -113,6 +113,18 @@ class Settings(BaseSettings):
             "with _element_type always included. Override with ARYX_RELATE_MAX_ATTRS."
         ),
     )
+    relate_pair_timeout: float = Field(
+        default=30.0,
+        description=(
+            "Max seconds _relate()/_relate_isolated() wait with no in-flight "
+            "pair completing before abandoning the rest of that stage. Relate "
+            "is best-effort enrichment, not a correctness requirement — "
+            "_relate_isolated() (or a later ingest) still connects anything "
+            "left isolated, so a stuck LLM call must not block the whole "
+            "ingest run for the full ARYX_LLM_TIMEOUT. "
+            "Override with ARYX_RELATE_PAIR_TIMEOUT."
+        ),
+    )
 
     csv_chunk_rows: int = Field(
         default=0,
