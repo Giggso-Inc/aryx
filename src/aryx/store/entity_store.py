@@ -238,6 +238,26 @@ class EntityStore:
                             aliases[str(val).strip().lower()] = entity_id
         return aliases
 
+    def overview_inputs(
+        self,
+    ) -> tuple[list[tuple[int, str, dict[str, Any]]], list[tuple[int, int, str]], dict[str, Any]]:
+        """Return brief, entities, and relationships for /graph/overview in one store path."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_workspace_brief"), (self._ws,))
+                row = cur.fetchone()
+                brief = (row[0] or {}) if row else {}
+
+            with conn.cursor() as cur:
+                cur.execute(load("select_entities"), (self._ws,))
+                entities = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+            with conn.cursor() as cur:
+                cur.execute(load("select_relationships"), (self._ws,))
+                relationships = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+        return entities, relationships, brief
+
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
 

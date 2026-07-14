@@ -28,7 +28,7 @@ function isProtectedPath(pathname: string) {
 }
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const { ready, session } = useShayAuth();
+  const { authState, ready, session } = useShayAuth();
   const pathname = usePathname();
   const router = useRouter();
 
@@ -38,8 +38,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     if (!ready || !protectedPath || session) return;
     const search = typeof window !== "undefined" ? window.location.search : "";
     const next = pathname === "/" ? "/workspaces" : `${pathname || "/"}${search}`;
+    if (authState === "expired") {
+      router.replace(`/session-expired?next=${encodeURIComponent(next)}`);
+      return;
+    }
     router.replace(`/login?next=${encodeURIComponent(next)}`);
-  }, [pathname, protectedPath, ready, router, session]);
+  }, [authState, pathname, protectedPath, ready, router, session]);
 
   if (!protectedPath) {
     return <>{children}</>;

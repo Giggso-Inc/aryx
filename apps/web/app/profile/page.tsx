@@ -31,6 +31,7 @@ export default function ProfilePage() {
         eyebrow="Profile"
         title={displayName}
         description="Manage your identity details, company context, and sign-in status from one place."
+        contentWidth="wide"
       >
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
           <Detail label="Email" value={profile?.email_id || session?.email_id || "—"} />

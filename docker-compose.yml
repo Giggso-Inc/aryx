@@ -24,6 +24,8 @@ services:
   falkordb:
     image: falkordb/falkordb:latest
     restart: unless-stopped
+    environment:
+      FALKORDB_ARGS: MAX_QUEUED_QUERIES 25 TIMEOUT 5000 RESULTSET_SIZE 10000
     ports:
       - "6379:6379"
     volumes:

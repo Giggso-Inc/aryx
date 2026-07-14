@@ -210,7 +210,7 @@ class FakeCpqRdb:
     def fetch_entity_attributes(self, entity_ids, workspace_id):
         return {i: self.entities[i] for i in entity_ids if i in self.entities}
 
-    def fetch_entities_by_type(self, workspace_id, type_suffix):
+    def fetch_entities_by_type(self, workspace_id, type_suffix, catalog_prefix=""):
         norm = type_suffix.lower().replace("_", "")
         out = []
         for tag, ids in self.by_tag.items():
@@ -218,7 +218,7 @@ class FakeCpqRdb:
                 out.extend((i, self.entities[i]) for i in ids)
         return out
 
-    def fetch_rules(self, workspace_id, rule_type):
+    def fetch_rules(self, workspace_id, rule_type, catalog_prefix=""):
         out = []
         for i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule"):
             if f.get("rule_type") == rule_type:
@@ -226,7 +226,15 @@ class FakeCpqRdb:
                             self._int(f.get("condition_function_id"))))
         return out
 
-    def fetch_rule_inputs(self, workspace_id):
+    def fetch_value_rules(self, workspace_id, catalog_prefix=""):
+        out = []
+        for i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule"):
+            if f.get("rule_type") != "11":
+                out.append((i, self._int(f.get("id"), None), f.get("name", ""),
+                            f.get("rule_type", ""), self._int(f.get("condition_function_id"))))
+        return out
+
+    def fetch_rule_inputs(self, workspace_id, catalog_prefix=""):
         out = []
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule_input"):
             rid = self._int(f.get("bm_config_rule_id") or f.get("rule_id"), 0)
@@ -235,17 +243,18 @@ class FakeCpqRdb:
                 out.append((rid, aid, f.get("value1", "")))
         return out
 
-    def fetch_rule_actions(self, workspace_id):
+    def fetch_rule_actions(self, workspace_id, catalog_prefix=""):
         out = []
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule_action"):
             rid = self._int(f.get("bm_config_rule_id") or f.get("rule_id"), 0)
             aid = self._int(f.get("attribute_id"), 0)
             if rid and aid:
                 out.append((rid, aid, self._int(f.get("action_type"), 0),
-                            f.get("value1", ""), self._int(f.get("function_id"))))
+                            f.get("value1", ""), self._int(f.get("function_id")),
+                            self._int(f.get("set_type"), 0)))
         return out
 
-    def fetch_marked_attrs(self, workspace_id):
+    def fetch_marked_attrs(self, workspace_id, catalog_prefix=""):
         out = []
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_config_marked_attr"):
             rid = self._int(f.get("bm_config_rule_id") or f.get("rule_id"), 0)
@@ -254,7 +263,7 @@ class FakeCpqRdb:
                 out.append((rid, aid))
         return out
 
-    def fetch_rule_chain_links(self, workspace_id):
+    def fetch_rule_chain_links(self, workspace_id, catalog_prefix=""):
         out = []
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule_assoc"):
             rid = self._int(f.get("bm_config_rule_id") or f.get("rule_id"), 0)
@@ -263,7 +272,7 @@ class FakeCpqRdb:
                 out.append((rid, cid))
         return out
 
-    def fetch_function_scripts(self, workspace_id):
+    def fetch_function_scripts(self, workspace_id, catalog_prefix=""):
         scripts = {}
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_function"):
             fn_id = self._int(f.get("id"), None)
@@ -328,10 +337,13 @@ def fake_rdb(truth, monkeypatch):
     import aryx.cpq.engine as engine_mod
     monkeypatch.setattr(engine_mod, "get_cpq_rdb", lambda: rdb)
     # Tier-2 LLM off: tests must be deterministic and offline.
-    from aryx.cpq.bml import BmlEvaluator
+    from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+    clear_shared_bml_cache()  # the script cache is process-wide (see bml.py)
     monkeypatch.setattr(
         engine_mod.CpqEngine, "build_bml_evaluator",
-        lambda self, ws: BmlEvaluator(rdb.fetch_function_scripts(ws), use_llm=False),
+        lambda self, ws, catalog_prefix="": BmlEvaluator(
+            rdb.fetch_function_scripts(ws), use_llm=False,
+            workspace_id=ws, catalog_prefix=catalog_prefix),
     )
     return rdb
 
@@ -417,7 +429,7 @@ def test_s5_script_rules_not_silently_dropped(truth, fake_rdb, caplog):
     # become evaluable ConstraintRule objects.
     scripts = fake_rdb.fetch_function_scripts(1)
     script_actions = [
-        (rid, aid, fn) for rid, aid, _at, _v, fn in fake_rdb.fetch_rule_actions(1)
+        (rid, aid, fn) for rid, aid, _at, _v, fn, _st in fake_rdb.fetch_rule_actions(1)
         if fn != -1 and fn in scripts
     ]
     type5_native_ids = {FakeCpqRdb._int(r.get("id"), 0)
@@ -454,7 +466,7 @@ def test_s5_tier1_coverage_on_real_scripts(truth):
             continue
         variables = {var: (value if op == "==" else value + "_x")
                      for _j, var, op, value in cond}
-        result = evaluate_tier1(script, variables)
+        result, _blocked = evaluate_tier1(script, variables)
         if result is not None:
             evaluated += 1
 
@@ -648,11 +660,18 @@ def test_s6_s7_conversation_payload_and_no_eager_output(truth, fake_rdb, monkeyp
         return
 
     # S6 — approved payload contains every user-confirmed value verbatim.
-    payload = final.get("cpq_payload") or {}
+    # Noise vars (_-prefixed / ALL-CAPS-prefixed integration fields, e.g.
+    # _BM_USER_CURRENCY) are intentionally excluded from the payload by
+    # build_payload() regardless of provenance — skip those here too.
+    from aryx.cpq.engine import CpqEngine
+    attrs_out = (final.get("cpq_payload") or {}).get("configAttributes", {})
     for var, value in user_confirmed.items():
-        assert payload.get(var) == value, (
+        if CpqEngine._is_noise_var(var):
+            continue
+        got = attrs_out.get(var, {}).get("value")
+        assert got == value, (
             f"user-confirmed {var}={value!r} missing/altered in final payload "
-            f"(got {payload.get(var)!r}) — the Region=NA drop bug class")
+            f"(got {got!r}) — the Region=NA drop bug class")
 
 
 def test_s7_turn_cap_never_fabricates_payload(truth, fake_rdb, monkeypatch):
@@ -853,6 +872,48 @@ def test_s12b_batched_pending_list_on_request(truth, fake_rdb, monkeypatch):
     assert resp3
 
 
+def test_s13_share_flags_appear_via_run_ask_after_three_answers(truth, fake_rdb, monkeypatch):
+    """End-to-end proof of the Streamlit UI's wiring contract: the panel calls
+    run_ask() (not _run_cpq_turn directly), threading session_data turn to
+    turn exactly like api.ask()/_attach_share_flags expect. Replays a real,
+    fixture-driven transcript through run_ask() and asserts the JSON/Beautify
+    button flags track the 3-filled readiness gate with real (non-placeholder)
+    data, and that wrapping the response never changes the underlying answer.
+    """
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest
+
+    transcript, _final = _drive_conversation(truth, fake_rdb, monkeypatch)
+    if not transcript:
+        pytest.skip("engine filtered out all config attrs for this export")
+
+    monkeypatch.setattr(api, "_reader", lambda workspace_id=1: FakeReader(fake_rdb))
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+
+    saw_ready = False
+    prior_session: dict = {}
+    for question, expected_resp in transcript:
+        resp = api.run_ask(AskRequest(question=question, workspace_id=1, session_data=prior_session))
+        assert resp["answer"] == expected_resp["answer"], (
+            "run_ask must reproduce _run_cpq_turn's answer unchanged — "
+            "attaching button flags must never alter existing behaviour")
+
+        session = resp["session_data"]
+        filled_count = len(session.get("filled", {})) + len(session.get("filled_multi", {}))
+        ready = filled_count >= 3 or session.get("status") != "configuring"
+
+        assert bool(resp.get("json_button_flag")) == ready
+        assert bool(resp.get("beautify_button_flag")) == ready
+        if ready:
+            saw_ready = True
+            assert resp["json_response"], "json_response must carry real filled data once ready"
+            assert resp["beautify"], "beautify text must not be empty once ready"
+        prior_session = session
+
+    if not saw_ready:
+        pytest.skip("conversation never reached the 3-filled readiness threshold for this export")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S14a — classify_select_type: pure unit test, no sample file needed
 # ─────────────────────────────────────────────────────────────────────────────
@@ -914,10 +975,13 @@ def apx_fake_rdb(apx_truth, monkeypatch):
     rdb = FakeCpqRdb(apx_truth)
     import aryx.cpq.engine as engine_mod
     monkeypatch.setattr(engine_mod, "get_cpq_rdb", lambda: rdb)
-    from aryx.cpq.bml import BmlEvaluator
+    from aryx.cpq.bml import BmlEvaluator, clear_shared_bml_cache
+    clear_shared_bml_cache()  # the script cache is process-wide (see bml.py)
     monkeypatch.setattr(
         engine_mod.CpqEngine, "build_bml_evaluator",
-        lambda self, ws: BmlEvaluator(rdb.fetch_function_scripts(ws), use_llm=False),
+        lambda self, ws, catalog_prefix="": BmlEvaluator(
+            rdb.fetch_function_scripts(ws), use_llm=False,
+            workspace_id=ws, catalog_prefix=catalog_prefix),
     )
     return rdb
 
@@ -1123,10 +1187,10 @@ def test_s20b_rule_chain_traced_by_id_not_name(apx_truth, apx_fake_rdb):
     assert ri_tuples, "no rule_input tuples surfaced by the dialect layer"
     assert ra_tuples, "no rule_action tuples surfaced by the dialect layer"
     # (rule_id, attribute_id, value1) / (rule_id, attribute_id, action_type,
-    # value1, function_id) — id-keyed by construction, no name field exists
-    # to accidentally depend on.
+    # value1, function_id, set_type) — id-keyed by construction, no name
+    # field exists to accidentally depend on.
     assert all(len(t) == 3 for t in ri_tuples)
-    assert all(len(t) == 5 for t in ra_tuples)
+    assert all(len(t) == 6 for t in ra_tuples)
 
 
 def test_s21_ungoverned_duplicate_concept_attrs_not_yet_automated():
@@ -1596,3 +1660,225 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     # Nothing survives filtering → no LLM call, empty string.
     monkeypatch.setattr(ask_api.llm_runtime, "chat", boom_chat)
     assert ask_api._cpq_summary_text({"ruggedized": "Yes"}, attrs, {1, 2}, "APX NEXT", 1) == ""
+
+
+def test_s32_change_request_full_option_name_outranks_coarse_hint():
+    """Regression: a change request naming a specific option verbatim must
+    resolve to THAT option, not to whichever option a coarse hint fragment
+    happens to match first.
+
+    Live bug (APX Next workspace): "change the hardware version to APX NEXT
+    (4G LTE Only)" was resolving to "APX NEXT (4G LTE+5G)" — the _HINT_PATTERNS
+    fragment ("hwversion" -> "LTE") matched BOTH options (both contain "LTE"),
+    and detect_change_request checked hints before the full-sentence option
+    match, so the ambiguous "LTE" hint won and grabbed whichever option came
+    first in menu order (which happened to already be the current value —
+    the config LOOKED unchanged while the tool claimed success).
+    """
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    hw = ConfigAttr(
+        entity_id=1, variable_name="hWVersion_astro", display_label="Hardware Version",
+        required=False, default_value="",
+        options=[
+            MenuOption("NEXT ENHANCED LTE PLUS 5G", "APX NEXT (4G LTE+5G)", 1),
+            MenuOption("NEXT STANDARD LTE ONLY", "APX NEXT (4G LTE Only)", 2),
+        ],
+    )
+    filled = {"hWVersion_astro": "NEXT ENHANCED LTE PLUS 5G"}
+
+    result = eng.detect_change_request(
+        "change the hardware version to APX NEXT (4G LTE Only)", [hw], filled,
+    )
+    assert result is not None, "a full, unambiguous option name must be recognized as a change"
+    changed_attr, new_value_hint = result
+    assert changed_attr.variable_name == "hWVersion_astro"
+
+    applied = eng.apply_answer(changed_attr, new_value_hint)
+    assert applied == ("NEXT STANDARD LTE ONLY", "APX NEXT (4G LTE Only)"), (
+        "the specifically-named option must be applied, not the "
+        "coarse-hint-matched (and here, unchanged) default option")
+
+
+def test_s33_change_request_does_not_corrupt_unrelated_free_text_attr():
+    """Regression: a gerund change-request phrasing ("i am changing...")
+    must not fall through to an unrelated free-text attribute earlier in
+    attribute order.
+
+    Live bug: "changing" didn't match the old `_CHANGE_VERB_RE` (bare verb
+    forms only), so has_change_verb was False, the attr-relevance gate never
+    engaged, and the loop's first free-text attribute (no options -> its
+    apply_answer always "succeeds") absorbed the entire raw sentence as its
+    new value — e.g. CRM_BILL_COUNTRY got overwritten with the literal
+    change-request text, while the actually-named attribute (hWVersion_astro)
+    was never reached.
+    """
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    bill_country = ConfigAttr(
+        entity_id=1, variable_name="CRM_BILL_COUNTRY", display_label="Bill Country",
+        required=False, default_value="", options=[],  # free-text, no menu items
+    )
+    hw = ConfigAttr(
+        entity_id=2, variable_name="hWVersion_astro", display_label="Hardware Version",
+        required=False, default_value="",
+        options=[
+            MenuOption("NEXT ENHANCED LTE PLUS 5G", "APX NEXT (4G LTE+5G)", 1),
+            MenuOption("NEXT STANDARD LTE ONLY", "APX NEXT (4G LTE Only)", 2),
+        ],
+    )
+    filled = {
+        "CRM_BILL_COUNTRY": "United States",
+        "hWVersion_astro": "NEXT ENHANCED LTE PLUS 5G",
+    }
+
+    result = eng.detect_change_request(
+        "i am changing the hardware version to APX NEXT (4G LTE Only)",
+        [bill_country, hw], filled,
+    )
+    assert result is not None
+    changed_attr, _ = result
+    assert changed_attr.variable_name == "hWVersion_astro", (
+        "the gerund phrasing must still target the attribute actually named "
+        "in the message, not fall through to an unrelated free-text attr")
+
+
+def test_s34_ambiguous_hint_without_full_option_name_does_not_guess():
+    """When the message names no full option and the only signal is a
+    coarse hint fragment that matches MORE THAN ONE option, the two-stage
+    detect_change_request -> apply_answer pipeline must never end up
+    applying a guessed value.
+
+    Current design (dev commit 5aefb07): detect_change_request() may still
+    return a candidate attr for an ambiguous message — it passes the FULL
+    question forward rather than the coarse fragment, deferring the actual
+    value resolution to a second apply_answer() call (exactly what
+    _handle_cascade does before writing anything to session state). The
+    safety guarantee that matters is at THAT boundary: a message with no
+    specific option named must never resolve to a value via apply_answer,
+    regardless of what detect_change_request's first-pass candidate was.
+    """
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    hw = ConfigAttr(
+        entity_id=1, variable_name="hWVersion_astro", display_label="Hardware Version",
+        required=False, default_value="",
+        options=[
+            MenuOption("NEXT ENHANCED LTE PLUS 5G", "APX NEXT (4G LTE+5G)", 1),
+            MenuOption("NEXT STANDARD LTE ONLY", "APX NEXT (4G LTE Only)", 2),
+        ],
+    )
+    filled = {"hWVersion_astro": "NEXT ENHANCED LTE PLUS 5G"}
+
+    result = eng.detect_change_request(
+        "switch the hardware version to LTE", [hw], filled,
+    )
+    if result is None:
+        return  # declining outright also satisfies the guarantee
+    changed_attr, new_value_hint = result
+    applied = eng.apply_answer(changed_attr, new_value_hint)
+    assert applied is None, (
+        "an ambiguous fragment with no full option named in the message "
+        "must never resolve to an applied value — "
+        f"got {applied!r} for a message that only says 'LTE'")
+
+
+def test_s35_build_payload_nests_value_and_drops_noise_vars():
+    """build_payload() returns {"configAttributes": {var: {"value": ...}}},
+    and never includes underscore-prefixed / ALL-CAPS-prefixed integration
+    fields regardless of provenance (§ "ignore attributes starting with _")."""
+    from aryx.cpq.engine import CpqEngine
+
+    eng = CpqEngine()
+    filled = {
+        "ultimateDestinationCountry": "US",
+        "_BM_USER_CURRENCY": "USD",
+        "CRM_BILL_COUNTRY": "United States",
+    }
+    filled_source = {
+        "ultimateDestinationCountry": "hint",
+        "_BM_USER_CURRENCY": "user",
+        "CRM_BILL_COUNTRY": "user",
+    }
+    payload = eng.build_payload(filled, filled_source)
+    assert payload == {
+        "configAttributes": {"ultimateDestinationCountry": {"value": "US"}},
+    }
+
+
+def test_s36_hidden_attr_with_default_fills_but_never_asked():
+    """A hidden=1 attr with a real default_value from the XML should still
+    land in `filled` (BML scripts elsewhere may reference it) but must
+    never appear in `pending` — hidden attrs are never asked or NL-hint-
+    matched, only ever given their own literal default."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    hidden_with_default = ConfigAttr(
+        entity_id=1, variable_name="hiddenRowSeparator_allFamily",
+        display_label="Row Separator", required=False, default_value="$$$",
+        options=[], hidden=True,
+    )
+    hidden_no_default = ConfigAttr(
+        entity_id=2, variable_name="hiddenUISequenceForModelSelection_astro",
+        display_label="UI Sequence", required=False, default_value="",
+        options=[], hidden=True,
+    )
+    normal = ConfigAttr(
+        entity_id=3, variable_name="quickStartGuide_astro",
+        display_label="Quick Start Guide", required=False, default_value="",
+        options=[MenuOption("YES", "Yes", 1), MenuOption("NO", "No", 2)],
+    )
+    filled, display_filled, pending = eng.auto_fill(
+        [hidden_with_default, hidden_no_default, normal], hints={},
+        governed_ids={3},
+    )
+    assert filled.get("hiddenRowSeparator_allFamily") == "$$$"
+    assert "hiddenUISequenceForModelSelection_astro" not in filled
+    assert all(a.variable_name != "hiddenRowSeparator_allFamily" for a in pending)
+    assert all(a.variable_name != "hiddenUISequenceForModelSelection_astro" for a in pending)
+
+
+def test_s37_country_hint_resolves_abbreviation_only_attrs():
+    """A country-fragment attr whose real options are abbreviation codes
+    only ("US", not "United States") must still resolve from the confirmed
+    country hint — confirmed live: chargerCountryPlug_apcr kept re-asking
+    "Country Plug" forever because "united states" (the hint) can never be
+    found as a substring inside its own shorter "US" option text, no matter
+    how the matching runs. The primary country anchor (whose own option
+    genuinely IS "United States") must keep resolving via the ordinary
+    exact-match path, untouched by the new shorthand fallback."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    charger_plug = ConfigAttr(
+        entity_id=1, variable_name="chargerCountryPlug_apcr",
+        display_label="Country Plug", required=False, default_value="",
+        options=[
+            MenuOption("US", "US", 1), MenuOption("UK", "UK", 2),
+            MenuOption("LA", "LA", 3), MenuOption("EU", "EU", 4),
+        ],
+    )
+    country_anchor = ConfigAttr(
+        entity_id=2, variable_name="ultimateDestinationCountry",
+        display_label="Ultimate Destination Country", required=False, default_value="",
+        options=[
+            MenuOption("US", "United States", 1),
+            MenuOption("GB", "United Kingdom", 2),
+        ],
+    )
+    filled, display_filled, _pending = eng.auto_fill(
+        [charger_plug, country_anchor], hints={"country": "United States"},
+        governed_ids={charger_plug.entity_id, country_anchor.entity_id},
+    )
+    assert filled.get("chargerCountryPlug_apcr") == "US"
+    assert filled.get("ultimateDestinationCountry") == "US"
+    assert display_filled.get("ultimateDestinationCountry") == "United States"

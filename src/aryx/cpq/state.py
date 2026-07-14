@@ -88,6 +88,17 @@ class ConfigAttr:
     # Derived from BM attribute metadata — see classify_select_type() in
     # engine.py (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
     select_type: str = "single"
+    # Source-derived catalog prefix (see engine._catalog_prefix), e.g.
+    # "ApxNextConfig" or "Sl3500EConfig" — "" when unresolved. Lets rule
+    # loaders scope to the same ingested catalog this attr came from, so a
+    # workspace holding more than one product's XML export never lets one
+    # catalog's rules act on another's attributes.
+    catalog_prefix: str = ""
+    # True for BM attrs flagged hidden=1 in the source XML — never shown to
+    # the customer or added to `pending`, but still eligible for its own
+    # default_value (BML scripts elsewhere may reference it) instead of
+    # being dropped from the graph entirely.
+    hidden: bool = False
 
 
 @dataclass
@@ -146,6 +157,16 @@ class CpqSession:
     # from the current rule set alone (§7). Each entry:
     # {"var": ..., "old": ..., "new": ..., "rule": ..., "turn": ...}.
     cascade_log: list[dict[str, Any]] = field(default_factory=list)
+    # variable_names extract_catalog_hints() flagged as negated in ANY past
+    # turn's question text (e.g. "no multikey"). Accumulated across turns,
+    # not recomputed per-turn like `hints` — a negation stated on turn 1
+    # must still suppress auto_fill's blind fallback on turn 3 even though
+    # turn 3's own question ("No Surveillance Kit") carries no negation
+    # signal itself (confirmed live: without this, multikeyType_astro was
+    # protected on the turn "no multikey" was typed, then silently filled
+    # "MULTIKEY" on the next turn once that turn's fresh, negation-free
+    # question overwrote the (until-then not persisted) suppression).
+    negated_vns: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -10,44 +10,44 @@ import {
   type ReactNode,
 } from "react";
 import { shayApi } from "./shay-api";
+import {
+  clearStoredShaySession,
+  getStoredShaySession,
+  getStoredShaySessionEvent,
+  isHttpStatusError,
+  type SessionClearReason,
+  type ShayAuthState,
+  SHAY_SESSION_EVENT_STORAGE_KEY,
+  SHAY_SESSION_STORAGE_KEY,
+  storeShaySession,
+  subscribeToShaySession,
+} from "./shay-session";
 import type { ShayProfile, ShaySession } from "./shay-types";
-
-export const SHAY_SESSION_STORAGE_KEY = "aryx.shay.session";
 
 interface ShayAuthContextValue {
   ready: boolean;
+  authState: ShayAuthState;
   session: ShaySession | null;
   profile: ShayProfile | null;
   setSession: (session: ShaySession) => void;
-  clearSession: () => void;
+  clearSession: (reason?: SessionClearReason) => void;
   refreshProfile: () => Promise<void>;
 }
 
 const ShayAuthContext = createContext<ShayAuthContextValue | null>(null);
 
-function isAuthFailure(error: unknown) {
-  return error instanceof Error && /\b(401|403)\b/.test(error.message);
-}
-
 export function ShayAuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
+  const [authState, setAuthState] = useState<ShayAuthState>("signed_out");
   const [session, setSessionState] = useState<ShaySession | null>(null);
   const [profile, setProfile] = useState<ShayProfile | null>(null);
 
-  const clearSession = useCallback(() => {
-    setSessionState(null);
-    setProfile(null);
-    if (typeof window !== "undefined") {
-      localStorage.removeItem(SHAY_SESSION_STORAGE_KEY);
-    }
+  const clearSession = useCallback((reason: SessionClearReason = "logout") => {
+    clearStoredShaySession(reason);
   }, []);
 
   const setSession = useCallback((next: ShaySession) => {
-    setSessionState(next);
-    setProfile(null);
-    if (typeof window !== "undefined") {
-      localStorage.setItem(SHAY_SESSION_STORAGE_KEY, JSON.stringify(next));
-    }
+    storeShaySession(next);
   }, []);
 
   const refreshProfile = useCallback(async () => {
@@ -60,26 +60,49 @@ export function ShayAuthProvider({ children }: { children: ReactNode }) {
       setProfile(nextProfile);
     } catch (error) {
       setProfile(null);
-      if (isAuthFailure(error)) {
-        clearSession();
+      if (isHttpStatusError(error, 401)) {
+        clearSession("expired");
       }
     }
   }, [clearSession, session?.access_token]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = localStorage.getItem(SHAY_SESSION_STORAGE_KEY);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        // Guard against stale SuccessResponse-wrapped sessions (autoLogin used to wrap in {success, data})
-        const session = parsed?.data?.access_token ? parsed.data : parsed;
-        setSessionState(session as ShaySession);
-      } catch {
-        localStorage.removeItem(SHAY_SESSION_STORAGE_KEY);
-      }
+    if (typeof window === "undefined") {
+      return;
     }
+
+    const syncSession = (nextSession: ShaySession | null, reason?: SessionClearReason) => {
+      setSessionState(nextSession);
+      setProfile(null);
+      if (nextSession) {
+        setAuthState("authenticated");
+        return;
+      }
+      setAuthState(reason === "expired" ? "expired" : "signed_out");
+    };
+
+    syncSession(getStoredShaySession());
+
+    const unsubscribe = subscribeToShaySession(syncSession);
+    const onStorage = (event: StorageEvent) => {
+      if (
+        event.key
+        && event.key !== SHAY_SESSION_STORAGE_KEY
+        && event.key !== SHAY_SESSION_EVENT_STORAGE_KEY
+      ) {
+        return;
+      }
+      const latestEvent = getStoredShaySessionEvent();
+      const reason = latestEvent?.type === "cleared" ? latestEvent.reason : undefined;
+      syncSession(getStoredShaySession(), reason);
+    };
+
+    window.addEventListener("storage", onStorage);
     setReady(true);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -89,12 +112,13 @@ export function ShayAuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ShayAuthContextValue>(() => ({
     ready,
+    authState,
     session,
     profile,
     setSession,
     clearSession,
     refreshProfile,
-  }), [clearSession, profile, ready, refreshProfile, session, setSession]);
+  }), [authState, clearSession, profile, ready, refreshProfile, session, setSession]);
 
   return (
     <ShayAuthContext.Provider value={value}>

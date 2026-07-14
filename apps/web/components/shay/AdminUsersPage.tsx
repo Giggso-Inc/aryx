@@ -320,6 +320,7 @@ export function AdminUsersPage() {
         showHero={false}
         title="Admin Hub"
         description="Manage company users and invitations."
+        contentWidth="wide"
       >
         <AdminUsersPageView
           company={company}

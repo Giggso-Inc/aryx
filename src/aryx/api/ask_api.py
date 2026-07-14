@@ -278,6 +278,22 @@ def _handle_cpq_qa(
                 req.question, types, req.history, workspace_id=req.workspace_id,
             )
             entities, calls = gather(reader, terms)
+            # Two ingested product catalogs can share one workspace (e.g. an
+            # APX Next export and an SL3500e export). When the fast path
+            # above didn't resolve the question to one attribute, this
+            # generic graph search has no attribute list to scope it, so it
+            # can otherwise return nodes from BOTH catalogs for a name that
+            # happens to appear in each (confirmed live: "carry solutions"
+            # matched a menu item in both catalogs at once). Restrict to the
+            # active session's catalog whenever one is known.
+            catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+            if catalog_prefix:
+                entities = [e for e in entities if e.type.startswith(catalog_prefix)]
+                for e in entities:
+                    e.neighbors = [
+                        n for n in e.neighbors
+                        if n.get("type", "").startswith(catalog_prefix)
+                    ]
             entities = _enrich_with_attributes(entities, req.workspace_id)
             context = render_context(entities)
             qa_answer, s_in, s_out, s_ms = _synthesise(
@@ -341,6 +357,12 @@ def _handle_cascade(
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
     by_eid = {a.entity_id: a for a in attrs}
     hints = _cpq_engine.extract_hints(req.question)
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    # Accumulate across turns (not just this one) — see CpqSession.negated_vns.
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
 
     # Find dependent attrs to invalidate
     dependent_eids = _cpq_engine.find_cascade_dependents(
@@ -387,14 +409,15 @@ def _handle_cascade(
         }
 
     # Re-run full rule evaluation loop with updated state
-    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
-        country=session.country,
+        country=session.country, negated_vns=negated_vns,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -402,6 +425,7 @@ def _handle_cascade(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns,
     )
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
@@ -459,8 +483,8 @@ def _handle_cascade(
             cascade_note + "\n\n"
             f"Configuration complete for **{session.product_name}**.\n\n"
             + (f"{summary}\n\n" if summary else "")
-            + f"Say **show me the json** to see the full payload, "
-              f"**confirm** to submit, or describe any changes."
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
         )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
@@ -561,11 +585,28 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if not attrs:
         return {}  # no CPQ data in graph — fall through to standard Ask
 
+    # Catalog-aware hints — now that attrs (and their real options) are
+    # loaded, scan the question for real option text extract_hints()'s fixed
+    # 3-concept pattern list has no coverage for (battery, multikey, carry
+    # solution, DMS tier, ...). setdefault so the curated patterns still win
+    # where both mechanisms independently find the same attr.
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    # Accumulate across turns (not just this one) — see CpqSession.negated_vns.
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
+
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
-    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id)
-    rec_rules = _cpq_engine.load_recommendation_rules(req.workspace_id)
-    con_rules = _cpq_engine.load_constraint_rules(req.workspace_id)
-    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id)
+    # catalog_prefix scopes every rule/function load to the same ingested
+    # catalog attrs came from, so a workspace holding more than one
+    # product's XML export never lets one catalog's rules act on another's
+    # attributes (see CpqEngine._scope_to_catalog).
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
+        req.workspace_id, catalog_prefix)
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":
@@ -641,8 +682,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             f"I didn't quite catch that. Here is the current configuration for "
             f"**{session.product_name}**:\n\n"
             + (f"{summary}\n\n" if summary else "")
-            + f"Say **show me the json** to see the full payload, "
-              f"**confirm** to submit, or describe what to change."
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe what to change."
         )
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
@@ -761,7 +802,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
-        country=session.country,
+        country=session.country, negated_vns=negated_vns,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -769,6 +810,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
+        negated_vns=negated_vns,
     )
     dropped_note = "".join(
         f" Removed **{', '.join(dvals)}** from **"
@@ -813,8 +855,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
             + f"Configuration complete for **{session.product_name}**.\n\n"
             + (f"{summary}\n\n" if summary else "")
-            + f"Say **show me the json** to see the full payload, "
-              f"**confirm** to submit, or describe any changes."
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
         )
     elif session.turn >= _cpq_engine.MAX_TURNS:
         # Turn cap reached with attrs still unresolved. NEVER fabricate a
@@ -901,6 +943,37 @@ class LlmConfigRequest(BaseModel):
     api_key: str = ""
 
 
+# Readiness gate for the JSON/Beautify/Share buttons: don't expose them
+# until there's enough substance to be worth showing (3 answered attrs),
+# or the session has already reached review/approval regardless of count.
+_SHARE_READY_MIN_FILLED = 3
+
+
+def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) -> None:
+    """Splice json/beautify/api_share fields into a CPQ turn's response, in place.
+
+    Single wrap point (called once from run_ask, not from every _run_cpq_turn
+    return site) — recomputed every ready turn from current session state, never
+    cached, since cascade can invalidate previously-filled attrs mid-conversation.
+    """
+    session_data = result.get("session_data")
+    if not session_data:
+        return
+    session = CpqSession.from_dict(session_data)
+    filled_count = len(session.filled) + len(session.filled_multi)
+    ready = filled_count >= _SHARE_READY_MIN_FILLED or session.status != "configuring"
+    if not ready or not session.product_name:
+        return
+    attrs, _ = _cpq_engine.load_product_config(reader, req.workspace_id, session.product_name)
+    payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
+    result["json_response"] = payload
+    result["json_button_flag"] = True
+    result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)
+    result["beautify_button_flag"] = True
+    result["api_share"] = payload if session.status != "configuring" else {}
+    result["api_share_button_flag"] = session.status != "configuring"
+
+
 def run_ask(req: AskRequest) -> dict[str, Any]:
     """Execute the Aryx Ask pipeline for a request payload.
 
@@ -920,6 +993,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     if is_cpq:
         result = _run_cpq_turn(req, reader)
         if result:  # non-empty → CPQ engine handled it
+            _attach_share_flags(result, req, reader)
             return result
         # empty → no CPQ data in graph yet, fall through to standard Ask
 

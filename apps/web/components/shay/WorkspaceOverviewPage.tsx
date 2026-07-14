@@ -75,6 +75,7 @@ export function WorkspaceOverviewPage({ workspaceId }: { workspaceId: string }) 
         title={workspace ? formatWorkspaceName(workspace.name) : "Workspace"}
         description={workspace?.description || "This workspace is bridged to Aryx so data sources, Ask sessions, and workspace controls run from one mapped surface."}
         actions={workspace ? <ShayWorkspaceTabs workspaceId={workspace.id} /> : undefined}
+        contentWidth="detail"
       >
         {loading ? (
           <div className="rounded-[1.5rem] border border-navy-100 bg-white px-5 py-12 text-center text-sm text-subtle shadow-soft">

@@ -72,6 +72,17 @@ class OracleWorkspaceStore:
                          "context": r[3], "brief": r[4] or {}, "created_at": r[5]}
                         for r in cur.fetchall()]
 
+    def get(self, wid: int) -> dict[str, Any] | None:
+        """Return one workspace row by id, or None when it does not exist."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_workspace_by_id"), (int(wid),))
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "name": row[1], "description": row[2],
+                "context": row[3], "brief": row[4] or {}, "created_at": row[5]}
+
     def set_context(self, wid: int, context: str) -> dict[str, Any]:
         """Update the free-text context string for workspace wid."""
         with self._pool.connection() as conn:

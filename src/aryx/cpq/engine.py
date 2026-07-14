@@ -61,6 +61,58 @@ def _presentable(val: str | None) -> bool:
     return bool(val) and str(val).strip().lower() not in _DISPLAY_EMPTY
 
 
+# Ontology types ingested from an XML source are named '{SourceStem}Bm{Tag}'
+# (e.g. 'ApxNextConfigBmConfigAttr', 'Sl3500EConfigBmConfigAttr') because every
+# BigMachines/Oracle CPQ export element tag begins with 'bm_' — the PascalCase
+# text before that marker is the ingested-source/catalog boundary.
+_CATALOG_PREFIX_RE = re.compile(r"^(.*?)Bm[A-Z]")
+
+
+def _catalog_prefix(type_name: str) -> str:
+    """Source-derived catalog prefix of an ingested ontology type name.
+
+    Used to keep two ingested product catalogs sharing one workspace (e.g.
+    an APX Next export and an SL3500e export) from being treated as a
+    single undifferentiated attribute/rule pool — see load_product_config's
+    catalog scoping. Returns "" when no 'Bm<Upper>' marker is found (a
+    workspace with no source-prefixed types, or a naming convention outside
+    this pipeline's own PascalCase scheme) — callers must treat "" as
+    "unknown catalog", never as a valid scope to filter on.
+    """
+    m = _CATALOG_PREFIX_RE.match(type_name or "")
+    return m.group(1) if m else ""
+
+
+# BigMachines variable_names are camelCase concatenations of the UI group an
+# attribute lives under plus its own field name (e.g. "carrySolutionsType_apcr"
+# groups under "Carry Solutions", field "Type") — the group name is what a
+# customer actually says ("carry solutions"), so detect_attr_query needs the
+# split words, not just the raw string, to resolve those questions.
+_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_GENERIC_ATTR_WORDS = frozenset({
+    "type", "types", "selection", "option", "options", "all", "config",
+    "attr", "value", "values",
+})
+
+
+def _variable_words(variable_name: str) -> list[str]:
+    """CamelCase/underscore-split words from a variable_name, catalog-suffix
+    and generic filler words (type/selection/option/...) dropped.
+
+    Used only as a fallback signal in detect_attr_query — never for exact
+    matching, since dropping generic words is intentionally lossy.
+    """
+    words: list[str] = []
+    for part in variable_name.split("_"):
+        if not part:
+            continue
+        spaced = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", part)
+        spaced = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", spaced)
+        words.extend(w.lower() for w in spaced.split())
+    return [w for w in words if len(w) > 1 and w not in _GENERIC_ATTR_WORDS]
+
+
 # ── CPQ intent detection ───────────────────────────────────────────────────────
 _CPQ_TRIGGER = re.compile(
     r"\b(quote|configure|configuration|build.*quote|create.*quote|"
@@ -101,6 +153,21 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     ("product", r"\bsl\s*3500\b", "SL3500e"),
 ]
 
+# Reverse of the country entries above — a country-fragment attribute whose
+# real options are abbreviation codes rather than full names (e.g.
+# chargerCountryPlug_apcr offers "US"/"UK", not "United States"/"United
+# Kingdom") can never match the "United States" hint via substring search:
+# a longer needle can't be found inside a shorter haystack. Confirmed live:
+# ultimateDestinationCountry (whose own option IS "United States"... actually
+# whose display name matches directly) resolves fine via Priority 2/3, but
+# chargerCountryPlug_apcr kept re-asking because "united states" can never be
+# found inside its own "US" option text — the customer had already answered
+# with the country, typed it again for this attribute, and got rejected.
+_COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
+    "united states": ("US", "USA"),
+    "united kingdom": ("UK", "GB"),
+}
+
 # Generic country extraction — captures any proper-noun country name from NL
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
 # The extracted name is matched word-boundary against DB option display names,
@@ -118,6 +185,76 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\bapac\b", "APAC"),
     (r"\blatin\s+america\b", "LA"),
 ]
+
+# catalog-hint matching (extract_catalog_hints): a real menu option's own
+# text (item_value/display_name) found verbatim in the question — punctuation
+# and casing stripped so "AT&T/FirstNet" matches item_value "ATT/FIRSTNET" and
+# "no multikey" matches "NO MULTIKEY". Deliberately glued (no word-boundary
+# anchors survive stripping), so a minimum cleaned length keeps accidental
+# substring collisions (e.g. "essential" inside "quintessential") negligible.
+_HINT_MIN_PHRASE_LEN = 5
+_HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
+
+
+def _normalize_for_hint(text: str) -> str:
+    return _HINT_STRIP_RE.sub("", text.lower())
+
+
+def _normalize_for_hint_with_map(text: str) -> tuple[str, list[int]]:
+    """Same stripping as _normalize_for_hint, but also returns index_map
+    where index_map[i] is the original `text` position that the i-th
+    character of the normalized string came from — lets a match found in
+    the glued/stripped string be traced back to its real location, e.g. to
+    inspect the words that precede it (see _is_negated_before)."""
+    lowered = text.lower()
+    kept: list[str] = []
+    index_map: list[int] = []
+    for i, ch in enumerate(lowered):
+        if ch.isalnum():
+            kept.append(ch)
+            index_map.append(i)
+    return "".join(kept), index_map
+
+
+# Cue words that flip a literal option-text match into an exclusion rather
+# than a selection — "exclude any... carry solutions" contains the exact
+# text of the real option "Carry Solutions", but means the opposite
+# (confirmed live: accessoriesSolutionSet_astro was auto-filled to "CARRY
+# SOLUTIONS" from that sentence). Word-bounded so short cues ("no", "not")
+# don't fire inside unrelated words ("know", "notification").
+_NEGATION_RE = re.compile(
+    r"\b(exclud\w*|without|no|not|never|omit\w*|remov\w*|minus)\b",
+    re.IGNORECASE,
+)
+_NEGATION_WINDOW_CHARS = 40
+
+
+def _is_negated_before(question_lower: str, orig_pos: int) -> bool:
+    window_start = max(0, orig_pos - _NEGATION_WINDOW_CHARS)
+    return bool(_NEGATION_RE.search(question_lower[window_start:orig_pos]))
+
+
+def _find_plural_tolerant(q_norm: str, phrase: str) -> int:
+    """q_norm.find(phrase), tolerating a missing/extra trailing "s".
+
+    Confirmed live: option text "CARRY SOLUTIONS" (normalized
+    "carrysolutions") never matched a customer writing "no carry solution"
+    (singular) — an exact-substring search on "carrysolution" fails against
+    "carrysolutions" by exactly one character, so the negation guard never
+    saw it and accessoriesSolutionSet_astro was silently auto-filled with
+    the very thing the customer excluded. Trying the phrase with its
+    trailing "s" added/removed catches this without weakening the
+    real length/ambiguity guards elsewhere (this only changes WHERE a
+    phrase is found in the question, not which attrs are eligible).
+    """
+    idx = q_norm.find(phrase)
+    if idx != -1:
+        return idx
+    variant = phrase[:-1] if phrase.endswith("s") else phrase + "s"
+    if len(variant) < _HINT_MIN_PHRASE_LEN:
+        return -1
+    return q_norm.find(variant)
+
 
 # Attr key fragments that represent "decision-required" choices — never
 # auto-fill via first-option fallback or rule-governed default-or-first (D2),
@@ -259,6 +396,134 @@ class CpqEngine:
 
         return hints
 
+    def extract_catalog_hints(
+        self, question: str, attrs: list["ConfigAttr"],
+    ) -> tuple[dict[str, str], set[str]]:
+        """Extract hints by matching real menu-option text against the question.
+
+        Complements extract_hints()'s fixed 3-concept pattern list (hwversion/
+        country/product) — confirmed live, that list silently drops anything
+        outside those three concepts.
+
+        Rather than adding a hardcoded pattern per concept, this scans every
+        visible, single/boolean attr's real options and checks whether that
+        option's own text (item_value or display_name) appears verbatim in
+        the question, punctuation/casing stripped. Returns
+        (hints, negated_vns):
+          - hints — {variable_name: item_value}, keyed by the exact
+            variable_name (unlike extract_hints()'s fragment keys) since the
+            match already identifies the specific attribute, no fuzzy
+            fragment lookup needed.
+          - negated_vns — variable_names whose concept appeared in the
+            question immediately after a negation cue ("exclude", "no",
+            "without", ...) rather than as a positive selection. Callers
+            must not silently auto-fill these via blind first-by-order —
+            confirmed live: "exclude any multikey capability" produced zero
+            positive hint for multikeyType_astro (see single-word rule
+            below), so it fell through to auto_fill's ungoverned fallback
+            and landed on the literal opposite, "MULTIKEY", even though a
+            "No Multikey" option exists. Only auto_fill() consults this —
+            it does not affect `hints` itself.
+
+        Never guesses (D2), several ways:
+          - If the same option text is real for two or more different attrs,
+            neither is hinted. A tie-break using a distinguishing word from
+            the attr's own variable_name was tried and REJECTED after
+            confirmed false positives: "software" in "baseline release
+            software" incorrectly anchored softwareBundlesBundleType_astro
+            (self-referential — the word only overlapped because it's also
+            in that attr's own name, unrelated to what the customer meant),
+            and "SIM" incorrectly anchored selectSecondarySIMCard_astro over
+            the intended sIMCardSelection_astro (an artifact of how the
+            latter's leading lowercase "s" splits under camelCase parsing).
+            A heuristic that's already produced two confirmed wrong guesses
+            in normal testing isn't safe to keep — better to leave both
+            unresolved than guess wrong.
+          - A candidate phrase must be multi-word (its real item_value or
+            display_name contains a space) OR contain a digit/slash to be
+            trusted as a positive hint, even with a single owner. A lone
+            single word is too easily a coincidence (e.g. "SOFTWARE" is a
+            real, sole-owner option for relatedServicesType_astro, but
+            appearing inside "baseline release software" has nothing to do
+            with related services). Multi-word phrases ("NO MULTIKEY",
+            "BASELINE RELEASE") aren't at meaningful risk of this — a
+            specific multi-word phrase appearing verbatim is not the kind of
+            thing that happens by accident. Neither is a punctuation-joined
+            code like "ATT/FIRSTNET" (confirmed live: excluding it as a bare
+            "single word" dropped the hint for wirelessCarrier_astro even
+            though the customer wrote "AT&T/FirstNet" verbatim) — English
+            prose essentially never contains a digit or an internal slash by
+            accident, unlike a common dictionary word.
+          - A positive-looking match is discarded (never turned into a
+            hint) if a negation cue sits in the ~40 chars right before it in
+            the real question text — "exclude ... carry solutions" must not
+            select "Carry Solutions" just because that literal phrase
+            appears in the sentence.
+
+        Longer/more specific option text is tried first so a short phrase
+        can't shadow a longer, more specific one that also appears in the
+        question. Options coded by a generic boolean item_value (YES/NO) are
+        excluded even when their display_name is elaborate (e.g.
+        item_value="YES", display_name="Baseline Release") — matching those
+        via display text alone is exactly the ambiguous-duplicate case D2
+        exists to avoid; the real, specifically-named option should win.
+        """
+        q_norm, q_index_map = _normalize_for_hint_with_map(question)
+        q_lower = question.lower()
+        candidates: dict[str, list[tuple[str, str]]] = {}
+        # Every real option's normalized text and its owning attr(s) — used
+        # for negation-suppression below regardless of word count or
+        # ambiguity (suppressing a blind fallback is low-risk: worst case is
+        # an extra question asked, not a wrong value silently picked, so
+        # it's fine to be broader here than the positive-hint match below).
+        all_owners: dict[str, set[str]] = {}
+        for attr in attrs:
+            if attr.hidden or attr.select_type == "multi":
+                continue
+            for opt in attr.options:
+                if opt.item_value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
+                    continue
+                for text in (opt.item_value, opt.display_name):
+                    stripped = text.strip()
+                    is_code = any(c.isdigit() for c in stripped) or "/" in stripped
+                    norm = _normalize_for_hint(text)
+                    if len(norm) < _HINT_MIN_PHRASE_LEN:
+                        continue
+                    all_owners.setdefault(norm, set()).add(attr.variable_name)
+                    if len(stripped.split()) < 2 and not is_code:
+                        # Single-word dictionary-style options are never
+                        # trusted as a positive hint (see docstring) — still
+                        # recorded above for negation-suppression, just not
+                        # added to `candidates` below.
+                        continue
+                    candidates.setdefault(norm, []).append(
+                        (attr.variable_name, opt.item_value))
+
+        hints: dict[str, str] = {}
+        for phrase in sorted(candidates, key=len, reverse=True):
+            idx = _find_plural_tolerant(q_norm, phrase)
+            if idx == -1:
+                continue
+            entries = candidates[phrase]
+            owners = {vn for vn, _iv in entries}
+            if len(owners) > 1:
+                continue  # real option for 2+ different attrs — never guess
+            vn, item_value = entries[0]
+            if vn in hints:
+                continue  # a longer, more specific phrase already matched this attr
+            if _is_negated_before(q_lower, q_index_map[idx]):
+                continue  # "exclude ... <phrase>" — not a selection
+            hints[vn] = item_value
+
+        negated_vns: set[str] = set()
+        for phrase, owners in all_owners.items():
+            idx = _find_plural_tolerant(q_norm, phrase)
+            if idx == -1:
+                continue
+            if _is_negated_before(q_lower, q_index_map[idx]):
+                negated_vns.update(owners)
+        return hints, negated_vns
+
     def detect_product_mention(self, question: str, hints: dict[str, str]) -> str:
         """Best-effort product display label from NL text, or "" if none found.
 
@@ -288,6 +553,75 @@ class CpqEngine:
     def _is_layout_noise(self, ontology_type: str) -> bool:
         t = (ontology_type or "").lower()
         return any(frag in t for frag in _LAYOUT_TYPE_FRAGMENTS)
+
+    def _scope_to_catalog(
+        self, reader: Any, workspace_id: int, attr_types: list[str], product_hint: str,
+    ) -> tuple[list[str], str]:
+        """Restrict attr_types to the single catalog the requested product belongs to.
+
+        A workspace can hold more than one ingested XML source at once (e.g. an
+        APX Next export and an SL3500e export side by side) — without this,
+        every product request pulls attributes/rules from ALL of them, producing
+        a hybrid config that mixes incompatible product lines (confirmed live:
+        asking for "APX Next" returned attrs from both '_astro' and '_apcr'
+        catalogs simultaneously).
+
+        Resolution: group attr_types by their source-derived _catalog_prefix,
+        look up each prefix's BmPrdFamily/BmCatalog entity name, and match
+        product_hint against those names. Falls back to returning ALL types
+        unscoped (the pre-fix behavior) whenever there's only one catalog to
+        begin with, or the hint can't be uniquely matched to one — this must
+        never silently return zero attrs for an unresolved hint.
+
+        Returns (scoped_attr_types, resolved_catalog_prefix) — the prefix is
+        "" when scoping did not narrow to exactly one catalog, and callers
+        (rule loaders) must treat that the same as "no catalog filter".
+        """
+        prefixes = {_catalog_prefix(t) for t in attr_types}
+        prefixes.discard("")
+        if len(prefixes) <= 1:
+            return attr_types, (next(iter(prefixes)) if prefixes else "")
+
+        hint_norm = re.sub(r"[^a-z0-9]", "", (product_hint or "").lower())
+        if not hint_norm:
+            return attr_types, ""
+
+        matched_prefixes: set[str] = set()
+        for prefix in prefixes:
+            family_ents: list[dict] = []
+            for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
+                # High limit, not a handful: a single product family can carry
+                # dozens of BmCatalog entities (e.g. a MOTOTRBO/PCR family
+                # spanning 70+ individual radio-model catalogs) — the model
+                # actually matching product_hint (e.g. "autoSL3500E_BOM") can
+                # sort anywhere in an unordered graph result, so a small limit
+                # risks silently missing it and falling back to "ambiguous".
+                family_ents.extend(
+                    reader.find_entities(ontology_type=family_type, limit=2000))
+            if not family_ents:
+                continue
+            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
+            for fent in family_ents:
+                fname = str(
+                    family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
+                )
+                fname_norm = re.sub(r"[^a-z0-9]", "", fname.lower())
+                if fname_norm and (fname_norm in hint_norm or hint_norm in fname_norm):
+                    matched_prefixes.add(prefix)
+                    break
+
+        if len(matched_prefixes) == 1:
+            chosen = next(iter(matched_prefixes))
+            scoped = [t for t in attr_types if _catalog_prefix(t) == chosen]
+            if scoped:
+                return scoped, chosen
+
+        logger.warning(
+            "cpq: could not uniquely scope product_hint=%r to one catalog among "
+            "prefixes=%s — loading ALL catalogs (cross-catalog mixing risk)",
+            product_hint, sorted(prefixes),
+        )
+        return attr_types, ""
 
     def load_product_config(
         self,
@@ -328,6 +662,15 @@ class CpqEngine:
                 t for t in all_type_names
                 if "configattr" in _norm(t) and not self._is_layout_noise(t)
             ]
+
+        # Scope to the single catalog the requested product belongs to —
+        # a workspace may hold more than one ingested product catalog at
+        # once (see _scope_to_catalog docstring). resolved_catalog_prefix
+        # is stamped onto every ConfigAttr below so rule loaders can apply
+        # the same scoping without needing a second graph round-trip.
+        attr_types, resolved_catalog_prefix = self._scope_to_catalog(
+            reader, workspace_id, attr_types, product_hint,
+        )
 
         attr_ents: list[dict] = []
         for attr_type in attr_types:
@@ -405,15 +748,18 @@ class CpqEngine:
                 logger.debug("cpq: skipping noise attr %r", var_name)
                 continue
 
-            hidden_raw = str(pg.get("hidden") or "0").strip().lower()
-            if hidden_raw in ("1", "true", "yes"):
-                continue  # hidden attributes are never shown or auto-filled
-
             display = str(pg.get("name") or ent.get("name") or var_name).strip()
             required_raw = str(pg.get("required") or "0").strip().lower()
             required = required_raw in ("1", "true", "yes")
             default_val = str(pg.get("default_value") or "").strip()
             order = int(pg.get("order_number") or pg.get("order") or 999)
+
+            hidden_raw = str(pg.get("hidden") or "0").strip().lower()
+            is_hidden = hidden_raw in ("1", "true", "yes")
+            if is_hidden and not default_val:
+                # Hidden with nothing to contribute — never shown/asked, and
+                # no default to feed BML scripts, so still fully dropped.
+                continue
 
             # Exclude layout/UI-noise nodes by checking attribute content
             if self._is_layout_noise(ent.get("type") or ""):
@@ -441,6 +787,8 @@ class CpqEngine:
                 order=order,
                 source_id=source_id,
                 select_type=classify_select_type(pg),
+                catalog_prefix=_catalog_prefix(ent.get("type") or ""),
+                hidden=is_hidden,
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -448,7 +796,7 @@ class CpqEngine:
 
     # ── Rule loaders (dialect-agnostic via cpq.rdb) ──────────────────────────
 
-    def _load_rule_join_data(self, workspace_id: int):
+    def _load_rule_join_data(self, workspace_id: int, catalog_prefix: str = ""):
         """Shared fetch for the rule loaders.
 
         BmConfigRuleInput/Action rows reference their rule by the BM-native
@@ -456,31 +804,41 @@ class CpqEngine:
         entity id — the join key is the rule entity's own attrs ``id``.
         Returns (rdb, inputs_by_rule, actions_by_rule, marked_by_rule,
         chain_by_rule).
+
+        catalog_prefix — restricts every join table to one ingested catalog.
+        Required whenever a workspace holds more than one product's XML
+        export: BM-native rule ids are only unique WITHIN one source, so two
+        catalogs sharing a workspace can and do collide on the same native
+        id (confirmed live — e.g. id 213876892 exists in both an APX Next
+        and an SL3500e export). Without this, inputs_by_rule/actions_by_rule
+        etc. silently merge rows from both catalogs under the same key, and
+        whichever catalog's row is read last wins — corrupting rule
+        evaluation even after fetch_rules() itself is correctly scoped.
         """
         rdb = get_cpq_rdb()
         inputs_by_rule: dict[int, tuple[int, str]] = {}
-        for rid, aid, val in rdb.fetch_rule_inputs(workspace_id):
+        for rid, aid, val in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
             inputs_by_rule[rid] = (aid, val)
-        actions_by_rule: dict[int, list[tuple[int, int, str, int]]] = {}
-        for rid, aid, at, val, fn in rdb.fetch_rule_actions(workspace_id):
-            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn))
+        actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]] = {}
+        for rid, aid, at, val, fn, st in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
+            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st))
         # bm_config_marked_attr: the real target linkage for many declarative
         # hiding rules — verified against real data where BmConfigRuleAction
         # and the rule's own attr_id both carry no target (docs/CPQ_GRAPH_FIX_PLAN.md §6a).
         marked_by_rule: dict[int, list[int]] = {}
-        for rid, aid in rdb.fetch_marked_attrs(workspace_id):
+        for rid, aid in rdb.fetch_marked_attrs(workspace_id, catalog_prefix):
             marked_by_rule.setdefault(rid, []).append(aid)
         # bm_config_rule_assoc: some rules chain to a child rule rather than
         # declaring their own target; the terminal rule holds the real one.
         chain_by_rule: dict[int, int] = {}
-        for rid, cid in rdb.fetch_rule_chain_links(workspace_id):
+        for rid, cid in rdb.fetch_rule_chain_links(workspace_id, catalog_prefix):
             chain_by_rule[rid] = cid
         return rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule
 
     @staticmethod
     def _resolve_targets(
         rule_key: int,
-        actions_by_rule: dict[int, list[tuple[int, int, str, int]]],
+        actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]],
         marked_by_rule: dict[int, list[int]],
         chain_by_rule: dict[int, int],
         max_hops: int = 3,
@@ -497,7 +855,7 @@ class CpqEngine:
         """
         acts = actions_by_rule.get(rule_key, [])
         if acts:
-            return [(aid, at) for aid, at, _v, _f in acts]
+            return [(aid, at) for aid, at, _v, _f, _st in acts]
         marked = marked_by_rule.get(rule_key)
         if marked:
             return [(aid, 2) for aid in marked]
@@ -507,7 +865,7 @@ class CpqEngine:
         while current is not None and current not in seen and hops < max_hops:
             acts = actions_by_rule.get(current, [])
             if acts:
-                return [(aid, at) for aid, at, _v, _f in acts]
+                return [(aid, at) for aid, at, _v, _f, _st in acts]
             marked = marked_by_rule.get(current)
             if marked:
                 return [(aid, 2) for aid in marked]
@@ -524,20 +882,25 @@ class CpqEngine:
             return source_id
         return entity_id
 
-    def load_hiding_rules(self, workspace_id: int) -> list[HidingRule]:
+    def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.
 
         Declarative rules become HidingRule objects. Script-backed rules
         (condition_function_id != -1) cannot be expressed as a simple
         hide/show pair — they are counted and logged (never silently
         dropped) so coverage is visible per workspace.
+
+        catalog_prefix — scopes to one ingested catalog (see
+        _load_rule_join_data) when the workspace holds more than one
+        product's XML export. "" preserves the original workspace-wide load.
         """
         rules: list[HidingRule] = []
         script_backed = 0
         unresolved = 0
         try:
-            rdb, inputs, actions, marked, chain = self._load_rule_join_data(workspace_id)
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11"):
+            rdb, inputs, actions, marked, chain = self._load_rule_join_data(
+                workspace_id, catalog_prefix)
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11", catalog_prefix):
                 if fn_id != -1:
                     script_backed += 1
                     logger.info(
@@ -649,36 +1012,142 @@ class CpqEngine:
 
     # ── Recommendation rule loader ────────────────────────────────────────────
 
-    def load_recommendation_rules(self, workspace_id: int) -> list[RecommendationRule]:
-        """Load recommendation rules (rule_type=10) from the RDB.
+    def _load_value_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> tuple[list[RecommendationRule], list[ConstraintRule]]:
+        """Load recommendation + constraint rules together in one pass.
 
-        When a condition attribute equals a specific value, the engine
-        auto-selects the recommended item_value for the target attribute
-        without asking the user. Script-backed rules are counted and logged.
+        Historical note: this originally filtered by a hardcoded rule_type
+        ("10" for recommendation, "5" for constraint) and action_type ("3"
+        for recommend, "4" for constrain). NEITHER exists anywhere in either
+        ingested catalog (APX Next, SL3500e) — confirmed empirically: real
+        rule_type codes seen are 1/2/4/6/9/11/23, never 5 or 10, and
+        action_type only ever takes the values 1/2. rule_type turns out to
+        be tenant/catalog-specific numbering (the two catalogs even use
+        DIFFERENT codes for the same semantic categories, and SL3500e
+        introduces codes never seen in APX Next at all), so it cannot be
+        used to select rule categories.
+
+        The signal that DOES hold consistently across both catalogs is
+        set_type on each declarative rule action: set_type == -1 always
+        means "remove this value from the allowed set" (constraint); any
+        other set_type means "assign this specific value" (recommendation/
+        default). This classifies every non-hiding rule by inspecting its
+        own actions instead of trusting rule_type/action_type.
+
+        Hiding rules (rule_type=11) are unaffected by any of this — that
+        code has proven reliable across both catalogs and is loaded
+        separately by load_hiding_rules().
+
+        catalog_prefix — scopes to one ingested catalog (see
+        _load_rule_join_data) when the workspace holds more than one
+        product's XML export. "" preserves the original workspace-wide load.
         """
-        rules: list[RecommendationRule] = []
-        script_backed = 0
+        rec_rules: list[RecommendationRule] = []
+        con_rules: list[ConstraintRule] = []
+        script_constraints = 0
+        script_recommendations_skipped = 0
+        cond_script_skipped = 0
+        ambiguous_recommendations_skipped = 0
         try:
-            rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(workspace_id)
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "10"):
-                if fn_id != -1:
-                    script_backed += 1
-                    logger.info(
-                        "cpq: recommendation rule %r is script-backed "
-                        "(function_id=%d) — logged, not evaluated", rule_name, fn_id)
-                    continue
+            rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(
+                workspace_id, catalog_prefix)
+            scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
+            for eid, src_id, rule_name, _rule_type, fn_id in rdb.fetch_value_rules(
+                workspace_id, catalog_prefix,
+            ):
                 key = self._rule_key(eid, src_id, inputs, actions)
                 inp = inputs.get(key)
-                # action_type=3 → set/recommend; value1 holds the recommended item_value
-                act = next(
-                    ((aid, val) for aid, at, val, _f in actions.get(key, [])
-                     if at == 3 and val),
-                    None,
-                )
-                if inp and act:
-                    cond_attr_id, cond_value = inp
-                    target_attr_id, rec_val = act
-                    rules.append(RecommendationRule(
+                acts = actions.get(key, [])
+
+                # Script-backed actions: gated by set_type same as declarative
+                # ones. set_type == -1 → the BML function returns the allowed
+                # list at apply time (constraint semantics, handled by the
+                # existing BML evaluator path). Any other set_type is a
+                # script-backed RECOMMENDATION/default — RecommendationRule
+                # has no script field and apply_recommendation_rules() has no
+                # BML evaluator hookup (unlike apply_constraint_rules()), so
+                # rather than mis-file it as a constraint (which would wrongly
+                # restrict the target's options instead of defaulting it),
+                # it's logged for coverage and skipped — the same "not yet
+                # evaluated" treatment scripted rules got before this fix.
+                for aid, _at, _val, act_fn, act_set_type in acts:
+                    if act_fn != -1:
+                        script = scripts.get(act_fn)
+                        if not script:
+                            logger.warning(
+                                "cpq: rule %r references function_id=%d but no "
+                                "BmFunction script was found", rule_name, act_fn)
+                        elif act_set_type == -1:
+                            con_rules.append(ConstraintRule(
+                                rule_name=rule_name or str(eid),
+                                condition_attr_id=(inp[0] if inp else 0),
+                                condition_value="",
+                                target_attr_id=aid,
+                                allowed_values=[],
+                                script=script,
+                            ))
+                            script_constraints += 1
+                        else:
+                            script_recommendations_skipped += 1
+                            logger.info(
+                                "cpq: rule %r is a script-backed recommendation "
+                                "(function_id=%d, target=%d) — logged, not yet "
+                                "evaluated (RecommendationRule has no BML hook)",
+                                rule_name, act_fn, aid)
+
+                if fn_id != -1:
+                    # Condition itself is a script (boolean BML) — not
+                    # derivable declaratively; logged for coverage.
+                    cond_script_skipped += 1
+                    logger.info(
+                        "cpq: rule %r has a script condition "
+                        "(condition_function_id=%d) — declarative actions for "
+                        "it are not gated", rule_name, fn_id)
+                    continue
+                if not inp:
+                    continue
+                cond_attr_id, cond_value = inp
+
+                # Declarative actions, bucketed per target by set_type.
+                # BigMachines packs multiple allowed values for one action
+                # into a single value1 field, tilde-delimited (confirmed live:
+                # "DEVICE RENTAL~DEVICE INSTALLATION~DEVICE PROGRAMMING" for
+                # one rule_action row) — split before use or the whole glued
+                # string gets treated as one (non-existent) option, leaving
+                # the target with zero real valid values.
+                restrict_by_target: dict[int, list[str]] = {}
+                recommend_by_target: dict[int, str] = {}
+                for aid, _at, val, act_fn, set_type in acts:
+                    if act_fn != -1 or not val:
+                        continue
+                    parts = [p.strip() for p in val.split("~") if p.strip()]
+                    if set_type == -1:
+                        restrict_by_target.setdefault(aid, []).extend(parts)
+                    elif len(parts) == 1:
+                        recommend_by_target.setdefault(aid, parts[0])
+                    else:
+                        # A recommendation assigns ONE default value — several
+                        # tilde-delimited candidates means picking one would be
+                        # guessing (same D2 "never guess" rule that governs
+                        # auto_fill elsewhere), so this is logged and skipped
+                        # rather than arbitrarily choosing the first candidate.
+                        ambiguous_recommendations_skipped += 1
+                        logger.info(
+                            "cpq: rule %r has a multi-value recommendation "
+                            "action for target=%d (%r) — ambiguous which is "
+                            "the default, skipped", rule_name, aid, parts)
+
+                for target_attr_id, allowed in restrict_by_target.items():
+                    con_rules.append(ConstraintRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        target_attr_id=target_attr_id,
+                        allowed_values=allowed,
+                    ))
+                for target_attr_id, rec_val in recommend_by_target.items():
+                    rec_rules.append(RecommendationRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
@@ -686,10 +1155,38 @@ class CpqEngine:
                         recommended_value=rec_val,
                     ))
         except Exception:
-            logger.debug("cpq: recommendation rule load failed", exc_info=True)
-        logger.info("cpq: loaded %d recommendation rules (%d script-backed logged)",
-                    len(rules), script_backed)
-        return rules
+            logger.debug("cpq: value-rule load failed", exc_info=True)
+        logger.info(
+            "cpq: loaded %d recommendation rules, %d constraint rules "
+            "(%d script-backed constraints, %d script-backed recommendations "
+            "skipped, %d script-condition rules skipped, %d ambiguous "
+            "multi-value recommendations skipped)",
+            len(rec_rules), len(con_rules), script_constraints,
+            script_recommendations_skipped, cond_script_skipped,
+            ambiguous_recommendations_skipped)
+        return rec_rules, con_rules
+
+    def load_recommendation_and_constraint_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> tuple[list[RecommendationRule], list[ConstraintRule]]:
+        """Both rule sets in a single pass — the call callers wanting BOTH
+        should use. load_recommendation_rules()/load_constraint_rules() each
+        independently call _load_value_rules(), which repeats the same 4
+        join-table queries plus a full function-script scan; calling both
+        back-to-back (as every CPQ turn does) doubles that DB work for no
+        reason. Prefer this method whenever both lists are needed."""
+        return self._load_value_rules(workspace_id, catalog_prefix)
+
+    def load_recommendation_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[RecommendationRule]:
+        """Recommendation rules for this catalog — see _load_value_rules for
+        how rule semantics are classified (NOT by rule_type/action_type).
+        If you also need constraint rules, call
+        load_recommendation_and_constraint_rules() instead to avoid fetching
+        the same rule data twice."""
+        rec_rules, _con_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        return rec_rules
 
     def apply_recommendation_rules(
         self,
@@ -728,91 +1225,45 @@ class CpqEngine:
 
     # ── Constraint rule loader ────────────────────────────────────────────────
 
-    def load_constraint_rules(self, workspace_id: int) -> list[ConstraintRule]:
-        """Load constraint rules (rule_type=5) from the RDB — declarative AND script.
+    def load_constraint_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[ConstraintRule]:
+        """Constraint rules for this catalog — declarative AND script.
 
-        Declarative form: when the condition attribute equals condition_value,
-        only the listed item_values (action_type=4) remain valid for the
-        target attribute. Multiple rules for one target are intersected.
-
-        Script form: actions whose logic lives in a BML function
-        (function_id != -1) get the raw script attached; allowed values are
-        derived at apply time by the BML evaluator from the current filled
-        variables. These rules were previously dropped entirely — the direct
-        cause of illegal configurations (e.g. hardware/frequency mismatches).
+        See _load_value_rules for how rule semantics are classified (by
+        each action's set_type, NOT by rule_type/action_type — neither
+        matches real data in either ingested catalog). Script-form actions
+        (function_id != -1) get the raw BML script attached; allowed values
+        are derived at apply time by the BML evaluator from the current
+        filled variables. If you also need recommendation rules, call
+        load_recommendation_and_constraint_rules() instead to avoid
+        fetching the same rule data twice.
         """
-        rules: list[ConstraintRule] = []
-        script_rules = 0
-        cond_script_skipped = 0
+        _rec_rules, con_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        return con_rules
+
+    def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
+        """BML evaluator over this workspace's BmFunction scripts.
+
+        catalog_prefix — scopes to one ingested catalog when the workspace
+        holds more than one product's XML export (BM-native function ids
+        collide across catalogs the same way rule ids do). Also passed to
+        the evaluator itself so its process-wide LLM-result cache (see
+        bml._SHARED_SCRIPT_CACHE) can't cross-contaminate between catalogs
+        or workspaces sharing a colliding function id.
+
+        Tier-2 LLM fallback is gated by settings.bml_use_llm (default
+        False) — see that field's docstring for why it's off by default.
+        """
         try:
-            rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(workspace_id)
-            scripts = rdb.fetch_function_scripts(workspace_id)
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "5"):
-                key = self._rule_key(eid, src_id, inputs, actions)
-                inp = inputs.get(key)
-                acts = actions.get(key, [])
-
-                # Script-backed actions: the BML function returns the allowed
-                # list; the script embeds its own conditions on variable names.
-                for aid, _at, _val, act_fn in acts:
-                    if act_fn != -1:
-                        script = scripts.get(act_fn)
-                        if script:
-                            rules.append(ConstraintRule(
-                                rule_name=rule_name or str(eid),
-                                condition_attr_id=(inp[0] if inp else 0),
-                                condition_value="",
-                                target_attr_id=aid,
-                                allowed_values=[],
-                                script=script,
-                            ))
-                            script_rules += 1
-                        else:
-                            logger.warning(
-                                "cpq: constraint rule %r references function_id=%d "
-                                "but no BmFunction script was found", rule_name, act_fn)
-
-                if fn_id != -1:
-                    # Condition itself is a script (boolean BML) — not derivable
-                    # by the value-list evaluator; logged for coverage.
-                    cond_script_skipped += 1
-                    logger.info(
-                        "cpq: constraint rule %r has a script condition "
-                        "(condition_function_id=%d) — declarative actions for it "
-                        "are not gated", rule_name, fn_id)
-                    continue
-
-                if not inp:
-                    continue
-                cond_attr_id, cond_value = inp
-                # Declarative include-actions grouped per target attribute
-                by_target: dict[int, list[str]] = {}
-                for aid, at, val, act_fn in acts:
-                    if act_fn == -1 and at == 4 and val:
-                        by_target.setdefault(aid, []).append(val)
-                for target_attr_id, allowed in by_target.items():
-                    rules.append(ConstraintRule(
-                        rule_name=rule_name or str(eid),
-                        condition_attr_id=cond_attr_id,
-                        condition_value=cond_value,
-                        target_attr_id=target_attr_id,
-                        allowed_values=allowed,
-                    ))
-        except Exception:
-            logger.debug("cpq: constraint rule load failed", exc_info=True)
-        logger.info(
-            "cpq: loaded %d constraint rules (%d script-backed, %d script-condition logged)",
-            len(rules), script_rules, cond_script_skipped)
-        return rules
-
-    def build_bml_evaluator(self, workspace_id: int) -> BmlEvaluator:
-        """BML evaluator over this workspace's BmFunction scripts."""
-        try:
-            scripts = get_cpq_rdb().fetch_function_scripts(workspace_id)
+            scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
         except Exception:  # noqa: BLE001
             logger.debug("cpq: function script fetch failed", exc_info=True)
             scripts = {}
-        return BmlEvaluator(scripts)
+        return BmlEvaluator(
+            scripts, use_llm=get_settings().bml_use_llm,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        )
 
     def apply_constraint_rules(
         self,
@@ -881,6 +1332,7 @@ class CpqEngine:
         filled_multi: dict[str, list[str]] | None = None,
         dropped_multi: dict[str, list[str]] | None = None,
         country: str | None = None,
+        negated_vns: set[str] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -926,7 +1378,8 @@ class CpqEngine:
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
-                rule_governed_ids=rule_ids, country=country,
+                rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
+                negated_vns=negated_vns,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
@@ -1098,6 +1551,8 @@ class CpqEngine:
         dropped_multi: dict[str, list[str]] | None = None,
         rule_governed_ids: set[int] | None = None,
         country: str | None = None,
+        rec_rules: list[RecommendationRule] | None = None,
+        negated_vns: set[str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -1106,7 +1561,18 @@ class CpqEngine:
           2. User-stated value matched from NL hints.
           3. Valid default_value from XML (not None/null/0).
           4. Rule-governed default-or-first (D2/§3) — only for attrs in
-             `governed_ids`; everything else falls through to (5).
+             `governed_ids`; everything else falls through to (5). Before
+             falling to "first by order", checks whether `rec_rules` has a
+             recommendation targeting this exact attr whose condition is
+             ALREADY satisfied by the current `filled` state — if so, uses
+             that value instead. Without this check, a rule-governed attr
+             whose real recommendation condition happens to already be true
+             this same pass still got the blind first-option pick here
+             (this method runs before `apply_recommendation_rules()` in
+             `evaluate_rules_loop`), permanently locking in the wrong value
+             since neither mechanism revisits an attr already in `filled`
+             (confirmed live: hWVersion_astro's region=NA recommendation
+             never fired because first-by-order claimed it first).
           5. First eligible item_value by order_number, but ONLY when exactly
              one option remains after constraint filtering (NO EAGER
              EVALUATION — Issue 6's "Stop and Wait" safeguard for anything
@@ -1128,6 +1594,11 @@ class CpqEngine:
           itself is unaffected — it's still asked as before (D1). No match
           (unmapped country, or catalog offers no matching code) falls
           through to asking, same as if `country` were omitted.
+        negated_vns — variable_names from extract_catalog_hints() whose
+          concept was explicitly negated in the question (see that method's
+          docstring). Step 4's blind first-by-order fallback is skipped for
+          these — ask instead of risking the literal opposite of what was
+          requested.
 
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
@@ -1159,6 +1630,42 @@ class CpqEngine:
         governed = governed_ids or set()
         rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
         dropped = dropped_multi if dropped_multi is not None else {}
+
+        # target attr id -> recommendation rules targeting it, so step 4 can
+        # check for an already-satisfied recommendation before blindly
+        # picking first-by-order (see docstring — the ordering bug this closes).
+        rec_by_target: dict[int, list[RecommendationRule]] = {}
+        if rec_rules:
+            for _r in rec_rules:
+                rec_by_target.setdefault(_r.target_attr_id, []).append(_r)
+        attr_by_rule_id = self._attr_index(attrs) if rec_by_target else {}
+
+        # Two "optional"-tier attrs (no rule, no default — eligible only via
+        # the widened Phase N fallback) that share a real option value are
+        # very likely the same underlying hardware/accessory concept exported
+        # as separate BM attributes (confirmed live: spSurveillancePackagesType_astro
+        # and spSurveillancePackagesTypes_astro both offer "Impress 3-Wire
+        # Surveillance Kit - Black" — picking first-by-order for each
+        # independently produced Beige AND Black in the same quote). Rule-governed
+        # attrs (a real rule already backs the value) are excluded — this is
+        # purely a same-slot-detector for otherwise-independent fields.
+        _option_value_owners: dict[str, set[int]] = {}
+        for a in attrs:
+            if (a.hidden or a.entity_id not in governed or a.entity_id in rule_governed
+                    or a.select_type == "multi"):
+                continue
+            for opt in a.options:
+                iv_norm = opt.item_value.strip().upper()
+                # Generic yes/no-shaped values are shared by dozens of
+                # unrelated boolean-ish attrs (quickStartGuide, dualBand,
+                # etc.) — real signal only comes from specific values a
+                # coincidence wouldn't produce (e.g. a shared SKU/kit name).
+                if _valid(opt.item_value) and iv_norm.lower() not in self._BOOLEAN_DISPLAY_VALUES:
+                    _option_value_owners.setdefault(iv_norm, set()).add(a.entity_id)
+        conflicted_optional_ids: set[int] = set()
+        for owners in _option_value_owners.values():
+            if len(owners) > 1:
+                conflicted_optional_ids.update(owners)
 
         for attr in attrs:
             vn = attr.variable_name
@@ -1208,6 +1715,21 @@ class CpqEngine:
                     )
                     continue
 
+            if attr.hidden:
+                # Never asked, never NL-hint-matched, never blind-first-picked
+                # — a hidden attr only ever gets its own XML default_value
+                # (BML scripts elsewhere may reference it), or is left out of
+                # `filled` entirely if it has none. Never enters `pending`.
+                if _valid(attr.default_value):
+                    filled[vn] = attr.default_value
+                    display_filled[vn] = next(
+                        (o.display_name for o in attr.options
+                         if o.item_value == attr.default_value),
+                        attr.default_value,
+                    )
+                    sources.setdefault(vn, "default")
+                continue
+
             value: str | None = None
             display: str | None = None
             source: str = "auto"
@@ -1240,6 +1762,19 @@ class CpqEngine:
                                          opt.display_name.lower()):
                                 value = opt.item_value
                                 display = opt.display_name
+                                break
+                    # Priority 4: country full-name → abbreviation shorthand.
+                    # Only for the "country" hint key — a full country name
+                    # can never substring-match a shorter code-only option
+                    # (chargerCountryPlug_apcr's "US", not "United States").
+                    if not value and hint_key == "country":
+                        for code in _COUNTRY_HINT_SHORTHAND.get(hv_lower, ()):
+                            for opt in attr.options:
+                                if opt.item_value.upper() == code or opt.display_name.upper() == code:
+                                    value = opt.item_value
+                                    display = opt.display_name
+                                    break
+                            if value:
                                 break
                     if not value and not attr.options and _valid(hint_val):
                         value = hint_val
@@ -1307,14 +1842,56 @@ class CpqEngine:
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
                             sources.setdefault(vn, governed_source)
                             filled_multi_now = True
+                    elif governed_source == "optional" and attr.entity_id in conflicted_optional_ids:
+                        # This attr shares a real option value with another
+                        # "optional"-tier attr — first-by-order would silently
+                        # pick a competing value for what's very likely the
+                        # same hardware/accessory slot (§ surveillance-package
+                        # double-fill). Ask instead of guessing which one wins.
+                        pass
+                    elif vn in (negated_vns or ()):
+                        # The customer explicitly negated this attr's concept
+                        # (e.g. "exclude any multikey capability") but no
+                        # option text let extract_catalog_hints resolve which
+                        # specific option that means — first-by-order has no
+                        # way to know either, and confirmed live it picked
+                        # the literal opposite ("MULTIKEY"). Ask instead.
+                        pass
                     else:
-                        # single/boolean, 2+ options, no default: first by
-                        # menu order — well-defined for boolean (only two
-                        # states) and safe here because a rule REQUIRES this
-                        # attr to be resolved for the cascade to proceed.
-                        value = valid_opts[0].item_value
-                        display = valid_opts[0].display_name
-                        source = governed_source
+                        # Check for an already-satisfied recommendation before
+                        # the blind first-by-order pick below claims this attr
+                        # (see docstring — apply_recommendation_rules() runs
+                        # AFTER this method in evaluate_rules_loop and never
+                        # revisits an attr already in `filled`).
+                        rec_value = rec_display = None
+                        for aid_key in (attr.entity_id, attr.source_id):
+                            if aid_key is None or rec_value:
+                                continue
+                            for rrule in rec_by_target.get(aid_key, []):
+                                cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
+                                if not cond_attr:
+                                    continue
+                                cond_val = filled.get(cond_attr.variable_name)
+                                if (cond_val is not None
+                                        and cond_val.lower() == rrule.condition_value.lower()):
+                                    match = next(
+                                        (o for o in valid_opts
+                                         if o.item_value.lower() == rrule.recommended_value.lower()),
+                                        None,
+                                    )
+                                    if match:
+                                        rec_value, rec_display = match.item_value, match.display_name
+                                        break
+                        if rec_value:
+                            value, display, source = rec_value, rec_display, "rule"
+                        else:
+                            # single/boolean, 2+ options, no default: first by
+                            # menu order — well-defined for boolean (only two
+                            # states) and safe here because a rule REQUIRES this
+                            # attr to be resolved for the cascade to proceed.
+                            value = valid_opts[0].item_value
+                            display = valid_opts[0].display_name
+                            source = governed_source
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
                 # Governed boolean with no menu options at all: default to
@@ -1633,21 +2210,70 @@ class CpqEngine:
         Detection: question contains an attribute's variable_name AND any
         option-query keyword. Reads options from already-loaded attrs — no DB
         call, no hardcoding.
+
+        When more than one attr matches (e.g. "Hardware" and "Hardware
+        Version" both appear in the same attribute list — confirmed live
+        once two catalogs share a workspace), the LONGEST/most specific
+        match wins rather than whichever happens to come first in list
+        order, so a shorter, coincidentally-matching label can't shadow the
+        attribute the user actually meant.
+
+        Word-overlap fallback: BigMachines attributes are frequently exported
+        with a near-useless leaf display_label (e.g. "Type") while the actual
+        UI grouping the customer names ("Carry Solutions") only lives inside
+        the variable_name itself ("carrySolutionsType_apcr"). When neither the
+        exact-substring nor display_label check matches, fall back to scoring
+        attrs by how many of their significant camelCase-split variable_name
+        words appear in the question — requires at least 2 matching words (a
+        single generic word must never hijack an unrelated question) and
+        picks the attr with the most matched words.
         """
         q_lower = question.lower()
         has_options_keyword = any(kw in q_lower for kw in self._OPTIONS_KEYWORDS)
         if not has_options_keyword:
             return None
+        q_flat = q_lower.replace("_", "")
         # Match by variable_name (case-insensitive, underscore-tolerant)
-        for attr in attrs:
-            vn_flat = attr.variable_name.lower().replace("_", "")
-            if vn_flat in q_lower.replace("_", "") or attr.variable_name.lower() in q_lower:
-                return attr
+        vn_matches = [
+            attr for attr in attrs
+            if attr.variable_name.lower().replace("_", "") in q_flat
+            or attr.variable_name.lower() in q_lower
+        ]
+        if vn_matches:
+            return max(vn_matches, key=lambda a: len(a.variable_name))
         # Fallback: match by display_label
+        label_matches = [attr for attr in attrs if attr.display_label.lower() in q_lower]
+        if label_matches:
+            return max(label_matches, key=lambda a: len(a.display_label))
+        # Fallback: word-overlap against the camelCase-split variable_name.
+        # Trailing tokens shared by many attrs in this list (e.g. "_apcr",
+        # "_astro") are catalog/product-line codes, not customer-facing
+        # words — computed here from the actual attrs rather than
+        # hardcoded, so a future catalog's own suffix convention is picked
+        # up automatically instead of needing a new hardcoded name.
+        suffix_counts: dict[str, int] = {}
+        for a in attrs:
+            _, _, tail = a.variable_name.rpartition("_")
+            if tail and tail.isalpha() and tail.islower() and len(tail) <= 8:
+                suffix_counts[tail] = suffix_counts.get(tail, 0) + 1
+        catalog_suffixes = {s for s, c in suffix_counts.items() if c >= 5}
+
+        q_words = set(q_lower.replace("_", " ").split())
+        best_attr: ConfigAttr | None = None
+        best_score = 1  # require > 1 matched word
         for attr in attrs:
-            if attr.display_label.lower() in q_lower:
-                return attr
-        return None
+            vn = attr.variable_name
+            base, _, tail = vn.rpartition("_")
+            if base and tail in catalog_suffixes:
+                vn = base
+            words = _variable_words(vn)
+            if len(words) < 2:
+                continue
+            score = sum(1 for w in words if w in q_words)
+            if score == len(words) and score > best_score:
+                best_score = score
+                best_attr = attr
+        return best_attr
 
     # ── Next question ─────────────────────────────────────────────────────────
 
@@ -1772,29 +2398,34 @@ class CpqEngine:
         filled: dict[str, str],
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
-    ) -> dict[str, str | list[str]]:
-        """Return the final CPQ BOM API payload {variable_name: item_value}.
+    ) -> dict[str, dict[str, dict[str, str | list[str]]]]:
+        """Return the final CPQ BOM API payload as::
 
-        Excludes HTML template values — those are layout/display fields, not
-        real configuration inputs for the BOM API. A value confirmed by the
-        user against a real menu option is valid BY DEFINITION: none-like
-        codes (``NA``, ``0``, ...) survive when their provenance is a
-        confirmed source; only unconfirmed auto-fills are dropped.
+            {"configAttributes": {variable_name: {"value": item_value}, ...}}
+
+        Excludes HTML template values (layout/display fields, not real
+        configuration inputs) and underscore-prefixed / integration-noise
+        variables (``_is_noise_var`` — session/system fields like
+        ``_BM_USER_CURRENCY`` or ``CRM_BILL_COUNTRY``, not real BOM
+        selections). A value confirmed by the user against a real menu
+        option is valid BY DEFINITION: none-like codes (``NA``, ``0``, ...)
+        survive when their provenance is a confirmed source; only
+        unconfirmed auto-fills are dropped.
 
         filled_multi (select_type=="multi" attrs) merges in as JSON arrays —
         CpqSession.filled stays str-only (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
         """
         sources = filled_source or {}
-        out: dict[str, str | list[str]] = {}
+        out: dict[str, dict[str, str | list[str]]] = {}
         for k, v in filled.items():
-            if not v or self._is_html_value(v):
+            if not v or self._is_html_value(v) or self._is_noise_var(k):
                 continue
             if _valid(v) or sources.get(k) in self._CONFIRMED_SOURCES:
-                out[k] = v
+                out[k] = {"value": v}
         for k, vals in (filled_multi or {}).items():
-            if vals:
-                out[k] = list(vals)
-        return out
+            if vals and not self._is_noise_var(k):
+                out[k] = {"value": list(vals)}
+        return {"configAttributes": out}
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
@@ -1847,6 +2478,8 @@ class CpqEngine:
             return True
         if attr is not None and attr.select_type == "boolean":
             return True
+        if attr is not None and attr.hidden:
+            return True
         label_l = display_label.lower()
         if "secondary" in label_l:
             return True
@@ -1890,6 +2523,22 @@ class CpqEngine:
                 if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
             ]
         return [(label_map.get(var, var), label) for var, label in items]
+
+    def beautify_text(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+    ) -> str:
+        """Human-readable ``Label : Value`` block for the Beautify button.
+
+        Reuses filled_summary_pairs' noise/low-signal filtering (§ above) so
+        Beautify shows the same substantive fields as the conversational
+        summary — as aligned key:value lines instead of prose, no LLM call.
+        """
+        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
+        width = max(len(label) for label, _ in pairs)
+        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
 
     def render_filled_summary(
         self,

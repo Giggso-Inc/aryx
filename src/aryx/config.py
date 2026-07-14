@@ -218,6 +218,23 @@ class Settings(BaseSettings):
             "Override with ARYX_LLM_NUM_PREDICT."
         ),
     )
+    bml_use_llm: bool = Field(
+        default=False,
+        description=(
+            "Enable Tier-2 LLM fallback for BML constraint-script evaluation "
+            "(aryx.cpq.bml.BmlEvaluator). Off by default: a single slow/"
+            "rate-limited call can cost up to 5 retries x llm_timeout plus "
+            "backoff sleeps (tens of minutes in the worst case) INSIDE one "
+            "CPQ turn, since constraint evaluation runs synchronously in the "
+            "request path. Disabling Tier-2 only drops evaluation for "
+            "script-backed constraints Tier-1's deterministic parser can't "
+            "handle — those already fell back to 'no constraint enforced' "
+            "before Tier-2 existed, so this is not a new correctness gap, "
+            "just reverting to that same safe fallback. Override with "
+            "ARYX_BML_USE_LLM=true once the LLM provider path is fast/"
+            "reliable enough not to risk stalling a live request."
+        ),
+    )
 
     # ── Document processing ───────────────────────────────────────────────────
     per_doc_timeout: float = Field(

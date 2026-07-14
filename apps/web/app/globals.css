@@ -12,6 +12,9 @@
   --aryx-ink: #0F1726;
   --aryx-subtle: #5A6478;
   --app-shell-offset: 0px;
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-display: Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 html,

@@ -169,24 +169,33 @@ def referenced_variables(script: str) -> set[str]:
     return {m.group(1) for m in re.finditer(r'(\w+)\s*(?:==|<>|!=)\s*"', script)}
 
 
-def evaluate_tier1(script: str, variables: dict[str, str]) -> list[str] | None:
+def evaluate_tier1(
+    script: str, variables: dict[str, str],
+) -> tuple[list[str] | None, bool]:
     """Deterministically evaluate a Tier-1 BML script.
 
-    Returns the allowed-value list from the first branch whose condition
-    holds, or None when the script is out of grammar or references a
-    variable that is not filled yet.
+    Returns (allowed_values, blocked_by_missing_var):
+      - (values, False) — a branch condition was fully evaluable and matched.
+      - (None, False) — the script's grammar itself is unsupported (parse
+        failure, no if-chain, nested if, etc.) — Tier 2 may still help here.
+      - (None, True) — at least one condition couldn't be evaluated because
+        a referenced variable is not filled yet. This is NOT a grammar
+        problem — a Tier-2 LLM call has no more information than Tier 1 in
+        this case (it cannot know a value that doesn't exist yet either),
+        so callers should skip the LLM and treat this as "unknown for now"
+        rather than spending a wasted round-trip.
     """
     branches = _parse_branches(script)
     if not branches:
-        return None
+        return None, False
     for cond, body in branches:
         if cond is None:
-            return _branch_values(body)
+            return _branch_values(body), False
         result: bool | None = None
         for joiner, var, op, expected in cond:
             actual = variables.get(var)
             if actual is None:
-                return None  # variable not filled yet → outcome unknown
+                return None, True  # variable not filled yet → outcome unknown
             hit = actual.strip().lower() == expected.strip().lower()
             if op in ("<>", "!="):
                 hit = not hit
@@ -197,19 +206,50 @@ def evaluate_tier1(script: str, variables: dict[str, str]) -> list[str] | None:
             else:
                 result = result or hit
         if result:
-            return _branch_values(body)
-    return None
+            return _branch_values(body), False
+    return None, False
+
+
+
+# Process-wide cache, SHARED across every BmlEvaluator instance — i.e.
+# across every CPQ turn and every concurrent request, not just within one.
+# build_bml_evaluator() previously created a fresh, empty per-instance cache
+# on every single turn, so the same script + same variable state paid the
+# Tier-2 LLM cost again on every turn (and again for every other session
+# hitting the same catalog). Keyed by (workspace_id, catalog_prefix, ...)
+# so a BM-native function id that collides across two catalogs/workspaces
+# sharing this process (confirmed happening earlier this session) can never
+# share a cached — and possibly wrong — answer.
+_SHARED_SCRIPT_CACHE: dict[tuple, list[str] | None] = {}
+_MAX_SHARED_CACHE_ENTRIES = 20_000
+
+
+def clear_shared_bml_cache() -> None:
+    """Reset the process-wide script cache. Tests should call this between
+    runs that mock different LLM responses for the same script/state, since
+    the cache is otherwise shared across the whole test process."""
+    _SHARED_SCRIPT_CACHE.clear()
 
 
 class BmlEvaluator:
-    """Two-tier BML evaluation with per-(script, state) caching."""
+    """Two-tier BML evaluation with a process-wide (workspace, script, state) cache."""
 
-    def __init__(self, scripts: dict[int, str], use_llm: bool = True) -> None:
-        """scripts — {bm_function_id: script_text} from the RDB."""
+    def __init__(
+        self, scripts: dict[int, str], use_llm: bool = True,
+        workspace_id: int = 0, catalog_prefix: str = "",
+    ) -> None:
+        """scripts — {bm_function_id: script_text} from the RDB.
+
+        workspace_id/catalog_prefix scope the shared cache (see
+        _SHARED_SCRIPT_CACHE) so results never cross-contaminate between
+        catalogs or workspaces that happen to reuse the same BM-native
+        function id.
+        """
         self._scripts = scripts
         self._use_llm = use_llm
-        self._cache: dict[tuple[int, frozenset], list[str] | None] = {}
-        self.stats = {"tier1": 0, "tier2": 0, "unknown": 0, "missing": 0}
+        self._workspace_id = workspace_id
+        self._catalog_prefix = catalog_prefix
+        self.stats = {"tier1": 0, "tier2": 0, "unknown": 0, "missing": 0, "cached": 0}
 
     def script_for(self, function_id: int) -> str | None:
         return self._scripts.get(function_id)
@@ -229,16 +269,33 @@ class BmlEvaluator:
         cache_id: int | None = None,
     ) -> list[str] | None:
         """Allowed-value list for a raw BML script body, or None if unknown."""
+        # referenced_variables() re-scans the whole script text with a regex —
+        # compute it ONCE per call, not once per (variable, value) pair. With
+        # ~170 filled variables and hundreds of script-backed constraint
+        # rules active, doing this inside the generator below (as written
+        # previously) re-parsed the same script ~170x per call — 71,490
+        # redundant regex scans and ~155s of wasted CPU in one real turn.
+        script_vars = referenced_variables(script)
         relevant = frozenset(
             (k, v) for k, v in variables.items()
-            if k in referenced_variables(script)
+            if k in script_vars
         )
-        key = (cache_id if cache_id is not None else hash(script), relevant)
-        if key in self._cache:
-            return self._cache[key]
-        result = evaluate_tier1(script, variables)
+        key = (self._workspace_id, self._catalog_prefix,
+               cache_id if cache_id is not None else hash(script), relevant)
+        if key in _SHARED_SCRIPT_CACHE:
+            self.stats["cached"] += 1
+            return _SHARED_SCRIPT_CACHE[key]
+        result, blocked_by_missing_var = evaluate_tier1(script, variables)
         if result is not None:
             self.stats["tier1"] += 1
+        elif blocked_by_missing_var:
+            # A referenced variable isn't filled yet — Tier 2 has no more
+            # information than we do (it cannot know a value that doesn't
+            # exist), so asking it would be a pure-waste round-trip. This
+            # cache entry naturally becomes a miss again once the variable
+            # gets filled, since `relevant` (and so `key`) changes.
+            self.stats["unknown"] += 1
+            result = None
         elif self._use_llm:
             result = self._evaluate_llm(script, dict(relevant))
             if result is not None:
@@ -247,7 +304,9 @@ class BmlEvaluator:
                 self.stats["unknown"] += 1
         else:
             self.stats["unknown"] += 1
-        self._cache[key] = result
+        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
+            _SHARED_SCRIPT_CACHE.clear()
+        _SHARED_SCRIPT_CACHE[key] = result
         return result
 
     def _evaluate_llm(
