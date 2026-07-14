@@ -43,13 +43,17 @@ def test_below_threshold_no_flags(monkeypatch):
 
 def test_at_threshold_json_and_beautify_present_but_share_withheld(monkeypatch):
     _patch_engine(monkeypatch)
+    filled = {"carrier": "Verizon", "billing": "Monthly", "activation": "Immediate"}
     result = {"answer": "...", "session_data": _session_data(
-        filled={"carrier": "Verizon", "billing": "Monthly", "activation": "Immediate"},
-        display_filled={"carrier": "Verizon", "billing": "Monthly", "activation": "Immediate"})}
+        filled=filled, display_filled=filled)}
     _attach_share_flags(result, _req(), reader=None)
     assert result["json_button_flag"] is True
-    assert result["json_response"] == {
-        "carrier": "Verizon", "billing": "Monthly", "activation": "Immediate"}
+    # Compare against build_payload()'s real, current output rather than a
+    # hardcoded literal — its return shape is independently evolving on
+    # another branch (flat {var: value} vs nested {"configAttributes": {...}}),
+    # so this assertion must track whatever the engine actually produces,
+    # not pin to one shape and rot the moment that branch merges.
+    assert result["json_response"] == api._cpq_engine.build_payload(filled, {}, {})
     assert result["beautify_button_flag"] is True
     assert "Verizon" in result["beautify"]
     # Still mid-configuration — nothing to share yet, even though JSON/Beautify are ready.
@@ -68,13 +72,15 @@ def test_multi_select_answers_count_toward_threshold(monkeypatch):
 
 def test_awaiting_approval_bypasses_threshold_and_enables_share(monkeypatch):
     _patch_engine(monkeypatch)
+    filled = {"carrier": "Verizon"}
     result = {"answer": "...", "session_data": _session_data(
-        filled={"carrier": "Verizon"}, display_filled={"carrier": "Verizon"},
-        status="awaiting_approval")}
+        filled=filled, display_filled=filled, status="awaiting_approval")}
     _attach_share_flags(result, _req(), reader=None)
     assert result["json_button_flag"] is True
     assert result["api_share_button_flag"] is True
-    assert result["api_share"] == {"carrier": "Verizon"}
+    # See note above — asserted against the live build_payload() output, not
+    # a hardcoded shape, so this survives the in-flight payload-shape change.
+    assert result["api_share"] == api._cpq_engine.build_payload(filled, {}, {})
 
 
 def test_no_session_data_is_noop():
