@@ -25,8 +25,16 @@ services:
     image: falkordb/falkordb:latest
     ports:
       - "6379:6379"
+      # Bundled browser UI (run.sh starts it when BROWSER=1, the image
+      # default) listens on 3000 inside the container — never published
+      # before, so localhost:3001 had nothing to connect to.
+      - "3001:3000"
     volumes:
-      - graphdata:/data
+      # FalkorDB's own entrypoint runs redis-server --dir "$FALKORDB_DATA_PATH",
+      # which defaults to /var/lib/falkordb/data — NOT /data. Mounting at /data
+      # (the old value here) persisted nothing; every container recreate lost
+      # the graph because RDB saves landed in the ephemeral container layer.
+      - graphdata:/var/lib/falkordb/data
 
   worker:
     build: .
@@ -74,7 +82,7 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     environment:
-      - DATABASE_URL=${ARYX_RDB_DSN:-postgresql+asyncpg://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx}
+      - DATABASE_URL=${ARYX_RDB_DSN:-postgresql+asyncpg://aryx:aryx@postgres:5432/aryx}
       - SHAY_RUN_MIGRATIONS=false
       # Canonical frontend root. PLATFORM_URL and APP_URL are derived in config.
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
