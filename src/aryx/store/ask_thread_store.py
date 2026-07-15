@@ -153,7 +153,6 @@ class AryxAskThreadStore:
                 load("ask_thread_insert_message"),
                 (
                     thread_id,
-                    thread_id,
                     str(uuid.uuid4()),
                     question,
                     "user",
@@ -214,7 +213,6 @@ class AryxAskThreadStore:
             cur.execute(
                 load("ask_thread_insert_message"),
                 (
-                    thread_id,
                     thread_id,
                     str(uuid.uuid4()),
                     answer,
