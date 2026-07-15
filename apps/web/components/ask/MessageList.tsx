@@ -73,9 +73,9 @@ function CpqActions({ turn, workspaceId, conversationId }: {
         </pre>
       )}
       {panel === "beautify" && (
-        <pre className="mt-2 max-w-prose overflow-x-auto rounded-xl border border-navy-100 bg-navy-50 p-3 text-[12px]">
-          {turn.beautify}
-        </pre>
+        <div className="mt-2 max-w-prose overflow-x-auto rounded-xl border border-navy-100 bg-white p-3">
+          <Markdown>{turn.beautify ?? ""}</Markdown>
+        </div>
       )}
       {canShare && (
         <ShareConfigDialog

@@ -3419,15 +3419,24 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
     ) -> str:
-        """Human-readable ``Label : Value`` block for the Beautify button.
+        """Two-column Markdown table (Attribute | Value) for the Beautify button.
 
         Reuses filled_summary_pairs' noise/low-signal filtering (§ above) so
         Beautify shows the same substantive fields as the conversational
-        summary — as aligned key:value lines instead of prose, no LLM call.
+        summary — as a GFM table the client renders natively (Next.js via
+        react-markdown+remark-gfm, Streamlit via st.markdown), no LLM call.
         """
         pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        width = max(len(label) for label, _ in pairs)
-        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+
+        def _cell(text: str) -> str:
+            # GFM table cells are one logical line: escape literal pipes
+            # (would otherwise be read as column separators) and collapse
+            # any embedded newlines a free-text value might carry.
+            return str(text).replace("|", "\\|").replace("\n", " ").strip()
+
+        rows = ["| Attribute | Value |", "| --- | --- |"]
+        rows.extend(f"| {_cell(label)} | {_cell(value)} |" for label, value in pairs)
+        return "\n".join(rows)
 
     def render_filled_summary(
         self,

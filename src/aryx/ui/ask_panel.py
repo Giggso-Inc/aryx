@@ -88,7 +88,10 @@ def _render_cpq_buttons(msg: dict, idx: int) -> None:
     if st.session_state.get(f"show_json_{idx}"):
         st.code(json.dumps(msg.get("json_response") or {}, indent=2), language="json")
     if st.session_state.get(f"show_beautify_{idx}"):
-        st.code(msg.get("beautify") or "", language="text")
+        # beautify is now a GFM two-column table (Attribute | Value) —
+        # st.markdown renders it as a real table; st.code would show raw
+        # pipe/dash syntax instead of a formatted table.
+        st.markdown(msg.get("beautify") or "")
     if st.session_state.get(f"show_share_{idx}"):
         with st.form(key=f"share_form_{idx}"):
             endpoint_url = st.text_input(
