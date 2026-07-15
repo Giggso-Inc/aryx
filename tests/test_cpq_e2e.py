@@ -1882,3 +1882,185 @@ def test_s37_country_hint_resolves_abbreviation_only_attrs():
     assert filled.get("chargerCountryPlug_apcr") == "US"
     assert filled.get("ultimateDestinationCountry") == "US"
     assert display_filled.get("ultimateDestinationCountry") == "United States"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S38–S44 — docs/CPQ_RULE_TOOL_FLOW_PLAN.md §12 test scenarios: single-query
+# vs conversational quote generation, RUN ID propagation, and the multi-input/
+# script-recommendation fixes (items 1-3). Driven through the REAL
+# _run_cpq_turn end-to-end (same pattern as S23), not hand-built rule objects,
+# so these exercise the actual production call chain.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_s38_single_query_full_quote_zero_pending(apx_truth, apx_fake_rdb, monkeypatch):
+    """A single, fully-specified message (product + country both given)
+    should resolve without needing extra turns — either straight to
+    awaiting_approval or with an empty pending list, never re-asking for
+    the product or country it was already given."""
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(apx_fake_rdb)
+
+    req = AskRequest(
+        question="Quote APX Next Enhanced radios for a US customer.",
+        workspace_id=1, session_data={},
+    )
+    resp = _run_cpq_turn(req, reader)
+    if not resp:
+        pytest.skip("engine filtered out all config attrs for APX Next")
+    session = resp["session_data"]
+    assert session.get("product_name"), "product must resolve from the single message"
+    assert session.get("country"), "country must resolve from the single message"
+    # Anchor gate must not still be pending on product/country — those were
+    # both given up front, so re-asking for either would be a regression.
+    assert session.get("pending_anchor") in ("", None)
+
+
+def test_s39_missing_country_falls_to_anchor_gate_with_real_options(
+    apx_truth, apx_fake_rdb, monkeypatch,
+):
+    """Omitting the country (a decision-required anchor, D1/D2) must ask
+    for it rather than guessing — the STEP 1 sequential anchor gate, not a
+    silent default."""
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(apx_fake_rdb)
+
+    req = AskRequest(question="Quote APX Next Enhanced radios.", workspace_id=1, session_data={})
+    resp = _run_cpq_turn(req, reader)
+    if not resp:
+        pytest.skip("engine filtered out all config attrs for APX Next")
+    session = resp["session_data"]
+    assert not session.get("country"), "country must not be guessed"
+    assert session.get("pending_anchor") == "country"
+    assert "country" in resp["answer"].lower()
+
+
+def test_s41_conversational_quote_only_payload_after_confirm(
+    apx_truth, apx_fake_rdb, monkeypatch,
+):
+    """Across a multi-turn conversation, cpq_payload must stay None on
+    every turn until the user explicitly confirms — the single-query and
+    conversational paths both go through the same STEP 3 rule loop and
+    STEP 8 approval gate, so neither should ever emit a payload early."""
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(apx_fake_rdb)
+    none_like = {"none", "null", "n/a", "na", "", "0", "-1", "any", "false"}
+
+    session: dict = {}
+    question = "quote APX Next for customer in United States"
+    reached_approval = False
+    for _turn in range(30):
+        req = AskRequest(question=question, workspace_id=1, session_data=session)
+        resp = _run_cpq_turn(req, reader)
+        if not resp:
+            pytest.skip("engine filtered out all config attrs for APX Next")
+        assert resp.get("cpq_payload") is None, (
+            "no payload before explicit confirmation — got one on an "
+            f"unconfirmed turn (status={resp['session_data'].get('status')})"
+        )
+        session = resp["session_data"]
+        if session.get("status") == "awaiting_approval":
+            reached_approval = True
+            break
+        pending = session.get("pending_variables", [])
+        if not pending:
+            break
+        pending_var = pending[0]
+        attr_eid = next(
+            (i for i, f in apx_fake_rdb.fetch_entities_by_type(1, "bm_config_attr")
+             if f.get("variable_name") == pending_var), None)
+        options = [
+            apx_fake_rdb.entities[n["id"]].get("item_value")
+            for n in reader.neighbors(attr_eid or -1)
+            if apx_fake_rdb.entities[n["id"]].get("item_value")
+        ]
+        question = (
+            next((o for o in options if o.strip().lower() in none_like), options[0])
+            if options else "1"
+        )
+    if not reached_approval:
+        pytest.skip("conversation did not reach awaiting_approval within the turn budget")
+
+    # Now confirm — this is the ONLY turn a payload may appear on.
+    confirm_req = AskRequest(question="confirm", workspace_id=1, session_data=session)
+    confirm_resp = _run_cpq_turn(confirm_req, reader)
+    assert confirm_resp.get("cpq_payload") is not None
+    assert "configAttributes" in confirm_resp["cpq_payload"]
+
+
+def test_s42_run_id_stable_across_turns_and_present_in_logs(
+    apx_truth, apx_fake_rdb, monkeypatch, caplog,
+):
+    """One run_id is minted on session creation and stays the SAME across
+    every subsequent turn (echoed back in session_data like every other
+    CpqSession field), and appears in the cpq logger's own output without
+    any log-call-site changes (see aryx.cpq.logging_context)."""
+    import logging as _logging
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(apx_fake_rdb)
+
+    req1 = AskRequest(question="Quote APX Next for a US customer.", workspace_id=1, session_data={})
+    with caplog.at_level(_logging.INFO, logger="aryx.cpq.engine"):
+        resp1 = _run_cpq_turn(req1, reader)
+    if not resp1:
+        pytest.skip("engine filtered out all config attrs for APX Next")
+    run_id = resp1["session_data"].get("run_id")
+    assert run_id, "run_id must be minted on session creation"
+    assert any(f"run_id={run_id}" in rec.message for rec in caplog.records), (
+        "run_id must be visible in cpq log output without touching existing log calls"
+    )
+
+    req2 = AskRequest(question="1", workspace_id=1, session_data=resp1["session_data"])
+    resp2 = _run_cpq_turn(req2, reader)
+    if resp2:
+        assert resp2["session_data"].get("run_id") == run_id, (
+            "run_id must stay stable across turns of the same conversation"
+        )
+
+
+def test_s44_enhanced_product_hint_vs_hwversion_default_documented(
+    apx_truth, apx_fake_rdb, monkeypatch,
+):
+    """Documents the CURRENT, known behavior (docs/CPQ_RULE_TOOL_FLOW_PLAN.md
+    §7/§8/item 12): naming the "Enhanced" product variant does not, by
+    itself, bias hWVersion toward the 5G/Enhanced hardware option — that
+    reconciliation is an explicit, NOT-YET-implemented design item pending
+    a product/UX decision (owner: Meera), deliberately excluded from the
+    items 1-9/14a/15b implementation batch. This test exists so that
+    whoever implements item 12 has a failing test to flip, not to assert
+    the mismatch is acceptable forever."""
+    import aryx.api.ask_api as api
+    from aryx.api.ask_api import AskRequest, _run_cpq_turn
+
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = FakeReader(apx_fake_rdb)
+
+    req = AskRequest(
+        question="Quote APX Next Enhanced radios for a US customer.",
+        workspace_id=1, session_data={},
+    )
+    resp = _run_cpq_turn(req, reader)
+    if not resp:
+        pytest.skip("engine filtered out all config attrs for APX Next")
+    filled = resp["session_data"].get("filled", {})
+    product = filled.get("productSelectionProduct_all")
+    hw_version = filled.get("hWVersion_astro")
+    if not product or not hw_version:
+        pytest.skip("this catalog snapshot didn't resolve both fields in one turn")
+    # KNOWN, documented gap (item 12) — not yet fixed:
+    assert "ENHANCED" in product.upper()
+    assert hw_version != "NEXT ENHANCED LTE PLUS 5G", (
+        "if this now passes, item 12's reconciliation has been implemented — "
+        "update this test to assert the FIXED behavior instead of the gap"
+    )
