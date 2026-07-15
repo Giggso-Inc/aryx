@@ -24,14 +24,19 @@ import re
 from typing import Any
 
 from aryx.config import get_settings
-from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.bml import (
+    BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
+)
+from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
     RecommendationRule,
 )
+from aryx.store.ingest_question_store import IngestQuestionStore
 
 logger = logging.getLogger(__name__)
+install_run_id_logging(__name__)
 
 # ── None-value sentinel set ────────────────────────────────────────────────────
 # CPQ attributes with these values represent "no selection" — auto-fill must
@@ -81,6 +86,26 @@ def _catalog_prefix(type_name: str) -> str:
     """
     m = _CATALOG_PREFIX_RE.match(type_name or "")
     return m.group(1) if m else ""
+
+
+def _strip_catalog_name_noise(norm: str) -> str:
+    """Strip the internal-naming wrapper from a normalized BmPrdFamily/
+    BmCatalog name so it can substring-match a natural-language sentence.
+
+    Confirmed live: EVERY real family/catalog name across both ingested
+    catalogs (77 total) ends in "bom" ("autoDGM8500E_BOM", "aPXNext_BOM",
+    "mOTOTRBO_BOM", ...), and many also start with "auto" — neither
+    fragment is something a customer ever says ("quote an auto DGM 8500 E
+    bom radio"), so leaving them in place meant a full sentence like
+    "quote DGM 8500e radios for a US customer" could never substring-match
+    "autodgm8500ebom" even though the meaningful part ("dgm8500e") is right
+    there in the sentence.
+    """
+    if norm.endswith("bom"):
+        norm = norm[:-3]
+    if norm.startswith("auto"):
+        norm = norm[4:]
+    return norm
 
 
 # BigMachines variable_names are camelCase concatenations of the UI group an
@@ -197,6 +222,13 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
 # substring collisions (e.g. "essential" inside "quintessential") negligible.
 _HINT_MIN_PHRASE_LEN = 5
 _HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
+
+# Process-wide, keyed by (workspace_id, catalog_prefix) — see
+# CpqEngine._build_flag_keyword_index. Depends only on the catalog's own
+# static rules/attrs, so it's safe to build once per catalog per process
+# lifetime rather than re-scanning every BML script on every turn (same
+# reasoning as bml.py's _SHARED_SCRIPT_CACHE).
+_FLAG_KEYWORD_INDEX_CACHE: dict[tuple[int, str], dict[str, tuple[str, str]]] = {}
 
 
 def _normalize_for_hint(text: str) -> str:
@@ -327,22 +359,51 @@ _NOISE_ITEM_FRAGMENTS: frozenset[str] = frozenset({
 def classify_select_type(attrs: dict[str, Any]) -> str:
     """Classify a config attr's UI/selection shape from its raw BM attrs.
 
-    Confirmed derivation (CPQ_CASCADE_CONVERSATION_PLAN.md §4), verified
-    against the full real config-attr population of the reference sample
-    (all 15 attrs: is_array_control_attr uniformly "0", data_type uniformly
-    "1", display_type never "10" in that export — so this classifier is
-    logic-confirmed but not yet exercised end-to-end on a real multi/boolean
-    example; treat those two branches as higher-risk until one does).
+    Confirmed derivation (CPQ_CASCADE_CONVERSATION_PLAN.md §4). The
+    multi-select branch was exercised end-to-end for the first time against
+    a real submission: the reference sample this classifier was originally
+    verified against had is_array_control_attr uniformly "0", so multi-select
+    coverage relied solely on that one flag — untested and, it turned out,
+    incomplete. A real payload submission confirmed 13 attributes with
+    is_array_control_attr=="0" were rejected by the live CPQ API expecting
+    an array-set payload, including one ("Carrier Selection") whose own
+    variable_name literally contains "MultiSelect". Checking
+    display_type in {"6","8"} and attr_type=="1" (both confirmed live to be
+    100% exclusive to the rejected attributes — zero overlap with any of
+    the 83 that were accepted) closes that gap.
 
-    Priority matters: array-control checked first, then the boolean pair,
-    else default to "single" — dropdowns (display_type=="3") and any other
-    shape (free-text, etc.) both fall through to "single" safely.
+    Priority matters: array-control signals checked first, then the boolean
+    pair, then the scalar data_type codes, else default to "single" —
+    dropdowns (display_type=="3") and any other shape (free-text, etc.)
+    both fall through to "single" safely.
+
+    date/currency/integer/float — added per the real CPQ API payload
+    contract (docs/CPQ_RULE_TOOL_FLOW_PLAN.md §15b/16): these were
+    previously invisible to this classifier (falling through to "single"
+    and serialized like a menu value) despite real attrs of each type
+    existing in a real ingested catalog — confirmed via data_type samples:
+    5="subscriptionStartDate"/"subscriptionEndDate" (date), 7=
+    "solutionCategoryListPrice_astro" (currency/price), 3=ID/counter
+    fields like "_configuration_id" (integer), 2="_BM_USER_EXCHANGE_RATE"
+    (float). Checked AFTER multi/boolean (those signals are more specific
+    and must win on any overlap) but BEFORE the "single" fallback.
     """
-    if str(attrs.get("is_array_control_attr", "")).strip() == "1":
+    if (str(attrs.get("is_array_control_attr", "")).strip() == "1"
+            or str(attrs.get("attr_type", "")).strip() == "1"
+            or str(attrs.get("display_type", "")).strip() in ("6", "8")):
         return "multi"
     if (str(attrs.get("display_type", "")).strip() == "10"
             or str(attrs.get("data_type", "")).strip() == "4"):
         return "boolean"
+    data_type = str(attrs.get("data_type", "")).strip()
+    if data_type == "5":
+        return "date"
+    if data_type == "7":
+        return "currency"
+    if data_type == "3":
+        return "integer"
+    if data_type == "2":
+        return "float"
     return "single"
 
 
@@ -434,8 +495,17 @@ class CpqEngine:
             positive hint for multikeyType_astro (see single-word rule
             below), so it fell through to auto_fill's ungoverned fallback
             and landed on the literal opposite, "MULTIKEY", even though a
-            "No Multikey" option exists. Only auto_fill() consults this —
-            it does not affect `hints` itself.
+            "No Multikey" option exists.
+            When a negated phrase's real catalog also spells out the
+            negation as its own option — "no{phrase}" (or its plural-flip)
+            found as a key in `candidates`, same-attr or a sibling — that
+            option IS asserted into `hints` too (not just recorded in
+            negated_vns), since passive suppression alone doesn't stop an
+            attr's own unconditional default_value from applying (confirmed
+            live: beltClipType_astro kept its "2.0 INCH / 5.08 CM
+            (STANDARD)" default after "exclude any... carry solutions" even
+            though "NO CARRY SOLUTION" is a real option on that very attr).
+            Same len(owners)==1 never-guess guard as the rest of this method.
 
         Never guesses (D2), several ways:
           - If the same option text is real for two or more different attrs,
@@ -490,7 +560,7 @@ class CpqEngine:
         # it's fine to be broader here than the positive-hint match below).
         all_owners: dict[str, set[str]] = {}
         for attr in attrs:
-            if attr.hidden or attr.select_type == "multi":
+            if attr.hidden:
                 continue
             for opt in attr.options:
                 if opt.item_value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
@@ -501,7 +571,16 @@ class CpqEngine:
                     norm = _normalize_for_hint(text)
                     if len(norm) < _HINT_MIN_PHRASE_LEN:
                         continue
+                    # Multi-select attrs still register here (needed so a
+                    # negated category on a multi-select attr, e.g.
+                    # accessoriesSolutionSet_astro's "CARRY SOLUTIONS", can be
+                    # detected as negated below and used to look up a
+                    # sibling's "NO <X>" option) but are excluded from
+                    # `candidates` just below — never a positive-hint target,
+                    # unchanged from before.
                     all_owners.setdefault(norm, set()).add(attr.variable_name)
+                    if attr.select_type == "multi":
+                        continue
                     if len(stripped.split()) < 2 and not is_code:
                         # Single-word dictionary-style options are never
                         # trusted as a positive hint (see docstring) — still
@@ -532,9 +611,147 @@ class CpqEngine:
             idx = _find_plural_tolerant(q_norm, phrase)
             if idx == -1:
                 continue
-            if _is_negated_before(q_lower, q_index_map[idx]):
-                negated_vns.update(owners)
+            if not _is_negated_before(q_lower, q_index_map[idx]):
+                continue
+            negated_vns.update(owners)
+            # Passive suppression (negated_vns) only stops auto_fill's blind
+            # first-by-order fallback — it does nothing about an attr whose
+            # own default_value applies unconditionally regardless of
+            # negation. Confirmed live: after "exclude any... carry
+            # solutions", beltClipType_astro's declarative default "2.0 INCH
+            # / 5.08 CM (STANDARD)" still applied (auto_fill's default-value
+            # step has no negation check at all), and multikeyType_astro was
+            # simply left unfilled after "exclude any multikey capability"
+            # even though both attrs have their own literal "NO <X>" option
+            # in the real catalog. When the option text spells the negation
+            # out explicitly — on the SAME attr (multikeyType_astro:
+            # "MULTIKEY" negated -> "NO MULTIKEY" also on multikeyType_astro)
+            # or a SIBLING one in this catalog (accessoriesSolutionSet_astro's
+            # "CARRY SOLUTIONS" negated -> beltClipType_astro's "NO CARRY
+            # SOLUTION") — assert that option directly instead of leaving the
+            # field to a default or an unfilled gap. Reuses `candidates`
+            # (already built above from this same catalog-scoped `attrs`,
+            # multi-word/code trust filter already applied) — no extra scan
+            # of the catalog, and the same len(owners)==1 guard as every
+            # other match in this method: never guess which attr "NO X"
+            # belongs to if more than one real option has it.
+            no_key = f"no{phrase}"
+            no_key_variant = f"no{phrase[:-1]}" if phrase.endswith("s") else f"no{phrase}s"
+            for key in (no_key, no_key_variant):
+                no_entries = candidates.get(key)
+                if not no_entries:
+                    continue
+                no_owners = {vn for vn, _iv in no_entries}
+                if len(no_owners) != 1:
+                    continue  # real "NO X" option on 2+ attrs — never guess
+                target_vn, target_value = no_entries[0]
+                if target_vn not in hints:
+                    hints[target_vn] = target_value
+                break
         return hints, negated_vns
+
+    def _build_flag_keyword_index(
+        self, attrs: list["ConfigAttr"], workspace_id: int, catalog_prefix: str,
+    ) -> dict[str, tuple[str, str]]:
+        """{normalized_keyword: (variable_name, literal_value)} for
+        option-less attrs whose value a real BML script actually checks.
+
+        Confirmed live this closes a real gap extract_catalog_hints cannot:
+        attrs like customerType have no menu options at all, so there is no
+        curated option text to match a phrase like "federal customer"
+        against — yet a real hiding rule's script literally checks
+        customerType=="FEDERAL". The keyword itself is read directly off
+        the script's own comparison (via extract_literal_comparisons), not
+        derived from the attribute's name — customerType's own name
+        ("customer", "type") contains nothing resembling "federal", so
+        camelCase-splitting the attribute name would find nothing useful
+        here; the useful signal only exists in the script body.
+
+        Never guesses (D2), two ways:
+          - A candidate value is dropped if 2+ different option-less
+            fields' scripts compare against the same normalized text —
+            same "ambiguous → don't guess" principle as extract_catalog_hints.
+          - A candidate value is ALSO dropped if it collides with any real,
+            curated menu option's text anywhere in the catalog (confirmed
+            live: "FEDERAL" is itself a real option on
+            systemEnhancementFeatureType_astro, plus a substring of several
+            others) — this fuzzy, script-derived mechanism must never
+            disagree with extract_catalog_hints about which attribute a
+            word belongs to.
+
+        Cached per (workspace_id, catalog_prefix) — this depends only on
+        the catalog's own static rules/attrs, not on conversation state, so
+        it is built once per catalog per process lifetime rather than
+        re-scanning every script on every turn.
+        """
+        cache_key = (workspace_id, catalog_prefix)
+        cached = _FLAG_KEYWORD_INDEX_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+        by_vn = {a.variable_name: a for a in attrs}
+        option_less = {
+            vn for vn, a in by_vn.items() if not a.options and not a.hidden
+        }
+
+        scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
+        candidates: dict[str, set[str]] = {}
+        literal_by_norm_and_var: dict[tuple[str, str], str] = {}
+        for script in scripts.values():
+            if not script:
+                continue
+            for var, value in extract_literal_comparisons(script):
+                if var not in option_less:
+                    continue
+                norm = _normalize_for_hint(value)
+                if len(norm) < _HINT_MIN_PHRASE_LEN:
+                    continue
+                candidates.setdefault(norm, set()).add(var)
+                literal_by_norm_and_var[(norm, var)] = value
+
+        index: dict[str, tuple[str, str]] = {
+            norm: (next(iter(vns)), literal_by_norm_and_var[(norm, next(iter(vns)))])
+            for norm, vns in candidates.items() if len(vns) == 1
+        }
+
+        for a in attrs:
+            if a.hidden or a.select_type == "multi":
+                continue
+            for opt in a.options:
+                for text in (opt.item_value, opt.display_name):
+                    index.pop(_normalize_for_hint(text), None)
+
+        _FLAG_KEYWORD_INDEX_CACHE[cache_key] = index
+        return index
+
+    def extract_flag_hints(
+        self, question: str, attrs: list["ConfigAttr"],
+        workspace_id: int, catalog_prefix: str,
+    ) -> dict[str, str]:
+        """{variable_name: literal_value} for option-less, BML-referenced
+        fields whose expected literal value appears (un-negated) in the
+        question. See _build_flag_keyword_index for the safety guards.
+
+        Negation drops the match entirely rather than inventing an
+        "opposite" literal — unlike a real YES/NO option pair, there is no
+        second value the script defines for "not federal", so the safe
+        behavior is to leave the field unfilled (same as any other
+        genuinely unresolvable case), not guess one.
+        """
+        index = self._build_flag_keyword_index(attrs, workspace_id, catalog_prefix)
+        if not index:
+            return {}
+        q_norm, q_index_map = _normalize_for_hint_with_map(question)
+        q_lower = question.lower()
+        hints: dict[str, str] = {}
+        for norm_value, (vn, literal_value) in index.items():
+            idx = _find_plural_tolerant(q_norm, norm_value)
+            if idx == -1:
+                continue
+            if _is_negated_before(q_lower, q_index_map[idx]):
+                continue
+            hints[vn] = literal_value
+        return hints
 
     def _ingested_product_names(self, reader: Any, workspace_id: int) -> list[str]:
         """Real product/family display names for every catalog currently
@@ -638,6 +855,50 @@ class CpqEngine:
         t = (ontology_type or "").lower()
         return any(frag in t for frag in _LAYOUT_TYPE_FRAGMENTS)
 
+    def _match_family_name(
+        self, reader: Any, workspace_id: int, prefix: str, hint_norm: str,
+    ) -> str | None:
+        """The real BmPrdFamily/BmCatalog entity name under `prefix` whose
+        normalized text substring-matches hint_norm, or None. Shared by
+        _scope_to_catalog (family-only scoping) and resolve_product_hint
+        (family + product-option scoping) — the family/catalog-name check
+        is identical in both; only what else gets checked afterward differs.
+
+        Requires the SHORTER side of the containment check to be at least
+        _HINT_MIN_PHRASE_LEN chars — confirmed live that without this, a
+        bare 2-char anchor reply like "US" (a country, not a product)
+        spuriously matched inside "pCRBusinessLightDevices_bom" (the "us"
+        in "business"), resolving a country name to a random catalog.
+        """
+        family_ents: list[dict] = []
+        for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
+            # High limit, not a handful: a single product family can carry
+            # dozens of BmCatalog entities (e.g. a MOTOTRBO/PCR family
+            # spanning 70+ individual radio-model catalogs) — the model
+            # actually matching product_hint (e.g. "autoSL3500E_BOM") can
+            # sort anywhere in an unordered graph result, so a small limit
+            # risks silently missing it and falling back to "ambiguous".
+            family_ents.extend(
+                reader.find_entities(ontology_type=family_type, limit=2000))
+        if not family_ents:
+            return None
+        family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
+        for fent in family_ents:
+            fname = str(
+                family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
+            )
+            fname_norm = _strip_catalog_name_noise(
+                re.sub(r"[^a-z0-9]", "", fname.lower())
+            )
+            if not fname_norm:
+                continue
+            shorter_len = min(len(fname_norm), len(hint_norm))
+            if shorter_len < _HINT_MIN_PHRASE_LEN:
+                continue
+            if fname_norm in hint_norm or hint_norm in fname_norm:
+                return fname
+        return None
+
     def _scope_to_catalog(
         self, reader: Any, workspace_id: int, attr_types: list[str], product_hint: str,
     ) -> tuple[list[str], str]:
@@ -651,11 +912,12 @@ class CpqEngine:
         catalogs simultaneously).
 
         Resolution: group attr_types by their source-derived _catalog_prefix,
-        look up each prefix's BmPrdFamily/BmCatalog entity name, and match
-        product_hint against those names. Falls back to returning ALL types
-        unscoped (the pre-fix behavior) whenever there's only one catalog to
-        begin with, or the hint can't be uniquely matched to one — this must
-        never silently return zero attrs for an unresolved hint.
+        look up each prefix's BmPrdFamily/BmCatalog entity name (via
+        _match_family_name), and match product_hint against those names.
+        Falls back to returning ALL types unscoped (the pre-fix behavior)
+        whenever there's only one catalog to begin with, or the hint can't
+        be uniquely matched to one — this must never silently return zero
+        attrs for an unresolved hint.
 
         Returns (scoped_attr_types, resolved_catalog_prefix) — the prefix is
         "" when scoping did not narrow to exactly one catalog, and callers
@@ -670,29 +932,10 @@ class CpqEngine:
         if not hint_norm:
             return attr_types, ""
 
-        matched_prefixes: set[str] = set()
-        for prefix in prefixes:
-            family_ents: list[dict] = []
-            for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
-                # High limit, not a handful: a single product family can carry
-                # dozens of BmCatalog entities (e.g. a MOTOTRBO/PCR family
-                # spanning 70+ individual radio-model catalogs) — the model
-                # actually matching product_hint (e.g. "autoSL3500E_BOM") can
-                # sort anywhere in an unordered graph result, so a small limit
-                # risks silently missing it and falling back to "ambiguous".
-                family_ents.extend(
-                    reader.find_entities(ontology_type=family_type, limit=2000))
-            if not family_ents:
-                continue
-            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
-            for fent in family_ents:
-                fname = str(
-                    family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
-                )
-                fname_norm = re.sub(r"[^a-z0-9]", "", fname.lower())
-                if fname_norm and (fname_norm in hint_norm or hint_norm in fname_norm):
-                    matched_prefixes.add(prefix)
-                    break
+        matched_prefixes = {
+            prefix for prefix in prefixes
+            if self._match_family_name(reader, workspace_id, prefix, hint_norm)
+        }
 
         if len(matched_prefixes) == 1:
             chosen = next(iter(matched_prefixes))
@@ -706,6 +949,210 @@ class CpqEngine:
             product_hint, sorted(prefixes),
         )
         return attr_types, ""
+
+    # Fallback structural signal for _fetch_product_option_list when no attr
+    # is literally named "productSelectionProduct_all" — see that method's
+    # docstring. Matches the common BM naming convention for a product-line
+    # variant selector without hardcoding one catalog's exact field name.
+    _PRODUCT_FIELD_FALLBACK_RE = re.compile(r"product", re.IGNORECASE)
+    _PRODUCT_FIELD_FALLBACK_HINT_RE = re.compile(r"select|line", re.IGNORECASE)
+
+    def _fetch_product_option_list(
+        self, reader: Any, workspace_id: int, prefix: str,
+    ) -> list[tuple[str, str]]:
+        """(item_value, display_name) options for one catalog's customer-
+        facing product-name field.
+
+        Confirmed live: both currently-ingested catalogs (ApxNextConfig,
+        Sl3500EConfig) name this field productSelectionProduct_all — this is
+        the field product-LINE VARIANTS (e.g. "APX NEXT Enhanced", "DGM
+        8500e") actually live in, never in BmPrdFamily/BmCatalog names
+        (confirmed: "APX NEXT Enhanced" matches no real family/catalog name
+        in this catalog at all).
+
+        A THIRD catalog using a different field name for the same concept
+        is not hardcoded around: when no attr is literally named
+        productSelectionProduct_all, falls back to a structural signal —
+        any attr whose variable_name matches both "product" and
+        ("select"|"line") (case-insensitive), same naming convention as
+        both known catalogs' own field. Multiple candidates pick the one
+        with the MOST real menu options (product-variant selectors are
+        high-cardinality dropdowns by nature — confirmed 325 real options
+        on this catalog's own field), a deterministic tie-break within an
+        already-narrowed, name-matched candidate set rather than a blind
+        guess across the whole catalog.
+
+        Only called for infrequent product-hint resolution (first message,
+        anchor-answer validation) — not the hot per-turn path — so a full
+        per-catalog attr scan here (mirroring load_product_config's own
+        entity+Postgres fetch) is an acceptable, one-off cost.
+        """
+        try:
+            attr_ents = reader.find_entities(
+                ontology_type=f"{prefix}BmConfigAttr", limit=500)
+        except Exception:
+            return []
+        if not attr_ents:
+            return []
+        attr_pg = self._batch_fetch([e["id"] for e in attr_ents], workspace_id)
+        target_id = None
+        fallback_candidates: list[tuple[int, int]] = []  # (entity_id, option_count)
+        for ent in attr_ents:
+            pg = attr_pg.get(ent["id"], {})
+            vn = str(
+                pg.get("variable_name") or pg.get("name") or ent.get("name") or ""
+            ).strip()
+            if vn == "productSelectionProduct_all":
+                target_id = ent["id"]
+                break
+            if (self._PRODUCT_FIELD_FALLBACK_RE.search(vn)
+                    and self._PRODUCT_FIELD_FALLBACK_HINT_RE.search(vn)):
+                try:
+                    neighbor_count = len(reader.neighbors(ent["id"]))
+                except Exception:
+                    neighbor_count = 0
+                fallback_candidates.append((ent["id"], neighbor_count))
+        if target_id is None and fallback_candidates:
+            target_id = max(fallback_candidates, key=lambda c: c[1])[0]
+        if target_id is None:
+            return []
+        try:
+            neighbors = reader.neighbors(target_id)
+        except Exception:
+            return []
+        menu_ids = [
+            n["id"] for n in neighbors
+            if "menuitem" in (n.get("type") or "").lower().replace("_", "")
+        ]
+        if not menu_ids:
+            return []
+        menu_pg = self._batch_fetch(menu_ids, workspace_id)
+        options: list[tuple[str, str]] = []
+        for mid in menu_ids:
+            ma = menu_pg.get(mid, {})
+            iv = str(ma.get("item_value") or "").strip()
+            dt = str(ma.get("item_text") or ma.get("name") or iv).strip()
+            if iv:
+                options.append((iv, dt))
+        return options
+
+    def resolve_product_hint(
+        self, reader: Any, workspace_id: int, hint_text: str,
+    ) -> tuple[str, str] | None:
+        """Resolve free-text to (catalog_prefix, canonical_display_name)
+        using only real ingested data — no hardcoded product-name list.
+
+        Replaces reliance on _PRODUCT_PATTERNS' fixed regex list, which
+        confirmed-live never recognizes products outside its hardcoded set
+        (e.g. "DGM 8500e" — a real, ingested product this method resolves
+        correctly with zero code changes, since DGM/MOTOTRBO models are
+        genuinely present as BmCatalog entities and productSelectionProduct_all
+        options inside the Sl3500EConfig ingestion).
+
+        Two passes, in priority order — NOT merged into one combined check:
+          1. BmPrdFamily/BmCatalog entity names (_match_family_name), across
+             ALL catalogs. This is genuinely catalog-specific data (an
+             internal BOM export code), so a unique match here is trusted
+             immediately without even looking at pass 2.
+          2. Only if pass 1 matched nothing anywhere: each catalog's
+             productSelectionProduct_all option list. Confirmed live this
+             field is a SHARED master list duplicated near-identically
+             across every ingested catalog (not real per-catalog data), so
+             it is deliberately the lower-priority, fallback signal — if
+             pass 1 had been checked per-catalog and merged with pass 2
+             additively instead, a real match in pass 1 (e.g. "DGM 8500e"
+             uniquely matching Sl3500EConfig's BmCatalog entity) would get
+             incorrectly reported as ambiguous the moment pass 2 also
+             matched the same shared list entry in a second, unrelated
+             catalog — confirmed live this exact false ambiguity happened
+             before this two-pass ordering was added.
+
+        Returns None if neither pass uniquely resolves to exactly one
+        catalog — callers must ask rather than guess (D2), same principle
+        as _scope_to_catalog's own "ambiguous → don't pick" behavior.
+        """
+        hint_norm = _normalize_for_hint(hint_text)
+        if not hint_norm:
+            return None
+
+        try:
+            all_type_names = reader.distinct_types()
+        except AttributeError:
+            all_type_names = sorted({
+                e.get("type") or "" for e in reader.find_entities(limit=1000)
+            })
+        prefixes = sorted({
+            _catalog_prefix(t) for t in all_type_names if _catalog_prefix(t)
+        })
+        if not prefixes:
+            return None
+
+        family_matches: dict[str, str] = {}
+        for prefix in prefixes:
+            fname = self._match_family_name(reader, workspace_id, prefix, hint_norm)
+            if fname:
+                family_matches[prefix] = fname
+        if len(family_matches) == 1:
+            prefix, name = next(iter(family_matches.items()))
+            return prefix, name
+        if family_matches:
+            return None  # ambiguous at the trustworthy signal — never fall through
+
+        option_matches: dict[str, str] = {}
+        for prefix in prefixes:
+            for item_value, display_name in self._fetch_product_option_list(
+                reader, workspace_id, prefix,
+            ):
+                for text in (item_value, display_name):
+                    stripped = text.strip()
+                    is_code = any(c.isdigit() for c in stripped) or "/" in stripped
+                    if len(stripped.split()) < 2 and not is_code:
+                        continue  # same single-word guard as extract_catalog_hints
+                    norm = _normalize_for_hint(text)
+                    if (
+                        min(len(norm), len(hint_norm)) >= _HINT_MIN_PHRASE_LEN
+                        and (norm in hint_norm or hint_norm in norm)
+                    ):
+                        option_matches[prefix] = display_name or item_value
+                        break
+                if prefix in option_matches:
+                    break
+
+        if len(option_matches) == 1:
+            prefix, name = next(iter(option_matches.items()))
+            return prefix, name
+        return None
+
+    def list_ingested_families(
+        self, reader: Any, workspace_id: int,
+    ) -> list[str]:
+        """Real family/catalog display names, one per ingested catalog
+        prefix — for building a dynamic "what product family?" prompt
+        instead of a hardcoded example string that goes stale the moment a
+        new catalog is ingested."""
+        try:
+            all_type_names = reader.distinct_types()
+        except AttributeError:
+            all_type_names = sorted({
+                e.get("type") or "" for e in reader.find_entities(limit=1000)
+            })
+        prefixes = sorted({
+            _catalog_prefix(t) for t in all_type_names if _catalog_prefix(t)
+        })
+        names: list[str] = []
+        for prefix in prefixes:
+            family_ents = reader.find_entities(
+                ontology_type=f"{prefix}BmPrdFamily", limit=5)
+            if not family_ents:
+                continue
+            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
+            fname = str(
+                family_pg.get(family_ents[0]["id"], {}).get("name")
+                or family_ents[0].get("name") or ""
+            ).strip()
+            if fname:
+                names.append(fname)
+        return names
 
     def load_product_config(
         self,
@@ -845,6 +1292,9 @@ class CpqEngine:
                 # no default to feed BML scripts, so still fully dropped.
                 continue
 
+            hide_in_trans_raw = str(pg.get("hide_in_trans") or "0").strip().lower()
+            is_hide_in_trans = hide_in_trans_raw in ("1", "true", "yes")
+
             # Exclude layout/UI-noise nodes by checking attribute content
             if self._is_layout_noise(ent.get("type") or ""):
                 continue
@@ -873,6 +1323,7 @@ class CpqEngine:
                 select_type=classify_select_type(pg),
                 catalog_prefix=_catalog_prefix(ent.get("type") or ""),
                 hidden=is_hidden,
+                hide_in_trans=is_hide_in_trans,
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -898,11 +1349,20 @@ class CpqEngine:
         etc. silently merge rows from both catalogs under the same key, and
         whichever catalog's row is read last wins — corrupting rule
         evaluation even after fetch_rules() itself is correctly scoped.
+
+        inputs_by_rule holds ALL of a rule's bm_config_rule_input rows, not
+        just one — confirmed live 445/688 real rules in one catalog carry
+        2+ input rows; keeping only the last (the previous behavior) meant
+        63% of declarative rules with any condition were either dead
+        (last-kept row's value blank) or silently over-firing (a real
+        second condition dropped). See docs/CPQ_APX_NEXT_RULE_CATALOG.md
+        "Gap Deep-Dive & Impact Analysis" and bml.evaluate_declarative_conditions
+        for the AND/OR-grouping semantics applied to this list.
         """
         rdb = get_cpq_rdb()
-        inputs_by_rule: dict[int, tuple[int, str]] = {}
+        inputs_by_rule: dict[int, list[tuple[int, str]]] = {}
         for rid, aid, val in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
-            inputs_by_rule[rid] = (aid, val)
+            inputs_by_rule.setdefault(rid, []).append((aid, val))
         actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]] = {}
         for rid, aid, at, val, fn, st in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
             actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st))
@@ -969,43 +1429,61 @@ class CpqEngine:
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.
 
-        Declarative rules become HidingRule objects. Script-backed rules
-        (condition_function_id != -1) cannot be expressed as a simple
-        hide/show pair — they are counted and logged (never silently
-        dropped) so coverage is visible per workspace.
+        Declarative rules become HidingRule objects with condition_attr_id/
+        condition_value/hide set. Script-backed rules (condition_function_id
+        != -1) ALSO become HidingRule objects, with `script` set instead —
+        confirmed live that 119 of 191 real hiding rules (62%) in this
+        catalog are script-backed (e.g. "Hide HW Version unless region=NA OR
+        country=KY OR customerType=FEDERAL"), so skipping them silently, as
+        this method previously did, meant most of the source system's real
+        show/hide dependencies never took effect here at all. Their target(s)
+        are resolved the same way as declarative rules (via
+        _resolve_targets); only the CONDITION differs, and is evaluated at
+        apply time by BmlEvaluator.should_hide (see apply_hiding_rules).
 
         catalog_prefix — scopes to one ingested catalog (see
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
         rules: list[HidingRule] = []
-        script_backed = 0
+        script_missing = 0
         unresolved = 0
         try:
             rdb, inputs, actions, marked, chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
+            scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
             for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11", catalog_prefix):
-                if fn_id != -1:
-                    script_backed += 1
-                    logger.info(
-                        "cpq: hiding rule %r is script-backed (function_id=%d) — "
-                        "hide/show semantics not derivable from BML, rule visible "
-                        "in coverage but not evaluated", rule_name, fn_id)
-                    continue
                 key = self._rule_key(eid, src_id, inputs, actions)
-                inp = inputs.get(key)
-                if not inp:
-                    unresolved += 1
-                    continue
                 targets = self._resolve_targets(key, actions, marked, chain)
                 if not targets:
                     unresolved += 1
                     logger.info(
-                        "cpq: hiding rule %r (id=%s) has a condition but no "
-                        "resolvable target via action/marked_attr/chain — "
-                        "excluded, not silently guessed", rule_name, key)
+                        "cpq: hiding rule %r (id=%s) has no resolvable target "
+                        "via action/marked_attr/chain — excluded, not "
+                        "silently guessed", rule_name, key)
                     continue
-                cond_attr_id, cond_value = inp
+                if fn_id != -1:
+                    script = scripts.get(fn_id)
+                    if not script:
+                        script_missing += 1
+                        logger.warning(
+                            "cpq: hiding rule %r references function_id=%d "
+                            "but no BmFunction script was found", rule_name, fn_id)
+                        continue
+                    for target_attr_id, _action_type in targets:
+                        rules.append(HidingRule(
+                            rule_name=rule_name or str(eid),
+                            condition_attr_id=0,
+                            condition_value="",
+                            target_attr_id=target_attr_id,
+                            script=script,
+                        ))
+                    continue
+                inp_list = inputs.get(key)
+                if not inp_list:
+                    unresolved += 1
+                    continue
+                cond_attr_id, cond_value = inp_list[-1]
                 for target_attr_id, action_type in targets:
                     rules.append(HidingRule(
                         rule_name=rule_name or str(eid),
@@ -1013,13 +1491,17 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         hide=(int(action_type or 2) == 2),
+                        conditions=list(inp_list),
                     ))
         except Exception:
             logger.debug("cpq: hiding rule load failed", exc_info=True)
 
+        script_backed = sum(1 for r in rules if r.script is not None)
         logger.info(
-            "cpq: loaded %d declarative hiding rules (%d script-backed logged, "
-            "%d unresolved)", len(rules), script_backed, unresolved)
+            "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
+            "%d missing script, %d unresolved)",
+            len(rules), len(rules) - script_backed, script_backed,
+            script_missing, unresolved)
         return rules
 
     @staticmethod
@@ -1058,8 +1540,19 @@ class CpqEngine:
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         rules: list[HidingRule],
+        bml_eval: BmlEvaluator | None = None,
     ) -> tuple[list[ConfigAttr], list[str], set[str]]:
         """Apply hiding rules against current filled values.
+
+        Script-backed rules (rule.script set) derive their hide/show outcome
+        from the BML evaluator using the current filled variables (keyed by
+        variable_name — BML scripts compare variable names directly, same
+        convention as apply_constraint_rules). An unknown script outcome
+        (bml_eval is None, or the evaluator can't determine it yet) leaves
+        the target visible rather than risking hiding something the
+        customer still needs — the safe default mirrors constraints'
+        "unknown applies no constraint" rule, just inverted for hiding
+        (unknown → don't hide, not → hide everything).
 
         Returns:
           filtered_attrs — attrs still visible after rules are applied
@@ -1076,19 +1569,39 @@ class CpqEngine:
         messages: list[str] = []
 
         for rule in rules:
-            current_val = filled_by_rule_id.get(rule.condition_attr_id)
-            if current_val is None:
-                continue  # condition attr not filled yet — rule doesn't fire
-            if current_val.lower() == rule.condition_value.lower():
-                target = by_rule_id.get(rule.target_attr_id)
-                if target:
-                    if rule.hide:
-                        hidden_eids.add(target.entity_id)
-                        messages.append(
-                            f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
-                        )
-                    else:
-                        hidden_eids.discard(target.entity_id)
+            target = by_rule_id.get(rule.target_attr_id)
+            if not target:
+                continue
+            if rule.script is not None:
+                if bml_eval is None:
+                    continue
+                hide = bml_eval.hide_for_script(rule.script, filled)
+                if hide is True:
+                    hidden_eids.add(target.entity_id)
+                    messages.append(
+                        f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
+                    )
+                elif hide is False:
+                    hidden_eids.discard(target.entity_id)
+                continue
+            if rule.conditions:
+                matched, _blocked = evaluate_declarative_conditions(
+                    rule.conditions, filled_by_rule_id)
+                if matched is not True:
+                    continue  # unresolved or definitively false — doesn't fire
+            else:
+                current_val = filled_by_rule_id.get(rule.condition_attr_id)
+                if current_val is None:
+                    continue  # condition attr not filled yet — rule doesn't fire
+                if current_val.lower() != rule.condition_value.lower():
+                    continue
+            if rule.hide:
+                hidden_eids.add(target.entity_id)
+                messages.append(
+                    f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
+                )
+            else:
+                hidden_eids.discard(target.entity_id)
 
         hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}
         filtered = [a for a in attrs if a.entity_id not in hidden_eids]
@@ -1130,9 +1643,23 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] = []
         con_rules: list[ConstraintRule] = []
         script_constraints = 0
-        script_recommendations_skipped = 0
+        script_recommendations_wired = 0
         cond_script_skipped = 0
+        script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
+        # Ambiguous multi-value recommendations are never guessed (D2) — instead
+        # routed through the same HITL ingest-question queue used elsewhere for
+        # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
+        # cost 14 round-trips, and so an already-answered rule resolves normally
+        # instead of being skipped forever.
+        try:
+            ingest_store = IngestQuestionStore(get_settings().rdb_dsn)
+            existing_questions = {
+                q["job_id"]: q for q in ingest_store.list(workspace_id, status="")
+            }
+        except Exception:
+            ingest_store = None
+            existing_questions = {}
         try:
             rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
@@ -1141,20 +1668,19 @@ class CpqEngine:
                 workspace_id, catalog_prefix,
             ):
                 key = self._rule_key(eid, src_id, inputs, actions)
-                inp = inputs.get(key)
+                inp_list = inputs.get(key)
                 acts = actions.get(key, [])
 
                 # Script-backed actions: gated by set_type same as declarative
                 # ones. set_type == -1 → the BML function returns the allowed
                 # list at apply time (constraint semantics, handled by the
                 # existing BML evaluator path). Any other set_type is a
-                # script-backed RECOMMENDATION/default — RecommendationRule
-                # has no script field and apply_recommendation_rules() has no
-                # BML evaluator hookup (unlike apply_constraint_rules()), so
-                # rather than mis-file it as a constraint (which would wrongly
-                # restrict the target's options instead of defaulting it),
-                # it's logged for coverage and skipped — the same "not yet
-                # evaluated" treatment scripted rules got before this fix.
+                # script-backed RECOMMENDATION/default — now wired to
+                # RecommendationRule.script + apply_recommendation_rules'
+                # BmlEvaluator hookup (previously extracted but never
+                # evaluated at all — see docs/CPQ_RULE_TOOL_FLOW_PLAN.md
+                # item 2/§7-8's confirmed "APX NEXT ENHANCED product +
+                # non-Enhanced hardware" inconsistency this closes).
                 for aid, _at, _val, act_fn, act_set_type in acts:
                     if act_fn != -1:
                         script = scripts.get(act_fn)
@@ -1165,7 +1691,7 @@ class CpqEngine:
                         elif act_set_type == -1:
                             con_rules.append(ConstraintRule(
                                 rule_name=rule_name or str(eid),
-                                condition_attr_id=(inp[0] if inp else 0),
+                                condition_attr_id=(inp_list[-1][0] if inp_list else 0),
                                 condition_value="",
                                 target_attr_id=aid,
                                 allowed_values=[],
@@ -1173,25 +1699,42 @@ class CpqEngine:
                             ))
                             script_constraints += 1
                         else:
-                            script_recommendations_skipped += 1
+                            rec_rules.append(RecommendationRule(
+                                rule_name=rule_name or str(eid),
+                                condition_attr_id=0,
+                                condition_value="",
+                                target_attr_id=aid,
+                                script=script,
+                            ))
+                            script_recommendations_wired += 1
                             logger.info(
                                 "cpq: rule %r is a script-backed recommendation "
-                                "(function_id=%d, target=%d) — logged, not yet "
-                                "evaluated (RecommendationRule has no BML hook)",
+                                "(function_id=%d, target=%d) — evaluated via "
+                                "BmlEvaluator at apply time",
                                 rule_name, act_fn, aid)
 
+                condition_script: str | None = None
                 if fn_id != -1:
-                    # Condition itself is a script (boolean BML) — not
-                    # derivable declaratively; logged for coverage.
-                    cond_script_skipped += 1
-                    logger.info(
-                        "cpq: rule %r has a script condition "
-                        "(condition_function_id=%d) — declarative actions for "
-                        "it are not gated", rule_name, fn_id)
-                    continue
-                if not inp:
-                    continue
-                cond_attr_id, cond_value = inp
+                    # Condition itself is a script (boolean BML), not the
+                    # single condition_attr_id/condition_value pair. As long
+                    # as the rule's ACTION is declarative (handled below),
+                    # gate it via condition_script instead of dropping it —
+                    # apply time runs the same Tier-1/Tier-2 boolean
+                    # evaluator apply_hiding_rules already uses (D2 "never
+                    # guess" still holds: unknown outcome never fires).
+                    condition_script = scripts.get(fn_id)
+                    if not condition_script:
+                        cond_script_skipped += 1
+                        logger.warning(
+                            "cpq: rule %r references condition_function_id=%d "
+                            "but no BmFunction script was found — not gated",
+                            rule_name, fn_id)
+                        continue
+                    cond_attr_id, cond_value = 0, ""
+                else:
+                    if not inp_list:
+                        continue
+                    cond_attr_id, cond_value = inp_list[-1]
 
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
@@ -1214,14 +1757,59 @@ class CpqEngine:
                         # A recommendation assigns ONE default value — several
                         # tilde-delimited candidates means picking one would be
                         # guessing (same D2 "never guess" rule that governs
-                        # auto_fill elsewhere), so this is logged and skipped
-                        # rather than arbitrarily choosing the first candidate.
+                        # auto_fill elsewhere). Never guessed in code — routed
+                        # to a human via aryx_ingest_question instead. An
+                        # already-answered rule resolves like any other
+                        # RecommendationRule; an unanswered one stays skipped
+                        # (visible in the queue, not a dead-end log line).
+                        job_id = f"cpq-rule-{eid}-{aid}"
+                        existing = existing_questions.get(job_id)
+                        if (existing and existing.get("status") == "answered"
+                                and existing.get("answer") in parts):
+                            recommend_by_target.setdefault(aid, existing["answer"])
+                            continue
                         ambiguous_recommendations_skipped += 1
                         logger.info(
                             "cpq: rule %r has a multi-value recommendation "
                             "action for target=%d (%r) — ambiguous which is "
-                            "the default, skipped", rule_name, aid, parts)
+                            "the default, %s", rule_name, aid, parts,
+                            "awaiting human answer (already queued)" if existing
+                            else "queued for human answer")
+                        if not existing and ingest_store is not None:
+                            try:
+                                ingest_store.enqueue(
+                                    workspace_id, job_id=job_id,
+                                    kind="cpq_ambiguous_recommendation",
+                                    prompt=(
+                                        f"Rule '{rule_name}' recommends one of "
+                                        f"{parts} for attribute {aid} — which "
+                                        "should be the default?"),
+                                    options=parts, suggested="")
+                                existing_questions[job_id] = {"status": "pending"}
+                            except Exception:
+                                logger.debug(
+                                    "cpq: failed to enqueue ambiguous-"
+                                    "recommendation ingest question",
+                                    exc_info=True)
 
+                if condition_script:
+                    if restrict_by_target or recommend_by_target:
+                        script_condition_gated += 1
+                        logger.info(
+                            "cpq: rule %r has a script condition "
+                            "(condition_function_id=%d) gating a declarative "
+                            "action — evaluated via BmlEvaluator at apply time",
+                            rule_name, fn_id)
+                    else:
+                        # Script condition but no declarative action to gate
+                        # (e.g. the action was itself script-backed and
+                        # already wired above, or genuinely has no action) —
+                        # nothing left for condition_script to attach to.
+                        cond_script_skipped += 1
+                        logger.info(
+                            "cpq: rule %r has a script condition "
+                            "(condition_function_id=%d) but no declarative "
+                            "action — nothing to gate", rule_name, fn_id)
                 for target_attr_id, allowed in restrict_by_target.items():
                     con_rules.append(ConstraintRule(
                         rule_name=rule_name or str(eid),
@@ -1229,6 +1817,8 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         allowed_values=allowed,
+                        conditions=list(inp_list) if condition_script is None else None,
+                        condition_script=condition_script,
                     ))
                 for target_attr_id, rec_val in recommend_by_target.items():
                     rec_rules.append(RecommendationRule(
@@ -1237,17 +1827,20 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         recommended_value=rec_val,
+                        conditions=list(inp_list) if condition_script is None else None,
+                        condition_script=condition_script,
                     ))
         except Exception:
             logger.debug("cpq: value-rule load failed", exc_info=True)
         logger.info(
             "cpq: loaded %d recommendation rules, %d constraint rules "
             "(%d script-backed constraints, %d script-backed recommendations "
-            "skipped, %d script-condition rules skipped, %d ambiguous "
+            "wired, %d script-condition rules gating a declarative action, "
+            "%d script-condition rules skipped, %d ambiguous "
             "multi-value recommendations skipped)",
             len(rec_rules), len(con_rules), script_constraints,
-            script_recommendations_skipped, cond_script_skipped,
-            ambiguous_recommendations_skipped)
+            script_recommendations_wired, script_condition_gated,
+            cond_script_skipped, ambiguous_recommendations_skipped)
         return rec_rules, con_rules
 
     def load_recommendation_and_constraint_rules(
@@ -1277,11 +1870,26 @@ class CpqEngine:
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         rules: list[RecommendationRule],
+        bml_eval: BmlEvaluator | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
         Only fills attrs that are not already filled. Does not override prior
         user selections or auto-fills from earlier loop iterations.
+
+        Script-backed rules (rule.script set) derive their recommended value
+        from the BML evaluator using the current filled variables — same
+        Tier-1/Tier-2 machinery apply_constraint_rules already uses via
+        BmlEvaluator.allowed_values_for_script. Closes the gap where
+        script-backed recommendations were extracted but never evaluated
+        (RecommendationRule previously had no script field/hookup at all —
+        see docs/CPQ_RULE_TOOL_FLOW_PLAN.md item 2/§7-8's confirmed
+        "APX NEXT ENHANCED product + non-Enhanced hardware" inconsistency).
+        A script resolving to anything other than EXACTLY one value (None,
+        or 2+ candidates) is treated as "not yet determined" and skipped —
+        same D2 "never guess" principle as the existing tilde-delimited
+        ambiguous-recommendation skip below. bml_eval=None (caller opted
+        out) silently skips script-backed rules, same as apply_constraint_rules.
         """
         if not rules:
             return {}
@@ -1289,20 +1897,42 @@ class CpqEngine:
         filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
-            if rule.condition_attr_id not in filled_by_rule_id:
-                continue
-            if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
-                continue
             target = by_rule_id.get(rule.target_attr_id)
             if not target or target.variable_name in filled:
                 continue
+            if rule.script is not None:
+                if bml_eval is None:
+                    continue
+                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                if not allowed or len(allowed) != 1:
+                    continue  # unknown, or ambiguous — never guess
+                recommended_value = allowed[0]
+            elif rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is not True:
+                    continue  # False or unknown — never guess, doesn't fire
+                recommended_value = rule.recommended_value
+            else:
+                if rule.conditions:
+                    matched, _blocked = evaluate_declarative_conditions(
+                        rule.conditions, filled_by_rule_id)
+                    if matched is not True:
+                        continue
+                else:
+                    if rule.condition_attr_id not in filled_by_rule_id:
+                        continue
+                    if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
+                        continue
+                recommended_value = rule.recommended_value
             matched_display = next(
                 (o.display_name for o in target.options
-                 if o.item_value.lower() == rule.recommended_value.lower()),
-                rule.recommended_value,
+                 if o.item_value.lower() == recommended_value.lower()),
+                recommended_value,
             )
-            if _valid(rule.recommended_value):
-                new_fills[target.variable_name] = (rule.recommended_value, matched_display)
+            if _valid(recommended_value):
+                new_fills[target.variable_name] = (recommended_value, matched_display)
         if new_fills:
             logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
         return new_fills
@@ -1391,10 +2021,23 @@ class CpqEngine:
                 if allowed:
                     _intersect(target.entity_id, allowed)
                 continue
-            if rule.condition_attr_id not in filled_by_rule_id:
-                continue
-            if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
-                continue
+            if rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is True:
+                    _intersect(target.entity_id, rule.allowed_values)
+                continue  # False or unknown — never guess, no constraint applied
+            if rule.conditions:
+                matched, _blocked = evaluate_declarative_conditions(
+                    rule.conditions, filled_by_rule_id)
+                if matched is not True:
+                    continue
+            else:
+                if rule.condition_attr_id not in filled_by_rule_id:
+                    continue
+                if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
+                    continue
             _intersect(target.entity_id, rule.allowed_values)
         if constrained:
             names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
@@ -1444,7 +2087,8 @@ class CpqEngine:
             prev_visible_ids = {a.entity_id for a in attrs}
 
             # Apply hiding rules first so auto_fill only fills visible attrs
-            attrs, _msgs, hidden_vns = self.apply_hiding_rules(attrs, filled, hiding_rules)
+            attrs, _msgs, hidden_vns = self.apply_hiding_rules(
+                attrs, filled, hiding_rules, bml_eval=bml_eval)
 
             # Strip values ONLY for attrs an explicit hiding rule removed from
             # view. Popping everything not currently visible (the old
@@ -1466,11 +2110,21 @@ class CpqEngine:
                 negated_vns=negated_vns,
             )
 
-            new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules)
+            new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
             if new_fills:
-                filled.update({k: iv for k, (iv, _d) in new_fills.items()})
-                display_filled.update({k: d for k, (_iv, d) in new_fills.items()})
-                for k in new_fills:
+                # Route multi-select targets to `multi`, not `filled` — same
+                # reasoning as auto_fill's final assignment block: this is
+                # yet another path that can hand a value to a select_type
+                # =="multi" attr, and build_payload only serializes an
+                # attr's value as an array when it's stored in filled_multi.
+                by_vn_for_type = {a.variable_name: a for a in attrs}
+                for k, (iv, d) in new_fills.items():
+                    tgt = by_vn_for_type.get(k)
+                    if tgt is not None and tgt.select_type == "multi":
+                        multi[k] = [iv]
+                    else:
+                        filled[k] = iv
+                    display_filled[k] = d
                     sources.setdefault(k, "rule")
 
             constrained_opts = self.apply_constraint_rules(
@@ -1860,7 +2514,19 @@ class CpqEngine:
                                     break
                             if value:
                                 break
-                    if not value and not attr.options and _valid(hint_val):
+                    # Never assign an arbitrary hint string to a boolean-typed
+                    # attr just because its name fragment-matched a hint key
+                    # (e.g. "country" is a substring of
+                    # "isUltimateDestinationCountryCA_astro") — confirmed
+                    # live against the real CPQ API: this attr is a genuine
+                    # boolean (data_type=4, real default "false"), and the
+                    # fragment match wrongly assigned the literal country
+                    # name "United States" to it, which the API rejected
+                    # ("has to be either true or false"). A boolean attr's
+                    # only valid values are true/false, never a hint's
+                    # free-text content.
+                    if (not value and not attr.options and _valid(hint_val)
+                            and attr.select_type != "boolean"):
                         value = hint_val
                         display = hint_val
                     if value:
@@ -1876,6 +2542,21 @@ class CpqEngine:
                      if o.item_value == attr.default_value),
                     attr.default_value,
                 )
+            elif (not value and attr.select_type == "boolean"
+                    and attr.default_value.strip().lower() in ("true", "false")):
+                # _valid() treats the literal string "false" as a none-sentinel
+                # (_NONE_VALUES) — correct for single-select dropdowns where
+                # "FALSE" can mean "no selection", but wrong for a genuinely
+                # boolean-typed attr, where "false" IS the real, meaningful
+                # value. Without this, a boolean's own valid default gets
+                # silently discarded here, falls through ungoverned, and
+                # (confirmed live) can reach the decision-required cascade
+                # below and get contaminated with an unrelated sibling's raw
+                # string value (e.g. isUltimateDestinationCountryCA_astro
+                # picking up "United States" from CRM_BILL_COUNTRY).
+                value = attr.default_value.strip().lower()
+                source = "default"
+                display = "Yes" if value == "true" else "No"
 
             # 3/4. Rule-governed default-or-first (D2/§3), else the
             # conservative single-remaining-option fallback (NO EAGER
@@ -1988,9 +2669,38 @@ class CpqEngine:
             if filled_multi_now:
                 continue
             if value:
-                filled[vn] = value
+                # A value can reach here from several upstream paths (hint
+                # match, default_value, region-derivation, single-remaining-
+                # option, rule recommendation, boolean-default) — none of
+                # which check select_type before this point. Route multi-
+                # select attrs to filled_multi here too, not just in the
+                # dedicated multi branch above, or a value assigned via any
+                # of those other paths would land in `filled` as a scalar
+                # and silently defeat build_payload's array serialization
+                # for it (confirmed live: this is exactly what happened to
+                # two attrs that got their value via hint-matching rather
+                # than the dedicated multi/constrained-options branch).
+                if attr.select_type == "multi":
+                    filled_multi[vn] = [value]
+                else:
+                    filled[vn] = value
                 display_filled[vn] = display or value
                 sources.setdefault(vn, source)
+            elif attr.select_type == "multi" and not attr.required:
+                # An unconstrained multi-select (no active constraint narrowed
+                # it, no single-remaining-option, not marked required=1 in
+                # the raw XML) reaches here with nothing that justifies
+                # picking any subset — but real Oracle CPQ UI behavior for an
+                # optional checkbox-list field is an empty selection, not a
+                # forced choice (confirmed against raw XML: every attr this
+                # applies to in practice has required="0", and their BML
+                # scripts only narrow/disallow values under OTHER conditions,
+                # never enforce a minimum-selection count). Auto-assign empty
+                # rather than asking — a required=1 multi-select still falls
+                # through to the pending branch below instead.
+                filled_multi[vn] = []
+                display_filled[vn] = "(none)"
+                sources.setdefault(vn, "default")
             elif attr.options or is_decision_attr:
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
@@ -2009,6 +2719,21 @@ class CpqEngine:
             vn_flat_p = attr.variable_name.lower().replace("_", "")
             if attr.options:
                 still_pending.append(attr)
+                continue
+            if attr.select_type == "boolean":
+                # A boolean's absent-default state is well-defined (default
+                # to "false" — see the governed-boolean fallback above) —
+                # never let it fall into the free-text cascade below, which
+                # blindly copies ANY same-fragment sibling's raw value with
+                # no type check. Confirmed live: a boolean attr named
+                # "isUltimateDestinationCountryCA_astro" matched the
+                # "country" decision-key fragment and got contaminated with
+                # "United States" (a raw string from CRM_BILL_COUNTRY) this
+                # way — nonsensical for a true/false field and exactly the
+                # payload-shape mismatch the real CPQ API previously rejected.
+                filled[attr.variable_name] = "false"
+                display_filled[attr.variable_name] = "No"
+                sources.setdefault(attr.variable_name, "default")
                 continue
             matched_dk = next(
                 (dk for dk in _DECISION_REQUIRED_KEYS if dk in vn_flat_p), None
@@ -2482,10 +3207,9 @@ class CpqEngine:
         filled: dict[str, str],
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
-    ) -> dict[str, dict[str, dict[str, str | list[str]]]]:
-        """Return the final CPQ BOM API payload as::
-
-            {"configAttributes": {variable_name: {"value": item_value}, ...}}
+        attrs: list["ConfigAttr"] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return the final CPQ BOM API payload as ``{"configAttributes": {...}}``.
 
         Excludes HTML template values (layout/display fields, not real
         configuration inputs) and underscore-prefixed / integration-noise
@@ -2496,18 +3220,99 @@ class CpqEngine:
         survive when their provenance is a confirmed source; only
         unconfirmed auto-fills are dropped.
 
-        filled_multi (select_type=="multi" attrs) merges in as JSON arrays —
-        CpqSession.filled stays str-only (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
+        filled_multi (select_type=="multi" attrs) merges in — see per-type
+        shape below. CpqSession.filled stays str-only
+        (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
+
+        attrs — optional; when supplied, per-type serialization matches the
+        REAL CPQ BOM API contract (confirmed against the documented payload
+        spec, docs/CPQ_RULE_TOOL_FLOW_PLAN.md §15b/16 — every shape below
+        was checked against a real example, not assumed):
+          - hide_in_trans=1 attrs (e.g. productInformationText_astro) are
+            excluded entirely — the real API rejected both with "cannot be
+            modified" when included.
+          - boolean            -> bare ``true``/``false`` (no wrapper at
+            all — the real API rejected ``{"value": true}`` too, only a
+            bare boolean is accepted).
+          - currency           -> ``{"value": <float>, "currency": <code>}``
+            (code sourced from ``_BM_USER_CURRENCY`` in ``filled`` when
+            present, else "USD" — no other currency signal exists in this
+            catalog's own data).
+          - integer / float    -> bare numeric value.
+          - date               -> bare string value (already in the
+            source's own date format; no reformatting attempted).
+          - single-select menu (attr has real options) -> ``{"value":..,
+            "displayValue":..}`` — previously missing ``displayValue``
+            entirely.
+          - multi-select menu  -> ``{"items": [{"value":..,
+            "displayValue":..}, ...]}`` — previously a bare list of value
+            strings (``{"value": [...]}``), a materially different shape
+            than the API documents and a SEPARATE bug from the
+            filled-vs-filled_multi routing issue fixed earlier.
+          - plain text / no matching ConfigAttr found -> bare string.
+        Omitting attrs preserves the EXACT prior behavior (every value
+        wrapped as ``{"value": v}``) for existing callers that don't pass
+        it — the per-type behavior above only applies when a ConfigAttr for
+        that variable_name is actually available.
         """
         sources = filled_source or {}
-        out: dict[str, dict[str, str | list[str]]] = {}
+        attr_by_vn = {a.variable_name: a for a in (attrs or [])}
+        out: dict[str, Any] = {}
+
+        def _display_for(attr: "ConfigAttr", value: str) -> str:
+            return next(
+                (o.display_name for o in attr.options if o.item_value == value),
+                value,
+            )
+
         for k, v in filled.items():
             if not v or self._is_html_value(v) or self._is_noise_var(k):
                 continue
-            if _valid(v) or sources.get(k) in self._CONFIRMED_SOURCES:
+            attr = attr_by_vn.get(k)
+            if attr is not None and attr.hide_in_trans:
+                continue
+            if not (_valid(v) or sources.get(k) in self._CONFIRMED_SOURCES):
+                continue
+            if attr is None:
                 out[k] = {"value": v}
+                continue
+            select_type = attr.select_type
+            if select_type == "boolean":
+                out[k] = v.strip().lower() in ("true", "yes")
+            elif select_type == "currency":
+                try:
+                    amount: float | str = float(v)
+                except ValueError:
+                    amount = v  # not numeric — pass through rather than guess
+                out[k] = {
+                    "value": amount,
+                    "currency": filled.get("_BM_USER_CURRENCY", "USD"),
+                }
+            elif select_type == "integer":
+                out[k] = int(v) if re.fullmatch(r"-?\d+", v) else v
+            elif select_type == "float":
+                try:
+                    out[k] = float(v)
+                except ValueError:
+                    out[k] = v
+            elif select_type == "date":
+                out[k] = v
+            elif attr.options:
+                out[k] = {"value": v, "displayValue": _display_for(attr, v)}
+            else:
+                out[k] = v
         for k, vals in (filled_multi or {}).items():
-            if vals and not self._is_noise_var(k):
+            if not vals or self._is_noise_var(k):
+                continue
+            attr = attr_by_vn.get(k)
+            if attr is not None and attr.hide_in_trans:
+                continue
+            if attr is not None:
+                out[k] = {"items": [
+                    {"value": val, "displayValue": _display_for(attr, val)}
+                    for val in vals
+                ]}
+            else:
                 out[k] = {"value": list(vals)}
         return {"configAttributes": out}
 

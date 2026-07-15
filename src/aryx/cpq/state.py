@@ -7,19 +7,43 @@ from typing import Any
 
 @dataclass
 class HidingRule:
-    """One declarative hiding rule from the graph (rule_type=11, condition_type=1).
+    """One hiding rule from the graph (rule_type=11).
 
-    condition_attr_id  — entity_id of the BmConfigAttr whose value is checked.
-    condition_value    — the value that triggers this rule (from BmConfigRuleInput.value1).
+    Declarative form: condition_attr_id/condition_value/hide describe a
+    simple equality check (from BmConfigRuleInput.value1).
+
+    Script form (BML): ``script`` holds the raw BML body from the referenced
+    BmFunction — confirmed live that ~62% of real hiding rules in this
+    catalog are script-backed (their hide/show logic depends on more than
+    one variable, e.g. "hide unless region=NA OR country=KY OR
+    customerType=FEDERAL"), not the single condition_attr/condition_value
+    pair the declarative form can express. At apply time the evaluator
+    derives a bool from the current filled variables (see
+    BmlEvaluator.should_hide); condition_attr_id/condition_value are unused
+    when script is set (the script embeds its own conditions).
+
+    condition_attr_id  — entity_id of the BmConfigAttr whose value is checked (declarative only).
+    condition_value    — the value that triggers this rule (declarative only).
     target_attr_id     — entity_id of the BmConfigAttr to hide/show.
-    hide               — True = hide the target when condition is met; False = show.
+    hide               — True = hide the target when condition is met; False = show (declarative only).
     rule_name          — human-readable rule name for reporting.
+    conditions         — ALL of this rule's real bm_config_rule_input rows, as
+        [(attr_id, value), ...] — same attr_id repeated means OR (any of
+        those values matches for that attribute); different attr_ids are
+        ANDed together. None/empty falls back to the single
+        condition_attr_id/condition_value pair (backward compatible with
+        rules that only ever had one input). Confirmed live: 445/688 rules
+        in a real catalog carry 2+ input rows that the old single-pair
+        shape silently collapsed to just the last one — see
+        docs/CPQ_APX_NEXT_RULE_CATALOG.md "Gap Deep-Dive & Impact Analysis".
     """
     rule_name: str
     condition_attr_id: int
     condition_value: str
     target_attr_id: int
     hide: bool = True
+    script: str | None = None
+    conditions: list[tuple[int, str]] | None = None
 
 
 @dataclass
@@ -28,13 +52,37 @@ class RecommendationRule:
 
     When condition_attr equals condition_value, the engine auto-selects
     recommended_value for target_attr (if target is not already filled).
-    Only declarative rules (condition_function_id=-1) are loaded.
+
+    Script form (BML): ``script`` holds the raw BML body from the referenced
+    BmFunction. At apply time the evaluator derives the recommended value
+    from the current filled variables (Tier-1 if/else `returnVal="X"` idiom,
+    same evaluator ConstraintRule uses); condition fields are unused (the
+    script embeds its own conditions on variable names). Gated identically
+    to ConstraintRule's script form: an unknown/unresolvable script outcome
+    never fills anything (D2 "never guess").
+
+    condition_script — distinct from ``script`` above. This rule's own
+    condition_function_id is a BML boolean script (not the single
+    condition_attr_id/condition_value pair) while the ACTION is declarative
+    (recommended_value is a plain value, not derived from a script). At
+    apply time the evaluator runs this through the same boolean Tier-1/
+    Tier-2 machinery apply_hiding_rules already uses via
+    BmlEvaluator.hide_for_script (True = rule fires, unknown = never guess,
+    doesn't fire). Mutually exclusive with ``script`` in practice — a rule
+    with both a script condition AND a script action is handled by
+    ``script`` alone (see CpqEngine._load_value_rules).
+
+    conditions — see HidingRule.conditions; same AND-of-OR-groups semantics
+    for declarative multi-input rules.
     """
     rule_name: str
     condition_attr_id: int
     condition_value: str
     target_attr_id: int
-    recommended_value: str  # item_value to auto-select on the target attr
+    recommended_value: str = ""  # item_value to auto-select on the target attr
+    script: str | None = None
+    conditions: list[tuple[int, str]] | None = None
+    condition_script: str | None = None
 
 
 @dataclass
@@ -49,6 +97,10 @@ class ConstraintRule:
     BmFunction. At apply time the evaluator derives allowed_values from the
     current filled variables; condition fields are unused (the script embeds
     its own conditions on variable names).
+
+    condition_script — see RecommendationRule.condition_script: the rule's
+    own condition is a BML boolean script while allowed_values is a plain
+    declarative list. Evaluated via BmlEvaluator.hide_for_script the same way.
     """
     rule_name: str
     condition_attr_id: int
@@ -56,6 +108,8 @@ class ConstraintRule:
     target_attr_id: int
     allowed_values: list[str]  # item_values that remain valid when condition fires
     script: str | None = None  # raw BML — evaluated dynamically when set
+    conditions: list[tuple[int, str]] | None = None  # see HidingRule.conditions
+    condition_script: str | None = None
 
 
 @dataclass
@@ -99,6 +153,15 @@ class ConfigAttr:
     # default_value (BML scripts elsewhere may reference it) instead of
     # being dropped from the graph entirely.
     hidden: bool = False
+    # True for BM attrs flagged hide_in_trans=1 — the source system's own
+    # "don't submit this at transaction/order time" marker (confirmed live
+    # against the real CPQ API: productInformationText_astro and
+    # productSelectionHelptext_astro both carry this flag and both got
+    # "cannot be modified" from the real API when included in a submission
+    # payload). Distinct from `hidden` (never shown in the UI) — a field can
+    # be visible/computed for display but still excluded from the BOM
+    # submission itself; see CpqEngine.build_payload.
+    hide_in_trans: bool = False
 
 
 @dataclass
@@ -110,6 +173,14 @@ class CpqSession:
     """
 
     mode: str = "cpq"
+    # Minted once when a session is first created (ask_api.py, on the
+    # `CpqSession()` fresh-session fallback) and echoed back every turn
+    # like every other field — traces one quote's ENTIRE lifecycle (anchor
+    # gate -> rule cascade -> cascades -> approval -> payload) across every
+    # turn in every "cpq: ..." log line, via
+    # aryx.cpq.logging_context.set_run_id(). Empty for any session that
+    # predates this field (from_dict() below simply won't find the key).
+    run_id: str = ""
     product_name: str = ""
     product_entity_id: int = 0
     # variable_name → item_value (API code stored, never display label)
