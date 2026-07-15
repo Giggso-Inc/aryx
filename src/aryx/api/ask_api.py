@@ -592,7 +592,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # rule cascade like any other dependent variable, once product+country
     # are known. ───────────────────────────────────────────────────────────
     if not session.product_name:
-        detected = _cpq_engine.detect_product_mention(req.question, hints)
+        detected = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
         if not detected and session.pending_anchor == "product":
             detected = req.question.strip()
         if not detected:
@@ -613,12 +613,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     else:
         # Product already anchored on an earlier turn — re-check THIS turn's
         # text for a mention of a DIFFERENT product. detect_product_mention
-        # only matches a small curated set of real product-family patterns
-        # (see _PRODUCT_PATTERNS), so an answer value that merely contains
-        # unrelated text is unlikely to misfire; the confirm gate above is
-        # the safety net regardless — a false-positive costs one extra
-        # yes/no turn, never silent data loss.
-        switch_candidate = _cpq_engine.detect_product_mention(req.question, hints)
+        # is dynamic: it matches against the real product/family names of
+        # whatever catalogs are actually ingested in this workspace (read
+        # live from the graph), not a hardcoded list — so an answer value
+        # that merely contains unrelated text is unlikely to misfire unless
+        # it names another product genuinely present in this workspace; the
+        # confirm gate above is the safety net regardless — a false-positive
+        # costs one extra yes/no turn, never silent data loss.
+        switch_candidate = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
         if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
             logger.info(
                 "cpq_switch: candidate detected turn=%s current=%r candidate=%r",

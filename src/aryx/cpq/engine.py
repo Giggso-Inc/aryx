@@ -304,17 +304,6 @@ _COUNTRY_TO_REGION: dict[str, str] = {
     "new zealand": "APAC", "taiwan": "APAC", "hong kong": "APAC",
 }
 
-# Product name extraction patterns for display
-_PRODUCT_PATTERNS: list[tuple[str, str]] = [
-    (r"\bapx\s*next\s+xe\b", "APX NEXT XE"),
-    (r"\bapx\s*next\s+xn\b", "APX NEXT XN"),
-    (r"\bapx\s*next\b", "APX NEXT"),
-    (r"\bsl\s*3500e?\b", "SL3500e"),
-    (r"\bdpx\s*\d+\b", "DPX"),
-    (r"\bxpr\s*\d+\b", "XPR"),
-    (r"\bmototrbo\b", "MOTOTRBO"),
-]
-
 # CPQ layout-noise types — exclude from configuration conversation.
 _LAYOUT_TYPE_FRAGMENTS: frozenset[str] = frozenset({
     "layout", "prop", "css", "display_type", "view",
@@ -524,8 +513,56 @@ class CpqEngine:
                 negated_vns.update(owners)
         return hints, negated_vns
 
-    def detect_product_mention(self, question: str, hints: dict[str, str]) -> str:
+    def _ingested_product_names(self, reader: Any, workspace_id: int) -> list[str]:
+        """Real product/family display names for every catalog currently
+        ingested in this workspace — read live from the graph, no hardcoded
+        product list.
+
+        Mirrors the BmPrdFamily/BmCatalog lookup _scope_to_catalog already
+        does to resolve a hint back to one catalog (see its docstring); here
+        we go the other direction — enumerate every ingested catalog's own
+        name so a mention of ANY currently-ingested product can be
+        recognised, not just ones anticipated when this code was written.
+        Returns [] (never raises) when the reader can't answer distinct_types
+        or no family/catalog entity is found — callers must treat that as
+        "no dynamic candidates available", not an error.
+        """
+        try:
+            all_type_names = reader.distinct_types()
+        except AttributeError:
+            return []
+        prefixes = sorted({_catalog_prefix(t) for t in all_type_names} - {""})
+        names: list[str] = []
+        for prefix in prefixes:
+            family_ents: list[dict] = []
+            for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
+                family_ents.extend(
+                    reader.find_entities(ontology_type=family_type, limit=50))
+                if family_ents:
+                    break
+            if not family_ents:
+                continue
+            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
+            for fent in family_ents:
+                fname = str(
+                    family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
+                ).strip()
+                if fname:
+                    names.append(fname)
+        return names
+
+    def detect_product_mention(
+        self, question: str, hints: dict[str, str],
+        reader: Any = None, workspace_id: int = 1,
+    ) -> str:
         """Best-effort product display label from NL text, or "" if none found.
+
+        Dynamic — no hardcoded product list. Matches against the REAL
+        product/family names of every catalog actually ingested into this
+        workspace (via _ingested_product_names), so a newly-ingested product
+        line is recognised immediately without a code change. Falls back to
+        the NL-hint-derived "product" key, then "" (Step 1's normal
+        anchor-prompt path takes over when nothing resolves).
 
         D1 (CPQ_CASCADE_CONVERSATION_PLAN.md §2): the anchor gate is now
         sequential (product, then country) rather than a single-shot block
@@ -533,12 +570,13 @@ class CpqEngine:
         "product line" anchor) resolves through the normal rule cascade
         instead, like any other dependent variable.
         """
-        q_lower = question.lower()
-        return next(
-            (label for pattern, label in _PRODUCT_PATTERNS
-             if re.search(pattern, q_lower, re.IGNORECASE)),
-            next((v for k, v in hints.items() if "product" in k), ""),
-        )
+        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+        if reader is not None and q_norm:
+            for name in self._ingested_product_names(reader, workspace_id):
+                name_norm = re.sub(r"[^a-z0-9]", "", name.lower())
+                if name_norm and name_norm in q_norm:
+                    return name
+        return next((v for k, v in hints.items() if "product" in k), "")
 
     # ── PostgreSQL attribute fetch ────────────────────────────────────────────
 

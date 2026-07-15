@@ -12,22 +12,62 @@ Fix (Andie-planned, converged design): re-run detect_product_mention() every
 turn. If it returns a DIFFERENT product than session.product_name, don't
 silently switch — ask for confirmation first (new pending_anchor value
 "confirm_switch" + new CpqSession.pending_switch_product field). Only reset
-the config-scoped state (filled/pending_variables/country/catalog_prefix/...)
-on an explicit "yes", and never on "no" — this is the safety net against a
-false-positive detection (e.g. a curated product name appearing inside an
-answer's value text) causing silent data loss.
+the config-scoped state (filled/pending_variables/country/...) on an
+explicit "yes", and never on "no" — this is the safety net against a
+false-positive detection causing silent data loss.
 
-These tests exercise _run_cpq_turn directly with hand-constructed
-CpqSession state (rather than the full fake_rdb/truth fixture used
-elsewhere in test_cpq_e2e.py) because the switch-gate logic runs and
-returns BEFORE Step 2's graph/reader access — no real product catalog is
-needed to verify it.
+detect_product_mention() itself is DYNAMIC — no hardcoded product-name
+list. It matches against the real product/family names of whatever
+catalogs are actually ingested into the workspace, read live from the
+graph (CpqEngine._ingested_product_names — the same BmPrdFamily/BmCatalog
+lookup _scope_to_catalog already uses). _FakeProductReader below is a
+minimal double exposing exactly that: distinct_types() to derive catalog
+prefixes, and find_entities(ontology_type=...) to return each catalog's
+family entity carrying its real product name.
 """
 from __future__ import annotations
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.state import CpqSession
+
+
+class _FakeProductReader:
+    """Reader double for the dynamic product-name lookup only.
+
+    `catalogs` maps a catalog prefix -> its real product/family display
+    name, mirroring how a workspace's ingested XML catalogs are actually
+    structured (e.g. {"Sl3500EConfig": "SL3500e", "MototrboConfig": "MOTOTRBO"}).
+    """
+
+    def __init__(self, catalogs: dict[str, str]):
+        self._catalogs = catalogs
+        self.id_to_name: dict[int, str] = {}
+        self._next_id = 1000
+
+    def distinct_types(self):
+        return [f"{prefix}BmConfigAttr" for prefix in self._catalogs]
+
+    def find_entities(self, ontology_type=None, name=None, limit=50):
+        for prefix, pname in self._catalogs.items():
+            if ontology_type == f"{prefix}BmPrdFamily":
+                self._next_id += 1
+                eid = self._next_id
+                self.id_to_name[eid] = pname
+                return [{"id": eid, "type": ontology_type, "name": pname}]
+        return []
+
+
+def _fake_reader_with_batch_fetch(monkeypatch, catalogs: dict[str, str]) -> _FakeProductReader:
+    reader = _FakeProductReader(catalogs)
+    monkeypatch.setattr(
+        api._cpq_engine, "_batch_fetch",
+        lambda ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
+    )
+    return reader
+
+
+_TWO_PRODUCT_CATALOGS = {"Sl3500EConfig": "SL3500e", "MototrboConfig": "MOTOTRBO"}
 
 
 def _mid_config_session(product_name="SL3500e", country="United States",
@@ -44,36 +84,38 @@ def _mid_config_session(product_name="SL3500e", country="United States",
     return session.to_dict()
 
 
-def _no_switch_setup(monkeypatch):
+def _no_switch_setup(monkeypatch, catalogs=None):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
-    # Step 2 onward needs real graph/RDB data we don't have here — force the
-    # "no CPQ data in graph" fallthrough so any turn that reaches Step 2
-    # returns cleanly ({}) instead of crashing on a bare reader double.
+    reader = _fake_reader_with_batch_fetch(monkeypatch, catalogs or _TWO_PRODUCT_CATALOGS)
+    # Step 2 onward needs real graph/RDB config-attr data we don't have here
+    # — force the "no CPQ data in graph" fallthrough so any turn that
+    # reaches Step 2 returns cleanly ({}) instead of crashing.
     monkeypatch.setattr(api._cpq_engine, "load_product_config", lambda *a, **k: ([], ""))
+    return reader
 
 
 # ── Scenario 1: baseline — no switch signal, existing behavior unaffected ──
 
 def test_baseline_no_switch_signal_leaves_session_untouched(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session_data = _mid_config_session()
     req = AskRequest(question="what color options are available",
                       workspace_id=1, session_data=session_data)
-    resp = _run_cpq_turn(req, reader=None)
+    resp = _run_cpq_turn(req, reader)
 
     # No product mentioned -> no switch candidate -> falls through to Step 2,
     # which we've mocked to report "no attrs" -> {} (existing behavior).
     assert resp == {}
 
 
-# ── Scenario 2: a different product is mentioned mid-session ───────────────
+# ── Scenario 2: a different, actually-ingested product is mentioned ────────
 
 def test_different_product_mention_triggers_confirm_prompt(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e")
     req = AskRequest(question="Actually I also need a MOTOTRBO radio",
                       workspace_id=1, session_data=session_data)
-    resp = _run_cpq_turn(req, reader=None)
+    resp = _run_cpq_turn(req, reader)
 
     assert resp, "engine returned no response for a switch candidate"
     assert "MOTOTRBO" in resp["answer"]
@@ -87,16 +129,31 @@ def test_different_product_mention_triggers_confirm_prompt(monkeypatch):
     assert sd["filled"] == {"battery": "STANDARD"}
 
 
+def test_product_not_ingested_in_workspace_is_never_a_switch_candidate(monkeypatch):
+    """Dynamic detection only recognises products actually ingested into
+    THIS workspace — a name that isn't one of the live catalogs must not
+    trigger a switch, proving there is no hardcoded product list left."""
+    reader = _no_switch_setup(monkeypatch, catalogs={"Sl3500EConfig": "SL3500e"})
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="what about a MOTOTRBO radio",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    # MOTOTRBO isn't ingested in this workspace (only SL3500e is) -> no
+    # candidate detected -> falls through to Step 2's mocked empty-attrs {}.
+    assert resp == {}
+
+
 # ── Scenario 3: user confirms the switch ────────────────────────────────────
 
 def test_confirmed_switch_resets_config_state_and_reanchors_country(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e")
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "MOTOTRBO"
 
     req = AskRequest(question="yes", workspace_id=1, session_data=session_data)
-    resp = _run_cpq_turn(req, reader=None)
+    resp = _run_cpq_turn(req, reader)
 
     assert resp
     sd = resp["session_data"]
@@ -117,14 +174,14 @@ def test_confirmed_switch_resets_config_state_and_reanchors_country(monkeypatch)
 # ── Scenario 4: user declines the switch — zero data loss ──────────────────
 
 def test_declined_switch_preserves_original_product_and_answers(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e",
                                         filled={"battery": "STANDARD", "carry": "BELT"})
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "MOTOTRBO"
 
     req = AskRequest(question="no", workspace_id=1, session_data=session_data)
-    resp = _run_cpq_turn(req, reader=None)
+    resp = _run_cpq_turn(req, reader)
 
     assert resp
     sd = resp["session_data"]
@@ -135,26 +192,25 @@ def test_declined_switch_preserves_original_product_and_answers(monkeypatch):
     assert "SL3500e" in resp["answer"]
 
 
-# ── Scenario 5: a curated product name inside an answer's value text ───────
-# (e.g. an accessory question whose answer happens to name another product)
+# ── Scenario 5: a real ingested product name inside an answer's value text ─
 # still must not lose data even if detection misfires — declining resumes
 # with the original configuration completely intact.
 
 def test_value_text_mention_does_not_lose_data_when_declined(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session_data = _mid_config_session(
         product_name="SL3500e", filled={"accessory": "STANDARD_KIT"})
     req = AskRequest(
         question="Add the MOTOTRBO-compatible carry accessory",
         workspace_id=1, session_data=session_data,
     )
-    resp = _run_cpq_turn(req, reader=None)
+    resp = _run_cpq_turn(req, reader)
     assert resp["tools_called"] == ["cpq_switch_candidate()"]  # detection did fire
 
     # User clarifies they meant to stay on SL3500e.
     req2 = AskRequest(question="no, stay on SL3500e",
                       workspace_id=1, session_data=resp["session_data"])
-    resp2 = _run_cpq_turn(req2, reader=None)
+    resp2 = _run_cpq_turn(req2, reader)
     sd2 = resp2["session_data"]
     assert sd2["product_name"] == "SL3500e"
     assert sd2["filled"] == {"accessory": "STANDARD_KIT"}, "declining must not touch prior answers"
@@ -165,7 +221,7 @@ def test_value_text_mention_does_not_lose_data_when_declined(monkeypatch):
 # state was explicitly rejected in the plan as too large a change surface).
 
 def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session_data = _mid_config_session(
         product_name="SL3500e", filled={"battery": "STANDARD"})
 
@@ -174,7 +230,7 @@ def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
     session_data["pending_switch_product"] = "MOTOTRBO"
     resp1 = _run_cpq_turn(
         AskRequest(question="yes", workspace_id=1, session_data=session_data),
-        reader=None,
+        reader,
     )
     sd1 = resp1["session_data"]
     assert sd1["product_name"] == "MOTOTRBO"
@@ -185,7 +241,7 @@ def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
     sd1["pending_switch_product"] = "SL3500e"
     resp2 = _run_cpq_turn(
         AskRequest(question="yes", workspace_id=1, session_data=sd1),
-        reader=None,
+        reader,
     )
     sd2 = resp2["session_data"]
     assert sd2["product_name"] == "SL3500e"
@@ -200,7 +256,7 @@ def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
 # ── Scenario 7: backward compatibility with pre-fix session_data payloads ──
 
 def test_old_session_data_without_pending_switch_field_does_not_crash(monkeypatch):
-    _no_switch_setup(monkeypatch)
+    reader = _no_switch_setup(monkeypatch)
     session = CpqSession(mode="cpq", product_name="SL3500e",
                           country="United States", pending_anchor="")
     old_style = session.to_dict()
@@ -208,6 +264,30 @@ def test_old_session_data_without_pending_switch_field_does_not_crash(monkeypatc
 
     req = AskRequest(question="what color options are available",
                       workspace_id=1, session_data=old_style)
-    resp = _run_cpq_turn(req, reader=None)
+    resp = _run_cpq_turn(req, reader)
 
     assert resp == {}  # falls through exactly like the baseline case, no KeyError
+
+
+# ── Dynamic detection itself — no hardcoded list anywhere ───────────────────
+
+def test_detect_product_mention_has_no_hardcoded_pattern_list():
+    """Guard against regressing back to a hardcoded product list: the
+    engine module must not define a fixed pattern table anymore."""
+    import aryx.cpq.engine as engine_mod
+    assert not hasattr(engine_mod, "_PRODUCT_PATTERNS")
+
+
+def test_detect_product_mention_recognises_a_brand_new_product_with_no_code_change(monkeypatch):
+    """A product family invented for this test alone (never referenced
+    anywhere in source) is recognised purely because it's "ingested" in
+    the fake workspace — proving detection is genuinely dynamic."""
+    reader = _fake_reader_with_batch_fetch(
+        monkeypatch, {"ZorbaxUltraConfig": "Zorbax Ultra 9000"})
+    from aryx.cpq.engine import CpqEngine
+    engine = CpqEngine()
+    result = engine.detect_product_mention(
+        "I need a quote for the Zorbax Ultra 9000", hints={},
+        reader=reader, workspace_id=1,
+    )
+    assert result == "Zorbax Ultra 9000"
