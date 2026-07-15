@@ -4,6 +4,7 @@ WITH current_message AS (
     WHERE thread_id = %s::uuid
       AND request_id = %s::uuid
       AND message_type = 'user'
+      AND is_visible = TRUE
     ORDER BY sequence_number ASC
     LIMIT 1
 ),
@@ -12,6 +13,7 @@ recent_messages AS (
     FROM gg_messages
     WHERE thread_id = %s::uuid
       AND message_type IN ('user', 'system')
+      AND is_visible = TRUE
       AND sequence_number < COALESCE((SELECT sequence_number FROM current_message), 2147483647)
     ORDER BY sequence_number DESC
     LIMIT %s

@@ -153,6 +153,7 @@ export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
   sequenceNumber?: number;
+  requestId?: string | null;
   citations?: Citation[];
   usage?: Usage;
   streaming?: boolean;
@@ -176,6 +177,7 @@ export interface AskThreadMessage {
   role: "user" | "assistant";
   content: string;
   sequence_number?: number;
+  request_id?: string | null;
   created_at?: string;
   citations?: Citation[];
   usage?: Usage;

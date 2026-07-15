@@ -166,6 +166,40 @@ def test_ask_thread_submit_does_not_run_ask_when_request_is_in_progress():
     run_ask_mock.assert_not_called()
 
 
+def test_ask_thread_submit_rejects_mismatched_idempotent_question():
+    class FakeStore:
+        def close(self):
+            return None
+
+        def validate_mapping(self, workspace_id, shay_workspace_id):
+            return None
+
+        def get_completed_response(self, shay_workspace_id, thread_id, request_id):
+            return None
+
+        def ensure_thread_and_user_message(self, **kwargs):
+            raise ValueError("Ask request id is already used for a different question")
+
+    with (
+        patch("aryx.api.ask_thread_api.AryxAskThreadStore", return_value=FakeStore()),
+        patch("aryx.api.ask_thread_api.run_ask") as run_ask_mock,
+        patch("aryx.api.ask_thread_api._validate_workspace", return_value=None),
+    ):
+        resp = _client().post(
+            "/ask/threads/message",
+            json={
+                "workspace_id": 7,
+                "shay_workspace_id": "00000000-0000-0000-0000-000000000009",
+                "thread_id": "00000000-0000-0000-0000-000000000010",
+                "request_id": "00000000-0000-0000-0000-000000000001",
+                "question": "Different retry text",
+            },
+        )
+
+    assert resp.status_code == 409
+    run_ask_mock.assert_not_called()
+
+
 def test_ask_thread_submit_does_not_run_ask_when_prompt_persist_fails():
     class FakeStore:
         def close(self):

@@ -8,6 +8,7 @@ JOIN gg_channels
     ON gg_channels.id = gg_threads.channel_id
 LEFT JOIN gg_messages
     ON gg_messages.thread_id = gg_threads.id
+    AND gg_messages.is_visible = TRUE
 WHERE gg_channels.workspace_id = %s::uuid
   AND gg_channels.name = %s
   AND COALESCE((gg_channels.channel_settings->>'aryx_hidden')::boolean, FALSE) = TRUE

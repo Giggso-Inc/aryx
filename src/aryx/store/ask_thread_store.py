@@ -171,13 +171,17 @@ class AryxAskThreadStore:
             message_row = cur.fetchone()
             cur.execute(load("ask_thread_touch_thread"), (thread_id, thread_id))
             cur.execute(load("ask_thread_touch_channel"), (channel_id, channel_id, channel_id))
+        request_claimed = bool(message_row[2])
+        existing_question = str(message_row[3])
+        if not request_claimed and existing_question != question:
+            raise ValueError("Ask request id is already used for a different question")
         return {
             "thread_id": str(thread_row[0]),
             "channel_id": channel_id,
             "created_thread": True,
             "user_message_id": str(message_row[0]),
             "user_sequence_number": int(message_row[1]),
-            "request_claimed": bool(message_row[2]),
+            "request_claimed": request_claimed,
         }
 
     def append_assistant_message(
@@ -324,15 +328,16 @@ class AryxAskThreadStore:
             rows = cur.fetchall()
         messages = []
         for row in rows:
-            metadata = row[5] or {}
-            usage = row[7] or {}
+            metadata = row[6] or {}
+            usage = row[8] or {}
             messages.append({
                 "id": row[0],
                 "role": "assistant" if row[1] == "system" else "user",
                 "content": row[2],
                 "sequence_number": row[3],
-                "created_at": row[4],
-                "citations": row[6] or [],
+                "request_id": row[4],
+                "created_at": row[5],
+                "citations": row[7] or [],
                 "usage": usage,
                 "json_response": metadata.get("json_response"),
                 "json_button_flag": metadata.get("json_button_flag", False),
@@ -346,4 +351,9 @@ class AryxAskThreadStore:
 
 def get_ask_thread_store() -> AryxAskThreadStore:
     """Return an Ask thread store bound to the configured Aryx DSN."""
-    return AryxAskThreadStore(get_settings().rdb_dsn)
+    settings = get_settings()
+    if settings.effective_db_backend() == "oci":
+        raise RuntimeError(
+            "Shay-backed Ask threads are not available with the OCI database backend"
+        )
+    return AryxAskThreadStore(settings.effective_dsn())

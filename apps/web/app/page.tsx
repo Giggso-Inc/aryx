@@ -54,6 +54,7 @@ function threadMessageToTurn(message: AskThreadMessage): ChatTurn {
     role: message.role,
     content: message.content,
     sequenceNumber: message.sequence_number,
+    requestId: message.request_id ?? null,
     citations: message.citations,
     usage: message.usage,
     jsonResponse: message.json_response ?? null,
@@ -238,6 +239,7 @@ export default function HomePage() {
     setInput("");
     setBusy(true);
     setAutoScrollTranscript(true);
+    const requestId = uid();
 
     const userTurn: ChatTurn = { id: uid(), role: "user", content: q };
     const assistantId = uid();
@@ -258,7 +260,6 @@ export default function HomePage() {
       const threadId = shayWorkspaceId
         ? (selectedThreadId || activeThreadRef.current || uid())
         : "";
-      const requestId = uid();
       if (shayWorkspaceId && !selectedThreadId) {
         activeThreadRef.current = threadId;
         optimisticThreadRef.current = threadId;
@@ -279,6 +280,10 @@ export default function HomePage() {
         (resp.terms || [])
           .slice(0, 5)
           .map((label, i) => ({ entity_id: i, label }));
+      const responseRequestId =
+        "request_id" in resp && typeof resp.request_id === "string"
+          ? resp.request_id
+          : requestId;
 
       // Persist CPQ session state so the next turn continues the configuration.
       if (resp.session_data && Object.keys(resp.session_data).length > 0) {
@@ -302,6 +307,7 @@ export default function HomePage() {
               ? {
                   ...t,
                   content: resp.answer,
+                  requestId: responseRequestId,
                   citations,
                   usage: resp.usage,
                   streaming: false,
@@ -358,9 +364,16 @@ export default function HomePage() {
           if (cancelRecoveryRef.current) break;
           try {
             const match = shayWorkspaceId && activeThreadRef.current
-              ? (await api.getAskThreadMessages(workspaceId, shayWorkspaceId, activeThreadRef.current, undefined, 50)).find(
+              ? (await api.getAskThreadMessages(
+                  workspaceId,
+                  shayWorkspaceId,
+                  activeThreadRef.current,
+                  undefined,
+                  50,
+                )).find(
                   (h) =>
                     h.role === "assistant" &&
+                    h.request_id === requestId &&
                     h.content &&
                     new Date(h.created_at ?? 0).getTime() >= requestStartMs,
                 )
@@ -387,7 +400,13 @@ export default function HomePage() {
                 setTurns((prev) =>
                   prev.map((t) =>
                     t.id === assistantId
-                      ? { ...t, content: recoveredAnswer, citations: recoveryCitations, streaming: false }
+                      ? {
+                          ...t,
+                          content: recoveredAnswer,
+                          requestId,
+                          citations: recoveryCitations,
+                          streaming: false,
+                        }
                       : t,
                   ),
                 );

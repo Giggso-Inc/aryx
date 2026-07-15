@@ -4,6 +4,7 @@ WITH stats AS (
         MAX(created_at) AS last_message_at
     FROM gg_messages
     WHERE thread_id = %s::uuid
+      AND is_visible = TRUE
 )
 UPDATE gg_threads
 SET message_count = stats.message_count,

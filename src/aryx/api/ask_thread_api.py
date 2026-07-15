@@ -15,6 +15,9 @@ from aryx.config import get_settings
 from aryx.store.ask_thread_store import AryxAskThreadStore
 
 logger = logging.getLogger(__name__)
+OCI_UNSUPPORTED_DETAIL = (
+    "Shay-backed Ask threads are not available with the OCI database backend."
+)
 
 
 class AskThreadMessageRequest(BaseModel):
@@ -24,6 +27,13 @@ class AskThreadMessageRequest(BaseModel):
     request_id: str
     question: str
     session_data: dict[str, Any] = Field(default_factory=dict)
+
+
+def _store_or_unsupported() -> AryxAskThreadStore:
+    settings = get_settings()
+    if settings.effective_db_backend() == "oci":
+        raise HTTPException(501, OCI_UNSUPPORTED_DETAIL)
+    return AryxAskThreadStore(settings.effective_dsn())
 
 
 def ask_thread_router() -> APIRouter:
@@ -37,7 +47,7 @@ def ask_thread_router() -> APIRouter:
     ) -> list[dict[str, Any]]:
         """List hidden Aryx Ask threads for the Shay workspace."""
         _validate_workspace(workspace_id)
-        store = AryxAskThreadStore(get_settings().rdb_dsn)
+        store = _store_or_unsupported()
         try:
             return store.list_threads(workspace_id, shay_workspace_id, limit)
         except ValueError as exc:
@@ -55,7 +65,7 @@ def ask_thread_router() -> APIRouter:
     ) -> list[dict[str, Any]]:
         """Fetch one Ask thread transcript without invoking Aryx Ask."""
         _validate_workspace(workspace_id)
-        store = AryxAskThreadStore(get_settings().rdb_dsn)
+        store = _store_or_unsupported()
         try:
             return store.list_messages(
                 workspace_id,
@@ -77,7 +87,7 @@ def ask_thread_router() -> APIRouter:
         if not question:
             raise HTTPException(422, "question is required")
 
-        store = AryxAskThreadStore(get_settings().rdb_dsn)
+        store = _store_or_unsupported()
         try:
             try:
                 store.validate_mapping(req.workspace_id, req.shay_workspace_id)
@@ -125,6 +135,8 @@ def ask_thread_router() -> APIRouter:
             except Exception as exc:  # noqa: BLE001
                 if isinstance(exc, HTTPException):
                     raise
+                if isinstance(exc, ValueError):
+                    raise HTTPException(409, str(exc)) from exc
                 logger.warning("ask prompt persist failed: %s", exc)
                 raise HTTPException(
                     503,

@@ -42,16 +42,43 @@ message_row AS (
     FROM next_sequence
     ON CONFLICT (thread_id, request_id, message_type) WHERE request_id IS NOT NULL
     DO UPDATE
-    SET content = EXCLUDED.content,
-        is_ai_processed = EXCLUDED.is_ai_processed,
-        ai_provider = EXCLUDED.ai_provider,
-        ai_model = EXCLUDED.ai_model,
-        ai_processing_time = EXCLUDED.ai_processing_time,
-        message_metadata = COALESCE(gg_messages.message_metadata, '{}'::jsonb)
-            || EXCLUDED.message_metadata,
-        citations = EXCLUDED.citations,
-        usage_metrics = EXCLUDED.usage_metrics,
-        updated_at = NOW()
-    RETURNING id::text, sequence_number, (xmax = 0) AS inserted
+    SET content = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.content
+            ELSE EXCLUDED.content
+        END,
+        is_ai_processed = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.is_ai_processed
+            ELSE EXCLUDED.is_ai_processed
+        END,
+        ai_provider = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.ai_provider
+            ELSE EXCLUDED.ai_provider
+        END,
+        ai_model = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.ai_model
+            ELSE EXCLUDED.ai_model
+        END,
+        ai_processing_time = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.ai_processing_time
+            ELSE EXCLUDED.ai_processing_time
+        END,
+        message_metadata = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.message_metadata
+            ELSE COALESCE(gg_messages.message_metadata, '{}'::jsonb)
+                || EXCLUDED.message_metadata
+        END,
+        citations = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.citations
+            ELSE EXCLUDED.citations
+        END,
+        usage_metrics = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.usage_metrics
+            ELSE EXCLUDED.usage_metrics
+        END,
+        updated_at = CASE
+            WHEN gg_messages.message_type = 'user' THEN gg_messages.updated_at
+            ELSE NOW()
+        END
+    RETURNING id::text, sequence_number, (xmax = 0) AS inserted, content
 )
-SELECT id, sequence_number, inserted FROM message_row
+SELECT id, sequence_number, inserted, content FROM message_row
