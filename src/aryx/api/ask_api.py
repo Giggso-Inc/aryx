@@ -531,12 +531,68 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if "country" in hints and not session.country:
         session.country = hints["country"]
 
+    # ── Mid-session product-switch gate ───────────────────────────────────────
+    # A PRIOR turn detected a different product than session.product_name and
+    # asked the user to confirm before discarding the in-progress config. THIS
+    # turn's raw reply is that yes/no answer, not a new CPQ hint (Andie-planned
+    # fix for: "CPQ for two products is not working in the single session").
+    if session.pending_anchor == "confirm_switch":
+        reply = req.question.strip().lower()
+        affirmative = reply.startswith(("y", "yes", "switch", "confirm"))
+        logger.info(
+            "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%r decision=%s",
+            session.turn, session.product_name, session.pending_switch_product,
+            req.question, "switch" if affirmative else "stay",
+        )
+        if affirmative:
+            new_product = session.pending_switch_product
+            session.cascade_log.append({
+                "event": "product_switch", "from": session.product_name,
+                "to": new_product, "turn": session.turn,
+            })
+            session.filled = {}
+            session.filled_multi = {}
+            session.display_filled = {}
+            session.filled_source = {}
+            session.pending_variables = []
+            session.status = "configuring"
+            session.country = ""
+            # NOTE: catalog_prefix is not a CpqSession field — it's derived
+            # fresh from attrs[0].catalog_prefix every turn in Step 2 below,
+            # so there's nothing session-scoped to reset here.
+            session.product_entity_id = 0
+            session.negated_vns = []
+            session.product_name = new_product
+            session.pending_switch_product = ""
+            session.pending_anchor = ""
+            logger.info(
+                "cpq_switch: switched turn=%s new_product=%r — config state reset",
+                session.turn, new_product,
+            )
+            # Fall through — Step 1's anchor block below now re-anchors the
+            # country for the new product (session.country was just cleared).
+        else:
+            session.pending_switch_product = ""
+            session.pending_anchor = ""
+            logger.info(
+                "cpq_switch: declined turn=%s staying on product=%r",
+                session.turn, session.product_name,
+            )
+            answer = f"OK — continuing with **{session.product_name}**."
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_declined()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
     # ── STEP 1: Sequential anchor prompting — product first, then country.
     # hwVersion is no longer an anchor (D1); it resolves through the normal
     # rule cascade like any other dependent variable, once product+country
     # are known. ───────────────────────────────────────────────────────────
     if not session.product_name:
-        detected = _cpq_engine.detect_product_mention(req.question, hints)
+        detected = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
         if not detected and session.pending_anchor == "product":
             detected = req.question.strip()
         if not detected:
@@ -553,6 +609,37 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
         session.product_name = detected
+        logger.info("cpq_switch: product anchored turn=%s product=%r", session.turn, detected)
+    else:
+        # Product already anchored on an earlier turn — re-check THIS turn's
+        # text for a mention of a DIFFERENT product. detect_product_mention
+        # is dynamic: it matches against the real product/family names of
+        # whatever catalogs are actually ingested in this workspace (read
+        # live from the graph), not a hardcoded list — so an answer value
+        # that merely contains unrelated text is unlikely to misfire unless
+        # it names another product genuinely present in this workspace; the
+        # confirm gate above is the safety net regardless — a false-positive
+        # costs one extra yes/no turn, never silent data loss.
+        switch_candidate = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
+        if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
+            logger.info(
+                "cpq_switch: candidate detected turn=%s current=%r candidate=%r",
+                session.turn, session.product_name, switch_candidate,
+            )
+            session.pending_switch_product = switch_candidate
+            session.pending_anchor = "confirm_switch"
+            answer = (
+                f"It looks like you're asking about **{switch_candidate}**, but this "
+                f"session is configuring **{session.product_name}**. Switch to "
+                f"**{switch_candidate}** and discard the current configuration? (yes/no)"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_candidate()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
 
     if not session.country:
         session.pending_anchor = "country"
@@ -725,7 +812,11 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         }
 
     # ── STEP 7: Q&A during active config (strict — only ? or Q&A keywords) ───
-    if session.pending_variables and session.turn > 1:
+    # `and not mode_request`: an explicit JSON/batch request must win here too,
+    # same as it does over Step 5 below — otherwise a batch request starting
+    # with "what" (e.g. "what else do you need from me") is misread as a
+    # Q&A question instead of the batch-listing request it actually is.
+    if session.pending_variables and session.turn > 1 and not mode_request:
         pending_var_for_qa = session.pending_variables[0]
         pending_attr_for_qa = next(
             (a for a in attrs if a.variable_name == pending_var_for_qa), None,
@@ -988,7 +1079,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     # ── CPQ routing ───────────────────────────────────────────────────────────
     is_cpq = (
         req.session_data.get("mode") == "cpq"  # continuing a CPQ session
-        or _cpq_engine.is_cpq_question(req.question)
+        or _cpq_engine.is_cpq_question(req.question, reader, req.workspace_id)
     )
     if is_cpq:
         result = _run_cpq_turn(req, reader)

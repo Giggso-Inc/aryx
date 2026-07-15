@@ -167,6 +167,13 @@ class CpqSession:
     # "MULTIKEY" on the next turn once that turn's fresh, negation-free
     # question overwrote the (until-then not persisted) suppression).
     negated_vns: list[str] = field(default_factory=list)
+    # Set when a LATER turn mentions a different product than product_name
+    # while a configuration is already in progress. The next turn's reply is
+    # then treated as a yes/no answer to the switch-confirmation prompt
+    # instead of a normal CPQ hint (see _run_cpq_turn's confirm_switch gate).
+    # Empty string when no switch is pending — old session_data payloads that
+    # predate this field simply default to "" via CpqSession.from_dict.
+    pending_switch_product: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
