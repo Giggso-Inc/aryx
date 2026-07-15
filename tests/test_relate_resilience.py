@@ -175,3 +175,48 @@ def test_relate_isolated_runs_even_when_relate_flag_is_false():
 
     mock_relate.assert_not_called()  # best-effort stage correctly skipped
     mock_relate_isolated.assert_called_once()  # safety net still runs
+
+
+def test_done_progress_reports_real_entity_count_not_always_zero():
+    """Regression: the "Done" progress message read counts.get("vertices", 0),
+    a key project_graph() never returns (it returns entities/provenance/
+    relationships), so it always reported "0 graph nodes" even when the
+    graph was populated correctly. It must now read the real "entities" key."""
+    mock_runner = MagicMock()
+    mock_runner.skip.return_value = False
+    mock_cfg = MagicMock()
+    mock_cfg.rdb_dsn = "postgresql://x"
+    mock_cfg.graph_url = "redis://x"
+    mock_cfg.rules_db_warn_threshold = 20
+    mock_cfg.max_relate_pairs = 5
+
+    progress_messages = []
+
+    def on_progress(stage, pct, detail):
+        progress_messages.append((stage, detail))
+
+    with patch("aryx.pipeline.orchestrate.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.orchestrate._relate_isolated", return_value=0), \
+         patch("aryx.pipeline.orchestrate.discover", return_value=1), \
+         patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
+         patch("aryx.pipeline.orchestrate.project_graph",
+               return_value={"entities": 1, "provenance": 32, "relationships": 0}), \
+         patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
+         patch("aryx.pipeline.orchestrate.StageTracker"), \
+         patch("aryx.pipeline.orchestrate.PostgresStore"), \
+         patch("aryx.pipeline.orchestrate.EntityStore"), \
+         patch("aryx.pipeline.orchestrate.FalkorStore"), \
+         patch("aryx.pipeline.orchestrate.OntologyStore"), \
+         patch("aryx.pipeline.orchestrate._build_type_ancestors", return_value={}), \
+         patch("aryx.workspaces.ws_graph", return_value="ws_1"):
+        from aryx.pipeline.orchestrate import run_pipeline
+        run_pipeline(
+            connector=MagicMock(), dsn="postgresql://x",
+            system="sys", dataset="ds", ontology_type="T",
+            match_keys=["name"], graph_url="redis://x",
+            broker=MagicMock(), relate=False, on_progress=on_progress,
+        )
+
+    done_detail = dict(progress_messages)["Done"]
+    assert "0 graph nodes" not in done_detail
+    assert "1 graph nodes" in done_detail
