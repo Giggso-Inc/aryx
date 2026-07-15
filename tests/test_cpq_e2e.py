@@ -595,6 +595,21 @@ def _drive_conversation(truth, fake_rdb, monkeypatch, max_user_turns=30):
         pending = session.get("pending_variables", [])
         status = session.get("status")
 
+        # Product-mention detection is dynamic (matches real ingested catalog
+        # names, no hardcoded list) — this fixture's dummy graph data doesn't
+        # literally contain "SL3500e" anywhere, so the anchor can't resolve
+        # from the opening sentence alone. Answer the anchor prompt directly,
+        # exactly like a real user replying to "could you provide that?"
+        # (same direct-answer path test_s8_sequential_anchor_prompting
+        # already proves works for a bare product/country reply).
+        pending_anchor = session.get("pending_anchor")
+        if pending_anchor == "product":
+            question = "SL3500e"
+            continue
+        if pending_anchor == "country":
+            question = "United States"
+            continue
+
         if status == "awaiting_approval":
             question = "confirm"
             continue
@@ -691,6 +706,28 @@ def test_s7_turn_cap_never_fabricates_payload(truth, fake_rdb, monkeypatch):
         question="quote sl 3500 single unit for customer in United States",
         workspace_id=1, session_data={})
     resp = _run_cpq_turn(req, reader)
+    if not resp:
+        pytest.skip("no drivable CPQ data in this export")
+    # Product/country anchoring is dynamic now (no hardcoded product list to
+    # shortcut a single-turn match against this fixture's dummy graph data)
+    # — answer the anchor prompts directly before checking for pending attrs,
+    # same pattern as _drive_conversation and test_s8_sequential_anchor_prompting.
+    for _ in range(2):
+        pending_anchor = resp["session_data"].get("pending_anchor")
+        if pending_anchor == "product":
+            resp = _run_cpq_turn(
+                AskRequest(question="SL3500e", workspace_id=1,
+                          session_data=resp["session_data"]),
+                reader,
+            )
+        elif pending_anchor == "country":
+            resp = _run_cpq_turn(
+                AskRequest(question="United States", workspace_id=1,
+                          session_data=resp["session_data"]),
+                reader,
+            )
+        else:
+            break
     if not resp:
         pytest.skip("no drivable CPQ data in this export")
     session = resp["session_data"]
@@ -802,12 +839,23 @@ def test_s9_governed_vs_ungoverned_autofill(truth, fake_rdb):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_s12_verbose_default_json_on_request_only(truth, fake_rdb, monkeypatch):
-    transcript, _final = _drive_conversation(truth, fake_rdb, monkeypatch, max_user_turns=1)
+    # Product/country anchoring may now take a couple of turns (dynamic
+    # detection — no hardcoded product list to shortcut a single-turn
+    # match against this fixture's dummy graph data), so find the first
+    # transcript entry that actually lands in a configuring+pending state
+    # rather than assuming it's always turn 1.
+    transcript, _final = _drive_conversation(truth, fake_rdb, monkeypatch, max_user_turns=5)
     if not transcript:
         pytest.skip("engine filtered out all config attrs for this export")
-    _q, resp = transcript[0]
-    if resp["session_data"].get("status") != "configuring" or not resp["session_data"].get("pending_variables"):
+    first_configuring = next(
+        ((q, r) for q, r in transcript
+         if r["session_data"].get("status") == "configuring"
+         and r["session_data"].get("pending_variables")),
+        None,
+    )
+    if first_configuring is None:
         pytest.skip("first turn did not land in a configuring+pending state")
+    _q, resp = first_configuring
 
     # Plain turn: no JSON leaked unasked.
     assert "```json" not in resp["answer"]
@@ -845,23 +893,49 @@ def test_s12b_batched_pending_list_on_request(truth, fake_rdb, monkeypatch):
     )
     if not resp:
         pytest.skip("no drivable CPQ data in this export")
-    pending = resp["session_data"].get("pending_variables", [])
-    if len(pending) < 2:
-        pytest.skip("export doesn't surface 2+ pending attrs in one turn")
-
+    # Product/country anchoring is dynamic now (no hardcoded product list to
+    # shortcut a single-turn match against this fixture's dummy graph data)
+    # — answer the anchor prompts directly, same as _drive_conversation and
+    # test_s8_sequential_anchor_prompting's proven direct-answer path.
+    for _ in range(2):
+        pending_anchor = resp["session_data"].get("pending_anchor")
+        if pending_anchor == "product":
+            resp = _run_cpq_turn(
+                AskRequest(question="SL3500e", workspace_id=1,
+                          session_data=resp["session_data"]),
+                reader,
+            )
+        elif pending_anchor == "country":
+            resp = _run_cpq_turn(
+                AskRequest(question="United States", workspace_id=1,
+                          session_data=resp["session_data"]),
+                reader,
+            )
+        else:
+            break
+    if not resp:
+        pytest.skip("no drivable CPQ data in this export")
     resp2 = _run_cpq_turn(
         AskRequest(question="what else do you need from me", workspace_id=1,
                   session_data=resp["session_data"]),
         reader,
     )
     assert resp2
+    # Check the pending count AT THIS TURN, not the pre-anchor snapshot —
+    # resolving the country anchor legitimately auto-fills related fields
+    # (e.g. CRM_BILL_COUNTRY/CRM_SHIP_COUNTRY) via cascade between turns,
+    # so the set of still-pending attrs can shrink by the time batching is
+    # requested. That's correct engine behavior, not a batching regression.
+    still_pending = resp2["session_data"].get("pending_variables", [])
+    if len(still_pending) < 2:
+        pytest.skip("export doesn't surface 2+ pending attrs in one batched turn")
     # Batched response must present multiple pending questions in one
     # message, not just the next one — count question blocks, don't rely on
     # exact label text (varies per attr).
     prompt_count = resp2["answer"].count("choose one") + resp2["answer"].count("Please provide")
-    assert prompt_count >= min(2, len(pending)), (
+    assert prompt_count >= min(2, len(still_pending)), (
         f"batched response has {prompt_count} question block(s) for "
-        f"{len(pending)} pending attrs — does not look batched")
+        f"{len(still_pending)} pending attrs — does not look batched")
 
     # Following turn (no repeat request) must revert to one-at-a-time.
     resp3 = _run_cpq_turn(

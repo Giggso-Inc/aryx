@@ -11,6 +11,7 @@ from typing import Any
 
 _CATALOG_KEY = "source_catalog"
 _XML_KEY = "xml"
+_XLSX_KEY = "xlsx"
 _GENERIC_KEY = "generic"
 
 
@@ -29,6 +30,16 @@ def _xml_meta(row: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(meta, dict):
         return meta
     if row.get("kind") == "xml":
+        return {}
+    return None
+
+
+def _xlsx_meta(row: dict[str, Any]) -> dict[str, Any] | None:
+    config = row.get("config") or {}
+    meta = config.get(_CATALOG_KEY, {}).get(_XLSX_KEY)
+    if isinstance(meta, dict):
+        return meta
+    if row.get("kind") == "xlsx":
         return {}
     return None
 
@@ -244,6 +255,82 @@ def upsert_xml_catalog_entry(
     )
 
 
+def xlsx_catalog_config(
+    source_filename: str,
+    xlsx_bytes: bytes,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Same shape as xml_catalog_config — one workbook, N generated per-sheet
+    CSV assets. This is what "maintains the association with the parent
+    workbook" for a multi-sheet Excel upload: the original .xlsx bytes plus
+    every sheet-derived dataset are held on one datasource_store row, so a
+    later query can recover every dataset that came from one upload."""
+    return {
+        _CATALOG_KEY: {
+            _XLSX_KEY: {
+                "source_filename": source_filename,
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "content_b64": base64.b64encode(xlsx_bytes).decode("ascii"),
+                "generated_assets": assets,
+                "deleted": False,
+            },
+        },
+    }
+
+
+def xlsx_asset_record(
+    *,
+    filename: str,
+    dataset: str,
+    ontology_type: str,
+    content_bytes: bytes,
+) -> dict[str, Any]:
+    return {
+        "asset_key": filename,
+        "filename": filename,
+        "dataset": dataset,
+        "ontology_type": ontology_type,
+        "content_type": "text/csv",
+        "content_b64": base64.b64encode(content_bytes).decode("ascii"),
+        "deleted": False,
+    }
+
+
+def upsert_xlsx_catalog_entry(
+    store: Any,
+    *,
+    workspace_id: int,
+    source_filename: str,
+    xlsx_bytes: bytes,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows = store.list(workspace_id)
+    existing = next(
+        (
+            row for row in rows
+            if row.get("name") == source_filename
+            and (row.get("config") or {}).get(_CATALOG_KEY, {}).get(_XLSX_KEY) is not None
+        ),
+        None,
+    )
+    config = xlsx_catalog_config(source_filename, xlsx_bytes, assets)
+    if existing:
+        return store.update(
+            int(existing["id"]),
+            name=source_filename,
+            kind="xlsx",
+            config=config,
+            secret=None,
+        )
+    return store.add(
+        workspace_id,
+        source_filename,
+        "xlsx",
+        config,
+        "",
+    )
+
+
 def find_legacy_xml_row(datasources: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
     expected_name = f"{prefix}.xml"
     for row in datasources:
@@ -399,8 +486,9 @@ def build_source_catalog(
                 # lifecycle, so they should not strand live re-uploaded data.
                 state["active"] = True
             continue
-        meta = _xml_meta(row)
-        if meta is None:
+        xml_meta = _xml_meta(row)
+        xlsx_meta = _xlsx_meta(row)
+        if xml_meta is None and xlsx_meta is None:
             rows.append({
                 "source_key": f"ds:{row['id']}",
                 "name": row.get("name") or f"datasource:{row['id']}",
@@ -413,6 +501,15 @@ def build_source_catalog(
                 "actions": source_actions(False, False, False),
             })
             continue
+
+        # Same "parent workbook/document -> generated per-dataset assets"
+        # grouping for both source_key prefixes — only the meta lookup,
+        # source_key prefix, and display label differ.
+        meta, source_prefix, display_kind, display_kind_key = (
+            (xml_meta, "xml", "XML File", "xml")
+            if xml_meta is not None
+            else (xlsx_meta, "xlsx", "Excel Workbook", "xlsx")
+        )
         active_assets = _active_assets(meta)
         all_assets = _asset_rows(meta)
         hidden_datasets.update(
@@ -423,10 +520,10 @@ def build_source_catalog(
         if meta.get("deleted"):
             continue
         rows.append({
-            "source_key": f"xml:{row['id']}",
-            "name": meta.get("source_filename") or row.get("name") or f"xml:{row['id']}",
-            "display_kind": "XML File",
-            "kind": "xml",
+            "source_key": f"{source_prefix}:{row['id']}",
+            "name": meta.get("source_filename") or row.get("name") or f"{source_prefix}:{row['id']}",
+            "display_kind": display_kind,
+            "kind": display_kind_key,
             "ready": True,
             "record_count": sum(
                 counts.get(("csv", asset.get("dataset", "")), 0)
@@ -486,6 +583,66 @@ def build_source_catalog(
     return rows
 
 
+def _build_meta_source_detail(
+    source_key: str,
+    datasources: list[dict[str, Any]],
+    counts: Counter[tuple[str, str]],
+    dataset_payloads: dict[str, list[dict[str, Any]]],
+    meta_fn: Any,
+    primary_label: str,
+) -> dict[str, Any] | None:
+    """Shared body for the "one parent row -> N generated CSV assets" detail
+    view — used by both xml: and xlsx: source keys (see meta_fn)."""
+    try:
+        datasource_id = int(source_key.split(":", 1)[1])
+    except ValueError:
+        return None
+    row = next((item for item in datasources if int(item["id"]) == datasource_id), None)
+    if row is None:
+        return None
+    meta = meta_fn(row) or {}
+    if meta.get("deleted"):
+        return None
+    assets = []
+    for asset in _active_assets(meta):
+        dataset = asset.get("dataset", "")
+        preview_rows = _preview_rows(asset.get("content_b64"))
+        if not preview_rows:
+            preview_rows = _preview_payload_rows(dataset_payloads.get(dataset))
+        can_download = (
+            bool(asset.get("content_b64"))
+            or bool(dataset_payloads.get(dataset))
+            or counts.get(("csv", dataset), 0) > 0
+        )
+        assets.append({
+            "asset_key": asset.get("asset_key") or asset.get("filename") or dataset,
+            "filename": asset.get("filename") or dataset,
+            "dataset": dataset,
+            "ontology_type": asset.get("ontology_type") or dataset,
+            "status": "Ready",
+            "record_count": counts.get(("csv", dataset), 0),
+            "preview_rows": preview_rows,
+            "actions": source_actions(True, can_download, True),
+        })
+    return {
+        "source_key": source_key,
+        "name": meta.get("source_filename") or row.get("name"),
+        "status": "Ready",
+        "generatedAssetCount": len(assets),
+        "record_count": sum(asset["record_count"] for asset in assets),
+        "primary": {
+            "label": primary_label,
+            "status": "Active",
+            "actions": source_actions(
+                True,
+                bool(meta.get("content_b64")) or bool(meta.get("legacy_prefix")) or bool(assets),
+                True,
+            ),
+        },
+        "assets": assets,
+    }
+
+
 def build_source_detail(
     source_key: str,
     datasources: list[dict[str, Any]],
@@ -495,54 +652,16 @@ def build_source_detail(
     counts = _source_counts(provenance)
     dataset_payloads = dataset_payloads or {}
     if source_key.startswith("xml:"):
-        try:
-            datasource_id = int(source_key.split(":", 1)[1])
-        except ValueError:
-            return None
-        row = next((item for item in datasources if int(item["id"]) == datasource_id), None)
-        if row is None:
-            return None
-        meta = _xml_meta(row) or {}
-        if meta.get("deleted"):
-            return None
-        assets = []
-        for asset in _active_assets(meta):
-            dataset = asset.get("dataset", "")
-            preview_rows = _preview_rows(asset.get("content_b64"))
-            if not preview_rows:
-                preview_rows = _preview_payload_rows(dataset_payloads.get(dataset))
-            can_download = (
-                bool(asset.get("content_b64"))
-                or bool(dataset_payloads.get(dataset))
-                or counts.get(("csv", dataset), 0) > 0
-            )
-            assets.append({
-                "asset_key": asset.get("asset_key") or asset.get("filename") or dataset,
-                "filename": asset.get("filename") or dataset,
-                "dataset": dataset,
-                "ontology_type": asset.get("ontology_type") or dataset,
-                "status": "Ready",
-                "record_count": counts.get(("csv", dataset), 0),
-                "preview_rows": preview_rows,
-                "actions": source_actions(True, can_download, True),
-            })
-        return {
-            "source_key": source_key,
-            "name": meta.get("source_filename") or row.get("name"),
-            "status": "Ready",
-            "generatedAssetCount": len(assets),
-            "record_count": sum(asset["record_count"] for asset in assets),
-            "primary": {
-                "label": "XML / Preserved Upload",
-                "status": "Active",
-                "actions": source_actions(
-                    True,
-                    bool(meta.get("content_b64")) or bool(meta.get("legacy_prefix")) or bool(assets),
-                    True,
-                ),
-            },
-            "assets": assets,
-        }
+        return _build_meta_source_detail(
+            source_key, datasources, counts, dataset_payloads,
+            _xml_meta, "XML / Preserved Upload",
+        )
+
+    if source_key.startswith("xlsx:"):
+        return _build_meta_source_detail(
+            source_key, datasources, counts, dataset_payloads,
+            _xlsx_meta, "Excel Workbook / Preserved Upload",
+        )
 
     if source_key.startswith("legacy-xml:"):
         prefix = source_key.split(":", 1)[1]
@@ -614,6 +733,82 @@ def mark_xml_asset_deleted(row: dict[str, Any], asset_key: str) -> dict[str, Any
     catalog[_XML_KEY] = meta
     config[_CATALOG_KEY] = catalog
     return config
+
+
+def mark_xlsx_source_deleted(row: dict[str, Any]) -> dict[str, Any]:
+    config = dict(row.get("config") or {})
+    catalog = dict(config.get(_CATALOG_KEY) or {})
+    meta = dict(catalog.get(_XLSX_KEY) or {})
+    meta["deleted"] = True
+    for asset in _asset_rows(meta):
+        asset["deleted"] = True
+    catalog[_XLSX_KEY] = meta
+    config[_CATALOG_KEY] = catalog
+    return config
+
+
+def mark_xlsx_asset_deleted(row: dict[str, Any], asset_key: str) -> dict[str, Any]:
+    config = dict(row.get("config") or {})
+    catalog = dict(config.get(_CATALOG_KEY) or {})
+    meta = dict(catalog.get(_XLSX_KEY) or {})
+    assets = []
+    for asset in _asset_rows(meta):
+        next_asset = dict(asset)
+        if (next_asset.get("asset_key") or next_asset.get("filename")) == asset_key:
+            next_asset["deleted"] = True
+        assets.append(next_asset)
+    meta["generated_assets"] = assets
+    catalog[_XLSX_KEY] = meta
+    config[_CATALOG_KEY] = catalog
+    return config
+
+
+def xlsx_download_payload(
+    row: dict[str, Any],
+    *,
+    asset_key: str | None = None,
+    payload_rows_by_dataset: dict[str, list[dict[str, Any]]] | None = None,
+    counts: Counter[tuple[str, str]] | None = None,
+) -> tuple[bytes, str, str] | None:
+    """Same shape as xml_download_payload — download the original workbook
+    (asset_key=None) or one generated sheet CSV (asset_key set). Unlike XML's
+    legacy-prefix case, an xlsx catalog row always carries content_b64 for
+    the source workbook itself, so there's no synthetic-manifest fallback
+    path to mirror."""
+    payload_rows_by_dataset = payload_rows_by_dataset or {}
+    meta = _xlsx_meta(row)
+    if meta is None or meta.get("deleted"):
+        return None
+    if asset_key is None:
+        content_b64 = meta.get("content_b64")
+        if not content_b64:
+            return None
+        return (
+            base64.b64decode(content_b64),
+            meta.get("source_filename") or row.get("name") or "source.xlsx",
+            meta.get("content_type")
+            or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    for asset in _active_assets(meta):
+        current_key = asset.get("asset_key") or asset.get("filename")
+        if current_key != asset_key:
+            continue
+        content_b64 = asset.get("content_b64")
+        if not content_b64:
+            csv_bytes = _csv_bytes_from_payload_rows(payload_rows_by_dataset.get(str(asset.get("dataset") or "")))
+            if csv_bytes is None:
+                return None
+            return (
+                csv_bytes,
+                asset.get("filename") or f"{asset_key}.csv",
+                asset.get("content_type") or "text/csv",
+            )
+        return (
+            base64.b64decode(content_b64),
+            asset.get("filename") or f"{asset_key}.csv",
+            asset.get("content_type") or "text/csv",
+        )
+    return None
 
 
 def xml_download_payload(

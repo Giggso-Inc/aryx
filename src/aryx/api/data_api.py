@@ -22,10 +22,13 @@ from aryx.source_catalog import (
     build_source_detail,
     find_legacy_xml_row,
     legacy_xml_row,
+    mark_xlsx_asset_deleted,
+    mark_xlsx_source_deleted,
     mark_xml_asset_deleted,
     mark_xml_source_deleted,
     upsert_generic_source_entry,
     upsert_legacy_xml_catalog_entry,
+    xlsx_download_payload,
     xml_download_payload,
 )
 from aryx.store.entity_store import EntityStore
@@ -169,7 +172,8 @@ def data_router() -> APIRouter:
             datasources = _datasource_store().list(workspace_id)
             provenance = list(store.list_members_provenance())
             datasource = _resolve_download_row(source_key, workspace_id, datasources, provenance)
-            payload = xml_download_payload(
+            download_fn = xlsx_download_payload if source_key.startswith("xlsx:") else xml_download_payload
+            payload = download_fn(
                 datasource,
                 counts=_provenance_counts(provenance),
             )
@@ -183,7 +187,7 @@ def data_router() -> APIRouter:
 
     @router.delete("/sources/{source_key}")
     def delete_source(source_key: str, workspace_id: int = 1) -> dict:
-        """Soft-delete an XML source from the catalog view."""
+        """Soft-delete an XML or Excel workbook source from the catalog view."""
         store = _datasource_store()
         if _is_generic_source_key(source_key):
             source_system, source_dataset = _parse_generic_source_key(source_key)
@@ -195,7 +199,8 @@ def data_router() -> APIRouter:
             )
             return {"status": "deleted", "source_key": source_key}
         datasource = _resolve_mutable_xml_row(source_key, workspace_id, store)
-        config = mark_xml_source_deleted(datasource)
+        mark_deleted_fn = mark_xlsx_source_deleted if source_key.startswith("xlsx:") else mark_xml_source_deleted
+        config = mark_deleted_fn(datasource)
         store.update(
             int(datasource["id"]),
             name=datasource["name"],
@@ -207,7 +212,7 @@ def data_router() -> APIRouter:
 
     @router.get("/sources/{source_key}/assets/{asset_key}/download")
     def download_asset(source_key: str, asset_key: str, workspace_id: int = 1) -> Response:
-        """Download one generated CSV asset for an XML source."""
+        """Download one generated CSV asset for an XML or Excel workbook source."""
         store = _store(workspace_id)
         try:
             datasources = _datasource_store().list(workspace_id)
@@ -221,7 +226,8 @@ def data_router() -> APIRouter:
                 [asset["dataset"] for asset in detail["assets"] if asset.get("dataset")],
                 limit=None,
             )
-            payload = xml_download_payload(
+            download_fn = xlsx_download_payload if source_key.startswith("xlsx:") else xml_download_payload
+            payload = download_fn(
                 datasource,
                 asset_key=asset_key,
                 payload_rows_by_dataset=dataset_payloads,
@@ -237,10 +243,11 @@ def data_router() -> APIRouter:
 
     @router.delete("/sources/{source_key}/assets/{asset_key}")
     def delete_asset(source_key: str, asset_key: str, workspace_id: int = 1) -> dict:
-        """Soft-delete one generated asset from the XML catalog view."""
+        """Soft-delete one generated asset from the XML or Excel workbook catalog view."""
         store = _datasource_store()
         datasource = _resolve_mutable_xml_row(source_key, workspace_id, store)
-        config = mark_xml_asset_deleted(datasource, asset_key)
+        mark_asset_deleted_fn = mark_xlsx_asset_deleted if source_key.startswith("xlsx:") else mark_xml_asset_deleted
+        config = mark_asset_deleted_fn(datasource, asset_key)
         store.update(
             int(datasource["id"]),
             name=datasource["name"],
@@ -279,8 +286,8 @@ def data_router() -> APIRouter:
     return router
 
 
-def _find_xml_datasource(source_key: str, workspace_id: int) -> dict:
-    if not source_key.startswith("xml:"):
+def _find_datasource_by_prefix(source_key: str, workspace_id: int, prefix: str) -> dict:
+    if not source_key.startswith(prefix):
         raise HTTPException(404, "source not found")
     try:
         datasource_id = int(source_key.split(":", 1)[1])
@@ -292,8 +299,16 @@ def _find_xml_datasource(source_key: str, workspace_id: int) -> dict:
     return datasource
 
 
+def _find_xml_datasource(source_key: str, workspace_id: int) -> dict:
+    return _find_datasource_by_prefix(source_key, workspace_id, "xml:")
+
+
+def _find_xlsx_datasource(source_key: str, workspace_id: int) -> dict:
+    return _find_datasource_by_prefix(source_key, workspace_id, "xlsx:")
+
+
 def _is_generic_source_key(source_key: str) -> bool:
-    return ":" in source_key and not source_key.startswith(("xml:", "legacy-xml:", "ds:"))
+    return ":" in source_key and not source_key.startswith(("xml:", "xlsx:", "legacy-xml:", "ds:"))
 
 
 def _parse_generic_source_key(source_key: str) -> tuple[str, str]:
@@ -473,6 +488,11 @@ def _resolve_download_row(
 ) -> dict:
     if source_key.startswith("xml:"):
         return _find_xml_datasource(source_key, workspace_id)
+    if source_key.startswith("xlsx:"):
+        # No legacy fallback for xlsx — every workbook upload always creates
+        # a real datasource_store row via upsert_xlsx_catalog_entry, unlike
+        # XML's pre-catalog era rows that need on-the-fly reconstruction.
+        return _find_xlsx_datasource(source_key, workspace_id)
     if not source_key.startswith("legacy-xml:"):
         raise HTTPException(404, "source not found")
     prefix = source_key.split(":", 1)[1]
@@ -493,6 +513,8 @@ def _resolve_mutable_xml_row(
 ) -> dict:
     if source_key.startswith("xml:"):
         return _find_xml_datasource(source_key, workspace_id)
+    if source_key.startswith("xlsx:"):
+        return _find_xlsx_datasource(source_key, workspace_id)
     if not source_key.startswith("legacy-xml:"):
         raise HTTPException(404, "source not found")
     entity_store = _store(workspace_id)

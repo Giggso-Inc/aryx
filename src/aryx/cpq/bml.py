@@ -733,3 +733,78 @@ class BmlEvaluator:
         except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
             logger.debug("bml: tier-2 LLM hide-evaluation failed", exc_info=True)
         return None
+
+    def condition_holds(
+        self, script: str, variables: dict[str, str],
+        cache_id: int | None = None,
+    ) -> bool | None:
+        """True/False/unknown for a rule's own boolean condition script.
+
+        Distinct from hide_for_script even though Tier 1 reuses the same
+        structural if/else-chain-returning-true/false parser (evaluate_hide_tier1
+        is generic — nothing about it is specific to hide/show semantics,
+        only its NAME is). Kept as a separate method (not an alias) because
+        Tier 2 needs its own LLM wording: hide_for_script's prompt explicitly
+        asks the model to reason about "hides the target attribute," which
+        is the wrong question for a rule condition that gates a declarative
+        recommend/restrict action rather than a hide decision. Uses a
+        distinct cache-key prefix ("cond") so a script's hide-decision and
+        condition-decision can never collide even if reused across both
+        (BM-native ids are only unique within one export, not globally)."""
+        script_vars = referenced_variables(script)
+        relevant = frozenset(
+            (k, v) for k, v in variables.items()
+            if k in script_vars
+        )
+        key = ("cond", self._workspace_id, self._catalog_prefix,
+               cache_id if cache_id is not None else hash(script), relevant)
+        if key in _SHARED_SCRIPT_CACHE:
+            self.stats["cached"] += 1
+            return _SHARED_SCRIPT_CACHE[key]
+        result, blocked_by_missing_var = evaluate_hide_tier1(script, variables)
+        if result is not None:
+            self.stats["tier1"] += 1
+        elif blocked_by_missing_var:
+            self.stats["unknown"] += 1
+            result = None
+        elif self._use_llm:
+            result = self._evaluate_llm_condition(script, dict(relevant))
+            if result is not None:
+                self.stats["tier2"] += 1
+            else:
+                self.stats["unknown"] += 1
+        else:
+            self.stats["unknown"] += 1
+        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
+            _SHARED_SCRIPT_CACHE.clear()
+        _SHARED_SCRIPT_CACHE[key] = result
+        return result
+
+    def _evaluate_llm_condition(
+        self, script: str, variables: dict[str, str],
+    ) -> bool | None:
+        """Tier 2: ask the menial model whether a rule's condition fires."""
+        try:
+            from aryx import llm_runtime
+            sys_p = ("You evaluate BigMachines BML rule-condition scripts. Given "
+                     "the script and the current variable values, determine "
+                     "whether the script's condition evaluates to true (the "
+                     "rule fires) or false (it does not).")
+            user_p = (f"Variables:\n{json.dumps(variables, indent=1)}\n\n"
+                      f"Script:\n{script[:4000]}\n\n"
+                      'Reply ONLY as JSON: {"condition_true": true} or '
+                      '{"condition_true": false} or {"unknown": true} if it '
+                      'cannot be determined.')
+            txt = llm_runtime.chat("menial", sys_p, user_p)[0]
+            s, e = txt.find("{"), txt.rfind("}")
+            if s == -1 or e <= s:
+                return None
+            d = json.loads(txt[s:e + 1])
+            if d.get("unknown"):
+                return None
+            val = d.get("condition_true")
+            if isinstance(val, bool):
+                return val
+        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            logger.debug("bml: tier-2 LLM condition-evaluation failed", exc_info=True)
+        return None

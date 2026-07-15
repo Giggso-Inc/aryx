@@ -33,6 +33,7 @@ from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
     RecommendationRule,
 )
+from aryx.store.ingest_question_store import IngestQuestionStore
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -138,9 +139,15 @@ def _variable_words(variable_name: str) -> list[str]:
 
 
 # ── CPQ intent detection ───────────────────────────────────────────────────────
+# Generic CPQ-domain vocabulary only — the English words customers use to
+# signal configuration intent ("quote", "configure", "bom", ...) are a fixed
+# set of the language, not workspace-ingested data, so listing them isn't the
+# same kind of hardcoding a product-name list is. Product-name literals
+# (formerly apx|mototrbo|sl3500|dpx|xpr here) were removed — is_cpq_question()
+# now also checks the workspace's actually-ingested product names dynamically.
 _CPQ_TRIGGER = re.compile(
     r"\b(quote|configure|configuration|build.*quote|create.*quote|"
-    r"radio|apx|mototrbo|sl3500|dpx|xpr|"
+    r"radio|"
     r"5g|lte|carrier|billing|activation|hardware.*version|"
     r"bom|payload)\b",
     re.IGNORECASE,
@@ -165,16 +172,13 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     # Only list codes/aliases the DB display name won't spell out verbatim.
     ("country", r"\b(us|usa|u\.s\.)\b", "United States"),
     ("country", r"\b(uk|u\.k\.)\b", "United Kingdom"),
-    # Product line variants — must come BEFORE the generic APX Next pattern so
-    # "APX NEXT XE" is never downgraded to the generic "APX Next" hint.
-    # Spec rule 3: if user says "APX NEXT XE", map to XE, not Single Band.
-    ("product", r"\bapx\s*next\s+xe\b", "APX NEXT XE"),
-    ("product", r"\bapx\s*next\s+xn\b", "APX NEXT XN"),
-    ("product", r"\bapx\s*next\s*enhanced\b", "APX NEXT Enhanced"),
-    # Generic fallback — fires only when no variant keyword was present
-    ("product", r"\bapx\s*next\b", "APX Next"),
-    ("product", r"\bapx\s+n\d+\b", "APX Next"),
-    ("product", r"\bsl\s*3500\b", "SL3500e"),
+    # NOTE: no "product" concept here anymore. A hardcoded product-name/
+    # variant list (APX NEXT XE/XN/Enhanced/...) used to live in this table
+    # and fed detect_product_mention()'s fallback path — removed because it
+    # silently failed to recognise any product outside that fixed list.
+    # Product detection is now fully dynamic: CpqEngine._ingested_product_names()
+    # reads the REAL product/family names of every catalog actually ingested
+    # into the workspace, live from the graph (see detect_product_mention).
 ]
 
 # Reverse of the country entries above — a country-fragment attribute whose
@@ -335,17 +339,6 @@ _COUNTRY_TO_REGION: dict[str, str] = {
     "new zealand": "APAC", "taiwan": "APAC", "hong kong": "APAC",
 }
 
-# Product name extraction patterns for display
-_PRODUCT_PATTERNS: list[tuple[str, str]] = [
-    (r"\bapx\s*next\s+xe\b", "APX NEXT XE"),
-    (r"\bapx\s*next\s+xn\b", "APX NEXT XN"),
-    (r"\bapx\s*next\b", "APX NEXT"),
-    (r"\bsl\s*3500e?\b", "SL3500e"),
-    (r"\bdpx\s*\d+\b", "DPX"),
-    (r"\bxpr\s*\d+\b", "XPR"),
-    (r"\bmototrbo\b", "MOTOTRBO"),
-]
-
 # CPQ layout-noise types — exclude from configuration conversation.
 _LAYOUT_TYPE_FRAGMENTS: frozenset[str] = frozenset({
     "layout", "prop", "css", "display_type", "view",
@@ -422,9 +415,28 @@ class CpqEngine:
 
     # ── Intent detection ──────────────────────────────────────────────────────
 
-    def is_cpq_question(self, question: str) -> bool:
-        """True when the question is a CPQ configuration / quote request."""
-        return bool(_CPQ_TRIGGER.search(question))
+    def is_cpq_question(self, question: str, reader: Any = None, workspace_id: int = 1) -> bool:
+        """True when the question is a CPQ configuration / quote request.
+
+        Two independent signals: the generic CPQ-vocabulary regex (fixed
+        English words, not ingested data), OR a mention of any product
+        actually ingested in this workspace (dynamic — same live-graph
+        source as detect_product_mention). A question naming a product
+        with no other CPQ-domain word (e.g. just "MOTOTRBO?") still routes
+        to CPQ without needing that product's name hardcoded here.
+        """
+        if _CPQ_TRIGGER.search(question):
+            return True
+        if reader is None:
+            return False
+        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+        if not q_norm:
+            return False
+        return any(
+            re.sub(r"[^a-z0-9]", "", name.lower()) in q_norm
+            for name in self._ingested_product_names(reader, workspace_id)
+            if name
+        )
 
     def extract_hints(self, question: str) -> dict[str, str]:
         """Extract attribute value hints from natural language.
@@ -461,9 +473,10 @@ class CpqEngine:
     ) -> tuple[dict[str, str], set[str]]:
         """Extract hints by matching real menu-option text against the question.
 
-        Complements extract_hints()'s fixed 3-concept pattern list (hwversion/
-        country/product) — confirmed live, that list silently drops anything
-        outside those three concepts.
+        Complements extract_hints()'s fixed pattern list (hwversion/country
+        concepts only now — product detection moved to the dynamic
+        _ingested_product_names lookup) — confirmed live, a fixed list
+        silently drops anything outside the concepts it names.
 
         Rather than adding a hardcoded pattern per concept, this scans every
         visible, single/boolean attr's real options and checks whether that
@@ -740,21 +753,93 @@ class CpqEngine:
             hints[vn] = literal_value
         return hints
 
-    def detect_product_mention(self, question: str, hints: dict[str, str]) -> str:
+    def _ingested_product_names(self, reader: Any, workspace_id: int) -> list[str]:
+        """Real product/family display names for every catalog currently
+        ingested in this workspace — read live from the graph, no hardcoded
+        product list.
+
+        Mirrors the BmPrdFamily/BmCatalog lookup _scope_to_catalog already
+        does to resolve a hint back to one catalog (see its docstring); here
+        we go the other direction — enumerate every ingested catalog's own
+        name so a mention of ANY currently-ingested product can be
+        recognised, not just ones anticipated when this code was written.
+        Returns [] (never raises) when the reader can't answer distinct_types
+        or no family/catalog entity is found — callers must treat that as
+        "no dynamic candidates available", not an error.
+        """
+        try:
+            all_type_names = reader.distinct_types()
+        except AttributeError:
+            return []
+        # "" (no source-stem prefix) is a legitimate catalog scope too — a
+        # workspace with only one ingested catalog may have unprefixed type
+        # names (_scope_to_catalog treats this the same way: len(prefixes)<=1
+        # returns that one prefix, even when it's ""). Excluding "" here
+        # would silently skip the single-catalog case entirely.
+        prefixes = sorted({_catalog_prefix(t) for t in all_type_names})
+        names: list[str] = []
+        for prefix in prefixes:
+            family_ents: list[dict] = []
+            for family_type in (f"{prefix}BmPrdFamily", f"{prefix}BmCatalog"):
+                family_ents.extend(
+                    reader.find_entities(ontology_type=family_type, limit=50))
+                if family_ents:
+                    break
+            if not family_ents:
+                continue
+            family_pg = self._batch_fetch([e["id"] for e in family_ents], workspace_id)
+            for fent in family_ents:
+                fname = str(
+                    family_pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
+                ).strip()
+                if fname:
+                    names.append(fname)
+        return names
+
+    def detect_product_mention(
+        self, question: str, hints: dict[str, str],
+        reader: Any = None, workspace_id: int = 1,
+    ) -> str:
         """Best-effort product display label from NL text, or "" if none found.
+
+        Dynamic — no hardcoded product list. Matches against the REAL
+        product/family names of every catalog actually ingested into this
+        workspace (via _ingested_product_names), so a newly-ingested product
+        line is recognised immediately without a code change. Falls back to
+        the NL-hint-derived "product" key, then "" (Step 1's normal
+        anchor-prompt path takes over when nothing resolves).
 
         D1 (CPQ_CASCADE_CONVERSATION_PLAN.md §2): the anchor gate is now
         sequential (product, then country) rather than a single-shot block
         requiring product+line+country together — hwVersion (formerly the
         "product line" anchor) resolves through the normal rule cascade
         instead, like any other dependent variable.
+
+        Candidates are tried LONGEST-first (mirrors extract_catalog_hints'
+        "longer/more specific option text is tried first so a short phrase
+        can't shadow a longer, more specific one"): a workspace can ingest
+        both a generic family name ("APX NEXT") and a specific variant
+        ("APX NEXT XE") as separate catalog entities, in no guaranteed
+        order from the graph — without this ordering, a customer asking
+        about "APX NEXT XE" could silently anchor to the generic "APX NEXT"
+        depending on which entity the graph happened to return first
+        (regression caught in review: this is the same "variant must win
+        over generic" guarantee the old hardcoded _PRODUCT_PATTERNS table
+        enforced via explicit list ordering).
         """
-        q_lower = question.lower()
-        return next(
-            (label for pattern, label in _PRODUCT_PATTERNS
-             if re.search(pattern, q_lower, re.IGNORECASE)),
-            next((v for k, v in hints.items() if "product" in k), ""),
-        )
+        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+        if reader is not None and q_norm:
+            candidates = self._ingested_product_names(reader, workspace_id)
+            normalized = [
+                (name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in candidates
+            ]
+            # Sort by the NORMALIZED length actually used for matching, not
+            # the raw display string — punctuation/spacing density could
+            # otherwise make the two orderings diverge.
+            for name, name_norm in sorted(normalized, key=lambda t: len(t[1]), reverse=True):
+                if name_norm and name_norm in q_norm:
+                    return name
+        return next((v for k, v in hints.items() if "product" in k), "")
 
     # ── PostgreSQL attribute fetch ────────────────────────────────────────────
 
@@ -1560,7 +1645,21 @@ class CpqEngine:
         script_constraints = 0
         script_recommendations_wired = 0
         cond_script_skipped = 0
+        script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
+        # Ambiguous multi-value recommendations are never guessed (D2) — instead
+        # routed through the same HITL ingest-question queue used elsewhere for
+        # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
+        # cost 14 round-trips, and so an already-answered rule resolves normally
+        # instead of being skipped forever.
+        try:
+            ingest_store = IngestQuestionStore(get_settings().rdb_dsn)
+            existing_questions = {
+                q["job_id"]: q for q in ingest_store.list(workspace_id, status="")
+            }
+        except Exception:
+            ingest_store = None
+            existing_questions = {}
         try:
             rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
@@ -1614,18 +1713,28 @@ class CpqEngine:
                                 "BmlEvaluator at apply time",
                                 rule_name, act_fn, aid)
 
+                condition_script: str | None = None
                 if fn_id != -1:
-                    # Condition itself is a script (boolean BML) — not
-                    # derivable declaratively; logged for coverage.
-                    cond_script_skipped += 1
-                    logger.info(
-                        "cpq: rule %r has a script condition "
-                        "(condition_function_id=%d) — declarative actions for "
-                        "it are not gated", rule_name, fn_id)
-                    continue
-                if not inp_list:
-                    continue
-                cond_attr_id, cond_value = inp_list[-1]
+                    # Condition itself is a script (boolean BML), not the
+                    # single condition_attr_id/condition_value pair. As long
+                    # as the rule's ACTION is declarative (handled below),
+                    # gate it via condition_script instead of dropping it —
+                    # apply time runs the same Tier-1/Tier-2 boolean
+                    # evaluator apply_hiding_rules already uses (D2 "never
+                    # guess" still holds: unknown outcome never fires).
+                    condition_script = scripts.get(fn_id)
+                    if not condition_script:
+                        cond_script_skipped += 1
+                        logger.warning(
+                            "cpq: rule %r references condition_function_id=%d "
+                            "but no BmFunction script was found — not gated",
+                            rule_name, fn_id)
+                        continue
+                    cond_attr_id, cond_value = 0, ""
+                else:
+                    if not inp_list:
+                        continue
+                    cond_attr_id, cond_value = inp_list[-1]
 
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
@@ -1648,14 +1757,59 @@ class CpqEngine:
                         # A recommendation assigns ONE default value — several
                         # tilde-delimited candidates means picking one would be
                         # guessing (same D2 "never guess" rule that governs
-                        # auto_fill elsewhere), so this is logged and skipped
-                        # rather than arbitrarily choosing the first candidate.
+                        # auto_fill elsewhere). Never guessed in code — routed
+                        # to a human via aryx_ingest_question instead. An
+                        # already-answered rule resolves like any other
+                        # RecommendationRule; an unanswered one stays skipped
+                        # (visible in the queue, not a dead-end log line).
+                        job_id = f"cpq-rule-{eid}-{aid}"
+                        existing = existing_questions.get(job_id)
+                        if (existing and existing.get("status") == "answered"
+                                and existing.get("answer") in parts):
+                            recommend_by_target.setdefault(aid, existing["answer"])
+                            continue
                         ambiguous_recommendations_skipped += 1
                         logger.info(
                             "cpq: rule %r has a multi-value recommendation "
                             "action for target=%d (%r) — ambiguous which is "
-                            "the default, skipped", rule_name, aid, parts)
+                            "the default, %s", rule_name, aid, parts,
+                            "awaiting human answer (already queued)" if existing
+                            else "queued for human answer")
+                        if not existing and ingest_store is not None:
+                            try:
+                                ingest_store.enqueue(
+                                    workspace_id, job_id=job_id,
+                                    kind="cpq_ambiguous_recommendation",
+                                    prompt=(
+                                        f"Rule '{rule_name}' recommends one of "
+                                        f"{parts} for attribute {aid} — which "
+                                        "should be the default?"),
+                                    options=parts, suggested="")
+                                existing_questions[job_id] = {"status": "pending"}
+                            except Exception:
+                                logger.debug(
+                                    "cpq: failed to enqueue ambiguous-"
+                                    "recommendation ingest question",
+                                    exc_info=True)
 
+                if condition_script:
+                    if restrict_by_target or recommend_by_target:
+                        script_condition_gated += 1
+                        logger.info(
+                            "cpq: rule %r has a script condition "
+                            "(condition_function_id=%d) gating a declarative "
+                            "action — evaluated via BmlEvaluator at apply time",
+                            rule_name, fn_id)
+                    else:
+                        # Script condition but no declarative action to gate
+                        # (e.g. the action was itself script-backed and
+                        # already wired above, or genuinely has no action) —
+                        # nothing left for condition_script to attach to.
+                        cond_script_skipped += 1
+                        logger.info(
+                            "cpq: rule %r has a script condition "
+                            "(condition_function_id=%d) but no declarative "
+                            "action — nothing to gate", rule_name, fn_id)
                 for target_attr_id, allowed in restrict_by_target.items():
                     con_rules.append(ConstraintRule(
                         rule_name=rule_name or str(eid),
@@ -1663,7 +1817,8 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         allowed_values=allowed,
-                        conditions=list(inp_list),
+                        conditions=list(inp_list) if condition_script is None else None,
+                        condition_script=condition_script,
                     ))
                 for target_attr_id, rec_val in recommend_by_target.items():
                     rec_rules.append(RecommendationRule(
@@ -1672,18 +1827,20 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         recommended_value=rec_val,
-                        conditions=list(inp_list),
+                        conditions=list(inp_list) if condition_script is None else None,
+                        condition_script=condition_script,
                     ))
         except Exception:
             logger.debug("cpq: value-rule load failed", exc_info=True)
         logger.info(
             "cpq: loaded %d recommendation rules, %d constraint rules "
             "(%d script-backed constraints, %d script-backed recommendations "
-            "wired, %d script-condition rules skipped, %d ambiguous "
+            "wired, %d script-condition rules gating a declarative action, "
+            "%d script-condition rules skipped, %d ambiguous "
             "multi-value recommendations skipped)",
             len(rec_rules), len(con_rules), script_constraints,
-            script_recommendations_wired, cond_script_skipped,
-            ambiguous_recommendations_skipped)
+            script_recommendations_wired, script_condition_gated,
+            cond_script_skipped, ambiguous_recommendations_skipped)
         return rec_rules, con_rules
 
     def load_recommendation_and_constraint_rules(
@@ -1750,6 +1907,13 @@ class CpqEngine:
                 if not allowed or len(allowed) != 1:
                     continue  # unknown, or ambiguous — never guess
                 recommended_value = allowed[0]
+            elif rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is not True:
+                    continue  # False or unknown — never guess, doesn't fire
+                recommended_value = rule.recommended_value
             else:
                 if rule.conditions:
                     matched, _blocked = evaluate_declarative_conditions(
@@ -1857,6 +2021,13 @@ class CpqEngine:
                 if allowed:
                     _intersect(target.entity_id, allowed)
                 continue
+            if rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is True:
+                    _intersect(target.entity_id, rule.allowed_values)
+                continue  # False or unknown — never guess, no constraint applied
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
                     rule.conditions, filled_by_rule_id)
