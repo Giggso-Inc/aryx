@@ -127,6 +127,45 @@ def test_ask_thread_submit_returns_cached_answer_without_running_ask():
     run_ask_mock.assert_not_called()
 
 
+def test_ask_thread_submit_does_not_run_ask_when_request_is_in_progress():
+    class FakeStore:
+        def close(self):
+            return None
+
+        def validate_mapping(self, workspace_id, shay_workspace_id):
+            return None
+
+        def get_completed_response(self, shay_workspace_id, thread_id, request_id):
+            return None
+
+        def ensure_thread_and_user_message(self, **kwargs):
+            return {
+                "thread_id": kwargs["thread_id"],
+                "channel_id": "00000000-0000-0000-0000-000000000099",
+                "user_message_id": "00000000-0000-0000-0000-000000000101",
+                "request_claimed": False,
+            }
+
+    with (
+        patch("aryx.api.ask_thread_api.AryxAskThreadStore", return_value=FakeStore()),
+        patch("aryx.api.ask_thread_api.run_ask") as run_ask_mock,
+        patch("aryx.api.ask_thread_api._validate_workspace", return_value=None),
+    ):
+        resp = _client().post(
+            "/ask/threads/message",
+            json={
+                "workspace_id": 7,
+                "shay_workspace_id": "00000000-0000-0000-0000-000000000009",
+                "thread_id": "00000000-0000-0000-0000-000000000010",
+                "request_id": "00000000-0000-0000-0000-000000000001",
+                "question": "What changed?",
+            },
+        )
+
+    assert resp.status_code == 409
+    run_ask_mock.assert_not_called()
+
+
 def test_ask_thread_submit_does_not_run_ask_when_prompt_persist_fails():
     class FakeStore:
         def close(self):
@@ -191,3 +230,23 @@ def test_ask_threads_and_messages_are_read_only():
     assert messages.status_code == 200
     assert messages.json()[0]["role"] == "user"
     run_ask_mock.assert_not_called()
+
+
+def test_normalize_grounding_citations_maps_backend_shape_to_ui_shape():
+    from aryx.store.ask_thread_store import normalize_grounding_citations
+
+    citations = normalize_grounding_citations({
+        "citations": [
+            {
+                "marker": 1,
+                "entity_id": "42",
+                "entity_name": "Acme Corp",
+                "entity_type": "Customer",
+                "system": "crm",
+            }
+        ]
+    })
+
+    assert citations == [
+        {"entity_id": 42, "label": "Acme Corp", "type": "Customer"}
+    ]

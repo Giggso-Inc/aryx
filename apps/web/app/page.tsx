@@ -167,6 +167,7 @@ export default function HomePage() {
   const cancelRecoveryRef = useRef(false);
   const activeThreadRef = useRef<string | null>(selectedThreadId);
   const optimisticThreadRef = useRef<string | null>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => () => { cancelRecoveryRef.current = true; }, []);
 
   useEffect(() => {
@@ -224,6 +225,7 @@ export default function HomePage() {
   const send = async (question?: string) => {
     const q = (question ?? input).trim();
     if (!q || busy) return;
+    setAutoScrollTranscript(true);
 
     // Stamp submit time (with 5 s clock-skew buffer) so the recovery poll
     // never surfaces a stale answer from a prior identical question.
@@ -272,9 +274,10 @@ export default function HomePage() {
             sessionData,
           })
         : await api.ask(q, workspaceId, history, sessionData);
-      // Lightweight citation extraction — V1: derive from terms.
-      const citations: Citation[] = (resp.terms || [])
-        .slice(0, 5)
+      const citations: Citation[] =
+        resp.citations ??
+        (resp.terms || [])
+          .slice(0, 5)
           .map((label, i) => ({ entity_id: i, label }));
 
       // Persist CPQ session state so the next turn continues the configuration.
@@ -421,6 +424,9 @@ export default function HomePage() {
 
   const loadOlderMessages = async () => {
     if (!selectedThreadId || !oldestSequence || loadingOlder || !hasOlderMessages) return;
+    const transcript = transcriptRef.current;
+    const previousScrollHeight = transcript?.scrollHeight ?? 0;
+    const previousScrollTop = transcript?.scrollTop ?? 0;
     setLoadingOlder(true);
     setAutoScrollTranscript(false);
     try {
@@ -435,11 +441,15 @@ export default function HomePage() {
       if (older.length > 0) {
         setTurns((prev) => [...older.map(threadMessageToTurn), ...prev]);
         setOldestSequence(older[0]?.sequence_number ?? oldestSequence);
+        window.requestAnimationFrame(() => {
+          if (!transcript) return;
+          transcript.scrollTop =
+            transcript.scrollHeight - previousScrollHeight + previousScrollTop;
+        });
       }
       setHasOlderMessages(older.length === 50);
     } finally {
       setLoadingOlder(false);
-      window.setTimeout(() => setAutoScrollTranscript(true), 400);
     }
   };
 
@@ -506,6 +516,7 @@ export default function HomePage() {
             </div>
           ) : (
             <div
+              ref={transcriptRef}
               className="min-h-0 flex-1 overflow-y-auto pb-6 pr-1"
               onScroll={(event) => {
                 if (event.currentTarget.scrollTop < 48) {

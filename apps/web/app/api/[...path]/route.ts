@@ -4,6 +4,7 @@ import {
   buildAryxForwardHeaders,
   requireInternalApiKey,
   requireShayBearerAuth,
+  requireShayWorkspaceAccess,
   aryxTarget,
 } from "../_aryxProxy";
 
@@ -32,6 +33,15 @@ async function proxy(
 
   const { path: pathSegments } = await params;
   const path = pathSegments.join("/");
+  if (path === "ask/threads" || path.startsWith("ask/threads/")) {
+    const workspaceAuth = await requireShayWorkspaceAccess(
+      req,
+      req.nextUrl.searchParams.get("shay_workspace_id"),
+    );
+    if (workspaceAuth instanceof NextResponse) {
+      return workspaceAuth;
+    }
+  }
   const url = `${aryxTarget()}/${path}${req.nextUrl.search}`;
 
   const init: RequestInit = {

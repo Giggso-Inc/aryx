@@ -24,6 +24,7 @@ export interface AskResponse {
   terms: string[];
   tools_called: unknown[];
   usage: Usage;
+  citations?: Citation[];
   grounding?: Grounding | null;
   session_data?: Record<string, unknown>;
   cpq_payload?: Record<string, unknown> | null;

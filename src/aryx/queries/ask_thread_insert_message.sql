@@ -1,7 +1,13 @@
-WITH next_sequence AS (
+WITH locked_thread AS (
+    SELECT id
+    FROM gg_threads
+    WHERE id = %s::uuid
+    FOR UPDATE
+),
+next_sequence AS (
     SELECT COALESCE(MAX(sequence_number), 0) + 1 AS value
     FROM gg_messages
-    WHERE thread_id = %s::uuid
+    WHERE thread_id = (SELECT id FROM locked_thread)
 ),
 message_row AS (
     INSERT INTO gg_messages (
@@ -46,6 +52,6 @@ message_row AS (
         citations = EXCLUDED.citations,
         usage_metrics = EXCLUDED.usage_metrics,
         updated_at = NOW()
-    RETURNING id::text, sequence_number
+    RETURNING id::text, sequence_number, (xmax = 0) AS inserted
 )
-SELECT id, sequence_number FROM message_row
+SELECT id, sequence_number, inserted FROM message_row

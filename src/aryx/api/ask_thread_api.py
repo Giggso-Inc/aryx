@@ -104,7 +104,26 @@ def ask_thread_router() -> APIRouter:
                     request_id=req.request_id,
                     question=question,
                 )
+                if not saved.get("request_claimed", True):
+                    cached = store.get_completed_response(
+                        req.shay_workspace_id,
+                        req.thread_id,
+                        req.request_id,
+                    )
+                    if cached:
+                        return {
+                            **cached,
+                            "thread_id": req.thread_id,
+                            "request_id": req.request_id,
+                            "replayed": True,
+                        }
+                    raise HTTPException(
+                        409,
+                        "This Ask request is already being processed.",
+                    )
             except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, HTTPException):
+                    raise
                 logger.warning("ask prompt persist failed: %s", exc)
                 raise HTTPException(
                     503,
@@ -125,14 +144,16 @@ def ask_thread_router() -> APIRouter:
             )
             answer = result.get("answer", "") or ""
             persistence_error = ""
+            citations = []
             try:
-                store.append_assistant_message(
+                saved_response = store.append_assistant_message(
                     thread_id=req.thread_id,
                     channel_id=saved["channel_id"],
                     request_id=req.request_id,
                     answer=answer,
                     result=result,
                 )
+                citations = saved_response.get("citations") or []
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ask response persist failed: %s", exc)
                 persistence_error = str(exc)
@@ -143,6 +164,7 @@ def ask_thread_router() -> APIRouter:
                 "thread_id": req.thread_id,
                 "request_id": req.request_id,
                 "replayed": False,
+                "citations": citations,
                 "persistence_error": persistence_error or None,
             }
         finally:

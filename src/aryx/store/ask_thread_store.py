@@ -16,6 +16,39 @@ ASK_CHANNEL_NAME = "__aryx_ask__"
 ASK_CHANNEL_DESCRIPTION = "Hidden Aryx Ask conversation channel"
 
 
+def _as_int(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def normalize_grounding_citations(grounding: Any) -> list[dict[str, Any]]:
+    """Return frontend citation objects from the grounding contract."""
+    if not isinstance(grounding, dict):
+        return []
+    raw_citations = grounding.get("citations")
+    if not isinstance(raw_citations, list):
+        return []
+
+    citations = []
+    for index, citation in enumerate(raw_citations):
+        if not isinstance(citation, dict):
+            continue
+        label = citation.get("label") or citation.get("entity_name")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        citations.append({
+            "entity_id": _as_int(
+                citation.get("entity_id"),
+                _as_int(citation.get("marker"), index),
+            ),
+            "label": label,
+            "type": citation.get("type") or citation.get("entity_type"),
+        })
+    return citations
+
+
 def normalize_thread_title(question: str, max_len: int = 80) -> str:
     """Return the deterministic first-prompt title for an Ask thread."""
     title = re.sub(r"\s+", " ", question.strip())
@@ -120,6 +153,7 @@ class AryxAskThreadStore:
                 load("ask_thread_insert_message"),
                 (
                     thread_id,
+                    thread_id,
                     str(uuid.uuid4()),
                     question,
                     "user",
@@ -143,6 +177,7 @@ class AryxAskThreadStore:
             "created_thread": True,
             "user_message_id": str(message_row[0]),
             "user_sequence_number": int(message_row[1]),
+            "request_claimed": bool(message_row[2]),
         }
 
     def append_assistant_message(
@@ -168,14 +203,13 @@ class AryxAskThreadStore:
             "beautify_button_flag": result.get("beautify_button_flag", False),
             "api_share_button_flag": result.get("api_share_button_flag", False),
         }
-        citations = []
         grounding = result.get("grounding") or {}
-        if isinstance(grounding, dict):
-            citations = grounding.get("citations") or []
+        citations = normalize_grounding_citations(grounding)
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 load("ask_thread_insert_message"),
                 (
+                    thread_id,
                     thread_id,
                     str(uuid.uuid4()),
                     answer,
@@ -194,7 +228,11 @@ class AryxAskThreadStore:
             row = cur.fetchone()
             cur.execute(load("ask_thread_touch_thread"), (thread_id, thread_id))
             cur.execute(load("ask_thread_touch_channel"), (channel_id, channel_id, channel_id))
-        return {"assistant_message_id": str(row[0]), "sequence_number": int(row[1])}
+        return {
+            "assistant_message_id": str(row[0]),
+            "sequence_number": int(row[1]),
+            "citations": citations,
+        }
 
     def get_completed_response(
         self,
