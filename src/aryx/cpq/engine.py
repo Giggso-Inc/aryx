@@ -3419,24 +3419,32 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
     ) -> str:
-        """Two-column Markdown table (Attribute | Value) for the Beautify button.
+        """Human-readable ``Label : Value`` block for the Beautify button.
 
         Reuses filled_summary_pairs' noise/low-signal filtering (§ above) so
         Beautify shows the same substantive fields as the conversational
-        summary — as a GFM table the client renders natively (Next.js via
-        react-markdown+remark-gfm, Streamlit via st.markdown), no LLM call.
+        summary — as aligned key:value lines instead of prose, no LLM call.
+        Used as-is by clients that display plain text (e.g. Streamlit's
+        st.code). Clients that render a real table use
+        beautify_rows()'s structured pairs instead of parsing this string.
         """
         pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
+        width = max(len(label) for label, _ in pairs)
+        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
 
-        def _cell(text: str) -> str:
-            # GFM table cells are one logical line: escape literal pipes
-            # (would otherwise be read as column separators) and collapse
-            # any embedded newlines a free-text value might carry.
-            return str(text).replace("|", "\\|").replace("\n", " ").strip()
-
-        rows = ["| Attribute | Value |", "| --- | --- |"]
-        rows.extend(f"| {_cell(label)} | {_cell(value)} |" for label, value in pairs)
-        return "\n".join(rows)
+    def beautify_rows(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+    ) -> list[dict[str, str]]:
+        """Structured [{label, value}, ...] pairs for clients that render a
+        real tabular UI (e.g. the Next.js Beautify panel) instead of plain
+        text — same data and filtering as beautify_text(), just not
+        flattened into a display string. No LLM call.
+        """
+        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
+        return [{"label": label, "value": value} for label, value in pairs]
 
     def render_filled_summary(
         self,
