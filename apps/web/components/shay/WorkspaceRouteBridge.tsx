@@ -95,5 +95,5 @@ export function WorkspaceRouteBridge({
     );
   }
 
-  return <>{children}</>;
+  return <div data-workspace-detail-route="true">{children}</div>;
 }

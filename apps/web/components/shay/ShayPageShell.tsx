@@ -56,7 +56,7 @@ export function ShayPageShell({
     <div className="min-h-screen bg-canvas">
       <Header />
       <main className="app-shell-offset w-full pb-6 pt-6">
-        <div className={shellWidthClassName}>
+        <div className={`shay-page-shell ${shellWidthClassName}`}>
           {shouldWrapInCard ? (
             <section className="overflow-hidden rounded-[0.75rem] border border-navy-100 bg-white shadow-soft">
               {content}
