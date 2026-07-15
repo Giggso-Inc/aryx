@@ -597,11 +597,29 @@ class CpqEngine:
         requiring product+line+country together — hwVersion (formerly the
         "product line" anchor) resolves through the normal rule cascade
         instead, like any other dependent variable.
+
+        Candidates are tried LONGEST-first (mirrors extract_catalog_hints'
+        "longer/more specific option text is tried first so a short phrase
+        can't shadow a longer, more specific one"): a workspace can ingest
+        both a generic family name ("APX NEXT") and a specific variant
+        ("APX NEXT XE") as separate catalog entities, in no guaranteed
+        order from the graph — without this ordering, a customer asking
+        about "APX NEXT XE" could silently anchor to the generic "APX NEXT"
+        depending on which entity the graph happened to return first
+        (regression caught in review: this is the same "variant must win
+        over generic" guarantee the old hardcoded _PRODUCT_PATTERNS table
+        enforced via explicit list ordering).
         """
         q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
         if reader is not None and q_norm:
-            for name in self._ingested_product_names(reader, workspace_id):
-                name_norm = re.sub(r"[^a-z0-9]", "", name.lower())
+            candidates = self._ingested_product_names(reader, workspace_id)
+            normalized = [
+                (name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in candidates
+            ]
+            # Sort by the NORMALIZED length actually used for matching, not
+            # the raw display string — punctuation/spacing density could
+            # otherwise make the two orderings diverge.
+            for name, name_norm in sorted(normalized, key=lambda t: len(t[1]), reverse=True):
                 if name_norm and name_norm in q_norm:
                     return name
         return next((v for k, v in hints.items() if "product" in k), "")

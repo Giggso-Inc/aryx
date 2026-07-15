@@ -278,6 +278,38 @@ def test_detect_product_mention_has_no_hardcoded_pattern_list():
     assert not hasattr(engine_mod, "_PRODUCT_PATTERNS")
 
 
+def test_detect_product_mention_prefers_specific_variant_over_generic_name(monkeypatch):
+    """Regression (caught in Raven review): the old hardcoded _PRODUCT_PATTERNS
+    table deliberately ordered variant patterns ("APX NEXT XE") before the
+    generic one ("APX NEXT") — "Spec rule 3: if user says 'APX NEXT XE', map
+    to XE, not Single Band." The dynamic replacement lost this guarantee by
+    matching candidates in whatever order the graph returned them, with no
+    length-based tie-break. Deliberately insert the GENERIC name first in
+    the fake catalog dict (the unfavorable graph-return order) and assert
+    the specific variant still wins."""
+    reader = _fake_reader_with_batch_fetch(monkeypatch, {
+        "ApxNextConfig": "APX NEXT",        # generic, inserted FIRST (unfavorable order)
+        "ApxNextXeConfig": "APX NEXT XE",   # specific variant
+    })
+    from aryx.cpq.engine import CpqEngine
+    engine = CpqEngine()
+    result = engine.detect_product_mention(
+        "I need a quote for the APX NEXT XE", hints={},
+        reader=reader, workspace_id=1,
+    )
+    assert result == "APX NEXT XE", (
+        "a specific variant name must win over a generic name it contains, "
+        "regardless of graph return order"
+    )
+
+    # The generic name alone must still resolve correctly (no over-matching).
+    result_generic = engine.detect_product_mention(
+        "I need a quote for the APX NEXT", hints={},
+        reader=reader, workspace_id=1,
+    )
+    assert result_generic == "APX NEXT"
+
+
 def test_detect_product_mention_recognises_a_brand_new_product_with_no_code_change(monkeypatch):
     """A product family invented for this test alone (never referenced
     anywhere in source) is recognised purely because it's "ingested" in
