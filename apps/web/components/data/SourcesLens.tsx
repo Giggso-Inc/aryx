@@ -315,7 +315,9 @@ function isDatabase(source: DataSourceCatalogItem) {
 }
 
 function isDocument(source: DataSourceCatalogItem) {
-  return source.kind === "xml" || source.display_kind === "Document";
+  // xlsx is grouped the same way xml is (one uploaded container -> N
+  // generated tabular datasets), so it belongs in the same category tab.
+  return source.kind === "xml" || source.kind === "xlsx" || source.display_kind === "Document";
 }
 
 function isApi(source: DataSourceCatalogItem) {
