@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -20,6 +21,7 @@ from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS
+from aryx.cpq.logging_context import install_run_id_logging, set_run_id
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
@@ -30,6 +32,7 @@ from aryx.store.pool import get_pool
 _cpq_engine = CpqEngine()
 
 logger = logging.getLogger(__name__)
+install_run_id_logging(__name__)
 
 
 def _validate_workspace(workspace_id: int) -> None:
@@ -122,16 +125,69 @@ def _extract_terms(question: str, types: list[str], history: list[Turn],
     return (terms or [question.strip()]), it, ot, ms
 
 
+_MAX_ANSWER_LINES = 5
+_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+
+def _line_count(text: str) -> int:
+    """Logical line count — the greater of physical newlines and sentence count.
+
+    A model asked for "N lines" can still return one dense multi-sentence
+    paragraph with no line breaks at all; counting sentences too catches that.
+    """
+    physical = len([ln for ln in text.splitlines() if ln.strip()])
+    sentences = len([s for s in _SENTENCE_SPLIT.split(text.strip()) if s.strip()])
+    return max(physical, sentences)
+
+
+def _rewrite_plain(text: str, context_hint: str, workspace_id: int) -> tuple[str, int, int]:
+    """Force a short, plain-English rewrite. Returns the original untouched on any failure.
+
+    Shared by `_enforce_plain_answer` (Q&A) and `_cpq_summary_text` (config
+    summaries) — the flow must never block on the rewrite.
+    """
+    sys = "You rewrite text in plain, everyday English for a non-technical reader."
+    user = (
+        f"Rewrite the TEXT below to at most {_MAX_ANSWER_LINES} short lines, one "
+        "idea per line, in plain jargon-free English — direct point first. Keep "
+        "every fact and proper noun (product names, codes) exactly as given; "
+        "don't invent or drop any.\n\n"
+        f"{context_hint}\n\nTEXT:\n{text}"
+    )
+    try:
+        rewritten, it, ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        rewritten = _strip_think(rewritten).strip()
+        if rewritten:
+            return rewritten, it, ot
+    except Exception:  # noqa: BLE001
+        logger.debug("plain-language rewrite failed — using original", exc_info=True)
+    return text, 0, 0
+
+
+def _enforce_plain_answer(
+    text: str, question: str, workspace_id: int,
+) -> tuple[str, int, int, int]:
+    """Second pass: force a short, plain-English rewrite if the model overran."""
+    if _line_count(text) <= _MAX_ANSWER_LINES:
+        return text, 0, 0, 0
+    start = time.monotonic()
+    rewritten, it, ot = _rewrite_plain(text, f"QUESTION: {question}", workspace_id)
+    ms = int((time.monotonic() - start) * 1000) if (it or ot) else 0
+    return rewritten, it, ot, ms
+
+
 def _synthesise(question: str, context: str, overview: str = "",
                 history: list[Turn] | None = None,
                 workspace_id: int = 1) -> tuple[str, int, int, int]:
     sys = (
-        "You are Aryx, a precise knowledge-graph assistant specialised in product "
-        "configuration, requirements management, and enterprise data. "
+        "You are Aryx, a knowledge-graph assistant. You explain product "
+        "configuration, requirements, and enterprise data in plain, everyday "
+        "English — the way you'd explain it to a colleague who isn't technical. "
         "Always answer from the GRAPH FACTS provided. "
-        "Cite entity names, attribute values, and relationship chains explicitly. "
-        "Synthesise across all entities shown when multiple are present. "
-        "Be direct and specific — never hedge when facts are in front of you."
+        "Name the specific things you're talking about (products, values, "
+        "relationships) but describe them in plain words, never technical or "
+        "internal terminology. Be direct and specific — never hedge when facts "
+        "are in front of you."
     )
     has_context = bool(context.strip())
     facts = context if has_context else "(none — no specific entity matched)"
@@ -140,20 +196,26 @@ def _synthesise(question: str, context: str, overview: str = "",
     user = (
         "Answer the QUESTION using the evidence below.\n\n"
         "Rules:\n"
-        "- GRAPH FACTS present → answer specifically, citing entity names, "
-        "attribute values, and relationship chains shown.\n"
+        "- GRAPH FACTS present → answer specifically, naming the entities, "
+        "values, and relationships shown, in plain language.\n"
         "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
         "and suggest a concrete follow-up question. "
         "Do NOT say 'no matching entities' or 'not stored'.\n"
         "- Do NOT invent facts not shown in GRAPH FACTS.\n"
         "- Use CONVERSATION SO FAR to resolve pronouns and give continuity.\n"
-        "- Format: bullet list for multiple items; direct prose for single answers.\n\n"
+        f"- Format: maximum {_MAX_ANSWER_LINES} lines. Lead with a direct "
+        "one-line answer, then supporting detail in the order a person would "
+        "naturally explain it. Use a short list only when multiple distinct "
+        "items are being enumerated. Plain, everyday English — no technical "
+        "or internal terms.\n\n"
         f"{overview}{conv_block}\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
     )
     start = time.monotonic()
     text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
     ms = int((time.monotonic() - start) * 1000)
-    return _strip_think(text), it, ot, ms
+    text = _strip_think(text)
+    text, r_it, r_ot, r_ms = _enforce_plain_answer(text, question, workspace_id)
+    return text, it + r_it, ot + r_ot, ms + r_ms
 
 
 def _enrich_with_attributes(
@@ -218,22 +280,29 @@ def _cpq_summary_text(
     if not pairs:
         return ""
     sys = (
-        "You summarise product configurations for sales reps in natural, "
-        "plain-English prose."
+        "You summarise product configurations for sales reps in plain, "
+        "everyday English — never technical or internal terminology."
     )
     user = (
-        f"Write ONE flowing paragraph (3-6 sentences, plain text) describing "
-        f"this {product_name or 'product'} configuration. Group related "
-        "choices naturally, the way a person would describe the build. "
-        "No lists, no markdown, no headings, and do not restate 'label: value' "
-        "pairs verbatim — write real sentences. Use ONLY the facts below; "
-        "never invent values that are not listed.\n\nCONFIGURATION:\n"
+        f"Describe this {product_name or 'product'} configuration in at most "
+        f"{_MAX_ANSWER_LINES} short lines, one idea per line. Lead with a direct "
+        "one-line summary (e.g. 'Your configuration is complete.'), then the "
+        "most important choices in plain language — group related choices "
+        "naturally, the way a person would describe the build, not as "
+        "'label: value' pairs. Use ONLY the facts below; never invent values "
+        "that are not listed.\n\nCONFIGURATION:\n"
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
     )
     try:
         text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
         if text:
+            if _line_count(text) > _MAX_ANSWER_LINES:
+                text, _rit, _rot = _rewrite_plain(
+                    text,
+                    f"This is a completed {product_name or 'product'} configuration summary.",
+                    workspace_id,
+                )
             return text
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
@@ -360,6 +429,11 @@ def _handle_cascade(
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
     for vn, iv in catalog_hints.items():
         hints.setdefault(vn, iv)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    for vn, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
+        hints.setdefault(vn, iv)
     # Accumulate across turns (not just this one) — see CpqSession.negated_vns.
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
@@ -386,8 +460,15 @@ def _handle_cascade(
     # Lock in the new value for the changed attr
     result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
     if result:
-        session.filled[changed_attr.variable_name] = result[0]
-        session.display_filled[changed_attr.variable_name] = result[1]
+        if changed_attr.select_type == "multi":
+            # Same "single answer selects one item" convention as the
+            # pending-question path — see its comment for why this matters
+            # now that real attrs are classified "multi".
+            session.filled_multi[changed_attr.variable_name] = [result[0]]
+            session.display_filled[changed_attr.variable_name] = result[1]
+        else:
+            session.filled[changed_attr.variable_name] = result[0]
+            session.display_filled[changed_attr.variable_name] = result[1]
         session.filled_source[changed_attr.variable_name] = "user"
     else:
         # Could not parse new value — ask for clarification
@@ -409,7 +490,6 @@ def _handle_cascade(
         }
 
     # Re-run full rule evaluation loop with updated state
-    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
@@ -517,6 +597,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if req.session_data.get("mode") == "cpq"
         else CpqSession()
     )
+    if not session.run_id:
+        # Minted once per session (fresh session, or an existing one that
+        # predates this field) and stable for every subsequent turn since
+        # it's echoed back in session_data like every other CpqSession
+        # field — traces this quote's whole lifecycle across turns, not
+        # just this one request.
+        session.run_id = uuid.uuid4().hex
+    set_run_id(session.run_id)
     session.turn += 1
 
     # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
@@ -531,20 +619,102 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if "country" in hints and not session.country:
         session.country = hints["country"]
 
+    # ── Mid-session product-switch gate ───────────────────────────────────────
+    # A PRIOR turn detected a different product than session.product_name and
+    # asked the user to confirm before discarding the in-progress config. THIS
+    # turn's raw reply is that yes/no answer, not a new CPQ hint (Andie-planned
+    # fix for: "CPQ for two products is not working in the single session").
+    if session.pending_anchor == "confirm_switch":
+        reply = req.question.strip().lower()
+        affirmative = reply.startswith(("y", "yes", "switch", "confirm"))
+        logger.info(
+            "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%r decision=%s",
+            session.turn, session.product_name, session.pending_switch_product,
+            req.question, "switch" if affirmative else "stay",
+        )
+        if affirmative:
+            new_product = session.pending_switch_product
+            session.cascade_log.append({
+                "event": "product_switch", "from": session.product_name,
+                "to": new_product, "turn": session.turn,
+            })
+            session.filled = {}
+            session.filled_multi = {}
+            session.display_filled = {}
+            session.filled_source = {}
+            session.pending_variables = []
+            session.status = "configuring"
+            session.country = ""
+            # NOTE: catalog_prefix is not a CpqSession field — it's derived
+            # fresh from attrs[0].catalog_prefix every turn in Step 2 below,
+            # so there's nothing session-scoped to reset here.
+            session.product_entity_id = 0
+            session.negated_vns = []
+            session.product_name = new_product
+            session.pending_switch_product = ""
+            session.pending_anchor = ""
+            logger.info(
+                "cpq_switch: switched turn=%s new_product=%r — config state reset",
+                session.turn, new_product,
+            )
+            # Fall through — Step 1's anchor block below now re-anchors the
+            # country for the new product (session.country was just cleared).
+        else:
+            session.pending_switch_product = ""
+            session.pending_anchor = ""
+            logger.info(
+                "cpq_switch: declined turn=%s staying on product=%r",
+                session.turn, session.product_name,
+            )
+            answer = f"OK — continuing with **{session.product_name}**."
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_declined()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
     # ── STEP 1: Sequential anchor prompting — product first, then country.
     # hwVersion is no longer an anchor (D1); it resolves through the normal
     # rule cascade like any other dependent variable, once product+country
     # are known. ───────────────────────────────────────────────────────────
     if not session.product_name:
-        detected = _cpq_engine.detect_product_mention(req.question, hints)
+        detected = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
         if not detected and session.pending_anchor == "product":
             detected = req.question.strip()
         if not detected:
+            # Priority 2: resolve against real ingested catalog/family/
+            # product-option data instead of falling back to accepting
+            # raw text unconditionally. Confirmed live this closes two
+            # real gaps at once: (a) products outside the fixed pattern
+            # list, e.g. "DGM 8500e", now resolve correctly with zero
+            # hardcoded entries; (b) a reply to the "what family?" question
+            # below is now validated the SAME way instead of being accepted
+            # verbatim — previously a bare "US" (a country, not a family)
+            # silently became session.product_name = "US", which then
+            # resolved to an unrelated phantom "APX6500" quote nobody asked
+            # for. Runs on every turn product_name is still unset, so it
+            # equally validates the very first message and any retry.
+            match = _cpq_engine.resolve_product_hint(reader, req.workspace_id, req.question)
+            if match:
+                detected = match[1]
+        if not detected:
+            already_asked = session.pending_anchor == "product"
             session.pending_anchor = "product"
-            answer = (
-                "To start the configuration I need the **product family** "
-                "(e.g., *APX Next*, *MOTOTRBO*, *SL3500e*). Could you provide that?"
-            )
+            families = _cpq_engine.list_ingested_families(reader, req.workspace_id)
+            fam_list = ", ".join(f"*{f}*" for f in families) if families else "*APX Next*, *MOTOTRBO*, *SL3500e*"
+            if already_asked:
+                answer = (
+                    f"I still couldn't match **{req.question.strip()}** to a "
+                    f"product family ingested in this workspace. Available "
+                    f"families: {fam_list}. Could you pick one of those?"
+                )
+            else:
+                answer = (
+                    f"To start the configuration I need the **product family** "
+                    f"(e.g., {fam_list}). Could you provide that?"
+                )
             _persist_cpq_history(req.workspace_id, req.question, answer)
             return {
                 "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
@@ -553,6 +723,37 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
         session.product_name = detected
+        logger.info("cpq_switch: product anchored turn=%s product=%r", session.turn, detected)
+    else:
+        # Product already anchored on an earlier turn — re-check THIS turn's
+        # text for a mention of a DIFFERENT product. detect_product_mention
+        # is dynamic: it matches against the real product/family names of
+        # whatever catalogs are actually ingested in this workspace (read
+        # live from the graph), not a hardcoded list — so an answer value
+        # that merely contains unrelated text is unlikely to misfire unless
+        # it names another product genuinely present in this workspace; the
+        # confirm gate above is the safety net regardless — a false-positive
+        # costs one extra yes/no turn, never silent data loss.
+        switch_candidate = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
+        if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
+            logger.info(
+                "cpq_switch: candidate detected turn=%s current=%r candidate=%r",
+                session.turn, session.product_name, switch_candidate,
+            )
+            session.pending_switch_product = switch_candidate
+            session.pending_anchor = "confirm_switch"
+            answer = (
+                f"It looks like you're asking about **{switch_candidate}**, but this "
+                f"session is configuring **{session.product_name}**. Switch to "
+                f"**{switch_candidate}** and discard the current configuration? (yes/no)"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_candidate()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
 
     if not session.country:
         session.pending_anchor = "country"
@@ -590,19 +791,25 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # 3-concept pattern list has no coverage for (battery, multikey, carry
     # solution, DMS tier, ...). setdefault so the curated patterns still win
     # where both mechanisms independently find the same attr.
+    # catalog_prefix scopes every rule/function load to the same ingested
+    # catalog attrs came from, so a workspace holding more than one
+    # product's XML export never lets one catalog's rules act on another's
+    # attributes (see CpqEngine._scope_to_catalog).
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
     for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    # Option-less fields a real BML script checks (e.g. customerType) that
+    # extract_catalog_hints can never reach — see CpqEngine.extract_flag_hints.
+    for vn, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
         hints.setdefault(vn, iv)
     # Accumulate across turns (not just this one) — see CpqSession.negated_vns.
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
 
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
-    # catalog_prefix scopes every rule/function load to the same ingested
-    # catalog attrs came from, so a workspace holding more than one
-    # product's XML export never lets one catalog's rules act on another's
-    # attributes (see CpqEngine._scope_to_catalog).
-    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
@@ -617,7 +824,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # this does not submit anything, cpq_payload stays unset.
         if _cpq_engine.detect_response_mode_request(req.question) == "json":
             preview_payload = _cpq_engine.build_payload(
-                session.filled, session.filled_source, session.filled_multi)
+                session.filled, session.filled_source, session.filled_multi, attrs)
             rule_ids_preview = _cpq_engine.rule_governed_ids(
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
@@ -644,7 +851,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_approval(req.question):
             session.status = "approved"
             session.complete = True
-            payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
+            payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi, attrs)
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -725,7 +932,11 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         }
 
     # ── STEP 7: Q&A during active config (strict — only ? or Q&A keywords) ───
-    if session.pending_variables and session.turn > 1:
+    # `and not mode_request`: an explicit JSON/batch request must win here too,
+    # same as it does over Step 5 below — otherwise a batch request starting
+    # with "what" (e.g. "what else do you need from me") is misread as a
+    # Q&A question instead of the batch-listing request it actually is.
+    if session.pending_variables and session.turn > 1 and not mode_request:
         pending_var_for_qa = session.pending_variables[0]
         pending_attr_for_qa = next(
             (a for a in attrs if a.variable_name == pending_var_for_qa), None,
@@ -764,9 +975,32 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
             if result:
                 iv, disp = result
-                session.filled[pending_var] = iv
-                session.display_filled[pending_var] = disp
-                session.filled_source[pending_var] = "user"
+                if pending_attr.select_type == "multi":
+                    # A direct answer to a multi-select question selects
+                    # that one item — store as a single-item list in
+                    # filled_multi, not a scalar in filled, so build_payload
+                    # serializes it as the array the real CPQ API expects
+                    # for these attrs (confirmed live: nothing was ever
+                    # classified "multi" before the display_type/attr_type
+                    # reclassification, so this branch was previously dead
+                    # code — now that real attrs reach it, storing a
+                    # multi-select answer as a scalar would silently defeat
+                    # that fix for every attr answered directly rather than
+                    # auto-filled).
+                    existing = session.filled_multi.get(pending_var, [])
+                    if iv not in existing:
+                        existing = [*existing, iv]
+                    session.filled_multi[pending_var] = existing
+                    session.display_filled[pending_var] = ", ".join(
+                        next((o.display_name for o in pending_attr.options
+                              if o.item_value == v), v)
+                        for v in existing
+                    )
+                    session.filled_source[pending_var] = "user"
+                else:
+                    session.filled[pending_var] = iv
+                    session.display_filled[pending_var] = disp
+                    session.filled_source[pending_var] = "user"
                 pv_flat = pending_var.lower().replace("_", "")
                 matched_fragment = next(
                     (dk for dk in DECISION_REQUIRED_KEYS if dk in pv_flat), None
@@ -883,7 +1117,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # request never gets rejected as an invalid menu answer. ─────────
         if mode_request == "json":
             preview_payload = _cpq_engine.build_payload(
-                filled, session.filled_source, session.filled_multi)
+                filled, session.filled_source, session.filled_multi, visible_attrs)
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id,
@@ -965,7 +1199,7 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     if not ready or not session.product_name:
         return
     attrs, _ = _cpq_engine.load_product_config(reader, req.workspace_id, session.product_name)
-    payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi)
+    payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi, attrs)
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)
@@ -988,7 +1222,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     # ── CPQ routing ───────────────────────────────────────────────────────────
     is_cpq = (
         req.session_data.get("mode") == "cpq"  # continuing a CPQ session
-        or _cpq_engine.is_cpq_question(req.question)
+        or _cpq_engine.is_cpq_question(req.question, reader, req.workspace_id)
     )
     if is_cpq:
         result = _run_cpq_turn(req, reader)

@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Loader2, PencilLine, Plus, UserPlus, Users2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Loader2,
+  PencilLine,
+  Plus,
+  Search,
+  UserPlus,
+  Users2,
+  X,
+} from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/cn";
 import { getAvatarInitial } from "@/lib/avatar";
@@ -59,8 +68,6 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
   const [savingProfile, setSavingProfile] = useState(false);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [addMemberOpen, setAddMemberOpen] = useState(false);
-  const [memberUserId, setMemberUserId] = useState("");
-  const [memberRole, setMemberRole] = useState("member");
   const [memberBusy, setMemberBusy] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -153,6 +160,14 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     return companyUsers.filter((user) => !memberIds.has(user.id));
   }, [companyUsers, displayMembers]);
 
+  const openAddMemberModal = () => {
+    setAddMemberOpen(true);
+  };
+
+  const closeAddMemberModal = () => {
+    setAddMemberOpen(false);
+  };
+
   const setTab = (nextTab: SettingsTab) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("tab", nextTab);
@@ -181,19 +196,17 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
     }
   };
 
-  const addMember = async () => {
-    if (!session || !memberUserId || !canManageWorkspace) return;
-    setMemberBusy("add");
+  const addMember = async (userId: string, role: string) => {
+    if (!session || !userId || !canManageWorkspace) return;
+    setMemberBusy(`add:${userId}`);
     setError(null);
     setNotice(null);
     try {
       await shayApi.addWorkspaceMember(
         workspaceId,
-        { user_id: memberUserId, role: memberRole },
+        { user_id: userId, role },
         session.access_token,
       );
-      setMemberUserId("");
-      setMemberRole("member");
       setAddMemberOpen(false);
       setNotice("Workspace member added.");
       await load();
@@ -367,14 +380,10 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
                     canManageMembers={canManageWorkspace}
                     currentUserId={session?.user_id ?? null}
                     memberBusy={memberBusy}
-                    memberRole={memberRole}
-                    memberUserId={memberUserId}
                     members={displayMembers}
                     onAddMember={addMember}
-                    onCloseModal={() => setAddMemberOpen(false)}
-                    onOpenModal={() => setAddMemberOpen(true)}
-                    onMemberRoleChange={setMemberRole}
-                    onMemberUserChange={setMemberUserId}
+                    onCloseModal={closeAddMemberModal}
+                    onOpenModal={openAddMemberModal}
                     onRemoveMember={removeMember}
                     onUpdateMemberRole={updateMemberRole}
                   />
@@ -391,7 +400,6 @@ export function WorkspaceSettingsPage({ workspaceId }: { workspaceId: string }) 
                     onDeleteWorkspace={deleteWorkspace}
                     onPurgeWorkspace={purgeWorkspaceData}
                     purging={purging}
-                    workspaceName={workspace?.name}
                   />
                 ) : null}
               </div>
@@ -420,14 +428,10 @@ function MembersTab({
   canManageMembers,
   currentUserId,
   memberBusy,
-  memberRole,
-  memberUserId,
   members,
   onAddMember,
   onCloseModal,
   onOpenModal,
-  onMemberRoleChange,
-  onMemberUserChange,
   onRemoveMember,
   onUpdateMemberRole,
 }: {
@@ -436,17 +440,41 @@ function MembersTab({
   canManageMembers: boolean;
   currentUserId?: string | null;
   memberBusy: string | null;
-  memberRole: string;
-  memberUserId: string;
   members: DisplayWorkspaceMember[];
-  onAddMember: () => void;
+  onAddMember: (userId: string, role: string) => void;
   onCloseModal: () => void;
   onOpenModal: () => void;
-  onMemberRoleChange: (value: string) => void;
-  onMemberUserChange: (value: string) => void;
   onRemoveMember: (member: ShayWorkspaceMember) => void;
   onUpdateMemberRole: (userId: string, role: string) => void;
 }) {
+  const [userSearch, setUserSearch] = useState("");
+  const [pendingRoles, setPendingRoles] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!addMemberOpen) {
+      setUserSearch("");
+      setPendingRoles({});
+    }
+  }, [addMemberOpen]);
+
+  const filteredAvailableUsers = useMemo(() => {
+    const needle = userSearch.trim().toLowerCase();
+    if (!needle) {
+      return availableUsers;
+    }
+    return availableUsers.filter((user) => {
+      const name = user.name.toLowerCase();
+      const email = user.email_id.toLowerCase();
+      return name.includes(needle) || email.includes(needle);
+    });
+  }, [availableUsers, userSearch]);
+
+  const roleForUser = (userId: string) => pendingRoles[userId] ?? "member";
+
+  const setRoleForUser = (userId: string, role: string) => {
+    setPendingRoles((current) => ({ ...current, [userId]: role }));
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -558,37 +586,93 @@ function MembersTab({
               </button>
             </div>
 
-            <div className="mt-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_180px]">
-              <select
-                value={memberUserId}
-                onChange={(event) => onMemberUserChange(event.target.value)}
-                className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-              >
-                <option value="">Select company user</option>
-                {availableUsers.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.name} ({user.email_id})
-                  </option>
-                ))}
-              </select>
-              <select
-                value={memberRole}
-                onChange={(event) => onMemberRoleChange(event.target.value)}
-                className="focus-ring rounded-2xl border border-navy-100 px-4 py-3 text-sm text-navy-900"
-              >
-                {MEMBER_ROLES.map((role) => (
-                  <option key={role.value} value={role.value}>
-                    {role.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <div className="mt-6 space-y-4">
+              <label className="relative block">
+                <Search
+                  className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-subtle"
+                  size={16}
+                />
+                <input
+                  value={userSearch}
+                  onChange={(event) => setUserSearch(event.target.value)}
+                  placeholder="Search company users by name or email..."
+                  className="focus-ring w-full rounded-2xl border border-navy-100 bg-white py-3 pl-11 pr-4 text-sm text-navy-900 placeholder:text-subtle"
+                />
+              </label>
 
-            {availableUsers.length === 0 ? (
-              <div className="mt-4 rounded-2xl border border-navy-100 bg-canvas px-4 py-3 text-sm text-subtle">
-                Everyone in the company is already part of this workspace.
+              <div className="space-y-3">
+                {availableUsers.length === 0 ? (
+                  <div className="rounded-[1.25rem] border border-navy-100 bg-canvas px-4 py-6 text-center text-sm text-subtle">
+                    Everyone in the company is already part of this workspace.
+                  </div>
+                ) : filteredAvailableUsers.length === 0 ? (
+                  <div className="rounded-[1.25rem] border border-navy-100 bg-canvas px-4 py-6 text-center text-sm text-subtle">
+                    No company users match "{userSearch.trim()}".
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium text-navy-800">Found users</p>
+                    <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+                      {filteredAvailableUsers.map((user) => {
+                        const pendingRole = roleForUser(user.id);
+                        const addingThisUser = memberBusy === `add:${user.id}`;
+                        const addDisabled = Boolean(memberBusy) && !addingThisUser;
+                        return (
+                          <div
+                            key={user.id}
+                            className="rounded-[1.25rem] border border-navy-100 bg-white px-4 py-4 shadow-sm"
+                          >
+                            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                              <div className="flex min-w-0 items-center gap-3">
+                                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(135deg,#173068,#3271d6)] text-sm font-semibold text-white">
+                                  {getAvatarInitial(user.name, user.email_id, user.id)}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-navy-900">
+                                    {user.name}
+                                  </p>
+                                  <p className="mt-1 truncate text-sm text-subtle">
+                                    {user.email_id}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3 md:shrink-0">
+                                <select
+                                  value={pendingRole}
+                                  onChange={(event) => setRoleForUser(user.id, event.target.value)}
+                                  disabled={Boolean(memberBusy)}
+                                  className="focus-ring min-w-[132px] rounded-xl border border-navy-100 bg-white px-3 py-2.5 text-sm text-navy-900"
+                                >
+                                  {MEMBER_ROLES.map((role) => (
+                                    <option key={role.value} value={role.value}>
+                                      {role.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => void onAddMember(user.id, pendingRole)}
+                                  disabled={addDisabled}
+                                  className="focus-ring inline-flex min-w-[90px] items-center justify-center gap-2 rounded-xl bg-navy-800 px-4 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700 disabled:opacity-50"
+                                >
+                                  {addingThisUser ? (
+                                    <Loader2 size={15} className="animate-spin" />
+                                  ) : (
+                                    <Plus size={15} />
+                                  )}
+                                  Add
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
-            ) : null}
+            </div>
 
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
@@ -597,15 +681,6 @@ function MembersTab({
                 className="focus-ring rounded-2xl border border-navy-100 px-4 py-2.5 text-sm font-medium text-navy-700 hover:bg-navy-50"
               >
                 Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onAddMember}
-                disabled={!memberUserId || memberBusy === "add" || availableUsers.length === 0}
-                className="focus-ring inline-flex items-center gap-2 rounded-2xl bg-navy-800 px-5 py-2.5 text-sm font-semibold text-white shadow-soft hover:bg-navy-700 disabled:opacity-50"
-              >
-                {memberBusy === "add" ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
-                Add member
               </button>
             </div>
           </div>
@@ -638,7 +713,6 @@ function DangerZoneTab({
   onDeleteWorkspace,
   onPurgeWorkspace,
   purging,
-  workspaceName,
 }: {
   bridgeReady: boolean;
   dangerError: string | null;
@@ -647,17 +721,9 @@ function DangerZoneTab({
   onDeleteWorkspace: () => void;
   onPurgeWorkspace: () => void;
   purging: boolean;
-  workspaceName?: string | null;
 }) {
   return (
     <div className="space-y-5">
-      <div>
-        <h3 className="text-xl font-semibold text-rose-900">Danger zone</h3>
-        <p className="mt-2 text-sm text-subtle">
-          Destructive workspace actions for {formatWorkspaceName(workspaceName)} live here.
-        </p>
-      </div>
-
       {dangerNotice ? <InlineNotice tone="success">{dangerNotice}</InlineNotice> : null}
       {dangerError ? <InlineNotice tone="error">{dangerError}</InlineNotice> : null}
 
