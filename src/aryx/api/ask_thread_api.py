@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from aryx.api.ask_api import AskRequest, Turn, _validate_workspace, run_ask
@@ -130,18 +131,56 @@ def ask_thread_router() -> APIRouter:
                     "Unable to save the prompt, so Aryx Ask was not called.",
                 ) from exc
 
-            history = [
-                Turn(role=entry["role"], text=entry["text"])
-                for entry in store.conversation_history(req.thread_id, req.request_id)
-            ]
-            result = run_ask(
-                AskRequest(
-                    question=question,
-                    history=history,
-                    workspace_id=req.workspace_id,
-                    session_data=req.session_data,
+            try:
+                history = [
+                    Turn(role=entry["role"], text=entry["text"])
+                    for entry in store.conversation_history(req.thread_id, req.request_id)
+                ]
+                result = run_ask(
+                    AskRequest(
+                        question=question,
+                        history=history,
+                        workspace_id=req.workspace_id,
+                        session_data=req.session_data,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ask run failed: %s", exc)
+                answer = "Aryx Ask could not complete this response. Please try again."
+                result = {
+                    "answer": answer,
+                    "terms": [],
+                    "tools_called": [],
+                    "usage": {},
+                    "grounding": None,
+                    "session_data": req.session_data,
+                    "error": str(exc),
+                }
+                persistence_error = ""
+                citations = []
+                try:
+                    saved_response = store.append_assistant_message(
+                        thread_id=req.thread_id,
+                        channel_id=saved["channel_id"],
+                        request_id=req.request_id,
+                        answer=answer,
+                        result=result,
+                    )
+                    citations = saved_response.get("citations") or []
+                except Exception as persist_exc:  # noqa: BLE001
+                    logger.warning("ask failure response persist failed: %s", persist_exc)
+                    persistence_error = str(persist_exc)
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        **result,
+                        "thread_id": req.thread_id,
+                        "request_id": req.request_id,
+                        "replayed": False,
+                        "citations": citations,
+                        "persistence_error": persistence_error or None,
+                    },
+                )
             answer = result.get("answer", "") or ""
             persistence_error = ""
             citations = []

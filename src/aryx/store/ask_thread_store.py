@@ -202,6 +202,7 @@ class AryxAskThreadStore:
             "beautify": result.get("beautify", ""),
             "beautify_button_flag": result.get("beautify_button_flag", False),
             "api_share_button_flag": result.get("api_share_button_flag", False),
+            "error": result.get("error"),
         }
         grounding = result.get("grounding") or {}
         citations = normalize_grounding_citations(grounding)
@@ -262,6 +263,7 @@ class AryxAskThreadStore:
             "beautify": metadata.get("beautify", ""),
             "beautify_button_flag": metadata.get("beautify_button_flag", False),
             "api_share_button_flag": metadata.get("api_share_button_flag", False),
+            "error": metadata.get("error"),
             "citations": row[3] or [],
         }
 

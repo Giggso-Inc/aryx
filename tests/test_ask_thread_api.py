@@ -200,6 +200,62 @@ def test_ask_thread_submit_does_not_run_ask_when_prompt_persist_fails():
     run_ask_mock.assert_not_called()
 
 
+def test_ask_thread_submit_persists_failure_response_when_run_ask_fails():
+    events: list[str] = []
+
+    class FakeStore:
+        def close(self):
+            return None
+
+        def validate_mapping(self, workspace_id, shay_workspace_id):
+            return None
+
+        def get_completed_response(self, shay_workspace_id, thread_id, request_id):
+            events.append("cached-check")
+            return None
+
+        def ensure_thread_and_user_message(self, **kwargs):
+            events.append("user-message")
+            return {
+                "thread_id": kwargs["thread_id"],
+                "channel_id": "00000000-0000-0000-0000-000000000099",
+                "user_message_id": "00000000-0000-0000-0000-000000000101",
+                "request_claimed": True,
+            }
+
+        def conversation_history(self, thread_id, before_request_id, limit_pairs=6):
+            events.append("history")
+            return []
+
+        def append_assistant_message(self, **kwargs):
+            events.append("assistant-message")
+            assert kwargs["answer"] == "Aryx Ask could not complete this response. Please try again."
+            assert kwargs["result"]["error"] == "provider timeout"
+            return {
+                "assistant_message_id": "00000000-0000-0000-0000-000000000202",
+                "citations": [],
+            }
+
+    with (
+        patch("aryx.api.ask_thread_api.AryxAskThreadStore", return_value=FakeStore()),
+        patch("aryx.api.ask_thread_api.run_ask", side_effect=RuntimeError("provider timeout")),
+        patch("aryx.api.ask_thread_api._validate_workspace", return_value=None),
+    ):
+        resp = _client().post(
+            "/ask/threads/message",
+            json={
+                "workspace_id": 7,
+                "shay_workspace_id": "00000000-0000-0000-0000-000000000009",
+                "thread_id": "00000000-0000-0000-0000-000000000010",
+                "request_id": "00000000-0000-0000-0000-000000000001",
+                "question": "What changed?",
+            },
+        )
+
+    assert resp.status_code == 502
+    assert events == ["cached-check", "user-message", "history", "assistant-message"]
+
+
 def test_ask_threads_and_messages_are_read_only():
     class FakeStore:
         def close(self):
