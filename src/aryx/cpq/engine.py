@@ -33,6 +33,7 @@ from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
     RecommendationRule,
 )
+from aryx.store.ingest_question_store import IngestQuestionStore
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
@@ -1560,7 +1561,21 @@ class CpqEngine:
         script_constraints = 0
         script_recommendations_wired = 0
         cond_script_skipped = 0
+        script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
+        # Ambiguous multi-value recommendations are never guessed (D2) — instead
+        # routed through the same HITL ingest-question queue used elsewhere for
+        # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
+        # cost 14 round-trips, and so an already-answered rule resolves normally
+        # instead of being skipped forever.
+        try:
+            ingest_store = IngestQuestionStore(get_settings().rdb_dsn)
+            existing_questions = {
+                q["job_id"]: q for q in ingest_store.list(workspace_id, status="")
+            }
+        except Exception:
+            ingest_store = None
+            existing_questions = {}
         try:
             rdb, inputs, actions, _marked, _chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
@@ -1614,18 +1629,28 @@ class CpqEngine:
                                 "BmlEvaluator at apply time",
                                 rule_name, act_fn, aid)
 
+                condition_script: str | None = None
                 if fn_id != -1:
-                    # Condition itself is a script (boolean BML) — not
-                    # derivable declaratively; logged for coverage.
-                    cond_script_skipped += 1
-                    logger.info(
-                        "cpq: rule %r has a script condition "
-                        "(condition_function_id=%d) — declarative actions for "
-                        "it are not gated", rule_name, fn_id)
-                    continue
-                if not inp_list:
-                    continue
-                cond_attr_id, cond_value = inp_list[-1]
+                    # Condition itself is a script (boolean BML), not the
+                    # single condition_attr_id/condition_value pair. As long
+                    # as the rule's ACTION is declarative (handled below),
+                    # gate it via condition_script instead of dropping it —
+                    # apply time runs the same Tier-1/Tier-2 boolean
+                    # evaluator apply_hiding_rules already uses (D2 "never
+                    # guess" still holds: unknown outcome never fires).
+                    condition_script = scripts.get(fn_id)
+                    if not condition_script:
+                        cond_script_skipped += 1
+                        logger.warning(
+                            "cpq: rule %r references condition_function_id=%d "
+                            "but no BmFunction script was found — not gated",
+                            rule_name, fn_id)
+                        continue
+                    cond_attr_id, cond_value = 0, ""
+                else:
+                    if not inp_list:
+                        continue
+                    cond_attr_id, cond_value = inp_list[-1]
 
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
@@ -1648,14 +1673,59 @@ class CpqEngine:
                         # A recommendation assigns ONE default value — several
                         # tilde-delimited candidates means picking one would be
                         # guessing (same D2 "never guess" rule that governs
-                        # auto_fill elsewhere), so this is logged and skipped
-                        # rather than arbitrarily choosing the first candidate.
+                        # auto_fill elsewhere). Never guessed in code — routed
+                        # to a human via aryx_ingest_question instead. An
+                        # already-answered rule resolves like any other
+                        # RecommendationRule; an unanswered one stays skipped
+                        # (visible in the queue, not a dead-end log line).
+                        job_id = f"cpq-rule-{eid}-{aid}"
+                        existing = existing_questions.get(job_id)
+                        if (existing and existing.get("status") == "answered"
+                                and existing.get("answer") in parts):
+                            recommend_by_target.setdefault(aid, existing["answer"])
+                            continue
                         ambiguous_recommendations_skipped += 1
                         logger.info(
                             "cpq: rule %r has a multi-value recommendation "
                             "action for target=%d (%r) — ambiguous which is "
-                            "the default, skipped", rule_name, aid, parts)
+                            "the default, %s", rule_name, aid, parts,
+                            "awaiting human answer (already queued)" if existing
+                            else "queued for human answer")
+                        if not existing and ingest_store is not None:
+                            try:
+                                ingest_store.enqueue(
+                                    workspace_id, job_id=job_id,
+                                    kind="cpq_ambiguous_recommendation",
+                                    prompt=(
+                                        f"Rule '{rule_name}' recommends one of "
+                                        f"{parts} for attribute {aid} — which "
+                                        "should be the default?"),
+                                    options=parts, suggested="")
+                                existing_questions[job_id] = {"status": "pending"}
+                            except Exception:
+                                logger.debug(
+                                    "cpq: failed to enqueue ambiguous-"
+                                    "recommendation ingest question",
+                                    exc_info=True)
 
+                if condition_script:
+                    if restrict_by_target or recommend_by_target:
+                        script_condition_gated += 1
+                        logger.info(
+                            "cpq: rule %r has a script condition "
+                            "(condition_function_id=%d) gating a declarative "
+                            "action — evaluated via BmlEvaluator at apply time",
+                            rule_name, fn_id)
+                    else:
+                        # Script condition but no declarative action to gate
+                        # (e.g. the action was itself script-backed and
+                        # already wired above, or genuinely has no action) —
+                        # nothing left for condition_script to attach to.
+                        cond_script_skipped += 1
+                        logger.info(
+                            "cpq: rule %r has a script condition "
+                            "(condition_function_id=%d) but no declarative "
+                            "action — nothing to gate", rule_name, fn_id)
                 for target_attr_id, allowed in restrict_by_target.items():
                     con_rules.append(ConstraintRule(
                         rule_name=rule_name or str(eid),
@@ -1663,7 +1733,8 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         allowed_values=allowed,
-                        conditions=list(inp_list),
+                        conditions=list(inp_list) if condition_script is None else None,
+                        condition_script=condition_script,
                     ))
                 for target_attr_id, rec_val in recommend_by_target.items():
                     rec_rules.append(RecommendationRule(
@@ -1672,18 +1743,20 @@ class CpqEngine:
                         condition_value=cond_value,
                         target_attr_id=target_attr_id,
                         recommended_value=rec_val,
-                        conditions=list(inp_list),
+                        conditions=list(inp_list) if condition_script is None else None,
+                        condition_script=condition_script,
                     ))
         except Exception:
             logger.debug("cpq: value-rule load failed", exc_info=True)
         logger.info(
             "cpq: loaded %d recommendation rules, %d constraint rules "
             "(%d script-backed constraints, %d script-backed recommendations "
-            "wired, %d script-condition rules skipped, %d ambiguous "
+            "wired, %d script-condition rules gating a declarative action, "
+            "%d script-condition rules skipped, %d ambiguous "
             "multi-value recommendations skipped)",
             len(rec_rules), len(con_rules), script_constraints,
-            script_recommendations_wired, cond_script_skipped,
-            ambiguous_recommendations_skipped)
+            script_recommendations_wired, script_condition_gated,
+            cond_script_skipped, ambiguous_recommendations_skipped)
         return rec_rules, con_rules
 
     def load_recommendation_and_constraint_rules(
@@ -1750,6 +1823,13 @@ class CpqEngine:
                 if not allowed or len(allowed) != 1:
                     continue  # unknown, or ambiguous — never guess
                 recommended_value = allowed[0]
+            elif rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is not True:
+                    continue  # False or unknown — never guess, doesn't fire
+                recommended_value = rule.recommended_value
             else:
                 if rule.conditions:
                     matched, _blocked = evaluate_declarative_conditions(
@@ -1857,6 +1937,13 @@ class CpqEngine:
                 if allowed:
                     _intersect(target.entity_id, allowed)
                 continue
+            if rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is True:
+                    _intersect(target.entity_id, rule.allowed_values)
+                continue  # False or unknown — never guess, no constraint applied
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
                     rule.conditions, filled_by_rule_id)

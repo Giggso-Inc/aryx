@@ -61,6 +61,17 @@ class RecommendationRule:
     to ConstraintRule's script form: an unknown/unresolvable script outcome
     never fills anything (D2 "never guess").
 
+    condition_script — distinct from ``script`` above. This rule's own
+    condition_function_id is a BML boolean script (not the single
+    condition_attr_id/condition_value pair) while the ACTION is declarative
+    (recommended_value is a plain value, not derived from a script). At
+    apply time the evaluator runs this through the same boolean Tier-1/
+    Tier-2 machinery apply_hiding_rules already uses via
+    BmlEvaluator.hide_for_script (True = rule fires, unknown = never guess,
+    doesn't fire). Mutually exclusive with ``script`` in practice — a rule
+    with both a script condition AND a script action is handled by
+    ``script`` alone (see CpqEngine._load_value_rules).
+
     conditions — see HidingRule.conditions; same AND-of-OR-groups semantics
     for declarative multi-input rules.
     """
@@ -71,6 +82,7 @@ class RecommendationRule:
     recommended_value: str = ""  # item_value to auto-select on the target attr
     script: str | None = None
     conditions: list[tuple[int, str]] | None = None
+    condition_script: str | None = None
 
 
 @dataclass
@@ -85,6 +97,10 @@ class ConstraintRule:
     BmFunction. At apply time the evaluator derives allowed_values from the
     current filled variables; condition fields are unused (the script embeds
     its own conditions on variable names).
+
+    condition_script — see RecommendationRule.condition_script: the rule's
+    own condition is a BML boolean script while allowed_values is a plain
+    declarative list. Evaluated via BmlEvaluator.hide_for_script the same way.
     """
     rule_name: str
     condition_attr_id: int
@@ -93,6 +109,7 @@ class ConstraintRule:
     allowed_values: list[str]  # item_values that remain valid when condition fires
     script: str | None = None  # raw BML — evaluated dynamically when set
     conditions: list[tuple[int, str]] | None = None  # see HidingRule.conditions
+    condition_script: str | None = None
 
 
 @dataclass
