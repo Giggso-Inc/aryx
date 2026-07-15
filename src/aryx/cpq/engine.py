@@ -114,9 +114,15 @@ def _variable_words(variable_name: str) -> list[str]:
 
 
 # ── CPQ intent detection ───────────────────────────────────────────────────────
+# Generic CPQ-domain vocabulary only — the English words customers use to
+# signal configuration intent ("quote", "configure", "bom", ...) are a fixed
+# set of the language, not workspace-ingested data, so listing them isn't the
+# same kind of hardcoding a product-name list is. Product-name literals
+# (formerly apx|mototrbo|sl3500|dpx|xpr here) were removed — is_cpq_question()
+# now also checks the workspace's actually-ingested product names dynamically.
 _CPQ_TRIGGER = re.compile(
     r"\b(quote|configure|configuration|build.*quote|create.*quote|"
-    r"radio|apx|mototrbo|sl3500|dpx|xpr|"
+    r"radio|"
     r"5g|lte|carrier|billing|activation|hardware.*version|"
     r"bom|payload)\b",
     re.IGNORECASE,
@@ -141,16 +147,13 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
     # Only list codes/aliases the DB display name won't spell out verbatim.
     ("country", r"\b(us|usa|u\.s\.)\b", "United States"),
     ("country", r"\b(uk|u\.k\.)\b", "United Kingdom"),
-    # Product line variants — must come BEFORE the generic APX Next pattern so
-    # "APX NEXT XE" is never downgraded to the generic "APX Next" hint.
-    # Spec rule 3: if user says "APX NEXT XE", map to XE, not Single Band.
-    ("product", r"\bapx\s*next\s+xe\b", "APX NEXT XE"),
-    ("product", r"\bapx\s*next\s+xn\b", "APX NEXT XN"),
-    ("product", r"\bapx\s*next\s*enhanced\b", "APX NEXT Enhanced"),
-    # Generic fallback — fires only when no variant keyword was present
-    ("product", r"\bapx\s*next\b", "APX Next"),
-    ("product", r"\bapx\s+n\d+\b", "APX Next"),
-    ("product", r"\bsl\s*3500\b", "SL3500e"),
+    # NOTE: no "product" concept here anymore. A hardcoded product-name/
+    # variant list (APX NEXT XE/XN/Enhanced/...) used to live in this table
+    # and fed detect_product_mention()'s fallback path — removed because it
+    # silently failed to recognise any product outside that fixed list.
+    # Product detection is now fully dynamic: CpqEngine._ingested_product_names()
+    # reads the REAL product/family names of every catalog actually ingested
+    # into the workspace, live from the graph (see detect_product_mention).
 ]
 
 # Reverse of the country entries above — a country-fragment attribute whose
@@ -351,9 +354,28 @@ class CpqEngine:
 
     # ── Intent detection ──────────────────────────────────────────────────────
 
-    def is_cpq_question(self, question: str) -> bool:
-        """True when the question is a CPQ configuration / quote request."""
-        return bool(_CPQ_TRIGGER.search(question))
+    def is_cpq_question(self, question: str, reader: Any = None, workspace_id: int = 1) -> bool:
+        """True when the question is a CPQ configuration / quote request.
+
+        Two independent signals: the generic CPQ-vocabulary regex (fixed
+        English words, not ingested data), OR a mention of any product
+        actually ingested in this workspace (dynamic — same live-graph
+        source as detect_product_mention). A question naming a product
+        with no other CPQ-domain word (e.g. just "MOTOTRBO?") still routes
+        to CPQ without needing that product's name hardcoded here.
+        """
+        if _CPQ_TRIGGER.search(question):
+            return True
+        if reader is None:
+            return False
+        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+        if not q_norm:
+            return False
+        return any(
+            re.sub(r"[^a-z0-9]", "", name.lower()) in q_norm
+            for name in self._ingested_product_names(reader, workspace_id)
+            if name
+        )
 
     def extract_hints(self, question: str) -> dict[str, str]:
         """Extract attribute value hints from natural language.
@@ -390,9 +412,10 @@ class CpqEngine:
     ) -> tuple[dict[str, str], set[str]]:
         """Extract hints by matching real menu-option text against the question.
 
-        Complements extract_hints()'s fixed 3-concept pattern list (hwversion/
-        country/product) — confirmed live, that list silently drops anything
-        outside those three concepts.
+        Complements extract_hints()'s fixed pattern list (hwversion/country
+        concepts only now — product detection moved to the dynamic
+        _ingested_product_names lookup) — confirmed live, a fixed list
+        silently drops anything outside the concepts it names.
 
         Rather than adding a hardcoded pattern per concept, this scans every
         visible, single/boolean attr's real options and checks whether that
@@ -531,7 +554,12 @@ class CpqEngine:
             all_type_names = reader.distinct_types()
         except AttributeError:
             return []
-        prefixes = sorted({_catalog_prefix(t) for t in all_type_names} - {""})
+        # "" (no source-stem prefix) is a legitimate catalog scope too — a
+        # workspace with only one ingested catalog may have unprefixed type
+        # names (_scope_to_catalog treats this the same way: len(prefixes)<=1
+        # returns that one prefix, even when it's ""). Excluding "" here
+        # would silently skip the single-catalog case entirely.
+        prefixes = sorted({_catalog_prefix(t) for t in all_type_names})
         names: list[str] = []
         for prefix in prefixes:
             family_ents: list[dict] = []

@@ -812,7 +812,11 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         }
 
     # ── STEP 7: Q&A during active config (strict — only ? or Q&A keywords) ───
-    if session.pending_variables and session.turn > 1:
+    # `and not mode_request`: an explicit JSON/batch request must win here too,
+    # same as it does over Step 5 below — otherwise a batch request starting
+    # with "what" (e.g. "what else do you need from me") is misread as a
+    # Q&A question instead of the batch-listing request it actually is.
+    if session.pending_variables and session.turn > 1 and not mode_request:
         pending_var_for_qa = session.pending_variables[0]
         pending_attr_for_qa = next(
             (a for a in attrs if a.variable_name == pending_var_for_qa), None,
@@ -1075,7 +1079,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     # ── CPQ routing ───────────────────────────────────────────────────────────
     is_cpq = (
         req.session_data.get("mode") == "cpq"  # continuing a CPQ session
-        or _cpq_engine.is_cpq_question(req.question)
+        or _cpq_engine.is_cpq_question(req.question, reader, req.workspace_id)
     )
     if is_cpq:
         result = _run_cpq_turn(req, reader)
