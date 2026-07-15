@@ -11,6 +11,7 @@ from typing import Any
 
 _CATALOG_KEY = "source_catalog"
 _XML_KEY = "xml"
+_XLSX_KEY = "xlsx"
 _GENERIC_KEY = "generic"
 
 
@@ -239,6 +240,82 @@ def upsert_xml_catalog_entry(
         workspace_id,
         source_filename,
         "xml",
+        config,
+        "",
+    )
+
+
+def xlsx_catalog_config(
+    source_filename: str,
+    xlsx_bytes: bytes,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Same shape as xml_catalog_config — one workbook, N generated per-sheet
+    CSV assets. This is what "maintains the association with the parent
+    workbook" for a multi-sheet Excel upload: the original .xlsx bytes plus
+    every sheet-derived dataset are held on one datasource_store row, so a
+    later query can recover every dataset that came from one upload."""
+    return {
+        _CATALOG_KEY: {
+            _XLSX_KEY: {
+                "source_filename": source_filename,
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "content_b64": base64.b64encode(xlsx_bytes).decode("ascii"),
+                "generated_assets": assets,
+                "deleted": False,
+            },
+        },
+    }
+
+
+def xlsx_asset_record(
+    *,
+    filename: str,
+    dataset: str,
+    ontology_type: str,
+    content_bytes: bytes,
+) -> dict[str, Any]:
+    return {
+        "asset_key": filename,
+        "filename": filename,
+        "dataset": dataset,
+        "ontology_type": ontology_type,
+        "content_type": "text/csv",
+        "content_b64": base64.b64encode(content_bytes).decode("ascii"),
+        "deleted": False,
+    }
+
+
+def upsert_xlsx_catalog_entry(
+    store: Any,
+    *,
+    workspace_id: int,
+    source_filename: str,
+    xlsx_bytes: bytes,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows = store.list(workspace_id)
+    existing = next(
+        (
+            row for row in rows
+            if row.get("name") == source_filename
+            and (row.get("config") or {}).get(_CATALOG_KEY, {}).get(_XLSX_KEY) is not None
+        ),
+        None,
+    )
+    config = xlsx_catalog_config(source_filename, xlsx_bytes, assets)
+    if existing:
+        return store.update(
+            int(existing["id"]),
+            name=source_filename,
+            kind="xlsx",
+            config=config,
+            secret=None,
+        )
+    return store.add(
+        workspace_id,
+        source_filename,
+        "xlsx",
         config,
         "",
     )

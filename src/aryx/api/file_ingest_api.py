@@ -25,14 +25,16 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
-from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xml_to_csvs
+from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
 from aryx.source_catalog import (
     restore_generic_source_entry,
+    upsert_xlsx_catalog_entry,
     upsert_xml_catalog_entry,
+    xlsx_asset_record,
     xml_asset_record,
 )
 
@@ -64,7 +66,7 @@ def shutdown_executor() -> None:
             _executor = None
 
 
-_DATA_EXTS = {".json", ".csv", ".xml"}
+_DATA_EXTS = {".json", ".csv", ".xml", ".xlsx"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
              ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
@@ -224,6 +226,71 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     workspace_id=workspace_id,
                     source_filename=name,
                     xml_bytes=data,
+                    assets=asset_rows,
+                )
+                continue
+            elif suffix == ".xlsx":
+                # Expand the workbook into one connector per visible, non-empty
+                # worksheet. Each CSV gets its own ontology_type derived from
+                # the sheet's own title (not the workbook filename) so cross-
+                # sheet pairs are generated for relate/fk_link exactly like the
+                # XML multi-type path above.
+                orig_stem = Path(name).stem
+                xlsx_csvs = _xlsx_to_csvs(data, orig_stem)
+                if not xlsx_csvs:
+                    logger.info("xlsx upload %r produced no ingestible sheets "
+                               "(all hidden/empty)", name)
+                    continue
+                xlsx_plans = []
+                for csv_data, csv_name in xlsx_csvs:
+                    csv_stem = Path(csv_name).stem
+                    # csv_name == "{orig_stem}__{sheet_slug}.csv" — strip the
+                    # workbook prefix to recover the sheet-derived slug alone,
+                    # so the ontology type reflects the sheet, not the file.
+                    prefix = orig_stem + "__"
+                    sheet_slug = csv_stem[len(prefix):] if csv_stem.startswith(prefix) else csv_stem
+                    derived_type = _stem_type(sheet_slug) or ontology_type
+                    xlsx_plans.append((csv_data, csv_name, derived_type))
+                # Auto-detect FK links now that all sheet types are known.
+                fk_plan_dicts = [
+                    {"data": d, "filename": n, "ontology_type": t, "match_keys": match_keys or ["name"]}
+                    for d, n, t in xlsx_plans
+                ]
+                auto_fk = _detect_fk_links(fk_plan_dicts)
+                if auto_fk:
+                    logger.info("XLSX auto-detected %d fk-link spec(s): %s", len(auto_fk), auto_fk)
+                for idx, (csv_data, csv_name, derived_type) in enumerate(xlsx_plans):
+                    is_last = (idx == len(xlsx_plans) - 1)
+                    jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
+                    # relate/skip_graph mirror ingest_confirmed() semantics —
+                    # see the identical comment on the XML path above.
+                    run_pipeline(
+                        connector=CsvConnector(csv_data, system="csv",
+                                               dataset=Path(csv_name).stem),
+                        dsn=settings.rdb_dsn,
+                        system="csv", dataset=Path(csv_name).stem,
+                        ontology_type=derived_type, match_keys=match_keys,
+                        graph_url=settings.graph_url, broker=broker,
+                        on_progress=on_prog,
+                        fk_links=auto_fk if is_last else [],
+                        workspace_id=workspace_id,
+                        relate=is_last,
+                        skip_graph=not is_last,
+                    )
+                asset_rows = [
+                    xlsx_asset_record(
+                        filename=csv_name,
+                        dataset=Path(csv_name).stem,
+                        ontology_type=derived_type,
+                        content_bytes=csv_data,
+                    )
+                    for csv_data, csv_name, derived_type in xlsx_plans
+                ]
+                upsert_xlsx_catalog_entry(
+                    datasource_store,
+                    workspace_id=workspace_id,
+                    source_filename=name,
+                    xlsx_bytes=data,
                     assets=asset_rows,
                 )
                 continue
