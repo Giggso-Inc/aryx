@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
             ".html", ".htm",
             ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-DATA_EXTS = {".json", ".csv", ".xml"}
+DATA_EXTS = {".json", ".csv", ".xml", ".xlsx"}
 
 
 _GENERIC = {"table", "row", "record", "data", "file", "entity", "item", "object",
@@ -431,6 +431,86 @@ def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tupl
     return results
 
 
+# Non-alphanumeric run -> single underscore, for turning an arbitrary sheet
+# title into a filesystem/dataset-key-safe slug ("Order Items!" -> "Order_Items").
+_SHEET_SLUG_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _sheet_slug(title: str) -> str:
+    slug = _SHEET_SLUG_RE.sub("_", title or "").strip("_")
+    return slug or "Sheet"
+
+
+def _xlsx_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tuple[bytes, str]]:
+    """Parse an Excel workbook -> one CSV per worksheet, each an independent dataset.
+
+    Mirrors _xml_to_csvs' shape (one source file -> N tabular CSV byte-strings
+    + names), so the caller wires xlsx sheets into the exact same per-file
+    run_pipeline() loop, FK-detection, and traceability machinery already
+    used for multi-entity XML uploads — no parallel ingestion path needed.
+
+    Naming: "{workbook_stem}__{sheet_slug}.csv" — the shared stem prefix is
+    what "maintains the association with the parent workbook" (a query for
+    datasets starting with "{stem}__" recovers every sheet from one upload),
+    while the sheet_slug suffix keeps each sheet's dataset key unique.
+
+    Skips (never silently ingested as garbage datasets):
+    - hidden/very-hidden sheets (ws.sheet_state != "visible")
+    - sheets with no header row at all (completely empty)
+    - sheets with a header but zero data rows (header-only / template tabs,
+      e.g. a blank "Template" tab shipped alongside real data tabs)
+    """
+    from openpyxl import load_workbook
+
+    prefix = f"[{log_id}] " if log_id else ""
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        results: list[tuple[bytes, str]] = []
+        for ws in wb.worksheets:
+            if ws.sheet_state != "visible":
+                logger.info("%sxlsx_to_csvs stem=%s: skipping hidden sheet %r",
+                           prefix, stem, ws.title)
+                continue
+            rows_iter = ws.iter_rows(values_only=True)
+            try:
+                header_row = next(rows_iter)
+            except StopIteration:
+                logger.info("%sxlsx_to_csvs stem=%s: skipping empty sheet %r",
+                           prefix, stem, ws.title)
+                continue
+            header = [str(h).strip() if h is not None else "" for h in header_row]
+            if not any(header):
+                logger.info("%sxlsx_to_csvs stem=%s: skipping sheet %r with no header",
+                           prefix, stem, ws.title)
+                continue
+
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(header)
+            row_count = 0
+            for row in rows_iter:
+                if row is None or all(v is None for v in row):
+                    continue
+                writer.writerow("" if v is None else v for v in row)
+                row_count += 1
+            if row_count == 0:
+                logger.info(
+                    "%sxlsx_to_csvs stem=%s: skipping header-only sheet %r (0 data rows)",
+                    prefix, stem, ws.title,
+                )
+                continue
+
+            csv_name = f"{stem}__{_sheet_slug(ws.title)}.csv"
+            results.append((buf.getvalue().encode("utf-8"), csv_name))
+        logger.info(
+            "xlsx_to_csvs log_id=%s stem=%s sheets_total=%d sheets_ingested=%d",
+            log_id, stem, len(wb.worksheets), len(results),
+        )
+        return results
+    finally:
+        wb.close()
+
+
 def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
     """Merge multi-part name columns into a single ``name`` field.
 
@@ -509,13 +589,17 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             context=context)
         mentions = list(connector.extract())
 
-    # XML files: expand into one CSV per top-N element type so that
-    # _detect_fk_links can wire cross-type relationships automatically.
+    # XML/XLSX files: expand into one CSV per element type / worksheet so
+    # that _detect_fk_links can wire cross-type relationships automatically.
     # CSV files: apply name-field consolidation for multi-part name columns.
     converted_tabular = []
     for d, n in tabular:
-        if Path(n).suffix.lower() == ".xml":
+        suffix = Path(n).suffix.lower()
+        if suffix == ".xml":
             for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
+                converted_tabular.append((csv_bytes, csv_name, n, d))
+        elif suffix == ".xlsx":
+            for csv_bytes, csv_name in _xlsx_to_csvs(d, Path(n).stem, log_id=did):
                 converted_tabular.append((csv_bytes, csv_name, n, d))
         else:
             converted_tabular.append((_consolidate_csv_names(d, did=did), n, None, None))
