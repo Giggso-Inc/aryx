@@ -122,16 +122,69 @@ def _extract_terms(question: str, types: list[str], history: list[Turn],
     return (terms or [question.strip()]), it, ot, ms
 
 
+_MAX_ANSWER_LINES = 5
+_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+
+def _line_count(text: str) -> int:
+    """Logical line count — the greater of physical newlines and sentence count.
+
+    A model asked for "N lines" can still return one dense multi-sentence
+    paragraph with no line breaks at all; counting sentences too catches that.
+    """
+    physical = len([ln for ln in text.splitlines() if ln.strip()])
+    sentences = len([s for s in _SENTENCE_SPLIT.split(text.strip()) if s.strip()])
+    return max(physical, sentences)
+
+
+def _rewrite_plain(text: str, context_hint: str, workspace_id: int) -> tuple[str, int, int]:
+    """Force a short, plain-English rewrite. Returns the original untouched on any failure.
+
+    Shared by `_enforce_plain_answer` (Q&A) and `_cpq_summary_text` (config
+    summaries) — the flow must never block on the rewrite.
+    """
+    sys = "You rewrite text in plain, everyday English for a non-technical reader."
+    user = (
+        f"Rewrite the TEXT below to at most {_MAX_ANSWER_LINES} short lines, one "
+        "idea per line, in plain jargon-free English — direct point first. Keep "
+        "every fact and proper noun (product names, codes) exactly as given; "
+        "don't invent or drop any.\n\n"
+        f"{context_hint}\n\nTEXT:\n{text}"
+    )
+    try:
+        rewritten, it, ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        rewritten = _strip_think(rewritten).strip()
+        if rewritten:
+            return rewritten, it, ot
+    except Exception:  # noqa: BLE001
+        logger.debug("plain-language rewrite failed — using original", exc_info=True)
+    return text, 0, 0
+
+
+def _enforce_plain_answer(
+    text: str, question: str, workspace_id: int,
+) -> tuple[str, int, int, int]:
+    """Second pass: force a short, plain-English rewrite if the model overran."""
+    if _line_count(text) <= _MAX_ANSWER_LINES:
+        return text, 0, 0, 0
+    start = time.monotonic()
+    rewritten, it, ot = _rewrite_plain(text, f"QUESTION: {question}", workspace_id)
+    ms = int((time.monotonic() - start) * 1000) if (it or ot) else 0
+    return rewritten, it, ot, ms
+
+
 def _synthesise(question: str, context: str, overview: str = "",
                 history: list[Turn] | None = None,
                 workspace_id: int = 1) -> tuple[str, int, int, int]:
     sys = (
-        "You are Aryx, a precise knowledge-graph assistant specialised in product "
-        "configuration, requirements management, and enterprise data. "
+        "You are Aryx, a knowledge-graph assistant. You explain product "
+        "configuration, requirements, and enterprise data in plain, everyday "
+        "English — the way you'd explain it to a colleague who isn't technical. "
         "Always answer from the GRAPH FACTS provided. "
-        "Cite entity names, attribute values, and relationship chains explicitly. "
-        "Synthesise across all entities shown when multiple are present. "
-        "Be direct and specific — never hedge when facts are in front of you."
+        "Name the specific things you're talking about (products, values, "
+        "relationships) but describe them in plain words, never technical or "
+        "internal terminology. Be direct and specific — never hedge when facts "
+        "are in front of you."
     )
     has_context = bool(context.strip())
     facts = context if has_context else "(none — no specific entity matched)"
@@ -140,20 +193,26 @@ def _synthesise(question: str, context: str, overview: str = "",
     user = (
         "Answer the QUESTION using the evidence below.\n\n"
         "Rules:\n"
-        "- GRAPH FACTS present → answer specifically, citing entity names, "
-        "attribute values, and relationship chains shown.\n"
+        "- GRAPH FACTS present → answer specifically, naming the entities, "
+        "values, and relationships shown, in plain language.\n"
         "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
         "and suggest a concrete follow-up question. "
         "Do NOT say 'no matching entities' or 'not stored'.\n"
         "- Do NOT invent facts not shown in GRAPH FACTS.\n"
         "- Use CONVERSATION SO FAR to resolve pronouns and give continuity.\n"
-        "- Format: bullet list for multiple items; direct prose for single answers.\n\n"
+        f"- Format: maximum {_MAX_ANSWER_LINES} lines. Lead with a direct "
+        "one-line answer, then supporting detail in the order a person would "
+        "naturally explain it. Use a short list only when multiple distinct "
+        "items are being enumerated. Plain, everyday English — no technical "
+        "or internal terms.\n\n"
         f"{overview}{conv_block}\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
     )
     start = time.monotonic()
     text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
     ms = int((time.monotonic() - start) * 1000)
-    return _strip_think(text), it, ot, ms
+    text = _strip_think(text)
+    text, r_it, r_ot, r_ms = _enforce_plain_answer(text, question, workspace_id)
+    return text, it + r_it, ot + r_ot, ms + r_ms
 
 
 def _enrich_with_attributes(
@@ -218,22 +277,29 @@ def _cpq_summary_text(
     if not pairs:
         return ""
     sys = (
-        "You summarise product configurations for sales reps in natural, "
-        "plain-English prose."
+        "You summarise product configurations for sales reps in plain, "
+        "everyday English — never technical or internal terminology."
     )
     user = (
-        f"Write ONE flowing paragraph (3-6 sentences, plain text) describing "
-        f"this {product_name or 'product'} configuration. Group related "
-        "choices naturally, the way a person would describe the build. "
-        "No lists, no markdown, no headings, and do not restate 'label: value' "
-        "pairs verbatim — write real sentences. Use ONLY the facts below; "
-        "never invent values that are not listed.\n\nCONFIGURATION:\n"
+        f"Describe this {product_name or 'product'} configuration in at most "
+        f"{_MAX_ANSWER_LINES} short lines, one idea per line. Lead with a direct "
+        "one-line summary (e.g. 'Your configuration is complete.'), then the "
+        "most important choices in plain language — group related choices "
+        "naturally, the way a person would describe the build, not as "
+        "'label: value' pairs. Use ONLY the facts below; never invent values "
+        "that are not listed.\n\nCONFIGURATION:\n"
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
     )
     try:
         text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
         if text:
+            if _line_count(text) > _MAX_ANSWER_LINES:
+                text, _rit, _rot = _rewrite_plain(
+                    text,
+                    f"This is a completed {product_name or 'product'} configuration summary.",
+                    workspace_id,
+                )
             return text
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
