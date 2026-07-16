@@ -641,3 +641,56 @@ Checked a third, independent file (`SL3500e_config.xml`, 17MB, MOTOTRBO/SL3500e 
 Naming varies again ("Region NA" / "MotoTrbo model series" instead of device-class names) — confirming the RULE NAME itself is never a safe signal, only `rule_type=6` + the layout_attr_assoc dominance pattern is. The country-anchor section here is small (2 attrs: country + its warning help text) — a plausible, real difference in how this catalog's designer split sections, not a break in the rule.
 
 **Net**: every mechanism in this plan (§1 flow rule, §2 fallback design, §4 section grouping, §5 country-anchor identification) is now confirmed on THREE independent catalogs, not two. No changes needed to the plan itself — this round was verification, not new discovery.
+
+## 8. Full 32-attr section order, `layout_id=22194397000` / `parent_id=22194397030`
+
+§6 only walked orders 1-8 (matching the screenshot's visible top half). Queried
+`bm_layout_model` children of this `parent_id` directly (not `bm_config_layout_attr_prop`
+— that tag holds display properties like `PERCENTAGE_WIDTH`, not order; order comes
+from the `bm_layout_model` node itself, resolved to a real attribute via
+`bm_config_layout_attr_assoc.layout_model_id` -> `attr_id` -> `bm_config_attr.id`):
+
+| Order | variable_name |
+|---|---|
+| 2 | `hWVersion_astro` |
+| 3 | `productSelectionProduct_all` |
+| 4 | `productSelectionHelptext_astro` |
+| 5 | `modelSelectionFrequencyBands_astro` |
+| 6 | `modelSelectionFrequencyBandPlus_astro` |
+| 7 | `softwareBundlesBundleType_astro` |
+| 8 | `packageTypeBundles_astro` |
+| 9 | `baselineReleaseSW_astro` |
+| 10 | `baselineReleaseSWHelpText_astro` |
+| 11 | `isProvisioningRequiredInCloudEnv_astro` |
+| 12 | `isProvisioningRequiredInCloudEnvHelpText_astro` |
+| 13 | `salesApprover_astro` |
+| 14 | `isFedRampRequired_astro` |
+| 15 | `fedRampHelpText_astro` |
+| 16 | `solutionTypeDevices_astro` |
+| 17 | `solutionTypeDuration_astro` |
+| 18 | `applicationServicesSelection_astro` |
+| 19 | `sIMCardSelection_astro` |
+| 20 | `enableDualActiveSim_astro` |
+| 21 | `carrierSelectionMultiSelect_astro` |
+| 22 | `selectSecondarySIMCard_astro` |
+| 23 | `wirelessCarrier_astro` |
+| 24 | `batteryType_astro` |
+| 25 | `batteryIncludeaSpare_astro` |
+| 26 | `batteryQuantityforSpares_astro` |
+| 27 | `isThisASPARERadioBatt_astro` |
+| 28 | `rSMType_astro` |
+| 29 | `qtyOfXVN500RemoteSpeakerMic_astro` |
+| 30 | `qtyOfVX650RemoteSpeakerMic_astro` |
+| 31 | `applicationServicesIntroBundle_astro` |
+| 32 | `additionalApplicationServices_astro` |
+
+Confirms Software Release, cloud-provisioning, and Solution Type (asked about
+in a follow-up round) ARE genuine section members (orders 9, 11, 16) — not
+just hiding-rule-governed visible attrs floating outside the section. Every
+field a sales rep can ever see on this device's Model Configuration page
+(screenshot included) traces to this one 32-node list; the earlier 13-attr
+hypothetical payload's non-anchor attrs (`operationModeType_astro`,
+`multikeyType_astro`, `beltClipType_astro`, `serviceTypeAdditionalDMSCoverage_astro`,
+`serviceActivationDelay_astro`) are notably ABSENT from this list — confirming
+they are real, rule-governed attrs but NOT members of this visible section,
+consistent with the earlier verdict.

@@ -3499,7 +3499,18 @@ class CpqEngine:
                 ]}
             else:
                 out[k] = {"value": list(vals)}
-        return {"configAttributes": out}
+        # Present in the same order the XML/graph itself defines
+        # (bm_config_attr.order_number, loaded into ConfigAttr.order) rather
+        # than insertion order from auto_fill's hint/default/rule/fallback
+        # passes — the two are unrelated, and callers cross-checking the
+        # payload against the raw catalog expect the catalog's own order.
+        # Keys with no matching ConfigAttr (e.g. hidddenRecordSeparator_allFamilly)
+        # keep their original relative position, sorted after every real attr.
+        ordered = sorted(
+            out.items(),
+            key=lambda kv: (attr_by_vn[kv[0]].order if kv[0] in attr_by_vn else 10**9),
+        )
+        return {"configAttributes": dict(ordered)}
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
