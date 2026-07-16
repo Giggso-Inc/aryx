@@ -73,9 +73,36 @@ function CpqActions({ turn, workspaceId, conversationId }: {
         </pre>
       )}
       {panel === "beautify" && (
-        <pre className="mt-2 max-w-prose overflow-x-auto rounded-xl border border-navy-100 bg-navy-50 p-3 text-[12px]">
-          {turn.beautify}
-        </pre>
+        <div className="mt-2 max-w-prose overflow-x-auto rounded-xl border border-navy-100 bg-white p-3">
+          {turn.beautifyRows && turn.beautifyRows.length > 0 ? (
+            <table className="min-w-full border-collapse text-[13px]">
+              <thead>
+                <tr>
+                  <th className="border border-navy-100 bg-navy-50 px-3 py-1.5 text-left font-semibold text-navy-800">
+                    Attribute
+                  </th>
+                  <th className="border border-navy-100 bg-navy-50 px-3 py-1.5 text-left font-semibold text-navy-800">
+                    Value
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {turn.beautifyRows.map((row, i) => (
+                  <tr key={`${row.label}-${i}`}>
+                    <td className="border border-navy-100 px-3 py-1.5 font-medium text-navy-800">
+                      {row.label}
+                    </td>
+                    <td className="border border-navy-100 px-3 py-1.5 text-navy-700">
+                      {row.value}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <pre className="text-[12px] text-navy-700">{turn.beautify}</pre>
+          )}
+        </div>
       )}
       {canShare && (
         <ShareConfigDialog
