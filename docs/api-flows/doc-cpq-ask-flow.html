@@ -1,0 +1,168 @@
+<title>POST /ask — CPQ Guided-Configuration Flow</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #1c2330; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950;
+    --yellow: #d29922; --red: #f85149; --purple: #bc8cff; --orange: #ffa657;
+    --teal: #39d353; --pill-bg: #21262d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.55;
+    padding: 32px 24px;
+  }
+  h1 { font-size: 20px; color: var(--accent); margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 12px; margin-bottom: 28px; }
+  h2 { font-size: 14px; color: var(--teal); margin: 32px 0 12px; }
+  .flow { display: flex; flex-direction: column; gap: 0; align-items: center; width: 100%; max-width: 900px; margin: 0 auto; }
+  .conn { display: flex; flex-direction: column; align-items: center; margin: 0; }
+  .conn-line { width: 2px; background: var(--border); height: 22px; }
+  .conn-arrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid var(--border); }
+  .step-card { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; }
+  .step-card.anchor  { border-color: var(--accent); }
+  .step-card.rules   { border-color: var(--green); }
+  .step-card.ask     { border-color: var(--orange); }
+  .step-card.cascade { border-color: var(--purple); }
+  .step-card.qa      { border-color: var(--teal); }
+  .step-card.final   { border-color: var(--yellow); }
+  .step-card.guard   { border-color: var(--red); }
+  .step-num { display: inline-block; background: var(--pill-bg); color: var(--muted); font-size: 10px; padding: 2px 8px; border-radius: 12px; margin-bottom: 6px; }
+  .anchor  .step-num { color: var(--accent); }
+  .rules   .step-num { color: var(--green); }
+  .ask     .step-num { color: var(--orange); }
+  .cascade .step-num { color: var(--purple); }
+  .qa      .step-num { color: var(--teal); }
+  .final   .step-num { color: var(--yellow); }
+  .guard   .step-num { color: var(--red); }
+  .step-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .anchor  .step-title { color: var(--accent); }
+  .rules   .step-title { color: var(--green); }
+  .ask     .step-title { color: var(--orange); }
+  .cascade .step-title { color: var(--purple); }
+  .qa      .step-title { color: var(--teal); }
+  .final   .step-title { color: var(--yellow); }
+  .guard   .step-title { color: var(--red); }
+  .step-body { color: var(--text); font-size: 12px; }
+  .step-body ul { margin: 6px 0 0 18px; }
+  .step-body li { margin-bottom: 4px; }
+  .plain { color: var(--muted); font-style: italic; font-size: 11px; margin-top: 8px; }
+  .branch-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; width: 100%; }
+  .io-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .io-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; display: flex; align-items: center; gap: 4px; }
+  .io-in  { background: #1c2330; border: 1px solid #30363d; color: var(--muted); }
+  .io-out { background: #1a2f1a; border: 1px solid var(--green); color: var(--green); }
+  .io-stop { background: #2f1a1a; border: 1px solid var(--red); color: var(--red); }
+</style>
+
+<h1>POST /ask — CPQ Guided-Configuration Flow</h1>
+<div class="subtitle">src/aryx/api/ask_api.py :: _run_cpq_turn() — one turn of a multi-turn quote-building conversation. See doc-cpq-ask-flow.md for the fully detailed, step-by-step reference.</div>
+
+<div class="flow">
+
+  <div class="step-card anchor">
+    <div class="step-num">STEP 0</div>
+    <div class="step-title">Restore session + product-switch confirmation</div>
+    <div class="step-body">Rehydrate CpqSession from session_data, or start fresh. If the previous turn asked "switch products and discard progress?" — this turn's text is that yes/no answer, handled before anything else.</div>
+    <div class="plain">Plain English: the whole conversation's memory travels in session_data — there's no server-side session store.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card anchor">
+    <div class="step-num">STEP 1</div>
+    <div class="step-title">Sequential anchor gate — product, then country</div>
+    <div class="step-body">
+      <ul>
+        <li>Product unknown → detect from real ingested catalog names, or ask and STOP</li>
+        <li>Product known, different one mentioned → ask to confirm switch, STOP</li>
+        <li>Country unknown → ask, STOP</li>
+      </ul>
+    </div>
+    <div class="io-row"><span class="io-badge io-stop">early return until both known</span></div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card anchor">
+    <div class="step-num">STEP 2</div>
+    <div class="step-title">Load the product's configuration attributes</div>
+    <div class="step-body">load_product_config() → every field, its menu options, defaults, hidden/required flags. Loads this catalog's hiding / recommendation / constraint rules and the BML script evaluator.</div>
+    <div class="io-row"><span class="io-badge io-out">visible_attrs, hiding_rules, rec_rules, con_rules, bml_eval</span></div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card guard">
+    <div class="step-num">ROUTER</div>
+    <div class="step-title">status == "awaiting_approval" ?</div>
+    <div class="step-body">If the quote already finished a full pass with nothing left pending, every turn from here routes through the review-stage checks (JSON preview → approval → Q&A → change/cascade → re-show summary) instead of the configuring loop below.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card rules">
+    <div class="step-num">STEP 5</div>
+    <div class="step-title">Lock in the answer to last turn's question</div>
+    <div class="step-body">Match this turn's text (or the earlier hint) against the pending field's real options. No match + real options exist → re-show the question, STOP. Decision-required siblings (country/region-shaped) inherit the same value.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card rules">
+    <div class="step-num">STEP 3</div>
+    <div class="step-title">Rule-evaluation loop — hide → fill → recommend → constrain</div>
+    <div class="step-body">Repeats up to 8 passes until nothing changes:
+      <ul>
+        <li><b>Hide</b> — apply hiding rules, drop stale answers for newly-hidden fields</li>
+        <li><b>Auto-fill</b> — hint → default → single-remaining-option; never guesses a real 2+-option decision</li>
+        <li><b>Recommend</b> — rule-driven "if A=X then B=Y" fills</li>
+        <li><b>Constrain</b> — narrow which options remain valid</li>
+      </ul>
+    </div>
+    <div class="io-row"><span class="io-badge io-out">filled, display_filled, constrained_opts, pending</span></div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="branch-row">
+    <div class="step-card final">
+      <div class="step-num">pending EMPTY</div>
+      <div class="step-title">STEP 6 — Completion</div>
+      <div class="step-body">status → awaiting_approval. Plain-English summary only — never raw JSON here.</div>
+    </div>
+    <div class="step-card guard">
+      <div class="step-num">turn ≥ MAX_TURNS</div>
+      <div class="step-title">Turn-cap safety valve</div>
+      <div class="step-body">Never fabricates a finished BOM. Explicitly says incomplete, keeps asking.</div>
+    </div>
+    <div class="step-card ask">
+      <div class="step-num">normal case</div>
+      <div class="step-title">STEP 4 — Ask one field</div>
+      <div class="step-body">"json"/"batch" request → preview / full list. Otherwise: context sentence + next pending field's real options.</div>
+    </div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card final">
+    <div class="step-num">RETURN</div>
+    <div class="step-title">Every branch converges here</div>
+    <div class="step-body">{ answer, session_data (echoed back by client next turn), cpq_payload (only on final approval), preview }</div>
+  </div>
+
+</div>
+
+<h2>Side branches (triggered from the review-stage router or mid-configuration)</h2>
+<div class="flow">
+  <div class="branch-row">
+    <div class="step-card cascade">
+      <div class="step-num">STEP 6b</div>
+      <div class="step-title">Cascade (change request)</div>
+      <div class="step-body">Erase changed field + everything depending on it → lock in new value → re-run Step 3's rule loop → log every value that actually changed.</div>
+    </div>
+    <div class="step-card qa">
+      <div class="step-num">STEP 7</div>
+      <div class="step-title">Contextual Q&A</div>
+      <div class="step-body">Answers a genuine question from the graph without touching configuration state, then resumes exactly where the conversation left off.</div>
+    </div>
+    <div class="step-card final">
+      <div class="step-num">STEP 8</div>
+      <div class="step-title">Approval → BOM payload</div>
+      <div class="step-body">Only on an explicit "confirm" — builds and returns the real order payload. Preview mode never sets cpq_payload.</div>
+    </div>
+  </div>
+</div>

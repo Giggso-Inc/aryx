@@ -607,6 +607,25 @@ cost per rule. This makes "deterministic, ~75%+ coverage, zero runtime LLM"
 a materially smaller, well-bounded engineering effort than it looked before
 this read.
 
+## 16c. New idiom found while investigating native-UI visibility (cross-linked)
+
+`docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md` §6 found a fifth real hiding-rule
+idiom while explaining why specific screenshot fields show/hide: a script
+that `SPLIT()`s a per-selected-base-model "enabled attributes" string
+(`hiddenUISequenceForModelSelection_astro` /
+`hiddenMasterStringForAstroPortable_astro`, delimited by
+`hidddenRecordSeparator_allFamilly`) and checks `findinarray()` for
+whether the target attribute's name appears in it. Confirmed live-relevant,
+not hypothetical — it's the actual mechanism gating
+`modelSelectionFrequencyBands_astro`/`modelSelectionFrequencyBandPlus_astro`/
+`productSelectionHelptext_astro`/`softwareBundlesBundleType_astro` in the
+real screenshot. Doesn't fit Tier 1's if/else grammar (the condition checks
+a LOCAL script variable — `findinarray()`'s result — not a direct attribute
+comparison), so it falls to "unknown → stay visible" today even with items
+1-9 implemented. Add as a candidate Tier 1.5 idiom alongside §16a/§16b's
+util-passthrough and constant-return idioms — same "one small deterministic
+parser per repeated pattern" approach, not general BML interpretation.
+
 ## 16. Rule-capture coverage ledger — does the deterministic flow actually use everything it extracts?
 
 Verified against the full 688-rule extraction (not a sample): every rule
@@ -651,3 +670,12 @@ spots (14a, 14b) are narrow, already self-documented in the code's own
 comments, and fixable without touching the rule_tool unification work
 (items 1-10) at all — fully independent tracks, same as the payload bug and
 UI work. 14c is additive, no risk to existing behavior.
+
+## 17. Native UI layout visibility — moved to its own plan
+
+Split out into a dedicated document: **[docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md](CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md)**
+— covers the `rule_type=6` "Configuration Flow" mechanism, why the native
+UI shows only a subset of attributes, and the 3-tier fallback for catalogs
+without it. Kept separate from this plan since it's a different question
+(which attrs are DISPLAYED) from what this plan covers (rule
+extraction/evaluation and payload correctness).

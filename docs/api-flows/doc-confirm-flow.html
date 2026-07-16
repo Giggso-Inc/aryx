@@ -245,16 +245,20 @@
 
   <!-- ═══ LOOP CONTEXT ═══ -->
   <div class="loop-panel">
-    <div class="loop-label">Outer loop — ingest_confirmed() iterates over approved types then files</div>
+    <div class="loop-label">Outer loop — ingest_confirmed() runs ALL approved_types first (one at a time), THEN all approved_files</div>
     <div class="loop-row">
       <div class="loop-col">
         <h4>Document entity types path</h4>
-        <p>For each <code>approved_type</code>: filters the mention list by type, wraps in <code>RecordsConnector</code>, runs full pipeline. <code>match_keys=["name"]</code>.</p>
+        <p>For each <code>approved_type</code>, one after another: filters the mention list by type, wraps in <code>RecordsConnector(recs, label=otype)</code>, runs the full pipeline with <code>match_keys=["name"]</code>, <code>relate=True</code>. <code>skip_graph</code> is never passed → defaults <code>False</code>, so <strong>every type gets its own immediate graph rebuild</strong>.</p>
       </div>
       <div class="loop-col">
         <h4>Tabular files path</h4>
-        <p>Detects FK links across all approved files once. For each file: <code>CsvConnector</code> or <code>JsonConnector</code>. Last file gets <code>fk_links</code> — by then all prior entities exist.</p>
+        <p>Detects FK links twice — once across this batch's files (<code>_detect_fk_links</code>), once against types already in the workspace from earlier confirms (<code>_detect_fk_links_workspace</code>). Non-last files run in <strong>parallel</strong> (<code>ARYX_INGEST_WORKERS</code>, default 3) with <code>skip_graph=True, relate=False</code>. The last file runs <strong>serially afterward</strong> with <code>fk_links=auto_fk</code>, <code>skip_graph=False</code>, and <code>relate</code> only if <code>ARYX_INGEST_RELATE=true</code> (default <strong>off</strong>).</p>
       </div>
+    </div>
+    <div class="inset teal" style="margin-top:10px">
+      <div class="head">Multi-sheet Excel &amp; multi-entity XML — split into derived files BEFORE /confirm</div>
+      <code>/read</code> already expanded any uploaded <code>.xlsx</code> workbook into one CSV per visible worksheet (<code>_xlsx_to_csvs()</code>, named <code>"{workbook_stem}__{sheet_slug}.csv"</code>) and any multi-entity <code>.xml</code> into one CSV per element type (<code>_xml_to_csvs()</code>). <code>approved_files</code> must name these <strong>derived</strong> filenames — exactly as shown by <code>/summary</code> — not the original workbook/XML name. Each derived file then flows through the tabular path independently.
     </div>
   </div>
 
@@ -300,6 +304,30 @@
         <div class="badges">
           <span class="badge b-mem">MEM: discoveries._STORE[did]</span>
           <span class="badge b-out">OUT: mentions[], tabular plans[]</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ORCHESTRATION LAYER (ingest_confirmed) -->
+    <div class="tl-item">
+      <div class="tl-marker bg">ORC</div>
+      <div class="card">
+        <div class="card-label">Orchestration — doc_discovery.py :: ingest_confirmed()</div>
+        <div class="card-title" style="color:var(--muted)">Per-file setup, BEFORE any run_pipeline() call</div>
+        <div class="detail">
+          Runs once for the whole <code>/confirm</code> request, before the tabular files loop below:<br>
+          <span class="k">1. FK detection, pass A (in-batch):</span> <code>_detect_fk_links(valid_plans)</code> — 3 rules: naming pattern (<code>{Type}_id</code>/<code>_name</code>), shared-suffix code columns, XML element-type FK.<br>
+          <span class="k">2. FK detection, pass B (workspace-wide, new):</span> <code>_detect_fk_links_workspace(last_plan, known_types)</code> — matches the last file's columns against ontology types <em>already registered from earlier confirms</em>, so single-file jobs still find FK links.<br>
+          <span class="k">3. Source provenance (new):</span> <code>_persist_xml_sources(valid_plans)</code> — for XML/XLSX-derived plans only, saves the original workbook/XML bytes + list of derived CSV assets to the source catalog.
+        </div>
+        <div class="inset teal">
+          <div class="head">Non-last files run in parallel, last file runs alone afterward</div>
+          <code>ThreadPoolExecutor(max_workers=ARYX_INGEST_WORKERS)</code> (default <strong>3</strong>) runs every file except the last <em>concurrently</em>, each with <code>skip_graph=True, relate=False</code>. A failure in a non-last file is logged and skipped — the rest continue. The <strong>last</strong> file always waits for all others to finish, then runs alone with <code>fk_links=auto_fk</code>, <code>skip_graph=False</code>, <code>relate=is_last and ARYX_INGEST_RELATE</code> (default off). This ordering exists because (a) FK links need every other file's entities to already exist, and (b) FalkorDB projection clears + rebuilds the whole graph — two of those running at once would race.
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: approved_files, tabular plans</span>
+          <span class="badge b-out">OUT: auto_fk[] specs, per-file run order</span>
+          <span class="badge b-db">DB: source catalog (DatasourceStore) — XML/XLSX only</span>
         </div>
       </div>
     </div>
@@ -362,12 +390,19 @@
           e.g. <code>match_keys=["name"]</code> → <code>text = "INV-2024-001"</code>
         </div>
 
-        <!-- Four sub-stages -->
+        <!-- Sub-stages -->
         <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+
+          <!-- 2.0 exact-id fast path -->
+          <div class="inset yellow">
+            <div class="head">2.0 — Exact-ID fast path  (new, deterministic, no API)  —  ARYX_ER_EXACT_ID_MATCH (default true)</div>
+            When every match key is literally <code>id</code>/<code>uuid</code>/<code>guid</code>/<code>key</code>, blocking/embedding/scoring are skipped entirely — records merge only on exact string equality of the normalised match text.<br>
+            <strong>Why:</strong> fuzzy similarity is wrong for opaque ids — sequential ids like <code>18722401146</code> vs <code>18722401147</code> score 0.90+ and, because merging is transitive, can collapse a whole id range into one entity. Two blank match texts never merge either (fuzzy scoring would otherwise treat <code>"" == ""</code> as a perfect match).
+          </div>
 
           <!-- 2a blocking -->
           <div class="inset teal">
-            <div class="head">2a — Blocking  (deterministic, no API)</div>
+            <div class="head">2a — Blocking  (when not in exact-ID mode; deterministic, no API)</div>
             <code>block(records)</code> — groups candidates to avoid O(n²) comparison:<br>
             &nbsp;&nbsp;• 4-char prefix of match text<br>
             &nbsp;&nbsp;• Token-set canonical form (sorted lowercase tokens)<br>
@@ -461,12 +496,13 @@ POST /adjudication/{id}/decide</pre>
 
           <!-- clustering -->
           <div class="inset teal">
-            <div class="head">Clustering — UnionFind + golden record</div>
-            After all pairs are routed, <code>UnionFind.groups()</code> produces clusters.<br><br>
+            <div class="head">Clustering — UnionFind + golden record (survivorship policy, not just confidence)</div>
+            After all pairs are routed (or after 2.0's exact-match grouping), <code>UnionFind.groups()</code> produces clusters.<br><br>
             For each cluster → <code>_materialize(member_ids, ...)</code>:<br>
-            &nbsp;&nbsp;• <span style="color:var(--text)">Confidence-weighted merge</span>: highest-confidence member's value wins per attribute<br>
-            &nbsp;&nbsp;• Conflicting values logged → <code>aryx_attribute_conflict</code><br>
-            &nbsp;&nbsp;• <code>cluster_confidence(edges, n_members)</code> → entity confidence score
+            &nbsp;&nbsp;• <span style="color:var(--text)">Per-workspace survivorship policy</span> (default strategy <code>"most_complete"</code>) decides, per attribute, which contributing record's value survives — usually <em>not</em> simply the member with the highest overall match confidence<br>
+            &nbsp;&nbsp;• Conflicting values logged → <code>aryx_attribute_conflict</code> (strategy name recorded, e.g. "most_complete")<br>
+            &nbsp;&nbsp;• <code>cluster_confidence(edges, n_members)</code> → separate entity-level confidence score (how sure the resolver is these are the same entity)<br>
+            &nbsp;&nbsp;• Fallback only: <code>golden_record_weighted()</code> (highest-confidence wins) if no policy object exists — not normally reached from <code>/confirm</code>
           </div>
 
         </div>
@@ -515,14 +551,14 @@ POST /adjudication/{id}/decide</pre>
     <div class="tl-item">
       <div class="tl-marker s3">3</div>
       <div class="card stage3">
-        <div class="card-label">Stage 3 / 5 — Relate  (relate=True, always in /confirm path)</div>
+        <div class="card-label">Stage 3 / 5 — Relate  (relate=True — approved_types always; tabular files only if last AND ARYX_INGEST_RELATE=true, default off)</div>
         <div class="card-title">LLM Relationship Inference — pipeline/enrich.py:_relate()</div>
         <div class="detail">
-          For each candidate entity pair (up to <code>ARYX_MAX_RELATE_PAIRS</code>, default 100):<br>
-          The LLM is asked whether a meaningful relationship exists between the two entities and what to name it.
+          Not a flat loop over every entity pair. Samples entities <strong>per type</strong> so every type is represented, builds cross-type pairs first (round-robined across type combos), then fills remaining budget with same-type pairs. Capped at <code>effective_pairs = min(ARYX_MAX_RELATE_PAIRS, cross_type_combos)</code> — <strong>ARYX_MAX_RELATE_PAIRS defaults to 10</strong>, a true hard cap (the schema-wide pass below covers full-population FK discovery). A "coverage guarantee" forces one extra pair for any type the round-robin left completely unrepresented.<br>
+          Runs concurrently (<code>ARYX_RELATE_WORKERS</code>, default 4); abandons still-pending calls after <code>ARYX_RELATE_PAIR_TIMEOUT</code> (default 30s) of no progress — a stuck call must not hang the ingest.
         </div>
         <div class="api-callout">
-          <div class="api-label">API C — Relationship Inference (frontier tier)</div>
+          <div class="api-label">API C1 — Relationship Inference (frontier tier, per sampled pair)</div>
           <div class="api-grid">
             <div class="api-col">
               <h4>User message (per pair)</h4>
@@ -550,10 +586,17 @@ relationship between these?</pre>
             </div>
           </div>
         </div>
+
+        <!-- 3b schema FK inference -->
+        <div class="inset violet" style="margin-top:12px">
+          <div class="head">3b — Schema-wide FK inference (new)  —  pipeline/enrich.py:_infer_schema_fk_links()  —  same relate=True gate, runs right after 3</div>
+          Stage 3 only samples a handful of entities per type, so it can miss FK-shaped columns that don't follow naming conventions. This step sends <strong>column names only</strong> (one sample entity per type, ≤8 types per LLM call, batched with an "anchor" type included in every batch) and asks which attributes across types look like foreign keys. Whatever it proposes is applied via <code>link_by_attribute()</code> — same mechanism as Stage 4 — but creates edges for <strong>every</strong> matching entity in the workspace, not just the sampled few.
+        </div>
+
         <div class="badges">
-          <span class="badge b-in">IN: entity pairs from aryx_entity</span>
+          <span class="badge b-in">IN: entity pairs / type schemas from aryx_entity</span>
           <span class="badge b-db">DB: aryx_relationship INSERT</span>
-          <span class="badge b-api">API C — LLM frontier tier</span>
+          <span class="badge b-api">API C1 (relate) + C2 (schema FK) — LLM frontier tier</span>
         </div>
       </div>
     </div>
@@ -565,7 +608,7 @@ relationship between these?</pre>
         <div class="card-label">Stage 4 / 5 — FK Link  (last approved file only, deterministic)</div>
         <div class="card-title">Cross-file Join — pipeline/fk_edges.py:link_by_attribute()</div>
         <div class="detail">
-          Uses the <code>auto_fk</code> specs from <code>_detect_fk_links()</code> — run once across all approved files before the loop:<br><br>
+          Uses the <code>auto_fk</code> specs from <strong>two</strong> detection passes run once before the file loop — <code>_detect_fk_links(valid_plans)</code> (in-batch: naming pattern + shared-suffix code columns + XML element-type) <strong>and</strong> <code>_detect_fk_links_workspace(last_plan, known_types)</code> (new — matches against ontology types already registered from earlier confirms, so single-file jobs still find links):<br><br>
           Pattern: if <code>orders.csv</code> has column <code>customer_id</code> → matched against <code>customers.csv</code> by <code>{TypeB}_id</code> naming convention.
         </div>
         <pre class="snippet">link_by_attribute(
@@ -582,9 +625,17 @@ relationship between these?</pre>
           <div class="head">No LLM call here</div>
           FK linking is deterministic pattern matching on column names and attribute values. No embedding, no adjudication.
         </div>
+
+        <!-- 4b relate-isolated safety net -->
+        <div class="inset orange" style="margin-top:12px">
+          <div class="head">4b — Relate-isolated safety net (new)  —  pipeline/enrich.py:_relate_isolated()  —  ALWAYS runs, not gated by relate</div>
+          Runs for every <code>run_pipeline()</code> call, right after FK Link, right before Project — even when <code>relate=False</code>. Finds every entity in the workspace with <strong>zero</strong> relationship edges (<code>store.list_isolated_entities()</code>, one query), groups them by type, and makes <strong>one LLM call per isolated type</strong> (not per entity) against a sampled anchor entity of some other type. If related, creates one edge per isolated entity of that type → the anchor. Keeps the LLM call count bounded at ~"number of isolated types" even for a 20-type, thousand-row XML upload — this is what guarantees no orphan nodes after ingest, independent of whether relate was ever enabled.
+        </div>
+
         <div class="badges">
-          <span class="badge b-in">IN: fk_links[] specs, aryx_entity attributes</span>
+          <span class="badge b-in">IN: fk_links[] specs, aryx_entity attributes, isolated entities</span>
           <span class="badge b-db">DB: aryx_relationship INSERT</span>
+          <span class="badge b-api">4b only: API C3 — LLM frontier tier, one call per isolated type</span>
         </div>
       </div>
     </div>
@@ -630,6 +681,27 @@ relationship between these?</pre>
       </div>
     </div>
 
+    <!-- VALIDATION -->
+    <div class="tl-item">
+      <div class="tl-marker bg">VAL</div>
+      <div class="card">
+        <div class="card-label">After ALL approved_types + approved_files finish — pipeline/ingest_validation.py</div>
+        <div class="card-title" style="color:var(--muted)">Zero-loss validation (new — read-only, best-effort, log-only)</div>
+        <div class="detail">
+          <code>gt = ground_truth_from_tabular(valid_plans)</code> re-derives "what should be true" straight from the ingested CSV bytes (row counts, id columns/values, FK column → parent relationships).<br>
+          <code>report = validate_workspace(workspace_id, gt, dsn, graph_url)</code> runs <strong>seven categories</strong> of read-only checks against Postgres and the graph — e.g. did every landed row make it into <code>aryx_landed</code>? does every FK value resolve to a real parent id or is it dangling? do the graph's node/edge counts match?
+        </div>
+        <div class="inset teal">
+          <div class="head">Smoke alarm, not a circuit breaker</div>
+          Results are only logged (<code>logger.info</code> / <code>logger.warning</code> per failing check). This step never raises and never fails the job, even if every check fails — it tells you after the fact that something went wrong, it does not stop the ingest.
+        </div>
+        <div class="badges">
+          <span class="badge b-in">IN: valid_plans (tabular only)</span>
+          <span class="badge b-out">OUT: ValidationReport (logged only)</span>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /timeline -->
 
   <!-- ═══ FULL DB WRITES TABLE ═══ -->
@@ -641,17 +713,18 @@ relationship between these?</pre>
         <tr><td class="c-yellow"><code>aryx_jobs</code></td><td>INSERT</td><td>HTTP handler</td><td>type="documents"</td></tr>
         <tr><td class="c-yellow"><code>aryx_jobs</code></td><td>UPDATE</td><td>Per-type/file progress + finish</td><td></td></tr>
         <tr><td class="c-yellow"><code>aryx_job_events</code></td><td>INSERT</td><td>Each update_stage call</td><td></td></tr>
-        <tr><td class="c-yellow"><code>aryx_runs</code></td><td>INSERT</td><td>Stage 1 start_run</td><td>one per run_pipeline call</td></tr>
+        <tr><td class="c-muted">Source catalog (DatasourceStore)</td><td>INSERT/UPSERT</td><td>Orchestration — <code>_persist_xml_sources()</code></td><td>XML/XLSX provenance only, before the file loop</td></tr>
+        <tr><td class="c-yellow"><code>aryx_runs</code></td><td>INSERT</td><td>Stage 1 start_run</td><td>one per run_pipeline call (per approved type/file)</td></tr>
         <tr><td class="c-yellow"><code>aryx_landed</code></td><td>INSERT</td><td>Stage 1 sink (batched)</td><td>one row per mention/CSV row</td></tr>
         <tr><td class="c-yellow"><code>aryx_profile_columns</code></td><td>INSERT</td><td>Stage 1 save_profiles</td><td>field statistics</td></tr>
         <tr><td class="c-yellow"><code>aryx_runs</code></td><td>UPDATE</td><td>Stage 1 finish_run</td><td>record_count, status="complete"</td></tr>
         <tr><td class="c-green"><code>aryx_entity</code></td><td>INSERT</td><td>Stage 2 — resolve</td><td>canonical entities — first write here</td></tr>
         <tr><td class="c-green"><code>aryx_entity_member</code></td><td>INSERT</td><td>Stage 2 — resolve</td><td>provenance per member</td></tr>
-        <tr><td class="c-yellow"><code>aryx_attribute_conflict</code></td><td>INSERT</td><td>Stage 2 — on conflict</td><td>merge conflict detail</td></tr>
+        <tr><td class="c-yellow"><code>aryx_attribute_conflict</code></td><td>INSERT</td><td>Stage 2 — on conflict</td><td>survivorship strategy name recorded</td></tr>
         <tr><td class="c-yellow"><code>aryx_adjudication</code></td><td>INSERT</td><td>Stage 2 — review/adj band</td><td>human queue + LLM verdicts</td></tr>
-        <tr><td class="c-yellow"><code>aryx_ontology_type</code></td><td>INSERT (idempotent)</td><td>After stage 2</td><td>ON CONFLICT DO NOTHING</td></tr>
-        <tr><td class="c-green"><code>aryx_relationship</code></td><td>INSERT</td><td>Stage 3 (LLM) + Stage 4 (FK)</td><td>graph edges</td></tr>
-        <tr><td class="c-green">FalkorDB / Oracle Graph</td><td>MERGE / INSERT</td><td>Stage 5 — project</td><td>nodes + edges</td></tr>
+        <tr><td class="c-yellow"><code>aryx_ontology_type</code></td><td>INSERT (idempotent)</td><td>After stage 2, every call</td><td>ON CONFLICT DO NOTHING</td></tr>
+        <tr><td class="c-green"><code>aryx_relationship</code></td><td>INSERT</td><td>Stage 3 (relate) + 3b (schema FK) + 4 (FK link) + 4b (relate-isolated)</td><td>graph edges</td></tr>
+        <tr><td class="c-green">FalkorDB / Oracle Graph</td><td>MERGE / INSERT</td><td>Stage 5 — project</td><td>nodes + edges, skipped when skip_graph=True</td></tr>
       </table>
     </div>
   </div>
@@ -661,24 +734,48 @@ relationship between these?</pre>
     <div class="section-title">Which External APIs Are Called</div>
     <div class="scroll-x">
       <table>
-        <tr><th>Condition</th><th>A · Embed (resolve)</th><th>B · Adjudicate (resolve)</th><th>C · Relate</th></tr>
+        <tr><th>Condition</th><th>A · Embed (resolve)</th><th>B · Adjudicate (resolve)</th><th>C · Relate family (3, 3b, 4b)</th></tr>
         <tr>
-          <td>Always (default)</td>
-          <td class="c-violet">Yes — per block</td>
+          <td>approved_types (document entity mentions)</td>
+          <td class="c-violet">Yes — per block, unless exact-ID mode</td>
           <td class="c-yellow">Only score in [0.90, 0.92)</td>
-          <td class="c-orange">Yes — up to max_pairs</td>
+          <td class="c-orange">Yes — <code>relate=True</code> always</td>
+        </tr>
+        <tr>
+          <td>approved_files — non-last file</td>
+          <td class="c-violet">Yes — per block, unless exact-ID mode</td>
+          <td class="c-yellow">Only score in [0.90, 0.92)</td>
+          <td class="c-muted">No — <code>relate=False</code> always</td>
+        </tr>
+        <tr>
+          <td>approved_files — last file</td>
+          <td class="c-violet">Yes — per block, unless exact-ID mode</td>
+          <td class="c-yellow">Only score in [0.90, 0.92)</td>
+          <td class="c-orange">Only if <code>ARYX_INGEST_RELATE=true</code> (default off)</td>
+        </tr>
+        <tr>
+          <td>All match_keys are id/uuid/guid/key</td>
+          <td class="c-muted">No — exact-ID fast path (2.0) skips it</td>
+          <td class="c-muted">No — exact-ID fast path skips it</td>
+          <td>Unaffected — relate runs on resolved entities, not raw records</td>
         </tr>
         <tr>
           <td><code>er_auto_merge=1.0 AND er_adjudicate=1.0</code></td>
           <td class="c-muted">No (skipped)</td>
           <td class="c-muted">No (skipped)</td>
-          <td class="c-orange">Yes</td>
+          <td>Unaffected</td>
         </tr>
         <tr>
           <td>Empty mention list for type</td>
           <td class="c-muted">No (empty connector)</td>
           <td class="c-muted">No</td>
           <td class="c-muted">No</td>
+        </tr>
+        <tr>
+          <td>Stage 4b — relate-isolated</td>
+          <td>—</td>
+          <td>—</td>
+          <td class="c-orange">Yes, always — one call per isolated <em>type</em>, not gated by relate</td>
         </tr>
         <tr>
           <td>Local mode</td>
@@ -731,19 +828,48 @@ relationship between these?</pre>
         <tr><td>discovery_id not found</td><td>HTTP handler</td><td class="c-red">HTTPException 404</td></tr>
         <tr><td>Process restart between /read and /confirm</td><td>_confirm_job</td><td class="c-red">ValueError "discovery expired" → job failed — re-run /read</td></tr>
         <tr><td>Empty mention list for approved type</td><td>ingest_confirmed</td><td class="c-green">run_pipeline with empty connector → zero entities, no error</td></tr>
+        <tr><td>approved_files entry doesn't match any plan</td><td>ingest_confirmed</td><td class="c-green">Silently dropped — not logged as a failure</td></tr>
+        <tr><td>Non-last tabular file's run_pipeline call raises</td><td>ingest_confirmed — parallel pool</td><td class="c-yellow">Caught + logged, filename added to a failed list — remaining files (incl. last) still run</td></tr>
+        <tr><td>Last tabular file's run_pipeline call raises</td><td>ingest_confirmed — serial</td><td class="c-red">Exception propagates → job failed</td></tr>
         <tr><td>aryx_runs INSERT fails</td><td>Stage 1</td><td class="c-red">Exception → job failed for this type/file</td></tr>
         <tr><td>Embed unavailable for a batch</td><td>Stage 2 — blocking</td><td class="c-yellow">Silent fallback to string-only scoring for that batch</td></tr>
         <tr><td>LLM adjudication unavailable</td><td>Stage 2 — threshold</td><td class="c-yellow">Pair queued for human (conservative: no wrong merges)</td></tr>
-        <tr><td>Relate LLM unavailable</td><td>Stage 3</td><td class="c-red">Exception propagates → job failed</td></tr>
+        <tr><td>Relate LLM unavailable/timed out for a pair</td><td>Stage 3</td><td class="c-yellow">Pair logged + skipped — does not fail the job; may be picked up by 4b safety net</td></tr>
+        <tr><td>Schema FK inference LLM call fails</td><td>Stage 3b</td><td class="c-yellow">Logged + skipped for that batch — best-effort, never fails the job</td></tr>
         <tr><td>FK link finds no matches</td><td>Stage 4</td><td class="c-green">No writes, continues silently</td></tr>
-        <tr><td>FalkorDB unreachable</td><td>Stage 5</td><td class="c-red">Exception → job failed</td></tr>
+        <tr><td>Relate-isolated LLM call fails for a type</td><td>Stage 4b</td><td class="c-yellow">Logged + skipped for that type — best-effort, never fails the job</td></tr>
+        <tr><td>FalkorDB unreachable</td><td>Stage 5</td><td class="c-red">Exception → job failed (only the call that actually projects)</td></tr>
         <tr><td>Oracle Graph unavailable</td><td>Stage 5</td><td class="c-red">Exception → job failed</td></tr>
+        <tr><td>Post-ingest validation check fails</td><td>After all types/files</td><td class="c-green">Logged only — never fails the job</td></tr>
+        <tr><td>OntologyStore lookup fails (workspace FK detection)</td><td>Before file loop</td><td class="c-yellow">Logged, known_types treated as empty — Pass B just finds nothing this run</td></tr>
       </table>
+    </div>
+  </div>
+
+  <!-- ═══ CORRECTIONS LOG ═══ -->
+  <div class="section">
+    <div class="section-title">Documentation Corrections Log — audited against source 2026-07-16</div>
+    <div class="inset red">
+      <div class="head">14 drift points found and fixed vs. current code</div>
+      1. Multi-sheet <code>.xlsx</code> support (<code>_xlsx_to_csvs()</code>) was completely undocumented — added.<br>
+      2. <code>_detect_fk_links_workspace()</code> (Pass B, workspace-wide FK detection) was missing — added.<br>
+      3. <code>_persist_xml_sources()</code> source-catalog provenance step was missing — added.<br>
+      4. Tabular-file <code>relate=True</code> was claimed unconditional; actual code gates it on <code>is_last AND ARYX_INGEST_RELATE</code> (default <strong>off</strong>) — corrected.<br>
+      5. <code>skip_graph</code> (non-last files defer graph writes) was undocumented — added, with the FalkorDB race-condition rationale.<br>
+      6. Parallel non-last-file execution (<code>ARYX_INGEST_WORKERS</code>) and partial-failure tolerance were undocumented — added.<br>
+      7. approved_types loop passes no <code>skip_graph</code>/relate gating → every type gets an immediate full graph rebuild — called out explicitly.<br>
+      8. Two pipeline sub-stages were entirely missing: schema-wide FK inference (3b) and the relate-isolated safety net (4b) — added in full.<br>
+      9. <code>ARYX_MAX_RELATE_PAIRS</code> was documented as defaulting to 100; actual default is <strong>10</strong> — corrected, plus added the type-aware sampling/coverage-guarantee logic.<br>
+      10. The exact-ID fast path (<code>ARYX_ER_EXACT_ID_MATCH</code>, default true) was undocumented — added as step 2.0.<br>
+      11. Golden-record merge described only the confidence-weighted fallback; the primary path uses a per-workspace survivorship policy (default "most_complete") — corrected.<br>
+      12. Post-ingest zero-loss validation (<code>ingest_validation.py</code>) was entirely undocumented — added as its own timeline step.<br>
+      13. Resume/checkpoint support (<code>resume_run_id</code>, StageRunner/StageTracker) was undocumented — added as a resilience note.<br>
+      14. Minor: <code>RecordsConnector(recs)</code> corrected to <code>RecordsConnector(recs, label=otype)</code>.
     </div>
   </div>
 
 </div><!-- /wrap -->
 
 <div style="margin-top:36px; max-width:920px; margin-left:auto; margin-right:auto; font-size:10px; color:var(--muted); text-align:center; padding-top:14px; border-top:1px solid var(--border)">
-  doc_discover_api.py · doc_discovery.py · orchestrate.py · discover.py · resolve_entities.py · resolution/run.py · pipeline/enrich.py · pipeline/fk_edges.py · project.py · store/entity_store.py
+  doc_discover_api.py · doc_discovery.py · orchestrate.py · discover.py · resolve_entities.py · resolution/run.py · resolution/survivorship.py · pipeline/enrich.py · relationships.py · pipeline/fk_edges.py · pipeline/ingest_validation.py · project.py · store/entity_store.py · store/datasource_store.py
 </div>

@@ -1203,6 +1203,7 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)
+    result["beautify_rows"] = _cpq_engine.beautify_rows(session.product_name, session.display_filled, attrs)
     result["beautify_button_flag"] = True
     result["api_share"] = payload if session.status != "configuring" else {}
     result["api_share_button_flag"] = session.status != "configuring"

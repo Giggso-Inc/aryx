@@ -35,6 +35,7 @@ export interface AskResponse {
   json_response?: Record<string, unknown> | null;
   json_button_flag?: boolean;
   beautify?: string;
+  beautify_rows?: { label: string; value: string }[];
   beautify_button_flag?: boolean;
   api_share?: Record<string, unknown> | null;
   api_share_button_flag?: boolean;
@@ -160,6 +161,7 @@ export interface ChatTurn {
   jsonResponse?: Record<string, unknown> | null;
   jsonButtonFlag?: boolean;
   beautify?: string;
+  beautifyRows?: { label: string; value: string }[];
   beautifyButtonFlag?: boolean;
   apiShareButtonFlag?: boolean;
   sessionData?: Record<string, unknown>;

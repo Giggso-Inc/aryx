@@ -314,6 +314,7 @@ export default function HomePage() {
                   jsonResponse: resp.json_response ?? null,
                   jsonButtonFlag: resp.json_button_flag ?? false,
                   beautify: resp.beautify ?? "",
+                  beautifyRows: resp.beautify_rows ?? [],
                   beautifyButtonFlag: resp.beautify_button_flag ?? false,
                   apiShareButtonFlag: resp.api_share_button_flag ?? false,
                   sessionData: resp.session_data ?? {},

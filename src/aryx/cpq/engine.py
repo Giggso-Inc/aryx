@@ -230,6 +230,13 @@ _HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
 # reasoning as bml.py's _SHARED_SCRIPT_CACHE).
 _FLAG_KEYWORD_INDEX_CACHE: dict[tuple[int, str], dict[str, tuple[str, str]]] = {}
 
+# Process-wide, keyed by (workspace_id, catalog_prefix) — see
+# CpqEngine._detect_layout_tier / resolve_ui_layout_scope
+# (docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md). Layout placement is static
+# ingested data, safe to compute once per catalog per process lifetime.
+_LAYOUT_TIER_CACHE: dict[tuple[int, str], int] = {}
+_LAYOUT_SCOPE_CACHE: dict[tuple[int, str], dict[str, Any] | None] = {}
+
 
 def _normalize_for_hint(text: str) -> str:
     return _HINT_STRIP_RE.sub("", text.lower())
@@ -1244,6 +1251,18 @@ class CpqEngine:
         menu_by_attr: dict[int, list[MenuOption]] = {}
         for eid, menu_ids in neighbor_map.items():
             opts: list[MenuOption] = []
+            # (item_value, display_name) pairs already added for this attr —
+            # company-level/global BM attrs (e.g. _BM_USER_CURRENCY,
+            # _BM_USER_LANGUAGE, _BM_USER_NUMBER_FORMAT) share one native id
+            # across every ingested catalog from the same BM tenant, and
+            # reader.neighbors() has no catalog-prefix scoping of its own, so
+            # a workspace holding 2+ catalogs can surface the same option
+            # more than once for these specific attrs (confirmed live: "US
+            # Dollar" offered twice). See docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md
+            # Bug 1 — this is the safe, minimal backstop; product-specific
+            # attrs never hit this since their menu items are never
+            # re-exported verbatim across catalogs.
+            seen_opts: set[tuple[str, str]] = set()
             for mid in menu_ids:
                 ma = all_menu_pg.get(mid, {})
                 # Always use item_value (API code), item_text for display
@@ -1257,6 +1276,10 @@ class CpqEngine:
                         continue
                     if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
                         continue
+                    key = (iv_lo, dt_lo)
+                    if key in seen_opts:
+                        continue
+                    seen_opts.add(key)
                     opts.append(MenuOption(item_value=iv, display_name=dt, order=order))
             opts.sort(key=lambda x: x.order)
             menu_by_attr[eid] = opts
@@ -1425,6 +1448,140 @@ class CpqEngine:
         if source_id is not None and (source_id in inputs or source_id in actions):
             return source_id
         return entity_id
+
+    def _detect_layout_tier(self, workspace_id: int, catalog_prefix: str = "") -> int:
+        """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §2 — one cheap existence
+        check per catalog, cached process-wide (same lifetime/reasoning as
+        bml.py's _SHARED_SCRIPT_CACHE / _FLAG_KEYWORD_INDEX_CACHE above):
+        1 = rule_type=6 "Configuration Flow" rules exist AND are referenced
+            by BmConfigLayoutAttrAssoc (verified on 3 independent catalogs).
+        2 = no rule_type=6 flow rule, but layout placement data exists
+            anyway — still real UI-truth, just unscoped to one flow.
+        3 = no layout data at all — callers must fall back to today's
+            existing hidden/required + rule-based behavior unchanged; free,
+            no new code needed for this tier.
+        """
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_TIER_CACHE:
+            return _LAYOUT_TIER_CACHE[key]
+        rdb = get_cpq_rdb()
+        assoc = rdb.fetch_layout_attr_assoc(workspace_id, catalog_prefix)
+        if not assoc:
+            tier = 3
+        else:
+            flow_ids = {
+                src_id for _eid, src_id, _name, _fn
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix)
+                if src_id is not None
+            }
+            tier = 1 if any(rid in flow_ids for rid, _a, _l in assoc) else 2
+        _LAYOUT_TIER_CACHE[key] = tier
+        return tier
+
+    def _is_country_anchor_var(self, variable_name: str) -> bool:
+        """The D1 country anchor specifically — NOT any "country"-fragment
+        match. A plain substring check collides with real, distinct attrs
+        confirmed live in this catalog: CRM_BILL_COUNTRY/CRM_SHIP_COUNTRY
+        (noise-shaped integration fields) and isUltimateDestinationCountryCA_astro
+        (a genuine but DIFFERENT boolean attr, "country" mid-name not at the
+        end). Requiring BOTH "ends with country" (excludes the CA-suffixed
+        boolean) AND not noise-shaped (excludes the two CRM_* fields)
+        isolates exactly ultimateDestinationCountry in this catalog — same
+        two-guard pattern auto_fill already uses elsewhere for fragment
+        matches that would otherwise over-collide.
+        """
+        vn_flat = variable_name.lower().replace("_", "")
+        return vn_flat.endswith("country") and not self._is_noise_var(variable_name)
+
+    def _find_country_anchor_attr_id(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> int | None:
+        """Native id of this catalog's country-anchor ConfigAttr, or None."""
+        rdb = get_cpq_rdb()
+        for _eid, attrs in rdb.fetch_entities_by_type(workspace_id, "bmconfigattr", catalog_prefix):
+            vn = attrs.get("variable_name") or ""
+            if self._is_country_anchor_var(vn):
+                try:
+                    return int(str(attrs.get("id")).strip())
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def resolve_ui_layout_scope(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> dict[str, Any] | None:
+        """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §1-§5 — which attributes
+        the real native UI shows on screen, and in what order.
+
+        Returns None for tier 3 (no layout data — caller keeps today's
+        existing behavior unchanged, zero new code needed).
+
+        Otherwise returns {"tier": 1|2, "flows": {flow_id: entry, ...}}.
+        flow_id is 0 for tier 2 (no flow-rule scoping, one catalog-wide
+        entry). Each entry is {"all": {attr_id: order_number},
+        "section": {attr_id: order_number} | None} — "all" is every attr
+        with layout placement (grouped/ordered, §4); "section" is the
+        country-anchor's own parent_id group (§5) when exactly one such
+        group exists for that flow, else None.
+
+        Multiple rule_type=6 flows in one catalog (confirmed live: APX
+        Next has 3) are a genuine, unresolved ambiguity — every
+        disambiguation heuristic tried (biggest total flow, biggest
+        immediate group) picked a DIFFERENT, WRONG flow when checked
+        against the real ground-truth screenshot. This method deliberately
+        does not guess: it returns one entry per flow and leaves picking
+        one to the caller (e.g. a future curated per-catalog choice),
+        rather than silently resolving to an unverified answer.
+        """
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_SCOPE_CACHE:
+            return _LAYOUT_SCOPE_CACHE[key]
+        tier = self._detect_layout_tier(workspace_id, catalog_prefix)
+        if tier == 3:
+            _LAYOUT_SCOPE_CACHE[key] = None
+            return None
+        rdb = get_cpq_rdb()
+        assoc = rdb.fetch_layout_attr_assoc(workspace_id, catalog_prefix)
+        nodes = rdb.fetch_layout_model_nodes(workspace_id, catalog_prefix)
+        country_attr_id = self._find_country_anchor_attr_id(workspace_id, catalog_prefix)
+
+        if tier == 1:
+            flow_ids = {
+                src_id for _eid, src_id, _name, _fn
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix)
+                if src_id is not None
+            }
+            by_flow: dict[int, list[tuple[int, int]]] = {}
+            for rid, attr_id, lmid in assoc:
+                if rid not in flow_ids:
+                    continue
+                by_flow.setdefault(rid, []).append((attr_id, lmid))
+        else:
+            by_flow = {0: [(attr_id, lmid) for _rid, attr_id, lmid in assoc]}
+
+        flows: dict[int, dict[str, Any]] = {}
+        for flow_id, attr_lmids in by_flow.items():
+            attr_group: dict[int, tuple[int, int]] = {}
+            for attr_id, lmid in attr_lmids:
+                node = nodes.get(lmid)
+                if node is None:
+                    continue
+                parent_id, _label, order_number = node
+                if attr_id not in attr_group:
+                    attr_group[attr_id] = (parent_id, order_number)
+            all_attrs = {aid: order for aid, (_p, order) in attr_group.items()}
+            section: dict[int, int] | None = None
+            if country_attr_id is not None and country_attr_id in attr_group:
+                target_parent, _own_order = attr_group[country_attr_id]
+                section = {
+                    aid: order for aid, (parent_id, order) in attr_group.items()
+                    if parent_id == target_parent
+                }
+            flows[flow_id] = {"all": all_attrs, "section": section}
+
+        result = {"tier": tier, "flows": flows}
+        _LAYOUT_SCOPE_CACHE[key] = result
+        return result
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.
@@ -2564,8 +2721,17 @@ class CpqEngine:
             # not rule-governed). Decision-required attrs (country/region —
             # hwVersion removed per D1, it's a normal dependent now) always
             # ask regardless of governance.
-            is_decision_attr = any(
-                dk in vn_flat for dk in _DECISION_REQUIRED_KEYS
+            is_decision_attr = (
+                any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+                # productSelectionProduct_all is a shared, catalog-wide
+                # option list (e.g. 325 product-line codes across every
+                # product family) with no rule reliably narrowing it to the
+                # resolved product — blind first-by-order picked "APX6500"
+                # for an APX NEXT quote (confirmed live). Exact variable-name
+                # match, not a substring, so this never widens to unrelated
+                # "product*" attrs. See
+                # docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md Bug 3/3c.
+                or vn == "productSelectionProduct_all"
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -2701,6 +2867,25 @@ class CpqEngine:
                 filled_multi[vn] = []
                 display_filled[vn] = "(none)"
                 sources.setdefault(vn, "default")
+            elif self._is_noise_var(vn) and attr.options:
+                # Company-level/system attrs (_BM_USER_CURRENCY, _BM_USER_
+                # LANGUAGE, _BM_USER_NUMBER_FORMAT, ...) are already excluded
+                # from the final payload by _is_noise_var (build_payload) —
+                # asking about them in conversation is inconsistent with that
+                # (confirmed live: these got asked, with duplicate options,
+                # right before a bug that never affects the submitted BOM).
+                # Auto-default instead of asking: prefer the XML default_value
+                # if it's a real option, else first by order — same rule
+                # already used for governed single/boolean attrs above.
+                valid_opts = [o for o in attr.options if _valid(o.item_value)]
+                fallback = next(
+                    (o for o in valid_opts if o.item_value == attr.default_value),
+                    valid_opts[0] if valid_opts else None,
+                )
+                if fallback:
+                    filled[vn] = fallback.item_value
+                    display_filled[vn] = fallback.display_name
+                    sources.setdefault(vn, "default")
             elif attr.options or is_decision_attr:
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
@@ -3424,10 +3609,27 @@ class CpqEngine:
         Reuses filled_summary_pairs' noise/low-signal filtering (§ above) so
         Beautify shows the same substantive fields as the conversational
         summary — as aligned key:value lines instead of prose, no LLM call.
+        Used as-is by clients that display plain text (e.g. Streamlit's
+        st.code). Clients that render a real table use
+        beautify_rows()'s structured pairs instead of parsing this string.
         """
         pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
         width = max(len(label) for label, _ in pairs)
         return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+
+    def beautify_rows(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+    ) -> list[dict[str, str]]:
+        """Structured [{label, value}, ...] pairs for clients that render a
+        real tabular UI (e.g. the Next.js Beautify panel) instead of plain
+        text — same data and filtering as beautify_text(), just not
+        flattened into a display string. No LLM call.
+        """
+        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
+        return [{"label": label, "value": value} for label, value in pairs]
 
     def render_filled_summary(
         self,
