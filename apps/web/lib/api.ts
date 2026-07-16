@@ -1,10 +1,11 @@
 import type {
   AbResult, AskResponse, AskHistoryTurn, Axiom, Brief, DataEntitiesPage,
-  DataSourceCatalogItem, DataSummary, Datasource, DiscoverySummary, GraphView,
+  DataSourceCatalogItem, DataSourceCatalogPage, DataSourceDetail, DataSummary,
+  Datasource, DiscoverySummary, GraphView,
   IngestQuestion, McpToken, McpTokenIssued, ObservabilityData, OntologyChange,
   OntologyDoc, OntologyVersion, QuizSpec, ReasonerCheck, Rule,
-  GenericSourcePreview,
-  SurvivorshipPolicy, Workspace, XmlSourceDetail,
+  GenericSourcePreview, SourceEntityTypesPage, SourceRecordsPage,
+  SurvivorshipPolicy, Workspace,
 } from "./types";
 import {
   createHttpStatusError,
@@ -111,9 +112,36 @@ export const api = {
   listDataSources: (workspaceId: number) =>
     fetchJSON<DataSourceCatalogItem[]>(`/data/sources?workspace_id=${workspaceId}`),
 
+  listDataSourcesPage: (
+    workspaceId: number,
+    args: { page?: number; pageSize?: number; query?: string; category?: string } = {},
+  ) => {
+    const params = new URLSearchParams({
+      workspace_id: String(workspaceId),
+      page: String(args.page ?? 1),
+      page_size: String(args.pageSize ?? 50),
+      q: args.query ?? "",
+      category: args.category ?? "all",
+    });
+    return fetchJSON<DataSourceCatalogPage>(`/data/sources/page?${params.toString()}`);
+  },
+
   getDataSourceDetail: (workspaceId: number, sourceKey: string) =>
-    fetchJSON<XmlSourceDetail>(
+    fetchJSON<DataSourceDetail>(
       `/data/sources/${encodeURIComponent(sourceKey)}?workspace_id=${workspaceId}`,
+    ),
+
+  getSourceEntityTypes: (
+    workspaceId: number, sourceKey: string, page = 1, query = "",
+  ) => fetchJSON<SourceEntityTypesPage>(
+    `/data/sources/${encodeURIComponent(sourceKey)}/entity-types` +
+    `?workspace_id=${workspaceId}&page=${page}&page_size=50&q=${encodeURIComponent(query)}`,
+  ),
+
+  getSourceRecords: (workspaceId: number, sourceKey: string, page = 1) =>
+    fetchJSON<SourceRecordsPage>(
+      `/data/sources/${encodeURIComponent(sourceKey)}/records` +
+      `?workspace_id=${workspaceId}&page=${page}&page_size=25`,
     ),
 
   getDataSourcePreview: (workspaceId: number, sourceKey: string) =>

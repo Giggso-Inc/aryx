@@ -277,7 +277,16 @@ export interface DataSourceCatalogItem {
   record_count: number;
   isXmlParent: boolean;
   generatedAssetCount: number;
+  total_entities: number;
+  entity_type_count: number;
   actions: SourceActionState;
+}
+
+export interface DataSourceCatalogPage {
+  items: DataSourceCatalogItem[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface GenericSourcePreview {
@@ -297,10 +306,23 @@ export interface XmlGeneratedAsset {
   actions: SourceActionState;
 }
 
-export interface XmlSourceDetail {
+export interface SourceEntitySummary {
+  total_entities: number;
+  type_count: number;
+  types: DataTypeCount[];
+}
+
+export interface DataSourceDetail {
   source_key: string;
   name: string;
+  display_kind: string;
+  kind: string;
   status: string;
+  ready: boolean;
+  actions: SourceActionState;
+  isXmlParent: boolean;
+  detail_kind: "grouped_assets" | "preview" | "configured";
+  entity_summary: SourceEntitySummary;
   generatedAssetCount: number;
   record_count: number;
   primary: {
@@ -309,6 +331,22 @@ export interface XmlSourceDetail {
     actions: SourceActionState;
   };
   assets: XmlGeneratedAsset[];
+}
+
+export type XmlSourceDetail = DataSourceDetail;
+
+export interface SourceEntityTypesPage {
+  items: DataTypeCount[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface SourceRecordsPage {
+  rows: Record<string, unknown>[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 // ── Observability ────────────────────────────────────────────────────────────
