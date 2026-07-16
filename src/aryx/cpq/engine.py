@@ -66,6 +66,27 @@ def _presentable(val: str | None) -> bool:
     return bool(val) and str(val).strip().lower() not in _DISPLAY_EMPTY
 
 
+def _condition_value_matches(current_val: str, condition_value: str) -> bool:
+    """True when current_val satisfies a single condition_attr/condition_value pair.
+
+    condition_value is sometimes a "~"-delimited OR-list (same convention
+    already handled for ConstraintRule.allowed_values, e.g. "PREMIER~ADVANCED
+    SOFTWARE ONLY~ESSENTIAL SOFTWARE ONLY") rather than one literal value.
+    A bare case-insensitive equality check against the whole string can
+    never match any single real value in that case, so any hiding/
+    constraint/recommendation rule using this encoding silently never
+    fires (confirmed live: this is exactly why "Hide Include Accidental
+    Damage for certain Service Type" never hid includeAccidentalDamageAddDMSCoverage_astro
+    despite serviceTypeAdditionalDMSCoverage_astro="PREMIER" matching one of
+    its 3 listed values — docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §3).
+    Single-value condition_value strings behave identically to a plain
+    equality check (a 1-element split set), so this is a strict superset
+    fix, not a behavior change for the common case.
+    """
+    allowed = {v.strip().lower() for v in condition_value.split("~") if v.strip()}
+    return current_val.strip().lower() in allowed
+
+
 # Ontology types ingested from an XML source are named '{SourceStem}Bm{Tag}'
 # (e.g. 'ApxNextConfigBmConfigAttr', 'Sl3500EConfigBmConfigAttr') because every
 # BigMachines/Oracle CPQ export element tag begins with 'bm_' — the PascalCase
@@ -1750,7 +1771,7 @@ class CpqEngine:
                 current_val = filled_by_rule_id.get(rule.condition_attr_id)
                 if current_val is None:
                     continue  # condition attr not filled yet — rule doesn't fire
-                if current_val.lower() != rule.condition_value.lower():
+                if not _condition_value_matches(current_val, rule.condition_value):
                     continue
             if rule.hide:
                 hidden_eids.add(target.entity_id)
@@ -2080,7 +2101,9 @@ class CpqEngine:
                 else:
                     if rule.condition_attr_id not in filled_by_rule_id:
                         continue
-                    if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
+                    if not _condition_value_matches(
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                    ):
                         continue
                 recommended_value = rule.recommended_value
             matched_display = next(
@@ -2193,13 +2216,113 @@ class CpqEngine:
             else:
                 if rule.condition_attr_id not in filled_by_rule_id:
                     continue
-                if filled_by_rule_id[rule.condition_attr_id].lower() != rule.condition_value.lower():
+                if not _condition_value_matches(
+                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                ):
                     continue
             _intersect(target.entity_id, rule.allowed_values)
         if constrained:
             names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
             logger.info("cpq: constraint rules active for %s", names)
         return constrained
+
+    # ── Rule-consistency cross-check ──────────────────────────────────────────
+
+    def find_rule_inconsistencies(
+        self,
+        filled: dict[str, str],
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        con_rules: list[ConstraintRule],
+        rec_rules: list[RecommendationRule],
+        bml_eval: BmlEvaluator | None = None,
+    ) -> list[dict[str, Any]]:
+        """Cross-check `filled` against each rule type's OWN independently
+        computed result — NOT a self-referential re-derivation of the same
+        data that produced `filled` in the first place (see
+        docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §1 for why a check
+        against attr_by_vn/options would be tautological and useless).
+
+        Three checks, one per rule type — all reuse the SAME apply_* methods
+        already used to build the payload, so BML-script-backed rules
+        (rule.script / rule.condition_script) are covered automatically,
+        with zero new script-evaluation code (§4's docstring):
+
+          - hiding:         attr is filled AND an active hiding rule matches
+                             it right now — it should never have been kept.
+          - constraint:     attr's filled value is not in the currently
+                             active allowed-values set for it (stale/
+                             pre-cascade value that should have been cleared).
+          - recommendation: attr not filled via "user" source, whose
+                             recommendation rule condition IS satisfied, but
+                             the filled value does not match recommended_value
+                             (confirmed live this session: the "invalidated —
+                             re-evaluating" cascade note that changes nothing).
+
+        Returns a list of {"attr", "value", "rule_type", "issue"} dicts —
+        empty when everything is consistent. Never raises; a rule whose
+        script outcome is "unknown" is simply skipped for that check (never
+        guess a bug that isn't there).
+        """
+        issues: list[dict[str, Any]] = []
+        by_vn = {a.variable_name: a for a in attrs}
+
+        _visible, _msgs, hidden_vns = self.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)
+        for vn in hidden_vns:
+            if filled.get(vn):
+                issues.append({
+                    "attr": vn, "value": filled[vn], "rule_type": "hiding",
+                    "issue": "filled but an active hiding rule matches",
+                })
+
+        constrained_opts = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        for vn, value in filled.items():
+            attr = by_vn.get(vn)
+            allowed = constrained_opts.get(attr.entity_id) if attr else None
+            if allowed is not None and value not in allowed:
+                issues.append({
+                    "attr": vn, "value": value, "rule_type": "constraint",
+                    "issue": f"value not in active allowed set {allowed}",
+                })
+
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        for rule in rec_rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if not target or target.variable_name not in filled:
+                continue
+            vn = target.variable_name
+            condition_met: bool | None
+            if rule.script is not None:
+                if bml_eval is None:
+                    continue
+                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                condition_met = bool(allowed) and len(allowed) == 1
+                recommended = allowed[0] if condition_met else None
+            elif rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                condition_met = bml_eval.condition_holds(rule.condition_script, filled) is True
+                recommended = rule.recommended_value
+            else:
+                if rule.conditions:
+                    matched, _blocked = evaluate_declarative_conditions(
+                        rule.conditions, filled_by_rule_id)
+                    condition_met = matched is True
+                else:
+                    current_val = filled_by_rule_id.get(rule.condition_attr_id)
+                    condition_met = (
+                        current_val is not None
+                        and _condition_value_matches(current_val, rule.condition_value)
+                    )
+                recommended = rule.recommended_value
+            if condition_met and recommended is not None and filled[vn].lower() != recommended.lower():
+                issues.append({
+                    "attr": vn, "value": filled[vn], "rule_type": "recommendation",
+                    "issue": f"condition met but value != recommended '{recommended}'",
+                })
+
+        return issues
 
     # ── Rule evaluation loop ──────────────────────────────────────────────────
 
@@ -2804,7 +2927,7 @@ class CpqEngine:
                                     continue
                                 cond_val = filled.get(cond_attr.variable_name)
                                 if (cond_val is not None
-                                        and cond_val.lower() == rrule.condition_value.lower()):
+                                        and _condition_value_matches(cond_val, rrule.condition_value)):
                                     match = next(
                                         (o for o in valid_opts
                                          if o.item_value.lower() == rrule.recommended_value.lower()),
@@ -3393,8 +3516,21 @@ class CpqEngine:
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
         attrs: list["ConfigAttr"] | None = None,
+        hidden_vns: set[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Return the final CPQ BOM API payload as ``{"configAttributes": {...}}``.
+
+        hidden_vns — variable_names an active hiding rule currently matches
+        (from ``apply_hiding_rules``' third return value, computed by the
+        caller against the exact same ``filled``/rules this turn already
+        loaded). When set, these are excluded from the payload even if
+        present in ``filled`` — this is the auto-fix side of the hiding-type
+        rule-consistency check (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
+        §4.1): a hidden attr's value was never a real customer decision, so
+        dropping it is a certain, safe correction rather than a guess. This
+        is DIFFERENT from constraint/recommendation-type inconsistencies,
+        which are surfaced to the user instead of silently auto-fixed (same
+        doc, §4.1) — hiding is the one case the engine can be certain about.
 
         Excludes HTML template values (layout/display fields, not real
         configuration inputs) and underscore-prefixed / integration-noise
@@ -3443,6 +3579,15 @@ class CpqEngine:
         sources = filled_source or {}
         attr_by_vn = {a.variable_name: a for a in (attrs or [])}
         out: dict[str, Any] = {}
+        hidden = hidden_vns or set()
+        if hidden:
+            dropped = [k for k in filled if k in hidden and filled[k]]
+            if dropped:
+                logger.info(
+                    "cpq: build_payload auto-fix — dropping %s (active hiding rule matches, "
+                    "rule-consistency check — docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1)",
+                    dropped,
+                )
 
         def _display_for(attr: "ConfigAttr", value: str) -> str:
             return next(
@@ -3451,6 +3596,8 @@ class CpqEngine:
             )
 
         for k, v in filled.items():
+            if k in hidden:
+                continue
             if not v or self._is_html_value(v) or self._is_noise_var(k):
                 continue
             attr = attr_by_vn.get(k)
@@ -3487,7 +3634,7 @@ class CpqEngine:
             else:
                 out[k] = v
         for k, vals in (filled_multi or {}).items():
-            if not vals or self._is_noise_var(k):
+            if k in hidden or not vals or self._is_noise_var(k):
                 continue
             attr = attr_by_vn.get(k)
             if attr is not None and attr.hide_in_trans:

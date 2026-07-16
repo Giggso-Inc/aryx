@@ -814,6 +814,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    # Rule-consistency auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
+    # §4.1): a filled attr an active hiding rule currently matches was never
+    # a real customer decision — drop it from every build_payload call this
+    # turn rather than silently submitting it. Computed once here since
+    # hiding_rules/bml_eval are already loaded and this turn's `filled`
+    # doesn't change again until the next request.
+    _hidden_for_payload = _cpq_engine.apply_hiding_rules(
+        attrs, session.filled, hiding_rules, bml_eval)[2]
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":
@@ -824,7 +832,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # this does not submit anything, cpq_payload stays unset.
         if _cpq_engine.detect_response_mode_request(req.question) == "json":
             preview_payload = _cpq_engine.build_payload(
-                session.filled, session.filled_source, session.filled_multi, attrs)
+                session.filled, session.filled_source, session.filled_multi, attrs,
+                hidden_vns=_hidden_for_payload)
             rule_ids_preview = _cpq_engine.rule_governed_ids(
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
@@ -851,7 +860,9 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_approval(req.question):
             session.status = "approved"
             session.complete = True
-            payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi, attrs)
+            payload = _cpq_engine.build_payload(
+                session.filled, session.filled_source, session.filled_multi, attrs,
+                hidden_vns=_hidden_for_payload)
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -1116,8 +1127,13 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # mode_request was detected early (before Step 5) so an explicit
         # request never gets rejected as an invalid menu answer. ─────────
         if mode_request == "json":
+            # Recomputed against the CURRENT `filled` (post-cascade), not the
+            # turn-start `_hidden_for_payload` — cascades earlier in this
+            # same turn can change which hiding rules are active.
+            _hidden_now = _cpq_engine.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)[2]
             preview_payload = _cpq_engine.build_payload(
-                filled, session.filled_source, session.filled_multi, visible_attrs)
+                filled, session.filled_source, session.filled_multi, visible_attrs,
+                hidden_vns=_hidden_now)
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id,
@@ -1199,6 +1215,12 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     if not ready or not session.product_name:
         return
     attrs, _ = _cpq_engine.load_product_config(reader, req.workspace_id, session.product_name)
+    # NOTE: hiding-rule auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
+    # §4.1) is not applied here — this is only the share-button preview
+    # snapshot, and loading hiding_rules/bml_eval here would mean a second
+    # rule-fetch round trip on every ready turn just for a preview. The real
+    # submission path (_run_cpq_turn's Step 8 build_payload call) already
+    # applies it.
     payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi, attrs)
     result["json_response"] = payload
     result["json_button_flag"] = True

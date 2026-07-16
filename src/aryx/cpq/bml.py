@@ -358,7 +358,23 @@ def evaluate_declarative_conditions(
             saw_missing = True
             continue
         expected_values = by_attr[attr_id]
-        hit = any(actual.strip().lower() == v.strip().lower() for v in expected_values)
+        # Each row's own value can itself be a "~"-delimited OR-list (same
+        # encoding as ConstraintRule.allowed_values, e.g. a single input row
+        # storing "PREMIER~ADVANCED SOFTWARE ONLY~ESSENTIAL SOFTWARE ONLY")
+        # rather than always one literal value per row — a bare equality
+        # check against the whole string can never match any one real value
+        # in that case (confirmed live: this is exactly why "Hide Include
+        # Accidental Damage for certain Service Type" never fired — see
+        # docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §3). Splitting each
+        # row's value here is a strict superset of the old behavior — a
+        # row with no "~" splits into a 1-element list, identical to before.
+        expanded = {
+            part.strip().lower()
+            for v in expected_values
+            for part in v.split("~")
+            if part.strip()
+        }
+        hit = actual.strip().lower() in expanded
         if not hit:
             return False, False
     if saw_missing:
