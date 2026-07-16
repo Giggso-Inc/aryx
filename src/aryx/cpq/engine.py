@@ -1386,9 +1386,22 @@ class CpqEngine:
             eid = ent["id"]
             try:
                 neighbors = reader.neighbors(eid)
+                # reader.neighbors() has no catalog awareness — for attrs whose
+                # native id is reused across catalogs (e.g. productSelectionProduct_all,
+                # confirmed live to have separate BmMenuItem sets per catalog under
+                # the same native id) this returns menu items from EVERY catalog in
+                # the workspace, not just the one resolved above. Scope by the same
+                # resolved_catalog_prefix already used for attr_types. Skip the
+                # filter when resolved_catalog_prefix is "" — per _scope_to_catalog,
+                # that means scoping didn't narrow to one catalog, so no filter
+                # should be applied (same convention as the attr-type scoping above).
                 menu_ids = [
                     n["id"] for n in neighbors
                     if "menuitem" in (n.get("type") or "").lower().replace("_", "")
+                    and (
+                        not resolved_catalog_prefix
+                        or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix
+                    )
                 ]
                 if menu_ids:
                     neighbor_map[eid] = menu_ids

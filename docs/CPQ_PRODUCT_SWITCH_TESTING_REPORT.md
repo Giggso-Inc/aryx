@@ -84,3 +84,107 @@ scope for this branch).
 - Detection quality is bounded by how closely a client's natural phrasing
   matches the real ingested family name, which — per §4 — can be an
   internal BOM identifier rather than a marketing name.
+
+## 7. New issue found via live testing (post-ship) — cross-catalog menu-item bleed
+
+While live-testing the switch flow above (step 4 of §4: switch to
+`videoSolutions_BOM`, country `United States`), the resulting "Product —
+choose one" list showed hundreds of models from *every* product family in
+the workspace (APX, XiR, DGP, SLR, MTP, VZ, etc.), not just SVX-relevant
+models — even though the correct catalog (`videoSolutions_BOM`) had already
+been resolved.
+
+**Root cause (confirmed against real Postgres data):** the attribute
+`productSelectionProduct_all` (native id `39427019`) has its own
+catalog-prefixed `BmMenuItem` entities in *each* catalog
+(`ApxNextConfigBmMenuItem`: 325 rows; `"Svx Video Remote Speaker
+Microphone"BmMenuItem`: 325 rows), all pointing at the same shared native
+id. `reader.neighbors()` (`src/aryx/graph/reader.py`) has no catalog
+scoping — it returns neighbors from both catalogs, and
+`load_product_config`'s menu-item collection loop merges them without
+filtering. This is the same root cause as the already-known, previously
+deferred "Bug 1"/"Bug 3b" in
+`docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md`, now confirmed live for a
+third attribute.
+
+**Fix plan (not yet applied):**
+
+1. In `load_product_config`'s menu-item collection loop (`engine.py`), add
+   one filter clause to the existing `menu_ids` list comprehension: keep a
+   neighbor only if `_catalog_prefix(n.get("type") or "") ==
+   resolved_catalog_prefix`. `resolved_catalog_prefix` is already computed
+   earlier in the same function via the existing `_scope_to_catalog`
+   pattern — nothing new to derive, and the same scoping convention already
+   used by `_load_rule_join_data` / `fetch_rules` / `_scope_to_catalog`
+   elsewhere in this engine. Reviewed and confirmed not to be hardcoding:
+   both `resolved_catalog_prefix` and `_catalog_prefix()` are computed
+   dynamically per call, not literal catalog/product names baked into
+   code. (The adjacent, unchanged `"menuitem" in type.lower()` check is a
+   BigMachines schema-level constant, verified stable across multiple
+   independent catalogs this session — a different, stronger category than
+   a tenant-specific variable name like `productSelectionProduct_all`.)
+2. Add a regression test: two fake catalogs sharing a
+   `productSelectionProduct_all`-style attribute and `BmMenuItem` neighbors
+   with the same variable name but different catalog prefixes — assert only
+   the resolved catalog's menu items are returned.
+3. Live-verify against workspace 14: reload `videoSolutions_BOM` + `United
+   States`, confirm the "Product — choose one" list only contains
+   SVX-relevant models.
+4. Run `test_cpq_product_switch.py` + `test_cpq_e2e.py` — confirm the same
+   5 known pre-existing baseline failures, zero new regressions.
+5. Commit/push/PR only once explicitly requested, on a new branch off
+   `dev`.
+
+**Status:** fix applied to `engine.py`. New regression coverage added in
+`tests/test_cpq_engine_catalog_scope.py` (2/2 passed): one test asserts a
+neighbor from a different catalog prefix sharing the same native id is
+filtered out; a second asserts the common single-catalog case is
+unaffected. Full regression run after the fix: `test_cpq_product_switch.py`
+23/23 passed; `test_cpq_e2e.py` 5 failed / 35 passed / 6 skipped — the same
+pre-existing, unrelated baseline failures (`s1`, `s15` `ImportError`; `s38`,
+`s39`, `s42` anchor/logging gaps). Zero new regressions.
+
+### 7.1 Live re-test — fix confirmed NOT sufficient; deeper root cause found
+
+Replayed the exact reported sequence against workspace 14 with the fix
+deployed: "quote me a videoSolution" → `videoSolutions_BOM` → `United
+States`. The Product list still showed all ~380 models across every
+family — unchanged from the original report.
+
+Direct investigation of the live graph confirmed **this specific bug was
+never a cross-catalog graph leak in the first place**:
+`productSelectionProduct_all`'s 328 neighbors in workspace 14 were already
+all correctly typed to the SVX catalog prefix (`Svx Video Remote Speaker
+Microphone...`) — zero neighbors from any other catalog. The §7 fix is
+still correct and kept (real, verified via its own regression test), but
+it had nothing to filter in this case.
+
+**Real root cause — a 3-step BML dependency chain that never resolves:**
+
+1. The *only* rule that narrows `productSelectionProduct_all`'s options is
+   a constraint script, "Restrict Product Selection Based on Package
+   Choice String," which reads a computed variable `packageChoiceString`.
+2. `packageChoiceString` is itself computed by a recommendation-rule
+   script, "Set Package Choice String," which requires `packageNumber` to
+   be non-empty (`if(not isnull(packageNumber) and packageNumber <> "")`).
+3. `packageNumber` (order 3, required=False) has **zero menu-item options**
+   anywhere in the ingested XML — its only graph neighbor is a
+   `BmConfigZipCache` metadata entity, not a picklist. In real
+   BigMachines this value almost certainly comes from an account/contract
+   "Package" selection made outside this catalog's configuration export
+   (pricing/package data) — Aryx never receives it.
+
+Since `packageNumber` can never be filled from the data Aryx has, the
+whole chain stays empty end to end, and `apply_constraint_rules` correctly
+reports "no active constraint" — the engine isn't misbehaving; the input
+needed to narrow this list simply doesn't exist in the ingested catalog.
+
+**Conclusion:** this specific manifestation is **not fixable within the
+current data model** — there's no hardcode-free way to narrow the list,
+since the narrowing input doesn't exist anywhere in the ingested catalog.
+Fabricating a value or an options list for `packageNumber` would itself be
+the kind of hardcoding this project has consistently avoided. Documented
+here as a known, root-caused limitation pending a decision on whether to
+pursue modeling `packageNumber` as a new user-facing input (which would
+first require sourcing what its legitimate values actually are — outside
+this catalog's own export).
