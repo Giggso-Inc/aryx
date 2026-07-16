@@ -161,7 +161,7 @@
 </style>
 
 <h1>POST /admin/docs/read</h1>
-<p class="subtitle">8-step document pipeline · entity extraction · process memory · no entity DB writes until /confirm</p>
+<p class="subtitle">8-step document pipeline + independent tabular path (CSV/JSON/XML/XLSX) · entity extraction · process memory · no entity DB writes until /confirm</p>
 
 <div class="flow">
 
@@ -172,7 +172,7 @@
     <div class="detail">
       <span class="key">Accepts:</span> multipart/form-data — <code>files[]</code> (binary), <code>context</code> (string), <code>workspace_id</code> (int)<br>
       <span class="key">Validates:</span> 50 MB per-file limit · extension whitelist (DOC_EXTS + DATA_EXTS)<br>
-      <span class="key">Creates:</span> <code>discovery_id = uuid4().hex</code> · <code>JobStore.create(did, "discovery", workspace_id)</code><br>
+      <span class="key">Creates:</span> <code>discovery_id = uuid4().hex</code> · <code>JobStore.create(did, "discovery", "N file(s)", workspace_id)</code><br>
       <span class="key">Schedules:</span> <code>_read_job</code> as FastAPI BackgroundTask<br>
       <span class="key">Returns immediately:</span> <code>{"discovery_id": "a3f9..."}</code> HTTP 200
     </div>
@@ -190,16 +190,28 @@
     <div class="step-num">background thread</div>
     <div class="step-title">_read_job — File Router</div>
     <div class="detail">
-      Splits files by extension into two parallel paths:<br>
-      <span class="key">DOC_EXTS</span> (.pdf .docx .pptx .ppt .rtf .html .htm .jpg .jpeg .png .tiff .tif .bmp)
+      Splits files by extension into two independent paths:<br>
+      <span class="key">DOC_EXTS</span> (.pdf .docx .doc .pptx .ppt .rtf .html .htm .jpg .jpeg .png .tiff .tif .bmp)
         → write to <code>NamedTemporaryFile</code> → <code>doc_paths[]</code><br>
-      <span class="key">DATA_EXTS</span> (.json .csv .xml) → keep as bytes → <code>tabular[]</code><br>
-      XML → <code>_xml_to_csvs()</code> → one CSV per top-3 most-frequent element type<br>
+      <span class="key">DATA_EXTS</span> (.json .csv .xml <span style="color:var(--teal)">.xlsx</span>) → kept in memory as bytes (no temp file needed) → <code>tabular[]</code><br>
+      .csv → <code>_consolidate_csv_names()</code> merges split name columns · .xml → <code>_xml_to_csvs()</code> one CSV per element type (capped) · <span style="color:var(--teal)">.xlsx → <code>_xlsx_to_csvs()</code> one CSV per visible worksheet</span> — see Tabular Path section below<br>
       <code>JobStore.update_stage(did, "Reading", 30, "Reading N file(s)…")</code>
     </div>
     <div class="io-row">
       <span class="io-badge io-in">IN: binary file bytes</span>
       <span class="io-badge io-out">OUT: doc_paths[], tabular[]</span>
+    </div>
+  </div>
+
+  <div class="conn"><div class="conn-line" style="height:12px"></div></div>
+
+  <!-- PIPELINE-LEVEL TIMEOUT/CONCURRENCY -->
+  <div class="step-card" style="width:100%">
+    <div class="step-num">pipeline-level (wraps all 8 steps)</div>
+    <div class="step-title">Per-Document Timeout &amp; Worker Concurrency — doc_router.py</div>
+    <div class="detail">
+      <span class="key">ARYX_PER_DOC_TIMEOUT</span> (default <strong>7200s / 2h</strong>) — hard wall-clock budget per document. A hang in parse/OCR/embed/extract abandons that one document (logged as error); the rest of the batch continues.<br>
+      <span class="key">ARYX_DOC_WORKERS</span> (default <strong>1</strong>, sequential) — how many documents run at once. Raise only for cloud LLM backends that can truly handle concurrent requests; a local CPU Ollama gains nothing from parallelism.
     </div>
   </div>
 
@@ -235,7 +247,7 @@
         <tr><td>Local</td><td>.pdf</td><td>PdfConnector</td><td>pymupdf layout-aware extraction</td></tr>
         <tr><td>Local</td><td>.docx .doc .rtf</td><td>DocxConnector</td><td>python-docx</td></tr>
         <tr><td>Local</td><td>.pptx .ppt</td><td>PptxConnector</td><td>python-pptx</td></tr>
-        <tr><td>Local</td><td>.jpg .png .tiff .bmp</td><td>ImageConnector</td><td>pytesseract OCR</td></tr>
+        <tr><td>Local</td><td>.jpg .jpeg .png .tiff .tif .bmp</td><td>ImageConnector</td><td>pytesseract OCR</td></tr>
         <tr><td>Local</td><td>.html .htm</td><td>MarkupConnector</td><td>html.parser</td></tr>
       </table>
     </div>
@@ -359,7 +371,8 @@ chunk 2:                      [────────────────�
         <tr><td><code>source_type</code></td><td>ext without dot</td></tr>
         <tr><td><code>byte_count</code></td><td>file size in bytes</td></tr>
       </table>
-      <div style="margin-top:8px; font-size:10px; color:var(--muted)">Idempotent on <code>content_hash</code> — re-upload returns existing ID.</div>
+      <div style="margin-top:8px; font-size:10px; color:var(--muted)">Idempotent on <code>content_hash</code> — re-upload returns existing ID (same bytes = same row, even under a different filename).</div>
+      <div style="margin-top:4px; font-size:10px; color:var(--muted)">Connections are borrowed from a shared pool (<code>store/pool.py</code>), not opened per call — <code>.close()</code> is now a no-op.</div>
       <div class="io-row">
         <span class="io-badge io-in">IN: doc_id, file meta</span>
         <span class="io-badge io-out">OUT: doc_db_id: int</span>
@@ -637,16 +650,56 @@ RawRecord(
 
 <!-- TABULAR PATH -->
 <div class="section">
-  <div class="section-title">Tabular Path — API Call D (JSON / CSV / XML files)</div>
+  <div class="section-title">Tabular Path — Step T1: Normalize (JSON / CSV / XML / XLSX files)</div>
+  <div style="font-size:11px; color:var(--muted); margin-bottom:12px;">
+    Runs independently of the 8-step document pipeline. No OCR, chunking, PII screening, or embeddings here — the data is already structured. Goal: split each upload into one clean CSV per record type.
+  </div>
+  <div class="split-row">
+    <div class="step-card" style="border-color:var(--muted)">
+      <div class="step-title" style="color:var(--muted)">.csv → _consolidate_csv_names()</div>
+      <div class="detail">
+        Passed through as-is, <strong>except</strong> multi-part name columns (<code>COMPANY_NAME</code>, <code>COMPANY_NAME_2</code> … <code>COMPANY_NAME_5</code>) get merged into one <code>name</code> column.<br><br>
+        <span class="key">Why:</span> some government/defense exports split a long org name across columns due to a legacy fixed-width limit. No-op when there's nothing to merge.
+      </div>
+    </div>
+    <div class="step-card" style="border-color:var(--accent)">
+      <div class="step-title" style="color:var(--accent)">.xml → _xml_to_csvs()</div>
+      <div class="detail">
+        Entity = element with ≥2 distinct child element types, or ≥1 XML attribute if it's a leaf. Multilingual fields collapse to one value (English preferred). <code>{parent_tag}_id</code> FK column injected on every child row automatically.<br><br>
+        <span class="key">Caps:</span> <code>ARYX_XML_MAX_ENTITY_TYPES</code> (default <strong>20</strong>, named types preferred) · <code>ARYX_XML_MAX_ROWS_PER_TYPE</code> (default <strong>500</strong>) — guards against ERP/CPQ exports with dozens of element types and huge row counts.
+      </div>
+    </div>
+  </div>
+  <div class="step-card" style="width:100%; margin-top:16px; border-color:var(--teal)">
+    <div class="step-title" style="color:var(--teal)">.xlsx → _xlsx_to_csvs() — multi-sheet Excel ingestion</div>
+    <div style="background:#0d2626; border:1px solid var(--teal); border-radius:6px; padding:8px 10px; margin-bottom:10px; font-size:11px; color:var(--teal)">
+      ✦ New: earlier revisions of this endpoint had no .xlsx support at all — DATA_EXTS did not include it.
+    </div>
+    <div class="detail">
+      Every <strong>visible</strong> worksheet becomes its own CSV, mirroring <code>_xml_to_csvs()</code>'s shape so the rest of the pipeline needs no separate spreadsheet code path.<br><br>
+      <span class="key">Skipped (never ingested as garbage datasets):</span> hidden/"very hidden" sheets · sheets with no header row · sheets with a header but zero data rows (e.g. a blank "Template" tab).<br><br>
+      <span class="key">Naming:</span> <code>"{workbook_stem}__{sheet_slug}.csv"</code> — e.g. <code>orders.xlsx</code> with sheets "Customers" / "Order Items!" → <code>orders__Customers.csv</code>, <code>orders__Order_Items.csv</code>. The shared <code>{stem}__</code> prefix lets a later query recover every sheet from one workbook upload.<br><br>
+      Reads via <code>openpyxl</code> in read-only streaming mode (no full workbook in memory).
+    </div>
+    <div class="io-row">
+      <span class="io-badge io-in">IN: .xlsx bytes</span>
+      <span class="io-badge io-out">OUT: list[(csv_bytes, "{stem}__{sheet}.csv")]</span>
+    </div>
+  </div>
+</div>
+
+<!-- TABULAR PATH STEP T2 -->
+<div class="section">
+  <div class="section-title">Tabular Path — Step T2: Type Inference — API Call D</div>
   <div class="step-card" style="width:100%">
-    <div class="step-title" style="color:var(--orange)">_infer_type() — Type Inference per File</div>
+    <div class="step-title" style="color:var(--orange)">_infer_type() — runs once per CSV from Step T1</div>
     <div class="detail">
       <span class="key">Filename signal (preferred):</span> <code>support_tickets.csv</code> → <code>SupportTicket</code><br>
-      Filename wins unless stem is a generic word (data, export, report, file, table, row, record…)<br><br>
+      Filename wins unless stem is a generic word (data, export, report, file, table, row, record, entity, item, object, dataset, import, sheet, upload, dump, output, input, sample, test)<br><br>
       <span class="key">LLM fallback (generic filenames only):</span>
     </div>
     <div class="ext-api" style="margin-top:10px">
-      <div class="api-label">API Call D — Tabular Type Inference (same LLM backend as C)</div>
+      <div class="api-label">API Call D — Tabular Type Inference (same tier as C, different broker plumbing)</div>
       <div class="api-grid">
         <div class="api-col">
           <h4>User prompt</h4>
@@ -679,7 +732,7 @@ Reply ONLY as JSON:
       </div>
     </div>
     <div style="margin-top:10px; font-size:11px; color:var(--muted)">
-      XML files → <code>_xml_to_csvs()</code> → top-3 most-frequent element types → one CSV each → <code>{parent_tag}_id</code> FK column injected → <code>_detect_fk_links()</code> auto-wires parent→child relationships at /confirm.
+      <strong style="color:var(--text)">Same tier, different code path:</strong> Call C (extract_mentions) uses the shared app <code>Broker</code> via <code>aryx.llm.complete_json()</code>. Call D uses <code>aryx.llm_runtime.chat("menial", ...)</code>, which builds its own single-model broker from the live Settings-panel "menial model" config. Both resolve to tier <code>"cheap"</code> today, but changing one model does not change the other.
     </div>
   </div>
 </div>
@@ -747,13 +800,14 @@ Reply ONLY as JSON:
         <td>No</td>
       </tr>
       <tr>
-        <td>Tabular files only (.csv etc)</td>
+        <td>Tabular files only (.csv .json .xml .xlsx)</td>
         <td>No</td>
         <td>No</td>
         <td>No</td>
-        <td class="col-ok">Yes</td>
+        <td class="col-warn">Only if filename is generic</td>
       </tr>
     </table>
+    <div style="margin-top:6px; font-size:10px; color:var(--muted)">D is conditional even when tabular files are present — a well-named CSV (customers.csv) never triggers an LLM call.</div>
   </div>
 </div>
 
@@ -763,20 +817,37 @@ Reply ONLY as JSON:
   <div class="scroll-x">
     <table>
       <tr><th>Error</th><th>Where</th><th>Behaviour</th></tr>
-      <tr><td>File > 50 MB</td><td>HTTP handler</td><td class="col-action">HTTPException 400 — no job created</td></tr>
-      <tr><td>OCI file > 15 MB</td><td>Step 1/8</td><td class="col-action">ValueError — job marked failed</td></tr>
-      <tr><td>OCI Document Understanding unreachable</td><td>Step 1/8</td><td class="col-action">Exception → job failed</td></tr>
+      <tr><td>Any single file > 50 MB</td><td>HTTP handler</td><td class="col-action">HTTPException 400 — no job created, whole request rejected first</td></tr>
+      <tr><td>Per-document timeout exceeded (ARYX_PER_DOC_TIMEOUT, default 2h)</td><td>wraps steps 1-8</td><td class="col-warn">That document abandoned (logged), batch continues</td></tr>
+      <tr><td>OCI file > 15 MB</td><td>Step 1/8 (OCI mode)</td><td class="col-action">ValueError — job marked failed</td></tr>
+      <tr><td>OCI Document Understanding unreachable</td><td>Step 1/8 (OCI mode)</td><td class="col-action">Exception → job failed</td></tr>
       <tr><td>presidio / spaCy not installed</td><td>Step 3/8</td><td class="col-action">Raises — job failed, no unscreened text passes</td></tr>
-      <tr><td>Ollama not running</td><td>Step 6/8</td><td class="col-action">RuntimeError — job failed</td></tr>
+      <tr><td>Ollama not running / no embed model configured</td><td>Step 6/8</td><td class="col-action">RuntimeError — job failed</td></tr>
       <tr><td>Embed dim mismatch</td><td>Step 6/8</td><td class="col-action">RuntimeError — job failed</td></tr>
-      <tr><td>LLM NER chunk fails</td><td>Step 8/8</td><td class="col-warn">Chunk skipped, rest continue (WARNING)</td></tr>
+      <tr><td>LLM NER chunk fails (API Call C)</td><td>Step 8/8</td><td class="col-warn">Chunk skipped, rest continue (WARNING)</td></tr>
       <tr><td>Mention fails verbatim-span gate</td><td>Step 8/8</td><td class="col-warn">Mention dropped, rest continue (DEBUG)</td></tr>
-      <tr><td>Type inference fails</td><td>_infer_type</td><td class="col-ok">Fallback to filename-derived type — never propagates</td></tr>
-      <tr><td>Process restart after /read</td><td>discoveries._STORE</td><td class="col-action">GET /summary → {} · POST /confirm → 404</td></tr>
+      <tr><td>XML fails to parse / no entity elements found</td><td>Step T1 (.xml)</td><td class="col-ok">Falls back to a single raw-upload CSV, never fails</td></tr>
+      <tr><td>Type inference fails (API Call D)</td><td>Step T2 · _infer_type</td><td class="col-ok">Fallback to filename-derived type — never propagates</td></tr>
+      <tr><td>Discovery expired / process restarted after /read</td><td>discoveries._STORE (in-memory)</td><td class="col-action">GET /summary → {} · POST /confirm → 404</td></tr>
     </table>
+    <div style="margin-top:8px; font-size:10px; color:var(--muted)">Process restarts lose discoveries._STORE entirely (plain in-memory dict) even though aryx_document / aryx_chunk / aryx_chunk_embedding rows from /read survive in the database — the user must re-upload to get a new discovery_id.</div>
+  </div>
+</div>
+
+<!-- AUDIT NOTE -->
+<div class="section">
+  <div class="section-title">Audit Note — Drift Fixed in This Revision</div>
+  <div class="confirm-path" style="font-size:11px;">
+    <div class="path-step"><span class="arrow">•</span><span><strong>.xlsx was entirely missing.</strong> DATA_EXTS now includes .xlsx; added the full <code>_xlsx_to_csvs()</code> multi-sheet ingestion path (one CSV per visible worksheet, hidden/empty sheets skipped).</span></div>
+    <div class="path-step"><span class="arrow">•</span><span><strong>CSV name consolidation was undocumented.</strong> Added <code>_consolidate_csv_names()</code> — merges split COMPANY_NAME_2-style columns into <code>name</code>.</span></div>
+    <div class="path-step"><span class="arrow">•</span><span><strong>Wrong XML cap.</strong> Corrected "top-3 most-frequent element type" → actual caps are ARYX_XML_MAX_ENTITY_TYPES (default 20) and ARYX_XML_MAX_ROWS_PER_TYPE (default 500).</span></div>
+    <div class="path-step"><span class="arrow">•</span><span><strong>JobStore.create() signature was incomplete.</strong> Corrected to the real 4-argument call: <code>create(job_id, system, dataset, workspace_id)</code>.</span></div>
+    <div class="path-step"><span class="arrow">•</span><span><strong>No per-document timeout / concurrency.</strong> Added ARYX_PER_DOC_TIMEOUT (default 2h) and ARYX_DOC_WORKERS (default 1) as a new pipeline-level card.</span></div>
+    <div class="path-step"><span class="arrow">•</span><span><strong>No connection-pooling note.</strong> Added a line noting ChunkStore/JobStore now borrow from a shared pool; .close() is a no-op.</span></div>
+    <div class="path-step"><span class="arrow">•</span><span>Everything else — the 8-step document pipeline, API Calls A-C, the verbatim-span gate, and the /confirm entity-creation boundary — matched current code and was left as-is (only reworded for clarity).</span></div>
   </div>
 </div>
 
 <div style="margin-top:32px; font-size:10px; color:var(--muted); text-align:center; padding-top:16px; border-top:1px solid var(--border)">
-  src/aryx/connectors/doc_router.py · src/aryx/pipeline/clean_text.py · src/aryx/pipeline/pii.py · src/aryx/store/chunk_store.py · src/aryx/pipeline/embed.py · src/aryx/ontology/extract.py · src/aryx/pipeline/doc_discovery.py
+  src/aryx/connectors/doc_router.py · src/aryx/pipeline/clean_text.py · src/aryx/pipeline/pii.py · src/aryx/store/chunk_store.py · src/aryx/pipeline/embed.py · src/aryx/ontology/extract.py · src/aryx/pipeline/doc_discovery.py · src/aryx/store/job_store.py · src/aryx/store/pool.py · src/aryx/llm_runtime.py
 </div>
