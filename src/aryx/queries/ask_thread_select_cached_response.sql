@@ -13,6 +13,7 @@ WHERE gg_messages.thread_id = %s::uuid
   AND gg_messages.request_id = %s::uuid
   AND gg_messages.message_type = 'system'
   AND gg_messages.is_visible = TRUE
+  AND NULLIF(BTRIM(COALESCE(gg_messages.message_metadata->>'error', '')), '') IS NULL
   AND gg_channels.workspace_id = %s::uuid
   AND gg_channels.name = %s
   AND COALESCE((gg_channels.channel_settings->>'aryx_hidden')::boolean, FALSE) = TRUE

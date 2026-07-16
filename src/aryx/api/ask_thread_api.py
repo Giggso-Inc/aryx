@@ -36,6 +36,25 @@ def _store_or_unsupported() -> AryxAskThreadStore:
     return AryxAskThreadStore(settings.effective_dsn())
 
 
+def _is_replayable_response(response: dict[str, Any] | None) -> bool:
+    """Return whether a cached response represents a completed Ask run."""
+    return bool(response) and not bool(response.get("error"))
+
+
+def _release_request_after_persist_error(
+    store: AryxAskThreadStore,
+    thread_id: str,
+    request_id: str,
+) -> str:
+    """Mark a request retryable, returning an error string if release fails."""
+    try:
+        store.mark_request_retryable(thread_id, request_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ask request retry release failed: %s", exc)
+        return str(exc)
+    return ""
+
+
 def ask_thread_router() -> APIRouter:
     router = APIRouter(dependencies=[Depends(require_api_key)])
 
@@ -99,7 +118,7 @@ def ask_thread_router() -> APIRouter:
                 req.thread_id,
                 req.request_id,
             )
-            if cached:
+            if _is_replayable_response(cached):
                 return {
                     **cached,
                     "thread_id": req.thread_id,
@@ -121,7 +140,7 @@ def ask_thread_router() -> APIRouter:
                         req.thread_id,
                         req.request_id,
                     )
-                    if cached:
+                    if _is_replayable_response(cached):
                         return {
                             **cached,
                             "thread_id": req.thread_id,
@@ -182,6 +201,13 @@ def ask_thread_router() -> APIRouter:
                 except Exception as persist_exc:  # noqa: BLE001
                     logger.warning("ask failure response persist failed: %s", persist_exc)
                     persistence_error = str(persist_exc)
+                    release_error = _release_request_after_persist_error(
+                        store,
+                        req.thread_id,
+                        req.request_id,
+                    )
+                    if release_error:
+                        persistence_error += f"; retry release failed: {release_error}"
                 return JSONResponse(
                     status_code=502,
                     content={
@@ -208,6 +234,13 @@ def ask_thread_router() -> APIRouter:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ask response persist failed: %s", exc)
                 persistence_error = str(exc)
+                release_error = _release_request_after_persist_error(
+                    store,
+                    req.thread_id,
+                    req.request_id,
+                )
+                if release_error:
+                    persistence_error += f"; retry release failed: {release_error}"
 
             return {
                 **result,

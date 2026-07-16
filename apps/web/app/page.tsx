@@ -166,6 +166,9 @@ export default function HomePage() {
   // Cancels an in-flight recovery poll when the component unmounts or a new
   // question is submitted before the previous recovery finishes.
   const cancelRecoveryRef = useRef(false);
+  // React state updates are asynchronous, so busy alone cannot reject two
+  // submit events fired in the same render. This ref is the synchronous gate.
+  const sendInFlightRef = useRef(false);
   const activeThreadRef = useRef<string | null>(selectedThreadId);
   const optimisticThreadRef = useRef<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -223,9 +226,15 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, shayWorkspaceId, turns.length, workspaceId]);
 
+  const finishSend = () => {
+    sendInFlightRef.current = false;
+    setBusy(false);
+  };
+
   const send = async (question?: string) => {
     const q = (question ?? input).trim();
-    if (!q || busy) return;
+    if (!q || busy || sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setAutoScrollTranscript(true);
 
     // Stamp submit time (with 5 s clock-skew buffer) so the recovery poll
@@ -325,7 +334,7 @@ export default function HomePage() {
         if (threadId === optimisticThreadRef.current) {
           optimisticThreadRef.current = null;
         }
-        setBusy(false);
+        finishSend();
       }, totalMs);
     } catch (err: unknown) {
       if (shayWorkspaceId && activeThreadRef.current === optimisticThreadRef.current) {
@@ -411,7 +420,7 @@ export default function HomePage() {
                       : t,
                   ),
                 );
-                setBusy(false);
+                finishSend();
               }, totalMs);
             }
           } catch {
@@ -427,7 +436,7 @@ export default function HomePage() {
                 : t,
             ),
           );
-          setBusy(false);
+          finishSend();
         }
       } else {
         setTurns((prev) =>
@@ -437,7 +446,7 @@ export default function HomePage() {
               : t,
           ),
         );
-        setBusy(false);
+        finishSend();
       }
     }
   };

@@ -63,7 +63,9 @@ message_row AS (
             ELSE EXCLUDED.ai_processing_time
         END,
         message_metadata = CASE
-            WHEN gg_messages.message_type = 'user' THEN gg_messages.message_metadata
+            WHEN gg_messages.message_type = 'user' THEN
+                COALESCE(gg_messages.message_metadata, '{}'::jsonb)
+                || EXCLUDED.message_metadata
             ELSE COALESCE(gg_messages.message_metadata, '{}'::jsonb)
                 || EXCLUDED.message_metadata
         END,
@@ -75,10 +77,29 @@ message_row AS (
             WHEN gg_messages.message_type = 'user' THEN gg_messages.usage_metrics
             ELSE EXCLUDED.usage_metrics
         END,
-        updated_at = CASE
-            WHEN gg_messages.message_type = 'user' THEN gg_messages.updated_at
-            ELSE NOW()
-        END
+        updated_at = NOW()
+    WHERE gg_messages.message_type <> 'user'
+       OR (
+            gg_messages.content = EXCLUDED.content
+            AND (
+                gg_messages.message_metadata->>'request_status' = 'failed'
+                OR (
+                    gg_messages.message_metadata->>'request_status' IS NULL
+                    AND EXISTS (
+                        SELECT 1
+                        FROM gg_messages AS failed_response
+                        WHERE failed_response.thread_id = gg_messages.thread_id
+                          AND failed_response.request_id = gg_messages.request_id
+                          AND failed_response.message_type = 'system'
+                          AND NULLIF(
+                              BTRIM(COALESCE(failed_response.message_metadata->>'error', '')),
+                              ''
+                          ) IS NOT NULL
+                    )
+                )
+                OR gg_messages.updated_at < NOW() - INTERVAL '20 minutes'
+            )
+        )
     RETURNING id::text, sequence_number, (xmax = 0) AS inserted, content
 )
 SELECT id, sequence_number, inserted, content FROM message_row
