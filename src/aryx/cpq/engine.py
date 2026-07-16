@@ -29,6 +29,7 @@ from aryx.cpq.bml import (
 )
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
+from aryx.resolution.classical import string_score
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
     RecommendationRule,
@@ -222,6 +223,24 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
 # substring collisions (e.g. "essential" inside "quintessential") negligible.
 _HINT_MIN_PHRASE_LEN = 5
 _HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
+
+# detect_product_mention's fuzzy-substring fallback (see its docstring):
+# minimum aryx.resolution.classical.string_score (SequenceMatcher ratio,
+# [0,1]) against a sliding window the length of the candidate name for a
+# PARTIAL/misspelled product mention to count. Deliberately conservative —
+# high enough that an unrelated, generic question never scores this well
+# against a real product name by coincidence; a genuine near-miss (a typo,
+# or a name missing one trailing character) comfortably clears it.
+_PRODUCT_FUZZY_MATCH_THRESHOLD = 0.82
+
+# suggest_product_candidates' lower bound for the "maybe, not confident"
+# band — empirically, unrelated generic questions ("does it support dual
+# SIM too", "what color options are available") score up to ~0.5 against a
+# real product name purely by character-overlap coincidence, while a
+# genuine near-miss clears 0.82. 0.65 sits well above that noise floor
+# (leaves margin so ordinary questions never trigger a "did you mean...?"
+# hint) while still well below the confirm-worthy threshold.
+_PRODUCT_FUZZY_SUGGEST_THRESHOLD = 0.65
 
 # Process-wide, keyed by (workspace_id, catalog_prefix) — see
 # CpqEngine._build_flag_keyword_index. Depends only on the catalog's own
@@ -833,20 +852,152 @@ class CpqEngine:
         (regression caught in review: this is the same "variant must win
         over generic" guarantee the old hardcoded _PRODUCT_PATTERNS table
         enforced via explicit list ordering).
+
+        Falls back to a FUZZY substring match (deterministic, no LLM) when
+        no candidate is an exact substring of the question — catches a
+        partial/incomplete mention ("SL 3500" missing the trailing "e") or
+        a typo, cases the exact check silently misses, which previously
+        left a mid-session product switch undetected with no signal
+        anything was wrong. Reuses aryx.resolution.classical.string_score
+        (SequenceMatcher-based), the same deterministic scoring already
+        used for entity-resolution matching elsewhere in this codebase —
+        no new dependency, no network call, no non-determinism. Slides a
+        window the length of each candidate's normalized name across the
+        normalized question and keeps the best score seen; only a name at
+        least _HINT_MIN_PHRASE_LEN chars long is ever considered, same
+        guard used elsewhere in this module to stop short names from
+        spuriously matching unrelated text. This is purely a widened
+        DETECTION signal — the caller (ask_api.py's confirm_switch gate)
+        still requires explicit confirmation before anything is reset, so
+        a fuzzy false positive costs one extra yes/no turn, never a silent
+        wrong-product answer or data loss.
         """
         q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
         if reader is not None and q_norm:
             candidates = self._ingested_product_names(reader, workspace_id)
-            normalized = [
-                (name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in candidates
-            ]
-            # Sort by the NORMALIZED length actually used for matching, not
-            # the raw display string — punctuation/spacing density could
-            # otherwise make the two orderings diverge.
-            for name, name_norm in sorted(normalized, key=lambda t: len(t[1]), reverse=True):
+            ordered = sorted(
+                ((name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in candidates),
+                key=lambda t: len(t[1]), reverse=True,
+            )
+            for name, name_norm in ordered:
                 if name_norm and name_norm in q_norm:
                     return name
+            scored = self._fuzzy_score_candidates(q_norm, ordered)
+            if scored and scored[0][1] >= _PRODUCT_FUZZY_MATCH_THRESHOLD:
+                return scored[0][0]
         return next((v for k, v in hints.items() if "product" in k), "")
+
+    @staticmethod
+    def _fuzzy_score_candidates(
+        q_norm: str, ordered: list[tuple[str, str]],
+    ) -> list[tuple[str, float]]:
+        """Best deterministic fuzzy score of each (name, name_norm) pair
+        against q_norm — a sliding window the length of the candidate's
+        normalized name, scored via aryx.resolution.classical.string_score.
+        Shared by detect_product_mention's confirm-worthy match and
+        suggest_product_candidates' lower "maybe" band, so both use the
+        exact same scoring, just different thresholds. Sorted descending;
+        names shorter than _HINT_MIN_PHRASE_LEN are never scored (same
+        guard used elsewhere to stop short names from spuriously matching
+        unrelated text).
+        """
+        scored: list[tuple[str, float]] = []
+        for name, name_norm in ordered:
+            if len(name_norm) < _HINT_MIN_PHRASE_LEN:
+                continue
+            window = len(name_norm)
+            span = max(1, len(q_norm) - window + 1)
+            best = 0.0
+            for i in range(span):
+                best = max(best, string_score(name_norm, q_norm[i:i + window]))
+            scored.append((name, best))
+        scored.sort(key=lambda t: t[1], reverse=True)
+        return scored
+
+    def suggest_product_candidates(
+        self, question: str, reader: Any, workspace_id: int,
+        exclude: str = "", limit: int = 5,
+    ) -> list[str]:
+        """Up to `limit` real ingested product names whose fuzzy similarity
+        to `question` falls in the "maybe, not confident" band — at or
+        above _PRODUCT_FUZZY_SUGGEST_THRESHOLD but below
+        detect_product_mention's own confirm-worthy _PRODUCT_FUZZY_MATCH_THRESHOLD.
+
+        Used when a mid-conversation message seems to be attempting to
+        name a product but doesn't clearly match anything — instead of
+        silently ignoring it (today's behavior when detect_product_mention
+        returns ""), the caller can offer these as "did you mean one of
+        these?" candidates rather than leaving the customer's real intent
+        unrecognised with no signal anything was ambiguous.
+
+        Returns [] when nothing scores in that band — either
+        detect_product_mention already found a confident match, or the
+        message truly has no product-name signal at all (the common case
+        for an ordinary configuration answer).
+        """
+        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+        if reader is None or not q_norm:
+            return []
+        candidates = self._ingested_product_names(reader, workspace_id)
+        ordered = [
+            (name, re.sub(r"[^a-z0-9]", "", name.lower()))
+            for name in candidates
+            if name.strip().lower() != exclude.strip().lower()
+        ]
+        scored = self._fuzzy_score_candidates(q_norm, ordered)
+        return [
+            name for name, score in scored
+            if _PRODUCT_FUZZY_SUGGEST_THRESHOLD <= score < _PRODUCT_FUZZY_MATCH_THRESHOLD
+        ][:limit]
+
+    def check_country_availability(
+        self,
+        attrs: list[ConfigAttr],
+        con_rules: list["ConstraintRule"],
+        filled: dict[str, str],
+        bml_eval: BmlEvaluator,
+    ) -> bool:
+        """Is the country in `filled` compatible with this catalog's
+        product line (variable_name "productSelectionProduct_all" —
+        confirmed via real data to be a shared, tenant-wide convention
+        present under the IDENTICAL native id in every ingested catalog
+        checked so far, same category as ultimateDestinationCountry
+        itself, not specific to any one product)?
+
+        Reuses apply_constraint_rules — the SAME machinery already used
+        for every other constraint in this engine, handling declarative
+        AND script-backed rules identically — rather than reading rule
+        conditions directly. Confirmed against real data that the actual
+        constraint on the product-selector conditioned on country/region
+        is BML-script-based (referencing region/customerType internally),
+        not a simple declarative country -> allowed-list lookup; 5 of the
+        6 constraint rules targeting this attribute in APX Next are
+        script-form. A hand-rolled declarative-only check would silently
+        miss all of them and always report "available."
+
+        Returns True whenever there's no active constraint on the
+        product-selector at all — no rule means no stated restriction,
+        the same default used throughout this engine. Returns False only
+        when a constraint actually fires and narrows the product-selector
+        down to zero allowed values.
+
+        Deliberately does NOT attempt to enumerate which OTHER countries
+        would be valid — doing so would mean re-running this same
+        constraint (script evaluation, possibly LLM-backed) once per
+        candidate country, up to ~249 times for a single check. Not
+        computable cheaply; the caller asks the client for a different
+        country instead of listing alternatives.
+        """
+        selector = next(
+            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
+        )
+        if selector is None:
+            return True
+        constrained = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        allowed = constrained.get(selector.entity_id)
+        if allowed is None:
+            return True
+        return bool(allowed)
 
     # ── PostgreSQL attribute fetch ────────────────────────────────────────────
 

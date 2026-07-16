@@ -624,7 +624,90 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # asked the user to confirm before discarding the in-progress config. THIS
     # turn's raw reply is that yes/no answer, not a new CPQ hint (Andie-planned
     # fix for: "CPQ for two products is not working in the single session").
-    if session.pending_anchor == "confirm_switch":
+    def _complete_product_switch(new_product: str, new_country: str) -> None:
+        """Reset config-scoped state and commit the switch. `new_country`
+        is carried over as-is (already validated by the caller, or simply
+        never set) — never blindly cleared, so a client who already gave a
+        valid country for the new product doesn't have to repeat it."""
+        session.cascade_log.append({
+            "event": "product_switch", "from": session.product_name,
+            "to": new_product, "turn": session.turn,
+        })
+        session.filled = {}
+        session.filled_multi = {}
+        session.display_filled = {}
+        session.filled_source = {}
+        session.pending_variables = []
+        session.status = "configuring"
+        session.country = new_country
+        # NOTE: catalog_prefix is not a CpqSession field — it's derived
+        # fresh from attrs[0].catalog_prefix every turn in Step 2 below,
+        # so there's nothing session-scoped to reset here.
+        session.product_entity_id = 0
+        session.negated_vns = []
+        session.product_name = new_product
+        session.pending_switch_product = ""
+        session.pending_anchor = ""
+        logger.info(
+            "cpq_switch: switched turn=%s new_product=%r country=%r — config state reset",
+            session.turn, new_product, new_country or "(none — will be asked fresh)",
+        )
+
+    def _country_available_for(product_name: str, country_value: str) -> bool:
+        """Best-effort: is country_value compatible with product_name's own
+        constraint rules? See CpqEngine.check_country_availability's
+        docstring — reuses the same rule-evaluation machinery as every
+        other constraint in this engine (declarative AND BML-script-backed
+        alike) rather than a hand-rolled lookup. Fails open (True) if the
+        new catalog can't be loaded at all — never blocks a switch on an
+        inability to check, only on a confirmed real restriction.
+        """
+        new_attrs, _resolved = _cpq_engine.load_product_config(reader, req.workspace_id, product_name)
+        if not new_attrs:
+            return True
+        new_prefix = new_attrs[0].catalog_prefix
+        country_attr = next(
+            (a for a in new_attrs if _cpq_engine._is_country_anchor_var(a.variable_name)), None,
+        )
+        if country_attr is None:
+            return True
+        new_con_rules = _cpq_engine.load_constraint_rules(req.workspace_id, new_prefix)
+        new_bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, new_prefix)
+        return _cpq_engine.check_country_availability(
+            new_attrs, new_con_rules,
+            {country_attr.variable_name: country_value}, new_bml_eval,
+        )
+
+    if session.pending_anchor == "switch_country":
+        # A prior turn found the carried-over country invalid for the new
+        # product and asked for a different one — this turn's text is that
+        # attempt (same "bare reply" convention as the normal country
+        # anchor: try the NL-hint extractor first, else the raw trimmed
+        # text — CPQ_CASCADE_CONVERSATION_PLAN.md D1).
+        new_country = hints.get("country") or req.question.strip()
+        new_product = session.pending_switch_product
+        if _country_available_for(new_product, new_country):
+            _complete_product_switch(new_product, new_country)
+            # Fall through — Step 1 below sees session.country already set
+            # and session.product_name already the new product, so it
+            # proceeds straight to Step 2 for the new catalog.
+        else:
+            logger.info(
+                "cpq_switch: country=%r still invalid for pending_product=%r turn=%s",
+                new_country, new_product, session.turn,
+            )
+            answer = (
+                f"**{new_product}** isn't available for **{new_country}** either. "
+                f"Could you provide a different country to continue switching?"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_country_invalid()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+    elif session.pending_anchor == "confirm_switch":
         reply = req.question.strip().lower()
         affirmative = reply.startswith(("y", "yes", "switch", "confirm"))
         logger.info(
@@ -634,31 +717,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         if affirmative:
             new_product = session.pending_switch_product
-            session.cascade_log.append({
-                "event": "product_switch", "from": session.product_name,
-                "to": new_product, "turn": session.turn,
-            })
-            session.filled = {}
-            session.filled_multi = {}
-            session.display_filled = {}
-            session.filled_source = {}
-            session.pending_variables = []
-            session.status = "configuring"
-            session.country = ""
-            # NOTE: catalog_prefix is not a CpqSession field — it's derived
-            # fresh from attrs[0].catalog_prefix every turn in Step 2 below,
-            # so there's nothing session-scoped to reset here.
-            session.product_entity_id = 0
-            session.negated_vns = []
-            session.product_name = new_product
-            session.pending_switch_product = ""
-            session.pending_anchor = ""
-            logger.info(
-                "cpq_switch: switched turn=%s new_product=%r — config state reset",
-                session.turn, new_product,
-            )
-            # Fall through — Step 1's anchor block below now re-anchors the
-            # country for the new product (session.country was just cleared).
+            old_country = session.country
+            if old_country and not _country_available_for(new_product, old_country):
+                session.pending_anchor = "switch_country"
+                logger.info(
+                    "cpq_switch: country=%r invalid for new_product=%r turn=%s — "
+                    "asking for a different country before completing the switch",
+                    old_country, new_product, session.turn,
+                )
+                answer = (
+                    f"**{new_product}** isn't available for **{old_country}**. "
+                    f"Could you provide a different country to continue switching?"
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_switch_country_invalid()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+            _complete_product_switch(new_product, old_country)
+            # Fall through — Step 1's anchor block below re-anchors the
+            # country for the new product only if it's still empty (a
+            # validated carried-over country is preserved, never re-asked).
         else:
             session.pending_switch_product = ""
             session.pending_anchor = ""
@@ -727,14 +808,15 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     else:
         # Product already anchored on an earlier turn — re-check THIS turn's
         # text for a mention of a DIFFERENT product. detect_product_mention
-        # is dynamic: it matches against the real product/family names of
-        # whatever catalogs are actually ingested in this workspace (read
-        # live from the graph), not a hardcoded list — so an answer value
-        # that merely contains unrelated text is unlikely to misfire unless
-        # it names another product genuinely present in this workspace; the
-        # confirm gate above is the safety net regardless — a false-positive
-        # costs one extra yes/no turn, never silent data loss.
-        switch_candidate = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
+        # is dynamic (matches against whatever catalogs are actually
+        # ingested in this workspace, not a hardcoded list) and now also
+        # fuzzy (see its docstring) — catches partial/misspelled mentions
+        # that don't exactly match the other product's name, without an
+        # LLM call — the confirm gate below is the safety net regardless —
+        # a false-positive costs one extra yes/no turn, never silent data loss.
+        switch_candidate = _cpq_engine.detect_product_mention(
+            req.question, hints, reader, req.workspace_id,
+        )
         if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
             logger.info(
                 "cpq_switch: candidate detected turn=%s current=%r candidate=%r",
@@ -750,6 +832,34 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             _persist_cpq_history(req.workspace_id, req.question, answer)
             return {
                 "answer": answer, "terms": [], "tools_called": ["cpq_switch_candidate()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
+        # No confident switch candidate — but the message might still be a
+        # garbled/partial attempt at naming a product (fuzzy score in the
+        # "maybe" band, below confirm-worthy but above pure noise). Rather
+        # than silently ignore it (today's behavior — falls straight
+        # through to Step 2 as a normal answer), offer up to 5 real
+        # candidates so the client isn't left unrecognised with no signal
+        # anything was ambiguous.
+        suggestions = _cpq_engine.suggest_product_candidates(
+            req.question, reader, req.workspace_id, exclude=session.product_name,
+        )
+        if suggestions:
+            logger.info(
+                "cpq_switch: ambiguous product mention turn=%s current=%r suggestions=%r",
+                session.turn, session.product_name, suggestions,
+            )
+            sug_list = ", ".join(f"**{s}**" for s in suggestions)
+            answer = (
+                f"I couldn't tell if that's a different product — did you mean one "
+                f"of: {sug_list}? Or let me know the exact product name."
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_ambiguous()"],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
                           "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,

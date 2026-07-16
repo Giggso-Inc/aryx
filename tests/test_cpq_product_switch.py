@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
-from aryx.cpq.state import CpqSession
+from aryx.cpq.state import ConfigAttr, CpqSession
 
 
 class _FakeProductReader:
@@ -148,7 +148,11 @@ def test_product_not_ingested_in_workspace_is_never_a_switch_candidate(monkeypat
 
 def test_confirmed_switch_resets_config_state_and_reanchors_country(monkeypatch):
     reader = _no_switch_setup(monkeypatch)
-    session_data = _mid_config_session(product_name="SL3500e")
+    # No country set before switching — country="" is the scenario this
+    # test targets (re-anchoring from a clean slate). A country already
+    # set and valid for the new product is now PRESERVED, not reset — see
+    # test_switch_preserves_valid_country_without_reasking for that case.
+    session_data = _mid_config_session(product_name="SL3500e", country="")
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "MOTOTRBO"
 
@@ -162,7 +166,7 @@ def test_confirmed_switch_resets_config_state_and_reanchors_country(monkeypatch)
     assert sd["filled"] == {}, "old product's answers must be discarded on confirmed switch"
     assert sd["display_filled"] == {}
     assert sd["pending_variables"] == []
-    # Country was cleared by the switch, so the next anchor step re-asks it.
+    # No country was set, so the next anchor step asks for one fresh.
     assert sd["pending_anchor"] == "country"
     assert "country" in resp["answer"].lower()
     # Audit trail: the switch is recorded, not silently dropped.
@@ -222,8 +226,11 @@ def test_value_text_mention_does_not_lose_data_when_declined(monkeypatch):
 
 def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
     reader = _no_switch_setup(monkeypatch)
+    # No country set — see test_confirmed_switch_resets_config_state_and_reanchors_country
+    # for why this must be explicit now that a valid, already-set country
+    # is preserved across a switch instead of being reset.
     session_data = _mid_config_session(
-        product_name="SL3500e", filled={"battery": "STANDARD"})
+        product_name="SL3500e", country="", filled={"battery": "STANDARD"})
 
     # Switch SL3500e -> MOTOTRBO.
     session_data["pending_anchor"] = "confirm_switch"
@@ -323,3 +330,228 @@ def test_detect_product_mention_recognises_a_brand_new_product_with_no_code_chan
         reader=reader, workspace_id=1,
     )
     assert result == "Zorbax Ultra 9000"
+
+
+# ── Scenario 7: fuzzy substring fallback catches a PARTIAL/misspelled ──────
+# product mention that Tier 1's exact-substring match alone would miss —
+# deterministic (SequenceMatcher via aryx.resolution.classical.string_score),
+# no LLM call, no added latency/cost on ordinary turns.
+
+def test_partial_product_name_missing_a_character_triggers_confirm(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(
+        question="what about a MOTOTRB radio",  # missing trailing "o"
+        workspace_id=1, session_data=session_data,
+    )
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp, "fuzzy match should have surfaced a switch candidate"
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "confirm_switch"
+    assert sd["pending_switch_product"] == "MOTOTRBO"
+    # Same safety net as an exact match — nothing is reset yet, only a candidate.
+    assert sd["product_name"] == "SL3500e"
+    assert sd["filled"] == {"battery": "STANDARD"}
+
+
+def test_misspelled_product_name_triggers_confirm(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="quote me a mototrbio instead",  # typo of MOTOTRBO
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp, "fuzzy match should have caught the misspelled product name"
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "confirm_switch"
+    assert sd["pending_switch_product"] == "MOTOTRBO"
+
+
+def test_generic_question_never_fuzzy_matches_a_product(monkeypatch):
+    """An ordinary, product-agnostic question must never be treated as a
+    switch candidate just because it shares some characters with a real
+    product name — the whole point of the conservative threshold."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="does it support dual SIM too",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    # No exact or fuzzy candidate -> falls through to Step 2's mocked {}.
+    assert resp == {}
+
+
+def test_short_direct_answer_never_fuzzy_matches_a_product(monkeypatch):
+    """A short, ordinary config answer must never be treated as a switch
+    candidate — proves the fuzzy fallback doesn't misfire on normal turns."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="core trunking bundle",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp == {}
+
+
+def test_exact_match_still_wins_before_fuzzy_is_even_tried(monkeypatch):
+    """Tier 1's free exact-name match must short-circuit before the fuzzy
+    scan runs at all — proven by using a message where the exact name is
+    present verbatim."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="Actually I also need a MOTOTRBO radio",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["session_data"]["pending_switch_product"] == "MOTOTRBO"
+
+
+# ── Scenario 8: mid-band fuzzy score -> "did you mean...?" suggestions ────
+# instead of silently ignoring a garbled/partial product mention that
+# scores between the suggest and confirm thresholds.
+
+def test_middle_band_mention_offers_up_to_5_suggestions(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(
+        question="what about motorola trbo",  # ~0.75 fuzzy score vs MOTOTRBO
+        workspace_id=1, session_data=session_data,
+    )
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp, "middle-band mention should surface a suggestion, not be ignored"
+    assert resp["tools_called"] == ["cpq_switch_ambiguous()"]
+    assert "MOTOTRBO" in resp["answer"]
+    # Stateless hint — no pending_anchor set, nothing committed either way.
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == ""
+    assert sd["product_name"] == "SL3500e"
+
+
+def test_middle_band_suggestions_capped_at_five(monkeypatch):
+    many_catalogs = {
+        "Sl3500EConfig": "SL3500e",
+        "AlphaZorbConfig": "Alpha Zorb One",
+        "AlphaZorbTwoConfig": "Alpha Zorb Two",
+        "AlphaZorbThreeConfig": "Alpha Zorb Three",
+        "AlphaZorbFourConfig": "Alpha Zorb Four",
+        "AlphaZorbFiveConfig": "Alpha Zorb Five",
+        "AlphaZorbSixConfig": "Alpha Zorb Six",
+    }
+    reader = _no_switch_setup(monkeypatch, catalogs=many_catalogs)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="what about the alpha zorb radio",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    if resp.get("tools_called") == ["cpq_switch_ambiguous()"]:
+        # Count how many bolded product names appear in the hint.
+        assert resp["answer"].count("**Alpha Zorb") <= 5
+
+
+def test_generic_question_gets_no_suggestions_either(monkeypatch):
+    """The existing 'generic question -> ignored' tests already prove no
+    exact/fuzzy switch candidate fires; this confirms the NEW middle-band
+    suggestion path doesn't fire for them either."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    req = AskRequest(question="does it support dual SIM too",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp == {}, "a purely generic question must not trigger a suggestion prompt"
+
+
+# ── Scenario 9: country re-validation on a confirmed product switch ───────
+
+_FAKE_COUNTRY_ATTR = ConfigAttr(
+    entity_id=9001, variable_name="ultimateDestinationCountry",
+    display_label="Country", required=True, default_value="", options=[],
+)
+
+
+def _country_check_setup(monkeypatch, available: bool):
+    """Override load_product_config (normally mocked to return ([], "") by
+    _no_switch_setup, which would make _country_available_for short-circuit
+    to True before ever calling check_country_availability) so the new
+    catalog resolves to a real country ConfigAttr, and check_country_availability
+    itself returns `available` — isolates the ask_api.py wiring from the
+    engine method's own internals, which are covered by their own unit tests."""
+    monkeypatch.setattr(
+        api._cpq_engine, "load_product_config",
+        lambda *a, **k: ([_FAKE_COUNTRY_ATTR], "MOTOTRBO"),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_constraint_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    monkeypatch.setattr(
+        api._cpq_engine, "check_country_availability", lambda *a, **k: available,
+    )
+
+
+def test_switch_preserves_valid_country_without_reasking(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=True)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="yes", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO"
+    assert sd["country"] == "United States", "a validated country must be preserved, not reset"
+    assert sd["pending_anchor"] != "country", "must not re-ask for a country already validated"
+
+
+def test_switch_asks_for_new_country_when_invalid(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=False)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="yes", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "switch_country"
+    assert sd["pending_switch_product"] == "MOTOTRBO"
+    # Nothing committed yet — still on the OLD product/config until a valid country is given.
+    assert sd["product_name"] == "SL3500e"
+    assert "MOTOTRBO" in resp["answer"]
+    assert "United States" in resp["answer"]
+
+
+def test_switch_completes_once_a_valid_new_country_is_given(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=True)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "switch_country"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="Canada", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO"
+    assert sd["country"] == "Canada"
+    assert sd["pending_switch_product"] == ""
+    assert sd["filled"] == {}, "switching product must still discard the old config"
+
+
+def test_switch_country_loops_if_new_country_still_invalid(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=False)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "switch_country"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="Germany", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "switch_country"
+    assert sd["product_name"] == "SL3500e", "must not commit the switch while still invalid"
+    assert "Germany" in resp["answer"] or "MOTOTRBO" in resp["answer"]
