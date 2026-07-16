@@ -126,6 +126,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    extract_mention_retries: int = Field(
+        default=3,
+        description=(
+            "Max attempts per document chunk for extract_mentions()'s LLM "
+            "call before giving up on that chunk. A single malformed/ "
+            "unparseable JSON response (common with local models under "
+            "load) previously dropped the chunk on the first failure with "
+            "no retry, silently zeroing out a document's discovered entity "
+            "types if it happened to hit every chunk in one run. "
+            "Override with ARYX_EXTRACT_MENTION_RETRIES."
+        ),
+    )
+    extract_mention_retry_delay: float = Field(
+        default=0.5,
+        description=(
+            "Base seconds between extract_mentions() retry attempts "
+            "(linear backoff: delay * attempt_number). "
+            "Override with ARYX_EXTRACT_MENTION_RETRY_DELAY."
+        ),
+    )
     csv_chunk_rows: int = Field(
         default=0,
         description=(
