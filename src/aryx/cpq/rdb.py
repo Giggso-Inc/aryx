@@ -358,6 +358,63 @@ class PostgresCpqRdb:
                 scripts[fn_id] = script
         return scripts
 
+    def fetch_layout_attr_assoc(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, int]]:
+        """All BmConfigLayoutAttrAssoc rows: (rule_id, attr_id, layout_model_id).
+
+        rule_id is the BM-native id of the governing flow/rule (see
+        docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §1) — a row's presence is
+        the only signal that an attribute is placed on SOME screen at all.
+        One attribute can carry multiple rows (one per flow it appears in
+        under), so callers scope to one rule_id, never aggregate blindly
+        across rows.
+        """
+        rows: list[tuple[int, int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfiglayoutattrassoc")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT attributes->>'rule_id',
+                               attributes->>'attr_id',
+                               attributes->>'layout_model_id'
+                        FROM aryx_entity
+                        WHERE workspace_id = %s
+                          AND replace(lower(ontology_type), '_', '') LIKE %s
+                        """,
+                        (workspace_id, type_pattern),
+                    )
+                    for rid, aid, lmid in cur.fetchall():
+                        rid_i, aid_i, lmid_i = _as_int(rid), _as_int(aid), _as_int(lmid)
+                        if aid_i and lmid_i:
+                            rows.append((rid_i or 0, aid_i, lmid_i))
+        except Exception:
+            logger.debug("cpq rdb: layout-attr-assoc fetch failed", exc_info=True)
+        return rows
+
+    def fetch_layout_model_nodes(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> dict[int, tuple[int | None, str, int]]:
+        """Map BmLayoutModel node id → (parent_id, label, order_number).
+
+        A plain parent-pointer hierarchy (docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md
+        §4) — parent_id groups a node with its siblings under one screen
+        section/tab; order_number is the real on-screen display order within
+        that group. parent_id of -1 marks the tree root (a tab).
+        """
+        nodes: dict[int, tuple[int | None, str, int]] = {}
+        for _eid, attrs in self.fetch_entities_by_type(workspace_id, "bmlayoutmodel", catalog_prefix):
+            node_id = _as_int(attrs.get("id"))
+            if not node_id:
+                continue
+            parent_id = _as_int(attrs.get("parent_id"))
+            label = (attrs.get("label") or "").strip()
+            order_number = _as_int(attrs.get("order_number")) or 0
+            nodes[node_id] = (parent_id, label, order_number)
+        return nodes
+
 
 class OracleCpqRdb(PostgresCpqRdb):
     """Oracle ADB 23ai implementation — JSON_VALUE over the JSON column.
@@ -586,6 +643,33 @@ class OracleCpqRdb(PostgresCpqRdb):
                             rows.append((rid_i, cid_i))
         except Exception:
             logger.debug("cpq rdb(oracle): rule-chain fetch failed", exc_info=True)
+        return rows
+
+    def fetch_layout_attr_assoc(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[tuple[int, int, int]]:
+        rows: list[tuple[int, int, int]] = []
+        type_pattern = _type_pattern(catalog_prefix, "bmconfiglayoutattrassoc")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT JSON_VALUE(attributes, '$.rule_id'),
+                               JSON_VALUE(attributes, '$.attr_id'),
+                               JSON_VALUE(attributes, '$.layout_model_id')
+                        FROM aryx_entity
+                        WHERE workspace_id = :1
+                          AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
+                        """,
+                        (workspace_id, type_pattern),
+                    )
+                    for rid, aid, lmid in cur.fetchall():
+                        rid_i, aid_i, lmid_i = _as_int(rid), _as_int(aid), _as_int(lmid)
+                        if aid_i and lmid_i:
+                            rows.append((rid_i or 0, aid_i, lmid_i))
+        except Exception:
+            logger.debug("cpq rdb(oracle): layout-attr-assoc fetch failed", exc_info=True)
         return rows
 
 
