@@ -1244,6 +1244,18 @@ class CpqEngine:
         menu_by_attr: dict[int, list[MenuOption]] = {}
         for eid, menu_ids in neighbor_map.items():
             opts: list[MenuOption] = []
+            # (item_value, display_name) pairs already added for this attr —
+            # company-level/global BM attrs (e.g. _BM_USER_CURRENCY,
+            # _BM_USER_LANGUAGE, _BM_USER_NUMBER_FORMAT) share one native id
+            # across every ingested catalog from the same BM tenant, and
+            # reader.neighbors() has no catalog-prefix scoping of its own, so
+            # a workspace holding 2+ catalogs can surface the same option
+            # more than once for these specific attrs (confirmed live: "US
+            # Dollar" offered twice). See docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md
+            # Bug 1 — this is the safe, minimal backstop; product-specific
+            # attrs never hit this since their menu items are never
+            # re-exported verbatim across catalogs.
+            seen_opts: set[tuple[str, str]] = set()
             for mid in menu_ids:
                 ma = all_menu_pg.get(mid, {})
                 # Always use item_value (API code), item_text for display
@@ -1257,6 +1269,10 @@ class CpqEngine:
                         continue
                     if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
                         continue
+                    key = (iv_lo, dt_lo)
+                    if key in seen_opts:
+                        continue
+                    seen_opts.add(key)
                     opts.append(MenuOption(item_value=iv, display_name=dt, order=order))
             opts.sort(key=lambda x: x.order)
             menu_by_attr[eid] = opts
@@ -2564,8 +2580,17 @@ class CpqEngine:
             # not rule-governed). Decision-required attrs (country/region —
             # hwVersion removed per D1, it's a normal dependent now) always
             # ask regardless of governance.
-            is_decision_attr = any(
-                dk in vn_flat for dk in _DECISION_REQUIRED_KEYS
+            is_decision_attr = (
+                any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+                # productSelectionProduct_all is a shared, catalog-wide
+                # option list (e.g. 325 product-line codes across every
+                # product family) with no rule reliably narrowing it to the
+                # resolved product — blind first-by-order picked "APX6500"
+                # for an APX NEXT quote (confirmed live). Exact variable-name
+                # match, not a substring, so this never widens to unrelated
+                # "product*" attrs. See
+                # docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md Bug 3/3c.
+                or vn == "productSelectionProduct_all"
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -2701,6 +2726,25 @@ class CpqEngine:
                 filled_multi[vn] = []
                 display_filled[vn] = "(none)"
                 sources.setdefault(vn, "default")
+            elif self._is_noise_var(vn) and attr.options:
+                # Company-level/system attrs (_BM_USER_CURRENCY, _BM_USER_
+                # LANGUAGE, _BM_USER_NUMBER_FORMAT, ...) are already excluded
+                # from the final payload by _is_noise_var (build_payload) —
+                # asking about them in conversation is inconsistent with that
+                # (confirmed live: these got asked, with duplicate options,
+                # right before a bug that never affects the submitted BOM).
+                # Auto-default instead of asking: prefer the XML default_value
+                # if it's a real option, else first by order — same rule
+                # already used for governed single/boolean attrs above.
+                valid_opts = [o for o in attr.options if _valid(o.item_value)]
+                fallback = next(
+                    (o for o in valid_opts if o.item_value == attr.default_value),
+                    valid_opts[0] if valid_opts else None,
+                )
+                if fallback:
+                    filled[vn] = fallback.item_value
+                    display_filled[vn] = fallback.display_name
+                    sources.setdefault(vn, "default")
             elif attr.options or is_decision_attr:
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.

@@ -624,3 +624,20 @@ Confirmed the raw `parent_id` is NOT a usable identifier across catalogs: APX Ne
 **Connection to `docs/CPQ_RULE_TOOL_FLOW_PLAN.md` §16 (BML coverage plan)**: these 5 scripts use `SPLIT()`/`findinarray()` against a LOCAL script variable, not a direct attribute comparison -- they don't fit the Tier-1 if/else grammar `bml.py` already parses, so they fall to "unknown -> stay visible" even with this session's fixes. This is a genuinely new, real idiom ("per-model enabled-attribute list lookup") for the Tier-1.5 roadmap -- confirmed live-relevant (it's exactly what gates the screenshot's own fields), not a hypothetical case.
 
 **Net model, four layers stacking together**: (1) flow-rule membership (§1) scopes what's relevant to this device at all; (2) section/`parent_id` grouping (§4/§5) scopes what's on THIS page, in what order; (3) the country-anchor identification rule (§5) finds that section generically; (4) ordinary hiding rules (already partially handled by the rule_tool plan, this specific idiom not yet) decide which of the section's fields are ACTUALLY shown for the current selections. No single layer explains the screenshot alone.
+---
+
+## 7. Third catalog confirmation — SL3500e_config.xml
+
+Checked a third, independent file (`SL3500e_config.xml`, 17MB, MOTOTRBO/SL3500e catalog) against every claim in this plan.
+
+| | APX Next | SVX Video RSM | SL3500e |
+|---|---|---|---|
+| `rule_type=6` count | 3 | 2 | **2** |
+| Flow rule names | "Configuration Flow For Astro Devices (Portable)" + "_sysConfig" | "Configuration Flow For vX650 (Video Solutions_BOM)" + "_SysConfig" | **"Configuration Flow For Region NA"** + **"Configuration flow for MotoTrbo model series"** |
+| `layout_attr_assoc` rows dominated by flow rule_ids | top 3 | top 2 = 100% of 266 | **top 2 = 100% of 331** |
+| Attrs with layout placement | 350/427 (82%) | 137/235 (58%) | **186/277 (67%)** |
+| Country anchor at `order_number=1` in its own section | ✅ | ✅ | **✅ (both layout_id variants)** |
+
+Naming varies again ("Region NA" / "MotoTrbo model series" instead of device-class names) — confirming the RULE NAME itself is never a safe signal, only `rule_type=6` + the layout_attr_assoc dominance pattern is. The country-anchor section here is small (2 attrs: country + its warning help text) — a plausible, real difference in how this catalog's designer split sections, not a break in the rule.
+
+**Net**: every mechanism in this plan (§1 flow rule, §2 fallback design, §4 section grouping, §5 country-anchor identification) is now confirmed on THREE independent catalogs, not two. No changes needed to the plan itself — this round was verification, not new discovery.
