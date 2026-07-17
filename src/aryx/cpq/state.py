@@ -148,6 +148,15 @@ class ConfigAttr:
     # workspace holding more than one product's XML export never lets one
     # catalog's rules act on another's attributes.
     catalog_prefix: str = ""
+    # Raw BM set_type code from the source XML ("1" transaction-line,
+    # "2" transient UI/action-layer, "3" other). set_type=2 attrs must be
+    # EXCLUDED from the BOM API payload — confirmed live: the real CPQ API
+    # rejected every set_type=2 attr sent ("has an invalid payload") while
+    # accepting identically-shaped set_type=1 menus, and the APX catalog's
+    # own set_type=2 population (_price_book_var_name, mergePackage,
+    # update, clearPackageJson, ...) shows the layer is transient fields,
+    # not transaction attributes. Distinct from select_type (UI shape).
+    set_type: str = ""
     # True for BM attrs flagged hidden=1 in the source XML — never shown to
     # the customer or added to `pending`, but still eligible for its own
     # default_value (BML scripts elsewhere may reference it) instead of
@@ -245,6 +254,15 @@ class CpqSession:
     # Empty string when no switch is pending — old session_data payloads that
     # predate this field simply default to "" via CpqSession.from_dict.
     pending_switch_product: str = ""
+    # Set when the mid-band "did you mean one of: ...?" hint offered MORE
+    # THAN ONE family (pending_anchor == "suggest_switch") — the candidates
+    # the next turn's reply picks from. A bare "yes" is ambiguous against
+    # 2+ names, so the suggest_switch gate re-prompts with this list instead
+    # of guessing (Issue 7, docs/CPQ_PRODUCT_SWITCH_ISSUE.md: the stateless
+    # version of this prompt let "yes" fall through to the approval handler,
+    # which SUBMITTED the current quote). Old payloads default to [] via
+    # from_dict, same as every other newer field.
+    pending_switch_candidates: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
-from aryx.cpq.state import ConfigAttr, CpqSession
+from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 
 
 class _FakeProductReader:
@@ -38,28 +38,43 @@ class _FakeProductReader:
     `catalogs` maps a catalog prefix -> its real product/family display
     name, mirroring how a workspace's ingested XML catalogs are actually
     structured (e.g. {"Sl3500EConfig": "SL3500e", "MototrboConfig": "MOTOTRBO"}).
+
+    `trees` (optional) maps a catalog prefix -> the names of its own
+    bm_catalog tree entities (product lines / products) — the
+    catalog-scoped hierarchy ingested_product_alias_map reads (confirmed
+    live: each export carries ONLY its own tree, e.g. "aPXNext_BOM" /
+    "APX™ NEXT" exist solely in the APX export).
     """
 
-    def __init__(self, catalogs: dict[str, str]):
+    def __init__(self, catalogs: dict[str, str], trees: dict[str, list[str]] | None = None):
         self._catalogs = catalogs
+        self._trees = trees or {}
         self.id_to_name: dict[int, str] = {}
         self._next_id = 1000
 
     def distinct_types(self):
         return [f"{prefix}BmConfigAttr" for prefix in self._catalogs]
 
+    def _ent(self, ontology_type: str, pname: str) -> dict:
+        self._next_id += 1
+        eid = self._next_id
+        self.id_to_name[eid] = pname
+        return {"id": eid, "type": ontology_type, "name": pname}
+
     def find_entities(self, ontology_type=None, name=None, limit=50):
         for prefix, pname in self._catalogs.items():
             if ontology_type == f"{prefix}BmPrdFamily":
-                self._next_id += 1
-                eid = self._next_id
-                self.id_to_name[eid] = pname
-                return [{"id": eid, "type": ontology_type, "name": pname}]
+                return [self._ent(ontology_type, pname)]
+            if ontology_type == f"{prefix}BmCatalog":
+                return [self._ent(ontology_type, t) for t in self._trees.get(prefix, [])]
         return []
 
 
-def _fake_reader_with_batch_fetch(monkeypatch, catalogs: dict[str, str]) -> _FakeProductReader:
-    reader = _FakeProductReader(catalogs)
+def _fake_reader_with_batch_fetch(
+    monkeypatch, catalogs: dict[str, str],
+    trees: dict[str, list[str]] | None = None,
+) -> _FakeProductReader:
+    reader = _FakeProductReader(catalogs, trees)
     monkeypatch.setattr(
         api._cpq_engine, "_batch_fetch",
         lambda ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
@@ -84,9 +99,10 @@ def _mid_config_session(product_name="SL3500e", country="United States",
     return session.to_dict()
 
 
-def _no_switch_setup(monkeypatch, catalogs=None):
+def _no_switch_setup(monkeypatch, catalogs=None, trees=None):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
-    reader = _fake_reader_with_batch_fetch(monkeypatch, catalogs or _TWO_PRODUCT_CATALOGS)
+    reader = _fake_reader_with_batch_fetch(
+        monkeypatch, catalogs or _TWO_PRODUCT_CATALOGS, trees)
     # Step 2 onward needs real graph/RDB config-attr data we don't have here
     # — force the "no CPQ data in graph" fallthrough so any turn that
     # reaches Step 2 returns cleanly ({}) instead of crashing.
@@ -423,9 +439,11 @@ def test_middle_band_mention_offers_up_to_5_suggestions(monkeypatch):
     assert resp, "middle-band mention should surface a suggestion, not be ignored"
     assert resp["tools_called"] == ["cpq_switch_ambiguous()"]
     assert "MOTOTRBO" in resp["answer"]
-    # Stateless hint — no pending_anchor set, nothing committed either way.
+    # Issue 7: the hint must arm a pending state its reply can be consumed
+    # by (one candidate -> the confirm gate). Nothing committed either way.
     sd = resp["session_data"]
-    assert sd["pending_anchor"] == ""
+    assert sd["pending_anchor"] == "confirm_switch"
+    assert sd["pending_switch_product"] == "MOTOTRBO"
     assert sd["product_name"] == "SL3500e"
 
 
@@ -477,12 +495,17 @@ def _country_check_setup(monkeypatch, available: bool):
     to True before ever calling check_country_availability) so the new
     catalog resolves to a real country ConfigAttr, and check_country_availability
     itself returns `available` — isolates the ask_api.py wiring from the
-    engine method's own internals, which are covered by their own unit tests."""
+    engine method's own internals, which are exercised for real (no mocks)
+    by the test_country_availability_* tests below."""
     monkeypatch.setattr(
         api._cpq_engine, "load_product_config",
         lambda *a, **k: ([_FAKE_COUNTRY_ATTR], "MOTOTRBO"),
     )
-    monkeypatch.setattr(api._cpq_engine, "load_constraint_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], []),
+    )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
     monkeypatch.setattr(
         api._cpq_engine, "check_country_availability", lambda *a, **k: available,
@@ -555,3 +578,378 @@ def test_switch_country_loops_if_new_country_still_invalid(monkeypatch):
     assert sd["pending_anchor"] == "switch_country"
     assert sd["product_name"] == "SL3500e", "must not commit the switch while still invalid"
     assert "Germany" in resp["answer"] or "MOTOTRBO" in resp["answer"]
+
+
+# ── Scenario 10: country-availability REAL logic (no engine mocks) ─────────
+#
+# Review finding P1: session.country holds DISPLAY text ("United States"),
+# but constraint rules key on canonical item_values ("US") and may read
+# fields derived from the country. Seeding the evaluation with a raw
+# one-key dict meant no rule ever fired and the check always passed.
+# The fix runs the same evaluate_rules_loop cascade a real first turn
+# runs (auto_fill canonicalizes the country hint via the attr's own
+# options). These tests exercise that logic end to end with real engine
+# methods — nothing on the evaluation path is mocked.
+
+_REAL_COUNTRY_ATTR = ConfigAttr(
+    entity_id=9101, variable_name="ultimateDestinationCountry",
+    display_label="Ultimate Destination Country", required=True,
+    default_value="", source_id=910101,
+    options=[
+        MenuOption(item_value="US", display_name="United States", order=1),
+        MenuOption(item_value="CA", display_name="Canada", order=2),
+    ],
+)
+_REAL_SELECTOR_ATTR = ConfigAttr(
+    entity_id=9102, variable_name="productSelectionProduct_all",
+    display_label="Product", required=False,
+    default_value="", source_id=910202,
+    options=[MenuOption(item_value="SVX-100", display_name="SVX Video RSM", order=1)],
+)
+
+
+def _country_rule(allowed_values: list[str]) -> ConstraintRule:
+    """Declarative rule: when country == item_value 'US', the product
+    selector is constrained to `allowed_values` (empty ⇒ unavailable)."""
+    return ConstraintRule(
+        rule_name="Restrict product selection by country",
+        condition_attr_id=_REAL_COUNTRY_ATTR.source_id,
+        condition_value="US",
+        target_attr_id=_REAL_SELECTOR_ATTR.source_id,
+        allowed_values=allowed_values,
+    )
+
+
+def test_country_availability_display_text_is_canonicalized_and_blocks():
+    """'United States' (display text, what session.country actually holds)
+    must canonicalize to item_value 'US' through the cascade and fire the
+    rule that empties the product selector → unavailable (False)."""
+    attrs = [_REAL_COUNTRY_ATTR, _REAL_SELECTOR_ATTR]
+    rule = _country_rule(allowed_values=[])
+    _vis, sim_filled, _disp, _copts = api._cpq_engine.evaluate_rules_loop(
+        attrs, {"country": "United States"}, {},
+        [], [], [rule], bml_eval=None, country="United States",
+    )
+    assert sim_filled.get("ultimateDestinationCountry") == "US", (
+        "the cascade must canonicalize display text to the option item_value"
+    )
+    assert api._cpq_engine.check_country_availability(
+        attrs, [rule], sim_filled, None,
+    ) is False
+
+
+def test_country_availability_display_text_allows_when_rule_keeps_options():
+    """Same canonicalized path, but the fired rule leaves a non-empty
+    allowed set → available (True)."""
+    attrs = [_REAL_COUNTRY_ATTR, _REAL_SELECTOR_ATTR]
+    rule = _country_rule(allowed_values=["SVX-100"])
+    _vis, sim_filled, _disp, _copts = api._cpq_engine.evaluate_rules_loop(
+        attrs, {"country": "United States"}, {},
+        [], [], [rule], bml_eval=None, country="United States",
+    )
+    assert api._cpq_engine.check_country_availability(
+        attrs, [rule], sim_filled, None,
+    ) is True
+
+
+# ── Scenario 11: family switch via catalog-TREE names (alias map) ──────────
+#
+# Live finding (workspace 14): both XMLs carry the IDENTICAL flat product
+# list, so a product mention can never discriminate the catalog — but each
+# export carries its OWN bm_catalog tree ("aPXNext_BOM"/"APX™ NEXT" only in
+# the APX export; "vX650_BOM" only in the SVX one). detect_product_mention
+# now matches those tree names and resolves them to the owning FAMILY —
+# "Quote APX Next Enhanced radios" mid-SVX-session previously fell through
+# to the change-request path and was misread as a country answer.
+
+_TREES = {
+    "Sl3500EConfig": ["radioLine_BOM", "SL3500e Series"],
+    "MototrboConfig": ["mototrboLine_BOM", "MOTOTRBO Series"],
+}
+
+
+def test_tree_product_line_mention_triggers_family_switch(monkeypatch):
+    reader = _no_switch_setup(monkeypatch, trees=_TREES)
+    session_data = _mid_config_session(product_name="SL3500e")
+
+    req = AskRequest(question="Quote MOTOTRBO Series radios for a US customer",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "confirm_switch"
+    assert sd["pending_switch_product"] == "MOTOTRBO", (
+        "a tree-name mention must resolve to the owning FAMILY name"
+    )
+    assert sd["product_name"] == "SL3500e", "nothing switches before confirmation"
+
+
+def test_tree_name_of_current_family_is_not_a_switch(monkeypatch):
+    reader = _no_switch_setup(monkeypatch, trees=_TREES)
+    session_data = _mid_config_session(product_name="SL3500e")
+
+    req = AskRequest(question="tell me about the SL3500e Series line",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    # Resolves to the CURRENT family -> not a different product -> no
+    # confirm prompt; falls through to Step 2 (mocked to return {}).
+    assert resp == {}
+
+
+def test_shared_tree_alias_is_dropped_never_guessed(monkeypatch):
+    shared_trees = {
+        "Sl3500EConfig": ["Accessory Kit"],
+        "MototrboConfig": ["Accessory Kit"],
+    }
+    reader = _no_switch_setup(monkeypatch, trees=shared_trees)
+    session_data = _mid_config_session(product_name="SL3500e")
+
+    req = AskRequest(question="add the Accessory Kit to the quote",
+                      workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    # "Accessory Kit" exists under BOTH families -> ambiguous -> dropped
+    # from the alias map entirely -> no switch prompt.
+    assert resp == {}
+
+
+def test_alias_map_maps_tree_names_to_family(monkeypatch):
+    reader = _fake_reader_with_batch_fetch(
+        monkeypatch, _TWO_PRODUCT_CATALOGS, _TREES)
+
+    alias_map = api._cpq_engine.ingested_product_alias_map(reader, 1)
+
+    assert alias_map["SL3500e"] == "SL3500e"
+    assert alias_map["radioLine_BOM"] == "SL3500e"
+    assert alias_map["SL3500e Series"] == "SL3500e"
+    assert alias_map["mototrboLine_BOM"] == "MOTOTRBO"
+    assert alias_map["MOTOTRBO Series"] == "MOTOTRBO"
+
+
+# ── Scenario 12: answer-over-switch precedence (Issue 6) ───────────────────
+#
+# Live finding: with Product pending, the legitimate menu answer "APX 6500"
+# scored 0.67 against the other family's tree alias "APX™ N70" and was
+# hijacked into a "did you mean...?" prompt instead of locking. A message
+# that validly answers the currently-pending attribute must be an ANSWER,
+# never a switch signal — switch detection now runs after attrs load and
+# defers to apply_answer against the pending attr's options.
+
+_PRODUCT_MENU_ATTR = ConfigAttr(
+    entity_id=9201, variable_name="productSelectionProduct_all",
+    display_label="Product", required=False, default_value="",
+    options=[
+        MenuOption(item_value="APX6500", display_name="APX 6500", order=1),
+        MenuOption(item_value="APXNEXTSB", display_name="APX NEXT Single Band", order=2),
+        MenuOption(item_value="XIRM8620", display_name="XiR M8620", order=3),
+    ],
+)
+
+# The OTHER family's tree carries short APX-ish aliases — the exact shape
+# that made "APX 6500" score into the suggestion band live.
+_APXISH_TREES = {
+    "Sl3500EConfig": [],
+    "MototrboConfig": ["APX N70", "APX NEXT"],
+}
+
+
+def _pending_menu_setup(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    reader = _fake_reader_with_batch_fetch(
+        monkeypatch, _TWO_PRODUCT_CATALOGS, _APXISH_TREES)
+    monkeypatch.setattr(
+        api._cpq_engine, "load_product_config",
+        lambda *a, **k: ([_PRODUCT_MENU_ATTR], "SL3500e"),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], []),
+    )
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    return reader
+
+
+def _pending_product_session() -> dict:
+    session_data = _mid_config_session(product_name="SL3500e", filled={})
+    session_data["pending_variables"] = ["productSelectionProduct_all"]
+    return session_data
+
+
+def test_menu_answer_resembling_other_family_alias_is_not_hijacked(monkeypatch):
+    reader = _pending_menu_setup(monkeypatch)
+    req = AskRequest(question="APX 6500", workspace_id=1,
+                      session_data=_pending_product_session())
+    resp = _run_cpq_turn(req, reader)
+
+    assert "cpq_switch_ambiguous()" not in resp.get("tools_called", [])
+    assert "cpq_switch_candidate()" not in resp.get("tools_called", [])
+    sd = resp["session_data"]
+    assert sd["filled"].get("productSelectionProduct_all") == "APX6500", (
+        "a valid menu answer must lock, not trigger a switch/suggestion prompt"
+    )
+
+
+def test_menu_answer_containing_alias_substring_still_locks(monkeypatch):
+    """'APX NEXT Single Band' is a REAL option whose text contains the
+    other family's alias 'APX NEXT' — the exact-substring detection tier
+    would hijack it without the answer guard."""
+    reader = _pending_menu_setup(monkeypatch)
+    req = AskRequest(question="APX NEXT Single Band", workspace_id=1,
+                      session_data=_pending_product_session())
+    resp = _run_cpq_turn(req, reader)
+
+    assert "cpq_switch_candidate()" not in resp.get("tools_called", [])
+    sd = resp["session_data"]
+    assert sd["filled"].get("productSelectionProduct_all") == "APXNEXTSB"
+
+
+def test_non_answer_switch_mention_still_detected_with_pending_menu(monkeypatch):
+    """The guard must NOT kill real switch detection: a message that does
+    not match any pending-attr option keeps the confirm-switch flow."""
+    reader = _pending_menu_setup(monkeypatch)
+    req = AskRequest(question="lets switch to the mototrbo quote instead",
+                      workspace_id=1, session_data=_pending_product_session())
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "confirm_switch"
+    assert sd["pending_switch_product"] == "MOTOTRBO"
+    assert sd["filled"].get("productSelectionProduct_all") is None
+
+
+# ── Scenario 13: "did you mean...?" replies are consumed statefully (Issue 7) ─
+#
+# Live finding: the mid-band suggestion prompt set NO pending state, so a
+# "yes" reply fell through to the awaiting_approval handler and SUBMITTED
+# the very quote the client was trying to switch away from. One candidate
+# now routes into the existing confirm_switch gate; several set
+# suggest_switch, whose gate re-prompts on a bare "yes" instead of guessing.
+
+def test_single_suggestion_sets_confirm_state_so_yes_switches_not_approves(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    # Deterministic mid-band: no confident detection, exactly one suggestion.
+    monkeypatch.setattr(
+        api._cpq_engine, "detect_product_mention", lambda *a, **k: "")
+    monkeypatch.setattr(
+        api._cpq_engine, "suggest_product_candidates", lambda *a, **k: ["MOTOTRBO"])
+    session_data = _mid_config_session(product_name="SL3500e")
+    session_data["status"] = "awaiting_approval"  # the live failure state
+
+    req = AskRequest(question="quote me a videoSolution", workspace_id=1,
+                      session_data=session_data)
+    resp1 = _run_cpq_turn(req, reader)
+
+    assert resp1["tools_called"] == ["cpq_switch_ambiguous()"]
+    sd1 = resp1["session_data"]
+    assert sd1["pending_anchor"] == "confirm_switch", (
+        "a single 'did you mean' candidate must arm the confirm gate"
+    )
+    assert sd1["pending_switch_product"] == "MOTOTRBO"
+
+    # Turn 2: "yes" must be consumed by the confirm gate — never approval.
+    _country_check_setup(monkeypatch, available=True)
+    resp2 = _run_cpq_turn(
+        AskRequest(question="yes", workspace_id=1, session_data=sd1), reader)
+
+    assert resp2.get("cpq_payload") is None, (
+        "'yes' to a did-you-mean prompt must NEVER approve/submit the quote"
+    )
+    sd2 = resp2["session_data"]
+    assert sd2["product_name"] == "MOTOTRBO", "the confirmed suggestion must switch"
+
+
+def test_multi_suggestion_yes_reprompts_instead_of_guessing(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    monkeypatch.setattr(
+        api._cpq_engine, "suggest_product_candidates",
+        lambda *a, **k: ["MOTOTRBO", "SL3500e XL"],
+    )
+    session_data = _mid_config_session(product_name="SL3500e")
+
+    resp1 = _run_cpq_turn(
+        AskRequest(question="quote me the other radio line", workspace_id=1,
+                   session_data=session_data), reader)
+    sd1 = resp1["session_data"]
+    assert sd1["pending_anchor"] == "suggest_switch"
+    assert sd1["pending_switch_candidates"] == ["MOTOTRBO", "SL3500e XL"]
+
+    resp2 = _run_cpq_turn(
+        AskRequest(question="yes", workspace_id=1, session_data=sd1), reader)
+
+    assert resp2.get("cpq_payload") is None
+    assert "MOTOTRBO" in resp2["answer"] and "SL3500e XL" in resp2["answer"], (
+        "a bare 'yes' against 2+ candidates must re-prompt with the list"
+    )
+    assert resp2["session_data"]["pending_anchor"] == "suggest_switch"
+
+
+def test_multi_suggestion_no_continues_with_current_product(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    session_data["pending_anchor"] = "suggest_switch"
+    session_data["pending_switch_candidates"] = ["MOTOTRBO", "SL3500e XL"]
+
+    resp = _run_cpq_turn(
+        AskRequest(question="no", workspace_id=1, session_data=session_data), reader)
+
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e"
+    assert sd["pending_anchor"] == ""
+    assert sd["pending_switch_candidates"] == []
+
+
+def test_multi_suggestion_name_reply_routes_into_confirm_flow(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e")
+    session_data["pending_anchor"] = "suggest_switch"
+    session_data["pending_switch_candidates"] = ["MOTOTRBO"]
+
+    resp = _run_cpq_turn(
+        AskRequest(question="MOTOTRBO", workspace_id=1, session_data=session_data),
+        reader)
+
+    sd = resp["session_data"]
+    assert sd["pending_anchor"] == "confirm_switch", (
+        "a candidate-name reply must fall through to normal detection and "
+        "arm the standard confirm gate"
+    )
+    assert sd["pending_switch_product"] == "MOTOTRBO"
+
+
+def test_confirm_switch_accepts_the_product_name_as_affirmative(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=True)
+    session_data = _mid_config_session(product_name="SL3500e")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    resp = _run_cpq_turn(
+        AskRequest(question="videoSolutions_BOM", workspace_id=1,
+                   session_data={**session_data, "pending_switch_product": "videoSolutions_BOM"}),
+        reader)
+
+    # The mocked load_product_config resolves the name afterwards, so assert
+    # the switch EVENT itself, not the final resolved product_name.
+    switches = [e for e in resp["session_data"]["cascade_log"]
+                if e.get("event") == "product_switch"]
+    assert switches and switches[-1]["to"] == "videoSolutions_BOM", (
+        "replying with the offered product's own name must count as yes, not decline"
+    )
+    assert "OK — continuing" not in resp["answer"]
+
+
+def test_country_availability_raw_display_text_documents_the_p1_bug():
+    """The exact pre-fix failure: seeding check_country_availability with
+    RAW display text (no cascade) never matches the rule's item_value
+    condition, so the check silently fails open — this is why
+    _country_available_for must run the cascade first, and why these
+    tests exist. If this assertion ever flips, the engine started
+    canonicalizing inside check_country_availability itself and the
+    cascade in ask_api can be simplified."""
+    attrs = [_REAL_COUNTRY_ATTR, _REAL_SELECTOR_ATTR]
+    rule = _country_rule(allowed_values=[])
+    assert api._cpq_engine.check_country_availability(
+        attrs, [rule], {"ultimateDestinationCountry": "United States"}, None,
+    ) is True
