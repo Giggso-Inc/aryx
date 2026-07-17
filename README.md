@@ -61,6 +61,23 @@ docker compose -f docker-compose.local.yml up -d
 
 First time? **Ingest tab** → provide context (e.g., "Customer support accounts with company info") → connect a database or upload files.
 
+### Validate CPQ rule evaluation
+
+Run the read-only deterministic checker against an ingested CPQ catalog:
+
+```bash
+PYTHONPATH=src python scripts/check_cpq_rule_loop.py \
+  --workspace-id 1 \
+  --product "APX Next" \
+  --strict-unknown \
+  --output cpq-rule-report.json
+```
+
+The checker exercises every catalog option and discoverable rule branch, runs an
+independent `hide → recommend → constrain → auto-fill` oracle to a fixed point,
+and compares it with the production engine. Exit codes are `0` for a clean run,
+`1` for rule/state mismatches, and `2` for setup or catalog-loading failures.
+
 ## Documentation
 
 | Guide | What it covers |
