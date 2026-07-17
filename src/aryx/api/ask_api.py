@@ -294,7 +294,10 @@ def _cpq_summary_text(
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
     )
     try:
-        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        # ARYX_LLM_REASON_MODEL (role="answer"), not menial — this narration
+        # is the customer-facing summary of a real quote; the same reasoning
+        # tier already used for CPQ's own BML Tier-2 script fallback.
+        text, _it, _ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
         if text:
             if _line_count(text) > _MAX_ANSWER_LINES:
@@ -822,6 +825,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # doesn't change again until the next request.
     _hidden_for_payload = _cpq_engine.apply_hiding_rules(
         attrs, session.filled, hiding_rules, bml_eval)[2]
+    # Constraint/recommendation-type inconsistencies (same plan, §4.1) are
+    # NOT auto-fixed — unlike hiding, the engine can't be certain what the
+    # correct value should have been, so silently changing it risks
+    # overwriting a real customer choice. Logged only, for now, as the
+    # audit trail this plan requires; surfacing it to the user directly
+    # is a separate, not-yet-built follow-up.
+    _rule_issues = _cpq_engine.find_rule_inconsistencies(
+        session.filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval)
+    if _rule_issues:
+        logger.info(
+            "cpq: rule-consistency check found %d issue(s): %s",
+            len(_rule_issues), _rule_issues,
+        )
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":

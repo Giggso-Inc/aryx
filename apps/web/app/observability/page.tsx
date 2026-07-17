@@ -141,7 +141,7 @@ export default function ObservabilityPage() {
               <Metric icon={<Zap size={16} />} label="LLM Calls" value={fmtNum(data.llm.total_calls)} color="amber" />
               <Metric icon={<BarChart3 size={16} />} label="Total Tokens" value={fmtNum(data.llm.total_tokens)} color="amber" />
               <Metric icon={<Clock size={16} />} label="Avg Latency" value={fmt(data.llm.avg_latency_ms)} color="steel" />
-              <Metric icon={<Cpu size={16} />} label="Model" value={mc?.menial_model || mc?.model || "—"} sub={mc?.provider} color="navy" />
+              <Metric icon={<Cpu size={16} />} label="Reason Model" value={mc?.answer_model || mc?.model || "—"} sub={mc?.provider} color="navy" />
             </div>
 
             {/* Jobs table */}
