@@ -2236,6 +2236,7 @@ class CpqEngine:
         con_rules: list[ConstraintRule],
         rec_rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Cross-check `filled` against each rule type's OWN independently
         computed result — NOT a self-referential re-derivation of the same
@@ -2292,6 +2293,12 @@ class CpqEngine:
             if not target or target.variable_name not in filled:
                 continue
             vn = target.variable_name
+            if filled_source and filled_source.get(vn) == "user":
+                # A customer's deliberate override is not an inconsistency
+                # even if it now disagrees with a currently-satisfied
+                # recommendation — see docstring's "not filled via 'user'
+                # source" contract, which this param actually enforces.
+                continue
             condition_met: bool | None
             if rule.script is not None:
                 if bml_eval is None:

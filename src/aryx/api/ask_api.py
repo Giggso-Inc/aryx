@@ -832,7 +832,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # audit trail this plan requires; surfacing it to the user directly
     # is a separate, not-yet-built follow-up.
     _rule_issues = _cpq_engine.find_rule_inconsistencies(
-        session.filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval)
+        session.filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval,
+        filled_source=session.filled_source)
     if _rule_issues:
         logger.info(
             "cpq: rule-consistency check found %d issue(s): %s",
