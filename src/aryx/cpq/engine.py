@@ -3793,19 +3793,32 @@ class CpqEngine:
         question: str,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> "tuple[ConfigAttr, str] | None":
         """Detect if the user wants to change an already-filled attribute (Step 6).
 
         Returns (attr_to_change, new_value_hint) or None if no change detected.
         Strategy: look for change-verb vocabulary first; then fall back to
         checking if the raw message maps to a different value for any filled attr.
+
+        filled_multi — multi-select selections (variable_name → item_values).
+        Without it, multi-selects were INVISIBLE to change detection (the
+        loop only consulted the scalar `filled` dict), so no multi-select
+        could ever be changed after completion — confirmed live: "I wanted
+        to include the mounting type: Locking Molle Mount" against a
+        declined (empty, user-confirmed) mount grid fell through to the
+        review nudge. A key present in filled_multi counts as filled —
+        including the explicitly-declined empty selection; for multi attrs
+        a "different value" means the mentioned option isn't already in
+        the selected rows.
         """
         q_lower = question.lower()
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question))
+        multi = filled_multi or {}
 
         # Try each filled attr — find one where the user's message implies a different value
         for attr in attrs:
-            if attr.variable_name not in filled:
+            if attr.variable_name not in filled and attr.variable_name not in multi:
                 continue
             vn_flat = attr.variable_name.lower().replace("_", "")
             label_lower = attr.display_label.lower()
@@ -3820,6 +3833,12 @@ class CpqEngine:
             # by _HINT_PATTERNS can't be distinguished from "4G LTE+5G".
             # Guard: skip option-less (free-text) attrs — apply_answer's free-text
             # fallback would accept ANY string as a spurious "value".
+            if attr.options and attr.variable_name in multi:
+                mentioned = self.apply_multi_answer(attr, question)
+                current_rows = set(multi.get(attr.variable_name, []))
+                if any(iv not in current_rows for iv, _dn in mentioned):
+                    return attr, question
+                continue
             if attr.options:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):

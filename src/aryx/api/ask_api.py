@@ -461,19 +461,32 @@ def _handle_cascade(
             session.filled_source.pop(a.variable_name, None)
 
     # Lock in the new value for the changed attr
-    result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
-    if result:
-        if changed_attr.select_type == "multi":
-            # Same "single answer selects one item" convention as the
-            # pending-question path — see its comment for why this matters
-            # now that real attrs are classified "multi".
-            session.filled_multi[changed_attr.variable_name] = [result[0]]
-            session.display_filled[changed_attr.variable_name] = result[1]
+    if changed_attr.select_type == "multi":
+        # UNION every mentioned option with the current selection — a
+        # post-completion "include Locking Molle Mount" ADDS a row, it
+        # doesn't wipe rows already chosen (and a previously DECLINED
+        # empty grid simply becomes the new rows). apply_multi_answer
+        # extracts all named options, not just the best single match.
+        mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+        result = ("", "") if not mentioned else mentioned[0]
+        if mentioned:
+            existing = session.filled_multi.get(changed_attr.variable_name, [])
+            merged = list(existing) + [iv for iv, _dn in mentioned if iv not in existing]
+            session.filled_multi[changed_attr.variable_name] = merged
+            session.display_filled[changed_attr.variable_name] = ", ".join(
+                next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+                for v in merged
+            )
+            session.filled_source[changed_attr.variable_name] = "user"
         else:
+            result = None
+    else:
+        result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+        if result:
             session.filled[changed_attr.variable_name] = result[0]
             session.display_filled[changed_attr.variable_name] = result[1]
-        session.filled_source[changed_attr.variable_name] = "user"
-    else:
+            session.filled_source[changed_attr.variable_name] = "user"
+    if not result:
         # Could not parse new value — ask for clarification
         opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
         answer = (
@@ -1217,7 +1230,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
         # STEP 6: change request → cascade
-        change_result = _cpq_engine.detect_change_request(req.question, attrs, session.filled)
+        change_result = _cpq_engine.detect_change_request(
+            req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if change_result:
             changed_attr, new_value_hint = change_result
             return _handle_cascade(

@@ -65,3 +65,57 @@ def test_declined_grid_ships_no_rows_in_payload():
     data = payload[next(iter(payload))]
 
     assert "mountRows" not in data, "a declined grid contributes nothing to the payload"
+
+
+# ── Post-completion change requests on multi-selects ────────────────────────
+#
+# Live finding: "I wanted to include the mounting type: Locking Molle Mount"
+# after completing with a declined grid fell through to the review nudge —
+# detect_change_request only consulted the scalar `filled` dict, so NO
+# multi-select was ever eligible for a change.
+
+def test_change_request_detected_on_declined_multi():
+    engine = CpqEngine()
+    attr = _multi(required=False)
+    result = engine.detect_change_request(
+        "I wanted to include the mounting type: Jacket Clip Mount",
+        [attr], filled={}, filled_multi={"mountRows": []},
+    )
+
+    assert result is not None
+    assert result[0].variable_name == "mountRows"
+
+
+def test_change_request_detected_when_adding_a_new_row():
+    engine = CpqEngine()
+    attr = _multi(required=False)
+    result = engine.detect_change_request(
+        "add the Jacket Clip Mount too",
+        [attr], filled={}, filled_multi={"mountRows": ["Shirt Magnetic Mount"]},
+    )
+
+    assert result is not None and result[0].variable_name == "mountRows"
+
+
+def test_naming_an_already_selected_row_is_not_a_change():
+    engine = CpqEngine()
+    attr = _multi(required=False)
+    result = engine.detect_change_request(
+        "Shirt Magnetic Mount",
+        [attr], filled={}, filled_multi={"mountRows": ["Shirt Magnetic Mount"]},
+    )
+
+    assert result is None
+
+
+def test_multi_invisible_without_filled_multi_param():
+    """Documents the pre-fix behavior the new param closes: without
+    filled_multi, the attr isn't eligible at all."""
+    engine = CpqEngine()
+    attr = _multi(required=False)
+    result = engine.detect_change_request(
+        "I wanted to include the mounting type: Jacket Clip Mount",
+        [attr], filled={},
+    )
+
+    assert result is None
