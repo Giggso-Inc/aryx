@@ -1317,14 +1317,28 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # extracted hint if the full question produces no match; hints are
             # coarse (e.g. "LTE") and can mis-match when multiple options share
             # the same keyword.
-            result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
-            if not result and hint_val_for_attr:
-                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
+            if pending_attr.select_type == "multi":
+                # A multi-select answer can name several options at once
+                # (e.g. "Shirt Magnetic Mount, Jacket Magnetic Mount, ...") —
+                # apply_answer() only ever returns the single best match, so
+                # naming all 6 real mounting-type options in one answer
+                # previously captured just 1 (confirmed live). Scan for every
+                # option mentioned instead.
+                multi_matches = _cpq_engine.apply_multi_answer(
+                    pending_attr, req.question, pending_constrained)
+                if not multi_matches and hint_val_for_attr:
+                    multi_matches = _cpq_engine.apply_multi_answer(
+                        pending_attr, hint_val_for_attr, pending_constrained)
+                result = multi_matches[0] if multi_matches else None
+            else:
+                result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
+                if not result and hint_val_for_attr:
+                    result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
             if result:
                 iv, disp = result
                 if pending_attr.select_type == "multi":
-                    # A direct answer to a multi-select question selects
-                    # that one item — store as a single-item list in
+                    # Every option apply_multi_answer() found in this answer
+                    # is a real selection — store as a single-item list in
                     # filled_multi, not a scalar in filled, so build_payload
                     # serializes it as the array the real CPQ API expects
                     # for these attrs (confirmed live: nothing was ever
@@ -1335,8 +1349,9 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     # that fix for every attr answered directly rather than
                     # auto-filled).
                     existing = session.filled_multi.get(pending_var, [])
-                    if iv not in existing:
-                        existing = [*existing, iv]
+                    for match_iv, _match_disp in multi_matches:
+                        if match_iv not in existing:
+                            existing = [*existing, match_iv]
                     session.filled_multi[pending_var] = existing
                     session.display_filled[pending_var] = ", ".join(
                         next((o.display_name for o in pending_attr.options
