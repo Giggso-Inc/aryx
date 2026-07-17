@@ -29,6 +29,7 @@ from aryx.cpq.bml import (
 )
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
+from aryx.resolution.classical import string_score
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
     RecommendationRule,
@@ -243,6 +244,33 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
 # substring collisions (e.g. "essential" inside "quintessential") negligible.
 _HINT_MIN_PHRASE_LEN = 5
 _HINT_STRIP_RE = re.compile(r"[^a-z0-9]")
+
+# detect_product_mention's fuzzy-substring fallback (see its docstring):
+# minimum aryx.resolution.classical.string_score (SequenceMatcher ratio,
+# [0,1]) against a sliding window the length of the candidate name for a
+# PARTIAL/misspelled product mention to count. Deliberately conservative —
+# high enough that an unrelated, generic question never scores this well
+# against a real product name by coincidence; a genuine near-miss (a typo,
+# or a name missing one trailing character) comfortably clears it.
+_PRODUCT_FUZZY_MATCH_THRESHOLD = 0.82
+
+# suggest_product_candidates' lower bound for the "maybe, not confident"
+# band — empirically, unrelated generic questions ("does it support dual
+# SIM too", "what color options are available") score up to ~0.5 against a
+# real product name purely by character-overlap coincidence, while a
+# genuine near-miss clears 0.82. 0.65 sits well above that noise floor
+# (leaves margin so ordinary questions never trigger a "did you mean...?"
+# hint) while still well below the confirm-worthy threshold.
+_PRODUCT_FUZZY_SUGGEST_THRESHOLD = 0.65
+
+# next_question_prompt: an attr whose effective option list exceeds this is
+# asked as "type the exact name" (with a few examples) instead of a numbered
+# menu — confirmed live that unconstrained master lists (product selector:
+# ~325 models spanning every family; country: ~250 entries) are unusable as
+# a menu dump. Threshold-based and attr-agnostic — no attribute names
+# hardcoded. 25 keeps every genuinely menu-shaped list seen in real
+# catalogs (colors, bands, service tiers — all well under 20) enumerated.
+_MAX_ENUMERATED_OPTIONS = 25
 
 # Process-wide, keyed by (workspace_id, catalog_prefix) — see
 # CpqEngine._build_flag_keyword_index. Depends only on the catalog's own
@@ -824,9 +852,85 @@ class CpqEngine:
                     names.append(fname)
         return names
 
+    def ingested_product_alias_map(self, reader: Any, workspace_id: int) -> dict[str, str]:
+        """{alias → owning family name} for every catalog in this workspace.
+
+        _ingested_product_names only surfaces the BmPrdFamily names (e.g.
+        "aSTRO25_bom", "videoSolutions_BOM") — internal BOM identifiers a
+        client rarely says. But each export also carries its OWN bm_catalog
+        tree (family → product line → product), and those names ARE what
+        clients say: "APX™ NEXT"/"aPXNext_BOM" lives only in the APX
+        export, "SVX Video Remote Speaker Microphone"/"vX650_BOM" only in
+        the SVX one (confirmed live, workspace 14). Unlike the flat
+        productSelectionProduct_all menu — the identical full-portfolio
+        list in every catalog, useless for discrimination — the tree is
+        catalog-scoped, so a product/line name maps unambiguously to its
+        family.
+
+        Every alias (the family name itself, plus each bm_catalog entity's
+        variable name and display name) maps to the family name detection
+        should resolve to — the same value _scope_to_catalog matches back
+        to one catalog when the config loads. An alias appearing under
+        MORE THAN ONE family (a shared tree entry) is dropped entirely:
+        ambiguous, never guess. Returns {} (never raises) when the reader
+        can't answer — same contract as _ingested_product_names.
+        """
+        try:
+            all_type_names = reader.distinct_types()
+        except AttributeError:
+            return {}
+        prefixes = sorted({_catalog_prefix(t) for t in all_type_names})
+        alias_map: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for prefix in prefixes:
+            fam_ents = reader.find_entities(
+                ontology_type=f"{prefix}BmPrdFamily", limit=50)
+            cat_ents = reader.find_entities(
+                ontology_type=f"{prefix}BmCatalog", limit=200)
+            if not fam_ents and not cat_ents:
+                continue
+            pg = self._batch_fetch(
+                [e["id"] for e in fam_ents + cat_ents], workspace_id)
+            family_name = ""
+            for fent in fam_ents:
+                family_name = str(
+                    pg.get(fent["id"], {}).get("name") or fent.get("name") or ""
+                ).strip()
+                if family_name:
+                    break
+            if not family_name:
+                # No family entity in this export — the tree's root catalog
+                # node (parent_id=-1) is the closest thing to a family name.
+                for cent in cat_ents:
+                    a = pg.get(cent["id"], {})
+                    if str(a.get("parent_id") or "").strip() == "-1":
+                        family_name = str(
+                            a.get("name") or cent.get("name") or "").strip()
+                        if family_name:
+                            break
+            if not family_name:
+                continue
+            aliases = {family_name}
+            for cent in cat_ents:
+                a = pg.get(cent["id"], {})
+                for key in ("name", "bm_name"):
+                    nm = str(a.get(key) or "").strip()
+                    if nm:
+                        aliases.add(nm)
+            for nm in aliases:
+                existing = alias_map.get(nm)
+                if existing is not None and existing != family_name:
+                    ambiguous.add(nm)
+                else:
+                    alias_map[nm] = family_name
+        for nm in ambiguous:
+            alias_map.pop(nm, None)
+        return alias_map
+
     def detect_product_mention(
         self, question: str, hints: dict[str, str],
         reader: Any = None, workspace_id: int = 1,
+        alias_map: dict[str, str] | None = None,
     ) -> str:
         """Best-effort product display label from NL text, or "" if none found.
 
@@ -854,20 +958,194 @@ class CpqEngine:
         (regression caught in review: this is the same "variant must win
         over generic" guarantee the old hardcoded _PRODUCT_PATTERNS table
         enforced via explicit list ordering).
+
+        Falls back to a FUZZY substring match (deterministic, no LLM) when
+        no candidate is an exact substring of the question — catches a
+        partial/incomplete mention ("SL 3500" missing the trailing "e") or
+        a typo, cases the exact check silently misses, which previously
+        left a mid-session product switch undetected with no signal
+        anything was wrong. Reuses aryx.resolution.classical.string_score
+        (SequenceMatcher-based), the same deterministic scoring already
+        used for entity-resolution matching elsewhere in this codebase —
+        no new dependency, no network call, no non-determinism. Slides a
+        window the length of each candidate's normalized name across the
+        normalized question and keeps the best score seen; only a name at
+        least _HINT_MIN_PHRASE_LEN chars long is ever considered, same
+        guard used elsewhere in this module to stop short names from
+        spuriously matching unrelated text. This is purely a widened
+        DETECTION signal — the caller (ask_api.py's confirm_switch gate)
+        still requires explicit confirmation before anything is reset, so
+        a fuzzy false positive costs one extra yes/no turn, never a silent
+        wrong-product answer or data loss.
+
+        Matching runs over ingested_product_alias_map's ALIASES (family
+        names PLUS each catalog's own bm_catalog tree names — "APX™ NEXT",
+        "vX650_BOM", ...) and resolves the matched alias to its owning
+        FAMILY name (see that method's docstring for why the tree, not the
+        flat product menu, is the only catalog-discriminating signal).
+        Both XMLs carry the identical flat product list, so a raw product
+        mention can never pick a catalog — the tree names can (confirmed
+        live: "Quote APX Next Enhanced radios" matched nothing when only
+        the two family identifiers were candidates).
+
+        alias_map — pre-fetched ingested_product_alias_map result. Pass it
+        when the caller also needs it for suggest_product_candidates in
+        the same turn (review finding P2: the common no-match path loaded
+        the same inventory twice through graph+RDB queries). When None,
+        self-fetches as before.
         """
         q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
-        if reader is not None and q_norm:
-            candidates = self._ingested_product_names(reader, workspace_id)
-            normalized = [
-                (name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in candidates
-            ]
-            # Sort by the NORMALIZED length actually used for matching, not
-            # the raw display string — punctuation/spacing density could
-            # otherwise make the two orderings diverge.
-            for name, name_norm in sorted(normalized, key=lambda t: len(t[1]), reverse=True):
+        if alias_map is None and reader is not None and q_norm:
+            alias_map = self.ingested_product_alias_map(reader, workspace_id)
+        if alias_map and q_norm:
+            ordered = sorted(
+                ((name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in alias_map),
+                key=lambda t: len(t[1]), reverse=True,
+            )
+            for name, name_norm in ordered:
                 if name_norm and name_norm in q_norm:
-                    return name
+                    return alias_map[name]
+            scored = self._fuzzy_score_candidates(q_norm, ordered)
+            if scored and scored[0][1] >= _PRODUCT_FUZZY_MATCH_THRESHOLD:
+                return alias_map[scored[0][0]]
         return next((v for k, v in hints.items() if "product" in k), "")
+
+    @staticmethod
+    def _fuzzy_score_candidates(
+        q_norm: str, ordered: list[tuple[str, str]],
+    ) -> list[tuple[str, float]]:
+        """Best deterministic fuzzy score of each (name, name_norm) pair
+        against q_norm — a sliding window the length of the candidate's
+        normalized name, scored via aryx.resolution.classical.string_score.
+        Shared by detect_product_mention's confirm-worthy match and
+        suggest_product_candidates' lower "maybe" band, so both use the
+        exact same scoring, just different thresholds. Sorted descending;
+        names shorter than _HINT_MIN_PHRASE_LEN are never scored (same
+        guard used elsewhere to stop short names from spuriously matching
+        unrelated text).
+        """
+        scored: list[tuple[str, float]] = []
+        for name, name_norm in ordered:
+            if len(name_norm) < _HINT_MIN_PHRASE_LEN:
+                continue
+            window = len(name_norm)
+            span = max(1, len(q_norm) - window + 1)
+            best = 0.0
+            for i in range(span):
+                best = max(best, string_score(name_norm, q_norm[i:i + window]))
+            scored.append((name, best))
+        scored.sort(key=lambda t: t[1], reverse=True)
+        return scored
+
+    def suggest_product_candidates(
+        self, question: str, reader: Any, workspace_id: int,
+        exclude: str = "", limit: int = 5,
+        alias_map: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Up to `limit` real ingested product names whose fuzzy similarity
+        to `question` falls in the "maybe, not confident" band — at or
+        above _PRODUCT_FUZZY_SUGGEST_THRESHOLD but below
+        detect_product_mention's own confirm-worthy _PRODUCT_FUZZY_MATCH_THRESHOLD.
+
+        Used when a mid-conversation message seems to be attempting to
+        name a product but doesn't clearly match anything — instead of
+        silently ignoring it (today's behavior when detect_product_mention
+        returns ""), the caller can offer these as "did you mean one of
+        these?" candidates rather than leaving the customer's real intent
+        unrecognised with no signal anything was ambiguous.
+
+        Returns [] when nothing scores in that band — either
+        detect_product_mention already found a confident match, or the
+        message truly has no product-name signal at all (the common case
+        for an ordinary configuration answer).
+
+        Scores the same alias inventory detect_product_mention matches
+        against (family names + catalog-tree names), then maps each
+        in-band alias back to its owning FAMILY name — suggestions are
+        always family names, because that's the value a confirmed switch
+        anchors the session to. Aliases whose family is `exclude` (the
+        session's current product) are skipped; duplicate families from
+        multiple in-band aliases are collapsed keeping best-score order.
+
+        alias_map — pre-fetched ingested_product_alias_map result; see
+        detect_product_mention. This method runs on EVERY ordinary answer
+        turn (the no-match path), so re-fetching here doubled the
+        graph+RDB round-trips per turn (review finding P2). When None,
+        self-fetches as before.
+        """
+        q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
+        if not q_norm:
+            return []
+        if alias_map is None:
+            if reader is None:
+                return []
+            alias_map = self.ingested_product_alias_map(reader, workspace_id)
+        exclude_norm = exclude.strip().lower()
+        ordered = [
+            (name, re.sub(r"[^a-z0-9]", "", name.lower()))
+            for name, family in alias_map.items()
+            if family.strip().lower() != exclude_norm
+        ]
+        scored = self._fuzzy_score_candidates(q_norm, ordered)
+        suggestions: list[str] = []
+        for name, score in scored:
+            if not (_PRODUCT_FUZZY_SUGGEST_THRESHOLD <= score < _PRODUCT_FUZZY_MATCH_THRESHOLD):
+                continue
+            family = alias_map[name]
+            if family not in suggestions:
+                suggestions.append(family)
+            if len(suggestions) >= limit:
+                break
+        return suggestions
+
+    def check_country_availability(
+        self,
+        attrs: list[ConfigAttr],
+        con_rules: list["ConstraintRule"],
+        filled: dict[str, str],
+        bml_eval: BmlEvaluator,
+    ) -> bool:
+        """Is the country in `filled` compatible with this catalog's
+        product line (variable_name "productSelectionProduct_all" —
+        confirmed via real data to be a shared, tenant-wide convention
+        present under the IDENTICAL native id in every ingested catalog
+        checked so far, same category as ultimateDestinationCountry
+        itself, not specific to any one product)?
+
+        Reuses apply_constraint_rules — the SAME machinery already used
+        for every other constraint in this engine, handling declarative
+        AND script-backed rules identically — rather than reading rule
+        conditions directly. Confirmed against real data that the actual
+        constraint on the product-selector conditioned on country/region
+        is BML-script-based (referencing region/customerType internally),
+        not a simple declarative country -> allowed-list lookup; 5 of the
+        6 constraint rules targeting this attribute in APX Next are
+        script-form. A hand-rolled declarative-only check would silently
+        miss all of them and always report "available."
+
+        Returns True whenever there's no active constraint on the
+        product-selector at all — no rule means no stated restriction,
+        the same default used throughout this engine. Returns False only
+        when a constraint actually fires and narrows the product-selector
+        down to zero allowed values.
+
+        Deliberately does NOT attempt to enumerate which OTHER countries
+        would be valid — doing so would mean re-running this same
+        constraint (script evaluation, possibly LLM-backed) once per
+        candidate country, up to ~249 times for a single check. Not
+        computable cheaply; the caller asks the client for a different
+        country instead of listing alternatives.
+        """
+        selector = next(
+            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
+        )
+        if selector is None:
+            return True
+        constrained = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        allowed = constrained.get(selector.entity_id)
+        if allowed is None:
+            return True
+        return bool(allowed)
 
     # ── PostgreSQL attribute fetch ────────────────────────────────────────────
 
@@ -1256,9 +1534,22 @@ class CpqEngine:
             eid = ent["id"]
             try:
                 neighbors = reader.neighbors(eid)
+                # reader.neighbors() has no catalog awareness — for attrs whose
+                # native id is reused across catalogs (e.g. productSelectionProduct_all,
+                # confirmed live to have separate BmMenuItem sets per catalog under
+                # the same native id) this returns menu items from EVERY catalog in
+                # the workspace, not just the one resolved above. Scope by the same
+                # resolved_catalog_prefix already used for attr_types. Skip the
+                # filter when resolved_catalog_prefix is "" — per _scope_to_catalog,
+                # that means scoping didn't narrow to one catalog, so no filter
+                # should be applied (same convention as the attr-type scoping above).
                 menu_ids = [
                     n["id"] for n in neighbors
                     if "menuitem" in (n.get("type") or "").lower().replace("_", "")
+                    and (
+                        not resolved_catalog_prefix
+                        or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix
+                    )
                 ]
                 if menu_ids:
                     neighbor_map[eid] = menu_ids
@@ -1368,6 +1659,7 @@ class CpqEngine:
                 catalog_prefix=_catalog_prefix(ent.get("type") or ""),
                 hidden=is_hidden,
                 hide_in_trans=is_hide_in_trans,
+                set_type=str(pg.get("set_type") or "").strip(),
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -3016,11 +3308,20 @@ class CpqEngine:
                     filled[vn] = fallback.item_value
                     display_filled[vn] = fallback.display_name
                     sources.setdefault(vn, "default")
-            elif attr.options or is_decision_attr:
+            elif (attr.options or is_decision_attr) and not self._is_noise_var(vn):
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
                 # Free-text CRM/system fields with no options and no decision
                 # requirement are skipped — they are filled by integration.
+                # `not _is_noise_var`: integration fields must NEVER be asked
+                # even when a decision-key fragment matches their name —
+                # confirmed live (Issue 9, docs/CPQ_PRODUCT_SWITCH_ISSUE.md):
+                # CRM_BILL_COUNTRY ("Bill Country") got decision-promoted via
+                # its "country" fragment and asked first after a product
+                # switch, while build_payload drops it unconditionally — the
+                # answer was collected then silently discarded. Same predicate
+                # the payload exclusion trusts; zero rule impact (no BML
+                # script in either catalog reads CRM_BILL_*/CRM_SHIP_*).
                 pending.append(attr)
 
         # Cascade fill: for any pending free-text attr that shares a decision
@@ -3423,6 +3724,28 @@ class CpqEngine:
         ]
         ctx_prefix = f"{context_sentence}\n\n" if context_sentence else ""
         if effective_opts:
+            if len(effective_opts) > _MAX_ENUMERATED_OPTIONS:
+                # An unconstrained master list (confirmed live: the product
+                # selector carries the full ~325-model portfolio in every
+                # catalog, and the country attr ~250 entries) is unusable as
+                # a numbered menu — ask for the exact name instead of
+                # dumping it. Threshold-based and generic: applies to ANY
+                # oversized attr, no attribute-specific hardcoding. The
+                # typed reply flows through apply_answer's existing
+                # exact/display/word-boundary matching unchanged, and the
+                # explicit "what are the options for X" Q&A path still
+                # enumerates in full for clients who really want the list.
+                # "Please provide" (not "type") — the batched-mode e2e test
+                # counts question blocks by the "choose one"/"Please provide"
+                # phrases, and this prompt must stay countable as one block.
+                examples = ", ".join(f"*{o.display_name}*" for o in effective_opts[:3])
+                return (
+                    f"{ctx_prefix}**{attr.display_label}** has "
+                    f"{len(effective_opts)} available options — too many to "
+                    f"list here. Please provide the exact name "
+                    f"(e.g. {examples}), or ask *\"what are the options for "
+                    f"{attr.display_label}\"* to see the full list."
+                )
             numbered = "\n".join(
                 f"{i + 1}. {opt.display_name}"
                 for i, opt in enumerate(effective_opts)
@@ -3614,6 +3937,15 @@ class CpqEngine:
             attr = attr_by_vn.get(k)
             if attr is not None and attr.hide_in_trans:
                 continue
+            if attr is not None and attr.set_type == "2":
+                # Transient UI/action-layer attr (see ConfigAttr.set_type) —
+                # confirmed live: the real CPQ API rejects every one of
+                # these with "has an invalid payload" (SVX model-selection
+                # panel: modelSelectionSelectModel/archeType/serviceType/
+                # dMSDuration_viSoln), same treatment as hide_in_trans.
+                # They still drive rules and conversation — only the POST
+                # excludes them.
+                continue
             if not (_valid(v) or sources.get(k) in self._CONFIRMED_SOURCES):
                 continue
             if attr is None:
@@ -3631,6 +3963,13 @@ class CpqEngine:
                     "value": amount,
                     "currency": filled.get("_BM_USER_CURRENCY", "USD"),
                 }
+            elif select_type in ("integer", "float") and attr.options:
+                # A MENU-backed numeric (e.g. bWCNumberOfRefreshes_viSoln:
+                # data_type=3 but real menu items "1"/"2"/"3") is a menu to
+                # the API — bare numeric was rejected live ("has an invalid
+                # payload"); the menu shape below is what its siblings with
+                # identical menus use. Menu presence wins over data_type.
+                out[k] = {"value": v, "displayValue": _display_for(attr, v)}
             elif select_type == "integer":
                 out[k] = int(v) if re.fullmatch(r"-?\d+", v) else v
             elif select_type == "float":
@@ -3650,6 +3989,8 @@ class CpqEngine:
             attr = attr_by_vn.get(k)
             if attr is not None and attr.hide_in_trans:
                 continue
+            if attr is not None and attr.set_type == "2":
+                continue  # transient layer — same exclusion as above
             if attr is not None:
                 out[k] = {"items": [
                     {"value": val, "displayValue": _display_for(attr, val)}
