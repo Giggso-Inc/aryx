@@ -1784,7 +1784,7 @@ class CpqEngine:
         else:
             flow_ids = {
                 src_id for _eid, src_id, _name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix)
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
                 if src_id is not None
             }
             tier = 1 if any(rid in flow_ids for rid, _a, _l in assoc) else 2
@@ -1861,7 +1861,7 @@ class CpqEngine:
         if tier == 1:
             flow_ids = {
                 src_id for _eid, src_id, _name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix)
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
                 if src_id is not None
             }
             by_flow: dict[int, list[tuple[int, int]]] = {}
@@ -1895,6 +1895,34 @@ class CpqEngine:
         result = {"tier": tier, "flows": flows}
         _LAYOUT_SCOPE_CACHE[key] = result
         return result
+
+    def resolve_always_ask_skips(
+        self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+    ) -> set[str]:
+        """Variable names whose is_decision_attr always-ask override
+        (auto_fill's skip_always_ask param, §3c) should be SKIPPED because
+        the real native UI never shows them for this catalog's active
+        configuration flow.
+
+        Deliberately conservative — only acts when resolve_ui_layout_scope
+        resolves to EXACTLY ONE active flow (tier 1, len(flows) == 1).
+        Ambiguous catalogs (e.g. APX Next's 2 simultaneously-active flows)
+        return an empty set, leaving today's unconditional always-ask
+        behavior completely unchanged — see
+        docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5/§6.
+        """
+        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
+        if not scope or scope["tier"] != 1 or len(scope["flows"]) != 1:
+            return set()
+        the_flow = next(iter(scope["flows"].values()))
+        in_flow_ids = the_flow["all"]
+        skips: set[str] = set()
+        for attr in attrs:
+            if attr.variable_name != "productSelectionProduct_all":
+                continue
+            if attr.entity_id not in in_flow_ids:
+                skips.add(attr.variable_name)
+        return skips
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.
@@ -2639,6 +2667,7 @@ class CpqEngine:
         dropped_multi: dict[str, list[str]] | None = None,
         country: str | None = None,
         negated_vns: set[str] | None = None,
+        skip_always_ask: set[str] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -2653,6 +2682,10 @@ class CpqEngine:
         (variable_name → selected item_values, for select_type=="multi"
         attrs) are updated in place when supplied. Returns (visible_attrs,
         filled, display_filled, constrained_opts).
+
+        skip_always_ask — passed straight through to auto_fill (see its
+        docstring); compute via resolve_always_ask_skips() once per turn at
+        the caller, where workspace_id/catalog_prefix are available.
         """
         _MAX_LOOPS = 8
         display_filled: dict[str, str] = {}
@@ -2686,7 +2719,7 @@ class CpqEngine:
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
-                negated_vns=negated_vns,
+                negated_vns=negated_vns, skip_always_ask=skip_always_ask,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
@@ -2870,6 +2903,7 @@ class CpqEngine:
         country: str | None = None,
         rec_rules: list[RecommendationRule] | None = None,
         negated_vns: set[str] | None = None,
+        skip_always_ask: set[str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -2938,6 +2972,17 @@ class CpqEngine:
         constraint each call — members no longer allowed are dropped and
         named in `dropped_multi` (in place) rather than silently vanishing
         (§5 — same bug class as the Region=NA payload-drop fix).
+
+        skip_always_ask — variable_names whose normal always-ask override
+        (e.g. productSelectionProduct_all, §3c) should NOT force a question
+        this call, because the caller already confirmed via
+        resolve_ui_layout_scope() that the real native UI never shows this
+        field for the active configuration flow (exactly one active
+        rule_type=6 flow resolved, and this attr isn't in it — see
+        docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5). Empty/None
+        changes nothing — every catalog where the flow is ambiguous (e.g.
+        APX Next, 2 active flows) keeps today's unchanged always-ask
+        behavior.
         """
         filled: dict[str, str] = dict(already_filled or {})
         filled_multi = already_filled_multi if already_filled_multi is not None else {}
@@ -3153,7 +3198,13 @@ class CpqEngine:
                 # match, not a substring, so this never widens to unrelated
                 # "product*" attrs. See
                 # docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md Bug 3/3c.
-                or vn == "productSelectionProduct_all"
+                # skip_always_ask overrides this ONLY when the caller
+                # already confirmed the real native UI never shows it (see
+                # docstring) — every other catalog keeps this unconditional.
+                or (
+                    vn == "productSelectionProduct_all"
+                    and vn not in (skip_always_ask or ())
+                )
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"

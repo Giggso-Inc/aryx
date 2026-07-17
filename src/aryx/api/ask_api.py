@@ -496,11 +496,14 @@ def _handle_cascade(
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -1333,11 +1336,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
