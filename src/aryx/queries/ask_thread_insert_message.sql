@@ -97,7 +97,10 @@ message_row AS (
                           ) IS NOT NULL
                     )
                 )
-                OR gg_messages.updated_at < NOW() - INTERVAL '20 minutes'
+                OR (
+                    gg_messages.message_metadata->>'request_status' = 'in_progress'
+                    AND gg_messages.updated_at < NOW() - INTERVAL '20 minutes'
+                )
             )
         )
     RETURNING id::text, sequence_number, (xmax = 0) AS inserted, content

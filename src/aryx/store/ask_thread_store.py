@@ -264,11 +264,19 @@ class AryxAskThreadStore:
         }
 
     def mark_request_retryable(self, thread_id: str, request_id: str) -> None:
-        """Release a claimed request after response persistence fails."""
+        """Release a claimed request after failure-response persistence fails."""
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 load("ask_thread_update_request_status"),
                 (REQUEST_STATUS_FAILED, thread_id, request_id),
+            )
+
+    def mark_request_completed(self, thread_id: str, request_id: str) -> None:
+        """Prevent another LLM call after a successful Ask run."""
+        with self._pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                load("ask_thread_update_request_status"),
+                (REQUEST_STATUS_COMPLETED, thread_id, request_id),
             )
 
     def get_completed_response(

@@ -49,6 +49,9 @@ def test_ask_thread_submit_persists_prompt_before_running_ask():
             assert before_request_id == "00000000-0000-0000-0000-000000000001"
             return [{"role": "user", "text": "Earlier"}]
 
+        def mark_request_completed(self, thread_id, request_id):
+            events.append("request-completed")
+
         def append_assistant_message(self, **kwargs):
             events.append("assistant-message")
             assert kwargs["answer"] == "Mapped answer"
@@ -85,7 +88,14 @@ def test_ask_thread_submit_persists_prompt_before_running_ask():
 
     assert resp.status_code == 200
     assert resp.json()["answer"] == "Mapped answer"
-    assert events == ["cached-check", "user-message", "history", "llm", "assistant-message"]
+    assert events == [
+        "cached-check",
+        "user-message",
+        "history",
+        "llm",
+        "request-completed",
+        "assistant-message",
+    ]
 
 
 def test_ask_thread_submit_returns_cached_answer_without_running_ask():

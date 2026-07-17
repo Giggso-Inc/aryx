@@ -80,9 +80,13 @@ def test_ask_thread_cached_response_excludes_failed_attempts():
 
 def test_ask_thread_insert_reclaims_failed_or_expired_request_lease():
     sql = _sql("ask_thread_insert_message")
+    normalized_sql = " ".join(sql.split())
 
     assert "request_status' = 'failed'" in sql
-    assert "INTERVAL '20 minutes'" in sql
+    assert (
+        "request_status' = 'in_progress' AND gg_messages.updated_at < NOW() - "
+        "INTERVAL '20 minutes'"
+    ) in normalized_sql
 
 
 def test_ask_thread_channel_conflict_target_has_follow_up_unique_index():
