@@ -1101,6 +1101,16 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # doesn't change again until the next request.
     _hidden_for_payload = _cpq_engine.apply_hiding_rules(
         attrs, session.filled, hiding_rules, bml_eval)[2]
+    # Skipping the always-ask override (resolve_always_ask_skips) stops the
+    # QUESTION, but auto_fill's normal fallback still assigns the attr some
+    # value (first-by-order/default) since no rule governs it either — and
+    # for a catalog where the real native UI never shows this field at all,
+    # that guessed value has no business in the submitted payload (confirmed
+    # live: SVX's productSelectionProduct_all fell back to "APX6500", an
+    # unrelated APX Next radio model). Same exclusion set, same reasoning as
+    # hiding-rule auto-fix above — union both into one payload-drop set.
+    _hidden_for_payload = _hidden_for_payload | _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
     # Constraint/recommendation-type inconsistencies (same plan, §4.1) are
     # NOT auto-fixed — unlike hiding, the engine can't be certain what the
     # correct value should have been, so silently changing it risks
@@ -1438,6 +1448,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # turn-start `_hidden_for_payload` — cascades earlier in this
             # same turn can change which hiding rules are active.
             _hidden_now = _cpq_engine.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)[2]
+            _hidden_now = _hidden_now | _cpq_engine.resolve_always_ask_skips(
+                req.workspace_id, catalog_prefix, attrs)
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi, visible_attrs,
                 hidden_vns=_hidden_now)
