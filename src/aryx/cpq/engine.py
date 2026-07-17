@@ -1622,9 +1622,21 @@ class CpqEngine:
 
             hidden_raw = str(pg.get("hidden") or "0").strip().lower()
             is_hidden = hidden_raw in ("1", "true", "yes")
-            if is_hidden and not default_val:
+            array_control_raw = str(pg.get("is_array_control_attr") or "0").strip().lower()
+            is_array_control = array_control_raw in ("1", "true", "yes")
+            if is_hidden and not default_val and not is_array_control:
                 # Hidden with nothing to contribute — never shown/asked, and
                 # no default to feed BML scripts, so still fully dropped.
+                # Exception: is_array_control_attr=1 rows are kept (still
+                # hidden, still never asked/filled/paid) purely so
+                # array_grid_controls_in_play() can detect and flag their
+                # presence — see docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md
+                # §5 Change B follow-up: the real link between a selected
+                # grid row and its quantity attr lives only in BigMachines'
+                # own native-UI array-control JavaScript, never in any
+                # ingested rule data — confirmed by a full-file scan finding
+                # zero rule_input rows referencing the visible selector
+                # attr. Not buildable without guessing; flagged instead.
                 continue
 
             hide_in_trans_raw = str(pg.get("hide_in_trans") or "0").strip().lower()
@@ -1660,6 +1672,7 @@ class CpqEngine:
                 hidden=is_hidden,
                 hide_in_trans=is_hide_in_trans,
                 set_type=str(pg.get("set_type") or "").strip(),
+                is_array_control=is_array_control,
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -1923,6 +1936,28 @@ class CpqEngine:
             if attr.entity_id not in in_flow_ids:
                 skips.add(attr.variable_name)
         return skips
+
+    @staticmethod
+    def array_grid_controls_in_play(attrs: list[ConfigAttr]) -> list[str]:
+        """Variable names of is_array_control_attr=1 attrs present in this
+        catalog (e.g. an array-control driving a mounting-type quantity
+        grid) — flagged, never auto-populated.
+
+        Investigated and deliberately NOT auto-filled
+        (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5 Change B
+        follow-up): the real link between a customer's grid-row selection
+        and its per-row quantity attr lives only in BigMachines' own
+        native-UI array-control JavaScript widget — confirmed by a
+        full-file scan of the raw XML finding ZERO bm_config_rule_input
+        rows referencing the visible row-selector attr at all. Any
+        code-side mapping would have to guess from variable-name patterns
+        (e.g. "Shirt Magnetic Mount" -> mountingTypeShirtMagneticMount
+        Quantity_viSoln), which is catalog-specific and unverifiable —
+        exactly the guessing this engine's design principle forbids
+        elsewhere (D2 "never guess"). This surfaces the gap instead of
+        silently mis-populating or silently dropping it.
+        """
+        return sorted({a.variable_name for a in attrs if a.is_array_control})
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.

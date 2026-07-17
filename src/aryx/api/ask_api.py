@@ -1115,6 +1115,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             "cpq: rule-consistency check found %d issue(s): %s",
             len(_rule_issues), _rule_issues,
         )
+    # Array-grid controls (e.g. a mounting-type quantity grid) — flagged,
+    # never auto-populated: the real row->quantity link lives only in
+    # BigMachines' own native-UI array-control widget, not in any ingested
+    # rule data (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5).
+    _array_grid_vns = _cpq_engine.array_grid_controls_in_play(attrs)
+    if _array_grid_vns:
+        logger.info(
+            "cpq: array-grid control attr(s) present, not auto-populated "
+            "(no rule data links row selection to quantity attrs): %s",
+            _array_grid_vns,
+        )
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
     if session.status == "awaiting_approval":
