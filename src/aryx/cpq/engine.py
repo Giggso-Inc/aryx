@@ -3210,6 +3210,16 @@ class CpqEngine:
                 rec_by_target.setdefault(_r.target_attr_id, []).append(_r)
         attr_by_rule_id = self._attr_index(attrs) if rec_by_target else {}
 
+        # Selectors resolve_array_grid_links() confirmed drive a real
+        # quantity attr (e.g. mountingTypeArray_viSoln -> the 6 mounting-
+        # type quantities) are NOT cosmetic optional checkboxes even though
+        # required="0" — silently defaulting them to empty would silently
+        # skip a real BOM decision (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_
+        # GRID_PLAN.md §5). Excluded from the optional-multi-select
+        # auto-empty branch below so they're asked like any other real
+        # question instead; every other optional multi-select is unaffected.
+        grid_selector_vns = set(self.resolve_array_grid_links(attrs).keys())
+
         # Two "optional"-tier attrs (no rule, no default — eligible only via
         # the widened Phase N fallback) that share a real option value are
         # very likely the same underlying hardware/accessory concept exported
@@ -3536,7 +3546,10 @@ class CpqEngine:
                     filled[vn] = value
                 display_filled[vn] = display or value
                 sources.setdefault(vn, source)
-            elif attr.select_type == "multi" and not attr.required:
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
+            ):
                 # An unconstrained multi-select (no active constraint narrowed
                 # it, no single-remaining-option, not marked required=1 in
                 # the raw XML) reaches here with nothing that justifies
@@ -3547,7 +3560,9 @@ class CpqEngine:
                 # scripts only narrow/disallow values under OTHER conditions,
                 # never enforce a minimum-selection count). Auto-assign empty
                 # rather than asking — a required=1 multi-select still falls
-                # through to the pending branch below instead.
+                # through to the pending branch below instead. Grid-linked
+                # selectors (vn in grid_selector_vns) are excluded from this
+                # branch — see grid_selector_vns comment above.
                 filled_multi[vn] = []
                 display_filled[vn] = "(none)"
                 sources.setdefault(vn, "default")
