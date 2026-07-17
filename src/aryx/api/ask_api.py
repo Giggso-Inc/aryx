@@ -461,19 +461,32 @@ def _handle_cascade(
             session.filled_source.pop(a.variable_name, None)
 
     # Lock in the new value for the changed attr
-    result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
-    if result:
-        if changed_attr.select_type == "multi":
-            # Same "single answer selects one item" convention as the
-            # pending-question path — see its comment for why this matters
-            # now that real attrs are classified "multi".
-            session.filled_multi[changed_attr.variable_name] = [result[0]]
-            session.display_filled[changed_attr.variable_name] = result[1]
+    if changed_attr.select_type == "multi":
+        # UNION every mentioned option with the current selection — a
+        # post-completion "include Locking Molle Mount" ADDS a row, it
+        # doesn't wipe rows already chosen (and a previously DECLINED
+        # empty grid simply becomes the new rows). apply_multi_answer
+        # extracts all named options, not just the best single match.
+        mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+        result = ("", "") if not mentioned else mentioned[0]
+        if mentioned:
+            existing = session.filled_multi.get(changed_attr.variable_name, [])
+            merged = list(existing) + [iv for iv, _dn in mentioned if iv not in existing]
+            session.filled_multi[changed_attr.variable_name] = merged
+            session.display_filled[changed_attr.variable_name] = ", ".join(
+                next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+                for v in merged
+            )
+            session.filled_source[changed_attr.variable_name] = "user"
         else:
+            result = None
+    else:
+        result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+        if result:
             session.filled[changed_attr.variable_name] = result[0]
             session.display_filled[changed_attr.variable_name] = result[1]
-        session.filled_source[changed_attr.variable_name] = "user"
-    else:
+            session.filled_source[changed_attr.variable_name] = "user"
+    if not result:
         # Could not parse new value — ask for clarification
         opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
         answer = (
@@ -496,11 +509,14 @@ def _handle_cascade(
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -508,8 +524,14 @@ def _handle_cascade(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
-        negated_vns=negated_vns,
+        negated_vns=negated_vns, filled_source=session.filled_source,
     )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
         if old_val != new_val:
@@ -522,7 +544,8 @@ def _handle_cascade(
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
-        k: v for k, v in session.filled_source.items() if k in filled
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
@@ -1085,6 +1108,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
 
+    # Seed the punch-in model context when the catalog's own bm_catalog
+    # tree makes it unambiguous (exactly one model leaf — SVX's vX650_BOM).
+    # BM injects _bm_model_variable_name at runtime; exports never carry
+    # it, which is why modelname_all (whose XML default POINTS at it)
+    # shipped the literal token in payloads (Issue 11). The hint fills the
+    # noise-prefixed context attr (feeds BML scripts, never the payload),
+    # and auto_fill's pointer post-pass resolves modelname_all from it.
+    # Ambiguous trees (APX Next: two model leaves) seed nothing.
+    model_vn = _cpq_engine.single_model_variable_name(
+        reader, req.workspace_id, catalog_prefix)
+    if model_vn:
+        hints.setdefault("_bm_model_variable_name", model_vn)
+
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
@@ -1098,6 +1134,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # doesn't change again until the next request.
     _hidden_for_payload = _cpq_engine.apply_hiding_rules(
         attrs, session.filled, hiding_rules, bml_eval)[2]
+    # Skipping the always-ask override (resolve_always_ask_skips) stops the
+    # QUESTION, but auto_fill's normal fallback still assigns the attr some
+    # value (first-by-order/default) since no rule governs it either — and
+    # for a catalog where the real native UI never shows this field at all,
+    # that guessed value has no business in the submitted payload (confirmed
+    # live: SVX's productSelectionProduct_all fell back to "APX6500", an
+    # unrelated APX Next radio model). Same exclusion set, same reasoning as
+    # hiding-rule auto-fix above — union both into one payload-drop set.
+    # payload_flow_exclusions adds product/model mutual exclusivity on top
+    # of the always-ask skips: model flow drops the product selector,
+    # product flow drops the model-context mirrors (see its docstring).
+    _hidden_for_payload = _hidden_for_payload | _cpq_engine.payload_flow_exclusions(
+        req.workspace_id, catalog_prefix, attrs)
     # Constraint/recommendation-type inconsistencies (same plan, §4.1) are
     # NOT auto-fixed — unlike hiding, the engine can't be certain what the
     # correct value should have been, so silently changing it risks
@@ -1111,6 +1160,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         logger.info(
             "cpq: rule-consistency check found %d issue(s): %s",
             len(_rule_issues), _rule_issues,
+        )
+    # Array-grid controls (e.g. a mounting-type quantity grid) — flagged,
+    # never auto-populated: the real row->quantity link lives only in
+    # BigMachines' own native-UI array-control widget, not in any ingested
+    # rule data (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5).
+    _array_grid_vns = _cpq_engine.array_grid_controls_in_play(attrs)
+    if _array_grid_vns:
+        logger.info(
+            "cpq: array-grid control attr(s) present, not auto-populated "
+            "(no rule data links row selection to quantity attrs): %s",
+            _array_grid_vns,
         )
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
@@ -1170,7 +1230,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
         # STEP 6: change request → cascade
-        change_result = _cpq_engine.detect_change_request(req.question, attrs, session.filled)
+        change_result = _cpq_engine.detect_change_request(
+            req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if change_result:
             changed_attr, new_value_hint = change_result
             return _handle_cascade(
@@ -1271,14 +1332,28 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # extracted hint if the full question produces no match; hints are
             # coarse (e.g. "LTE") and can mis-match when multiple options share
             # the same keyword.
-            result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
-            if not result and hint_val_for_attr:
-                result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
+            if pending_attr.select_type == "multi":
+                # A multi-select answer can name several options at once
+                # (e.g. "Shirt Magnetic Mount, Jacket Magnetic Mount, ...") —
+                # apply_answer() only ever returns the single best match, so
+                # naming all 6 real mounting-type options in one answer
+                # previously captured just 1 (confirmed live). Scan for every
+                # option mentioned instead.
+                multi_matches = _cpq_engine.apply_multi_answer(
+                    pending_attr, req.question, pending_constrained)
+                if not multi_matches and hint_val_for_attr:
+                    multi_matches = _cpq_engine.apply_multi_answer(
+                        pending_attr, hint_val_for_attr, pending_constrained)
+                result = multi_matches[0] if multi_matches else None
+            else:
+                result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
+                if not result and hint_val_for_attr:
+                    result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
             if result:
                 iv, disp = result
                 if pending_attr.select_type == "multi":
-                    # A direct answer to a multi-select question selects
-                    # that one item — store as a single-item list in
+                    # Every option apply_multi_answer() found in this answer
+                    # is a real selection — store as a single-item list in
                     # filled_multi, not a scalar in filled, so build_payload
                     # serializes it as the array the real CPQ API expects
                     # for these attrs (confirmed live: nothing was ever
@@ -1289,8 +1364,9 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     # that fix for every attr answered directly rather than
                     # auto-filled).
                     existing = session.filled_multi.get(pending_var, [])
-                    if iv not in existing:
-                        existing = [*existing, iv]
+                    for match_iv, _match_disp in multi_matches:
+                        if match_iv not in existing:
+                            existing = [*existing, match_iv]
                     session.filled_multi[pending_var] = existing
                     session.display_filled[pending_var] = ", ".join(
                         next((o.display_name for o in pending_attr.options
@@ -1315,6 +1391,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                             session.filled[svn] = iv
                             session.display_filled[svn] = disp
                             session.filled_source[svn] = "cascade"
+            elif (pending_attr.select_type == "multi"
+                    and not pending_attr.required
+                    and re.match(r"^\s*(no|none|nope|skip|nothing|not\s+needed)\b",
+                                 req.question.strip().lower())):
+                # Explicit decline of an OPTIONAL multi-select (e.g. the
+                # mount-type quantity grid: required="0" in the raw XML,
+                # and the real native UI lets the grid stay empty).
+                # Previously "no mounts needed" was rejected and the same
+                # question re-asked forever — the only escape was picking
+                # a mount the customer didn't want. An empty selection IS
+                # the answer: record it as user-confirmed so auto_fill
+                # never re-resolves or re-asks it, and the payload simply
+                # carries no rows (build_payload already skips empty
+                # values). Checked ONLY after apply_answer found no option
+                # match, so option names are never misread as declines,
+                # and never offered for required multi-selects.
+                session.filled_multi[pending_var] = []
+                session.display_filled[pending_var] = "(none)"
+                session.filled_source[pending_var] = "user"
+                logger.info(
+                    "cpq: optional multi-select %r explicitly declined turn=%s",
+                    pending_var, session.turn,
+                )
             elif pending_attr.options:
                 # Answer matched nothing — tell the user and re-show the options
                 opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
@@ -1333,11 +1432,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -1345,8 +1447,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
-        negated_vns=negated_vns,
+        negated_vns=negated_vns, filled_source=session.filled_source,
     )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
     dropped_note = "".join(
         f" Removed **{', '.join(dvals)}** from **"
         f"{next((a.display_label for a in attrs if a.variable_name == dvar), dvar)}"
@@ -1358,7 +1466,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
-        k: v for k, v in session.filled_source.items() if k in filled
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
@@ -1421,6 +1530,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # turn-start `_hidden_for_payload` — cascades earlier in this
             # same turn can change which hiding rules are active.
             _hidden_now = _cpq_engine.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)[2]
+            _hidden_now = _hidden_now | _cpq_engine.payload_flow_exclusions(
+                req.workspace_id, catalog_prefix, attrs)
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi, visible_attrs,
                 hidden_vns=_hidden_now)
@@ -1511,7 +1622,18 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     # rule-fetch round trip on every ready turn just for a preview. The real
     # submission path (_run_cpq_turn's Step 8 build_payload call) already
     # applies it.
-    payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi, attrs)
+    # Flow exclusions MUST apply here too (Issue 11 §5) — this is the web
+    # UI's JSON-button payload, a separate emission path from the chat
+    # "show me the json" preview and the Step-8 submission (both already
+    # excluded). Confirmed live: without this, the button showed
+    # modelname_all alongside productSelectionProduct_all (and, on model
+    # flows, the skipped product selector). Cheap: layout scope is cached
+    # per (workspace, catalog); no extra rule fetch.
+    flow_exclusions = _cpq_engine.payload_flow_exclusions(
+        req.workspace_id, attrs[0].catalog_prefix if attrs else "", attrs)
+    payload = _cpq_engine.build_payload(
+        session.filled, session.filled_source, session.filled_multi, attrs,
+        hidden_vns=flow_exclusions)
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)

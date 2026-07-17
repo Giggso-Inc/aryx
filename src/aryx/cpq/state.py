@@ -171,6 +171,13 @@ class ConfigAttr:
     # be visible/computed for display but still excluded from the BOM
     # submission itself; see CpqEngine.build_payload.
     hide_in_trans: bool = False
+    # True for BM attrs flagged is_array_control_attr=1 — the source
+    # system's own marker that this attr drives a native-UI grid editor
+    # (e.g. a mounting-type quantity table), not a plain scalar/menu
+    # question. Its real target quantity attrs are typically hidden=1 and
+    # sized/populated by a rec/constraint rule conditioned on this control
+    # (see docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5 Change B).
+    is_array_control: bool = False
 
 
 @dataclass

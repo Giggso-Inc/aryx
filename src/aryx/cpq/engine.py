@@ -927,6 +927,42 @@ class CpqEngine:
             alias_map.pop(nm, None)
         return alias_map
 
+    def single_model_variable_name(
+        self, reader: Any, workspace_id: int, catalog_prefix: str,
+    ) -> str:
+        """The catalog's model variable name — ONLY when its own bm_catalog
+        tree has exactly one model leaf; "" otherwise (never guess).
+
+        Recreates the punch-in model context BigMachines injects at runtime
+        (the `_bm_model_*` attrs a user enters the configurator through) —
+        data that never exists in an XML export. When the tree makes the
+        model unambiguous (SVX: family videoSolutions_BOM → line mobile_BOM
+        → single leaf vX650_BOM), Aryx can seed it; when several leaves
+        exist (APX Next: aPXNext_BOM AND aPXN70_BOM), returns "" and the
+        model context stays unfilled — the quote's identity travels in the
+        product selection there instead (Issue 11,
+        docs/CPQ_PRODUCT_SWITCH_ISSUE.md). A leaf = a bm_catalog node whose
+        native id is never another node's parent_id.
+        """
+        if not catalog_prefix:
+            return ""
+        cat_ents = reader.find_entities(
+            ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
+        if not cat_ents:
+            return ""
+        pg = self._batch_fetch([e["id"] for e in cat_ents], workspace_id)
+        nodes: list[tuple[str, str, str]] = []  # (native_id, parent_id, name)
+        for cent in cat_ents:
+            a = pg.get(cent["id"], {})
+            native = str(a.get("id") or "").strip()
+            parent = str(a.get("parent_id") or "").strip()
+            name = str(a.get("name") or cent.get("name") or "").strip()
+            if native and name:
+                nodes.append((native, parent, name))
+        parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
+        leaves = [nm for native, _p, nm in nodes if native not in parent_ids]
+        return leaves[0] if len(leaves) == 1 else ""
+
     def detect_product_mention(
         self, question: str, hints: dict[str, str],
         reader: Any = None, workspace_id: int = 1,
@@ -1622,7 +1658,15 @@ class CpqEngine:
 
             hidden_raw = str(pg.get("hidden") or "0").strip().lower()
             is_hidden = hidden_raw in ("1", "true", "yes")
-            if is_hidden and not default_val:
+            array_control_raw = str(pg.get("is_array_control_attr") or "0").strip().lower()
+            is_array_control = array_control_raw in ("1", "true", "yes")
+            # "quantity" name fragment — candidate grid-quantity target attr
+            # (e.g. mountingTypeShirtMagneticMountQuantity_viSoln). Kept
+            # despite hidden+no-default so resolve_array_grid_links() can
+            # name-match it against a visible selector's menu options (§5
+            # Change B, docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md).
+            is_grid_qty_candidate = "quantity" in vn_lo
+            if is_hidden and not default_val and not (is_array_control or is_grid_qty_candidate):
                 # Hidden with nothing to contribute — never shown/asked, and
                 # no default to feed BML scripts, so still fully dropped.
                 continue
@@ -1660,6 +1704,7 @@ class CpqEngine:
                 hidden=is_hidden,
                 hide_in_trans=is_hide_in_trans,
                 set_type=str(pg.get("set_type") or "").strip(),
+                is_array_control=is_array_control,
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -1784,7 +1829,7 @@ class CpqEngine:
         else:
             flow_ids = {
                 src_id for _eid, src_id, _name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix)
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
                 if src_id is not None
             }
             tier = 1 if any(rid in flow_ids for rid, _a, _l in assoc) else 2
@@ -1861,7 +1906,7 @@ class CpqEngine:
         if tier == 1:
             flow_ids = {
                 src_id for _eid, src_id, _name, _fn
-                in rdb.fetch_rules(workspace_id, "6", catalog_prefix)
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
                 if src_id is not None
             }
             by_flow: dict[int, list[tuple[int, int]]] = {}
@@ -1895,6 +1940,178 @@ class CpqEngine:
         result = {"tier": tier, "flows": flows}
         _LAYOUT_SCOPE_CACHE[key] = result
         return result
+
+    def resolve_always_ask_skips(
+        self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
+    ) -> set[str]:
+        """Variable names whose is_decision_attr always-ask override
+        (auto_fill's skip_always_ask param, §3c) should be SKIPPED because
+        the real native UI never shows them for this catalog's active
+        configuration flow.
+
+        Deliberately conservative — only acts when resolve_ui_layout_scope
+        resolves to EXACTLY ONE active flow (tier 1, len(flows) == 1).
+        Ambiguous catalogs (e.g. APX Next's 2 simultaneously-active flows)
+        return an empty set, leaving today's unconditional always-ask
+        behavior completely unchanged — see
+        docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5/§6.
+        """
+        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
+        if not scope or scope["tier"] != 1 or len(scope["flows"]) != 1:
+            return set()
+        the_flow = next(iter(scope["flows"].values()))
+        in_flow_ids = the_flow["all"]
+        skips: set[str] = set()
+        for attr in attrs:
+            if attr.variable_name != "productSelectionProduct_all":
+                continue
+            if attr.entity_id not in in_flow_ids:
+                skips.add(attr.variable_name)
+        return skips
+
+    @staticmethod
+    def model_context_mirror_vns(attrs: list["ConfigAttr"]) -> set[str]:
+        """Variable names of model-context MIRROR attrs — pointer-default
+        attrs whose referenced attribute is an underscore-prefixed runtime
+        context field (the platform's own `_bm_model_*`-style punch-in
+        family). Fully structural: an attr qualifies when its
+        default_value equals ANOTHER attr's variable name AND that name
+        starts with "_" — no attribute names in code (matches
+        modelname_all -> _bm_model_variable_name in both ingested
+        exports, and nothing else, per the Issue 11 survey).
+        """
+        vns = {a.variable_name for a in attrs}
+        return {
+            a.variable_name for a in attrs
+            if not a.options
+            and a.default_value in vns
+            and a.default_value != a.variable_name
+            and a.default_value.startswith("_")
+        }
+
+    def payload_flow_exclusions(
+        self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
+    ) -> set[str]:
+        """Product/model flow mutual exclusivity for the payload
+        (Issue 11 follow-up, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a quote is
+        identified by its product selection OR its model context — never
+        both.
+
+        The flow signal is the catalog's own layout data
+        (resolve_always_ask_skips): non-empty means the single active
+        native-UI flow HIDES the product selector (model flow — e.g. SVX),
+        so the product selector is excluded and model mirrors ship.
+        Empty means the product selector is genuinely part of this
+        catalog's flow, or the flow is ambiguous/unresolvable (e.g. APX
+        Next's two active flows) — product flow: the product identifies
+        the quote and the model-context mirrors are excluded instead
+        (confirmed live: APX shipped modelname_all="aPXNext" alongside
+        productSelectionProduct_all, violating the integration's
+        one-or-the-other contract).
+        """
+        skips = self.resolve_always_ask_skips(workspace_id, catalog_prefix, attrs)
+        if skips:
+            return skips  # model flow — product excluded, mirrors ship
+        return self.model_context_mirror_vns(attrs)  # product flow
+
+    @staticmethod
+    def array_grid_controls_in_play(attrs: list[ConfigAttr]) -> list[str]:
+        """Variable names of is_array_control_attr=1 attrs present in this
+        catalog (e.g. an array-control driving a mounting-type quantity
+        grid) — flagged, never auto-populated.
+
+        Investigated and deliberately NOT auto-filled
+        (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5 Change B
+        follow-up): the real link between a customer's grid-row selection
+        and its per-row quantity attr lives only in BigMachines' own
+        native-UI array-control JavaScript widget — confirmed by a
+        full-file scan of the raw XML finding ZERO bm_config_rule_input
+        rows referencing the visible row-selector attr at all. Any
+        code-side mapping would have to guess from variable-name patterns
+        (e.g. "Shirt Magnetic Mount" -> mountingTypeShirtMagneticMount
+        Quantity_viSoln), which is catalog-specific and unverifiable —
+        exactly the guessing this engine's design principle forbids
+        elsewhere (D2 "never guess"). This surfaces the gap instead of
+        silently mis-populating or silently dropping it.
+        """
+        return sorted({a.variable_name for a in attrs if a.is_array_control})
+
+    @staticmethod
+    def resolve_array_grid_links(attrs: list[ConfigAttr]) -> dict[str, dict[str, str]]:
+        """Best-effort variable-name heuristic linking a visible menu-based
+        selector attr's options to hidden ``*Quantity*``-named attrs (kept
+        in `attrs` for exactly this purpose — see load_product_config's
+        drop-filter exception).
+
+        Explicitly NOT rule-derived — array_grid_controls_in_play()'s own
+        docstring and docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5
+        confirm no such link exists in any ingested rule data. This is a
+        deliberate, explicitly requested exception to this engine's
+        "never guess" default, scoped as tightly as possible: a match only
+        counts when EXACTLY ONE quantity candidate's normalized
+        variable_name contains the option's normalized text (>=6 alnum
+        chars, to avoid trivial/short-token false positives like "1" or
+        "US"). Ambiguous or too-short tokens are skipped silently — never
+        guessed. Returns {selector_vn: {item_value_lower: quantity_vn}}.
+        """
+        def norm(s: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", s.lower())
+
+        qty_candidates = [
+            a for a in attrs if a.hidden and "quantity" in a.variable_name.lower()
+        ]
+        if not qty_candidates:
+            return {}
+        qty_norm = [(a.variable_name, norm(a.variable_name)) for a in qty_candidates]
+
+        links: dict[str, dict[str, str]] = {}
+        for attr in attrs:
+            if attr.hidden or not attr.options:
+                continue
+            item_map: dict[str, str] = {}
+            for opt in attr.options:
+                token = norm(opt.display_name or opt.item_value)
+                if len(token) < 6:
+                    continue
+                matches = [vn for vn, qn in qty_norm if token in qn]
+                if len(matches) == 1:
+                    item_map[opt.item_value.strip().lower()] = matches[0]
+            if item_map:
+                links[attr.variable_name] = item_map
+        return links
+
+    def resolve_pending_grid_quantities(
+        self, attrs: list[ConfigAttr], filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+    ) -> list[ConfigAttr]:
+        """Extra pending ConfigAttrs for grid-quantity attrs whose selector
+        has a selected row without a quantity yet (resolve_array_grid_links).
+
+        Each returned attr is a REAL ConfigAttr from `attrs` — asked via the
+        same free-text pending mechanism as any other attribute (these
+        quantity attrs have no menu options, so apply_answer's free-text
+        numeric path handles the reply). No new UI/ask concept needed.
+        """
+        links = self.resolve_array_grid_links(attrs)
+        if not links:
+            return []
+        by_vn = {a.variable_name: a for a in attrs}
+        extra: list[ConfigAttr] = []
+        seen: set[str] = set()
+        for selector_vn, item_map in links.items():
+            selected = filled_multi.get(selector_vn) or (
+                [filled[selector_vn]] if selector_vn in filled and filled[selector_vn] else []
+            )
+            for item_value in selected:
+                qty_vn = item_map.get(item_value.strip().lower())
+                if not qty_vn or qty_vn in filled or qty_vn in seen:
+                    continue
+                qty_attr = by_vn.get(qty_vn)
+                if qty_attr is None:
+                    continue
+                extra.append(qty_attr)
+                seen.add(qty_vn)
+        return extra
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.
@@ -2639,6 +2856,7 @@ class CpqEngine:
         dropped_multi: dict[str, list[str]] | None = None,
         country: str | None = None,
         negated_vns: set[str] | None = None,
+        skip_always_ask: set[str] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
 
@@ -2653,6 +2871,10 @@ class CpqEngine:
         (variable_name → selected item_values, for select_type=="multi"
         attrs) are updated in place when supplied. Returns (visible_attrs,
         filled, display_filled, constrained_opts).
+
+        skip_always_ask — passed straight through to auto_fill (see its
+        docstring); compute via resolve_always_ask_skips() once per turn at
+        the caller, where workspace_id/catalog_prefix are available.
         """
         _MAX_LOOPS = 8
         display_filled: dict[str, str] = {}
@@ -2686,7 +2908,7 @@ class CpqEngine:
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
-                negated_vns=negated_vns,
+                negated_vns=negated_vns, skip_always_ask=skip_always_ask,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
@@ -2870,6 +3092,7 @@ class CpqEngine:
         country: str | None = None,
         rec_rules: list[RecommendationRule] | None = None,
         negated_vns: set[str] | None = None,
+        skip_always_ask: set[str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -2938,6 +3161,17 @@ class CpqEngine:
         constraint each call — members no longer allowed are dropped and
         named in `dropped_multi` (in place) rather than silently vanishing
         (§5 — same bug class as the Region=NA payload-drop fix).
+
+        skip_always_ask — variable_names whose normal always-ask override
+        (e.g. productSelectionProduct_all, §3c) should NOT force a question
+        this call, because the caller already confirmed via
+        resolve_ui_layout_scope() that the real native UI never shows this
+        field for the active configuration flow (exactly one active
+        rule_type=6 flow resolved, and this attr isn't in it — see
+        docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5). Empty/None
+        changes nothing — every catalog where the flow is ambiguous (e.g.
+        APX Next, 2 active flows) keeps today's unchanged always-ask
+        behavior.
         """
         filled: dict[str, str] = dict(already_filled or {})
         filled_multi = already_filled_multi if already_filled_multi is not None else {}
@@ -2948,6 +3182,25 @@ class CpqEngine:
         rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
         dropped = dropped_multi if dropped_multi is not None else {}
 
+        # Pointer-defaults (Issue 11, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a
+        # default_value that exactly equals ANOTHER attribute's variable
+        # name is a REFERENCE the source platform resolves at runtime, not
+        # a literal (confirmed live: modelname_all's XML default is the
+        # string "_bm_model_variable_name" — BM's own "Set Model Name..."
+        # rule copies that runtime model-context attr into it; the export
+        # carries only the pointer token). Shipping the token as data put
+        # '"modelname_all": "_bm_model_variable_name"' in real payloads.
+        # Structural check, no attribute names in code — an exhaustive
+        # survey of every ingested catalog found exactly this ONE pattern
+        # (modelname_all -> _bm_model_variable_name in both exports) and
+        # zero coincidental literal defaults matching an attr name.
+        _all_vns = {a.variable_name for a in attrs}
+
+        def _is_pointer_default(a: "ConfigAttr") -> bool:
+            return (not a.options
+                    and a.default_value in _all_vns
+                    and a.default_value != a.variable_name)
+
         # target attr id -> recommendation rules targeting it, so step 4 can
         # check for an already-satisfied recommendation before blindly
         # picking first-by-order (see docstring — the ordering bug this closes).
@@ -2956,6 +3209,16 @@ class CpqEngine:
             for _r in rec_rules:
                 rec_by_target.setdefault(_r.target_attr_id, []).append(_r)
         attr_by_rule_id = self._attr_index(attrs) if rec_by_target else {}
+
+        # Selectors resolve_array_grid_links() confirmed drive a real
+        # quantity attr (e.g. mountingTypeArray_viSoln -> the 6 mounting-
+        # type quantities) are NOT cosmetic optional checkboxes even though
+        # required="0" — silently defaulting them to empty would silently
+        # skip a real BOM decision (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_
+        # GRID_PLAN.md §5). Excluded from the optional-multi-select
+        # auto-empty branch below so they're asked like any other real
+        # question instead; every other optional multi-select is unaffected.
+        grid_selector_vns = set(self.resolve_array_grid_links(attrs).keys())
 
         # Two "optional"-tier attrs (no rule, no default — eligible only via
         # the widened Phase N fallback) that share a real option value are
@@ -3021,6 +3284,15 @@ class CpqEngine:
                         dropped[vn] = lost
                         filled_multi[vn] = kept
                 if not filled_multi.get(vn):
+                    if sources.get(vn) == "user":
+                        # An EMPTY selection the user explicitly confirmed
+                        # ("no mounts needed" declining an optional grid) is
+                        # a settled answer, not an unresolved attr — keep it
+                        # so the question is never re-asked and the payload
+                        # simply carries no rows. Only constraint-drops
+                        # (non-user sources) fall through to re-resolution.
+                        display_filled[vn] = "(none)"
+                        continue
                     filled_multi.pop(vn, None)
                     sources.pop(vn, None)
                     # Falls through to normal resolution below — the drop may
@@ -3037,7 +3309,9 @@ class CpqEngine:
                 # — a hidden attr only ever gets its own XML default_value
                 # (BML scripts elsewhere may reference it), or is left out of
                 # `filled` entirely if it has none. Never enters `pending`.
-                if _valid(attr.default_value):
+                # Pointer-defaults are NOT literals — resolved (or left
+                # unfilled) by the post-pass below, never written verbatim.
+                if _valid(attr.default_value) and not _is_pointer_default(attr):
                     filled[vn] = attr.default_value
                     display_filled[vn] = next(
                         (o.display_name for o in attr.options
@@ -3112,8 +3386,9 @@ class CpqEngine:
                         source = "hint"
                     break
 
-            # 2. Default value
-            if not value and _valid(attr.default_value):
+            # 2. Default value (pointer-defaults excluded — see
+            # _is_pointer_default above; the post-pass resolves them)
+            if not value and _valid(attr.default_value) and not _is_pointer_default(attr):
                 value = attr.default_value
                 source = "default"
                 display = next(
@@ -3153,7 +3428,13 @@ class CpqEngine:
                 # match, not a substring, so this never widens to unrelated
                 # "product*" attrs. See
                 # docs/CPQ_MULTI_CATALOG_ASK_FLOW_BUGS_PLAN.md Bug 3/3c.
-                or vn == "productSelectionProduct_all"
+                # skip_always_ask overrides this ONLY when the caller
+                # already confirmed the real native UI never shows it (see
+                # docstring) — every other catalog keeps this unconditional.
+                or (
+                    vn == "productSelectionProduct_all"
+                    and vn not in (skip_always_ask or ())
+                )
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -3274,7 +3555,10 @@ class CpqEngine:
                     filled[vn] = value
                 display_filled[vn] = display or value
                 sources.setdefault(vn, source)
-            elif attr.select_type == "multi" and not attr.required:
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
+            ):
                 # An unconstrained multi-select (no active constraint narrowed
                 # it, no single-remaining-option, not marked required=1 in
                 # the raw XML) reaches here with nothing that justifies
@@ -3285,7 +3569,9 @@ class CpqEngine:
                 # scripts only narrow/disallow values under OTHER conditions,
                 # never enforce a minimum-selection count). Auto-assign empty
                 # rather than asking — a required=1 multi-select still falls
-                # through to the pending branch below instead.
+                # through to the pending branch below instead. Grid-linked
+                # selectors (vn in grid_selector_vns) are excluded from this
+                # branch — see grid_selector_vns comment above.
                 filled_multi[vn] = []
                 display_filled[vn] = "(none)"
                 sources.setdefault(vn, "default")
@@ -3323,6 +3609,24 @@ class CpqEngine:
                 # the payload exclusion trusts; zero rule impact (no BML
                 # script in either catalog reads CRM_BILL_*/CRM_SHIP_*).
                 pending.append(attr)
+
+        # Pointer-default resolution post-pass (Issue 11): an unfilled
+        # pointer attr inherits its REFERENCED attribute's value once that
+        # value exists — reproducing what the source platform's own runtime
+        # rule does (BM's "Set Model Name to All Product Family attribute
+        # modelname" copies _bm_model_variable_name into modelname_all).
+        # If the referenced attr never fills (e.g. APX Next, where the
+        # model context is ambiguous), the pointer attr stays unfilled —
+        # the token itself is never shipped as data.
+        for attr in attrs:
+            vn = attr.variable_name
+            if vn in filled or not _is_pointer_default(attr):
+                continue
+            ref_value = filled.get(attr.default_value)
+            if ref_value:
+                filled[vn] = ref_value
+                display_filled[vn] = display_filled.get(attr.default_value, ref_value)
+                sources.setdefault(vn, "cascade")
 
         # Cascade fill: for any pending free-text attr that shares a decision
         # key fragment with an already-filled attr (e.g. packageRegion ← region
@@ -3489,19 +3793,32 @@ class CpqEngine:
         question: str,
         attrs: list[ConfigAttr],
         filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> "tuple[ConfigAttr, str] | None":
         """Detect if the user wants to change an already-filled attribute (Step 6).
 
         Returns (attr_to_change, new_value_hint) or None if no change detected.
         Strategy: look for change-verb vocabulary first; then fall back to
         checking if the raw message maps to a different value for any filled attr.
+
+        filled_multi — multi-select selections (variable_name → item_values).
+        Without it, multi-selects were INVISIBLE to change detection (the
+        loop only consulted the scalar `filled` dict), so no multi-select
+        could ever be changed after completion — confirmed live: "I wanted
+        to include the mounting type: Locking Molle Mount" against a
+        declined (empty, user-confirmed) mount grid fell through to the
+        review nudge. A key present in filled_multi counts as filled —
+        including the explicitly-declined empty selection; for multi attrs
+        a "different value" means the mentioned option isn't already in
+        the selected rows.
         """
         q_lower = question.lower()
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question))
+        multi = filled_multi or {}
 
         # Try each filled attr — find one where the user's message implies a different value
         for attr in attrs:
-            if attr.variable_name not in filled:
+            if attr.variable_name not in filled and attr.variable_name not in multi:
                 continue
             vn_flat = attr.variable_name.lower().replace("_", "")
             label_lower = attr.display_label.lower()
@@ -3516,6 +3833,12 @@ class CpqEngine:
             # by _HINT_PATTERNS can't be distinguished from "4G LTE+5G".
             # Guard: skip option-less (free-text) attrs — apply_answer's free-text
             # fallback would accept ANY string as a spurious "value".
+            if attr.options and attr.variable_name in multi:
+                mentioned = self.apply_multi_answer(attr, question)
+                current_rows = set(multi.get(attr.variable_name, []))
+                if any(iv not in current_rows for iv, _dn in mentioned):
+                    return attr, question
+                continue
             if attr.options:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
@@ -3827,6 +4150,51 @@ class CpqEngine:
 
         return None
 
+    def apply_multi_answer(
+        self,
+        attr: ConfigAttr,
+        user_answer: str,
+        constrained_item_values: list[str] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Match ALL option names mentioned in a multi-select answer.
+
+        apply_answer() deliberately returns only the single best match — the
+        right behavior for a single-select question. A multi-select answer
+        like "Shirt Magnetic Mount, Jacket Magnetic Mount, ..." names several
+        options at once; using apply_answer() alone silently keeps only one
+        (confirmed live: naming all 6 real mounting-type options in one
+        answer captured just 1). This scans for every option whose display
+        name appears in the answer, consuming matched text so a shorter
+        option name already covered by a longer one isn't double-counted
+        (e.g. "TEK-LOK Belt Mount" vs "Belt Mount").
+
+        Returns a list of (item_value, display_name) pairs, in the order
+        their names appear in the answer text — empty if none matched.
+        """
+        allowed = set(constrained_item_values) if constrained_item_values is not None else None
+        options = (
+            [o for o in attr.options if o.item_value in allowed]
+            if allowed is not None else attr.options
+        )
+        ua = user_answer.lower()
+        remaining = ua
+        matches: list[tuple[int, str, str]] = []  # (position, item_value, display_name)
+        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
+            if not _valid(opt.item_value):
+                continue
+            dn = opt.display_name.lower()
+            if not dn:
+                continue
+            pattern = re.compile(r"(?<!\w)" + re.escape(dn) + r"(?!\w)")
+            m = pattern.search(remaining)
+            if m:
+                matches.append((m.start(), opt.item_value, opt.display_name))
+                # Blank out the matched span so a shorter, overlapping option
+                # name (already covered by this longer match) can't also match.
+                remaining = remaining[:m.start()] + " " * (m.end() - m.start()) + remaining[m.end():]
+        matches.sort(key=lambda t: t[0])
+        return [(iv, dn) for _pos, iv, dn in matches]
+
     # ── Payload builder ───────────────────────────────────────────────────────
 
     def _is_html_value(self, val: str) -> bool:
@@ -3945,6 +4313,17 @@ class CpqEngine:
                 # dMSDuration_viSoln), same treatment as hide_in_trans.
                 # They still drive rules and conversation — only the POST
                 # excludes them.
+                continue
+            if (attr is not None and not attr.options
+                    and v == attr.default_value
+                    and v in attr_by_vn and v != k):
+                # Unresolved pointer token (Issue 11): the value still
+                # equals the attr's own pointer default — another attr's
+                # variable name, not data. Fill-time guards prevent new
+                # fills, but a session filled on an older build carries the
+                # token in its saved state; scrub it here so a stale
+                # session can never ship '"modelname_all":
+                # "_bm_model_variable_name"'.
                 continue
             if not (_valid(v) or sources.get(k) in self._CONFIRMED_SOURCES):
                 continue

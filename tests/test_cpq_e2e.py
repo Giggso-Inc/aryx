@@ -218,12 +218,15 @@ class FakeCpqRdb:
                 out.extend((i, self.entities[i]) for i in ids)
         return out
 
-    def fetch_rules(self, workspace_id, rule_type, catalog_prefix=""):
+    def fetch_rules(self, workspace_id, rule_type, catalog_prefix="", active_only=False):
         out = []
         for i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule"):
-            if f.get("rule_type") == rule_type:
-                out.append((i, self._int(f.get("id"), None), f.get("name", ""),
-                            self._int(f.get("condition_function_id"))))
+            if f.get("rule_type") != rule_type:
+                continue
+            if active_only and str(f.get("status")) != "1":
+                continue
+            out.append((i, self._int(f.get("id"), None), f.get("name", ""),
+                        self._int(f.get("condition_function_id"))))
         return out
 
     def fetch_value_rules(self, workspace_id, catalog_prefix=""):
@@ -2173,13 +2176,23 @@ def test_s44_enhanced_product_hint_vs_hwversion_default_documented(
     )
 
 
-def test_s45_layout_tier_detected_and_flows_match_raw_counts(apx_truth, apx_fake_rdb):
+def test_s45_layout_tier_detected_and_flows_match_raw_counts(apx_truth, apx_fake_rdb, monkeypatch):
     """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §1-§2: tier detection must
     find rule_type=6 flow rules and scope layout placement to them. Every
     expected number here is recomputed independently from apx_truth's own
     raw rows at runtime — nothing is a literal from any specific catalog,
-    proving the mechanism, not a memorized count, drives the result."""
+    proving the mechanism, not a memorized count, drives the result.
+
+    _LAYOUT_TIER_CACHE/_LAYOUT_SCOPE_CACHE are process-global, keyed only by
+    (workspace_id, catalog_prefix) — with workspace_id=1 shared across many
+    fixtures in this file, an earlier test's resolve_ui_layout_scope(1, "")
+    call (now also reachable via ask_api's resolve_always_ask_skips wiring)
+    can leave a stale cached result for THIS test's fixture data. Reset both
+    before asserting, same pattern as test_s47's cache clear below."""
     from aryx.cpq.engine import CpqEngine
+    import aryx.cpq.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_LAYOUT_TIER_CACHE", {})
+    monkeypatch.setattr(engine_mod, "_LAYOUT_SCOPE_CACHE", {})
 
     engine = CpqEngine()
     result = engine.resolve_ui_layout_scope(1)
@@ -2191,6 +2204,10 @@ def test_s45_layout_tier_detected_and_flows_match_raw_counts(apx_truth, apx_fake
         apx_fake_rdb._int(f.get("id"), 0)
         for _i, f in apx_fake_rdb.fetch_entities_by_type(1, "bm_config_rule")
         if f.get("rule_type") == "6" and f.get("id")
+        # status=1 (active) only — a disabled/superseded flow rule
+        # (status=3) is not a real UI path and must not be counted as one
+        # (docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5).
+        and str(f.get("status", "1")) == "1"
     }
     assert flow_rule_ids, "fixture must actually contain rule_type=6 rows for this test to mean anything"
     assert set(result["flows"].keys()) == flow_rule_ids, (

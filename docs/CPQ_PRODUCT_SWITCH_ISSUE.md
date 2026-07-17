@@ -16,6 +16,7 @@ Issues found via live testing, all fully root-caused:
 | 8 | Payload root key was `configAttributes`; integration contract expects `configData` | **FIXED** — root key renamed in `build_payload`, tests/docs updated, live-verified (84-attr APX payload now under `configData`) |
 | 9 | "Bill Country" (`CRM_BILL_COUNTRY`, a CRM-integration field) asked as a question after a product switch | **FIXED** — noise vars never pend; plus follow-up: a preserved country now carries over as a hint, so UDC isn't re-asked after a switch |
 | 10 | `switch_country` pending state had no decline/cancel path (review finding M1) | **FIXED** — exact-phrase decline ("no"/"cancel"/…) resumes the original product; prefix matching deliberately avoided (Norway/Netherlands/Nigeria are country attempts) |
+| 11 | `modelname_all` shipped the literal pointer token `_bm_model_variable_name` in payloads | **FIXED** — pointer-defaults never fill as literals; resolved from the referenced attr; plus product/model flow mutual exclusivity: model flow (SVX) ships `modelname_all=vX650_BOM` and no product, product flow (APX) ships the product and no modelname; stale-session tokens scrubbed at payload time |
 
 ---
 
@@ -675,3 +676,130 @@ Tests (tests/test_cpq_product_switch.py):
 `test_switch_country_no_declines_and_resumes_original_product` (also
 asserts the original config/country survive the decline),
 `test_switch_country_norway_is_a_country_not_a_decline`.
+
+---
+
+# Issue 11 — `modelname_all` shipped the literal pointer token `_bm_model_variable_name`
+
+Status: **FIXED — implemented, unit-tested (7 tests), live-verified on both
+catalogs.**
+
+## 1. Symptom
+
+Real payloads contained `"modelname_all": "_bm_model_variable_name"` — a
+placeholder string, not a model name.
+
+## 2. Root cause
+
+`modelname_all` is a hidden attr whose XML `default_value` is literally
+the string `_bm_model_variable_name` — a POINTER to the runtime
+model-context attribute BigMachines injects at punch-in (one of ten
+`_bm_model_*` context fields). BM's own rule "Set Model Name to All
+Product Family attribute modelname" copies that context attr into
+`modelname_all` at runtime; live scripts read it directly
+(`selModel = upper(_bm_model_variable_name)`). Exports never carry
+runtime context, so Aryx's hidden-attr default fill wrote the pointer
+token itself into `filled`, and the payload shipped it as data.
+
+Safety survey before fixing: across EVERY ingested catalog (all
+workspaces), exactly ONE pointer-default pattern exists —
+`modelname_all → _bm_model_variable_name` in both exports — and zero
+legitimate literal defaults coincidentally equal an attribute name.
+
+## 3. Fix (shipped)
+
+1. **Pointer-defaults never fill as literals** (`auto_fill`): a
+   default_value that exactly equals ANOTHER attribute's variable name
+   (optionless attrs only) is treated as a reference — skipped at both
+   default-fill sites. Structural check; no attribute names in code.
+2. **Pointer resolution post-pass** (`auto_fill`): an unfilled pointer
+   attr inherits its referenced attribute's value once one exists —
+   reproducing BM's own runtime copy-rule.
+3. **Model-context seeding** (`single_model_variable_name` +
+   one ask_api hint): when the catalog's own `bm_catalog` tree has
+   exactly ONE model leaf, seed `_bm_model_variable_name` with it
+   (recreating the punch-in context). Ambiguous trees seed nothing —
+   never guess.
+
+## 4. Live outcomes (workspace 14)
+
+- **SVX:** `"modelname_all": "vX650_BOM"` — tree-seeded (single leaf),
+  matching the real BM config URL path
+  (`/config/videoSolutions_BOM/mobile_BOM/vX650_BOM`).
+- **APX:** `"modelname_all": "aPXNext"` — the tree is ambiguous (two
+  leaves) so seeding stayed out, but the PRE-EXISTING flag-hint mechanism
+  (`extract_flag_hints`, which mines BML script comparisons for
+  keyword→value pairs) already derives `_bm_model_variable_name =
+  "aPXNext"` from the question's "APX Next" mention — script-grounded,
+  question-driven, and exactly the literal APX's own BML compares
+  against. The new post-pass then resolves `modelname_all` from it.
+  Better than the planned "absent": a real, script-verified value.
+- In both cases `_bm_model_variable_name` itself stays out of the
+  payload (noise-prefixed), and the token can never ship: if nothing
+  fills the context, `modelname_all` is simply absent.
+
+Tests: `tests/test_cpq_model_pointer.py` (7) — token never fills,
+resolution works, payload shapes both ways, legitimate literal defaults
+unaffected, single-leaf resolves / multi-leaf never guesses.
+Full suites: 75 passed on `feature/msi_cpq` (includes the branch's own
+rule-validation scenario tests), zero regressions.
+
+## 5. Follow-up — product/model flow mutual exclusivity (shipped)
+
+Requirement: a quote is identified by its product selection OR its model
+context — never both in the payload. Initially the fix left APX shipping
+`modelname_all="aPXNext"` (flag-hint-derived) ALONGSIDE
+`productSelectionProduct_all` — violating the one-or-the-other contract.
+
+Shipped (`payload_flow_exclusions` + `model_context_mirror_vns`):
+
+- Flow signal = the catalog's own layout data (`resolve_always_ask_skips`):
+  non-empty ⇒ the single active native-UI flow hides the product selector
+  ⇒ MODEL flow — product excluded, model mirrors ship. Empty ⇒ PRODUCT
+  flow — the product identifies the quote, model-context mirrors are
+  excluded. No per-catalog switches; a new XML classifies itself.
+- Mirror detection is structural: pointer-default attrs whose referenced
+  attribute is underscore-prefixed (the platform's runtime-context
+  convention). No attribute names in code.
+- Stale-session hardening: `build_payload` scrubs a value still equal to
+  the attr's own pointer token (sessions filled on older builds carried
+  the literal in saved state).
+
+Live outcomes (workspace 14): APX — product present, `modelname_all`
+ABSENT; SVX — `modelname_all="vX650_BOM"`, product ABSENT.
+Tests: tests/test_cpq_model_pointer.py grew to 11 (mirror detection,
+flow exclusivity both directions, stale-token scrub, resolved-value
+survival).
+Full suites after the exclusivity fix: 79 passed, zero regressions.
+
+## 6. Hardcoding audit & future-XML behavior
+
+Nothing catalog- or attribute-specific is in code:
+
+- *Which flow a catalog is* — computed per-request from that catalog's own
+  `rule_type=6` flow rules (`status='1'`) + layout tree.
+- *Which attrs are model mirrors* — structural pattern only
+  (default-value equals another attr's variable name AND the referenced
+  attr is underscore-prefixed, the platform's runtime-context convention).
+  `modelname_all` is never named in code; it merely matches.
+- *Stale-token scrub* — an attr's value compared against its own default;
+  pure self-consistency.
+- Fixed in code: BM schema names (`rule_type=6`, `status`, the `_`
+  prefix — platform grammar) and ONE business policy, stated by the
+  customer: "product or model, never both."
+
+Behavior for any future XML, decided by its own structure (no code
+change):
+
+| The new XML's own data says... | Payload result |
+|---|---|
+| Single active flow SHOWS the product selector (even with model context present — APX's real shape) | Product ships, model mirror excluded |
+| Single active flow HIDES the product selector | Product excluded, model ships |
+| Flow ambiguous (2+ active flows) or no layout data | Treated as product flow — product ships, mirror excluded (never guess) |
+| Model flow but the model is undeterminable (multiple tree leaves, no question mention) | Neither ships — the payload reflects that the data didn't determine an identifier |
+
+The either/or preference itself is a business rule encoded once; if a
+future integration requires BOTH identifiers in one payload, that is a
+one-line policy change (stop excluding mirrors in product flow) — the
+mechanism and the policy are cleanly separated.
+
