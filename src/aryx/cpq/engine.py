@@ -3284,6 +3284,15 @@ class CpqEngine:
                         dropped[vn] = lost
                         filled_multi[vn] = kept
                 if not filled_multi.get(vn):
+                    if sources.get(vn) == "user":
+                        # An EMPTY selection the user explicitly confirmed
+                        # ("no mounts needed" declining an optional grid) is
+                        # a settled answer, not an unresolved attr — keep it
+                        # so the question is never re-asked and the payload
+                        # simply carries no rows. Only constraint-drops
+                        # (non-user sources) fall through to re-resolution.
+                        display_filled[vn] = "(none)"
+                        continue
                     filled_multi.pop(vn, None)
                     sources.pop(vn, None)
                     # Falls through to normal resolution below — the drop may

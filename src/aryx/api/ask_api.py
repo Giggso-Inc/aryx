@@ -511,7 +511,7 @@ def _handle_cascade(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
-        negated_vns=negated_vns,
+        negated_vns=negated_vns, filled_source=session.filled_source,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -531,7 +531,8 @@ def _handle_cascade(
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
-        k: v for k, v in session.filled_source.items() if k in filled
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
@@ -1376,6 +1377,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                             session.filled[svn] = iv
                             session.display_filled[svn] = disp
                             session.filled_source[svn] = "cascade"
+            elif (pending_attr.select_type == "multi"
+                    and not pending_attr.required
+                    and re.match(r"^\s*(no|none|nope|skip|nothing|not\s+needed)\b",
+                                 req.question.strip().lower())):
+                # Explicit decline of an OPTIONAL multi-select (e.g. the
+                # mount-type quantity grid: required="0" in the raw XML,
+                # and the real native UI lets the grid stay empty).
+                # Previously "no mounts needed" was rejected and the same
+                # question re-asked forever — the only escape was picking
+                # a mount the customer didn't want. An empty selection IS
+                # the answer: record it as user-confirmed so auto_fill
+                # never re-resolves or re-asks it, and the payload simply
+                # carries no rows (build_payload already skips empty
+                # values). Checked ONLY after apply_answer found no option
+                # match, so option names are never misread as declines,
+                # and never offered for required multi-selects.
+                session.filled_multi[pending_var] = []
+                session.display_filled[pending_var] = "(none)"
+                session.filled_source[pending_var] = "user"
+                logger.info(
+                    "cpq: optional multi-select %r explicitly declined turn=%s",
+                    pending_var, session.turn,
+                )
             elif pending_attr.options:
                 # Answer matched nothing — tell the user and re-show the options
                 opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
@@ -1409,7 +1433,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
-        negated_vns=negated_vns,
+        negated_vns=negated_vns, filled_source=session.filled_source,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -1428,7 +1452,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
-        k: v for k, v in session.filled_source.items() if k in filled
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
