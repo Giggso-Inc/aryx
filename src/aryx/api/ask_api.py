@@ -726,6 +726,33 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # attempt (same "bare reply" convention as the normal country
         # anchor: try the NL-hint extractor first, else the raw trimmed
         # text — CPQ_CASCADE_CONVERSATION_PLAN.md D1).
+        #
+        # Decline path first (Issue 10, docs/CPQ_PRODUCT_SWITCH_ISSUE.md):
+        # this state previously had NO way out — every reply was treated
+        # as a country attempt, and worse, a decline-shaped reply ("no")
+        # could silently COMPLETE the switch with a garbage country, since
+        # an unmatchable country fills nothing, no constraint fires, and
+        # the availability check fails open by design. EXACT-phrase match
+        # only — confirm_switch's startswith(("n","no")) convention would
+        # swallow real countries here (Norway, Netherlands, Nigeria,
+        # North Macedonia all start with "n").
+        _sc_reply = req.question.strip().lower()
+        if _sc_reply in ("n", "no", "cancel", "stop", "abort",
+                         "never mind", "nevermind"):
+            session.pending_switch_product = ""
+            session.pending_anchor = ""
+            logger.info(
+                "cpq_switch: switch_country declined turn=%s staying on product=%r",
+                session.turn, session.product_name,
+            )
+            answer = f"OK — continuing with **{session.product_name}**."
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_switch_declined()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
         new_country = hints.get("country") or req.question.strip()
         new_product = session.pending_switch_product
         if _country_available_for(new_product, new_country):
