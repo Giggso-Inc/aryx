@@ -20,9 +20,10 @@ Tier 1 — deterministic mini-evaluator for the dominant BML idiom::
     An if/else-if/else chain of equality comparisons on variable names,
     each branch assigning a pipe-delimited list of allowed values.
 
-Tier 2 — LLM fallback: scripts Tier 1 cannot parse are handed to the menial
-model with the current variable state; the reply is a JSON allowed-values
-list. Results are cached per (script, relevant-variable-state).
+Tier 2 — LLM fallback: scripts Tier 1 cannot parse are handed to the reason
+model (ARYX_LLM_REASON_MODEL, role="answer") with the current variable
+state; the reply is a JSON allowed-values list. Results are cached per
+(script, relevant-variable-state).
 
 Both tiers return ``None`` when the outcome is unknown (unparseable script,
 referenced variable not yet filled, LLM unavailable) — the caller treats
@@ -358,7 +359,23 @@ def evaluate_declarative_conditions(
             saw_missing = True
             continue
         expected_values = by_attr[attr_id]
-        hit = any(actual.strip().lower() == v.strip().lower() for v in expected_values)
+        # Each row's own value can itself be a "~"-delimited OR-list (same
+        # encoding as ConstraintRule.allowed_values, e.g. a single input row
+        # storing "PREMIER~ADVANCED SOFTWARE ONLY~ESSENTIAL SOFTWARE ONLY")
+        # rather than always one literal value per row — a bare equality
+        # check against the whole string can never match any one real value
+        # in that case (confirmed live: this is exactly why "Hide Include
+        # Accidental Damage for certain Service Type" never fired — see
+        # docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §3). Splitting each
+        # row's value here is a strict superset of the old behavior — a
+        # row with no "~" splits into a 1-element list, identical to before.
+        expanded = {
+            part.strip().lower()
+            for v in expected_values
+            for part in v.split("~")
+            if part.strip()
+        }
+        hit = actual.strip().lower() in expanded
         if not hit:
             return False, False
     if saw_missing:
@@ -635,7 +652,7 @@ class BmlEvaluator:
     def _evaluate_llm(
         self, script: str, variables: dict[str, str],
     ) -> list[str] | None:
-        """Tier 2: ask the menial model to evaluate the script."""
+        """Tier 2: ask the reason model to evaluate the script."""
         try:
             from aryx import llm_runtime
             sys_p = ("You evaluate BigMachines BML rule scripts. Given the "
@@ -645,7 +662,12 @@ class BmlEvaluator:
                       f"Script:\n{script[:4000]}\n\n"
                       'Reply ONLY as JSON: {"allowed_values": ["..."]} or '
                       '{"unknown": true} if it cannot be determined.')
-            txt = llm_runtime.chat("menial", sys_p, user_p)[0]
+            # Tier-2 script interpretation genuinely needs reasoning (parse a
+            # real BML script, hold its logic against current variable state,
+            # commit to true/false/allowed-values) — moved from "menial" to
+            # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
+            # lightweight term-extraction task "menial" is meant for.
+            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -709,7 +731,7 @@ class BmlEvaluator:
     def _evaluate_llm_hide(
         self, script: str, variables: dict[str, str],
     ) -> bool | None:
-        """Tier 2: ask the menial model for a hiding rule's hide/show outcome."""
+        """Tier 2: ask the reason model for a hiding rule's hide/show outcome."""
         try:
             from aryx import llm_runtime
             sys_p = ("You evaluate BigMachines BML hiding-rule scripts. Given "
@@ -720,7 +742,12 @@ class BmlEvaluator:
                       f"Script:\n{script[:4000]}\n\n"
                       'Reply ONLY as JSON: {"hide": true} or {"hide": false} '
                       'or {"unknown": true} if it cannot be determined.')
-            txt = llm_runtime.chat("menial", sys_p, user_p)[0]
+            # Tier-2 script interpretation genuinely needs reasoning (parse a
+            # real BML script, hold its logic against current variable state,
+            # commit to true/false/allowed-values) — moved from "menial" to
+            # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
+            # lightweight term-extraction task "menial" is meant for.
+            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -783,7 +810,7 @@ class BmlEvaluator:
     def _evaluate_llm_condition(
         self, script: str, variables: dict[str, str],
     ) -> bool | None:
-        """Tier 2: ask the menial model whether a rule's condition fires."""
+        """Tier 2: ask the reason model whether a rule's condition fires."""
         try:
             from aryx import llm_runtime
             sys_p = ("You evaluate BigMachines BML rule-condition scripts. Given "
@@ -795,7 +822,12 @@ class BmlEvaluator:
                       'Reply ONLY as JSON: {"condition_true": true} or '
                       '{"condition_true": false} or {"unknown": true} if it '
                       'cannot be determined.')
-            txt = llm_runtime.chat("menial", sys_p, user_p)[0]
+            # Tier-2 script interpretation genuinely needs reasoning (parse a
+            # real BML script, hold its logic against current variable state,
+            # commit to true/false/allowed-values) — moved from "menial" to
+            # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
+            # lightweight term-extraction task "menial" is meant for.
+            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None

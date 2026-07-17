@@ -1720,8 +1720,10 @@ def test_s30_verbose_summary_has_no_other_fields_count():
 
 
 def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
-    """_cpq_summary_text sends only the FILTERED pairs to the menial model
-    and returns its prose; on LLM failure or empty reply it falls back to
+    """_cpq_summary_text sends only the FILTERED pairs to the reason model
+    (ARYX_LLM_REASON_MODEL, role="answer" — this narration is the
+    customer-facing summary of a real quote, moved off "menial") and
+    returns its prose; on LLM failure or empty reply it falls back to
     the deterministic bullet summary instead of blocking the flow."""
     from aryx.api import ask_api
     from aryx.cpq.state import ConfigAttr, MenuOption
@@ -1749,7 +1751,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     monkeypatch.setattr(ask_api.llm_runtime, "chat", fake_chat)
     text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
     assert text == "The radio is configured for the NA region."
-    assert captured["role"] == "menial"
+    assert captured["role"] == "answer"
     assert "Region: NA" in captured["user"]
     assert "Ruggedized" not in captured["user"], (
         "filtered-out pairs must never reach the narrator prompt")
