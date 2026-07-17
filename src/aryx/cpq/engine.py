@@ -1624,19 +1624,15 @@ class CpqEngine:
             is_hidden = hidden_raw in ("1", "true", "yes")
             array_control_raw = str(pg.get("is_array_control_attr") or "0").strip().lower()
             is_array_control = array_control_raw in ("1", "true", "yes")
-            if is_hidden and not default_val and not is_array_control:
+            # "quantity" name fragment — candidate grid-quantity target attr
+            # (e.g. mountingTypeShirtMagneticMountQuantity_viSoln). Kept
+            # despite hidden+no-default so resolve_array_grid_links() can
+            # name-match it against a visible selector's menu options (§5
+            # Change B, docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md).
+            is_grid_qty_candidate = "quantity" in vn_lo
+            if is_hidden and not default_val and not (is_array_control or is_grid_qty_candidate):
                 # Hidden with nothing to contribute — never shown/asked, and
                 # no default to feed BML scripts, so still fully dropped.
-                # Exception: is_array_control_attr=1 rows are kept (still
-                # hidden, still never asked/filled/paid) purely so
-                # array_grid_controls_in_play() can detect and flag their
-                # presence — see docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md
-                # §5 Change B follow-up: the real link between a selected
-                # grid row and its quantity attr lives only in BigMachines'
-                # own native-UI array-control JavaScript, never in any
-                # ingested rule data — confirmed by a full-file scan finding
-                # zero rule_input rows referencing the visible selector
-                # attr. Not buildable without guessing; flagged instead.
                 continue
 
             hide_in_trans_raw = str(pg.get("hide_in_trans") or "0").strip().lower()
@@ -1958,6 +1954,83 @@ class CpqEngine:
         silently mis-populating or silently dropping it.
         """
         return sorted({a.variable_name for a in attrs if a.is_array_control})
+
+    @staticmethod
+    def resolve_array_grid_links(attrs: list[ConfigAttr]) -> dict[str, dict[str, str]]:
+        """Best-effort variable-name heuristic linking a visible menu-based
+        selector attr's options to hidden ``*Quantity*``-named attrs (kept
+        in `attrs` for exactly this purpose — see load_product_config's
+        drop-filter exception).
+
+        Explicitly NOT rule-derived — array_grid_controls_in_play()'s own
+        docstring and docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5
+        confirm no such link exists in any ingested rule data. This is a
+        deliberate, explicitly requested exception to this engine's
+        "never guess" default, scoped as tightly as possible: a match only
+        counts when EXACTLY ONE quantity candidate's normalized
+        variable_name contains the option's normalized text (>=6 alnum
+        chars, to avoid trivial/short-token false positives like "1" or
+        "US"). Ambiguous or too-short tokens are skipped silently — never
+        guessed. Returns {selector_vn: {item_value_lower: quantity_vn}}.
+        """
+        def norm(s: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", s.lower())
+
+        qty_candidates = [
+            a for a in attrs if a.hidden and "quantity" in a.variable_name.lower()
+        ]
+        if not qty_candidates:
+            return {}
+        qty_norm = [(a.variable_name, norm(a.variable_name)) for a in qty_candidates]
+
+        links: dict[str, dict[str, str]] = {}
+        for attr in attrs:
+            if attr.hidden or not attr.options:
+                continue
+            item_map: dict[str, str] = {}
+            for opt in attr.options:
+                token = norm(opt.display_name or opt.item_value)
+                if len(token) < 6:
+                    continue
+                matches = [vn for vn, qn in qty_norm if token in qn]
+                if len(matches) == 1:
+                    item_map[opt.item_value.strip().lower()] = matches[0]
+            if item_map:
+                links[attr.variable_name] = item_map
+        return links
+
+    def resolve_pending_grid_quantities(
+        self, attrs: list[ConfigAttr], filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+    ) -> list[ConfigAttr]:
+        """Extra pending ConfigAttrs for grid-quantity attrs whose selector
+        has a selected row without a quantity yet (resolve_array_grid_links).
+
+        Each returned attr is a REAL ConfigAttr from `attrs` — asked via the
+        same free-text pending mechanism as any other attribute (these
+        quantity attrs have no menu options, so apply_answer's free-text
+        numeric path handles the reply). No new UI/ask concept needed.
+        """
+        links = self.resolve_array_grid_links(attrs)
+        if not links:
+            return []
+        by_vn = {a.variable_name: a for a in attrs}
+        extra: list[ConfigAttr] = []
+        seen: set[str] = set()
+        for selector_vn, item_map in links.items():
+            selected = filled_multi.get(selector_vn) or (
+                [filled[selector_vn]] if selector_vn in filled and filled[selector_vn] else []
+            )
+            for item_value in selected:
+                qty_vn = item_map.get(item_value.strip().lower())
+                if not qty_vn or qty_vn in filled or qty_vn in seen:
+                    continue
+                qty_attr = by_vn.get(qty_vn)
+                if qty_attr is None:
+                    continue
+                extra.append(qty_attr)
+                seen.add(qty_vn)
+        return extra
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.

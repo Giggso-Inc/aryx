@@ -513,6 +513,12 @@ def _handle_cascade(
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns,
     )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
     for var, new_val in filled.items():
         old_val = prev_filled_snapshot.get(var)
         if old_val != new_val:
@@ -1374,6 +1380,12 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
         negated_vns=negated_vns,
     )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
     dropped_note = "".join(
         f" Removed **{', '.join(dvals)}** from **"
         f"{next((a.display_label for a in attrs if a.variable_name == dvar), dvar)}"
