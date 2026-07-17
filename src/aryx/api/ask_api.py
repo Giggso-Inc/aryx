@@ -1094,6 +1094,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.negated_vns = sorted(set(session.negated_vns) | negated_now)
     negated_vns = set(session.negated_vns)
 
+    # Seed the punch-in model context when the catalog's own bm_catalog
+    # tree makes it unambiguous (exactly one model leaf — SVX's vX650_BOM).
+    # BM injects _bm_model_variable_name at runtime; exports never carry
+    # it, which is why modelname_all (whose XML default POINTS at it)
+    # shipped the literal token in payloads (Issue 11). The hint fills the
+    # noise-prefixed context attr (feeds BML scripts, never the payload),
+    # and auto_fill's pointer post-pass resolves modelname_all from it.
+    # Ambiguous trees (APX Next: two model leaves) seed nothing.
+    model_vn = _cpq_engine.single_model_variable_name(
+        reader, req.workspace_id, catalog_prefix)
+    if model_vn:
+        hints.setdefault("_bm_model_variable_name", model_vn)
+
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
     hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
@@ -1115,7 +1128,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # live: SVX's productSelectionProduct_all fell back to "APX6500", an
     # unrelated APX Next radio model). Same exclusion set, same reasoning as
     # hiding-rule auto-fix above — union both into one payload-drop set.
-    _hidden_for_payload = _hidden_for_payload | _cpq_engine.resolve_always_ask_skips(
+    # payload_flow_exclusions adds product/model mutual exclusivity on top
+    # of the always-ask skips: model flow drops the product selector,
+    # product flow drops the model-context mirrors (see its docstring).
+    _hidden_for_payload = _hidden_for_payload | _cpq_engine.payload_flow_exclusions(
         req.workspace_id, catalog_prefix, attrs)
     # Constraint/recommendation-type inconsistencies (same plan, §4.1) are
     # NOT auto-fixed — unlike hiding, the engine can't be certain what the
@@ -1460,7 +1476,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # turn-start `_hidden_for_payload` — cascades earlier in this
             # same turn can change which hiding rules are active.
             _hidden_now = _cpq_engine.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)[2]
-            _hidden_now = _hidden_now | _cpq_engine.resolve_always_ask_skips(
+            _hidden_now = _hidden_now | _cpq_engine.payload_flow_exclusions(
                 req.workspace_id, catalog_prefix, attrs)
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi, visible_attrs,
@@ -1552,7 +1568,18 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     # rule-fetch round trip on every ready turn just for a preview. The real
     # submission path (_run_cpq_turn's Step 8 build_payload call) already
     # applies it.
-    payload = _cpq_engine.build_payload(session.filled, session.filled_source, session.filled_multi, attrs)
+    # Flow exclusions MUST apply here too (Issue 11 §5) — this is the web
+    # UI's JSON-button payload, a separate emission path from the chat
+    # "show me the json" preview and the Step-8 submission (both already
+    # excluded). Confirmed live: without this, the button showed
+    # modelname_all alongside productSelectionProduct_all (and, on model
+    # flows, the skipped product selector). Cheap: layout scope is cached
+    # per (workspace, catalog); no extra rule fetch.
+    flow_exclusions = _cpq_engine.payload_flow_exclusions(
+        req.workspace_id, attrs[0].catalog_prefix if attrs else "", attrs)
+    payload = _cpq_engine.build_payload(
+        session.filled, session.filled_source, session.filled_multi, attrs,
+        hidden_vns=flow_exclusions)
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)

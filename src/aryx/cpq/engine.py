@@ -927,6 +927,42 @@ class CpqEngine:
             alias_map.pop(nm, None)
         return alias_map
 
+    def single_model_variable_name(
+        self, reader: Any, workspace_id: int, catalog_prefix: str,
+    ) -> str:
+        """The catalog's model variable name — ONLY when its own bm_catalog
+        tree has exactly one model leaf; "" otherwise (never guess).
+
+        Recreates the punch-in model context BigMachines injects at runtime
+        (the `_bm_model_*` attrs a user enters the configurator through) —
+        data that never exists in an XML export. When the tree makes the
+        model unambiguous (SVX: family videoSolutions_BOM → line mobile_BOM
+        → single leaf vX650_BOM), Aryx can seed it; when several leaves
+        exist (APX Next: aPXNext_BOM AND aPXN70_BOM), returns "" and the
+        model context stays unfilled — the quote's identity travels in the
+        product selection there instead (Issue 11,
+        docs/CPQ_PRODUCT_SWITCH_ISSUE.md). A leaf = a bm_catalog node whose
+        native id is never another node's parent_id.
+        """
+        if not catalog_prefix:
+            return ""
+        cat_ents = reader.find_entities(
+            ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
+        if not cat_ents:
+            return ""
+        pg = self._batch_fetch([e["id"] for e in cat_ents], workspace_id)
+        nodes: list[tuple[str, str, str]] = []  # (native_id, parent_id, name)
+        for cent in cat_ents:
+            a = pg.get(cent["id"], {})
+            native = str(a.get("id") or "").strip()
+            parent = str(a.get("parent_id") or "").strip()
+            name = str(a.get("name") or cent.get("name") or "").strip()
+            if native and name:
+                nodes.append((native, parent, name))
+        parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
+        leaves = [nm for native, _p, nm in nodes if native not in parent_ids]
+        return leaves[0] if len(leaves) == 1 else ""
+
     def detect_product_mention(
         self, question: str, hints: dict[str, str],
         reader: Any = None, workspace_id: int = 1,
@@ -1932,6 +1968,51 @@ class CpqEngine:
             if attr.entity_id not in in_flow_ids:
                 skips.add(attr.variable_name)
         return skips
+
+    @staticmethod
+    def model_context_mirror_vns(attrs: list["ConfigAttr"]) -> set[str]:
+        """Variable names of model-context MIRROR attrs — pointer-default
+        attrs whose referenced attribute is an underscore-prefixed runtime
+        context field (the platform's own `_bm_model_*`-style punch-in
+        family). Fully structural: an attr qualifies when its
+        default_value equals ANOTHER attr's variable name AND that name
+        starts with "_" — no attribute names in code (matches
+        modelname_all -> _bm_model_variable_name in both ingested
+        exports, and nothing else, per the Issue 11 survey).
+        """
+        vns = {a.variable_name for a in attrs}
+        return {
+            a.variable_name for a in attrs
+            if not a.options
+            and a.default_value in vns
+            and a.default_value != a.variable_name
+            and a.default_value.startswith("_")
+        }
+
+    def payload_flow_exclusions(
+        self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
+    ) -> set[str]:
+        """Product/model flow mutual exclusivity for the payload
+        (Issue 11 follow-up, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a quote is
+        identified by its product selection OR its model context — never
+        both.
+
+        The flow signal is the catalog's own layout data
+        (resolve_always_ask_skips): non-empty means the single active
+        native-UI flow HIDES the product selector (model flow — e.g. SVX),
+        so the product selector is excluded and model mirrors ship.
+        Empty means the product selector is genuinely part of this
+        catalog's flow, or the flow is ambiguous/unresolvable (e.g. APX
+        Next's two active flows) — product flow: the product identifies
+        the quote and the model-context mirrors are excluded instead
+        (confirmed live: APX shipped modelname_all="aPXNext" alongside
+        productSelectionProduct_all, violating the integration's
+        one-or-the-other contract).
+        """
+        skips = self.resolve_always_ask_skips(workspace_id, catalog_prefix, attrs)
+        if skips:
+            return skips  # model flow — product excluded, mirrors ship
+        return self.model_context_mirror_vns(attrs)  # product flow
 
     @staticmethod
     def array_grid_controls_in_play(attrs: list[ConfigAttr]) -> list[str]:
@@ -3101,6 +3182,25 @@ class CpqEngine:
         rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
         dropped = dropped_multi if dropped_multi is not None else {}
 
+        # Pointer-defaults (Issue 11, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a
+        # default_value that exactly equals ANOTHER attribute's variable
+        # name is a REFERENCE the source platform resolves at runtime, not
+        # a literal (confirmed live: modelname_all's XML default is the
+        # string "_bm_model_variable_name" — BM's own "Set Model Name..."
+        # rule copies that runtime model-context attr into it; the export
+        # carries only the pointer token). Shipping the token as data put
+        # '"modelname_all": "_bm_model_variable_name"' in real payloads.
+        # Structural check, no attribute names in code — an exhaustive
+        # survey of every ingested catalog found exactly this ONE pattern
+        # (modelname_all -> _bm_model_variable_name in both exports) and
+        # zero coincidental literal defaults matching an attr name.
+        _all_vns = {a.variable_name for a in attrs}
+
+        def _is_pointer_default(a: "ConfigAttr") -> bool:
+            return (not a.options
+                    and a.default_value in _all_vns
+                    and a.default_value != a.variable_name)
+
         # target attr id -> recommendation rules targeting it, so step 4 can
         # check for an already-satisfied recommendation before blindly
         # picking first-by-order (see docstring — the ordering bug this closes).
@@ -3190,7 +3290,9 @@ class CpqEngine:
                 # — a hidden attr only ever gets its own XML default_value
                 # (BML scripts elsewhere may reference it), or is left out of
                 # `filled` entirely if it has none. Never enters `pending`.
-                if _valid(attr.default_value):
+                # Pointer-defaults are NOT literals — resolved (or left
+                # unfilled) by the post-pass below, never written verbatim.
+                if _valid(attr.default_value) and not _is_pointer_default(attr):
                     filled[vn] = attr.default_value
                     display_filled[vn] = next(
                         (o.display_name for o in attr.options
@@ -3265,8 +3367,9 @@ class CpqEngine:
                         source = "hint"
                     break
 
-            # 2. Default value
-            if not value and _valid(attr.default_value):
+            # 2. Default value (pointer-defaults excluded — see
+            # _is_pointer_default above; the post-pass resolves them)
+            if not value and _valid(attr.default_value) and not _is_pointer_default(attr):
                 value = attr.default_value
                 source = "default"
                 display = next(
@@ -3482,6 +3585,24 @@ class CpqEngine:
                 # the payload exclusion trusts; zero rule impact (no BML
                 # script in either catalog reads CRM_BILL_*/CRM_SHIP_*).
                 pending.append(attr)
+
+        # Pointer-default resolution post-pass (Issue 11): an unfilled
+        # pointer attr inherits its REFERENCED attribute's value once that
+        # value exists — reproducing what the source platform's own runtime
+        # rule does (BM's "Set Model Name to All Product Family attribute
+        # modelname" copies _bm_model_variable_name into modelname_all).
+        # If the referenced attr never fills (e.g. APX Next, where the
+        # model context is ambiguous), the pointer attr stays unfilled —
+        # the token itself is never shipped as data.
+        for attr in attrs:
+            vn = attr.variable_name
+            if vn in filled or not _is_pointer_default(attr):
+                continue
+            ref_value = filled.get(attr.default_value)
+            if ref_value:
+                filled[vn] = ref_value
+                display_filled[vn] = display_filled.get(attr.default_value, ref_value)
+                sources.setdefault(vn, "cascade")
 
         # Cascade fill: for any pending free-text attr that shares a decision
         # key fragment with an already-filled attr (e.g. packageRegion ← region
@@ -4104,6 +4225,17 @@ class CpqEngine:
                 # dMSDuration_viSoln), same treatment as hide_in_trans.
                 # They still drive rules and conversation — only the POST
                 # excludes them.
+                continue
+            if (attr is not None and not attr.options
+                    and v == attr.default_value
+                    and v in attr_by_vn and v != k):
+                # Unresolved pointer token (Issue 11): the value still
+                # equals the attr's own pointer default — another attr's
+                # variable name, not data. Fill-time guards prevent new
+                # fills, but a session filled on an older build carries the
+                # token in its saved state; scrub it here so a stale
+                # session can never ship '"modelname_all":
+                # "_bm_model_variable_name"'.
                 continue
             if not (_valid(v) or sources.get(k) in self._CONFIRMED_SOURCES):
                 continue
