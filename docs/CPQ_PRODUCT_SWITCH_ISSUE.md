@@ -15,6 +15,7 @@ Issues found via live testing, all fully root-caused:
 | 7 | "yes" to a stateless "did you mean…?" hint approved/submitted the current quote | **FIXED** — suggestion prompt now arms a pending state (single candidate → `confirm_switch`; several → new `suggest_switch`) |
 | 8 | Payload root key was `configAttributes`; integration contract expects `configData` | **FIXED** — root key renamed in `build_payload`, tests/docs updated, live-verified (84-attr APX payload now under `configData`) |
 | 9 | "Bill Country" (`CRM_BILL_COUNTRY`, a CRM-integration field) asked as a question after a product switch | **FIXED** — noise vars never pend; plus follow-up: a preserved country now carries over as a hint, so UDC isn't re-asked after a switch |
+| 10 | `switch_country` pending state had no decline/cancel path (review finding M1) | **FIXED** — exact-phrase decline ("no"/"cancel"/…) resumes the original product; prefix matching deliberately avoided (Norway/Netherlands/Nigeria are country attempts) |
 
 ---
 
@@ -559,6 +560,20 @@ question is the genuine Product attr — no "Bill Country", and
 `ultimateDestinationCountry` auto-filled `US` from the preserved country
 without re-asking.
 
+**Review follow-up (finding N1) — exhaustive smoke test across all
+catalogs:** all 1,639 config attributes across every ingested catalog in
+the environment (12 workspaces; 4 distinct exports — APX Next, SL3500e
+Dummy, SVX Video RSM — each with its own naming conventions) were run
+through the REAL engine predicates. The guard suppresses exactly TWO
+distinct variable names anywhere: `CRM_BILL_COUNTRY` and
+`CRM_SHIP_COUNTRY` — both genuine CRM-integration address fields. Zero
+legitimate free-text decision attributes are affected in any catalog;
+every real ask-able input in all four exports uses lower-camelCase naming,
+so the ALL-CAPS-first-segment heuristic cleanly separates the populations.
+The residual risk (a future catalog naming a real input in the
+integration convention) stays theoretical — and such an attr was already
+broken worse pre-fix (asked, then silently dropped from the payload).
+
 ## 1. Reported symptom
 
 Immediately after a confirmed product switch to `videoSolutions_BOM`, the
@@ -618,3 +633,45 @@ noise-var guard (Bug 2 precedent).
   being asked — but such an attr would already be excluded from the
   payload today, so it was already broken in a worse way (asked, then
   answer dropped).
+
+---
+
+# Issue 10 — `switch_country` pending state had no decline/cancel path
+
+Status: **FIXED — implemented and unit-tested.** (Review finding M1.)
+
+## 1. Reported symptom
+
+`confirm_switch` and `suggest_switch` both let the user back out of a
+pending product switch; `switch_country` did not — every reply was treated
+as a country attempt, so a user who changed their mind was stuck: the
+"isn't available for X either" prompt repeated with no way to abandon the
+switch and resume the original product.
+
+## 2. Root cause — and a sharper edge than the report
+
+The branch had exactly two outcomes: validate-and-complete, or
+loop-and-re-ask. Worse than the reported infinite loop: a decline-shaped
+reply ("no") could silently **complete the switch with a garbage
+country** — an unmatchable country string fills nothing in the simulated
+cascade, no constraint fires, and `check_country_availability` fails OPEN
+by documented design → `_complete_product_switch(product, "no")` →
+`session.country = "no"`, which Issue 9's country carry-over would then
+inject as a hint on every later turn. The decline path prevents state
+corruption, not just UX frustration.
+
+## 3. Fix (shipped)
+
+Exact-phrase decline check FIRST ("n", "no", "cancel", "stop", "abort",
+"never mind"): clears `pending_switch_product`/`pending_anchor` and
+resumes the original product — same contract and same
+`cpq_switch_declined()` tool tag as `confirm_switch`'s decline branch.
+Deliberately NOT the sibling branches' `startswith(("n","no"))`
+convention: this state expects country names, and Norway, Netherlands,
+Nigeria, and North Macedonia all start with "n" — prefix matching would
+swallow real answers.
+
+Tests (tests/test_cpq_product_switch.py):
+`test_switch_country_no_declines_and_resumes_original_product` (also
+asserts the original config/country survive the decline),
+`test_switch_country_norway_is_a_country_not_a_decline`.

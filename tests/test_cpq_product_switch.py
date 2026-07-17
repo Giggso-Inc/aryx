@@ -580,6 +580,47 @@ def test_switch_country_loops_if_new_country_still_invalid(monkeypatch):
     assert "Germany" in resp["answer"] or "MOTOTRBO" in resp["answer"]
 
 
+def test_switch_country_no_declines_and_resumes_original_product(monkeypatch):
+    """Issue 10: switch_country previously had no exit — and a 'no' reply
+    could even COMPLETE the switch with country='no' via the fail-open
+    availability check. It must decline, like its sibling states."""
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=True)  # fail-open would accept "no"
+    session_data = _mid_config_session(
+        product_name="SL3500e", country="United States",
+        filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "switch_country"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    resp = _run_cpq_turn(
+        AskRequest(question="no", workspace_id=1, session_data=session_data), reader)
+
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e"
+    assert sd["pending_anchor"] == ""
+    assert sd["pending_switch_product"] == ""
+    assert sd["country"] == "United States", "the original country must survive a decline"
+    assert sd["filled"] == {"battery": "STANDARD"}, "the original config must survive a decline"
+
+
+def test_switch_country_norway_is_a_country_not_a_decline(monkeypatch):
+    """The decline check must be exact-phrase: real countries starting with
+    'n' (Norway, Netherlands, Nigeria...) are country attempts."""
+    reader = _no_switch_setup(monkeypatch)
+    _country_check_setup(monkeypatch, available=True)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "switch_country"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    resp = _run_cpq_turn(
+        AskRequest(question="Norway", workspace_id=1, session_data=session_data), reader)
+
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO", "'Norway' must be tried as a country"
+    assert sd["country"] == "Norway"
+
+
 # ── Scenario 10: country-availability REAL logic (no engine mocks) ─────────
 #
 # Review finding P1: session.country holds DISPLAY text ("United States"),
