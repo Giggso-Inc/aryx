@@ -5,17 +5,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { parseWorkspaceScope, workspaceModelHref, workspaceStartHref } from "@/lib/workspace-route";
 
 interface Props {
   workspaceId: number;
+  className?: string;
 }
 
 /** Compact banner — what's actually in this workspace.
  *  EMPTY state is loud: when there are zero records (regardless of
  *  whether any types are registered), surface a big "Start setup" CTA
  *  instead of pretending there's data to ask about. */
-export function WorkspacePeek({ workspaceId }: Props) {
+export function WorkspacePeek({ workspaceId, className }: Props) {
   const pathname = usePathname();
   const { shayWorkspaceId } = parseWorkspaceScope(pathname);
   const [entityCount, setEntityCount] = useState<number | null>(null);
@@ -30,7 +32,7 @@ export function WorkspacePeek({ workspaceId }: Props) {
 
   if (entityCount === 0) {
     return (
-      <div className="mb-6 rounded-2xl border-[1.5px] border-dashed border-amber-300 bg-amber-50/60 px-5 py-5 text-center">
+      <div className={cn("mb-6 rounded-2xl border-[1.5px] border-dashed border-amber-300 bg-amber-50/60 px-5 py-5 text-center", className)}>
         <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700">
           This workspace is empty
         </div>
@@ -49,7 +51,7 @@ export function WorkspacePeek({ workspaceId }: Props) {
   }
 
   return (
-    <div className="mb-6 rounded-2xl border border-navy-100 bg-white px-5 py-4 shadow-soft">
+    <div className={cn("mb-6 rounded-2xl border border-navy-100 bg-white px-5 py-4 shadow-soft", className)}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-subtle">
           In this workspace
