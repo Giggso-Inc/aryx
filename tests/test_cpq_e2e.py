@@ -701,7 +701,7 @@ def test_s6_s7_conversation_payload_and_no_eager_output(truth, fake_rdb, monkeyp
     # _BM_USER_CURRENCY) are intentionally excluded from the payload by
     # build_payload() regardless of provenance — skip those here too.
     from aryx.cpq.engine import CpqEngine
-    attrs_out = (final.get("cpq_payload") or {}).get("configAttributes", {})
+    attrs_out = (final.get("cpq_payload") or {}).get("configData", {})
     for var, value in user_confirmed.items():
         if CpqEngine._is_noise_var(var):
             continue
@@ -1897,7 +1897,7 @@ def test_s34_ambiguous_hint_without_full_option_name_does_not_guess():
 
 
 def test_s35_build_payload_nests_value_and_drops_noise_vars():
-    """build_payload() returns {"configAttributes": {var: {"value": ...}}},
+    """build_payload() returns {"configData": {var: {"value": ...}}},
     and never includes underscore-prefixed / ALL-CAPS-prefixed integration
     fields regardless of provenance (§ "ignore attributes starting with _")."""
     from aryx.cpq.engine import CpqEngine
@@ -1915,7 +1915,7 @@ def test_s35_build_payload_nests_value_and_drops_noise_vars():
     }
     payload = eng.build_payload(filled, filled_source)
     assert payload == {
-        "configAttributes": {"ultimateDestinationCountry": {"value": "US"}},
+        "configData": {"ultimateDestinationCountry": {"value": "US"}},
     }
 
 
@@ -2100,7 +2100,7 @@ def test_s41_conversational_quote_only_payload_after_confirm(
     confirm_req = AskRequest(question="confirm", workspace_id=1, session_data=session)
     confirm_resp = _run_cpq_turn(confirm_req, reader)
     assert confirm_resp.get("cpq_payload") is not None
-    assert "configAttributes" in confirm_resp["cpq_payload"]
+    assert "configData" in confirm_resp["cpq_payload"]
 
 
 def test_s42_run_id_stable_across_turns_and_present_in_logs(

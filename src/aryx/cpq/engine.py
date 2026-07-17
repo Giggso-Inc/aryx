@@ -3525,7 +3525,11 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         hidden_vns: set[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Return the final CPQ BOM API payload as ``{"configAttributes": {...}}``.
+        """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
+
+        Root key is ``configData`` per the actual integration contract —
+        previously ``configAttributes``, an internal assumption never
+        matched by the consumer.
 
         hidden_vns — variable_names an active hiding rule currently matches
         (from ``apply_hiding_rules``' third return value, computed by the
@@ -3664,7 +3668,7 @@ class CpqEngine:
             out.items(),
             key=lambda kv: (attr_by_vn[kv[0]].order if kv[0] in attr_by_vn else 10**9),
         )
-        return {"configAttributes": dict(ordered)}
+        return {"configData": dict(ordered)}
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
