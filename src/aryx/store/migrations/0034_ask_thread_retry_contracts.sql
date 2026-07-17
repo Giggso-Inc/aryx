@@ -1,4 +1,21 @@
 -- 0034 — Complete Ask retry claims and guarantee the channel upsert target.
+-- migration: required
+
+DO $migration$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM gg_channels
+        WHERE name IS NOT NULL
+          AND workspace_id IS NOT NULL
+        GROUP BY name, workspace_id
+        HAVING COUNT(*) > 1
+    ) THEN
+        RAISE EXCEPTION
+            'Migration 0034 cannot enforce channel uniqueness: duplicate (name, workspace_id) rows exist';
+    END IF;
+END
+$migration$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gg_channels_name_workspace
     ON gg_channels(name, workspace_id);

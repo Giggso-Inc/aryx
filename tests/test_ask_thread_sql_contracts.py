@@ -9,6 +9,7 @@ from pathlib import Path
 STORE_PATH = Path(__file__).resolve().parents[1] / "src" / "aryx" / "store" / "ask_thread_store.py"
 CONTRACT_PATH = STORE_PATH.with_name("ask_thread_contract.py")
 QUERY_DIR = Path(__file__).resolve().parents[1] / "src" / "aryx" / "queries"
+MIGRATE_PATH = STORE_PATH.with_name("migrate.py")
 
 
 def _sql(name: str) -> str:
@@ -95,6 +96,34 @@ def test_ask_thread_channel_conflict_target_has_follow_up_unique_index():
     ).read_text(encoding="utf-8")
 
     assert "ON gg_channels(name, workspace_id)" in migration
+
+
+def test_ask_thread_channel_index_rejects_duplicates_clearly() -> None:
+    migration = (
+        STORE_PATH.parent / "migrations" / "0034_ask_thread_retry_contracts.sql"
+    ).read_text(encoding="utf-8")
+
+    assert all(
+        fragment in migration
+        for fragment in (
+            "GROUP BY name, workspace_id",
+            "HAVING COUNT(*) > 1",
+            "RAISE EXCEPTION",
+        )
+    )
+
+
+def test_ask_thread_retry_migration_errors_are_required() -> None:
+    migration = (
+        STORE_PATH.parent / "migrations" / "0034_ask_thread_retry_contracts.sql"
+    ).read_text(encoding="utf-8")
+    runner = MIGRATE_PATH.read_text(encoding="utf-8")
+    required_block = runner[
+        runner.index("if required:"):
+        runner.index("# An optional/unavailable feature")
+    ]
+
+    assert "-- migration: required" in migration and "raise" in required_block
 
 
 def test_ask_thread_list_messages_exposes_request_id_for_recovery():
