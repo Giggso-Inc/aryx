@@ -525,6 +525,7 @@ def _handle_cascade(
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -1448,6 +1449,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
         negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
