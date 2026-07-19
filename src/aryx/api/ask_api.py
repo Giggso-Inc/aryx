@@ -461,19 +461,32 @@ def _handle_cascade(
             session.filled_source.pop(a.variable_name, None)
 
     # Lock in the new value for the changed attr
-    result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
-    if result:
-        if changed_attr.select_type == "multi":
-            # Same "single answer selects one item" convention as the
-            # pending-question path — see its comment for why this matters
-            # now that real attrs are classified "multi".
-            session.filled_multi[changed_attr.variable_name] = [result[0]]
-            session.display_filled[changed_attr.variable_name] = result[1]
+    if changed_attr.select_type == "multi":
+        # UNION every mentioned option with the current selection — a
+        # post-completion "include Locking Molle Mount" ADDS a row, it
+        # doesn't wipe rows already chosen (and a previously DECLINED
+        # empty grid simply becomes the new rows). apply_multi_answer
+        # extracts all named options, not just the best single match.
+        mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+        result = ("", "") if not mentioned else mentioned[0]
+        if mentioned:
+            existing = session.filled_multi.get(changed_attr.variable_name, [])
+            merged = list(existing) + [iv for iv, _dn in mentioned if iv not in existing]
+            session.filled_multi[changed_attr.variable_name] = merged
+            session.display_filled[changed_attr.variable_name] = ", ".join(
+                next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+                for v in merged
+            )
+            session.filled_source[changed_attr.variable_name] = "user"
         else:
+            result = None
+    else:
+        result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+        if result:
             session.filled[changed_attr.variable_name] = result[0]
             session.display_filled[changed_attr.variable_name] = result[1]
-        session.filled_source[changed_attr.variable_name] = "user"
-    else:
+            session.filled_source[changed_attr.variable_name] = "user"
+    if not result:
         # Could not parse new value — ask for clarification
         opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
         answer = (
@@ -511,7 +524,7 @@ def _handle_cascade(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
-        negated_vns=negated_vns,
+        negated_vns=negated_vns, filled_source=session.filled_source,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -531,7 +544,8 @@ def _handle_cascade(
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
-        k: v for k, v in session.filled_source.items() if k in filled
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
@@ -1216,7 +1230,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
         # STEP 6: change request → cascade
-        change_result = _cpq_engine.detect_change_request(req.question, attrs, session.filled)
+        change_result = _cpq_engine.detect_change_request(
+            req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if change_result:
             changed_attr, new_value_hint = change_result
             return _handle_cascade(
@@ -1376,6 +1391,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                             session.filled[svn] = iv
                             session.display_filled[svn] = disp
                             session.filled_source[svn] = "cascade"
+            elif (pending_attr.select_type == "multi"
+                    and not pending_attr.required
+                    and re.match(r"^\s*(no|none|nope|skip|nothing|not\s+needed)\b",
+                                 req.question.strip().lower())):
+                # Explicit decline of an OPTIONAL multi-select (e.g. the
+                # mount-type quantity grid: required="0" in the raw XML,
+                # and the real native UI lets the grid stay empty).
+                # Previously "no mounts needed" was rejected and the same
+                # question re-asked forever — the only escape was picking
+                # a mount the customer didn't want. An empty selection IS
+                # the answer: record it as user-confirmed so auto_fill
+                # never re-resolves or re-asks it, and the payload simply
+                # carries no rows (build_payload already skips empty
+                # values). Checked ONLY after apply_answer found no option
+                # match, so option names are never misread as declines,
+                # and never offered for required multi-selects.
+                session.filled_multi[pending_var] = []
+                session.display_filled[pending_var] = "(none)"
+                session.filled_source[pending_var] = "user"
+                logger.info(
+                    "cpq: optional multi-select %r explicitly declined turn=%s",
+                    pending_var, session.turn,
+                )
             elif pending_attr.options:
                 # Answer matched nothing — tell the user and re-show the options
                 opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
@@ -1409,7 +1447,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
-        negated_vns=negated_vns,
+        negated_vns=negated_vns, filled_source=session.filled_source,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -1428,7 +1466,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
     session.filled_source = {
-        k: v for k, v in session.filled_source.items() if k in filled
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
