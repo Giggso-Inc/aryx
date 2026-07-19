@@ -1636,6 +1636,65 @@ class CpqEngine:
             except Exception:
                 logger.debug("cpq: neighbor fetch failed for attr %d", eid, exc_info=True)
 
+        # Step 3b — FK fallback for attrs with a real Postgres bm_config_attr
+        # row but NO graph edge to their menu items (confirmed live: SVX's
+        # modelSelectionSelectModel_viSoln has 4 real bm_menu_item rows in
+        # Postgres, correctly FK'd via bm_config_attr_id, but zero FalkorDB
+        # neighbors — a graph-ingestion gap, not a rule-driven/constrained
+        # menu). Detected purely structurally (menu_type present + empty
+        # neighbor_map entry), never by attr/catalog name, so it self-heals
+        # for any future XML with the same ingestion gap.
+        orphan_eids = [
+            e["id"] for e in attr_ents
+            if e["id"] not in neighbor_map
+            and str(attr_pg.get(e["id"], {}).get("menu_type") or "") == "1"
+        ]
+        if orphan_eids:
+            # A real BM native id can legitimately own more than one graph
+            # entity_id (confirmed live: SL3500e ingested
+            # ultimateDestinationCountry twice under distinct entity_ids
+            # 188302/212455, both real id 39426962) — a plain 1:1 dict here
+            # would silently keep only the last-iterated entity_id and drop
+            # the other's options entirely. Map real id -> ALL owning
+            # entity_ids so every duplicate gets the same menu options.
+            orphan_real_ids: dict[str, list[int]] = {}
+            for eid in orphan_eids:
+                rid = attr_pg.get(eid, {}).get("id")
+                if rid is not None:
+                    orphan_real_ids.setdefault(str(rid), []).append(eid)
+            if orphan_real_ids:
+                menu_types = [
+                    t for t in all_type_names
+                    if _norm(t).endswith("menuitem")
+                    and (not resolved_catalog_prefix
+                         or _catalog_prefix(t) == resolved_catalog_prefix)
+                ]
+                # Paginate past find_entities' per-call cap (ARYX_GRAPH_QUERY_LIMIT,
+                # confirmed live at 2000) — SL3500e alone ships >2000 bm_menu_item
+                # rows, so a single capped call silently truncated to whichever
+                # rows the graph happened to return first, missing e.g.
+                # ultimateDestinationCountry's country list entirely.
+                fk_menu_ents: list[dict] = []
+                page_size = 2000
+                for mt in menu_types:
+                    offset = 0
+                    while True:
+                        page = reader.find_entities(
+                            ontology_type=mt, limit=page_size, offset=offset)
+                        fk_menu_ents.extend(page)
+                        if len(page) < page_size:
+                            break
+                        offset += page_size
+                fk_menu_pg = self._batch_fetch(
+                    [m["id"] for m in fk_menu_ents], workspace_id)
+                for mid, mdata in fk_menu_pg.items():
+                    owner_eids = orphan_real_ids.get(str(mdata.get("bm_config_attr_id") or ""))
+                    if not owner_eids:
+                        continue
+                    for owner_eid in owner_eids:
+                        neighbor_map.setdefault(owner_eid, []).append(mid)
+                    all_menu_ids.append(mid)
+
         # Single batch fetch for all menu items across all attrs
         all_menu_pg = self._batch_fetch(all_menu_ids, workspace_id) if all_menu_ids else {}
 

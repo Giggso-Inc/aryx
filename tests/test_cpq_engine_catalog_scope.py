@@ -37,7 +37,7 @@ class _FakeReader:
     def distinct_types(self):
         return [self._attr_type]
 
-    def find_entities(self, ontology_type=None, name=None, limit=50):
+    def find_entities(self, ontology_type=None, name=None, limit=50, offset=0):
         if ontology_type != self._attr_type:
             return []
         return [{"id": 1, "type": self._attr_type, "name": "productSelectionProduct_all"}]

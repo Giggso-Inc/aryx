@@ -152,7 +152,7 @@ class _FakeTreeReader:
         # nodes: list of (aryx_id, native_id, parent_id, name)
         self._nodes = nodes
 
-    def find_entities(self, ontology_type=None, name=None, limit=50):
+    def find_entities(self, ontology_type=None, name=None, limit=50, offset=0):
         if ontology_type != "SvxBmCatalog":
             return []
         return [{"id": i, "type": ontology_type, "name": nm}

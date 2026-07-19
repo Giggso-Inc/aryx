@@ -61,7 +61,7 @@ class _FakeProductReader:
         self.id_to_name[eid] = pname
         return {"id": eid, "type": ontology_type, "name": pname}
 
-    def find_entities(self, ontology_type=None, name=None, limit=50):
+    def find_entities(self, ontology_type=None, name=None, limit=50, offset=0):
         for prefix, pname in self._catalogs.items():
             if ontology_type == f"{prefix}BmPrdFamily":
                 return [self._ent(ontology_type, pname)]

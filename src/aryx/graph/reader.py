@@ -117,14 +117,20 @@ class GraphReader:
         }
 
     def find_entities(self, ontology_type: str | None = None,
-                      name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+                      name: str | None = None, limit: int = 50,
+                      offset: int = 0) -> list[dict[str, Any]]:
         """Find entities filtered by type and/or case-insensitive name match.
 
         Args:
             ontology_type: Exact ontology type to match, or None for any.
             name: Substring matched case-insensitively against the name, or None.
             limit: Maximum rows to return (coerced to int, capped at ARYX_GRAPH_QUERY_LIMIT).
-
+            offset: Rows to skip before applying limit — paginate a
+                single ontology_type past the ARYX_GRAPH_QUERY_LIMIT cap by
+                calling repeatedly with offset += limit until a short page
+                comes back (see CpqEngine.load_product_config's FK-fallback,
+                confirmed live: SL3500e's >2000 bm_menu_item rows silently
+                truncated at one capped call otherwise).
         Returns:
             A list of {id, type, name, attributes} dicts.
         """
@@ -138,8 +144,10 @@ class GraphReader:
             params["name"] = name
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
+        skip = max(0, int(offset))
         rows = self._query(
-            f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, properties(e) LIMIT {capped}",
+            f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, properties(e) "
+            f"SKIP {skip} LIMIT {capped}",
             params,
         )
         return [_entity(r) for r in rows]
