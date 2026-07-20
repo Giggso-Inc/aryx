@@ -1765,7 +1765,7 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
     assert text == (
         "Your configuration is complete.\n\n"
-        "• Associated Options\nThe radio is configured for the NA region."
+        "**Associated Options** - The radio is configured for the NA region."
     )
     assert captured["role"] == "answer"
     assert "Region: NA" in captured["user"]

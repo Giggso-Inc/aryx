@@ -347,7 +347,7 @@ def _cpq_summary_text(
                 # deterministically regardless of how verbose the model got,
                 # without a second LLM round-trip.
                 prose = _SENTENCE_SPLIT.split(segment)[0].strip()
-                lines.append(f"\n• {category}\n{prose}")
+                lines.append(f"\n**{category}** - {prose}")
             return "\n".join(lines)
         logger.debug(
             "cpq: summary narration returned %d segments (expected %d) — "
