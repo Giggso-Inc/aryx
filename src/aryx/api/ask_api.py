@@ -20,7 +20,7 @@ from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
-from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS
+from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.graph.retrieve import all_types, gather, render_context
@@ -127,6 +127,11 @@ def _extract_terms(question: str, types: list[str], history: list[Turn],
 
 _MAX_ANSWER_LINES = 5
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+# Segments _cpq_summary_text asks the LLM to separate its reply by — one
+# lead-in sentence + one narration segment per category, code-assembled
+# with the real "• Category" headers afterwards (see _cpq_summary_text).
+# Distinctive enough that real narration text won't produce it by accident.
+_CPQ_SEGMENT_DELIM = "@@@"
 
 
 def _line_count(text: str) -> int:
@@ -266,32 +271,77 @@ def _cpq_summary_text(
     product_name: str,
     workspace_id: int,
 ) -> str:
-    """Natural-language paragraph summarising the filtered configuration.
+    """Structured, headed/bulleted summary of the filtered configuration.
 
-    The engine's `filled_summary_pairs` owns ALL filtering (booleans,
-    secondary/warranty/product attrs, year durations, rule-governed set);
-    the menial model only rewrites the surviving facts as prose. Any LLM
-    failure or empty reply falls back to the deterministic bullet summary
-    (`render_filled_summary`) — the CPQ flow must never block on the
-    narrator.
+    The engine's `categorized_summary_groups` owns ALL filtering (booleans,
+    secondary/warranty/product attrs, year durations, rule-governed set,
+    "(none)" placeholders) AND the same category grouping (Product Name /
+    Service Plan / Quantity & Duration / Associated Options, or however
+    many are actually present) the deterministic fallback
+    (`render_filled_summary`) uses.
+
+    The "**Category:**" headers are assembled here in CODE, never left to
+    the LLM to reproduce verbatim — asking a model to keep exact header
+    text on its own line is a request, not a guarantee (confirmed live: it
+    silently folded headers into running prose instead of respecting the
+    line breaks). The model is only asked for each category's CONTENT — its
+    real bulleted/plain-text shape (bullets for every category except
+    Associated Options, one plain-text line for that one) — as one segment
+    per category separated by a fixed delimiter it cannot plausibly emit as
+    part of real prose, so the structure is deterministic while the wording
+    stays LLM-narrated. Associated Options is explicitly told to OMIT any
+    fact it isn't sure of rather than gesture at it with a vague placeholder
+    (e.g. never "plus the usual defaults") — confirmed live to hallucinate
+    otherwise. If the reply doesn't split into exactly the expected number
+    of segments, or the LLM call fails/returns empty, this falls back to
+    `render_filled_summary` — the CPQ flow must never block on, or silently
+    mis-format via, the narrator.
     """
-    pairs = _cpq_engine.filled_summary_pairs(
+    groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids)
-    if not pairs:
+    if not groups:
         return ""
     sys = (
         "You summarise product configurations for sales reps in plain, "
         "everyday English — never technical or internal terminology."
     )
-    user = (
-        f"Describe this {product_name or 'product'} configuration in at most "
-        f"{_MAX_ANSWER_LINES} short lines, one idea per line. Lead with a direct "
-        "one-line summary (e.g. 'Your configuration is complete.'), then the "
-        "most important choices in plain language — group related choices "
-        "naturally, the way a person would describe the build, not as "
-        "'label: value' pairs. Use ONLY the facts below; never invent values "
-        "that are not listed.\n\nCONFIGURATION:\n"
+    config_text = "\n\n".join(
+        f"{category}:\n"
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
+        for category, pairs in groups
+    )
+    expected_segments = 1 + len(groups)
+    user = (
+        f"Describe this {product_name or 'product'} configuration for a sales "
+        f"rep. Reply with EXACTLY {expected_segments} segments separated by "
+        f"the literal token {_CPQ_SEGMENT_DELIM} (nothing else on the "
+        f"delimiter's line) — never merge two segments together, never add "
+        "or omit a segment, never include this instruction or the token "
+        "anywhere except as a separator.\n\n"
+        "Segment 1: one direct sentence, e.g. 'Your configuration is complete.'\n"
+        + "\n".join(
+            (
+                f"Segment {i + 2}: the {category} facts below as short markdown "
+                "bullets '- **Label** → value', one bullet per fact, using "
+                "plain-English labels instead of raw variable names."
+                if category != SUMMARY_FALLBACK_CATEGORY
+                else (
+                    f"Segment {i + 2}: ONE short plain-text line narrating the "
+                    f"{category} facts below (not a bulleted list, not "
+                    "'label: value' pairs) — you do not need to mention every "
+                    "fact in this category; pick whichever subset you can "
+                    "state with total accuracy and simply OMIT the rest. Never "
+                    "paraphrase, generalise, or invent a placeholder for a "
+                    "fact you are dropping (e.g. never write anything like "
+                    "'plus the usual defaults') — an omitted fact must be "
+                    "invisible, not gestured at."
+                )
+            )
+            for i, (category, _pairs) in enumerate(groups)
+        ) + "\n\n"
+        "Use ONLY the exact facts below; if you are not certain a name or "
+        "value is precisely what you are about to write, leave it out "
+        "rather than guess or approximate it.\n\nCONFIGURATION:\n" + config_text
     )
     try:
         # ARYX_LLM_REASON_MODEL (role="answer"), not menial — this narration
@@ -299,14 +349,24 @@ def _cpq_summary_text(
         # tier already used for CPQ's own BML Tier-2 script fallback.
         text, _it, _ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
-        if text:
-            if _line_count(text) > _MAX_ANSWER_LINES:
-                text, _rit, _rot = _rewrite_plain(
-                    text,
-                    f"This is a completed {product_name or 'product'} configuration summary.",
-                    workspace_id,
-                )
-            return text
+        segments = [s.strip() for s in text.split(_CPQ_SEGMENT_DELIM)]
+        if len(segments) == expected_segments and all(segments):
+            lead_in = _SENTENCE_SPLIT.split(segments[0])[0].strip()
+            lines = [lead_in]
+            for (category, _pairs), segment in zip(groups, segments[1:]):
+                if category == SUMMARY_FALLBACK_CATEGORY:
+                    # Meant to be one short line already (per the prompt) —
+                    # still cap to the first sentence so a model that rambles
+                    # anyway can't blow past the "plain-text line" contract.
+                    segment = _SENTENCE_SPLIT.split(segment)[0].strip()
+                # Every other category is real bullet lines, one per fact —
+                # capping to "first sentence" here would truncate to a
+                # single bullet, so the full segment is kept verbatim.
+                lines.append(f"\n**{category}:**\n{segment}")
+            return "\n".join(lines)
+        logger.debug(
+            "cpq: summary narration returned %d segments (expected %d) — "
+            "using bullet fallback", len(segments), expected_segments)
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
@@ -959,6 +1019,33 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if resolved_name:
         session.product_name = resolved_name
 
+    # A product-switch (or the initial turn's own NL detection) already
+    # PROVED session.product_name against this catalog — asking the
+    # productSelectionProduct_all question again on the very next turn
+    # would ignore that proof and re-derive it from a reply ("yes") that
+    # carries no product hint at all. Seed it directly from the resolved
+    # name via the same fuzzy option-matcher normal answers use, mirroring
+    # the confirmed-country carry-over above. Guarded on "not yet filled"
+    # so this only fires once (turn 1, or the turn right after
+    # _complete_product_switch reset session.filled) and never clobbers a
+    # value a later turn's real answer already set.
+    if "productSelectionProduct_all" not in session.filled:
+        _product_attr = next(
+            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
+        )
+        if _product_attr is not None:
+            _match = _cpq_engine.apply_answer(_product_attr, session.product_name)
+            if _match:
+                _item_value, _display_name = _match
+                session.filled["productSelectionProduct_all"] = _item_value
+                session.display_filled["productSelectionProduct_all"] = _display_name
+                session.filled_source["productSelectionProduct_all"] = "product_anchor"
+                logger.info(
+                    "cpq: seeded productSelectionProduct_all=%r from resolved "
+                    "product_name=%r turn=%s — skips a redundant re-ask",
+                    _item_value, session.product_name, session.turn,
+                )
+
     if product_was_anchored:
         # Product already anchored on an earlier turn — re-check THIS turn's
         # text for a mention of a DIFFERENT product. detect_product_mention
@@ -990,15 +1077,68 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             and pending_attr_guard.options
             and _cpq_engine.apply_answer(pending_attr_guard, req.question)
         )
-        if not is_answer_to_pending:
-            # Alias inventory fetched ONCE for this turn, and only on the
-            # non-answer path (review finding P2 — plus the answer guard
-            # above now skips the fetch entirely for ordinary answers).
+        # productSelectionProduct_all's option list is shared, catalog-wide
+        # (the exact same ~325 SKU codes on every ingested catalog — see
+        # engine.py's own docstrings on this attr) — confirmed live: a
+        # genuine switch sentence ("Quote APX Next Enhanced radios...")
+        # legitimately option-matched against THIS unrelated catalog's copy
+        # of that same list (APX NEXT ENHANCED really is one of its 325
+        # options too), so is_answer_to_pending was True and the switch
+        # mention never got checked at all — the wrong product's code
+        # silently landed in the wrong catalog's build. For this one
+        # attr specifically, always check switch-detection FIRST and only
+        # trust the option-match if no other ingested product was named —
+        # every other pending attr's option list is catalog-specific, so
+        # the original answer-over-switch precedence (Issue 6 above) stays
+        # unchanged for them, preserving the "APX 6500" fix it exists for.
+        # An exact, standalone match against one of THIS attr's own options
+        # (the whole reply, not a substring within a longer sentence) is a
+        # strong "definitely answering" signal regardless of what else the
+        # text might also resemble — confirmed live: "APX NEXT Single Band"
+        # is a real SL3500e-catalog option whose own text happens to
+        # contain a different family's alias ("APX NEXT"), and must still
+        # lock as an answer. Only a longer sentence that merely CONTAINS an
+        # option string (e.g. "Quote APX Next Enhanced radios for a US
+        # customer.") is ambiguous enough to need the switch-mention probe
+        # below.
+        _reply_norm = req.question.strip().lower()
+        is_exact_option_reply = bool(
+            pending_attr_guard is not None
+            and any(
+                _reply_norm in (o.item_value.strip().lower(), o.display_name.strip().lower())
+                for o in (pending_attr_guard.options or ())
+            )
+        )
+        alias_map: dict[str, str] | None = None
+        switch_candidate: str | None = None
+        if (
+            is_answer_to_pending
+            and not is_exact_option_reply
+            and pending_attr_guard is not None
+            and pending_attr_guard.variable_name == "productSelectionProduct_all"
+        ):
             alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
             switch_candidate = _cpq_engine.detect_product_mention(
                 req.question, hints, reader, req.workspace_id,
                 alias_map=alias_map,
             )
+            if (
+                switch_candidate
+                and switch_candidate.strip().lower() != session.product_name.strip().lower()
+            ):
+                is_answer_to_pending = False
+        if not is_answer_to_pending:
+            # Alias inventory fetched ONCE for this turn, and only on the
+            # non-answer path (review finding P2 — plus the answer guard
+            # above now skips the fetch entirely for ordinary answers).
+            # Reuse the probe above when the productSelectionProduct_all
+            # guard already computed it — no need to hit the graph twice.
+            if alias_map is None:
+                alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
+                switch_candidate = _cpq_engine.detect_product_mention(
+                    req.question, hints, reader, req.workspace_id,
+                    alias_map=alias_map,
+                )
             if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
                 logger.info(
                     "cpq_switch: candidate detected turn=%s current=%r candidate=%r",

@@ -547,6 +547,45 @@ def test_switch_asks_for_new_country_when_invalid(monkeypatch):
     assert "United States" in resp["answer"]
 
 
+def test_confirmed_switch_seeds_product_identifier_without_reasking(monkeypatch):
+    """Regression: switching product already PROVES the identity via
+    detect_product_mention's fuzzy match before the confirm gate is even
+    shown — re-deriving it from the confirmation reply ("yes", which carries
+    no product hint) instead re-asked productSelectionProduct_all on the very
+    next turn. Mirrors test_switch_preserves_valid_country_without_reasking's
+    setup but for the product identifier itself."""
+    reader = _no_switch_setup(monkeypatch)
+    _product_attr = ConfigAttr(
+        entity_id=9002, variable_name="productSelectionProduct_all",
+        display_label="Product", required=True, default_value="",
+        options=[MenuOption(item_value="MOTOTRBO", display_name="MOTOTRBO")],
+    )
+    monkeypatch.setattr(
+        api._cpq_engine, "load_product_config",
+        lambda *a, **k: ([_product_attr], "MOTOTRBO"),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], []),
+    )
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="yes", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO"
+    assert sd["filled"].get("productSelectionProduct_all") == "MOTOTRBO", (
+        "the confirmed switch already proved the product identity — it must "
+        "not be re-asked as if it were unknown"
+    )
+    assert "productSelectionProduct_all" not in (sd.get("pending_variables") or [])
+
+
 def test_switch_completes_once_a_valid_new_country_is_given(monkeypatch):
     reader = _no_switch_setup(monkeypatch)
     _country_check_setup(monkeypatch, available=True)
