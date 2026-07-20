@@ -20,7 +20,7 @@ from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
-from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS
+from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.graph.retrieve import all_types, gather, render_context
@@ -127,6 +127,11 @@ def _extract_terms(question: str, types: list[str], history: list[Turn],
 
 _MAX_ANSWER_LINES = 5
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+# Segments _cpq_summary_text asks the LLM to separate its reply by — one
+# lead-in sentence + one narration segment per category, code-assembled
+# with the real "• Category" headers afterwards (see _cpq_summary_text).
+# Distinctive enough that real narration text won't produce it by accident.
+_CPQ_SEGMENT_DELIM = "@@@"
 
 
 def _line_count(text: str) -> int:
@@ -270,13 +275,23 @@ def _cpq_summary_text(
 
     The engine's `categorized_summary_groups` owns ALL filtering (booleans,
     secondary/warranty/product attrs, year durations, rule-governed set,
-    "(none)" placeholders) AND the same 4-category grouping (Product Name /
-    Service Plan / Quantity & Duration / Associated Options) the
-    deterministic fallback (`render_filled_summary`) uses — the menial
-    model only rewrites each group's facts as prose, never invents its own
-    organization, so narration stays consistent whichever path fires. Any
-    LLM failure or empty reply falls back to `render_filled_summary` — the
-    CPQ flow must never block on the narrator.
+    "(none)" placeholders) AND the same category grouping (Product Name /
+    Service Plan / Quantity & Duration / Associated Options, or however
+    many are actually present) the deterministic fallback
+    (`render_filled_summary`) uses.
+
+    The "• Category" headers are assembled here in CODE, never left to the
+    LLM to reproduce verbatim — asking a model to keep exact header text on
+    its own line is a request, not a guarantee (confirmed live: it silently
+    folded headers into running prose instead of respecting the line
+    breaks). The model is only asked for the narration content, as one
+    segment per category separated by a fixed delimiter it cannot
+    plausibly emit as part of real prose — this makes the structure
+    deterministic while the wording stays LLM-narrated. If the reply
+    doesn't split into exactly the expected number of segments (model
+    didn't follow the one-segment-per-category contract), or the LLM call
+    fails/returns empty, this falls back to `render_filled_summary` — the
+    CPQ flow must never block on, or silently mis-format via, the narrator.
     """
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids)
@@ -291,20 +306,30 @@ def _cpq_summary_text(
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
         for category, pairs in groups
     )
+    expected_segments = 1 + len(groups)
     user = (
-        f"Describe this {product_name or 'product'} configuration in at most "
-        f"{_MAX_ANSWER_LINES} short lines, one idea per line. Lead with a direct "
-        "one-line summary (e.g. 'Your configuration is complete.'), then narrate "
-        "the choices in plain language, ONE SHORT PARAGRAPH PER CATEGORY BELOW, "
-        "in the same order as the categories — never merge categories together, "
-        "never reorder them, never invent a category that isn't listed. Within "
-        "a category, describe its facts naturally (not as 'label: value' pairs), "
-        "never as a bulleted list. ASSOCIATED OPTIONS in particular can list "
-        "dozens of facts — for that category ONLY, mention just the handful "
-        "that matter most and summarise the rest in general terms (e.g. "
-        "'plus the usual regional and packaging defaults'), rather than "
-        "naming every single one. Use ONLY the facts below; never invent "
-        "values that are not listed.\n\n"
+        f"Describe this {product_name or 'product'} configuration for a sales "
+        f"rep. Reply with EXACTLY {expected_segments} segments separated by "
+        f"the literal token {_CPQ_SEGMENT_DELIM} (nothing else on the "
+        f"delimiter's line) — never merge two segments together, never add "
+        "or omit a segment, never include this instruction or the token "
+        "anywhere except as a separator.\n\n"
+        "Segment 1: one direct sentence, e.g. 'Your configuration is complete.'\n"
+        + "\n".join(
+            f"Segment {i + 2}: ONE short plain-language sentence narrating the "
+            f"{category} facts below (not as 'label: value' pairs, never a "
+            "bulleted sub-list)."
+            + (
+                " This category can list dozens of facts — mention just the "
+                "handful that matter most and summarise the rest in general "
+                "terms (e.g. 'plus the usual regional and packaging "
+                "defaults'), rather than naming every single one."
+                if category == SUMMARY_FALLBACK_CATEGORY
+                else ""
+            )
+            for i, (category, _pairs) in enumerate(groups)
+        ) + "\n\n"
+        "Use ONLY the facts below; never invent values that are not listed.\n\n"
         "CONFIGURATION:\n" + config_text
     )
     try:
@@ -313,14 +338,20 @@ def _cpq_summary_text(
         # tier already used for CPQ's own BML Tier-2 script fallback.
         text, _it, _ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
-        if text:
-            if _line_count(text) > _MAX_ANSWER_LINES:
-                text, _rit, _rot = _rewrite_plain(
-                    text,
-                    f"This is a completed {product_name or 'product'} configuration summary.",
-                    workspace_id,
-                )
-            return text
+        segments = [s.strip() for s in text.split(_CPQ_SEGMENT_DELIM)]
+        if len(segments) == expected_segments and all(segments):
+            lead_in = _SENTENCE_SPLIT.split(segments[0])[0].strip()
+            lines = [lead_in]
+            for (category, _pairs), segment in zip(groups, segments[1:]):
+                # First sentence only — caps each category's line count
+                # deterministically regardless of how verbose the model got,
+                # without a second LLM round-trip.
+                prose = _SENTENCE_SPLIT.split(segment)[0].strip()
+                lines.append(f"\n• {category}\n{prose}")
+            return "\n".join(lines)
+        logger.debug(
+            "cpq: summary narration returned %d segments (expected %d) — "
+            "using bullet fallback", len(segments), expected_segments)
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
