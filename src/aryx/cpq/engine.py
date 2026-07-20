@@ -4627,6 +4627,17 @@ class CpqEngine:
             return True
         if "warranty" in label_l or "warranty" in value.lower():
             return True
+        if variable_name == "productSelectionProduct_all":
+            # Exempted from the "product" exclusion below: that rule
+            # assumes "the summary header already names the product," but
+            # the header shows the internal BOM codename (e.g. "aSTRO25_
+            # bom"), never the real, customer-facing product name — this
+            # IS that real name (confirmed live: "APX NEXT Enhanced" was
+            # silently missing from every summary despite being correctly
+            # filled). Every other product/product-line attr this
+            # exclusion targets (productLineName, bm_prd_level_product_
+            # line, ...) stays excluded.
+            return False
         return "product" in label_l or "product" in variable_name.lower()
 
     def _filled_summary_triples(
