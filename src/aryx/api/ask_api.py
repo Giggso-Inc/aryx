@@ -990,15 +990,68 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             and pending_attr_guard.options
             and _cpq_engine.apply_answer(pending_attr_guard, req.question)
         )
-        if not is_answer_to_pending:
-            # Alias inventory fetched ONCE for this turn, and only on the
-            # non-answer path (review finding P2 — plus the answer guard
-            # above now skips the fetch entirely for ordinary answers).
+        # productSelectionProduct_all's option list is shared, catalog-wide
+        # (the exact same ~325 SKU codes on every ingested catalog — see
+        # engine.py's own docstrings on this attr) — confirmed live: a
+        # genuine switch sentence ("Quote APX Next Enhanced radios...")
+        # legitimately option-matched against THIS unrelated catalog's copy
+        # of that same list (APX NEXT ENHANCED really is one of its 325
+        # options too), so is_answer_to_pending was True and the switch
+        # mention never got checked at all — the wrong product's code
+        # silently landed in the wrong catalog's build. For this one
+        # attr specifically, always check switch-detection FIRST and only
+        # trust the option-match if no other ingested product was named —
+        # every other pending attr's option list is catalog-specific, so
+        # the original answer-over-switch precedence (Issue 6 above) stays
+        # unchanged for them, preserving the "APX 6500" fix it exists for.
+        # An exact, standalone match against one of THIS attr's own options
+        # (the whole reply, not a substring within a longer sentence) is a
+        # strong "definitely answering" signal regardless of what else the
+        # text might also resemble — confirmed live: "APX NEXT Single Band"
+        # is a real SL3500e-catalog option whose own text happens to
+        # contain a different family's alias ("APX NEXT"), and must still
+        # lock as an answer. Only a longer sentence that merely CONTAINS an
+        # option string (e.g. "Quote APX Next Enhanced radios for a US
+        # customer.") is ambiguous enough to need the switch-mention probe
+        # below.
+        _reply_norm = req.question.strip().lower()
+        is_exact_option_reply = bool(
+            pending_attr_guard is not None
+            and any(
+                _reply_norm in (o.item_value.strip().lower(), o.display_name.strip().lower())
+                for o in (pending_attr_guard.options or ())
+            )
+        )
+        alias_map: dict[str, str] | None = None
+        switch_candidate: str | None = None
+        if (
+            is_answer_to_pending
+            and not is_exact_option_reply
+            and pending_attr_guard is not None
+            and pending_attr_guard.variable_name == "productSelectionProduct_all"
+        ):
             alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
             switch_candidate = _cpq_engine.detect_product_mention(
                 req.question, hints, reader, req.workspace_id,
                 alias_map=alias_map,
             )
+            if (
+                switch_candidate
+                and switch_candidate.strip().lower() != session.product_name.strip().lower()
+            ):
+                is_answer_to_pending = False
+        if not is_answer_to_pending:
+            # Alias inventory fetched ONCE for this turn, and only on the
+            # non-answer path (review finding P2 — plus the answer guard
+            # above now skips the fetch entirely for ordinary answers).
+            # Reuse the probe above when the productSelectionProduct_all
+            # guard already computed it — no need to hit the graph twice.
+            if alias_map is None:
+                alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
+                switch_candidate = _cpq_engine.detect_product_mention(
+                    req.question, hints, reader, req.workspace_id,
+                    alias_map=alias_map,
+                )
             if switch_candidate and switch_candidate.strip().lower() != session.product_name.strip().lower():
                 logger.info(
                     "cpq_switch: candidate detected turn=%s current=%r candidate=%r",
