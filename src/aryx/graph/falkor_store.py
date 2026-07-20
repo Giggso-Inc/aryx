@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -157,6 +158,20 @@ class FalkorStore:
         except Exception as exc:  # noqa: BLE001 — perf optimization only; MERGE still works without it
             logger.warning("falkor: failed to create index on Entity.id, "
                            "writes will fall back to full-scan MERGE: %s", exc)
+        try:
+            # Same fix as Entity.id above, for the SAME reason — add_provenance's
+            # MERGE (s:Source {system, dataset, record_id}) had no index, so
+            # every call label-scanned every Source node written so far this
+            # run: O(1) per write growing to O(n), O(n^2) overall. Confirmed
+            # live (docs/CPQ_INGESTION_PROJECTION_PERFORMANCE_PLAN.md): this
+            # was the dominant cost of the "slow after 90%" symptom — ~69 of
+            # ~70 minutes in the Project stage on an 83k-entity workspace,
+            # and severe enough that an external timeout watchdog marked a
+            # genuinely-still-working ingestion job "failed" mid-run.
+            self._graph.query("CREATE INDEX FOR (s:Source) ON (s.record_id)")
+        except Exception as exc:  # noqa: BLE001 — perf optimization only
+            logger.warning("falkor: failed to create index on Source.record_id, "
+                           "provenance writes will fall back to full-scan MERGE: %s", exc)
 
     def ensure_indexes(self) -> int:
         """Create exact-match indexes for Entity lookups (idempotent).
@@ -225,6 +240,60 @@ class FalkorStore:
             params,
         )
 
+    def add_entities_batch(
+        self,
+        entities: list[tuple[int, str, dict[str, Any], list[str] | None, str | None]],
+        batch_size: int = 500,
+        on_batch: "Callable[[int], None] | None" = None,
+    ) -> int:
+        """Write multiple entity nodes in batched UNWIND queries.
+
+        Each item is (entity_id, ontology_type, attributes, labels, iri) —
+        same fields as add_entity(). Cypher labels must be static text in
+        the query, not parameters, so rows are grouped by their exact
+        label-set and one UNWIND is issued per group (a workspace has a
+        few hundred distinct types at most, not one query per row).
+        Measured 7.8x faster than per-call add_entity() on realistic
+        ~20-key attribute payloads (docs/CPQ_INGESTION_PROJECTION_PERFORMANCE_PLAN.md).
+
+        on_batch — optional callback invoked with the running total of
+        rows written after each UNWIND batch, for sub-progress reporting.
+        """
+        groups: dict[tuple[str, ...], list[tuple[int, str, dict[str, Any], str | None]]] = {}
+        for entity_id, ontology_type, attributes, labels, iri in entities:
+            chain = [ontology_type] + list(labels or [])
+            safe = tuple(_safe_labels(chain))
+            groups.setdefault(safe, []).append((entity_id, ontology_type, attributes, iri))
+
+        written = 0
+        for safe_labels, rows in groups.items():
+            label_clause = "".join(f":{lbl}" for lbl in safe_labels)
+            for i in range(0, len(rows), batch_size):
+                chunk = rows[i : i + batch_size]
+                params = []
+                for entity_id, ontology_type, attributes, iri in chunk:
+                    props = _lift_props(attributes)
+                    for key in props:
+                        if _INDEX_PROP_RE.search(key):
+                            self._index_candidates.add(key)
+                    params.append({
+                        "id": entity_id, "type": ontology_type,
+                        "name": _display_name(attributes) or f"#{entity_id}",
+                        "props": props, "iri": iri,
+                    })
+                self._graph.query(
+                    f"UNWIND $rows AS r "
+                    f"MERGE (e:Entity{label_clause} {{id: r.id}}) "
+                    f"SET e.type = r.type, e.name = r.name, "
+                    f"e.iri = CASE WHEN r.iri IS NOT NULL THEN r.iri ELSE e.iri END, "
+                    f"e += r.props",
+                    {"rows": params},
+                )
+                written += len(chunk)
+                if on_batch is not None:
+                    on_batch(written)
+        return written
+
     def add_provenance(self, entity_id: int, system: str, dataset: str,
                        record_id: str) -> None:
         """Link an entity to the source record it was discovered in."""
@@ -233,6 +302,46 @@ class FalkorStore:
             "WITH s MATCH (e:Entity {id: $id}) MERGE (e)-[:FROM]->(s)",
             {"sys": system, "ds": dataset, "rid": record_id, "id": entity_id},
         )
+
+    def add_provenance_batch(
+        self,
+        rows: list[tuple[int, str, str, str]],
+        batch_size: int = 500,
+        on_batch: "Callable[[int], None] | None" = None,
+    ) -> int:
+        """Write multiple provenance links in batched UNWIND queries.
+
+        Mirrors add_relationships_batch's UNWIND pattern (N/batch_size
+        round-trips instead of N) and mirrors the Oracle graph store's
+        existing add_provenance_batch — this was previously a
+        FalkorDB-specific gap, not a deliberate cross-backend design
+        choice. Combined with the Source.record_id index added in
+        clear(), this is what actually closes the ~69-minute quadratic
+        tail documented in docs/CPQ_INGESTION_PROJECTION_PERFORMANCE_PLAN.md
+        — the index alone fixes the growth curve; batching removes the
+        remaining per-row round-trip overhead on top of that.
+
+        on_batch — optional callback invoked with the running total of rows
+        written after each batch, for sub-progress reporting (see
+        project.py's use of this in project_graph/project_incremental).
+        """
+        written = 0
+        for i in range(0, len(rows), batch_size):
+            chunk = rows[i : i + batch_size]
+            params = [
+                {"sys": sys_, "ds": ds, "rid": rid, "id": eid}
+                for eid, sys_, ds, rid in chunk
+            ]
+            self._graph.query(
+                "UNWIND $rows AS r "
+                "MERGE (s:Source {system: r.sys, dataset: r.ds, record_id: r.rid}) "
+                "WITH s, r MATCH (e:Entity {id: r.id}) MERGE (e)-[:FROM]->(s)",
+                {"rows": params},
+            )
+            written += len(chunk)
+            if on_batch is not None:
+                on_batch(written)
+        return written
 
     def remove_entity(self, entity_id: int) -> None:
         """Tombstone one entity node and all its edges (incremental delete)."""
