@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ReactFlow, Background, Controls, MiniMap,
+  ReactFlow, Background, Controls, MiniMap, BaseEdge, EdgeLabelRenderer,
+  getSmoothStepPath,
   useNodesState, useEdgesState, MarkerType,
-  type Node, type Edge, type ReactFlowInstance,
+  type Node, type Edge, type EdgeProps, type EdgeTypes, type ReactFlowInstance,
 } from "@xyflow/react";
+import type { CSSProperties } from "react";
 import "@xyflow/react/dist/style.css";
 import {
   AlertCircle, GitMerge, Loader2, RefreshCw, Search, X,
@@ -34,6 +36,16 @@ type GraphOverview = {
   relationship_count: number;
 };
 type GraphMode = "overview" | "focused" | "full";
+type TruncatedEdgeData = Record<string, unknown> & {
+  label: string;
+  title: string;
+  labelColor: string;
+  labelFontWeight: number;
+  labelOpacity: number;
+  labelBackground: string;
+  labelBackgroundOpacity: number;
+};
+type TruncatedEdge = Edge<TruncatedEdgeData, "truncatedSmoothstep">;
 type NeighborNode = {
   id: number;
   type: string;
@@ -41,6 +53,82 @@ type NeighborNode = {
   attributes?: Record<string, unknown>;
   relationship: string;
   direction: "in" | "out";
+};
+
+const NODE_WIDTH = 160;
+const OVERVIEW_NODE_WIDTH = 190;
+const MAX_EDGE_LABEL_WIDTH = 180;
+const clippedTextStyle: CSSProperties = {
+  display: "block",
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+function clippedLineStyle(style: CSSProperties): CSSProperties {
+  return { ...clippedTextStyle, ...style };
+}
+
+function TruncatedSmoothStepEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  style,
+  data,
+  pathOptions,
+}: EdgeProps<TruncatedEdge>) {
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    ...pathOptions,
+  });
+  const label = data?.label ?? "";
+
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
+      {label ? (
+        <EdgeLabelRenderer>
+          <div
+            title={data?.title}
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              maxWidth: MAX_EDGE_LABEL_WIDTH,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              borderRadius: 6,
+              background: hexToRgba(data?.labelBackground ?? "#ffffff", data?.labelBackgroundOpacity ?? 1),
+              opacity: data?.labelOpacity,
+              padding: "2px 4px",
+              color: data?.labelColor,
+              fontSize: 10,
+              fontWeight: data?.labelFontWeight,
+              lineHeight: 1.2,
+              pointerEvents: "all",
+            }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
+}
+
+const edgeTypes: EdgeTypes = {
+  truncatedSmoothstep: TruncatedSmoothStepEdge,
 };
 
 function resolveFocusSourceEntityIds(
@@ -331,11 +419,21 @@ function buildGraph(
       type: "default",
       data: {
         label: (
-          <div style={{ textAlign: "center", lineHeight: 1.3 }}>
-            <div style={{ fontWeight: isSelected || pathHighlighted ? 700 : 600, fontSize: 11, color: "#0F1726" }}>
+          <div style={{ textAlign: "center", lineHeight: 1.3, minWidth: 0, overflow: "hidden", width: "100%" }}>
+            <div
+              title={e.name}
+              style={clippedLineStyle({
+                fontWeight: isSelected || pathHighlighted ? 700 : 600,
+                fontSize: 11,
+                color: "#0F1726",
+              })}
+            >
               {e.name}
             </div>
-            <div style={{ fontSize: 10, color: typeLabelColor, marginTop: 1 }}>
+            <div
+              title={e.type}
+              style={clippedLineStyle({ fontSize: 10, color: typeLabelColor, marginTop: 1 })}
+            >
               {e.type}
             </div>
             {isExpanded && (
@@ -350,7 +448,9 @@ function buildGraph(
         border: `${borderWidth}px solid ${color}`,
         borderRadius: 8,
         padding: "6px 10px",
-        width: 160,
+        width: NODE_WIDTH,
+        overflow: "hidden",
+        boxSizing: "border-box",
         boxShadow,
         opacity: nodeOpacity,
       },
@@ -369,8 +469,16 @@ function buildGraph(
       type: "default",
       data: {
         label: (
-          <div style={{ textAlign: "center", lineHeight: 1.3 }}>
-            <div style={{ fontWeight: 500, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>
+          <div style={{ textAlign: "center", lineHeight: 1.3, minWidth: 0, overflow: "hidden", width: "100%" }}>
+            <div
+              title={typeName}
+              style={clippedLineStyle({
+                fontWeight: 500,
+                fontSize: 11,
+                color: "#64748b",
+                fontStyle: "italic",
+              })}
+            >
               {typeName}
             </div>
             <div style={{ fontSize: 9, color, marginTop: 1, opacity: 0.7 }}>
@@ -385,7 +493,9 @@ function buildGraph(
         border: `2px dashed ${color}`,
         borderRadius: 8,
         padding: "6px 10px",
-        width: 160,
+        width: NODE_WIDTH,
+        overflow: "hidden",
+        boxSizing: "border-box",
         boxShadow: "none",
         opacity: 0.75,
       },
@@ -412,25 +522,22 @@ function buildGraph(
         id: `e${r.source}-${r.target}-${i}`,
         source: String(r.source),
         target: String(r.target),
-        label: r.name,
-        type: "smoothstep",
+        type: "truncatedSmoothstep",
         animated: selectedEdge || highlighted || focusHighlighted,
         style: {
           stroke,
           strokeWidth: selectedEdge ? 3.8 : highlighted ? 2.5 : focusHighlighted ? 2.3 : 1.5,
           opacity: selectionContextActive ? (selectedEdge ? 1 : 0.1) : focusActive && !focusHighlighted ? 0.18 : 1,
         },
-        labelStyle: {
-          fill: selectedEdge ? "#0F1726" : "#334155",
-          fontSize: 10,
-          fontWeight: selectedEdge ? 700 : 500,
-          opacity: selectionContextActive ? (selectedEdge ? 1 : 0.18) : focusActive && !focusHighlighted ? 0.38 : 1,
-        },
-        labelBgStyle: {
-          fill: selectedEdge ? "#ffffff" : "#f8fafc",
-          fillOpacity: selectionContextActive ? (selectedEdge ? 0.98 : 0.18) : focusActive && !focusHighlighted ? 0.4 : 0.9,
-        },
-        labelBgPadding: [4, 2] as [number, number],
+        data: {
+          label: r.name,
+          title: r.name,
+          labelColor: selectedEdge ? "#0F1726" : "#334155",
+          labelFontWeight: selectedEdge ? 700 : 500,
+          labelOpacity: selectionContextActive ? (selectedEdge ? 1 : 0.18) : focusActive && !focusHighlighted ? 0.38 : 1,
+          labelBackground: selectedEdge ? "#ffffff" : "#f8fafc",
+          labelBackgroundOpacity: selectionContextActive ? (selectedEdge ? 0.98 : 0.18) : focusActive && !focusHighlighted ? 0.4 : 0.9,
+        } satisfies TruncatedEdgeData,
         markerEnd: {
           type: MarkerType.ArrowClosed,
           color: stroke,
@@ -455,11 +562,17 @@ function buildOverviewGraph(
       type: "default",
       data: {
         label: (
-          <div style={{ textAlign: "center", lineHeight: 1.3 }}>
-            <div style={{ fontWeight: 700, fontSize: 12, color: "#0F1726" }}>
+          <div style={{ textAlign: "center", lineHeight: 1.3, minWidth: 0, overflow: "hidden", width: "100%" }}>
+            <div
+              title={node.type}
+              style={clippedLineStyle({ fontWeight: 700, fontSize: 12, color: "#0F1726" })}
+            >
               {node.type}
             </div>
-            <div style={{ fontSize: 10, color: "#0F9D8B", marginTop: 2 }}>
+            <div
+              title={`${node.count} matched entities`}
+              style={clippedLineStyle({ fontSize: 10, color: "#0F9D8B", marginTop: 2 })}
+            >
               {node.count} matched entities
             </div>
           </div>
@@ -471,7 +584,9 @@ function buildOverviewGraph(
         border: `2px solid ${color}`,
         borderRadius: 10,
         padding: "8px 12px",
-        width: 190,
+        width: OVERVIEW_NODE_WIDTH,
+        overflow: "hidden",
+        boxSizing: "border-box",
         boxShadow: "0 8px 24px rgba(15, 23, 38, 0.08)",
       },
     };
@@ -481,12 +596,17 @@ function buildOverviewGraph(
     id: `overview-edge-${edge.source}-${edge.target}-${index}`,
     source: `overview::${edge.source}`,
     target: `overview::${edge.target}`,
-    label: `${edge.name} (${edge.count})`,
-    type: "smoothstep",
+    type: "truncatedSmoothstep",
     style: { stroke: "#0F9D8B", strokeWidth: 2.4 },
-    labelStyle: { fill: "#334155", fontSize: 10, fontWeight: 600 },
-    labelBgStyle: { fill: "#ffffff", fillOpacity: 0.95 },
-    labelBgPadding: [4, 2] as [number, number],
+    data: {
+      label: `${edge.name} (${edge.count})`,
+      title: `${edge.name} (${edge.count})`,
+      labelColor: "#334155",
+      labelFontWeight: 600,
+      labelOpacity: 1,
+      labelBackground: "#ffffff",
+      labelBackgroundOpacity: 0.95,
+    } satisfies TruncatedEdgeData,
     markerEnd: {
       type: MarkerType.ArrowClosed,
       color: "#0F9D8B",
@@ -1007,6 +1127,7 @@ export function EntityGraph({ workspaceId }: { workspaceId: number }) {
           onEdgesChange={onEdgesChange}
           onNodeClick={onNodeClick}
           onInit={(instance) => { rfInstance.current = instance; }}
+          edgeTypes={edgeTypes}
           minZoom={0.05}
           maxZoom={3}
           proOptions={{ hideAttribution: true }}
