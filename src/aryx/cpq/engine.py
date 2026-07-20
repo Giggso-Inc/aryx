@@ -3590,7 +3590,17 @@ class CpqEngine:
                 # gates the untouched blind first-by-order fallback below)
                 # or when exactly one valid option remains (that branch is
                 # unconditional, resolves correctly regardless of this flag).
-                or any(pk in vn_flat for pk in _PRODUCT_IDENTIFIER_KEYS)
+                # Same skip_always_ask carve-out as the productSelectionProduct_all
+                # branch above — otherwise a catalog whose
+                # resolve_always_ask_skips legitimately suppresses some OTHER
+                # product-naming attr would have this generic fragment match
+                # force it to always-ask anyway, reintroducing the "asks a
+                # question the native UI never shows" bug that carve-out
+                # exists to prevent (Raven review, PR #104).
+                or (
+                    any(pk in vn_flat for pk in _PRODUCT_IDENTIFIER_KEYS)
+                    and vn not in (skip_always_ask or ())
+                )
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
