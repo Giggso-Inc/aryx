@@ -195,6 +195,7 @@ def run_pipeline(
                 counts = project_graph(
                     estore, graph_inst,
                     type_ancestors=type_ancestors, workspace_id=workspace_id,
+                    on_progress=on_progress, pct_range=(90, 95),
                 )
         else:
             logger.debug("skip_graph=True — FalkorDB projection deferred to final plan")
