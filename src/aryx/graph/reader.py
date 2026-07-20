@@ -147,7 +147,14 @@ class GraphReader:
         skip = max(0, int(offset))
         rows = self._query(
             f"MATCH (e:Entity) {where}RETURN e.id, e.type, e.name, properties(e) "
-            f"SKIP {skip} LIMIT {capped}",
+            # ORDER BY is required for SKIP/LIMIT to paginate correctly —
+            # Cypher/FalkorDB does not guarantee row order across separate
+            # calls without an explicit sort key, so pagination without it
+            # can return the same row twice (harmless) or silently skip
+            # rows between pages (reintroduces the exact truncation bug
+            # this offset param exists to fix). Matches oracle_graph_
+            # reader.py's ORDER BY entity_id for the same reason.
+            f"ORDER BY e.id SKIP {skip} LIMIT {capped}",
             params,
         )
         return [_entity(r) for r in rows]
