@@ -67,6 +67,35 @@ def _presentable(val: str | None) -> bool:
     return bool(val) and str(val).strip().lower() not in _DISPLAY_EMPTY
 
 
+def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 2) -> bool:
+    """True when the user's message plausibly names this attr's label.
+
+    A full-phrase substring match is tried first (existing behavior). Some
+    display labels are auto-generated compound names carrying a generic
+    leading qualifier shared by many sibling attrs (confirmed live: every
+    per-mount-type quantity attr on the SVX catalog is literally named
+    "mounting type {Mount Name} Quantity" — six attrs, one per mount
+    option). A user naturally drops that generic prefix ("change the
+    jacket magnetic mount quantity to 15") since it adds nothing
+    discriminating — but the exact-phrase check rejected it entirely,
+    silently falling through to "I didn't quite catch that" instead of
+    recognizing a clearly-named change (confirmed live). Retries with up
+    to `max_dropped_leading` leading words dropped, requiring at least half
+    the label's own words to remain — bounded so a short label (e.g. two
+    words) can't be matched by an almost-empty remainder.
+    """
+    if label_lower in q_lower:
+        return True
+    words = label_lower.split()
+    min_words = max(2, len(words) - max_dropped_leading)
+    if len(words) <= min_words:
+        return False
+    for start in range(1, len(words) - min_words + 1):
+        if " ".join(words[start:]) in q_lower:
+            return True
+    return False
+
+
 def _condition_value_matches(current_val: str, condition_value: str) -> bool:
     """True when current_val satisfies a single condition_attr/condition_value pair.
 
@@ -4030,7 +4059,11 @@ class CpqEngine:
             label_lower = attr.display_label.lower()
 
             # When a change verb is present, require the attr to be mentioned by name/label
-            if has_change_verb and vn_flat not in q_lower.replace("_", "") and label_lower not in q_lower:
+            if (
+                has_change_verb
+                and vn_flat not in q_lower.replace("_", "")
+                and not _label_mentioned(label_lower, q_lower)
+            ):
                 continue
 
             # Direct apply_answer match — checked FIRST so the full NL question
@@ -4049,6 +4082,22 @@ class CpqEngine:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
                     return attr, question
+            elif has_change_verb:
+                # Free-text attr (e.g. a per-mount quantity field) with an
+                # explicit change verb — the label-mention gate above has
+                # already confirmed THIS attr is the one being talked about,
+                # but unlike options-backed attrs there's no menu list to
+                # fuzzy-match a value against, and extract_hints() only knows
+                # fixed concepts (country/region/hwversion) — never numbers
+                # (confirmed live: "change the jacket magnetic mount quantity
+                # to 15" fell through to "I didn't quite catch that" even
+                # after the label-mention fix above, because nothing ever
+                # extracted "15" out of the sentence). Pull the first
+                # standalone number in the message — the common "set/change
+                # X to N" phrasing this attr type actually gets.
+                m = re.search(r"-?\d+(?:\.\d+)?", question)
+                if m and m.group(0) != filled.get(attr.variable_name, ""):
+                    return attr, m.group(0)
 
             # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
             # the attr is mentioned but may not identify the exact option. Only reached
