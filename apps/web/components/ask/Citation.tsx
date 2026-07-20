@@ -9,10 +9,11 @@ interface Props {
 
 /** Inline citation pills under an assistant message. */
 export function Citations({ citations, className }: Props) {
-  if (!citations.length) return null;
+  const visibleCitations = citations.filter((c) => c.label?.trim());
+  if (!visibleCitations.length) return null;
   return (
     <div className={cn("mt-3 flex flex-wrap gap-2", className)}>
-      {citations.map((c) => (
+      {visibleCitations.map((c) => (
         <span
           key={c.entity_id}
           title={c.type ? `${c.type} · id ${c.entity_id}` : `id ${c.entity_id}`}

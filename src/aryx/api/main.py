@@ -13,6 +13,7 @@ from aryx.api.actions_api import actions_router
 from aryx.api.adjudication_api import adjudication_router
 from aryx.api.admin_api import admin_router
 from aryx.api.ask_api import ask_router
+from aryx.api.ask_thread_api import ask_thread_router
 from aryx.api.brief_api import brief_router
 from aryx.api.axioms_api import axioms_router, shapes_router
 from aryx.api.ask_history_api import ask_history_router
@@ -141,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router())
     app.include_router(admin_router())
     app.include_router(ask_router())
+    app.include_router(ask_thread_router())
     app.include_router(lab_router())
     app.include_router(data_router())
     app.include_router(ask_history_router())

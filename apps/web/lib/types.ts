@@ -24,6 +24,7 @@ export interface AskResponse {
   terms: string[];
   tools_called: unknown[];
   usage: Usage;
+  citations?: Citation[];
   grounding?: Grounding | null;
   session_data?: Record<string, unknown>;
   cpq_payload?: Record<string, unknown> | null;
@@ -152,6 +153,8 @@ export interface ChatTurn {
   id: string;
   role: "user" | "assistant";
   content: string;
+  sequenceNumber?: number;
+  requestId?: string | null;
   citations?: Citation[];
   usage?: Usage;
   streaming?: boolean;
@@ -161,6 +164,38 @@ export interface ChatTurn {
   beautifyRows?: { label: string; value: string }[];
   beautifyButtonFlag?: boolean;
   apiShareButtonFlag?: boolean;
+  sessionData?: Record<string, unknown>;
+}
+
+export interface AskThreadSummary {
+  id: string;
+  title: string;
+  message_count: number;
+  updated_at?: string;
+}
+
+export interface AskThreadMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sequence_number?: number;
+  request_id?: string | null;
+  created_at?: string;
+  citations?: Citation[];
+  usage?: Usage;
+  json_response?: Record<string, unknown> | null;
+  json_button_flag?: boolean;
+  beautify?: string;
+  beautify_button_flag?: boolean;
+  api_share_button_flag?: boolean;
+  session_data?: Record<string, unknown>;
+}
+
+export interface AskThreadResponse extends AskResponse {
+  thread_id: string;
+  request_id: string;
+  replayed?: boolean;
+  persistence_error?: string | null;
 }
 
 // ─── Ontology / modelling layer ───────────────────────────────────────────
