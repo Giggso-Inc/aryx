@@ -361,6 +361,30 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Summary categories (§ render_filled_summary grouping) — structural
+# fragment-matching against variable_name, same convention as
+# _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
+# never a literal per-catalog field name (e.g. "modelSelectionSelectModel_
+# viSoln" or "serviceType_astro"), only the fragment every catalog's own
+# naming happens to share ("model"/"product", "service"/"billing"/"plan",
+# "quantity"/"duration"). Checked in this fixed order — the first category
+# whose fragments match wins, so "serviceDuration_astro" (Service Plan
+# fragment "service" checked before "duration") lands in Service Plan, not
+# Quantity & Duration, matching how a sales rep would actually group it.
+_SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Narrow, specific fragments only — "model" alone is too broad: both
+    # catalogs prefix MANY unrelated attrs with "modelSelection*" (frequency
+    # bands, keypad type, display type share APX's naming convention with
+    # its actual model/product attr), so a loose "model" substring sweeps
+    # those in too. These fragments target the attr that names the product
+    # itself, not siblings that merely share its naming prefix.
+    ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
+                       "productselection", "producttype")),
+    ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
+    ("Quantity & Duration", ("quantity", "duration", "qty")),
+)
+_SUMMARY_FALLBACK_CATEGORY = "Associated Options"
+
 # Country -> standard sales-region abbreviation. Deliberately covers only
 # the unambiguous majority; countries not listed here fall through to the
 # normal "ask" behavior rather than guess. Two catalog-observed codes are
@@ -1285,6 +1309,49 @@ class CpqEngine:
             if scoped:
                 return scoped, chosen
 
+        # Family-name matching failed (or was ambiguous) — customers name the
+        # real product/model ("SVX Video Remote Speaker Microphone"), not the
+        # internal BOM export codename ("videoSolutions_BOM"), which never
+        # substring-matches. productSelectionProduct_all's option list (the
+        # OTHER fallback used elsewhere) doesn't help either — it's a flat,
+        # identical-across-every-catalog portfolio list, not catalog-scoped
+        # data. ingested_product_alias_map's bm_catalog TREE names ARE
+        # catalog-scoped (confirmed live: "SVX Video Remote Speaker
+        # Microphone"/"vX650_BOM" only exist in the SVX export) — reuse that
+        # same signal detect_product_mention already relies on successfully,
+        # instead of re-deriving a weaker one here (confirmed live this was
+        # the actual reason catalog_prefix resolution — and everything
+        # downstream that depends on it, e.g. resolve_always_ask_skips —
+        # behaved inconsistently for SVX).
+        if not matched_prefixes:
+            alias_map = self.ingested_product_alias_map(reader, workspace_id)
+            ordered = sorted(
+                ((name, re.sub(r"[^a-z0-9]", "", name.lower())) for name in alias_map),
+                key=lambda t: len(t[1]), reverse=True,
+            )
+            matched_family: str | None = None
+            for name, name_norm in ordered:
+                if name_norm and min(len(name_norm), len(hint_norm)) >= _HINT_MIN_PHRASE_LEN \
+                        and name_norm in hint_norm:
+                    matched_family = alias_map[name]
+                    break
+            if matched_family:
+                # matched_family is the owning FAMILY name (e.g.
+                # "videoSolutions_BOM") — resolve it back to a prefix by
+                # exact equality against each candidate's own BmPrdFamily
+                # entity name, not another substring search.
+                for prefix in prefixes:
+                    fam_ents = reader.find_entities(
+                        ontology_type=f"{prefix}BmPrdFamily", limit=5)
+                    fam_pg = self._batch_fetch([e["id"] for e in fam_ents], workspace_id)
+                    fname = next(
+                        (str(fam_pg.get(e["id"], {}).get("name") or e.get("name") or "").strip()
+                         for e in fam_ents), "")
+                    if fname == matched_family:
+                        scoped = [t for t in attr_types if _catalog_prefix(t) == prefix]
+                        if scoped:
+                            return scoped, prefix
+
         logger.warning(
             "cpq: could not uniquely scope product_hint=%r to one catalog among "
             "prefixes=%s — loading ALL catalogs (cross-catalog mixing risk)",
@@ -1592,6 +1659,65 @@ class CpqEngine:
                     all_menu_ids.extend(menu_ids)
             except Exception:
                 logger.debug("cpq: neighbor fetch failed for attr %d", eid, exc_info=True)
+
+        # Step 3b — FK fallback for attrs with a real Postgres bm_config_attr
+        # row but NO graph edge to their menu items (confirmed live: SVX's
+        # modelSelectionSelectModel_viSoln has 4 real bm_menu_item rows in
+        # Postgres, correctly FK'd via bm_config_attr_id, but zero FalkorDB
+        # neighbors — a graph-ingestion gap, not a rule-driven/constrained
+        # menu). Detected purely structurally (menu_type present + empty
+        # neighbor_map entry), never by attr/catalog name, so it self-heals
+        # for any future XML with the same ingestion gap.
+        orphan_eids = [
+            e["id"] for e in attr_ents
+            if e["id"] not in neighbor_map
+            and str(attr_pg.get(e["id"], {}).get("menu_type") or "") == "1"
+        ]
+        if orphan_eids:
+            # A real BM native id can legitimately own more than one graph
+            # entity_id (confirmed live: SL3500e ingested
+            # ultimateDestinationCountry twice under distinct entity_ids
+            # 188302/212455, both real id 39426962) — a plain 1:1 dict here
+            # would silently keep only the last-iterated entity_id and drop
+            # the other's options entirely. Map real id -> ALL owning
+            # entity_ids so every duplicate gets the same menu options.
+            orphan_real_ids: dict[str, list[int]] = {}
+            for eid in orphan_eids:
+                rid = attr_pg.get(eid, {}).get("id")
+                if rid is not None:
+                    orphan_real_ids.setdefault(str(rid), []).append(eid)
+            if orphan_real_ids:
+                menu_types = [
+                    t for t in all_type_names
+                    if _norm(t).endswith("menuitem")
+                    and (not resolved_catalog_prefix
+                         or _catalog_prefix(t) == resolved_catalog_prefix)
+                ]
+                # Paginate past find_entities' per-call cap (ARYX_GRAPH_QUERY_LIMIT,
+                # confirmed live at 2000) — SL3500e alone ships >2000 bm_menu_item
+                # rows, so a single capped call silently truncated to whichever
+                # rows the graph happened to return first, missing e.g.
+                # ultimateDestinationCountry's country list entirely.
+                fk_menu_ents: list[dict] = []
+                page_size = 2000
+                for mt in menu_types:
+                    offset = 0
+                    while True:
+                        page = reader.find_entities(
+                            ontology_type=mt, limit=page_size, offset=offset)
+                        fk_menu_ents.extend(page)
+                        if len(page) < page_size:
+                            break
+                        offset += page_size
+                fk_menu_pg = self._batch_fetch(
+                    [m["id"] for m in fk_menu_ents], workspace_id)
+                for mid, mdata in fk_menu_pg.items():
+                    owner_eids = orphan_real_ids.get(str(mdata.get("bm_config_attr_id") or ""))
+                    if not owner_eids:
+                        continue
+                    for owner_eid in owner_eids:
+                        neighbor_map.setdefault(owner_eid, []).append(mid)
+                    all_menu_ids.append(mid)
 
         # Single batch fetch for all menu items across all attrs
         all_menu_pg = self._batch_fetch(all_menu_ids, workspace_id) if all_menu_ids else {}
@@ -3464,7 +3590,22 @@ class CpqEngine:
                     # Exactly one choice — auto-fill, no user decision needed
                     value = valid_opts[0].item_value
                     display = valid_opts[0].display_name
-                elif is_governed and not is_decision_attr and valid_opts:
+                elif (
+                    is_governed and not is_decision_attr and valid_opts
+                    # skip_always_ask only means "the native UI never shows
+                    # a question for this" — it must NOT also unlock the
+                    # blind first-by-order fallback below for
+                    # productSelectionProduct_all specifically. That list is
+                    # shared/catalog-wide (hundreds of unrelated product
+                    # codes across every family), so first-by-order silently
+                    # picks a foreign product's code (confirmed live: SVX
+                    # session filled "APX6500" this way). Without this guard,
+                    # suppressing the ask (is_decision_attr -> False) directly
+                    # re-opens the exact failure this attr's is_decision_attr
+                    # branch above exists to prevent.
+                    and not (vn == "productSelectionProduct_all"
+                             and vn in (skip_always_ask or ()))
+                ):
                     if attr.select_type == "multi":
                         # The allowed set from an active constraint IS the
                         # selected set — never guess a subset with nothing
@@ -3594,7 +3735,20 @@ class CpqEngine:
                     filled[vn] = fallback.item_value
                     display_filled[vn] = fallback.display_name
                     sources.setdefault(vn, "default")
-            elif (attr.options or is_decision_attr) and not self._is_noise_var(vn):
+            elif (
+                (attr.options or is_decision_attr)
+                and not self._is_noise_var(vn)
+                # skip_always_ask means the native UI never shows a question
+                # for this attr in this catalog — it must be excluded from
+                # `pending` too, not just from is_decision_attr's always-ask
+                # override above. `attr.options` alone would otherwise put it
+                # right back into pending (confirmed live: SVX asked
+                # productSelectionProduct_all again once the first-by-order
+                # auto-fill leak above was fixed, because this branch never
+                # consulted skip_always_ask on its own).
+                and not (vn == "productSelectionProduct_all"
+                         and vn in (skip_always_ask or ()))
+            ):
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
                 # Free-text CRM/system fields with no options and no decision
@@ -4450,6 +4604,35 @@ class CpqEngine:
             return True
         return "product" in label_l or "product" in variable_name.lower()
 
+    def _filled_summary_triples(
+        self,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """Filtered (variable_name, display_label, value) triples worth
+        summarising — same filtering as filled_summary_pairs, but keeps
+        variable_name so callers (render_filled_summary's category
+        grouping) can pattern-match on it. See filled_summary_pairs for the
+        filtering rules this applies.
+        """
+        if not display_filled:
+            return []
+        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
+        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
+        items = [
+            (var, label) for var, label in display_filled.items()
+            if not self._is_html_value(label)
+            and not self._is_noise_var(var)
+            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+        ]
+        if rule_governed_ids is not None:
+            items = [
+                (var, label) for var, label in items
+                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
+            ]
+        return [(var, label_map.get(var, var), label) for var, label in items]
+
     def filled_summary_pairs(
         self,
         display_filled: dict[str, str],
@@ -4470,22 +4653,24 @@ class CpqEngine:
         reasoned about survive (Phase K/§3g). The rest are silently
         omitted — no count of remaining auto-configured fields.
         """
-        if not display_filled:
-            return []
-        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
-        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
-        items = [
-            (var, label) for var, label in display_filled.items()
-            if not self._is_html_value(label)
-            and not self._is_noise_var(var)
-            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+        return [
+            (label, value)
+            for _var, label, value in self._filled_summary_triples(
+                display_filled, attrs, rule_governed_ids)
         ]
-        if rule_governed_ids is not None:
-            items = [
-                (var, label) for var, label in items
-                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
-            ]
-        return [(label_map.get(var, var), label) for var, label in items]
+
+    @staticmethod
+    def _summary_category(variable_name: str) -> str:
+        """Classify a filled attr into one of the 5 scannable summary
+        sections, purely by variable_name fragment — never a literal
+        per-catalog field name, so it applies to any ingested XML the same
+        way. See _SUMMARY_CATEGORY_KEYS docstring for the matching order.
+        """
+        vn_flat = (variable_name or "").lower().replace("_", "")
+        for category, fragments in _SUMMARY_CATEGORY_KEYS:
+            if any(frag in vn_flat for frag in fragments):
+                return category
+        return _SUMMARY_FALLBACK_CATEGORY
 
     def beautify_text(
         self,
@@ -4526,15 +4711,29 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
     ) -> str:
-        """Deterministic bullet-list summary of what has been auto-filled.
+        """Deterministic, categorized summary of what has been auto-filled.
 
-        Formats `filled_summary_pairs()` (which owns ALL the filtering) as
-        markdown bullets. Used directly as the fallback whenever the
-        LLM-narrated paragraph (ask_api `_cpq_summary_text`) is
-        unavailable or fails.
+        Groups `filled_summary_pairs()` (which owns ALL the filtering) under
+        4 scannable headed sections — Product Name, Service Plan, Quantity
+        & Duration, Associated Options — instead of one flat bullet list,
+        classified purely by variable_name fragment (`_summary_category`,
+        generic across any ingested catalog, never a per-catalog literal).
+        Used directly as the fallback whenever the LLM-narrated paragraph
+        (ask_api `_cpq_summary_text`) is unavailable or fails.
         """
-        pairs = self.filled_summary_pairs(display_filled, attrs, rule_governed_ids)
-        if not pairs:
+        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids)
+        if not triples:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
-        return "\n".join([heading, *(f"- **{label}** → {value}" for label, value in pairs)])
+        by_category: dict[str, list[tuple[str, str]]] = {}
+        for var, label, value in triples:
+            by_category.setdefault(self._summary_category(var), []).append((label, value))
+        section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [_SUMMARY_FALLBACK_CATEGORY]
+        lines = [heading]
+        for category in section_order:
+            group = by_category.get(category)
+            if not group:
+                continue
+            lines.append(f"\n**{category}:**")
+            lines.extend(f"- **{label}** → {value}" for label, value in group)
+        return "\n".join(lines)

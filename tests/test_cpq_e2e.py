@@ -334,7 +334,7 @@ class FakeReader:
     def distinct_types(self):
         return sorted(_pascal(t) for t in self._rdb.by_tag)
 
-    def find_entities(self, ontology_type=None, name=None, limit=50):
+    def find_entities(self, ontology_type=None, name=None, limit=50, offset=0):
         out = []
         for tag, ids in self._rdb.by_tag.items():
             if ontology_type and _pascal(tag) != ontology_type:
