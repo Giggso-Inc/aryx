@@ -1,5 +1,6 @@
 import type {
-  AbResult, AskResponse, AskHistoryTurn, Axiom, Brief, DataEntitiesPage,
+  AbResult, AskResponse, AskHistoryTurn, AskThreadMessage, AskThreadResponse,
+  AskThreadSummary, Axiom, Brief, DataEntitiesPage,
   DataSourceCatalogItem, DataSourceCatalogPage, DataSourceDetail, DataSummary,
   Datasource, DiscoverySummary, GraphView,
   IngestQuestion, McpToken, McpTokenIssued, ObservabilityData, OntologyChange,
@@ -58,6 +59,26 @@ export const api = {
     fetchJSON<AskResponse>("/ask", {
       method: "POST",
       body: JSON.stringify({ question, workspace_id: workspaceId, history, session_data: sessionData }),
+    }),
+
+  askThreadMessage: (args: {
+    workspaceId: number;
+    shayWorkspaceId: string;
+    threadId: string;
+    requestId: string;
+    question: string;
+    sessionData?: Record<string, unknown>;
+  }) =>
+    fetchJSON<AskThreadResponse>("/ask/threads/message", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: args.workspaceId,
+        shay_workspace_id: args.shayWorkspaceId,
+        thread_id: args.threadId,
+        request_id: args.requestId,
+        question: args.question,
+        session_data: args.sessionData ?? {},
+      }),
     }),
 
   shareConfig: (args: {
@@ -440,6 +461,24 @@ export const api = {
   getAskHistory: (workspaceId: number, limit = 50) =>
     fetchJSON<AskHistoryTurn[]>(
       `/ask/history?workspace_id=${workspaceId}&limit=${limit}`,
+    ),
+
+  listAskThreads: (workspaceId: number, shayWorkspaceId: string, limit = 50) =>
+    fetchJSON<AskThreadSummary[]>(
+      `/ask/threads?workspace_id=${workspaceId}&shay_workspace_id=${encodeURIComponent(shayWorkspaceId)}&limit=${limit}`,
+    ),
+
+  getAskThreadMessages: (
+    workspaceId: number,
+    shayWorkspaceId: string,
+    threadId: string,
+    beforeSequence?: number,
+    limit = 50,
+  ) =>
+    fetchJSON<AskThreadMessage[]>(
+      `/ask/threads/${encodeURIComponent(threadId)}/messages?workspace_id=${workspaceId}` +
+        `&shay_workspace_id=${encodeURIComponent(shayWorkspaceId)}&limit=${limit}` +
+        (beforeSequence ? `&before_sequence=${beforeSequence}` : ""),
     ),
 
   // ── Database connect → discover → ingest ─────────────────────────────

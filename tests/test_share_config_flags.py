@@ -56,6 +56,7 @@ def test_at_threshold_json_and_beautify_present_but_share_withheld(monkeypatch):
     assert result["json_response"] == api._cpq_engine.build_payload(filled, {}, {})
     assert result["beautify_button_flag"] is True
     assert "Verizon" in result["beautify"]
+    assert any(row["value"] == "Verizon" for row in result["beautify_rows"])
     # Still mid-configuration — nothing to share yet, even though JSON/Beautify are ready.
     assert result["api_share_button_flag"] is False
     assert result["api_share"] == {}

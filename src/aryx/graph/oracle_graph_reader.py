@@ -103,13 +103,15 @@ class OracleGraphReader:
         }
 
     def find_entities(self, ontology_type: str | None = None,
-                      name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+                      name: str | None = None, limit: int = 50,
+                      offset: int = 0) -> list[dict[str, Any]]:
         """Find entities filtered by type and/or case-insensitive name substring.
 
         Args:
             ontology_type: Exact ontology type to match, or None for any.
             name: Substring matched case-insensitively against the name, or None.
             limit: Maximum rows to return (coerced to int, capped at ARYX_GRAPH_QUERY_LIMIT).
+            offset: Rows to skip before applying limit — see GraphReader.find_entities.
 
         Returns:
             A list of {id, type, name, attributes} dicts.
@@ -124,11 +126,13 @@ class OracleGraphReader:
             params["name"] = name
         where = " AND ".join(clauses)
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
+        skip = max(0, int(offset))
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"SELECT entity_id, type, name, attributes FROM aryx_graph_vertex "
-                    f"WHERE {where} FETCH FIRST {capped} ROWS ONLY",  # nosec S608 — capped is a validated int
+                    f"WHERE {where} ORDER BY entity_id "
+                    f"OFFSET {skip} ROWS FETCH NEXT {capped} ROWS ONLY",  # nosec S608 — capped/skip are validated ints
                     params,
                 )
                 rows = cur.fetchall()
