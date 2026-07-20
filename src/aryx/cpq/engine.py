@@ -3566,7 +3566,22 @@ class CpqEngine:
                     # Exactly one choice — auto-fill, no user decision needed
                     value = valid_opts[0].item_value
                     display = valid_opts[0].display_name
-                elif is_governed and not is_decision_attr and valid_opts:
+                elif (
+                    is_governed and not is_decision_attr and valid_opts
+                    # skip_always_ask only means "the native UI never shows
+                    # a question for this" — it must NOT also unlock the
+                    # blind first-by-order fallback below for
+                    # productSelectionProduct_all specifically. That list is
+                    # shared/catalog-wide (hundreds of unrelated product
+                    # codes across every family), so first-by-order silently
+                    # picks a foreign product's code (confirmed live: SVX
+                    # session filled "APX6500" this way). Without this guard,
+                    # suppressing the ask (is_decision_attr -> False) directly
+                    # re-opens the exact failure this attr's is_decision_attr
+                    # branch above exists to prevent.
+                    and not (vn == "productSelectionProduct_all"
+                             and vn in (skip_always_ask or ()))
+                ):
                     if attr.select_type == "multi":
                         # The allowed set from an active constraint IS the
                         # selected set — never guess a subset with nothing
@@ -3696,7 +3711,20 @@ class CpqEngine:
                     filled[vn] = fallback.item_value
                     display_filled[vn] = fallback.display_name
                     sources.setdefault(vn, "default")
-            elif (attr.options or is_decision_attr) and not self._is_noise_var(vn):
+            elif (
+                (attr.options or is_decision_attr)
+                and not self._is_noise_var(vn)
+                # skip_always_ask means the native UI never shows a question
+                # for this attr in this catalog — it must be excluded from
+                # `pending` too, not just from is_decision_attr's always-ask
+                # override above. `attr.options` alone would otherwise put it
+                # right back into pending (confirmed live: SVX asked
+                # productSelectionProduct_all again once the first-by-order
+                # auto-fill leak above was fixed, because this branch never
+                # consulted skip_always_ask on its own).
+                and not (vn == "productSelectionProduct_all"
+                         and vn in (skip_always_ask or ()))
+            ):
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
                 # Free-text CRM/system fields with no options and no decision
