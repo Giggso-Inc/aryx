@@ -300,12 +300,15 @@ def _cpq_summary_text(
         "never reorder them, never invent a category that isn't listed. Within "
         "a category, describe its facts naturally (not as 'label: value' pairs), "
         "never as a bulleted list. ASSOCIATED OPTIONS in particular can list "
-        "dozens of facts — for that category ONLY, mention just the handful "
-        "that matter most and summarise the rest in general terms (e.g. "
-        "'plus the usual regional and packaging defaults'), rather than "
-        "naming every single one. Use ONLY the facts below; never invent "
-        "values that are not listed.\n\n"
-        "CONFIGURATION:\n" + config_text
+        "dozens of facts — for that category ONLY, you do not need to mention "
+        "every one; pick whichever subset you can describe with total accuracy "
+        "and simply OMIT the rest. Never paraphrase, generalise, or invent a "
+        "placeholder for a fact you are dropping (e.g. never write anything "
+        "like 'plus the usual defaults') — an omitted fact must be invisible "
+        "in the narration, not gestured at. Use ONLY the exact facts below; "
+        "if you are not certain a name or value below is precisely what you "
+        "are about to write, leave it out rather than guess or approximate "
+        "it.\n\nCONFIGURATION:\n" + config_text
     )
     try:
         # ARYX_LLM_REASON_MODEL (role="answer"), not menial — this narration
