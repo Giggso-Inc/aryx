@@ -1725,9 +1725,16 @@ def test_s30_verbose_summary_has_no_other_fields_count():
 def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
     """_cpq_summary_text sends only the FILTERED pairs to the reason model
     (ARYX_LLM_REASON_MODEL, role="answer" — this narration is the
-    customer-facing summary of a real quote, moved off "menial") and
-    returns its prose; on LLM failure or empty reply it falls back to
-    the deterministic bullet summary instead of blocking the flow."""
+    customer-facing summary of a real quote, moved off "menial"). The
+    "**Category:**" headers are assembled in code, not left to the LLM to
+    reproduce verbatim — the model only supplies one segment per category
+    (bulleted content, or plain text for Associated Options), separated by
+    a fixed delimiter (_CPQ_SEGMENT_DELIM), which
+    this test's fake_chat must also follow. A reply that doesn't split into
+    the expected segment count (model ignored the delimiter contract), an
+    LLM failure, or an empty reply all fall back to the deterministic
+    bullet summary instead of blocking the flow or showing a malformed
+    merge."""
     from aryx.api import ask_api
     from aryx.cpq.state import ConfigAttr, MenuOption
 
@@ -1742,22 +1749,47 @@ def test_s31_summary_narrator_uses_llm_with_bullet_fallback(monkeypatch):
             required=False, default_value="",
             options=[MenuOption("Y", "Yes", 1)],
         ),
+        ConfigAttr(
+            entity_id=3, variable_name="quantitySpareUnits", display_label="Spare Units",
+            required=False, default_value="",
+            options=[MenuOption("1", "1", 1)],
+        ),
     ]
-    display_filled = {"region": "NA", "ruggedized": "Yes"}
+    display_filled = {"region": "NA", "ruggedized": "Yes", "quantitySpareUnits": "1"}
+    delim = ask_api._CPQ_SEGMENT_DELIM
 
     captured: dict[str, str] = {}
 
     def fake_chat(role, sys, user, workspace_id=1):
         captured["role"], captured["user"] = role, user
-        return "The radio is configured for the NA region.", 10, 20
+        return (
+            f"Your configuration is complete.{delim}"
+            "- **Spare Units** → 1"
+            f"{delim}"
+            "The radio is configured for the NA region."
+        ), 10, 20
 
     monkeypatch.setattr(ask_api.llm_runtime, "chat", fake_chat)
-    text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
-    assert text == "The radio is configured for the NA region."
+    text = ask_api._cpq_summary_text(display_filled, attrs, {1, 2, 3}, "APX NEXT", 1)
+    assert text == (
+        "Your configuration is complete.\n\n"
+        "**Quantity & Duration:**\n- **Spare Units** → 1\n\n"
+        "**Associated Options:**\nThe radio is configured for the NA region."
+    )
     assert captured["role"] == "answer"
     assert "Region: NA" in captured["user"]
     assert "Ruggedized" not in captured["user"], (
         "filtered-out pairs must never reach the narrator prompt")
+
+    def malformed_chat(role, sys, user, workspace_id=1):
+        # Ignores the delimiter contract entirely (a single undifferentiated
+        # blob) — must fall back rather than surface unstructured text.
+        return "The radio is configured for the NA region.", 10, 20
+
+    monkeypatch.setattr(ask_api.llm_runtime, "chat", malformed_chat)
+    malformed_fallback = ask_api._cpq_summary_text(display_filled, attrs, {1, 2}, "APX NEXT", 1)
+    assert "Key decisions" in malformed_fallback and "Region" in malformed_fallback, (
+        "a reply that doesn't match the expected segment count must fall back")
 
     def boom_chat(role, sys, user, workspace_id=1):
         raise RuntimeError("provider down")

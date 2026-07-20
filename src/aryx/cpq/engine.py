@@ -397,6 +397,11 @@ _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 _SUMMARY_FALLBACK_CATEGORY = "Associated Options"
 
+# Public alias so ask_api can identify the catch-all category by name
+# (e.g. to tighten its own narration instructions for it) without a
+# private-name cross-module import.
+SUMMARY_FALLBACK_CATEGORY = _SUMMARY_FALLBACK_CATEGORY
+
 # Country -> standard sales-region abbreviation. Deliberately covers only
 # the unambiguous majority; countries not listed here fall through to the
 # normal "ask" behavior rather than guess. Two catalog-observed codes are

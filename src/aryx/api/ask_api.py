@@ -20,7 +20,7 @@ from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
-from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS
+from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
 from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.graph.retrieve import all_types, gather, render_context
@@ -127,6 +127,11 @@ def _extract_terms(question: str, types: list[str], history: list[Turn],
 
 _MAX_ANSWER_LINES = 5
 _SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+# Segments _cpq_summary_text asks the LLM to separate its reply by — one
+# lead-in sentence + one narration segment per category, code-assembled
+# with the real "• Category" headers afterwards (see _cpq_summary_text).
+# Distinctive enough that real narration text won't produce it by accident.
+_CPQ_SEGMENT_DELIM = "@@@"
 
 
 def _line_count(text: str) -> int:
@@ -270,19 +275,27 @@ def _cpq_summary_text(
 
     The engine's `categorized_summary_groups` owns ALL filtering (booleans,
     secondary/warranty/product attrs, year durations, rule-governed set,
-    "(none)" placeholders) AND the same 4-category grouping (Product Name /
-    Service Plan / Quantity & Duration / Associated Options) the
-    deterministic fallback (`render_filled_summary`) uses. The model is
-    instructed to reproduce that SAME headed/bulleted shape in its own
-    wording (plain-English labels, not raw variable names) rather than
-    free prose — earlier revisions asked for flowing paragraphs instead,
-    which never actually matched the "scannable, headed" format this was
-    built for. `_MAX_ANSWER_LINES`'s generic line cap and its header-blind
-    `_rewrite_plain` rewrite pass are deliberately NOT applied here — both
-    are tuned for short prose answers and would flatten the headers/bullets
-    this prompt now asks for. Any LLM failure or empty reply falls back to
-    `render_filled_summary` — the CPQ flow must never block on the
-    narrator.
+    "(none)" placeholders) AND the same category grouping (Product Name /
+    Service Plan / Quantity & Duration / Associated Options, or however
+    many are actually present) the deterministic fallback
+    (`render_filled_summary`) uses.
+
+    The "**Category:**" headers are assembled here in CODE, never left to
+    the LLM to reproduce verbatim — asking a model to keep exact header
+    text on its own line is a request, not a guarantee (confirmed live: it
+    silently folded headers into running prose instead of respecting the
+    line breaks). The model is only asked for each category's CONTENT — its
+    real bulleted/plain-text shape (bullets for every category except
+    Associated Options, one plain-text line for that one) — as one segment
+    per category separated by a fixed delimiter it cannot plausibly emit as
+    part of real prose, so the structure is deterministic while the wording
+    stays LLM-narrated. Associated Options is explicitly told to OMIT any
+    fact it isn't sure of rather than gesture at it with a vague placeholder
+    (e.g. never "plus the usual defaults") — confirmed live to hallucinate
+    otherwise. If the reply doesn't split into exactly the expected number
+    of segments, or the LLM call fails/returns empty, this falls back to
+    `render_filled_summary` — the CPQ flow must never block on, or silently
+    mis-format via, the narrator.
     """
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids)
@@ -297,26 +310,38 @@ def _cpq_summary_text(
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
         for category, pairs in groups
     )
+    expected_segments = 1 + len(groups)
     user = (
-        f"Summarise this {product_name or 'product'} configuration for a "
-        "sales rep. Lead with one direct line (e.g. 'Your configuration is "
-        "complete.'). Then reproduce the EXACT structure below: for each "
-        "category, print a bold header line '**Category Name:**' (using "
-        "the category names exactly as given, in the same order — never "
-        "merge, reorder, or invent one), followed by its facts as short "
-        "markdown bullets '- **Label** → value', one bullet per fact, "
-        "using plain-English labels instead of raw variable names. "
-        "EXCEPTION: for the 'Associated Options' category only, skip bullets "
-        "entirely and instead write ONE short plain-text line under its "
-        "header — you do not need to mention every fact in that category; "
-        "pick whichever subset you can state with total accuracy and "
-        "simply OMIT the rest. Never paraphrase, generalise, or invent a "
-        "placeholder for a fact you are dropping (e.g. never write "
-        "anything like 'plus the usual defaults') — an omitted fact must "
-        "be invisible, not gestured at. Use ONLY the exact facts below; if "
-        "you are not certain a name or value is precisely what you are "
-        "about to write, leave it out rather than guess or approximate "
-        "it.\n\nCONFIGURATION:\n" + config_text
+        f"Describe this {product_name or 'product'} configuration for a sales "
+        f"rep. Reply with EXACTLY {expected_segments} segments separated by "
+        f"the literal token {_CPQ_SEGMENT_DELIM} (nothing else on the "
+        f"delimiter's line) — never merge two segments together, never add "
+        "or omit a segment, never include this instruction or the token "
+        "anywhere except as a separator.\n\n"
+        "Segment 1: one direct sentence, e.g. 'Your configuration is complete.'\n"
+        + "\n".join(
+            (
+                f"Segment {i + 2}: the {category} facts below as short markdown "
+                "bullets '- **Label** → value', one bullet per fact, using "
+                "plain-English labels instead of raw variable names."
+                if category != SUMMARY_FALLBACK_CATEGORY
+                else (
+                    f"Segment {i + 2}: ONE short plain-text line narrating the "
+                    f"{category} facts below (not a bulleted list, not "
+                    "'label: value' pairs) — you do not need to mention every "
+                    "fact in this category; pick whichever subset you can "
+                    "state with total accuracy and simply OMIT the rest. Never "
+                    "paraphrase, generalise, or invent a placeholder for a "
+                    "fact you are dropping (e.g. never write anything like "
+                    "'plus the usual defaults') — an omitted fact must be "
+                    "invisible, not gestured at."
+                )
+            )
+            for i, (category, _pairs) in enumerate(groups)
+        ) + "\n\n"
+        "Use ONLY the exact facts below; if you are not certain a name or "
+        "value is precisely what you are about to write, leave it out "
+        "rather than guess or approximate it.\n\nCONFIGURATION:\n" + config_text
     )
     try:
         # ARYX_LLM_REASON_MODEL (role="answer"), not menial — this narration
@@ -324,8 +349,24 @@ def _cpq_summary_text(
         # tier already used for CPQ's own BML Tier-2 script fallback.
         text, _it, _ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
-        if text:
-            return text
+        segments = [s.strip() for s in text.split(_CPQ_SEGMENT_DELIM)]
+        if len(segments) == expected_segments and all(segments):
+            lead_in = _SENTENCE_SPLIT.split(segments[0])[0].strip()
+            lines = [lead_in]
+            for (category, _pairs), segment in zip(groups, segments[1:]):
+                if category == SUMMARY_FALLBACK_CATEGORY:
+                    # Meant to be one short line already (per the prompt) —
+                    # still cap to the first sentence so a model that rambles
+                    # anyway can't blow past the "plain-text line" contract.
+                    segment = _SENTENCE_SPLIT.split(segment)[0].strip()
+                # Every other category is real bullet lines, one per fact —
+                # capping to "first sentence" here would truncate to a
+                # single bullet, so the full segment is kept verbatim.
+                lines.append(f"\n**{category}:**\n{segment}")
+            return "\n".join(lines)
+        logger.debug(
+            "cpq: summary narration returned %d segments (expected %d) — "
+            "using bullet fallback", len(segments), expected_segments)
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
