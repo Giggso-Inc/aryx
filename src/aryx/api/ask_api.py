@@ -978,6 +978,33 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if resolved_name:
         session.product_name = resolved_name
 
+    # A product-switch (or the initial turn's own NL detection) already
+    # PROVED session.product_name against this catalog — asking the
+    # productSelectionProduct_all question again on the very next turn
+    # would ignore that proof and re-derive it from a reply ("yes") that
+    # carries no product hint at all. Seed it directly from the resolved
+    # name via the same fuzzy option-matcher normal answers use, mirroring
+    # the confirmed-country carry-over above. Guarded on "not yet filled"
+    # so this only fires once (turn 1, or the turn right after
+    # _complete_product_switch reset session.filled) and never clobbers a
+    # value a later turn's real answer already set.
+    if "productSelectionProduct_all" not in session.filled:
+        _product_attr = next(
+            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
+        )
+        if _product_attr is not None:
+            _match = _cpq_engine.apply_answer(_product_attr, session.product_name)
+            if _match:
+                _item_value, _display_name = _match
+                session.filled["productSelectionProduct_all"] = _item_value
+                session.display_filled["productSelectionProduct_all"] = _display_name
+                session.filled_source["productSelectionProduct_all"] = "product_anchor"
+                logger.info(
+                    "cpq: seeded productSelectionProduct_all=%r from resolved "
+                    "product_name=%r turn=%s — skips a redundant re-ask",
+                    _item_value, session.product_name, session.turn,
+                )
+
     if product_was_anchored:
         # Product already anchored on an earlier turn — re-check THIS turn's
         # text for a mention of a DIFFERENT product. detect_product_mention
