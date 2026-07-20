@@ -266,17 +266,23 @@ def _cpq_summary_text(
     product_name: str,
     workspace_id: int,
 ) -> str:
-    """Natural-language paragraph summarising the filtered configuration.
+    """Structured, headed/bulleted summary of the filtered configuration.
 
     The engine's `categorized_summary_groups` owns ALL filtering (booleans,
     secondary/warranty/product attrs, year durations, rule-governed set,
     "(none)" placeholders) AND the same 4-category grouping (Product Name /
     Service Plan / Quantity & Duration / Associated Options) the
-    deterministic fallback (`render_filled_summary`) uses — the menial
-    model only rewrites each group's facts as prose, never invents its own
-    organization, so narration stays consistent whichever path fires. Any
-    LLM failure or empty reply falls back to `render_filled_summary` — the
-    CPQ flow must never block on the narrator.
+    deterministic fallback (`render_filled_summary`) uses. The model is
+    instructed to reproduce that SAME headed/bulleted shape in its own
+    wording (plain-English labels, not raw variable names) rather than
+    free prose — earlier revisions asked for flowing paragraphs instead,
+    which never actually matched the "scannable, headed" format this was
+    built for. `_MAX_ANSWER_LINES`'s generic line cap and its header-blind
+    `_rewrite_plain` rewrite pass are deliberately NOT applied here — both
+    are tuned for short prose answers and would flatten the headers/bullets
+    this prompt now asks for. Any LLM failure or empty reply falls back to
+    `render_filled_summary` — the CPQ flow must never block on the
+    narrator.
     """
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids)
@@ -287,27 +293,29 @@ def _cpq_summary_text(
         "everyday English — never technical or internal terminology."
     )
     config_text = "\n\n".join(
-        f"{category.upper()}:\n"
+        f"{category}:\n"
         + "\n".join(f"- {label}: {value}" for label, value in pairs)
         for category, pairs in groups
     )
     user = (
-        f"Describe this {product_name or 'product'} configuration in at most "
-        f"{_MAX_ANSWER_LINES} short lines, one idea per line. Lead with a direct "
-        "one-line summary (e.g. 'Your configuration is complete.'), then narrate "
-        "the choices in plain language, ONE SHORT PARAGRAPH PER CATEGORY BELOW, "
-        "in the same order as the categories — never merge categories together, "
-        "never reorder them, never invent a category that isn't listed. Within "
-        "a category, describe its facts naturally (not as 'label: value' pairs), "
-        "never as a bulleted list. ASSOCIATED OPTIONS in particular can list "
-        "dozens of facts — for that category ONLY, you do not need to mention "
-        "every one; pick whichever subset you can describe with total accuracy "
-        "and simply OMIT the rest. Never paraphrase, generalise, or invent a "
-        "placeholder for a fact you are dropping (e.g. never write anything "
-        "like 'plus the usual defaults') — an omitted fact must be invisible "
-        "in the narration, not gestured at. Use ONLY the exact facts below; "
-        "if you are not certain a name or value below is precisely what you "
-        "are about to write, leave it out rather than guess or approximate "
+        f"Summarise this {product_name or 'product'} configuration for a "
+        "sales rep. Lead with one direct line (e.g. 'Your configuration is "
+        "complete.'). Then reproduce the EXACT structure below: for each "
+        "category, print a bold header line '**Category Name:**' (using "
+        "the category names exactly as given, in the same order — never "
+        "merge, reorder, or invent one), followed by its facts as short "
+        "markdown bullets '- **Label** → value', one bullet per fact, "
+        "using plain-English labels instead of raw variable names. "
+        "EXCEPTION: for the 'Associated Options' category only, skip bullets "
+        "entirely and instead write ONE short plain-text line under its "
+        "header — you do not need to mention every fact in that category; "
+        "pick whichever subset you can state with total accuracy and "
+        "simply OMIT the rest. Never paraphrase, generalise, or invent a "
+        "placeholder for a fact you are dropping (e.g. never write "
+        "anything like 'plus the usual defaults') — an omitted fact must "
+        "be invisible, not gestured at. Use ONLY the exact facts below; if "
+        "you are not certain a name or value is precisely what you are "
+        "about to write, leave it out rather than guess or approximate "
         "it.\n\nCONFIGURATION:\n" + config_text
     )
     try:
@@ -317,12 +325,6 @@ def _cpq_summary_text(
         text, _it, _ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
         text = _strip_think(text).strip()
         if text:
-            if _line_count(text) > _MAX_ANSWER_LINES:
-                text, _rit, _rot = _rewrite_plain(
-                    text,
-                    f"This is a completed {product_name or 'product'} configuration summary.",
-                    workspace_id,
-                )
             return text
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
