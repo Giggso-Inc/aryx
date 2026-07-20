@@ -128,7 +128,11 @@ def data_router() -> APIRouter:
         try:
             reader, datasources, counts, catalog = _catalog_snapshot(store, workspace_id)
             refs = mapped_references(catalog, datasources, counts)
-            return apply_source_metrics(catalog, reader.source_entity_type_counts(refs))
+            return apply_source_metrics(
+                catalog,
+                reader.source_entity_type_counts(refs),
+                reader.source_edge_counts(refs),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("data sources failed: %s", exc)
             return []
@@ -151,7 +155,9 @@ def data_router() -> APIRouter:
             )
             refs = mapped_references(result["items"], datasources, counts)
             result["items"] = apply_source_metrics(
-                result["items"], reader.source_entity_type_counts(refs),
+                result["items"],
+                reader.source_entity_type_counts(refs),
+                reader.source_edge_counts(refs),
             )
             return result
         finally:
@@ -165,10 +171,14 @@ def data_router() -> APIRouter:
             reader, datasources, counts, catalog = _catalog_snapshot(store, workspace_id)
             item = _catalog_item(catalog, source_key)
             refs = source_references(source_key, datasources, counts)
+            source_map = [(source_key, system, dataset) for system, dataset in refs]
             stats = reader.source_entity_type_counts(
-                [(source_key, system, dataset) for system, dataset in refs],
+                source_map,
             ).get(source_key, [])
-            return _universal_source_detail(store, item, datasources, counts, stats)
+            edge_count = reader.source_edge_counts(source_map).get(source_key, 0)
+            return _universal_source_detail(
+                store, item, datasources, counts, stats, edge_count,
+            )
         finally:
             store.close()
 
@@ -395,6 +405,33 @@ class _LegacyMetricReader:
     ) -> dict[str, list[tuple[str, int]]]:
         return {}
 
+    def source_edge_counts(
+        self, source_map: list[tuple[str, str, str]],
+    ) -> dict[str, int]:
+        if not hasattr(self._store, "list_relationships"):
+            return {}
+        provenance = self._store.list_members_provenance()  # type: ignore[attr-defined]
+        entity_sources = {
+            (entity_id, system, dataset)
+            for entity_id, system, dataset, _record_id in provenance
+        }
+        source_entities: dict[str, set[int]] = {}
+        for source_key, system, dataset in source_map:
+            source_entities.setdefault(source_key, set()).update(
+                entity_id
+                for entity_id, linked_system, linked_dataset in entity_sources
+                if linked_system == system and linked_dataset == dataset
+            )
+        relationships = list(self._store.list_relationships())  # type: ignore[attr-defined]
+        return {
+            source_key: len({
+                (source_id, target_id, name)
+                for source_id, target_id, name in relationships
+                if source_id in entity_ids or target_id in entity_ids
+            })
+            for source_key, entity_ids in source_entities.items()
+        }
+
     def workspace_summary(self) -> dict:
         return explore.summarize(  # type: ignore[attr-defined]
             self._store.list_entities(), self._store.list_members_provenance(),
@@ -443,6 +480,7 @@ def _universal_source_detail(
     datasources: list[dict],
     counts: Counter,
     stats: list[tuple[str, int]],
+    edge_count: int,
 ) -> dict:
     source_key = str(item["source_key"])
     grouped = _build_source_detail_payload(store, datasources, source_key, counts)
@@ -468,6 +506,8 @@ def _universal_source_detail(
         "entity_summary": {
             "total_entities": total_entities,
             "type_count": len(stats),
+            "node_count": total_entities,
+            "edge_count": edge_count,
             "types": [{"name": name, "count": count} for name, count in stats[:12]],
         },
     })

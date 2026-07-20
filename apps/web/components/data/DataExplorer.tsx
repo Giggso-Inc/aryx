@@ -15,6 +15,45 @@ type DeleteRequest =
   | { kind: "source"; sourceKey: string; sourceName: string }
   | { kind: "asset"; sourceKey: string; sourceName: string; assetKey: string; assetName: string };
 
+async function loadSourcesPage(
+  workspaceId: number,
+  options: { page: number; pageSize: number; query: string; category: SourceFilter },
+): Promise<DataSourceCatalogPage> {
+  const result = await api.listDataSourcesPage(workspaceId, options);
+  const isUnfilteredSingleSource = options.query.trim() === ""
+    && options.category === "all"
+    && result.total === 1
+    && result.items.length === 1;
+  if (!isUnfilteredSingleSource || result.items[0].edge_count != null) return result;
+
+  try {
+    const overview = await api.getEntityGraphOverview(workspaceId);
+    return {
+      ...result,
+      items: [{ ...result.items[0], edge_count: overview.relationship_count }],
+    };
+  } catch {
+    return result;
+  }
+}
+
+function mergeDetailMetrics(
+  detail: DataSourceDetail,
+  fallback: { total_entities?: number; node_count?: number; edge_count?: number },
+): DataSourceDetail {
+  return {
+    ...detail,
+    entity_summary: {
+      ...detail.entity_summary,
+      node_count: detail.entity_summary.node_count
+        ?? fallback.node_count
+        ?? fallback.total_entities
+        ?? detail.entity_summary.total_entities,
+      edge_count: detail.entity_summary.edge_count ?? fallback.edge_count,
+    },
+  };
+}
+
 /** The Data tab: source registry first, then resolved-entity exploration. */
 export function DataExplorer() {
   const { workspaceId } = useWorkspace();
@@ -62,7 +101,7 @@ export function DataExplorer() {
     const timer = window.setTimeout(() => {
       setSourcesLoading(true);
       setSourceErr(null);
-      api.listDataSourcesPage(workspaceId, {
+      loadSourcesPage(workspaceId, {
         page: sourcePage, pageSize: 50, query: sourceQuery, category: sourceFilter,
       }).then((result) => {
         if (!live) return;
@@ -78,7 +117,7 @@ export function DataExplorer() {
   const refreshSources = async () => {
     setSourcesLoading(true);
     try {
-      const result: DataSourceCatalogPage = await api.listDataSourcesPage(workspaceId, {
+      const result = await loadSourcesPage(workspaceId, {
         page: sourcePage, pageSize: 50, query: sourceQuery, category: sourceFilter,
       });
       if (result.items.length === 0 && sourcePage > 1) {
@@ -103,7 +142,7 @@ export function DataExplorer() {
     try {
       const detail = await api.getDataSourceDetail(workspaceId, source.source_key);
       if (currentWorkspaceId.current !== requestedWorkspaceId) return;
-      setActiveSourceDetail(detail);
+      setActiveSourceDetail(mergeDetailMetrics(detail, source));
     } catch (e) {
       if (currentWorkspaceId.current !== requestedWorkspaceId) return;
       setActiveSourceKey(null);
@@ -202,7 +241,10 @@ export function DataExplorer() {
     try {
       await api.deleteGeneratedAsset(workspaceId, sourceKey, assetKey);
       const nextDetail = await api.getDataSourceDetail(workspaceId, sourceKey);
-      setActiveSourceDetail(nextDetail);
+      setActiveSourceDetail(mergeDetailMetrics(
+        nextDetail,
+        activeSourceDetail?.entity_summary ?? {},
+      ));
       await refreshSources();
     } catch (e) {
       setSourceErr(e instanceof Error ? e.message : "asset delete failed");

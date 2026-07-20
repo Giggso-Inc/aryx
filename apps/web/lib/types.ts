@@ -316,6 +316,8 @@ export interface DataSourceCatalogItem {
   generatedAssetCount: number;
   total_entities: number;
   entity_type_count: number;
+  node_count?: number;
+  edge_count?: number;
   actions: SourceActionState;
 }
 
@@ -346,6 +348,8 @@ export interface XmlGeneratedAsset {
 export interface SourceEntitySummary {
   total_entities: number;
   type_count: number;
+  node_count?: number;
+  edge_count?: number;
   types: DataTypeCount[];
 }
 

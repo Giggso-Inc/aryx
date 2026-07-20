@@ -42,6 +42,22 @@ class SourceMetricsStore:
             stats.setdefault(str(source_key), []).append((str(ontology_type), int(count)))
         return stats
 
+    def source_edge_counts(
+        self, source_map: list[tuple[str, str, str]],
+    ) -> dict[str, int]:
+        """Count distinct relationship edges touching each logical source."""
+        if not source_map:
+            return {}
+        payload = [
+            {"source_key": key, "source_system": system, "source_dataset": dataset}
+            for key, system, dataset in dict.fromkeys(source_map)
+        ]
+        rows = self._all("select_source_edge_counts", {
+            "workspace_id": self._ws,
+            "source_map": Json(payload),
+        })
+        return {str(source_key): int(count) for source_key, count in rows}
+
     def workspace_summary(self) -> dict[str, Any]:
         """Return the legacy DataSummary shape from aggregate queries."""
         types = [(str(row[0]), int(row[1])) for row in self._all(

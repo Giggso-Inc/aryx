@@ -42,11 +42,14 @@ def test_page_source_catalog_query_and_category_preserve_order() -> None:
 def test_apply_source_metrics_uses_distinct_entity_type_counts() -> None:
     rows = [_source(1)]
     stats = {"csv:source-0001": [("Customer", 12), ("Order", 4)]}
+    edge_stats = {"csv:source-0001": 7}
 
-    enriched = apply_source_metrics(rows, stats)
+    enriched = apply_source_metrics(rows, stats, edge_stats)
 
     assert enriched[0]["total_entities"] == 16
     assert enriched[0]["entity_type_count"] == 2
+    assert enriched[0]["node_count"] == 16
+    assert enriched[0]["edge_count"] == 7
 
 
 def test_source_references_grouped_assets_excludes_deleted_assets() -> None:
@@ -68,4 +71,3 @@ def test_source_references_generic_key_preserves_special_dataset_text() -> None:
     refs = source_references("rest:orders/2026 west", [], Counter())
 
     assert refs == [("rest", "orders/2026 west")]
-

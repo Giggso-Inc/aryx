@@ -32,6 +32,11 @@ class _FakeMetricsStore:
             for key, _system, _dataset in source_map
         }
 
+    def source_edge_counts(
+        self, source_map: list[tuple[str, str, str]],
+    ) -> dict[str, int]:
+        return {key: 7 for key, _system, _dataset in source_map}
+
     def source_records_page(
         self, system: str, dataset: str, *, limit: int, offset: int,
     ) -> tuple[int, list[dict]]:
@@ -65,6 +70,8 @@ def test_sources_page_thousand_sources_returns_first_fifty() -> None:
     assert response.json()["total"] == 1001
     assert len(response.json()["items"]) == 50
     assert response.json()["page_size"] == 50
+    assert response.json()["items"][0]["node_count"] == 16
+    assert response.json()["items"][0]["edge_count"] == 7
 
 
 def test_generic_source_detail_contains_selected_source_entity_summary() -> None:
@@ -75,6 +82,8 @@ def test_generic_source_detail_contains_selected_source_entity_summary() -> None
     assert response.status_code == 200
     assert response.json()["detail_kind"] == "preview"
     assert response.json()["entity_summary"]["total_entities"] == 16
+    assert response.json()["entity_summary"]["node_count"] == 16
+    assert response.json()["entity_summary"]["edge_count"] == 7
 
 
 def test_source_entity_types_endpoint_is_paginated() -> None:

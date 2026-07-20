@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Loader2, Search } from "lucide-react";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { typeColor } from "@/lib/typeColor";
 import type { SourceEntitySummary, SourceEntityTypesPage } from "@/lib/types";
 
@@ -43,9 +44,11 @@ export function SourceEntityOverview({
           </p>
           <p className="mt-2 text-sm text-subtle">Resolved entities linked only to this data source.</p>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Metric value={summary.total_entities} label="Total Entities" />
           <Metric value={summary.type_count} label="Entity Types" />
+          <Metric value={summary.node_count ?? summary.total_entities} label="Nodes" />
+          <Metric value={summary.edge_count} label="Edges" />
         </div>
       </div>
 
@@ -90,9 +93,12 @@ export function SourceEntityOverview({
   );
 }
 
-function Metric({ value, label }: { value: number; label: string }) {
-  return <div className="min-w-[140px] rounded-[1.25rem] border border-navy-100 bg-white px-5 py-3 text-right shadow-soft" title={value.toLocaleString()}>
-    <p className="text-3xl font-semibold text-steel-600">{formatCount(value)}</p>
+function Metric({ value, label }: { value?: number | null; label: string }) {
+  const title = value == null ? "Unavailable" : value.toLocaleString();
+  return <div className="min-w-[120px] rounded-[1.25rem] border border-navy-100 bg-white px-4 py-3 text-right shadow-soft" title={title}>
+    <p className={cn("text-3xl font-semibold", value == null ? "text-subtle" : "text-steel-600")}>
+      {value == null ? "—" : formatCount(value)}
+    </p>
     <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-subtle">{label}</p>
   </div>;
 }

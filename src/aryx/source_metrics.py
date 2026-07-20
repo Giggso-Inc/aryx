@@ -7,6 +7,7 @@ from typing import Any, Literal
 SourceCategory = Literal["all", "database", "documents", "api"]
 SourceCounts = Counter[tuple[str, str]]
 SourceStats = dict[str, list[tuple[str, int]]]
+SourceEdgeStats = dict[str, int]
 
 _DATABASE_KINDS = {"postgresql", "postgres", "mysql", "mariadb", "oracle", "sqlite", "csv"}
 
@@ -29,15 +30,23 @@ def page_source_catalog(
     }
 
 
-def apply_source_metrics(rows: list[dict[str, Any]], stats: SourceStats) -> list[dict[str, Any]]:
-    """Attach total distinct entities and entity-type counts to catalog rows."""
+def apply_source_metrics(
+    rows: list[dict[str, Any]],
+    stats: SourceStats,
+    edge_stats: SourceEdgeStats | None = None,
+) -> list[dict[str, Any]]:
+    """Attach node, edge, entity, and entity-type counts to catalog rows."""
     enriched: list[dict[str, Any]] = []
+    edge_stats = edge_stats or {}
     for row in rows:
         type_counts = stats.get(str(row["source_key"]), [])
+        total_entities = sum(count for _name, count in type_counts)
         enriched.append({
             **row,
-            "total_entities": sum(count for _name, count in type_counts),
+            "total_entities": total_entities,
             "entity_type_count": len(type_counts),
+            "node_count": total_entities,
+            "edge_count": edge_stats.get(str(row["source_key"]), 0),
         })
     return enriched
 
