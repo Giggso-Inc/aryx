@@ -361,6 +361,30 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Summary categories (§ render_filled_summary grouping) — structural
+# fragment-matching against variable_name, same convention as
+# _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
+# never a literal per-catalog field name (e.g. "modelSelectionSelectModel_
+# viSoln" or "serviceType_astro"), only the fragment every catalog's own
+# naming happens to share ("model"/"product", "service"/"billing"/"plan",
+# "quantity"/"duration"). Checked in this fixed order — the first category
+# whose fragments match wins, so "serviceDuration_astro" (Service Plan
+# fragment "service" checked before "duration") lands in Service Plan, not
+# Quantity & Duration, matching how a sales rep would actually group it.
+_SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Narrow, specific fragments only — "model" alone is too broad: both
+    # catalogs prefix MANY unrelated attrs with "modelSelection*" (frequency
+    # bands, keypad type, display type share APX's naming convention with
+    # its actual model/product attr), so a loose "model" substring sweeps
+    # those in too. These fragments target the attr that names the product
+    # itself, not siblings that merely share its naming prefix.
+    ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
+                       "productselection", "producttype")),
+    ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
+    ("Quantity & Duration", ("quantity", "duration", "qty")),
+)
+_SUMMARY_FALLBACK_CATEGORY = "Associated Options"
+
 # Country -> standard sales-region abbreviation. Deliberately covers only
 # the unambiguous majority; countries not listed here fall through to the
 # normal "ask" behavior rather than guess. Two catalog-observed codes are
@@ -4580,6 +4604,35 @@ class CpqEngine:
             return True
         return "product" in label_l or "product" in variable_name.lower()
 
+    def _filled_summary_triples(
+        self,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """Filtered (variable_name, display_label, value) triples worth
+        summarising — same filtering as filled_summary_pairs, but keeps
+        variable_name so callers (render_filled_summary's category
+        grouping) can pattern-match on it. See filled_summary_pairs for the
+        filtering rules this applies.
+        """
+        if not display_filled:
+            return []
+        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
+        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
+        items = [
+            (var, label) for var, label in display_filled.items()
+            if not self._is_html_value(label)
+            and not self._is_noise_var(var)
+            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+        ]
+        if rule_governed_ids is not None:
+            items = [
+                (var, label) for var, label in items
+                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
+            ]
+        return [(var, label_map.get(var, var), label) for var, label in items]
+
     def filled_summary_pairs(
         self,
         display_filled: dict[str, str],
@@ -4600,22 +4653,24 @@ class CpqEngine:
         reasoned about survive (Phase K/§3g). The rest are silently
         omitted — no count of remaining auto-configured fields.
         """
-        if not display_filled:
-            return []
-        by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
-        label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
-        items = [
-            (var, label) for var, label in display_filled.items()
-            if not self._is_html_value(label)
-            and not self._is_noise_var(var)
-            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+        return [
+            (label, value)
+            for _var, label, value in self._filled_summary_triples(
+                display_filled, attrs, rule_governed_ids)
         ]
-        if rule_governed_ids is not None:
-            items = [
-                (var, label) for var, label in items
-                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
-            ]
-        return [(label_map.get(var, var), label) for var, label in items]
+
+    @staticmethod
+    def _summary_category(variable_name: str) -> str:
+        """Classify a filled attr into one of the 5 scannable summary
+        sections, purely by variable_name fragment — never a literal
+        per-catalog field name, so it applies to any ingested XML the same
+        way. See _SUMMARY_CATEGORY_KEYS docstring for the matching order.
+        """
+        vn_flat = (variable_name or "").lower().replace("_", "")
+        for category, fragments in _SUMMARY_CATEGORY_KEYS:
+            if any(frag in vn_flat for frag in fragments):
+                return category
+        return _SUMMARY_FALLBACK_CATEGORY
 
     def beautify_text(
         self,
@@ -4656,15 +4711,29 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
     ) -> str:
-        """Deterministic bullet-list summary of what has been auto-filled.
+        """Deterministic, categorized summary of what has been auto-filled.
 
-        Formats `filled_summary_pairs()` (which owns ALL the filtering) as
-        markdown bullets. Used directly as the fallback whenever the
-        LLM-narrated paragraph (ask_api `_cpq_summary_text`) is
-        unavailable or fails.
+        Groups `filled_summary_pairs()` (which owns ALL the filtering) under
+        4 scannable headed sections — Product Name, Service Plan, Quantity
+        & Duration, Associated Options — instead of one flat bullet list,
+        classified purely by variable_name fragment (`_summary_category`,
+        generic across any ingested catalog, never a per-catalog literal).
+        Used directly as the fallback whenever the LLM-narrated paragraph
+        (ask_api `_cpq_summary_text`) is unavailable or fails.
         """
-        pairs = self.filled_summary_pairs(display_filled, attrs, rule_governed_ids)
-        if not pairs:
+        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids)
+        if not triples:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
-        return "\n".join([heading, *(f"- **{label}** → {value}" for label, value in pairs)])
+        by_category: dict[str, list[tuple[str, str]]] = {}
+        for var, label, value in triples:
+            by_category.setdefault(self._summary_category(var), []).append((label, value))
+        section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [_SUMMARY_FALLBACK_CATEGORY]
+        lines = [heading]
+        for category in section_order:
+            group = by_category.get(category)
+            if not group:
+                continue
+            lines.append(f"\n**{category}:**")
+            lines.extend(f"- **{label}** → {value}" for label, value in group)
+        return "\n".join(lines)
