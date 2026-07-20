@@ -4752,19 +4752,40 @@ class CpqEngine:
         Used directly as the fallback whenever the LLM-narrated paragraph
         (ask_api `_cpq_summary_text`) is unavailable or fails.
         """
-        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids)
-        if not triples:
+        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids)
+        if not groups:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
+        lines = [heading]
+        for category, group in groups:
+            lines.append(f"\n**{category}:**")
+            lines.extend(f"- **{label}** → {value}" for label, value in group)
+        return "\n".join(lines)
+
+    def categorized_summary_groups(
+        self,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None = None,
+        rule_governed_ids: set[int] | None = None,
+    ) -> list[tuple[str, list[tuple[str, str]]]]:
+        """(category, [(label, value), ...]) groups, non-empty categories
+        only, in the fixed display order (Product Name, Service Plan,
+        Quantity & Duration, Associated Options — see
+        _SUMMARY_CATEGORY_KEYS). Same filtering and classification
+        `render_filled_summary` uses for its bullet output; exposed
+        separately so callers that build their own presentation (e.g.
+        ask_api's LLM-narrated summary) can group the same facts the same
+        way instead of inventing their own grouping.
+        """
+        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids)
+        if not triples:
+            return []
         by_category: dict[str, list[tuple[str, str]]] = {}
         for var, label, value in triples:
             by_category.setdefault(self._summary_category(var), []).append((label, value))
         section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [_SUMMARY_FALLBACK_CATEGORY]
-        lines = [heading]
-        for category in section_order:
-            group = by_category.get(category)
-            if not group:
-                continue
-            lines.append(f"\n**{category}:**")
-            lines.extend(f"- **{label}** → {value}" for label, value in group)
-        return "\n".join(lines)
+        return [
+            (category, by_category[category])
+            for category in section_order
+            if by_category.get(category)
+        ]

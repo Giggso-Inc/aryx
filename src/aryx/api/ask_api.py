@@ -268,30 +268,39 @@ def _cpq_summary_text(
 ) -> str:
     """Natural-language paragraph summarising the filtered configuration.
 
-    The engine's `filled_summary_pairs` owns ALL filtering (booleans,
-    secondary/warranty/product attrs, year durations, rule-governed set);
-    the menial model only rewrites the surviving facts as prose. Any LLM
-    failure or empty reply falls back to the deterministic bullet summary
-    (`render_filled_summary`) — the CPQ flow must never block on the
-    narrator.
+    The engine's `categorized_summary_groups` owns ALL filtering (booleans,
+    secondary/warranty/product attrs, year durations, rule-governed set,
+    "(none)" placeholders) AND the same 4-category grouping (Product Name /
+    Service Plan / Quantity & Duration / Associated Options) the
+    deterministic fallback (`render_filled_summary`) uses — the menial
+    model only rewrites each group's facts as prose, never invents its own
+    organization, so narration stays consistent whichever path fires. Any
+    LLM failure or empty reply falls back to `render_filled_summary` — the
+    CPQ flow must never block on the narrator.
     """
-    pairs = _cpq_engine.filled_summary_pairs(
+    groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids)
-    if not pairs:
+    if not groups:
         return ""
     sys = (
         "You summarise product configurations for sales reps in plain, "
         "everyday English — never technical or internal terminology."
     )
+    config_text = "\n\n".join(
+        f"{category.upper()}:\n"
+        + "\n".join(f"- {label}: {value}" for label, value in pairs)
+        for category, pairs in groups
+    )
     user = (
         f"Describe this {product_name or 'product'} configuration in at most "
         f"{_MAX_ANSWER_LINES} short lines, one idea per line. Lead with a direct "
-        "one-line summary (e.g. 'Your configuration is complete.'), then the "
-        "most important choices in plain language — group related choices "
-        "naturally, the way a person would describe the build, not as "
-        "'label: value' pairs. Use ONLY the facts below; never invent values "
-        "that are not listed.\n\nCONFIGURATION:\n"
-        + "\n".join(f"- {label}: {value}" for label, value in pairs)
+        "one-line summary (e.g. 'Your configuration is complete.'), then narrate "
+        "the choices in plain language, ONE SHORT PARAGRAPH PER CATEGORY BELOW, "
+        "in the same order as the categories — never merge categories together, "
+        "never reorder them, never invent a category that isn't listed. Within "
+        "a category, describe its facts naturally (not as 'label: value' pairs). "
+        "Use ONLY the facts below; never invent values that are not listed.\n\n"
+        "CONFIGURATION:\n" + config_text
     )
     try:
         # ARYX_LLM_REASON_MODEL (role="answer"), not menial — this narration
