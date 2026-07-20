@@ -361,6 +361,25 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Narrow, specific fragments identifying "this attr names the product/model
+# itself" — never "model" alone, which is too broad (both catalogs prefix
+# MANY unrelated attrs with "modelSelection*": frequency bands, keypad type,
+# display type share APX's naming convention with its actual model/product
+# attr, so a loose "model" substring sweeps those in too). Shared by two
+# consumers: render_filled_summary's "Product Name" grouping, and
+# auto_fill's is_decision_attr guard below — an attr that names the
+# product is exactly the risky category where "blind first-by-order"
+# guessing can silently swap in an unrelated product (confirmed live:
+# modelSelectionSelectModel_viSoln's own option list mixes SVX's 3 real
+# variants with an unrelated "V200 Body Worn Camera" accessory at order=1
+# — a product-switch turn with no hint text to disambiguate picked the
+# camera). Structural fragment-matching, never a literal per-catalog
+# field/attr name, so it applies to any ingested XML the same way.
+_PRODUCT_IDENTIFIER_KEYS: tuple[str, ...] = (
+    "selectmodel", "basemodel", "modelname", "productname",
+    "productselection", "producttype",
+)
+
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
 # _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
@@ -372,14 +391,7 @@ DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 # fragment "service" checked before "duration") lands in Service Plan, not
 # Quantity & Duration, matching how a sales rep would actually group it.
 _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # Narrow, specific fragments only — "model" alone is too broad: both
-    # catalogs prefix MANY unrelated attrs with "modelSelection*" (frequency
-    # bands, keypad type, display type share APX's naming convention with
-    # its actual model/product attr), so a loose "model" substring sweeps
-    # those in too. These fragments target the attr that names the product
-    # itself, not siblings that merely share its naming prefix.
-    ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
-                       "productselection", "producttype")),
+    ("Product Name", _PRODUCT_IDENTIFIER_KEYS),
     ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
     ("Quantity & Duration", ("quantity", "duration", "qty")),
 )
@@ -3561,6 +3573,19 @@ class CpqEngine:
                     vn == "productSelectionProduct_all"
                     and vn not in (skip_always_ask or ())
                 )
+                # Any attr that NAMES the product/model itself (see
+                # _PRODUCT_IDENTIFIER_KEYS) is the same risk class as
+                # productSelectionProduct_all, just without a shared native
+                # id across catalogs to key off of — its own option list can
+                # mix the resolved product's real variants with an unrelated
+                # product line (confirmed live: SVX's modelSelectionSelect
+                # Model_viSoln listed a "V200 Body Worn Camera" accessory at
+                # order=1 alongside the 3 real SVX variants). Harmless when
+                # a hint/rule already resolved `value` above (this only
+                # gates the untouched blind first-by-order fallback below)
+                # or when exactly one valid option remains (that branch is
+                # unconditional, resolves correctly regardless of this flag).
+                or any(pk in vn_flat for pk in _PRODUCT_IDENTIFIER_KEYS)
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -4625,6 +4650,12 @@ class CpqEngine:
             if not self._is_html_value(label)
             and not self._is_noise_var(var)
             and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+            # "(none)" is the engine's own literal placeholder for an
+            # unfilled multi/array-typed field (e.g. Promotion, Solution
+            # Set) — confirmed live: it survives every other filter since
+            # it's a real, deliberately-set display value, not noise by any
+            # existing rule. Worth summarising nothing, so drop it here.
+            and label.strip() != "(none)"
         ]
         if rule_governed_ids is not None:
             items = [
