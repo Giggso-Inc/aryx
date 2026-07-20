@@ -298,8 +298,13 @@ def _cpq_summary_text(
         "the choices in plain language, ONE SHORT PARAGRAPH PER CATEGORY BELOW, "
         "in the same order as the categories — never merge categories together, "
         "never reorder them, never invent a category that isn't listed. Within "
-        "a category, describe its facts naturally (not as 'label: value' pairs). "
-        "Use ONLY the facts below; never invent values that are not listed.\n\n"
+        "a category, describe its facts naturally (not as 'label: value' pairs), "
+        "never as a bulleted list. ASSOCIATED OPTIONS in particular can list "
+        "dozens of facts — for that category ONLY, mention just the handful "
+        "that matter most and summarise the rest in general terms (e.g. "
+        "'plus the usual regional and packaging defaults'), rather than "
+        "naming every single one. Use ONLY the facts below; never invent "
+        "values that are not listed.\n\n"
         "CONFIGURATION:\n" + config_text
     )
     try:

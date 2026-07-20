@@ -4770,7 +4770,18 @@ class CpqEngine:
         lines = [heading]
         for category, group in groups:
             lines.append(f"\n**{category}:**")
-            lines.extend(f"- **{label}** → {value}" for label, value in group)
+            if category == _SUMMARY_FALLBACK_CATEGORY:
+                # This category is a catch-all for everything not
+                # classified into the other 3 (confirmed live: 20-50+
+                # items on a real quote) — a bullet per item is no longer
+                # scannable at that volume, unlike Product Name/Service
+                # Plan/Quantity & Duration which stay small. Render as one
+                # short, deterministic plain-text line instead — no LLM
+                # call, so this path never depends on the narrator being
+                # reachable (see this method's own docstring constraint).
+                lines.append("; ".join(f"{label}: {value}" for label, value in group) + ".")
+            else:
+                lines.extend(f"- **{label}** → {value}" for label, value in group)
         return "\n".join(lines)
 
     def categorized_summary_groups(
