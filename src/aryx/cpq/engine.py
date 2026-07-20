@@ -3785,9 +3785,21 @@ class CpqEngine:
                 # right back into pending (confirmed live: SVX asked
                 # productSelectionProduct_all again once the first-by-order
                 # auto-fill leak above was fixed, because this branch never
-                # consulted skip_always_ask on its own).
-                and not (vn == "productSelectionProduct_all"
-                         and vn in (skip_always_ask or ()))
+                # consulted skip_always_ask on its own). Same generalization
+                # as is_decision_attr's own carve-out (Raven review, PR #104
+                # follow-up): an UNGOVERNED product-identifier attr (is_governed
+                # False, so the governed-blind-fallback elif above never fires)
+                # falls straight through to this branch, whose `attr.options`
+                # clause is true regardless of is_decision_attr — the old
+                # productSelectionProduct_all-only name check missed this case
+                # entirely for any other product-identifier attr.
+                and not (
+                    vn in (skip_always_ask or ())
+                    and (
+                        vn == "productSelectionProduct_all"
+                        or any(pk in vn_flat for pk in _PRODUCT_IDENTIFIER_KEYS)
+                    )
+                )
             ):
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
