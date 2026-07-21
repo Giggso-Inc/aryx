@@ -3595,6 +3595,23 @@ class CpqEngine:
                     vn == "productSelectionProduct_all"
                     and vn not in (skip_always_ask or ())
                 )
+                # "selectmodel"-named attrs can list real variants of ONE
+                # product mixed with an unrelated accessory at a low menu
+                # order (confirmed live: SVX's modelSelectionSelectModel_
+                # viSoln has "V200 Body Worn Camera" at order=1 ahead of its
+                # 3 real "SVX Video Remote Speaker Mic" variants) — blind
+                # first-by-order silently picked the camera with zero
+                # customer input. No rule or default_value backs this attr
+                # in the ingested data (confirmed via direct Postgres query),
+                # so hint-matching (checked above, unaffected by this flag)
+                # is the only correct signal; without one, ask rather than
+                # guess. Deliberately narrower than the full
+                # _PRODUCT_IDENTIFIER_KEYS fragment set used to (see history
+                # of commit 445595b) — "basemodel" and the others stay off
+                # this override because they're rule-governed catalog master
+                # lists, not a mix of unrelated products (APX's Base Model:
+                # picking the rule-governed first option is safe there).
+                or "selectmodel" in vn_flat
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -4626,7 +4643,7 @@ class CpqEngine:
 
     def _is_summary_excluded(
         self, variable_name: str, display_label: str, value: str,
-        attr: "ConfigAttr | None",
+        attr: "ConfigAttr | None", source: str | None = None,
     ) -> bool:
         """True when a filled attr should not get a summary line.
 
@@ -4649,7 +4666,20 @@ class CpqEngine:
             return True
         if attr is not None and attr.select_type == "boolean":
             return True
-        if attr is not None and attr.hidden:
+        if attr is not None and attr.hidden and source != "user":
+            # hidden=1 in the raw XML means BigMachines' own UI renders this
+            # inline as part of a grid widget rather than as its own summary
+            # line (confirmed live: 248 hidden attrs in workspace 14, almost
+            # all genuine internal/system fields — _config_operation_context,
+            # customerUIN, subscriptionStatus_all — never customer-answered).
+            # But a grid-quantity companion (e.g.
+            # mountingTypeLockingMolleMountQuantity_viSoln) IS hidden=1 yet
+            # still gets asked and answered directly in this chat interface,
+            # which has no grid rendering to fall back on — excluding it
+            # silently dropped the one number the customer actually gave
+            # (confirmed live: "15" survived in `filled`/the real payload,
+            # just never shown back to them). Only user-sourced answers get
+            # this carve-out; rule/default-filled hidden attrs stay excluded.
             return True
         label_l = display_label.lower()
         if "secondary" in label_l:
@@ -4674,6 +4704,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> list[tuple[str, str, str]]:
         """Filtered (variable_name, display_label, value) triples worth
         summarising — same filtering as filled_summary_pairs, but keeps
@@ -4689,7 +4720,15 @@ class CpqEngine:
             (var, label) for var, label in display_filled.items()
             if not self._is_html_value(label)
             and not self._is_noise_var(var)
-            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+            and not self._is_summary_excluded(
+                var, label_map.get(var, var), label, by_vn.get(var),
+                source=(sources or {}).get(var))
+            # "(none)" is the engine's own literal placeholder for an
+            # unfilled multi/array-typed field (e.g. Promotion, Solution
+            # Set) — confirmed live: it survives every other filter since
+            # it's a real, deliberately-set display value, not noise by any
+            # existing rule. Worth summarising nothing, so drop it here.
+            and label.strip() != "(none)"
         ]
         if rule_governed_ids is not None:
             items = [
@@ -4703,6 +4742,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> list[tuple[str, str]]:
         """Filtered (display_label, value) pairs worth summarising.
 
@@ -4721,7 +4761,7 @@ class CpqEngine:
         return [
             (label, value)
             for _var, label, value in self._filled_summary_triples(
-                display_filled, attrs, rule_governed_ids)
+                display_filled, attrs, rule_governed_ids, sources)
         ]
 
     @staticmethod
@@ -4775,6 +4815,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> str:
         """Deterministic, categorized summary of what has been auto-filled.
 
@@ -4786,7 +4827,7 @@ class CpqEngine:
         Used directly as the fallback whenever the LLM-narrated paragraph
         (ask_api `_cpq_summary_text`) is unavailable or fails.
         """
-        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids)
+        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids, sources)
         if not groups:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
@@ -4812,6 +4853,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
         """(category, [(label, value), ...]) groups, non-empty categories
         only, in the fixed display order (Product Name, Service Plan,
@@ -4822,7 +4864,7 @@ class CpqEngine:
         ask_api's LLM-narrated summary) can group the same facts the same
         way instead of inventing their own grouping.
         """
-        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids)
+        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids, sources)
         if not triples:
             return []
         by_category: dict[str, list[tuple[str, str]]] = {}
