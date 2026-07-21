@@ -196,12 +196,40 @@ attr as the per-option quantities before their own hidden-attr-visibility
 fix landed on dev). Recommend (b) unless a real downstream consumer
 (pricing, BOM generation) depends on this specific field's value.
 
-**Fix implemented:** option (b) — `build_payload()` now excludes any attr
-with `is_array_control=True`, the same treatment as `hide_in_trans`/
-`set_type=="2"`. It still drives rules and conversation internally; only
-the POST excludes it. Test:
-`test_array_control_attr_is_excluded_from_payload`
-(`tests/test_cpq_payload_shapes.py`).
+**Fix implemented, then CORRECTED:** option (b) (exclude entirely) shipped
+first, but a genuine reference payload obtained afterward (`"mountingArray
+Control_viSoln": 6`, a bare int matching its array-set's row count)
+confirmed that assumption was wrong — BigMachines DOES expect this attr in
+the payload. Corrected to option (a) in spirit: `build_payload()` now
+derives it as a bare int equal to the number of selected values in the
+catalog's array selector, but ONLY when the link is structurally
+unambiguous (exactly one `is_array_control` attr and exactly one
+`select_type=="multi"` attr among the loaded attrs) — deriving it by
+NAME-matching control↔selector across multiple candidates would be exactly
+the guessing `resolve_array_grid_links`'s own docstring already refuses to
+do for this catalog family, so any ambiguous case still abstains (same as
+the original exclusion). The raw, disconnected `filled` value (still just
+whatever `auto_fill` happened to pick) is never shipped either way. Tests:
+`test_array_control_attr_derives_row_count_when_link_is_unambiguous`,
+`test_array_control_attr_abstains_when_the_link_is_ambiguous`
+(`tests/test_cpq_payload_shapes.py`). A durable fix — deriving this from a
+REAL ingested control→selector link instead of the unambiguous-shape
+heuristic — is scoped in
+[`CPQ_ARRAY_SET_PAYLOAD_PLAN.md`](CPQ_ARRAY_SET_PAYLOAD_PLAN.md), which
+also now incorporates the full confirmed array-set row shape (`_index` +
+both the selector AND its per-row quantity nested together) from the same
+reference payload.
+
+**New, separate, NOT YET IMPLEMENTED finding from the same reference
+payload:** `archeType_viSoln` and `modelSelectionSelectModel_viSoln` (both
+reportedly `set_type=="Set"` with an "auto-lock" flag on) appear
+double-wrapped — `{"value": {"value":.., "displayValue":..}}` — one extra
+nesting level beyond the normal single-select `{"value":..,
+"displayValue":..}` shape every other menu attr in this same payload uses.
+No code today tracks a `set_type=="Set"`/"auto-lock" concept (`ConfigAttr`
+has no such field), and this hasn't been cross-checked against the raw XML
+metadata the way every other finding in this doc has been — flagged for
+verification, not yet acted on.
 
 ---
 

@@ -4678,6 +4678,31 @@ class CpqEngine:
         attr_by_vn = {a.variable_name: a for a in (attrs or [])}
         out: dict[str, Any] = {}
         hidden = hidden_vns or set()
+
+        # is_array_control_attr=1 attrs (e.g. mountingArrayControl_viSoln)
+        # ARE expected in the real payload — confirmed live against a
+        # genuine reference payload (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3
+        # revision) as a BARE int equal to the array-set's row count, not
+        # excluded as previously assumed. There is still no ingested link
+        # from a control attr to its own selector attr (that requires the
+        # bm_config_attr_set ingestion scoped in
+        # docs/CPQ_ARRAY_SET_PAYLOAD_PLAN.md) — deriving the count by
+        # NAME-matching control<->selector would be exactly the guessing
+        # resolve_array_grid_links's own docstring already refuses to do for
+        # this catalog family. So this only derives a count when the link is
+        # STRUCTURALLY unambiguous: exactly one is_array_control attr and
+        # exactly one select_type=="multi" attr among the attrs this turn
+        # loaded — the count is that multi-select's number of selected
+        # values. Any other shape (0 or 2+ of either) abstains rather than
+        # guess, same "match or bail" discipline used everywhere else.
+        array_control_count: int | None = None
+        if attrs:
+            control_attrs = [a for a in attrs if a.is_array_control]
+            multi_attrs = [a for a in attrs if a.select_type == "multi"]
+            if len(control_attrs) == 1 and len(multi_attrs) == 1:
+                selector_vn = multi_attrs[0].variable_name
+                selected = (filled_multi or {}).get(selector_vn) or []
+                array_control_count = len(selected)
         if hidden:
             dropped = [k for k in filled if k in hidden and filled[k]]
             if dropped:
@@ -4702,13 +4727,12 @@ class CpqEngine:
             if attr is not None and attr.hide_in_trans:
                 continue
             if attr is not None and attr.is_array_control:
-                # is_array_control_attr=1 (e.g. mountingArrayControl_viSoln)
-                # is BigMachines-internal array-size scaffolding, hidden=1 in
-                # the raw XML and never surfaced by the native UI. Its value
-                # has no real connection to the answered per-row quantity —
-                # that's captured separately by resolve_pending_grid_quantities
-                # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3) — so shipping it
-                # would only ever be a coincidental, disconnected number.
+                # Bare int = row count when unambiguous (see derivation
+                # above); otherwise abstain rather than ship the
+                # disconnected, coincidental raw value that caused the
+                # original 5-vs-7 mismatch this exclusion was meant to fix.
+                if array_control_count is not None:
+                    out[k] = array_control_count
                 continue
             if attr is not None and attr.set_type == "2":
                 # Transient UI/action-layer attr (see ConfigAttr.set_type) —

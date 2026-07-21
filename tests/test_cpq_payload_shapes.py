@@ -54,12 +54,41 @@ def test_set_type_2_multi_attr_is_excluded_too():
     assert "multiSel" not in out
 
 
-def test_array_control_attr_is_excluded_from_payload():
-    # docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3: mountingArrayControl_viSoln's
-    # value has no real connection to the answered per-row quantity — it's
-    # BigMachines-internal array-size scaffolding, hidden=1 in the raw XML,
-    # never surfaced by the native UI. Shipping it is a coincidental,
-    # disconnected number, so it's dropped like hide_in_trans/set_type=2.
+def test_array_control_attr_derives_row_count_when_link_is_unambiguous():
+    # docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3, corrected: a genuine
+    # reference payload confirmed mountingArrayControl_viSoln IS expected
+    # in the real payload, as a bare int equal to the array-set's row
+    # count — NOT excluded (the original fix's assumption was wrong; its
+    # raw filled value is still disconnected/coincidental, but the
+    # COUNT of selected rows is a real, derivable fact when there's
+    # exactly one array-control attr and exactly one select_type=="multi"
+    # attr to link it to, avoiding any name-matching guess).
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="mountingArrayControl_viSoln",
+                   display_label="Mounting Array Control", required=False,
+                   default_value="", options=_menu("5", "7"), is_array_control=True),
+        ConfigAttr(entity_id=2, variable_name="mountingTypeArray_viSoln",
+                   display_label="Mounting Type", required=False,
+                   default_value="", options=_menu("Shirt Magnetic Mount", "Jacket Magnetic Mount"),
+                   select_type="multi"),
+    ]
+    out = _payload(
+        attrs,
+        {"mountingArrayControl_viSoln": "5"},  # stale/disconnected raw value — must be ignored
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]},
+    )
+
+    assert out["mountingArrayControl_viSoln"] == 2, (
+        "must derive the real row count (2 selected), not the stale raw value (5)"
+    )
+
+
+def test_array_control_attr_abstains_when_the_link_is_ambiguous():
+    # No select_type=="multi" attr present to link to (or 2+ candidates) —
+    # deriving a count would require guessing WHICH multi-select this
+    # control attr belongs to, which this engine's design principle
+    # forbids (same discipline as resolve_array_grid_links). Abstain
+    # entirely rather than ship a wrong or coincidental number.
     attrs = [
         ConfigAttr(entity_id=1, variable_name="mountingArrayControl_viSoln",
                    display_label="Mounting Array Control", required=False,
