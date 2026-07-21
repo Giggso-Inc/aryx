@@ -212,13 +212,18 @@ the original exclusion). The raw, disconnected `filled` value (still just
 whatever `auto_fill` happened to pick) is never shipped either way. Tests:
 `test_array_control_attr_derives_row_count_when_link_is_unambiguous`,
 `test_array_control_attr_abstains_when_the_link_is_ambiguous`
-(`tests/test_cpq_payload_shapes.py`). A durable fix — deriving this from a
-REAL ingested control→selector link instead of the unambiguous-shape
-heuristic — is scoped in
-[`CPQ_ARRAY_SET_PAYLOAD_PLAN.md`](CPQ_ARRAY_SET_PAYLOAD_PLAN.md), which
-also now incorporates the full confirmed array-set row shape (`_index` +
-both the selector AND its per-row quantity nested together) from the same
-reference payload.
+(`tests/test_cpq_payload_shapes.py`).
+
+**Superseded by the durable fix — the full array-set implementation is now
+also shipped**, see [`CPQ_ARRAY_SET_PAYLOAD_PLAN.md`](CPQ_ARRAY_SET_PAYLOAD_PLAN.md)
+for the complete design/verification. `mountingArrayControl_viSoln` and
+`mountingTypeArray_viSoln`/`mountingTypeArrayqty_viSoln` are now correctly
+linked via a REAL ingested `bm_config_attr_set`/`bm_config_attr_set_assoc`
+join, not the narrower single-control/single-multi-select heuristic (which
+still exists as a fallback for catalogs/attrs with no real array-set link
+data). Verified live against the actual ingested SVX catalog (workspace
+19) — `build_payload()` now produces byte-for-byte the same shape as the
+original reference payload.
 
 **New, separate, NOT YET IMPLEMENTED finding from the same reference
 payload — now partially confirmed against Postgres (workspace 19):**

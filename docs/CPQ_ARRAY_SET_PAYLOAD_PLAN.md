@@ -1,5 +1,11 @@
 # BigMachines Array-Set Payload — Implementation Plan
 
+**STATUS: IMPLEMENTED AND VERIFIED LIVE** (see "Implementation & Live
+Verification" at the end of this doc). No re-ingestion was needed — the
+`bm_config_attr_set`/`bm_config_attr_set_assoc` data was already ingested
+into workspace 19's Postgres store from the original XML import; the fix
+only needed to READ it, which nothing in this pipeline did before.
+
 Scopes the fix for `docs/CPQ_RULE_TOOL_FLOW_PLAN.md` §15c: composite
 "array-set" attributes are currently misclassified as ordinary multi-select
 and serialized flat, which BigMachines rejects for genuine array-set columns
@@ -305,3 +311,113 @@ array-set implementation — see `docs/CPQ_SESSION_2_OPEN_ISSUES.md` item 3's
 "Fix implemented, then CORRECTED" note — but the real fix is still this
 plan's full `bm_config_attr_set` ingestion, which removes the "exactly one
 of each" restriction entirely.
+
+## Implementation & Live Verification
+
+All 3 design layers implemented as scoped, with the corrections from the
+"analyze this" pass applied:
+
+- **`rdb.py`**: `PostgresCpqRdb.fetch_attr_set_assoc()` — reads both
+  `BmConfigAttrSet` (driver rows: `size_attr_id`, `variable_name`) and
+  `BmConfigAttrSetAssoc` (ordered member rows: `set_id`, `attr_id`,
+  `display_order_number`) via the existing dialect-agnostic
+  `fetch_entities_by_type` — one implementation serves Oracle too through
+  inheritance, same as `fetch_function_scripts`. Trivial self-wrap sets
+  (`size_attr_id=-1`) are skipped.
+- **`state.py`**: `ConfigAttr` gained `array_set_id`, `array_set_role`
+  (`"driver"`/`"member"`/`""`), `array_col_order`, and `array_set_wrapper_key`
+  (driver-only, precomputed `"_set" + set.variable_name`).
+- **`engine.py`**: `load_product_config()` fetches `fetch_attr_set_assoc`
+  once per catalog and stamps the 4 fields onto matching `ConfigAttr`s by
+  `source_id`. `build_payload()`'s `filled_multi` loop routes array-set
+  members into a `set_id`-keyed accumulator instead of flat top-level keys;
+  a follow-up pass groups them into `_index`-keyed rows, filters `hidden`
+  dummy/placeholder members, and emits the driver's own row-count as a
+  sibling bare int — exactly resolving the design-section bugs found
+  during doc review (wrong key template, missing sibling-int emission).
+
+**Tests** (13 new, all passing):
+- `tests/test_cpq_rdb_attr_set_assoc.py` (3) — ordered member fetch,
+  self-wrap skip, orphan-assoc-row handling.
+- `tests/test_cpq_array_set_payload.py` (5) — indexed-row grouping, plain
+  multi-select regression guard, driver sibling-int (not nested/duplicated),
+  dummy-member exclusion, no-selection no-op.
+- 2 existing test doubles (`test_cpq_engine_catalog_scope.py`,
+  `test_cpq_e2e.py`) updated with a no-op `fetch_attr_set_assoc` stub —
+  regression fallout from the new call in `load_product_config`, not new
+  behavior.
+
+**Live verification against the real ingested SVX catalog** (workspace 19,
+no re-ingestion needed — this data was already there):
+
+```
+mountingArrayControl_viSoln -> array_set_id=19435423713 role='driver'
+    wrapper_key='_setmountingTypeArrayset_viSoln' hidden=True
+mountingTypeArray_viSoln    -> array_set_id=19435423713 role='member' order=1
+mountingTypeArrayqty_viSoln -> array_set_id=19435423713 role='member' order=2
+MountingQuantityDummyArrayAttribute_viSoln -> NOT LOADED (filtered upstream
+    of build_payload entirely — the code's own dummy-member filter is
+    defense-in-depth, not load-bearing for this specific attr)
+```
+
+`build_payload()` output, given `mountingTypeArray_viSoln = ["Shirt
+Magnetic Mount", "Jacket Magnetic Mount"]` and `mountingTypeArrayqty_viSoln
+= ["10", "10"]`:
+
+```json
+"mountingArrayControl_viSoln": 2,
+"_setmountingTypeArrayset_viSoln": {
+  "items": [
+    {"_index": 0, "mountingTypeArray_viSoln": {"value": "Shirt Magnetic Mount", "displayValue": "Shirt Magnetic Mount"}, "mountingTypeArrayqty_viSoln": 10},
+    {"_index": 1, "mountingTypeArray_viSoln": {"value": "Jacket Magnetic Mount", "displayValue": "Jacket Magnetic Mount"}, "mountingTypeArrayqty_viSoln": 10}
+  ]
+}
+```
+
+An exact structural match to the original reference payload (row count
+reflects the 2 simulated selections here vs. the original's 6 — the shape
+is what's being verified). Neither member appears as a flat top-level key.
+
+**Still genuinely open**: Open Question 2 (does ARYX's own `filled_multi`
+population for `mountingTypeArrayqty_viSoln` actually get filled at all by
+any existing mechanism, and does it stay positionally aligned with
+`mountingTypeArray_viSoln`'s own list?) remains UNRESOLVED — this
+implementation correctly GROUPS whatever is present, but does not add any
+new mechanism to populate `mountingTypeArrayqty_viSoln` itself, since that
+was explicitly out of scope (a guess this plan refused to make). In a real
+conversation flow, that attr's `filled_multi` entry may currently be empty
+until/unless something else fills it — worth a follow-up trace of
+`resolve_pending_grid_quantities` before relying on this in production.
+
+## Re-ingestion Verification (from the real source XML, not just pre-existing data)
+
+The earlier "Live Verification" section above only proved the fix reads
+`bm_config_attr_set`/`_assoc` data already sitting in Postgres from a prior
+ingest — it didn't prove the ingestion PATH itself produces that data
+correctly from a fresh file. Re-verified end-to-end against the actual
+source file (`SVX Video Remote Speaker Microphone.xml`, 12,484 lines):
+
+1. Created a fresh workspace (id 24, via `POST /admin/workspaces`) to avoid
+   touching the already-ingested workspace 19/100 data.
+2. `POST /admin/docs/read` (discovery) then `POST /admin/docs/confirm`
+   (ingest all 30 discovered CSV files, including `bm_config_attr_set.csv`
+   and `bm_config_attr_set_assoc.csv`) — completed in ~10 minutes (LLM-based
+   discovery + FK-link inference over 12,244 graph nodes / 12,659
+   relationships), no errors.
+3. Confirmed identical row counts to the pre-existing workspace 19 data:
+   27 `BmConfigAttrSet` rows, 23 `BmConfigAttrSetAssoc` rows — deterministic
+   re-ingestion.
+4. Ran the exact same `load_product_config()`/`build_payload()` check
+   against workspace 24 (product hint resolved cleanly to the single
+   catalog this time, no cross-catalog ambiguity warning) — **byte-for-byte
+   identical output** to the workspace-19 check: `mountingArrayControl_
+   viSoln` correctly linked as driver (`array_set_id=19435423713`,
+   `wrapper_key='_setmountingTypeArrayset_viSoln'`), both real members
+   correctly ordered, dummy member correctly absent, and the final payload
+   producing the exact grouped `_index`-keyed shape with the driver as a
+   sibling row-count int.
+
+This confirms the fix works from a genuine, fresh ingestion of the actual
+BigMachines export — not just against data that happened to already be in
+the store. Workspace 24 was left in place (not deleted) as a clean,
+disposable verification fixture; safe to remove if no longer needed.

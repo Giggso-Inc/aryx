@@ -186,6 +186,23 @@ class ConfigAttr:
     # ({"value": {"value":..,"displayValue":..}}), not dropped like the
     # genuinely transient set_type=="2"/auto_lock=0 attrs.
     auto_lock: bool = False
+    # BigMachines composite "array set" membership (docs/
+    # CPQ_ARRAY_SET_PAYLOAD_PLAN.md) — a driver/control attr (already
+    # flagged is_array_control above) plus ordered member columns (e.g.
+    # Mounting Type's selector + its own per-row quantity), grouped by a
+    # shared bm_config_attr_set id and serialized as one _index-keyed row
+    # per selection rather than flat per-column lists. None/"" = not part
+    # of any array-set.
+    array_set_id: int | None = None
+    array_set_role: str = ""              # "driver" | "member" | ""
+    array_col_order: int = 999            # member ordinal within the set's row
+    # DRIVER attrs only — the set's own variable_name (from the
+    # bm_config_attr_set driver row, a distinct, never-ConfigAttr-ingested
+    # entity) precomputed into the real wire-format top-level key, e.g.
+    # "_setmountingTypeArrayset_viSoln". Members leave this "" — the
+    # wrapper key is looked up via the driver, never reconstructed by
+    # build_payload from a template.
+    array_set_wrapper_key: str = ""
 
 
 @dataclass

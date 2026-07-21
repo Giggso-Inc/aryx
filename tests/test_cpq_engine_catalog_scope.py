@@ -23,6 +23,9 @@ class _FakeRdb:
     def fetch_entity_attributes(self, entity_ids, workspace_id):
         return {eid: self._entity_attrs[eid] for eid in entity_ids if eid in self._entity_attrs}
 
+    def fetch_attr_set_assoc(self, workspace_id, catalog_prefix=""):
+        return {}
+
 
 class _FakeReader:
     """Graph-reader double with a single config attr whose menu-item

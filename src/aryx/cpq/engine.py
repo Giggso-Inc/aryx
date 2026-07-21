@@ -1847,6 +1847,29 @@ class CpqEngine:
             opts.sort(key=lambda x: x.order)
             menu_by_attr[eid] = opts
 
+        # Step 3c — array-set membership (docs/CPQ_ARRAY_SET_PAYLOAD_PLAN.md):
+        # bm_config_attr_set/bm_config_attr_set_assoc define BigMachines'
+        # composite "array set" construct (a driver/control attr + ordered
+        # member columns, e.g. Mounting Type's selector+quantity pair) —
+        # confirmed real, previously completely unread by this pipeline.
+        # role_by_attr_id/order_by_attr_id/wrapper_key_by_attr_id are keyed
+        # by the BM-native attribute id (source_id), the same id every
+        # other rule/set join in this method already cross-references by.
+        array_sets = get_cpq_rdb().fetch_attr_set_assoc(workspace_id, resolved_catalog_prefix)
+        array_set_id_by_attr_id: dict[int, int] = {}
+        role_by_attr_id: dict[int, str] = {}
+        order_by_attr_id: dict[int, int] = {}
+        wrapper_key_by_attr_id: dict[int, str] = {}
+        for set_id, sdef in array_sets.items():
+            driver_id = sdef["driver_attr_id"]
+            array_set_id_by_attr_id[driver_id] = set_id
+            role_by_attr_id[driver_id] = "driver"
+            wrapper_key_by_attr_id[driver_id] = f"_set{sdef['variable_name']}"
+            for member_id, order in sdef["members"]:
+                array_set_id_by_attr_id[member_id] = set_id
+                role_by_attr_id[member_id] = "member"
+                order_by_attr_id[member_id] = order
+
         # Step 4 — build ConfigAttr list
         config_attrs: list[ConfigAttr] = []
         for ent in attr_ents:
@@ -1923,6 +1946,10 @@ class CpqEngine:
                 set_type=str(pg.get("set_type") or "").strip(),
                 is_array_control=is_array_control,
                 auto_lock=is_auto_lock,
+                array_set_id=(array_set_id_by_attr_id.get(source_id) if source_id else None),
+                array_set_role=(role_by_attr_id.get(source_id, "") if source_id else ""),
+                array_col_order=(order_by_attr_id.get(source_id, 999) if source_id else 999),
+                array_set_wrapper_key=(wrapper_key_by_attr_id.get(source_id, "") if source_id else ""),
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -4813,6 +4840,14 @@ class CpqEngine:
                 # branch, since no other select_type + auto_lock=1
                 # combination has been observed yet either way.
                 out[k] = {"value": out[k]}
+        # Array-set members (docs/CPQ_ARRAY_SET_PAYLOAD_PLAN.md — BigMachines'
+        # composite "array set": a driver/control attr + ordered member
+        # columns, e.g. Mounting Type's selector + its own per-row quantity)
+        # are accumulated separately here and grouped into _index-keyed rows
+        # AFTER this loop, instead of each member becoming its own flat
+        # top-level key. array_set_rows: set_id -> {member_variable_name:
+        # [selected values]}.
+        array_set_rows: dict[int, dict[str, list[str]]] = {}
         for k, vals in (filled_multi or {}).items():
             if k in hidden or not vals or self._is_noise_var(k):
                 continue
@@ -4821,6 +4856,10 @@ class CpqEngine:
                 continue
             if attr is not None and attr.set_type == "2":
                 continue  # transient layer — same exclusion as above
+            if (attr is not None and attr.array_set_id is not None
+                    and attr.array_set_role == "member"):
+                array_set_rows.setdefault(attr.array_set_id, {})[k] = list(vals)
+                continue
             if attr is not None:
                 out[k] = {"items": [
                     {"value": val, "displayValue": _display_for(attr, val)}
@@ -4828,6 +4867,53 @@ class CpqEngine:
                 ]}
             else:
                 out[k] = {"value": list(vals)}
+
+        if array_set_rows:
+            drivers_by_set_id = {
+                a.array_set_id: a for a in (attrs or [])
+                if a.array_set_id is not None and a.array_set_role == "driver"
+            }
+            for set_id, member_vals in array_set_rows.items():
+                driver = drivers_by_set_id.get(set_id)
+                if driver is None or not driver.array_set_wrapper_key:
+                    continue
+                # Dummy/placeholder members (confirmed real example:
+                # MountingQuantityDummyArrayAttribute_viSoln — hidden=1,
+                # boolean, untouched default) are excluded from the row;
+                # both real members (selector + quantity) are hidden=0.
+                member_attrs = sorted(
+                    (a for a in (attrs or [])
+                     if a.array_set_id == set_id and a.array_set_role == "member"
+                     and not a.hidden and a.variable_name in member_vals),
+                    key=lambda a: a.array_col_order,
+                )
+                if not member_attrs:
+                    continue
+                max_len = max(len(member_vals[a.variable_name]) for a in member_attrs)
+                rows: list[dict[str, Any]] = []
+                for idx in range(max_len):
+                    row: dict[str, Any] = {"_index": idx}
+                    for a in member_attrs:
+                        vlist = member_vals[a.variable_name]
+                        if idx >= len(vlist):
+                            continue
+                        val = vlist[idx]
+                        if a.options:
+                            row[a.variable_name] = {
+                                "value": val, "displayValue": _display_for(a, val),
+                            }
+                        elif re.fullmatch(r"-?\d+", val):
+                            row[a.variable_name] = int(val)
+                        else:
+                            row[a.variable_name] = val
+                    rows.append(row)
+                out[driver.array_set_wrapper_key] = {"items": rows}
+                # The driver's own value ships as a SIBLING bare int (row
+                # count), NOT nested inside the wrapper — confirmed by a
+                # real reference payload. Supersedes the narrower
+                # is_array_control heuristic above (single control + single
+                # multi-select) whenever a real array-set link exists.
+                out[driver.variable_name] = len(rows)
         # Present in the same order the XML/graph itself defines
         # (bm_config_attr.order_number, loaded into ConfigAttr.order) rather
         # than insertion order from auto_fill's hint/default/rule/fallback

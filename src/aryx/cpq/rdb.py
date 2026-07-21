@@ -368,6 +368,52 @@ class PostgresCpqRdb:
                 scripts[fn_id] = script
         return scripts
 
+    def fetch_attr_set_assoc(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> dict[int, dict[str, Any]]:
+        """BigMachines "array set" definitions (docs/CPQ_ARRAY_SET_PAYLOAD_
+        PLAN.md): set_id -> {"driver_attr_id": int, "variable_name": str,
+        "members": [(attr_id, order), ...]} (members sorted by order).
+
+        A composite array-set models a repeating multi-column row (e.g. one
+        mount option + its own quantity) as a driver/control attribute
+        (``bm_config_attr_set.size_attr_id``) plus ordered member columns
+        (``bm_config_attr_set_assoc``). Both ontology types are fetched via
+        ``fetch_entities_by_type`` — dialect-agnostic, so this single
+        implementation serves Postgres and Oracle alike through inheritance
+        (same pattern as ``fetch_function_scripts``).
+
+        Most ``bm_config_attr_set`` rows are trivial 1-attribute self-wraps
+        with `size_attr_id=-1` — NOT real array-sets (confirmed live,
+        docs/CPQ_RULE_TOOL_FLOW_PLAN.md §15c) — those are skipped here, so
+        only genuine driver rows populate the returned dict.
+        """
+        sets: dict[int, dict[str, Any]] = {}
+        for _eid, attrs in self.fetch_entities_by_type(
+            workspace_id, "bmconfigattrset", catalog_prefix,
+        ):
+            set_id = _as_int(attrs.get("id"))
+            driver_attr_id = _as_int(attrs.get("size_attr_id"))
+            var_name = str(attrs.get("variable_name") or "").strip()
+            if not set_id or not driver_attr_id or driver_attr_id <= 0 or not var_name:
+                continue
+            sets[set_id] = {
+                "driver_attr_id": driver_attr_id,
+                "variable_name": var_name,
+                "members": [],
+            }
+        for _eid, attrs in self.fetch_entities_by_type(
+            workspace_id, "bmconfigattrsetassoc", catalog_prefix,
+        ):
+            set_id = _as_int(attrs.get("set_id"))
+            attr_id = _as_int(attrs.get("attr_id") or attrs.get("bm_config_attr_id"))
+            order = _as_int(attrs.get("display_order_number")) or 999
+            if set_id in sets and attr_id:
+                sets[set_id]["members"].append((attr_id, order))
+        for sdef in sets.values():
+            sdef["members"].sort(key=lambda t: t[1])
+        return sets
+
     def fetch_layout_attr_assoc(
         self, workspace_id: int, catalog_prefix: str = "",
     ) -> list[tuple[int, int, int]]:
