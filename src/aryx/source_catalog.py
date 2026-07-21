@@ -462,7 +462,15 @@ def build_source_catalog(
     datasources: list[dict[str, Any]],
     provenance: list[tuple[int, str, str, str]] | tuple[tuple[int, str, str, str], ...],
 ) -> list[dict[str, Any]]:
-    counts = _source_counts(provenance)
+    """Build the catalog from legacy row-level provenance input."""
+    return build_source_catalog_from_counts(datasources, _source_counts(provenance))
+
+
+def build_source_catalog_from_counts(
+    datasources: list[dict[str, Any]],
+    counts: Counter[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Build the catalog from bounded database-side source counts."""
     rows: list[dict[str, Any]] = []
     hidden_datasets: set[str] = set()
     covered_keys: set[tuple[str, str]] = set()
@@ -498,7 +506,7 @@ def build_source_catalog(
                 "record_count": 0,
                 "isXmlParent": False,
                 "generatedAssetCount": 0,
-                "actions": source_actions(False, False, False),
+                "actions": source_actions(True, False, False),
             })
             continue
 
@@ -606,9 +614,9 @@ def _build_meta_source_detail(
     assets = []
     for asset in _active_assets(meta):
         dataset = asset.get("dataset", "")
-        preview_rows = _preview_rows(asset.get("content_b64"))
+        preview_rows = _preview_payload_rows(dataset_payloads.get(dataset))
         if not preview_rows:
-            preview_rows = _preview_payload_rows(dataset_payloads.get(dataset))
+            preview_rows = _preview_rows(asset.get("content_b64"))
         can_download = (
             bool(asset.get("content_b64"))
             or bool(dataset_payloads.get(dataset))
@@ -649,7 +657,22 @@ def build_source_detail(
     provenance: list[tuple[int, str, str, str]] | tuple[tuple[int, str, str, str], ...],
     dataset_payloads: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any] | None:
-    counts = _source_counts(provenance)
+    """Build grouped detail from legacy row-level provenance input."""
+    return build_source_detail_from_counts(
+        source_key,
+        datasources,
+        _source_counts(provenance),
+        dataset_payloads=dataset_payloads,
+    )
+
+
+def build_source_detail_from_counts(
+    source_key: str,
+    datasources: list[dict[str, Any]],
+    counts: Counter[tuple[str, str]],
+    dataset_payloads: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any] | None:
+    """Build grouped XML/XLSX detail from bounded source counts."""
     dataset_payloads = dataset_payloads or {}
     if source_key.startswith("xml:"):
         return _build_meta_source_detail(

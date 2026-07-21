@@ -77,6 +77,7 @@ class _FakeEntityStore:
                 }
                 for index in range(1, 31)
             ],
+            "orders": [{"order_id": "1", "status": "Ready"}],
         }
         items = list(rows.get(source_dataset, []))
         if limit is None:

@@ -16,6 +16,7 @@ export function XmlSourceDetailView({
   onPreviewAsset,
   onDownloadAsset,
   onDeleteAsset,
+  showHeader = true,
 }: {
   detail: XmlSourceDetail;
   busyTarget: string | null;
@@ -25,6 +26,7 @@ export function XmlSourceDetailView({
   onPreviewAsset: (asset: XmlGeneratedAsset) => Promise<Record<string, string>[]>;
   onDownloadAsset: (asset: XmlGeneratedAsset) => void;
   onDeleteAsset: (asset: XmlGeneratedAsset) => void;
+  showHeader?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [selectedAssetKey, setSelectedAssetKey] = useState<string | null>(null);
@@ -64,7 +66,7 @@ export function XmlSourceDetailView({
 
   return (
     <div className="space-y-6">
-      <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
+      {showHeader ? <section className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
         <div className="space-y-5">
           <div>
             <button
@@ -115,7 +117,7 @@ export function XmlSourceDetailView({
             </div>
           </div>
         </div>
-      </section>
+      </section> : null}
 
       <section className="rounded-[1.5rem] border border-navy-100 bg-[#EEF4FF] p-5 shadow-soft">
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-subtle">

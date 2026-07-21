@@ -1,31 +1,75 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Database, ListTree, Loader2, Network, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Database, ListTree, Loader2, Network } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
-import type { DataSourceCatalogItem, DataSummary, XmlGeneratedAsset, XmlSourceDetail } from "@/lib/types";
+import type { DataSourceCatalogItem, DataSourceCatalogPage, DataSourceDetail, DataSummary, XmlGeneratedAsset } from "@/lib/types";
 import { GraphLens } from "./GraphLens";
-import { SourcesLens } from "./SourcesLens";
+import { SourcesLens, type SourceFilter } from "./SourcesLens";
+import { SourceDetailView } from "./SourceDetail";
 import { TreeLens } from "./TreeLens";
-import { XmlSourceDetailView } from "./XmlSourceDetail";
 
 type Lens = "sources" | "tree" | "graph";
 type DeleteRequest =
   | { kind: "source"; sourceKey: string; sourceName: string }
   | { kind: "asset"; sourceKey: string; sourceName: string; assetKey: string; assetName: string };
 
+async function loadSourcesPage(
+  workspaceId: number,
+  options: { page: number; pageSize: number; query: string; category: SourceFilter },
+): Promise<DataSourceCatalogPage> {
+  const result = await api.listDataSourcesPage(workspaceId, options);
+  const isUnfilteredSingleSource = options.query.trim() === ""
+    && options.category === "all"
+    && result.total === 1
+    && result.items.length === 1;
+  if (!isUnfilteredSingleSource || result.items[0].edge_count != null) return result;
+
+  try {
+    const overview = await api.getEntityGraphOverview(workspaceId);
+    return {
+      ...result,
+      items: [{ ...result.items[0], edge_count: overview.relationship_count }],
+    };
+  } catch {
+    return result;
+  }
+}
+
+function mergeDetailMetrics(
+  detail: DataSourceDetail,
+  fallback: { total_entities?: number; node_count?: number; edge_count?: number },
+): DataSourceDetail {
+  return {
+    ...detail,
+    entity_summary: {
+      ...detail.entity_summary,
+      node_count: detail.entity_summary.node_count
+        ?? fallback.node_count
+        ?? fallback.total_entities
+        ?? detail.entity_summary.total_entities,
+      edge_count: detail.entity_summary.edge_count ?? fallback.edge_count,
+    },
+  };
+}
+
 /** The Data tab: source registry first, then resolved-entity exploration. */
 export function DataExplorer() {
   const { workspaceId } = useWorkspace();
+  const currentWorkspaceId = useRef(workspaceId);
+  currentWorkspaceId.current = workspaceId;
   const [summary, setSummary] = useState<DataSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [sources, setSources] = useState<DataSourceCatalogItem[]>([]);
+  const [sourceTotal, setSourceTotal] = useState(0);
+  const [sourcePage, setSourcePage] = useState(1);
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [sourceErr, setSourceErr] = useState<string | null>(null);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [activeSourceKey, setActiveSourceKey] = useState<string | null>(null);
-  const [activeSourceDetail, setActiveSourceDetail] = useState<XmlSourceDetail | null>(null);
-  const [sourcePreview, setSourcePreview] = useState<{ name: string; rows: Record<string, unknown>[] } | null>(null);
+  const [activeSourceDetail, setActiveSourceDetail] = useState<DataSourceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
@@ -36,27 +80,52 @@ export function DataExplorer() {
     setSummary(null);
     setErr(null);
     setSources([]);
+    setSourceTotal(0);
+    setSourcePage(1);
+    setSourceQuery("");
+    setSourceFilter("all");
     setSourceErr(null);
     setSourcesLoading(true);
     setActiveSourceKey(null);
     setActiveSourceDetail(null);
-    setSourcePreview(null);
     setDetailLoading(false);
     setBusyKey(null);
     api.dataSummary(workspaceId)
       .then((d) => { if (live) ("error" in d && d.error) ? setErr(d.error) : setSummary(d); })
       .catch((e) => { if (live) setErr(e instanceof Error ? e.message : "failed"); });
-    api.listDataSources(workspaceId)
-      .then((items) => { if (live) setSources(items); })
-      .catch((e) => { if (live) setSourceErr(e instanceof Error ? e.message : "failed"); })
-      .finally(() => { if (live) setSourcesLoading(false); });
     return () => { live = false; };
   }, [workspaceId]);
+
+  useEffect(() => {
+    let live = true;
+    const timer = window.setTimeout(() => {
+      setSourcesLoading(true);
+      setSourceErr(null);
+      loadSourcesPage(workspaceId, {
+        page: sourcePage, pageSize: 50, query: sourceQuery, category: sourceFilter,
+      }).then((result) => {
+        if (!live) return;
+        setSources(result.items);
+        setSourceTotal(result.total);
+      }).catch((e) => {
+        if (live) setSourceErr(e instanceof Error ? e.message : "failed");
+      }).finally(() => { if (live) setSourcesLoading(false); });
+    }, 250);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [sourceFilter, sourcePage, sourceQuery, workspaceId]);
 
   const refreshSources = async () => {
     setSourcesLoading(true);
     try {
-      setSources(await api.listDataSources(workspaceId));
+      const result = await loadSourcesPage(workspaceId, {
+        page: sourcePage, pageSize: 50, query: sourceQuery, category: sourceFilter,
+      });
+      if (result.items.length === 0 && sourcePage > 1) {
+        setSourcePage(sourcePage - 1);
+      } else {
+        setSources(result.items);
+        setSourceTotal(result.total);
+      }
     } catch (e) {
       setSourceErr(e instanceof Error ? e.message : "failed");
     } finally {
@@ -66,35 +135,21 @@ export function DataExplorer() {
 
   const openSource = async (source: DataSourceCatalogItem) => {
     if (!source.actions.view) return;
-    if (!source.isXmlParent) {
-      setActiveSourceKey(null);
-      setActiveSourceDetail(null);
-      setSourcePreview(null);
-      setDetailLoading(true);
-      setSourceErr(null);
-      try {
-        const preview = await api.getDataSourcePreview(workspaceId, source.source_key);
-        setSourcePreview({ name: preview.name, rows: preview.rows });
-      } catch (e) {
-        setSourceErr(e instanceof Error ? e.message : "failed");
-      } finally {
-        setDetailLoading(false);
-      }
-      return;
-    }
-    setSourcePreview(null);
+    const requestedWorkspaceId = workspaceId;
     setActiveSourceKey(source.source_key);
     setDetailLoading(true);
     setSourceErr(null);
     try {
       const detail = await api.getDataSourceDetail(workspaceId, source.source_key);
-      setActiveSourceDetail(detail);
+      if (currentWorkspaceId.current !== requestedWorkspaceId) return;
+      setActiveSourceDetail(mergeDetailMetrics(detail, source));
     } catch (e) {
+      if (currentWorkspaceId.current !== requestedWorkspaceId) return;
       setActiveSourceKey(null);
       setActiveSourceDetail(null);
       setSourceErr(e instanceof Error ? e.message : "failed");
     } finally {
-      setDetailLoading(false);
+      if (currentWorkspaceId.current === requestedWorkspaceId) setDetailLoading(false);
     }
   };
 
@@ -128,7 +183,6 @@ export function DataExplorer() {
       await api.deleteDataSource(workspaceId, sourceKey);
       setActiveSourceKey(null);
       setActiveSourceDetail(null);
-      setSourcePreview(null);
       await refreshSources();
     } catch (e) {
       setSourceErr(e instanceof Error ? e.message : "delete failed");
@@ -186,12 +240,12 @@ export function DataExplorer() {
     setBusyKey(targetKey);
     try {
       await api.deleteGeneratedAsset(workspaceId, sourceKey, assetKey);
-      const [nextDetail, nextSources] = await Promise.all([
-        api.getDataSourceDetail(workspaceId, sourceKey),
-        api.listDataSources(workspaceId),
-      ]);
-      setActiveSourceDetail(nextDetail);
-      setSources(nextSources);
+      const nextDetail = await api.getDataSourceDetail(workspaceId, sourceKey);
+      setActiveSourceDetail(mergeDetailMetrics(
+        nextDetail,
+        activeSourceDetail?.entity_summary ?? {},
+      ));
+      await refreshSources();
     } catch (e) {
       setSourceErr(e instanceof Error ? e.message : "asset delete failed");
     } finally {
@@ -224,7 +278,7 @@ export function DataExplorer() {
         </div>
       )}
 
-      {summary && (
+      {(summary || lens === "sources") && (
         <div className="mt-4 space-y-5">
           <div className="flex items-center gap-1 border-b border-navy-100">
             <Tab icon={<Database size={15} />} label="Sources"
@@ -237,7 +291,8 @@ export function DataExplorer() {
 
           {lens === "sources" ? (
             activeSourceKey && activeSourceDetail ? (
-              <XmlSourceDetailView
+              <SourceDetailView
+                workspaceId={workspaceId}
                 detail={activeSourceDetail}
                 busyTarget={busyKey}
                 onBack={() => {
@@ -256,32 +311,33 @@ export function DataExplorer() {
                 onDeleteAsset={(asset) => { void deleteAsset(asset); }}
                 onPreviewAsset={(asset) => previewAsset(asset)}
               />
-            ) : sourcePreview ? (
-              <GenericSourcePreviewModal
-                name={sourcePreview.name}
-                rows={sourcePreview.rows}
-                onClose={() => setSourcePreview(null)}
-              />
             ) : detailLoading ? (
               <div className="flex items-center gap-2 rounded-2xl border border-navy-100 bg-white px-5 py-10 text-sm text-subtle shadow-soft">
                 <Loader2 size={16} className="animate-spin" />
-                Loading XML source detail...
+                Loading source details...
               </div>
             ) : (
               <SourcesLens
-                summary={summary}
                 sources={sources}
+                total={sourceTotal}
+                page={sourcePage}
+                pageSize={50}
+                query={sourceQuery}
+                filter={sourceFilter}
                 loading={sourcesLoading}
                 error={sourceErr}
                 busyKey={busyKey}
+                onQueryChange={(value) => { setSourceQuery(value); setSourcePage(1); }}
+                onFilterChange={(value) => { setSourceFilter(value); setSourcePage(1); }}
+                onPageChange={setSourcePage}
                 onViewSource={(source) => { void openSource(source); }}
                 onDownloadSource={(source) => { void downloadSource(source); }}
                 onDeleteSource={(source) => { void deleteSource(source); }}
               />
             )
           ) : null}
-          {lens === "tree" ? <TreeLens types={summary.types} /> : null}
-          {lens === "graph" ? <GraphLens types={summary.types} /> : null}
+          {lens === "tree" && summary ? <TreeLens types={summary.types} /> : null}
+          {lens === "graph" && summary ? <GraphLens types={summary.types} /> : null}
         </div>
       )}
 
@@ -436,83 +492,6 @@ function DeleteConfirmModal({
           >
             Delete
           </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function GenericSourcePreviewModal({
-  name,
-  rows,
-  onClose,
-}: {
-  name: string;
-  rows: Record<string, unknown>[];
-  onClose: () => void;
-}) {
-  const headers = rows[0] ? Object.keys(rows[0]) : [];
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/45 px-4 py-8"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="generic-source-preview-title"
-      onClick={onClose}
-    >
-      <div
-        className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-[1.5rem] border border-navy-100 bg-white shadow-soft"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="relative border-b border-navy-100 px-5 py-4">
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close source preview"
-            className="focus-ring absolute right-5 top-5 rounded-full border border-navy-100 bg-white p-2 text-navy-500 transition-colors hover:border-navy-200 hover:bg-navy-50 hover:text-navy-800"
-          >
-            <X size={16} />
-          </button>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-subtle">
-            Source Preview
-          </p>
-          <h4 id="generic-source-preview-title" className="mt-1 text-xl font-semibold text-navy-900">
-            {name}
-          </h4>
-        </div>
-
-        <div className="max-h-[calc(85vh-84px)] overflow-auto p-5">
-          {rows.length > 0 ? (
-            <div className="overflow-x-auto rounded-2xl border border-navy-100 bg-white">
-              <table className="min-w-full text-left text-sm">
-                <thead className="bg-navy-50 text-xs uppercase tracking-[0.14em] text-subtle">
-                  <tr>
-                    {headers.map((header) => (
-                      <th key={header} className="px-4 py-3 font-semibold">
-                        {header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => (
-                    <tr key={index} className="border-t border-navy-100">
-                      {headers.map((header) => (
-                        <td key={header} className="px-4 py-3 text-navy-800">
-                          {String(row[header] ?? "—")}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="rounded-2xl border border-dashed border-navy-200 bg-canvas px-4 py-10 text-center text-sm text-subtle">
-              Preview is unavailable for this source.
-            </div>
-          )}
         </div>
       </div>
     </div>
