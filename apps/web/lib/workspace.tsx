@@ -1,7 +1,8 @@
 "use client";
 
 import {
-  createContext, useContext, useEffect, useState, type ReactNode,
+  createContext, useCallback, useContext, useEffect, useMemo, useState,
+  type ReactNode,
 } from "react";
 import { api } from "./api";
 import { useShayAuth } from "./shay-auth";
@@ -28,7 +29,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState(0);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     if (!session?.access_token) {
       setWorkspaces([]);
       return;
@@ -39,7 +40,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     } catch {
       setWorkspaces([]);
     }
-  };
+  }, [session?.access_token]);
 
   useEffect(() => {
     if (!ready || !session?.access_token) {
@@ -76,15 +77,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, [ready, session?.access_token]);
 
-  const setWorkspaceId = (id: number) => {
+  const setWorkspaceId = useCallback((id: number) => {
     setWorkspaceIdState(id);
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, String(id));
     }
-  };
+  }, []);
+
+  const value = useMemo<WorkspaceContext>(() => ({
+    ready,
+    workspaceId,
+    workspaces,
+    setWorkspaceId,
+    refresh,
+  }), [ready, refresh, setWorkspaceId, workspaceId, workspaces]);
 
   return (
-    <Ctx.Provider value={{ ready, workspaceId, workspaces, setWorkspaceId, refresh }}>
+    <Ctx.Provider value={value}>
       {children}
     </Ctx.Provider>
   );
