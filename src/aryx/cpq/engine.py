@@ -1888,6 +1888,8 @@ class CpqEngine:
 
             hide_in_trans_raw = str(pg.get("hide_in_trans") or "0").strip().lower()
             is_hide_in_trans = hide_in_trans_raw in ("1", "true", "yes")
+            auto_lock_raw = str(pg.get("auto_lock") or "0").strip().lower()
+            is_auto_lock = auto_lock_raw in ("1", "true", "yes")
 
             # Exclude layout/UI-noise nodes by checking attribute content
             if self._is_layout_noise(ent.get("type") or ""):
@@ -1920,6 +1922,7 @@ class CpqEngine:
                 hide_in_trans=is_hide_in_trans,
                 set_type=str(pg.get("set_type") or "").strip(),
                 is_array_control=is_array_control,
+                auto_lock=is_auto_lock,
             ))
 
         config_attrs.sort(key=lambda a: a.order)
@@ -4734,14 +4737,22 @@ class CpqEngine:
                 if array_control_count is not None:
                     out[k] = array_control_count
                 continue
-            if attr is not None and attr.set_type == "2":
+            if attr is not None and attr.set_type == "2" and not attr.auto_lock:
                 # Transient UI/action-layer attr (see ConfigAttr.set_type) —
                 # confirmed live: the real CPQ API rejects every one of
-                # these with "has an invalid payload" (SVX model-selection
-                # panel: modelSelectionSelectModel/archeType/serviceType/
-                # dMSDuration_viSoln), same treatment as hide_in_trans.
-                # They still drive rules and conversation — only the POST
-                # excludes them.
+                # these with "has an invalid payload" (APX catalog's own
+                # population: _price_book_var_name/mergePackage/update/
+                # clearPackageJson/testPager2...), same treatment as
+                # hide_in_trans. They still drive rules and conversation —
+                # only the POST excludes them.
+                #
+                # auto_lock=1 is the exception (docs/CPQ_SESSION_2_OPEN_
+                # ISSUES.md, auto_lock double-wrap finding): a set_type=="2"
+                # attr with auto_lock=1 (e.g. archeType_viSoln,
+                # modelSelectionSelectModel_viSoln, serviceType_viSoln — the
+                # SAME attrs an earlier pass wrongly assumed were always
+                # transient) is a real, includable value — falls through to
+                # normal serialization below, then gets double-wrapped.
                 continue
             if (attr is not None and not attr.options
                     and v == attr.default_value
@@ -4791,6 +4802,17 @@ class CpqEngine:
                 out[k] = {"value": v, "displayValue": _display_for(attr, v)}
             else:
                 out[k] = v
+            if attr.set_type == "2" and attr.auto_lock and k in out:
+                # Confirmed live (archeType_viSoln, modelSelectionSelectModel_
+                # viSoln — both set_type=="2"/auto_lock=1, data_type=1/
+                # menu_type=1, i.e. ordinary single-select) — the real API
+                # wraps this class of attr ONE level deeper than every other
+                # menu attr: {"value": {"value":..,"displayValue":..}}. Wraps
+                # whatever shape was just built above, generic over
+                # select_type — not special-cased to the single-select
+                # branch, since no other select_type + auto_lock=1
+                # combination has been observed yet either way.
+                out[k] = {"value": out[k]}
         for k, vals in (filled_multi or {}).items():
             if k in hidden or not vals or self._is_noise_var(k):
                 continue

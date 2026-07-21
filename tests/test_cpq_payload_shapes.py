@@ -54,6 +54,37 @@ def test_set_type_2_multi_attr_is_excluded_too():
     assert "multiSel" not in out
 
 
+def test_set_type_2_attr_with_auto_lock_is_included_double_wrapped():
+    # docs/CPQ_SESSION_2_OPEN_ISSUES.md, auto_lock double-wrap finding:
+    # a genuine reference payload showed archeType_viSoln/modelSelectionSelect
+    # Model_viSoln (set_type=="2", auto_lock=1) present, NOT excluded — one
+    # extra nesting level beyond the normal single-select shape. auto_lock=1
+    # overrides the set_type=="2" transient-layer exclusion.
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="archeType_viSoln", display_label="Solution Type",
+                   required=False, default_value="", options=_menu("CAPEX PURCHASE"),
+                   set_type="2", auto_lock=True),
+    ]
+    out = _payload(attrs, {"archeType_viSoln": "CAPEX PURCHASE"})
+
+    assert out["archeType_viSoln"] == {
+        "value": {"value": "CAPEX PURCHASE", "displayValue": "Display CAPEX PURCHASE"},
+    }
+
+
+def test_set_type_2_attr_without_auto_lock_still_excluded():
+    # Regression guard: the ORIGINAL workspace-14 evidence (genuinely
+    # transient UI/action-layer attrs, auto_lock=0 by default) must be
+    # completely unaffected by the auto_lock override.
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="_price_book_var_name", display_label="Price Book",
+                   required=False, default_value="", options=[], set_type="2"),
+    ]
+    out = _payload(attrs, {"_price_book_var_name": "PB1"})
+
+    assert "_price_book_var_name" not in out
+
+
 def test_array_control_attr_derives_row_count_when_link_is_unambiguous():
     # docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3, corrected: a genuine
     # reference payload confirmed mountingArrayControl_viSoln IS expected

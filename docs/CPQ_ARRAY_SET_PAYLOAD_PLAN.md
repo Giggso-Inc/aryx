@@ -166,17 +166,62 @@ directly from the user's own confirmed real payload
   conversation-flow code is touched; low regression risk to anything
   outside `build_payload`'s final serialization step.
 
-## Open Questions (resolve before implementation, not during)
+## Open Questions — status
 
-1. Confirm SVX's own `bm_config_attr_set`/`_assoc` rows directly (same
-   method §15c used for APX) rather than inferring from the pasted payload
-   alone.
-2. Confirm real member/value alignment source — does `filled_multi` already
-   preserve per-row order, or does grouping need a new alignment step?
-3. Confirm the exact top-level key-naming rule (`_set{X}set_{suffix}` vs.
-   other observed variants) against more than the one sample payload,
-   ideally by finding a genuine BigMachines API contract doc/spec rather
-   than reverse-engineering from output alone.
+1. **RESOLVED, confirmed directly against Postgres (workspace 19).** SVX
+   genuinely has its own ingested array-set data — `Svx Video Remote
+   Speaker MicrophoneBmConfigAttrSet` (27 rows) and `...BmConfigAttrSetAssoc`
+   (23 rows), stored as `ontology_type`-tagged rows in `aryx_entity_ws19`
+   (JSONB `attributes`, not separate relational tables — see "Actual
+   storage shape" below). The Mounting Type set specifically:
+   - Driver row (`BmConfigAttrSet`, entity id 115689): `"id": "19435423713"`,
+     `"variable_name": "mountingTypeArrayset_viSoln"`,
+     `"size_attr_id": "19435423551"` (→ `mountingArrayControl_viSoln`'s
+     real BM attribute id), `"default_attr_id": "-1"` (driver rows never
+     have one — only members do).
+   - `BmConfigAttrSetAssoc` rows with `"set_id": "19435423713"`:
+     `attr_id 19435423613` order 1 (→ `mountingTypeArray_viSoln`),
+     `attr_id 19435423615` order 2 (→ `mountingTypeArrayqty_viSoln`),
+     `attr_id 19435423627` order 3 (→ `MountingQuantityDummyArrayAttribute_
+     viSoln` — an internal "dummy" 3rd column, absent from every real
+     payload sample seen so far; almost certainly excluded from the wire
+     format, same class of internal bookkeeping as the array-control's own
+     raw value).
+   This is the exact `driver + ordered members` shape the design section
+   already assumed — SVX is not "coincidentally similar," it's the same
+   real mechanism as APX's confirmed sets.
+2. **Still open.** Member/value alignment (does `filled_multi` already
+   preserve per-row order for `mountingTypeArray_viSoln` vs. however
+   `mountingTypeArrayqty_viSoln`'s values get collected today via
+   `resolve_pending_grid_quantities`) — not resolved by this pass; needs
+   tracing that function's actual list-building against a live session.
+3. **RESOLVED, confirmed exactly.** The top-level payload key is literally
+   `"_set" + {driver row's own variable_name}` — `"_set" +
+   "mountingTypeArrayset_viSoln"` = `"_setmountingTypeArrayset_viSoln"`,
+   an EXACT match to the real payload. This is simpler than the originally
+   guessed `_set{Name}set_{suffix}` pattern: no suffix concatenation logic
+   needed at all, just prepend `"_set"` to the set's own `variable_name`
+   field (which, in this catalog, already happens to end in `...set_
+   viSoln` as part of its own native name — that's baked into the source
+   data, not something the code needs to construct).
+
+## Actual storage shape (corrects an implicit assumption in "Files to Change")
+
+`bm_config_attr_set`/`bm_config_attr_set_assoc` are NOT separate Postgres
+tables — confirmed via `\dt` against the live `aryx` database, no such
+tables exist. Like every other BM entity, they're rows in the generic,
+workspace-partitioned `aryx_entity_ws{N}` table, distinguished by
+`ontology_type` (`"{CatalogPrefix}BmConfigAttrSet"` /
+`"...BmConfigAttrSetAssoc"`) with the real fields inside a JSONB
+`attributes` column. This means `fetch_attr_set_assoc()` (§1 above) is a
+`SELECT ... WHERE ontology_type = $1` against `aryx_entity_ws{workspace_id}`
+— the SAME query shape `rdb.py`'s other `fetch_*` methods already use for
+every other rule-join type (e.g. `fetch_marked_attrs`) — not a new SQL
+table/schema to design. It also needs to read from BOTH ontology types, not
+just the Assoc one: `BmConfigAttrSetAssoc` gives the set→member ordering,
+but the driver's own `variable_name` (for the top-level key, per Open
+Question 3's resolution) and `size_attr_id` (for the driver/control attr
+link) only live on the `BmConfigAttrSet` driver row itself.
 
 ## Update — second reference payload confirms the full row shape
 

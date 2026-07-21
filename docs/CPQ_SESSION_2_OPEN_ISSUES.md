@@ -221,15 +221,66 @@ both the selector AND its per-row quantity nested together) from the same
 reference payload.
 
 **New, separate, NOT YET IMPLEMENTED finding from the same reference
-payload:** `archeType_viSoln` and `modelSelectionSelectModel_viSoln` (both
-reportedly `set_type=="Set"` with an "auto-lock" flag on) appear
+payload — now partially confirmed against Postgres (workspace 19):**
+`archeType_viSoln` and `modelSelectionSelectModel_viSoln` appear
 double-wrapped — `{"value": {"value":.., "displayValue":..}}` — one extra
 nesting level beyond the normal single-select `{"value":..,
 "displayValue":..}` shape every other menu attr in this same payload uses.
-No code today tracks a `set_type=="Set"`/"auto-lock" concept (`ConfigAttr`
-has no such field), and this hasn't been cross-checked against the raw XML
-metadata the way every other finding in this doc has been — flagged for
-verification, not yet acted on.
+Queried the raw `bm_config_attr` rows for both directly: both carry
+`set_type: "2"` and `auto_lock: "1"` — and a third attr in the same
+catalog, `serviceType_viSoln`, shares the EXACT same `set_type=2,
+auto_lock=1` signature (vs. e.g. `mountingArrayControl_viSoln`'s
+`set_type=1, auto_lock=0`), suggesting this is a real, consistent field
+combination, not coincidence. **Still not fully confirmed**: no code today
+reads `auto_lock` at all (`ConfigAttr` has no such field, only the
+existing numeric `set_type` — note this is `bm_config_attr.set_type`, a
+DIFFERENT field from the driver-row `bm_config_attr_set` concept in
+`CPQ_ARRAY_SET_PAYLOAD_PLAN.md`, unfortunate naming overlap in the source
+data itself), and `serviceType_viSoln`'s own payload shape hasn't actually
+been observed double-wrapped in any sample yet — only its metadata
+matches. Needs one more real payload sample containing `serviceType_
+viSoln` to confirm the mechanism before scoping a fix.
+
+**Contradiction surfaced while scoping:** `build_payload()` (`engine.py:
+4737`) ALREADY excludes any `set_type=="2"` attr from the payload entirely
+— and its own comment literally names `modelSelectionSelectModel/
+archeType/serviceType/dMSDuration_viSoln` as the confirmed real examples
+(from an earlier, separately-verified "workspace 14" finding,
+`docs/CPQ_PRODUCT_SWITCH_ISSUE.md` Issue 5 — same attrs this finding is
+about). But the new reference payload shows `archeType_viSoln`/
+`modelSelectionSelectModel_viSoln` PRESENT (double-wrapped), not excluded.
+Resolved (by direction, not yet by code): `auto_lock` is the
+discriminator. The `set_type==2` exclusion is correct ONLY for `auto_lock
+==0` attrs (genuinely transient UI/action-layer attrs, e.g. `_price_book_
+var_name`/`mergePackage`/`update` — the original workspace-14 evidence,
+none of which carry `auto_lock==1`); a `set_type==2` attr with `auto_lock
+==1` is a real, includable value that needs the double-wrap shape
+instead of being dropped.
+
+**Fix implemented:**
+- `ConfigAttr` (`state.py`): added `auto_lock: bool = False`.
+- `engine.py`'s `ConfigAttr` construction (~1908-1923): parse `pg.get(
+  "auto_lock")` the same boolean-flag way `is_hidden`/`is_array_control`
+  already are.
+- `engine.py:4737`'s exclusion check becomes `attr.set_type == "2" and not
+  attr.auto_lock` — an `auto_lock==1` attr now falls through to normal
+  per-type serialization instead of being dropped.
+- After that attr's normal shape is computed (whatever `select_type`
+  resolves to — confirmed `"single"`/menu-backed for all 3 known examples,
+  `data_type=1`+`menu_type=1` on all of them), wrap it once more:
+  `if attr.set_type == "2" and attr.auto_lock and k in out: out[k] =
+  {"value": out[k]}` — generic over whatever shape was already built,
+  not special-cased to the single-select branch specifically.
+- The `filled_multi` loop's own separate `set_type=="2"` check
+  (`engine.py:4800`) is UNCHANGED — no confirmed example of a multi-select
+  `auto_lock==1` attr exists yet; scope stays narrow to what's evidenced.
+- Tests: `test_set_type_2_attr_with_auto_lock_is_included_double_wrapped`
+  (archeType_viSoln-shaped fixture: `set_type="2"`, `auto_lock=True`, real
+  options → asserts `{"value": {"value":.., "displayValue":..}}`) and
+  `test_set_type_2_attr_without_auto_lock_still_excluded` (regression guard
+  — the ORIGINAL workspace-14 transient-attr exclusion, `auto_lock=False`
+  by default, confirmed completely unaffected) — both in
+  `tests/test_cpq_payload_shapes.py`.
 
 ---
 

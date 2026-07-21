@@ -178,6 +178,14 @@ class ConfigAttr:
     # sized/populated by a rec/constraint rule conditioned on this control
     # (see docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5 Change B).
     is_array_control: bool = False
+    # True for BM attrs flagged auto_lock=1 — confirmed live (docs/
+    # CPQ_SESSION_2_OPEN_ISSUES.md, auto_lock double-wrap finding) this
+    # overrides the set_type=="2" exclusion in build_payload: a set_type=="2"
+    # attr with auto_lock=1 (e.g. archeType_viSoln, modelSelectionSelectModel_
+    # viSoln) is a real, includable value that ships double-wrapped
+    # ({"value": {"value":..,"displayValue":..}}), not dropped like the
+    # genuinely transient set_type=="2"/auto_lock=0 attrs.
+    auto_lock: bool = False
 
 
 @dataclass
