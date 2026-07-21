@@ -67,6 +67,33 @@ def _presentable(val: str | None) -> bool:
     return bool(val) and str(val).strip().lower() not in _DISPLAY_EMPTY
 
 
+def _label_mention_span(
+    label_lower: str, q_lower: str, max_dropped_leading: int = 2,
+) -> "tuple[int, int] | None":
+    """(start, end) of the label's first match in q_lower, or None.
+
+    Same matching strategy as `_label_mentioned` (full phrase first, then
+    up to `max_dropped_leading` leading words dropped) — factored out so
+    callers that need WHERE the label was mentioned (not just whether)
+    can scope a search to nearby text instead of the whole message. See
+    `_label_mentioned`'s docstring for why the dropped-leading-words retry
+    exists.
+    """
+    if label_lower in q_lower:
+        idx = q_lower.index(label_lower)
+        return idx, idx + len(label_lower)
+    words = label_lower.split()
+    min_words = max(2, len(words) - max_dropped_leading)
+    if len(words) <= min_words:
+        return None
+    for start in range(1, len(words) - min_words + 1):
+        suffix = " ".join(words[start:])
+        if suffix in q_lower:
+            idx = q_lower.index(suffix)
+            return idx, idx + len(suffix)
+    return None
+
+
 def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 2) -> bool:
     """True when the user's message plausibly names this attr's label.
 
@@ -84,16 +111,7 @@ def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 
     the label's own words to remain — bounded so a short label (e.g. two
     words) can't be matched by an almost-empty remainder.
     """
-    if label_lower in q_lower:
-        return True
-    words = label_lower.split()
-    min_words = max(2, len(words) - max_dropped_leading)
-    if len(words) <= min_words:
-        return False
-    for start in range(1, len(words) - min_words + 1):
-        if " ".join(words[start:]) in q_lower:
-            return True
-    return False
+    return _label_mention_span(label_lower, q_lower, max_dropped_leading) is not None
 
 
 def _condition_value_matches(current_val: str, condition_value: str) -> bool:
@@ -390,25 +408,6 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
-# Narrow, specific fragments identifying "this attr names the product/model
-# itself" — never "model" alone, which is too broad (both catalogs prefix
-# MANY unrelated attrs with "modelSelection*": frequency bands, keypad type,
-# display type share APX's naming convention with its actual model/product
-# attr, so a loose "model" substring sweeps those in too). Shared by two
-# consumers: render_filled_summary's "Product Name" grouping, and
-# auto_fill's is_decision_attr guard below — an attr that names the
-# product is exactly the risky category where "blind first-by-order"
-# guessing can silently swap in an unrelated product (confirmed live:
-# modelSelectionSelectModel_viSoln's own option list mixes SVX's 3 real
-# variants with an unrelated "V200 Body Worn Camera" accessory at order=1
-# — a product-switch turn with no hint text to disambiguate picked the
-# camera). Structural fragment-matching, never a literal per-catalog
-# field/attr name, so it applies to any ingested XML the same way.
-_PRODUCT_IDENTIFIER_KEYS: tuple[str, ...] = (
-    "selectmodel", "basemodel", "modelname", "productname",
-    "productselection", "producttype",
-)
-
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
 # _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
@@ -420,7 +419,14 @@ _PRODUCT_IDENTIFIER_KEYS: tuple[str, ...] = (
 # fragment "service" checked before "duration") lands in Service Plan, not
 # Quantity & Duration, matching how a sales rep would actually group it.
 _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Product Name", _PRODUCT_IDENTIFIER_KEYS),
+    # Narrow, specific fragments only — "model" alone is too broad: both
+    # catalogs prefix MANY unrelated attrs with "modelSelection*" (frequency
+    # bands, keypad type, display type share APX's naming convention with
+    # its actual model/product attr), so a loose "model" substring sweeps
+    # those in too. These fragments target the attr that names the product
+    # itself, not siblings that merely share its naming prefix.
+    ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
+                       "productselection", "producttype")),
     ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
     ("Quantity & Duration", ("quantity", "duration", "qty")),
 )
@@ -3607,29 +3613,31 @@ class CpqEngine:
                     vn == "productSelectionProduct_all"
                     and vn not in (skip_always_ask or ())
                 )
-                # Any attr that NAMES the product/model itself (see
-                # _PRODUCT_IDENTIFIER_KEYS) is the same risk class as
-                # productSelectionProduct_all, just without a shared native
-                # id across catalogs to key off of — its own option list can
-                # mix the resolved product's real variants with an unrelated
-                # product line (confirmed live: SVX's modelSelectionSelect
-                # Model_viSoln listed a "V200 Body Worn Camera" accessory at
-                # order=1 alongside the 3 real SVX variants). Harmless when
-                # a hint/rule already resolved `value` above (this only
-                # gates the untouched blind first-by-order fallback below)
-                # or when exactly one valid option remains (that branch is
-                # unconditional, resolves correctly regardless of this flag).
+                # "selectmodel"-named attrs can list real variants of ONE
+                # product mixed with an unrelated accessory at a low menu
+                # order (confirmed live: SVX's modelSelectionSelectModel_
+                # viSoln has "V200 Body Worn Camera" at order=1 ahead of its
+                # 3 real "SVX Video Remote Speaker Mic" variants) — blind
+                # first-by-order silently picked the camera with zero
+                # customer input. No rule or default_value backs this attr
+                # in the ingested data (confirmed via direct Postgres query),
+                # so hint-matching (checked above, unaffected by this flag)
+                # is the only correct signal; without one, ask rather than
+                # guess. Deliberately narrower than the full
+                # _PRODUCT_IDENTIFIER_KEYS fragment set used to (see history
+                # of commit 445595b) — "basemodel" and the others stay off
+                # this override because they're rule-governed catalog master
+                # lists, not a mix of unrelated products (APX's Base Model:
+                # picking the rule-governed first option is safe there).
                 # Same skip_always_ask carve-out as the productSelectionProduct_all
-                # branch above — otherwise a catalog whose
-                # resolve_always_ask_skips legitimately suppresses some OTHER
-                # product-naming attr would have this generic fragment match
-                # force it to always-ask anyway, reintroducing the "asks a
-                # question the native UI never shows" bug that carve-out
-                # exists to prevent (Raven review, PR #104).
-                or (
-                    any(pk in vn_flat for pk in _PRODUCT_IDENTIFIER_KEYS)
-                    and vn not in (skip_always_ask or ())
-                )
+                # branch above -- resolve_always_ask_skips only ever populates
+                # productSelectionProduct_all today, so this is currently
+                # dormant, but without it any future extension of that method
+                # to a "selectmodel"-named attr would have this generic
+                # fragment match force it to always-ask anyway, reintroducing
+                # the exact "asks a question the native UI never shows" bug
+                # this carve-out pattern exists to prevent (Raven review).
+                or ("selectmodel" in vn_flat and vn not in (skip_always_ask or ()))
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -3814,20 +3822,17 @@ class CpqEngine:
                 # right back into pending (confirmed live: SVX asked
                 # productSelectionProduct_all again once the first-by-order
                 # auto-fill leak above was fixed, because this branch never
-                # consulted skip_always_ask on its own). Same generalization
-                # as is_decision_attr's own carve-out (Raven review, PR #104
-                # follow-up): an UNGOVERNED product-identifier attr (is_governed
-                # False, so the governed-blind-fallback elif above never fires)
-                # falls straight through to this branch, whose `attr.options`
-                # clause is true regardless of is_decision_attr — the old
-                # productSelectionProduct_all-only name check missed this case
-                # entirely for any other product-identifier attr.
+                # consulted skip_always_ask on its own).
+                # Same carve-out extended to "selectmodel"-named attrs,
+                # matching is_decision_attr's own dormant-but-structural
+                # skip_always_ask exception above -- an ungoverned
+                # "selectmodel" attr (is_governed False, so the governed
+                # blind-fallback elif never fires) falls straight through to
+                # this branch on `attr.options` alone regardless of
+                # is_decision_attr, so it needs this same exclusion too.
                 and not (
                     vn in (skip_always_ask or ())
-                    and (
-                        vn == "productSelectionProduct_all"
-                        or any(pk in vn_flat for pk in _PRODUCT_IDENTIFIER_KEYS)
-                    )
+                    and (vn == "productSelectionProduct_all" or "selectmodel" in vn_flat)
                 )
             ):
                 # Attrs with a meaningful choice set OR decision-required free-text
@@ -4051,6 +4056,28 @@ class CpqEngine:
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question))
         multi = filled_multi or {}
 
+        # Each candidate attr's own label-mention span (start, end) in the
+        # lowercased message, when found — used below to scope free-text
+        # numeric extraction to the text near THIS attr's own mention
+        # rather than the whole message. A message naming two sibling
+        # quantity attrs (confirmed live: SVX's per-mount-type quantity
+        # attrs are all named "mounting type {Mount Name} Quantity", one
+        # per mount option) — e.g. "change the jacket magnetic mount
+        # quantity to 15 and the pouch mount quantity to 8" — would
+        # otherwise have BOTH attrs' searches independently grab the SAME
+        # first number in the sentence, since neither search was scoped to
+        # its own attr's mention; whichever attr `attrs` iteration reached
+        # first won, regardless of which number was actually meant for it
+        # (catalog order, not textual order — confirmed live by reversing
+        # iteration order and getting "15" for the pouch attr instead of 8).
+        label_spans: dict[str, tuple[int, int]] = {}
+        for _attr in attrs:
+            if _attr.variable_name not in filled and _attr.variable_name not in multi:
+                continue
+            span = _label_mention_span(_attr.display_label.lower(), q_lower)
+            if span:
+                label_spans[_attr.variable_name] = span
+
         # Try each filled attr — find one where the user's message implies a different value
         for attr in attrs:
             if attr.variable_name not in filled and attr.variable_name not in multi:
@@ -4092,12 +4119,42 @@ class CpqEngine:
                 # (confirmed live: "change the jacket magnetic mount quantity
                 # to 15" fell through to "I didn't quite catch that" even
                 # after the label-mention fix above, because nothing ever
-                # extracted "15" out of the sentence). Pull the first
-                # standalone number in the message — the common "set/change
-                # X to N" phrasing this attr type actually gets.
-                m = re.search(r"-?\d+(?:\.\d+)?", question)
-                if m and m.group(0) != filled.get(attr.variable_name, ""):
-                    return attr, m.group(0)
+                # extracted "15" out of the sentence). Anchor to the "to/from
+                # N" phrasing FIRST — this catalog's own product names embed
+                # digits (V200 Body Worn Camera, APX6500, both confirmed live
+                # elsewhere in this file), so "change the V200 Body Worn
+                # Camera quantity to 2" would otherwise match "200" before
+                # the intended "2". Only fall back to the first standalone
+                # number in the sentence when no directional verb is present.
+                # Scoped to the text after THIS attr's own label mention (see
+                # label_spans above) and before the next sibling attr's own
+                # mention, if any — never the whole message, or a second
+                # quantity attr named later in the same sentence would steal
+                # this one's number (or vice versa).
+                own_span = label_spans.get(attr.variable_name)
+                if own_span:
+                    window_start = own_span[1]
+                    later_starts = [
+                        s for vn2, (s, _e) in label_spans.items()
+                        if vn2 != attr.variable_name and s >= window_start
+                    ]
+                    window_end = min(later_starts) if later_starts else len(question)
+                    search_text = question[window_start:window_end]
+                else:
+                    # This attr matched only via vn_flat (the raw variable
+                    # name literally in the message), not its display label
+                    # — no span to scope by, so fall back to the whole
+                    # message like before (rare: natural phrasing almost
+                    # never types the internal snake_case variable name).
+                    search_text = question
+                m = (re.search(r"\bto\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE)
+                     or re.search(r"\bfrom\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE))
+                value = m.group(1) if m else None
+                if value is None:
+                    m2 = re.search(r"-?\d+(?:\.\d+)?", search_text)
+                    value = m2.group(0) if m2 else None
+                if value is not None and value != filled.get(attr.variable_name, ""):
+                    return attr, value
 
             # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
             # the attr is mentioned but may not identify the exact option. Only reached
@@ -4673,7 +4730,7 @@ class CpqEngine:
 
     def _is_summary_excluded(
         self, variable_name: str, display_label: str, value: str,
-        attr: "ConfigAttr | None",
+        attr: "ConfigAttr | None", source: str | None = None,
     ) -> bool:
         """True when a filled attr should not get a summary line.
 
@@ -4696,7 +4753,20 @@ class CpqEngine:
             return True
         if attr is not None and attr.select_type == "boolean":
             return True
-        if attr is not None and attr.hidden:
+        if attr is not None and attr.hidden and source != "user":
+            # hidden=1 in the raw XML means BigMachines' own UI renders this
+            # inline as part of a grid widget rather than as its own summary
+            # line (confirmed live: 248 hidden attrs in workspace 14, almost
+            # all genuine internal/system fields — _config_operation_context,
+            # customerUIN, subscriptionStatus_all — never customer-answered).
+            # But a grid-quantity companion (e.g.
+            # mountingTypeLockingMolleMountQuantity_viSoln) IS hidden=1 yet
+            # still gets asked and answered directly in this chat interface,
+            # which has no grid rendering to fall back on — excluding it
+            # silently dropped the one number the customer actually gave
+            # (confirmed live: "15" survived in `filled`/the real payload,
+            # just never shown back to them). Only user-sourced answers get
+            # this carve-out; rule/default-filled hidden attrs stay excluded.
             return True
         label_l = display_label.lower()
         if "secondary" in label_l:
@@ -4721,6 +4791,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> list[tuple[str, str, str]]:
         """Filtered (variable_name, display_label, value) triples worth
         summarising — same filtering as filled_summary_pairs, but keeps
@@ -4736,7 +4807,9 @@ class CpqEngine:
             (var, label) for var, label in display_filled.items()
             if not self._is_html_value(label)
             and not self._is_noise_var(var)
-            and not self._is_summary_excluded(var, label_map.get(var, var), label, by_vn.get(var))
+            and not self._is_summary_excluded(
+                var, label_map.get(var, var), label, by_vn.get(var),
+                source=(sources or {}).get(var))
             # "(none)" is the engine's own literal placeholder for an
             # unfilled multi/array-typed field (e.g. Promotion, Solution
             # Set) — confirmed live: it survives every other filter since
@@ -4756,6 +4829,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> list[tuple[str, str]]:
         """Filtered (display_label, value) pairs worth summarising.
 
@@ -4774,7 +4848,7 @@ class CpqEngine:
         return [
             (label, value)
             for _var, label, value in self._filled_summary_triples(
-                display_filled, attrs, rule_governed_ids)
+                display_filled, attrs, rule_governed_ids, sources)
         ]
 
     @staticmethod
@@ -4828,6 +4902,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> str:
         """Deterministic, categorized summary of what has been auto-filled.
 
@@ -4839,7 +4914,7 @@ class CpqEngine:
         Used directly as the fallback whenever the LLM-narrated paragraph
         (ask_api `_cpq_summary_text`) is unavailable or fails.
         """
-        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids)
+        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids, sources)
         if not groups:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
@@ -4865,6 +4940,7 @@ class CpqEngine:
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
+        sources: dict[str, str] | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
         """(category, [(label, value), ...]) groups, non-empty categories
         only, in the fixed display order (Product Name, Service Plan,
@@ -4875,7 +4951,7 @@ class CpqEngine:
         ask_api's LLM-narrated summary) can group the same facts the same
         way instead of inventing their own grouping.
         """
-        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids)
+        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids, sources)
         if not triples:
             return []
         by_category: dict[str, list[tuple[str, str]]] = {}

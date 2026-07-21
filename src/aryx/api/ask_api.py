@@ -270,6 +270,7 @@ def _cpq_summary_text(
     rule_governed_ids: set[int],
     product_name: str,
     workspace_id: int,
+    sources: dict[str, str] | None = None,
 ) -> str:
     """Structured, headed/bulleted summary of the filtered configuration.
 
@@ -298,7 +299,7 @@ def _cpq_summary_text(
     mis-format via, the narrator.
     """
     groups = _cpq_engine.categorized_summary_groups(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids)
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
     if not groups:
         return ""
     sys = (
@@ -371,7 +372,7 @@ def _cpq_summary_text(
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
     return _cpq_engine.render_filled_summary(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids)
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
 
 
 def _handle_cpq_qa(
@@ -644,7 +645,7 @@ def _handle_cascade(
         session.status = "awaiting_approval"
         summary = _cpq_summary_text(
             display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id,
+            session.product_name, req.workspace_id, sources=session.filled_source,
         )
         answer = (
             cascade_note + "\n\n"
@@ -1351,7 +1352,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
                 session.display_filled, attrs, rule_ids_preview,
-                session.product_name, req.workspace_id,
+                session.product_name, req.workspace_id, sources=session.filled_source,
             )
             answer = (
                 (f"{summary}\n\n" if summary else "")
@@ -1408,7 +1409,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         rule_ids_nudge = _cpq_engine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
         summary = _cpq_summary_text(
             session.display_filled, attrs, rule_ids_nudge,
-            session.product_name, req.workspace_id,
+            session.product_name, req.workspace_id, sources=session.filled_source,
         )
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
@@ -1657,7 +1658,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         session.status = "awaiting_approval"
         summary = _cpq_summary_text(
             display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id,
+            session.product_name, req.workspace_id, sources=session.filled_source,
         )
         answer = (
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
@@ -1701,7 +1702,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hidden_vns=_hidden_now)
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
-                session.product_name, req.workspace_id,
+                session.product_name, req.workspace_id, sources=session.filled_source,
             )
             still_need = ", ".join(a.display_label for a in pending)
             answer = (
