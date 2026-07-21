@@ -67,6 +67,33 @@ def _presentable(val: str | None) -> bool:
     return bool(val) and str(val).strip().lower() not in _DISPLAY_EMPTY
 
 
+def _label_mention_span(
+    label_lower: str, q_lower: str, max_dropped_leading: int = 2,
+) -> "tuple[int, int] | None":
+    """(start, end) of the label's first match in q_lower, or None.
+
+    Same matching strategy as `_label_mentioned` (full phrase first, then
+    up to `max_dropped_leading` leading words dropped) — factored out so
+    callers that need WHERE the label was mentioned (not just whether)
+    can scope a search to nearby text instead of the whole message. See
+    `_label_mentioned`'s docstring for why the dropped-leading-words retry
+    exists.
+    """
+    if label_lower in q_lower:
+        idx = q_lower.index(label_lower)
+        return idx, idx + len(label_lower)
+    words = label_lower.split()
+    min_words = max(2, len(words) - max_dropped_leading)
+    if len(words) <= min_words:
+        return None
+    for start in range(1, len(words) - min_words + 1):
+        suffix = " ".join(words[start:])
+        if suffix in q_lower:
+            idx = q_lower.index(suffix)
+            return idx, idx + len(suffix)
+    return None
+
+
 def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 2) -> bool:
     """True when the user's message plausibly names this attr's label.
 
@@ -84,16 +111,7 @@ def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 
     the label's own words to remain — bounded so a short label (e.g. two
     words) can't be matched by an almost-empty remainder.
     """
-    if label_lower in q_lower:
-        return True
-    words = label_lower.split()
-    min_words = max(2, len(words) - max_dropped_leading)
-    if len(words) <= min_words:
-        return False
-    for start in range(1, len(words) - min_words + 1):
-        if " ".join(words[start:]) in q_lower:
-            return True
-    return False
+    return _label_mention_span(label_lower, q_lower, max_dropped_leading) is not None
 
 
 def _condition_value_matches(current_val: str, condition_value: str) -> bool:
@@ -3611,7 +3629,15 @@ class CpqEngine:
                 # this override because they're rule-governed catalog master
                 # lists, not a mix of unrelated products (APX's Base Model:
                 # picking the rule-governed first option is safe there).
-                or "selectmodel" in vn_flat
+                # Same skip_always_ask carve-out as the productSelectionProduct_all
+                # branch above -- resolve_always_ask_skips only ever populates
+                # productSelectionProduct_all today, so this is currently
+                # dormant, but without it any future extension of that method
+                # to a "selectmodel"-named attr would have this generic
+                # fragment match force it to always-ask anyway, reintroducing
+                # the exact "asks a question the native UI never shows" bug
+                # this carve-out pattern exists to prevent (Raven review).
+                or ("selectmodel" in vn_flat and vn not in (skip_always_ask or ()))
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -3797,8 +3823,17 @@ class CpqEngine:
                 # productSelectionProduct_all again once the first-by-order
                 # auto-fill leak above was fixed, because this branch never
                 # consulted skip_always_ask on its own).
-                and not (vn == "productSelectionProduct_all"
-                         and vn in (skip_always_ask or ()))
+                # Same carve-out extended to "selectmodel"-named attrs,
+                # matching is_decision_attr's own dormant-but-structural
+                # skip_always_ask exception above -- an ungoverned
+                # "selectmodel" attr (is_governed False, so the governed
+                # blind-fallback elif never fires) falls straight through to
+                # this branch on `attr.options` alone regardless of
+                # is_decision_attr, so it needs this same exclusion too.
+                and not (
+                    vn in (skip_always_ask or ())
+                    and (vn == "productSelectionProduct_all" or "selectmodel" in vn_flat)
+                )
             ):
                 # Attrs with a meaningful choice set OR decision-required free-text
                 # attrs (region/country) go to pending for user input.
@@ -4021,6 +4056,28 @@ class CpqEngine:
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question))
         multi = filled_multi or {}
 
+        # Each candidate attr's own label-mention span (start, end) in the
+        # lowercased message, when found — used below to scope free-text
+        # numeric extraction to the text near THIS attr's own mention
+        # rather than the whole message. A message naming two sibling
+        # quantity attrs (confirmed live: SVX's per-mount-type quantity
+        # attrs are all named "mounting type {Mount Name} Quantity", one
+        # per mount option) — e.g. "change the jacket magnetic mount
+        # quantity to 15 and the pouch mount quantity to 8" — would
+        # otherwise have BOTH attrs' searches independently grab the SAME
+        # first number in the sentence, since neither search was scoped to
+        # its own attr's mention; whichever attr `attrs` iteration reached
+        # first won, regardless of which number was actually meant for it
+        # (catalog order, not textual order — confirmed live by reversing
+        # iteration order and getting "15" for the pouch attr instead of 8).
+        label_spans: dict[str, tuple[int, int]] = {}
+        for _attr in attrs:
+            if _attr.variable_name not in filled and _attr.variable_name not in multi:
+                continue
+            span = _label_mention_span(_attr.display_label.lower(), q_lower)
+            if span:
+                label_spans[_attr.variable_name] = span
+
         # Try each filled attr — find one where the user's message implies a different value
         for attr in attrs:
             if attr.variable_name not in filled and attr.variable_name not in multi:
@@ -4062,12 +4119,42 @@ class CpqEngine:
                 # (confirmed live: "change the jacket magnetic mount quantity
                 # to 15" fell through to "I didn't quite catch that" even
                 # after the label-mention fix above, because nothing ever
-                # extracted "15" out of the sentence). Pull the first
-                # standalone number in the message — the common "set/change
-                # X to N" phrasing this attr type actually gets.
-                m = re.search(r"-?\d+(?:\.\d+)?", question)
-                if m and m.group(0) != filled.get(attr.variable_name, ""):
-                    return attr, m.group(0)
+                # extracted "15" out of the sentence). Anchor to the "to/from
+                # N" phrasing FIRST — this catalog's own product names embed
+                # digits (V200 Body Worn Camera, APX6500, both confirmed live
+                # elsewhere in this file), so "change the V200 Body Worn
+                # Camera quantity to 2" would otherwise match "200" before
+                # the intended "2". Only fall back to the first standalone
+                # number in the sentence when no directional verb is present.
+                # Scoped to the text after THIS attr's own label mention (see
+                # label_spans above) and before the next sibling attr's own
+                # mention, if any — never the whole message, or a second
+                # quantity attr named later in the same sentence would steal
+                # this one's number (or vice versa).
+                own_span = label_spans.get(attr.variable_name)
+                if own_span:
+                    window_start = own_span[1]
+                    later_starts = [
+                        s for vn2, (s, _e) in label_spans.items()
+                        if vn2 != attr.variable_name and s >= window_start
+                    ]
+                    window_end = min(later_starts) if later_starts else len(question)
+                    search_text = question[window_start:window_end]
+                else:
+                    # This attr matched only via vn_flat (the raw variable
+                    # name literally in the message), not its display label
+                    # — no span to scope by, so fall back to the whole
+                    # message like before (rare: natural phrasing almost
+                    # never types the internal snake_case variable name).
+                    search_text = question
+                m = (re.search(r"\bto\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE)
+                     or re.search(r"\bfrom\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE))
+                value = m.group(1) if m else None
+                if value is None:
+                    m2 = re.search(r"-?\d+(?:\.\d+)?", search_text)
+                    value = m2.group(0) if m2 else None
+                if value is not None and value != filled.get(attr.variable_name, ""):
+                    return attr, value
 
             # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
             # the attr is mentioned but may not identify the exact option. Only reached
