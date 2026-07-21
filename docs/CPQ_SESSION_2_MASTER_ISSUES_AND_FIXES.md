@@ -36,6 +36,18 @@ missing any other product-identifier attr for ungoverned cases.
 for any `_PRODUCT_IDENTIFIER_KEYS`-matching attr, with regression tests
 proving each gap independently (fails without the fix, passes with it).
 
+**Superseded (dev, PR #107):** this broad `_PRODUCT_IDENTIFIER_KEYS`
+approach was **reverted** (`107ca98`) — confirmed live it caused Base
+Model (APX/SL3500e) to wrongly force always-ask again, since option-count
+alone can't separate "genuinely ambiguous" (SVX's Select Model, which
+mixes real variants with an unrelated accessory at order=1) from "fine to
+auto-fill" (APX's Base Model, same option-count range but no such mixing).
+Replaced by a narrower fix scoped ONLY to `"selectmodel"`-fragment attrs
+(`5c5a445`), with the equivalent `skip_always_ask` carve-out ported
+forward for that narrower scope (`c570bf4`). **Net effect: the underlying
+intent of this item is still fixed, just via a safer, more narrowly
+scoped mechanism than originally implemented.**
+
 ---
 
 ## 3. `productSelectionProduct_all` seeding silently failed for multi-product catalogs
@@ -97,7 +109,18 @@ latest live transcript. Lower priority than #6 below; same fix family
 (the recognizer would need word-SET containment instead of
 suffix-substring matching — deferred pending a decision on false-positive
 risk, since bag-of-words matching is looser than every other matcher in
-this file).
+this file). **Still open as of dev `c570bf4`** — checked `_label_mention_span`
+directly, it reuses the same prefix-drop-only logic, no reordering support added.
+
+**Follow-up fix landed (dev, `c570bf4`):** a SEPARATE bug in this same
+numeric-extraction code — when a message names two SIBLING quantity
+attrs in one sentence (SVX's per-mount quantity attrs are all named
+"mounting type {Mount Name} Quantity"), both attrs' searches
+independently grabbed the SAME first "to N" number in the message,
+whichever attr `attrs` iteration reached first winning regardless of
+which number was actually meant for it. Fixed via `_label_mention_span()`
+scoping each attr's numeric search to the text between that attr's own
+label mention and the next sibling's.
 
 ---
 
@@ -156,6 +179,20 @@ FK-discovery is generic/structural (column-name driven), but BML
 option's quantity — that's a real business decision with no other source.
 It only makes DERIVED rules (like the boolean flags) deterministic
 instead of an LLM call.
+
+**Related, already-fixed side issue (dev, `5c5a445`):** a SEPARATE bug in
+this same neighborhood — `mountingTypeLockingMolleMountQuantity_viSoln`
+(and its siblings) are `hidden=1` in the raw XML, and the summary's
+own exclusion filter was dropping them entirely even when the customer
+directly answered them in THIS chat interface (which has no native grid
+widget fallback), so a real "15" the customer gave was silently missing
+from every summary despite being correctly captured in the payload.
+Fixed by threading `filled_source` through so a hidden attr with
+`source="user"` is no longer excluded. **This is a display-visibility
+fix only — it does NOT touch the BML array-iteration evaluator gap
+this item is actually about, and does NOT explain item 10's separate
+`mountingArrayControl_viSoln` value-mismatch finding below** (different
+attr, different mechanism).
 
 ---
 
