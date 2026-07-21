@@ -65,58 +65,96 @@ any other rule-join table (`fetch_marked_attrs` etc.).
 
 ### 2. `ConfigAttr` — add array-set membership fields
 
-`state.py:125-180`, three new fields (mirroring how `is_array_control`
-was added for the size/control attr concept):
+`state.py:125-180`, four new fields (mirroring how `is_array_control` was
+added for the size/control attr concept). Note the SET's own identity
+(`variable_name`, e.g. `"mountingTypeArrayset_viSoln"`) lives on the
+`BmConfigAttrSet` DRIVER ROW — a distinct entity from `mountingArrayControl
+_viSoln` (the real control ConfigAttr, referenced only via that driver
+row's `size_attr_id`) that is NEVER itself ingested as a `ConfigAttr` (the
+construction loop only walks `BmConfigAttr` entities). So the wrapper-key
+string has to be carried on the control attr as its own field — there is
+no other place for it to live:
 
 ```python
-array_set_id: int | None = None      # shared set id, None = not a set member
-array_set_role: str = ""             # "driver" | "member"
-array_col_order: int = 999           # ordinal position within the set's row
+array_set_id: int | None = None       # shared set id, None = not a set member/driver
+array_set_role: str = ""              # "driver" | "member"
+array_col_order: int = 999            # ordinal position within the set's row
+                                       # (real source field: display_order_number)
+array_set_wrapper_key: str = ""       # DRIVER ONLY — e.g. "_setmountingTypeArrayset_viSoln",
+                                       # precomputed as "_set" + the BmConfigAttrSet
+                                       # driver row's own variable_name (Open Question 3)
 ```
 
-`classify_select_type()` keeps its existing logic UNCHANGED for attrs with
-`array_set_id is None` — this is additive, not a reclassification of the
-whole multi/boolean/single split. A NEW check in the `ConfigAttr`
-construction loop (`engine.py:1908-1923`) sets `array_set_id`/`array_set_
-role`/`array_col_order` from the new `fetch_attr_set_assoc` data, keyed by
-`source_id` (the same BM-native id every other rule/set join already uses
-to cross-reference `ConfigAttr`).
+`array_set_role == "driver"` is assigned to the CONTROL attr (the one
+already flagged `is_array_control=True` today, resolved via the driver
+row's `size_attr_id`) — not a new, separately-ingested entity. `classify_
+select_type()` keeps its existing logic UNCHANGED for attrs with `array_
+set_id is None` — this is additive, not a reclassification of the whole
+multi/boolean/single split. A NEW check in the `ConfigAttr` construction
+loop (`engine.py:1908-1923`) sets all four fields from the new `fetch_
+attr_set_assoc` data, keyed by `source_id` (the same BM-native id every
+other rule/set join already uses to cross-reference `ConfigAttr`).
+
+**Dummy/placeholder member filter**: member rows whose own `ConfigAttr` is
+`hidden=1` with a boolean/no-real-content default (confirmed real example:
+`MountingQuantityDummyArrayAttribute_viSoln`, order 3 in the Mounting Type
+set — `hidden:1`, `data_type:4` boolean, `default_value:"false"`, absent
+from every real payload sample) must be EXCLUDED from the emitted row.
+These survive the general hidden-attr drop filter today only because their
+name matches the `"quantity" in vn_lo` carve-out
+(`engine.py:1883`) meant for the REAL quantity member — so `build_payload`'s
+grouping pass (§3) needs its own filter, not a reclassification at
+ingestion: skip any member whose value is empty/absent/the attr's own
+unmodified `default_value` when building each row, same "nothing real to
+contribute" logic the existing hidden-attr drop already uses elsewhere.
 
 ### 3. `build_payload` — group array-set members into one indexed row
 
 `engine.py:4770-4784`'s `filled_multi` loop gains a branch BEFORE the
-existing flat-serialization fallback: if `attr.array_set_id is not None`,
-route it to a separate accumulator keyed by `array_set_id` instead of
-`out[k]` directly. After the main loop, one pass over that accumulator
-builds the real shape:
+existing flat-serialization fallback: if `attr.array_set_id is not None`
+and `attr.array_set_role == "member"`, route it to a separate accumulator
+keyed by `array_set_id` instead of `out[k]` directly (the DRIVER's own
+value is handled separately — see below, NOT accumulated here). After the
+main loop, one pass over that accumulator builds the real shape:
 
 ```python
 for set_id, members in array_set_accum.items():
-    driver = next(m for m in members if m.role == "driver")
+    driver = drivers_by_set_id[set_id]  # the control ConfigAttr, role=="driver"
+    real_members = [m for m in members if _has_real_content(m)]  # drops dummy placeholders
     rows = []
-    max_len = max(len(m.values) for m in members if m.role == "member")
+    max_len = max((len(m.values) for m in real_members), default=0)
     for idx in range(max_len):
         row = {"_index": idx}
-        for m in members:
-            if m.role == "member" and idx < len(m.values):
-                row[m.display_label] = {"value": m.values[idx], "displayValue": m.display}
+        for m in real_members:
+            if idx < len(m.values):
+                row[m.variable_name] = {"value": m.values[idx], "displayValue": m.display[idx]}
         rows.append(row)
-    out[f"_set{driver.variable_name}set_{driver.catalog_suffix}"] = {"items": rows}
+    if rows:
+        out[driver.array_set_wrapper_key] = {"items": rows}
+        # The driver's own value ships as a SIBLING bare int (row count),
+        # NOT nested inside the wrapper — confirmed by the second reference
+        # payload (see "Update" section below). This supersedes the earlier,
+        # narrower is_array_control heuristic (single control + single
+        # multi-select, docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3) once this
+        # real linkage exists — that heuristic can be retired.
+        out[driver.variable_name] = len(rows)
 ```
 
-(Pseudocode — the real member/value alignment needs confirming against a
-live array-set payload sample once one is available; see Open Questions.)
-The top-level key naming convention (`_set{Name}set_{suffix}`) is taken
-directly from the user's own confirmed real payload
-(`_setmountingTypeArrayset_viSoln`) and the `_setCountryArray` example in
-§15c — both follow `_set{DriverName}(set)?_{catalogSuffix}`.
+(Pseudocode — member/value alignment inside a row, i.e. whether row 0's
+`mountingTypeArray_viSoln` genuinely pairs with row 0's `mountingTypeArray
+qty_viSoln` in `filled_multi`'s own list order, is still the one real
+unknown — see Open Question 2, still open.) The top-level key is read
+directly from `driver.array_set_wrapper_key` (precomputed at ingestion, §2)
+— NOT constructed here from a template; Open Question 3 already proved a
+per-catalog naming template is unnecessary since the source data's own
+`variable_name` supplies the exact string needed.
 
 ## Files to Change
 
 | File | Change |
 |---|---|
 | `src/aryx/cpq/rdb.py` | Add `fetch_attr_set_assoc()` (Postgres + Oracle variants), mirroring existing fetch_* methods. |
-| `src/aryx/cpq/state.py` | Add `array_set_id`/`array_set_role`/`array_col_order` to `ConfigAttr`. |
+| `src/aryx/cpq/state.py` | Add `array_set_id`/`array_set_role`/`array_col_order`/`array_set_wrapper_key` to `ConfigAttr`. |
 | `src/aryx/cpq/engine.py` | Wire the new fetch into `ConfigAttr` construction (~1908-1923); add the array-set grouping branch to `build_payload`'s `filled_multi` loop (~4770-4784). `classify_select_type` unchanged. |
 | `tests/test_cpq_payload_shapes.py` | New tests (see below) — same file the `mountingArrayControl_viSoln` exclusion test already lives in. |
 
@@ -124,22 +162,31 @@ directly from the user's own confirmed real payload
 
 1. **`test_array_set_member_groups_into_indexed_rows_not_flat_items`** —
    2 member attrs sharing an `array_set_id`, each with `filled_multi`
-   values → asserts the payload key is the driver-named `_set{name}set_`
-   wrapper, `items` contains one dict per index with `_index` present and
-   BOTH member columns nested inside, NOT two separate flat top-level keys.
+   values → asserts the payload key is the driver's own precomputed
+   `array_set_wrapper_key` (NOT a template built at serialization time —
+   see Open Question 3's resolution), `items` contains one dict per index
+   with `_index` present and BOTH member columns nested inside, NOT two
+   separate flat top-level keys.
 2. **`test_non_array_set_multi_select_still_serializes_flat`** — a plain
    `select_type=="multi"` attr with no `array_set_id` keeps the EXISTING
    flat shape unchanged — regression guard, this fix must be purely
    additive.
-3. **`test_array_set_driver_control_attr_itself_excluded_from_member_rows`**
-   — the driver/control attr's own raw value (e.g. `mountingArrayControl_
-   viSoln`) doesn't ALSO appear as a flat top-level key once grouped (this
-   builds on the already-shipped exclusion for `is_array_control`,
-   confirming the two mechanisms compose correctly rather than double-
-   counting or conflicting).
-4. **`test_fetch_attr_set_assoc_returns_ordered_member_columns`** — rdb.py
+3. **`test_array_set_driver_ships_as_sibling_row_count_not_nested_or_duplicated`**
+   — the driver/control attr (e.g. `mountingArrayControl_viSoln`) ships as
+   its OWN top-level bare int equal to `len(rows)`, is NOT nested inside
+   the `_set...` wrapper, and does NOT also appear as a flat top-level key
+   the old ungrouped way — confirms this supersedes (not merely coexists
+   with) the narrower is_array_control heuristic already shipped for the
+   ambiguous-link case.
+4. **`test_array_set_dummy_placeholder_member_excluded_from_rows`** — a
+   3rd member matching the confirmed `MountingQuantityDummyArrayAttribute_
+   viSoln` shape (`hidden=1`, boolean, untouched `default_value`) is
+   dropped from every row; the 2 real members still group correctly.
+5. **`test_fetch_attr_set_assoc_returns_ordered_member_columns`** — rdb.py
    unit test against a fake cursor/connection, confirming set→member
-   ordering survives the fetch.
+   ordering survives the fetch, and that the driver row's `variable_name`/
+   `size_attr_id` are returned alongside (not just the Assoc rows) so
+   `array_set_wrapper_key` can be computed.
 
 ## Risks
 
@@ -151,15 +198,11 @@ directly from the user's own confirmed real payload
   populates these lists today; it may already produce aligned per-option
   lists, or it may need a small adjustment to guarantee alignment before
   `build_payload` can safely zip them by index.
-- **Only 6 confirmed array-sets in one catalog family (APX NEXT/DM4400).**
-  SVX's `mountingTypeArray_viSoln` needs the SAME direct-XML confirmation
-  §15c did for the APX catalog (parse `bm_config_attr_set`/`_assoc` for the
-  SVX export specifically) before assuming it's definitely a `driver` +
-  `mountingTypeShirtMagneticMountQuantity_viSoln`/`...JacketMagneticMount
-  Quantity_viSoln` member-column set rather than a coincidentally similar
-  but differently-modeled construct — the user's own pasted "payload
-  original from CPQ engine" sample is strong evidence but not yet cross-
-  checked against SVX's raw `bm_config_attr_set` rows the way APX's was.
+- ~~Only 6 confirmed array-sets in one catalog family (APX NEXT/DM4400)...~~
+  **RESOLVED** — see Open Question 1 below: SVX's own `bm_config_attr_set`/
+  `_assoc` rows were queried directly against Postgres (workspace 19) and
+  confirm the exact same driver+ordered-members mechanism, not a
+  coincidentally similar construct.
 - **Blast radius is payload-shape-only**, same class of change as the
   Date/Currency/Integer/Float serialization fix already shipped
   (`CPQ_RULE_TOOL_FLOW_PLAN.md` §15b) — no rule-evaluation, cascade, or
@@ -238,12 +281,18 @@ plan's design section already predicted:
 }
 ```
 
-This resolves Open Question 2 in the direction this plan already assumed
-— the selector value AND its per-row quantity (`mountingTypeArrayqty_
-viSoln`) are sibling keys inside the SAME `_index` row, confirming
-`mountingTypeArrayqty_viSoln` is a genuine array-set MEMBER column, not an
-independently-fetched flat attr the way `resolve_pending_grid_quantities`
-currently treats it.
+This confirms the WIRE SHAPE half of Open Question 2 — the selector value
+AND its per-row quantity (`mountingTypeArrayqty_viSoln`) are sibling keys
+inside the SAME `_index` row on the wire, confirming `mountingTypeArrayqty_
+viSoln` is a genuine array-set MEMBER column, not an independently-fetched
+flat attr the way `resolve_pending_grid_quantities` currently treats it.
+**Does NOT resolve the other half** — whether ARYX's OWN internal
+`filled_multi` list order for `mountingTypeArray_viSoln` already lines up
+positionally with however `mountingTypeArrayqty_viSoln`'s values get
+collected today is a question about this codebase's existing collection
+mechanism, not about BigMachines' wire contract, and a reference payload
+can't answer it either way — Open Question 2 stays open on that count
+until `resolve_pending_grid_quantities` is traced directly.
 
 It also corrects this plan's own driver-attr assumption:
 `mountingArrayControl_viSoln` (the driver/control attr) ships as its OWN
