@@ -178,8 +178,9 @@ class Broker:
         nesting level vs. Ollama's flat vector lists. `output_dimensionality`
         is always sent explicitly (768, matching the existing
         `documents.embedding vector(768)` column) — required for
-        gemini-embedding-001 (3072-dim by default) and harmless for
-        text-embedding-004 (already 768-dim by default) — see
+        gemini-embedding-2 (3072-dim by default; Google's own docs recommend
+        truncating to 768 for production, with auto-normalization) and
+        harmless for older 768-native models like text-embedding-004 — see
         docs/LLM_GEMINI_MIGRATION_PLAN.md §4.3 for why this is pinned rather
         than widening the column.
         """
@@ -191,7 +192,7 @@ class Broker:
                 "ARYX_LLM_API_KEY must be set when ARYX_EMBED_BACKEND=gemini "
                 "(the same key already used for Gemini chat covers embeddings)"
             )
-        model_id = getattr(settings, "embed_model_override", "") or "gemini-embedding-001"
+        model_id = getattr(settings, "embed_model_override", "") or "gemini-embedding-2"
         # API key goes in the query string, per Gemini's REST convention (not
         # a Bearer header like the OpenAI-compatible chat path) — post_json
         # never logs the URL, so this never leaks the key into logs.

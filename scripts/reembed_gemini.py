@@ -74,7 +74,7 @@ def main() -> int:
 
     broker = default_broker()
     store = ChunkStore(settings.effective_dsn())
-    model_id = settings.embed_model_override or "gemini-embedding-001"
+    model_id = settings.embed_model_override or "gemini-embedding-2"
 
     total = 0
     for batch in _fetch_unembedded_chunks(store._pool, model_id, args.batch_size):

@@ -47,17 +47,17 @@ This covers everything `llm_runtime.chat()` drives (`ask_api.py`'s CPQ turns, Q&
 
 ### 3.1 Get a Gemini API key + confirm the OpenAI-compat endpoint
 
-Google's OpenAI-compatible endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/`. Confirm current Gemini model names for the two roles — likely:
-- **menial** (cheap/fast, high volume): `gemini-2.5-flash` or `gemini-2.0-flash`
-- **answer** (reasoning-tier, customer-facing narration): `gemini-2.5-pro`
+Google's OpenAI-compatible endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/`. Model names verified live via web search (my training-data knowledge is stale — six months old against a fast-moving model lineup):
+- **menial** (cheap/fast, high volume): `gemini-3.5-flash` — confirmed GA/stable as of May 2026, Google's current flash-tier default.
+- **answer** (reasoning-tier, customer-facing narration): `gemini-2.5-pro` — still listed as the stable "most advanced" model on Google's official models page. `gemini-3.5-pro` has been announced and is described as "rolling out" as the new flagship, but wasn't confirmed GA/stable in the same doc pass — worth checking your own Google AI Studio/Vertex console for availability before switching the reasoning tier to it, since that's the higher-stakes, customer-facing role.
 
 ### 3.2 Update `.env` (and `.env.example` stays as-is — it already documents `gemini` as a supported value)
 
 ```bash
 ARYX_LLM_PROVIDER=gemini            # was: openai (label only — anything but "anthropic"/"ollama" hits the generic path)
 ARYX_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-ARYX_LLM_MENIAL_MODEL=gemini-2.5-flash    # was: grok-3-mini
-ARYX_LLM_REASON_MODEL=gemini-2.5-pro      # was: grok-3
+ARYX_LLM_MENIAL_MODEL=gemini-3.5-flash    # was: grok-3-mini
+ARYX_LLM_REASON_MODEL=gemini-2.5-pro      # was: grok-3 (gemini-3.5-pro once confirmed GA on your account)
 ARYX_LLM_API_KEY=<Gemini API key>          # was: xAI key
 ARYX_LLM_TIMEOUT=900                       # keep, or re-tune after latency testing
 ```
@@ -87,7 +87,7 @@ ARYX_LLM_TIMEOUT=900                       # keep, or re-tune after latency test
    - Response: `{"embeddings": [{"values": [...]}, ...]}` — note the extra nesting (`values`, not a bare list) vs. Ollama's flat `embeddings: [[...], ...]`.
 2. **`src/aryx/config.py`** — extend `embed_backend`'s allowed values / docstring to include `"gemini"`, and `effective_embed_backend()`'s `_resolve()` call sites accordingly (currently a strict `"local"`/`"oci"` binary).
 3. **`Broker.embed()`** dispatch — add the third branch.
-4. **New env vars**: `ARYX_EMBED_BACKEND=gemini`, reuse `ARYX_LLM_API_KEY` (one Gemini key covers both chat and embeddings) or add a dedicated `ARYX_GEMINI_EMBED_MODEL` (e.g. `text-embedding-004` or `gemini-embedding-001`).
+4. **New env vars**: `ARYX_EMBED_BACKEND=gemini`, reuse `ARYX_LLM_API_KEY` (one Gemini key covers both chat and embeddings) or set `ARYX_EMBED_MODEL_OVERRIDE` (e.g. `text-embedding-004` or `gemini-embedding-2`).
 
 ### 4.3 The real blocker: vector dimension is baked into the schema
 
@@ -96,7 +96,7 @@ ARYX_LLM_TIMEOUT=900                       # keep, or re-tune after latency test
 - Ollama's `nomic-embed-text` → 768-dim (matches the column as-is).
 - OCI's `cohere.embed-multilingual-v3.0` → 1024-dim (already a mismatch if that path is ever live simultaneously — out of scope here).
 - Gemini `text-embedding-004` → 768-dim **by default** (configurable via `output_dimensionality`, matches without a migration).
-- Gemini `gemini-embedding-001` (newer, generally better quality) → 3072-dim **by default**, but explicitly supports `output_dimensionality: 768` to truncate to match — **must be set explicitly**, verify it isn't silently defaulting to 3072 in testing.
+- Gemini `gemini-embedding-2` (current default in code — natively multimodal, generally better quality) → 3072-dim **by default**, but explicitly supports `output_dimensionality: 768` — Google's own docs recommend exactly this as the production sweet spot, with auto-normalization of the truncated vector. **Must be set explicitly** (it's implemented as always-sent in `_gemini_embed`, never left to the default) — verify live it isn't silently returning 3072 anyway.
 
 **Two paths:**
 - **(A) Pin `output_dimensionality=768`** on whichever Gemini embed model is chosen — no schema migration, but every embedding must be **re-generated** (old Ollama vectors and new Gemini vectors are not comparable even at the same dimension — different model, different semantic space). Existing rows in `documents.embedding` need a backfill job re-running `broker.embed()` over all existing content.

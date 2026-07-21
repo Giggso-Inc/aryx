@@ -60,7 +60,7 @@ def test_gemini_embed_defaults_model_when_no_override():
         broker.embed(["x"])
 
     url = mock_post.call_args[0][0]
-    assert "gemini-embedding-001" in url
+    assert "gemini-embedding-2" in url
 
 
 def test_gemini_embed_respects_model_override():
