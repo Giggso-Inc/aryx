@@ -3,7 +3,9 @@
 Provider-agnostic selection layer (Anthropic + Ollama + OCI GenAI + any
 OpenAI-compatible endpoint). It decides which model serves a tier and enforces
 budgets; actual chat invocation lives in aryx/llm.py. Embeddings run via Ollama
-(local dev) or OCI GenAI Cohere Embed v3 (OCI deployment).
+(local dev), OCI GenAI Cohere Embed v3 (OCI deployment), or Gemini's native
+embedContent API (ARYX_EMBED_BACKEND=gemini) — the latter is NOT the same
+wire protocol as chat's OpenAI-compatible path, so it gets its own method.
 """
 from __future__ import annotations
 
@@ -96,22 +98,25 @@ class Broker:
 
     def embed(self, texts: list[str],
               input_type: str = "SEARCH_DOCUMENT") -> list[list[float]]:
-        """Embed texts via the configured backend (Ollama local or OCI GenAI).
+        """Embed texts via the configured backend (Ollama, OCI GenAI, or Gemini).
 
         Args:
             texts: Texts to embed.
             input_type: Cohere input type hint for the OCI path.
                 Use "SEARCH_DOCUMENT" when indexing (default) and
                 "SEARCH_QUERY" when embedding a search query at retrieval time.
-                Ignored on the local Ollama path.
+                Ignored on the local Ollama and Gemini paths.
 
         Returns an empty list if no embed model is configured, so callers can
         gracefully fall back to string-only similarity.
         """
         from aryx.config import get_settings
         settings = get_settings()
-        if settings.effective_embed_backend() == "oci":
+        backend = settings.effective_embed_backend()
+        if backend == "oci":
             return self._oci_embed(texts, settings, input_type=input_type)
+        if backend == "gemini":
+            return self._gemini_embed(texts, settings)
         return self._ollama_embed(texts)
 
     def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
@@ -162,6 +167,53 @@ class Broker:
         embeddings = response.data.embeddings
         dim = len(embeddings[0]) if embeddings else 0
         logger.debug("oci_embed ok vectors=%d dim=%d", len(embeddings), dim)
+        return embeddings
+
+    def _gemini_embed(self, texts: list[str], settings: object) -> list[list[float]]:
+        """Embed via Gemini's native batchEmbedContents API.
+
+        NOT the OpenAI-compatible surface chat uses (aryx/llm.py) — Gemini's
+        embedding API is its own protocol: API key as a query param (not a
+        Bearer header), and a request/response shape with an extra "values"
+        nesting level vs. Ollama's flat vector lists. `output_dimensionality`
+        is always sent explicitly (768, matching the existing
+        `documents.embedding vector(768)` column) — required for
+        gemini-embedding-001 (3072-dim by default) and harmless for
+        text-embedding-004 (already 768-dim by default) — see
+        docs/LLM_GEMINI_MIGRATION_PLAN.md §4.3 for why this is pinned rather
+        than widening the column.
+        """
+        from aryx.llm_providers import post_json  # noqa: PLC0415
+
+        key = getattr(settings, "llm_api_key", "") or ""
+        if not key:
+            raise RuntimeError(
+                "ARYX_LLM_API_KEY must be set when ARYX_EMBED_BACKEND=gemini "
+                "(the same key already used for Gemini chat covers embeddings)"
+            )
+        model_id = getattr(settings, "embed_model_override", "") or "gemini-embedding-001"
+        # API key goes in the query string, per Gemini's REST convention (not
+        # a Bearer header like the OpenAI-compatible chat path) — post_json
+        # never logs the URL, so this never leaks the key into logs.
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_id}:batchEmbedContents?key={key}"
+        )
+        body = {
+            "requests": [
+                {
+                    "model": f"models/{model_id}",
+                    "content": {"parts": [{"text": t}]},
+                    "outputDimensionality": 768,
+                }
+                for t in texts
+            ],
+        }
+        logger.debug("gemini_embed model=%s texts=%d", model_id, len(texts))
+        payload = post_json(url, body, {})
+        embeddings = [e.get("values", []) for e in payload.get("embeddings", [])]
+        dim = len(embeddings[0]) if embeddings else 0
+        logger.debug("gemini_embed ok vectors=%d dim=%d", len(embeddings), dim)
         return embeddings
 
 
