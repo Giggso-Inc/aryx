@@ -270,6 +270,7 @@ def _cpq_summary_text(
     rule_governed_ids: set[int],
     product_name: str,
     workspace_id: int,
+    sources: dict[str, str] | None = None,
 ) -> str:
     """Structured, headed/bulleted summary of the filtered configuration.
 
@@ -298,7 +299,7 @@ def _cpq_summary_text(
     mis-format via, the narrator.
     """
     groups = _cpq_engine.categorized_summary_groups(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids)
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
     if not groups:
         return ""
     sys = (
@@ -371,7 +372,7 @@ def _cpq_summary_text(
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
     return _cpq_engine.render_filled_summary(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids)
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
 
 
 def _handle_cpq_qa(
@@ -644,7 +645,7 @@ def _handle_cascade(
         session.status = "awaiting_approval"
         summary = _cpq_summary_text(
             display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id,
+            session.product_name, req.workspace_id, sources=session.filled_source,
         )
         answer = (
             cascade_note + "\n\n"
@@ -824,6 +825,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _sc_reply in ("n", "no", "cancel", "stop", "abort",
                          "never mind", "nevermind"):
             session.pending_switch_product = ""
+            session.pending_switch_question = ""
             session.pending_anchor = ""
             logger.info(
                 "cpq_switch: switch_country declined turn=%s staying on product=%r",
@@ -938,6 +940,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # validated carried-over country is preserved, never re-asked).
         else:
             session.pending_switch_product = ""
+            session.pending_switch_question = ""
             session.pending_anchor = ""
             logger.info(
                 "cpq_switch: declined turn=%s staying on product=%r",
@@ -1023,28 +1026,46 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # PROVED session.product_name against this catalog — asking the
     # productSelectionProduct_all question again on the very next turn
     # would ignore that proof and re-derive it from a reply ("yes") that
-    # carries no product hint at all. Seed it directly from the resolved
-    # name via the same fuzzy option-matcher normal answers use, mirroring
-    # the confirmed-country carry-over above. Guarded on "not yet filled"
-    # so this only fires once (turn 1, or the turn right after
-    # _complete_product_switch reset session.filled) and never clobbers a
-    # value a later turn's real answer already set.
+    # carries no product hint at all. Seed it directly via the same fuzzy
+    # option-matcher normal answers use, mirroring the confirmed-country
+    # carry-over above. Guarded on "not yet filled" so this only fires once
+    # (turn 1, or the turn right after _complete_product_switch reset
+    # session.filled) and never clobbers a value a later turn's real answer
+    # already set.
+    #
+    # session.product_name is the FAMILY/catalog name detect_product_mention
+    # resolved (e.g. "aSTRO25_bom") — for a catalog hosting many products
+    # (APX NEXT Enhanced is one of 325 under that family), that name never
+    # matches productSelectionProduct_all's own option list, so this alone
+    # silently fails to seed anything for multi-product catalogs (confirmed
+    # live: switching to "APX Next Enhanced" or "DM4400" still re-asked
+    # Product). The ORIGINAL text that triggered the switch — carried via
+    # session.pending_switch_question — usually names the specific product
+    # too ("Quote APX Next Enhanced radios...") and is tried FIRST since it's
+    # the more specific candidate; product_name is the fallback for the
+    # single-product-catalog case that already worked.
     if "productSelectionProduct_all" not in session.filled:
         _product_attr = next(
             (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
         )
         if _product_attr is not None:
-            _match = _cpq_engine.apply_answer(_product_attr, session.product_name)
-            if _match:
-                _item_value, _display_name = _match
-                session.filled["productSelectionProduct_all"] = _item_value
-                session.display_filled["productSelectionProduct_all"] = _display_name
-                session.filled_source["productSelectionProduct_all"] = "product_anchor"
-                logger.info(
-                    "cpq: seeded productSelectionProduct_all=%r from resolved "
-                    "product_name=%r turn=%s — skips a redundant re-ask",
-                    _item_value, session.product_name, session.turn,
-                )
+            _seed_candidates = [
+                c for c in (session.pending_switch_question, session.product_name) if c
+            ]
+            for _candidate_text in _seed_candidates:
+                _match = _cpq_engine.apply_answer(_product_attr, _candidate_text)
+                if _match:
+                    _item_value, _display_name = _match
+                    session.filled["productSelectionProduct_all"] = _item_value
+                    session.display_filled["productSelectionProduct_all"] = _display_name
+                    session.filled_source["productSelectionProduct_all"] = "product_anchor"
+                    logger.info(
+                        "cpq: seeded productSelectionProduct_all=%r from %r "
+                        "turn=%s — skips a redundant re-ask",
+                        _item_value, _candidate_text, session.turn,
+                    )
+                    break
+    session.pending_switch_question = ""
 
     if product_was_anchored:
         # Product already anchored on an earlier turn — re-check THIS turn's
@@ -1145,6 +1166,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     session.turn, session.product_name, switch_candidate,
                 )
                 session.pending_switch_product = switch_candidate
+                session.pending_switch_question = req.question
                 session.pending_anchor = "confirm_switch"
                 answer = (
                     f"It looks like you're asking about **{switch_candidate}**, but this "
@@ -1184,6 +1206,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # gate re-prompts on a bare "yes" instead of guessing.
                 if len(suggestions) == 1:
                     session.pending_switch_product = suggestions[0]
+                    session.pending_switch_question = req.question
                     session.pending_anchor = "confirm_switch"
                     answer = (
                         f"I couldn't tell if that's a different product — did you "
@@ -1329,7 +1352,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
                 session.display_filled, attrs, rule_ids_preview,
-                session.product_name, req.workspace_id,
+                session.product_name, req.workspace_id, sources=session.filled_source,
             )
             answer = (
                 (f"{summary}\n\n" if summary else "")
@@ -1386,7 +1409,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         rule_ids_nudge = _cpq_engine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
         summary = _cpq_summary_text(
             session.display_filled, attrs, rule_ids_nudge,
-            session.product_name, req.workspace_id,
+            session.product_name, req.workspace_id, sources=session.filled_source,
         )
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
@@ -1635,7 +1658,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         session.status = "awaiting_approval"
         summary = _cpq_summary_text(
             display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id,
+            session.product_name, req.workspace_id, sources=session.filled_source,
         )
         answer = (
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
@@ -1679,7 +1702,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hidden_vns=_hidden_now)
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
-                session.product_name, req.workspace_id,
+                session.product_name, req.workspace_id, sources=session.filled_source,
             )
             still_need = ", ".join(a.display_label for a in pending)
             answer = (

@@ -1931,6 +1931,47 @@ def test_s34_ambiguous_hint_without_full_option_name_does_not_guess():
         f"got {applied!r} for a message that only says 'LTE'")
 
 
+def test_s48_change_request_matches_compound_label_missing_generic_prefix():
+    """Regression (found live): a per-mount-type quantity attr is literally
+    named "mounting type Jacket Magnetic Mount Quantity" — six sibling attrs
+    on the SVX catalog share this "mounting type {option} quantity" naming
+    scaffold, one per mount option. A user naturally drops the generic
+    "mounting type" prefix ("change the jacket magnetic mount quantity to
+    15") since it doesn't discriminate between siblings, but the OLD exact
+    full-label-substring gate rejected it outright, falling through to "I
+    didn't quite catch that" (confirmed live) even though the message
+    clearly named both the attr and the new value.
+
+    Two things had to be fixed together: the label-mention gate needed to
+    tolerate a dropped generic leading phrase (_label_mentioned), AND
+    free-text (no-options) attrs needed a way to extract the actual new
+    value at all — extract_hints() only knows fixed concepts
+    (country/region/hwversion), never bare numbers, so even a correctly
+    identified free-text attr had nothing else in this file that would ever
+    produce "15" as its new value.
+    """
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr
+
+    eng = CpqEngine()
+    qty = ConfigAttr(
+        entity_id=1, variable_name="mountingTypeJacketMagneticMountQuantity_viSoln",
+        display_label="mounting type Jacket Magnetic Mount Quantity",
+        required=True, default_value="", options=[],
+    )
+    filled = {"mountingTypeJacketMagneticMountQuantity_viSoln": "10"}
+
+    result = eng.detect_change_request(
+        "Change the jacket magnetic mount quantity to 15", [qty], filled,
+    )
+    assert result is not None, (
+        "dropping the generic 'mounting type' prefix must still match "
+        "this attr's label")
+    changed_attr, new_value = result
+    assert changed_attr.variable_name == "mountingTypeJacketMagneticMountQuantity_viSoln"
+    assert new_value == "15"
+
+
 def test_s35_build_payload_nests_value_and_drops_noise_vars():
     """build_payload() returns {"configData": {var: {"value": ...}}},
     and never includes underscore-prefixed / ALL-CAPS-prefixed integration

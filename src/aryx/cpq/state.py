@@ -261,6 +261,17 @@ class CpqSession:
     # Empty string when no switch is pending — old session_data payloads that
     # predate this field simply default to "" via CpqSession.from_dict.
     pending_switch_product: str = ""
+    # The raw question text that TRIGGERED the switch detection (e.g. "Quote
+    # APX Next Enhanced radios for a US customer"). detect_product_mention
+    # resolves switches at the FAMILY/catalog level (pending_switch_product
+    # is "aSTRO25_bom", not "APX NEXT Enhanced" — the family can host 300+
+    # distinct products, see its own docstring) — the specific product the
+    # user actually named lives only in this original text. Carried through
+    # so the confirmed switch can seed productSelectionProduct_all directly
+    # from it instead of re-asking a question the user's own trigger message
+    # already answered. Empty when no switch is pending, same convention as
+    # pending_switch_product.
+    pending_switch_question: str = ""
     # Set when the mid-band "did you mean one of: ...?" hint offered MORE
     # THAN ONE family (pending_anchor == "suggest_switch") — the candidates
     # the next turn's reply picks from. A bare "yes" is ambiguous against

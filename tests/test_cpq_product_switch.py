@@ -586,6 +586,59 @@ def test_confirmed_switch_seeds_product_identifier_without_reasking(monkeypatch)
     assert "productSelectionProduct_all" not in (sd.get("pending_variables") or [])
 
 
+def test_confirmed_switch_seeds_product_identifier_from_original_question_when_family_name_wont_match(
+    monkeypatch,
+):
+    """Regression (found live): detect_product_mention resolves a switch to
+    the FAMILY/catalog name (e.g. "aSTRO25_bom"), which can host 300+ distinct
+    products — pending_switch_product/session.product_name is that family
+    name, not the specific product the user actually said ("APX Next
+    Enhanced"). Seeding productSelectionProduct_all from product_name alone
+    (as the prior fix did) silently fails to match for these multi-product
+    catalogs, so Product still gets re-asked. The ORIGINAL question that
+    triggered the switch usually names the specific product directly and
+    must be tried too, via the new pending_switch_question carry-over."""
+    reader = _no_switch_setup(monkeypatch)
+    _product_attr = ConfigAttr(
+        entity_id=9003, variable_name="productSelectionProduct_all",
+        display_label="Product", required=True, default_value="",
+        options=[
+            MenuOption(item_value="APX NEXT ENHANCED", display_name="APX NEXT Enhanced"),
+            MenuOption(item_value="APX 6500", display_name="APX 6500"),
+        ],
+    )
+    monkeypatch.setattr(
+        api._cpq_engine, "load_product_config",
+        # The family name ("aSTRO25_bom") is what gets resolved/anchored —
+        # deliberately does NOT match either option above, reproducing the
+        # live gap.
+        lambda *a, **k: ([_product_attr], "aSTRO25_bom"),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], []),
+    )
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    session_data = _mid_config_session(product_name="SL3500e", country="United States")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "aSTRO25_bom"
+    session_data["pending_switch_question"] = "Quote APX Next Enhanced radios for a US customer."
+
+    req = AskRequest(question="yes", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    sd = resp["session_data"]
+    assert sd["product_name"] == "aSTRO25_bom"
+    assert sd["filled"].get("productSelectionProduct_all") == "APX NEXT ENHANCED", (
+        "the original switch-trigger question named the specific product — "
+        "it must seed productSelectionProduct_all, not be silently dropped "
+        "just because the family name alone doesn't match any option"
+    )
+    assert "productSelectionProduct_all" not in (sd.get("pending_variables") or [])
+    assert sd["pending_switch_question"] == "", "must be cleared once consumed"
+
+
 def test_switch_completes_once_a_valid_new_country_is_given(monkeypatch):
     reader = _no_switch_setup(monkeypatch)
     _country_check_setup(monkeypatch, available=True)
