@@ -212,6 +212,57 @@ def test_declined_switch_preserves_original_product_and_answers(monkeypatch):
     assert "SL3500e" in resp["answer"]
 
 
+# ── Scenario 4b: a "decline" reply that actually names a THIRD real product
+# must not be swallowed as a flat decline — it should re-offer a switch to
+# that new product instead (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 1).
+
+def test_decline_reply_naming_a_different_product_reoffers_switch_instead(monkeypatch):
+    three_products = {
+        "Sl3500EConfig": "SL3500e",
+        "MototrboConfig": "MOTOTRBO",
+        "ApxNextConfig": "APX NEXT",
+    }
+    reader = _no_switch_setup(monkeypatch, catalogs=three_products)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(
+        question="Quote APX NEXT for a US customer.",
+        workspace_id=1, session_data=session_data,
+    )
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    # Neither discarded (no data loss) nor silently switched — re-offered.
+    assert sd["product_name"] == "SL3500e"
+    assert sd["filled"] == {"battery": "STANDARD"}
+    assert sd["pending_anchor"] == "confirm_switch"
+    assert sd["pending_switch_product"] == "APX NEXT"
+    assert "APX NEXT" in resp["answer"]
+    assert resp["tools_called"] == ["cpq_switch_reoffer()"]
+
+
+def test_decline_reply_with_no_new_product_still_declines_normally(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="no thanks", workspace_id=1, session_data=session_data)
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e"
+    assert sd["pending_switch_product"] == ""
+    assert sd["pending_anchor"] == ""
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
 # ── Scenario 5: a real ingested product name inside an answer's value text ─
 # still must not lose data even if detection misfires — declining resumes
 # with the original configuration completely intact.
@@ -240,7 +291,11 @@ def test_value_text_mention_does_not_lose_data_when_declined(monkeypatch):
 # in-progress answers by design (documented tradeoff — concurrent per-product
 # state was explicitly rejected in the plan as too large a change surface).
 
-def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
+def test_switching_back_and_forth_restores_prior_answers_from_snapshot(monkeypatch):
+    """Regression: A -> B -> A no longer discards A's in-progress answers
+    (docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md). Superseded prior
+    behavior (this test used to assert the opposite — the discard-by-design
+    tradeoff explicitly accepted before the snapshot feature existed)."""
     reader = _no_switch_setup(monkeypatch)
     # No country set — see test_confirmed_switch_resets_config_state_and_reanchors_country
     # for why this must be explicit now that a valid, already-set country
@@ -258,6 +313,8 @@ def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
     sd1 = resp1["session_data"]
     assert sd1["product_name"] == "MOTOTRBO"
     assert sd1["filled"] == {}
+    # SL3500e's answer is snapshotted, not lost.
+    assert sd1["product_snapshots"]["SL3500e"]["filled"] == {"battery": "STANDARD"}
 
     # Switch back MOTOTRBO -> SL3500e.
     sd1["pending_anchor"] = "confirm_switch"
@@ -269,11 +326,89 @@ def test_switching_back_and_forth_does_not_restore_prior_answers(monkeypatch):
     sd2 = resp2["session_data"]
     assert sd2["product_name"] == "SL3500e"
     # The original battery="STANDARD" answer from before the FIRST switch is
-    # gone — known, accepted limitation of the confirm/reset design.
-    assert sd2["filled"] == {}
+    # restored from the snapshot.
+    assert sd2["filled"] == {"battery": "STANDARD"}
     assert len(sd2["cascade_log"]) == 2
     assert sd2["cascade_log"][0]["to"] == "MOTOTRBO"
     assert sd2["cascade_log"][1]["to"] == "SL3500e"
+
+
+def test_first_ever_switch_has_no_snapshot_to_restore(monkeypatch):
+    """A target product never visited this session gets the ordinary blank
+    reset (no snapshot exists yet) — unchanged behavior for the common case."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", country="", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+    resp = _run_cpq_turn(
+        AskRequest(question="yes", workspace_id=1, session_data=session_data),
+        reader,
+    )
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO"
+    assert sd["filled"] == {}
+    assert "MOTOTRBO" not in sd["product_snapshots"]
+
+
+def test_product_snapshot_cap_evicts_oldest(monkeypatch):
+    """Switching across 7 distinct products (6 switch-aways) keeps only the
+    5 most recent snapshots — bounds session_data growth (docs/CPQ_MULTI_
+    PRODUCT_SESSION_SNAPSHOT_PLAN.md §4)."""
+    catalogs = {f"P{i}Config": f"Product{i}" for i in range(1, 8)}
+    reader = _no_switch_setup(monkeypatch, catalogs=catalogs)
+    session_data = _mid_config_session(product_name="Product1", country="")
+
+    for i in range(2, 8):
+        session_data["pending_anchor"] = "confirm_switch"
+        session_data["pending_switch_product"] = f"Product{i}"
+        resp = _run_cpq_turn(
+            AskRequest(question="yes", workspace_id=1, session_data=session_data),
+            reader,
+        )
+        session_data = resp["session_data"]
+
+    # 6 switch-aways (Product1..Product6) each snapshotted, but the cap
+    # only keeps 5 -- Product1 (the oldest) must be evicted.
+    assert len(session_data["product_snapshots"]) == 5
+    assert "Product1" not in session_data["product_snapshots"]
+    assert "Product2" in session_data["product_snapshots"]
+    assert session_data["product_name"] == "Product7"
+
+
+def test_restored_snapshot_value_dropped_when_no_longer_allowed_by_a_constraint():
+    """A restored value isn't trusted blindly — it's fed into auto_fill as
+    already_filled, the SAME re-validation every normal turn already relies
+    on: an already-filled value whose attr is narrowed by an ACTIVE
+    constraint rule since it was answered gets cleared and re-asked rather
+    than kept stale (engine.py's own already-existing "a cascade may have
+    narrowed this attr's allowed set since then" handling — confirmed here
+    via constrained_opts, the actual mechanism, not the attr's static
+    option list, which auto_fill never re-checks on its own). Proves
+    restore doesn't bypass validation, no new machinery needed
+    (docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md §3)."""
+    from aryx.cpq.engine import CpqEngine
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    eng = CpqEngine()
+    attr = ConfigAttr(
+        entity_id=1, variable_name="battery", display_label="Battery",
+        required=False, default_value="",
+        options=[MenuOption("STANDARD", "Standard", 1), MenuOption("EXTENDED", "Extended", 2)],
+    )
+    # Simulates a restored snapshot carrying "STANDARD", but a constraint
+    # rule active THIS turn (e.g. a sibling attr's value the restored
+    # snapshot didn't have, or a rule that changed) now only allows
+    # "EXTENDED" — this is exactly what a restored snapshot's `filled`
+    # dict re-entering the flow via already_filled looks like on the next
+    # real turn's auto_fill call.
+    filled, display_filled, pending = eng.auto_fill(
+        attrs=[attr], hints={}, already_filled={"battery": "STANDARD"},
+        constrained_opts={1: ["EXTENDED"]},
+    )
+    assert filled.get("battery") != "STANDARD", (
+        "a restored value no longer allowed by an active constraint must "
+        "not survive re-validation unchanged")
 
 
 # ── Scenario 7: backward compatibility with pre-fix session_data payloads ──

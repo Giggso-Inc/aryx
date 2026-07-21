@@ -72,25 +72,62 @@ def _label_mention_span(
 ) -> "tuple[int, int] | None":
     """(start, end) of the label's first match in q_lower, or None.
 
-    Same matching strategy as `_label_mentioned` (full phrase first, then
-    up to `max_dropped_leading` leading words dropped) — factored out so
-    callers that need WHERE the label was mentioned (not just whether)
-    can scope a search to nearby text instead of the whole message. See
-    `_label_mentioned`'s docstring for why the dropped-leading-words retry
-    exists.
+    Three tiers, each stricter than the risk of the next: full-phrase
+    substring, then up to `max_dropped_leading` leading words dropped
+    (both preserve the label's own word ORDER), then — only if neither
+    finds anything — a word-SET fallback requiring EVERY one of the
+    label's own words to appear as a whole word somewhere in q_lower,
+    order-independent. Factored out so callers that need WHERE the label
+    was mentioned (not just whether) can scope a search to nearby text
+    instead of the whole message. See `_label_mentioned`'s docstring for
+    why the dropped-leading-words retry exists, and the word-set tier's
+    own docstring note below for why it's safe to add.
     """
     if label_lower in q_lower:
         idx = q_lower.index(label_lower)
         return idx, idx + len(label_lower)
     words = label_lower.split()
     min_words = max(2, len(words) - max_dropped_leading)
-    if len(words) <= min_words:
-        return None
-    for start in range(1, len(words) - min_words + 1):
-        suffix = " ".join(words[start:])
-        if suffix in q_lower:
-            idx = q_lower.index(suffix)
-            return idx, idx + len(suffix)
+    if len(words) > min_words:
+        for start in range(1, len(words) - min_words + 1):
+            suffix = " ".join(words[start:])
+            if suffix in q_lower:
+                idx = q_lower.index(suffix)
+                return idx, idx + len(suffix)
+    # Word-set fallback (Raven-flagged, previously deferred pending a
+    # false-positive review): a REORDERED phrase — "change the quantity of
+    # jacket magnetic mount" states the quantity word BEFORE the mount name,
+    # reversed from the label's own "...Jacket Magnetic Mount Quantity"
+    # order, AND drops the generic "mounting type" prefix in the same
+    # breath — never matches either tier above (which only ever drop
+    # leading words WITHOUT reordering the rest), nor a naive order-blind
+    # check requiring every word INCLUDING the dropped prefix (confirmed
+    # still failing after c570bf4, see docs/CPQ_SESSION_2_OPEN_ISSUES.md
+    # item 1). Combines both tolerances: try progressively shorter
+    # leading-word-dropped SUFFIXES of the label's word list (same
+    # min_words bound as the tier above), but check each suffix's words
+    # as a SET (any order) instead of a contiguous phrase — the least
+    # permissive candidate (full word list, order-blind) is tried first,
+    # only dropping more leading words if that still doesn't match. Safe
+    # to add here because this function only ever gates a coarse "is this
+    # attr even relevant" pre-filter (detect_change_request still requires
+    # apply_answer/the numeric-extraction span to independently confirm a
+    # real value nearby before ever resolving anything) — a false-positive
+    # span here costs an extra attr considered, never a wrongly-resolved
+    # value. Each candidate still requires ALL its words present (not a
+    # fuzzy majority) — same "match fully or bail" discipline as every
+    # other matcher in this file, just order-blind within the candidate.
+    for start in range(0, len(words) - min_words + 1):
+        candidate = words[start:]
+        spans: list[tuple[int, int]] = []
+        for w in candidate:
+            m = re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", q_lower)
+            if not m:
+                spans = []
+                break
+            spans.append((m.start(), m.end()))
+        if spans:
+            return min(s for s, _e in spans), max(e for _s, e in spans)
     return None
 
 
@@ -3359,6 +3396,13 @@ class CpqEngine:
         governed = governed_ids or set()
         rule_governed = rule_governed_ids if rule_governed_ids is not None else governed
         dropped = dropped_multi if dropped_multi is not None else {}
+        # Cascade-invalidated attrs whose CLEARED value was a real user
+        # decision (filled_source == "user"), not an auto-fill — these must
+        # be re-asked (added to `pending`) rather than silently re-guessed
+        # by the blind-fallback branch below (docs/CPQ_SESSION_2_OPEN_ISSUES.md
+        # item 4). Mirrors the same "never silently guess a real decision"
+        # principle already applied to product-identifier attrs.
+        user_answered_dropped_ids: set[int] = set()
 
         # Pointer-defaults (Issue 11, docs/CPQ_PRODUCT_SWITCH_ISSUE.md): a
         # default_value that exactly equals ANOTHER attribute's variable
@@ -3441,6 +3485,8 @@ class CpqEngine:
                 if allowed_single is not None and filled[vn] not in allowed_single:
                     stale_display = display_filled.get(vn, filled[vn])
                     dropped[vn] = [stale_display]
+                    if sources.get(vn) == "user":
+                        user_answered_dropped_ids.add(attr.entity_id)
                     filled.pop(vn, None)
                     display_filled.pop(vn, None)
                     sources.pop(vn, None)
@@ -3682,6 +3728,13 @@ class CpqEngine:
                     # branch above exists to prevent.
                     and not (vn == "productSelectionProduct_all"
                              and vn in (skip_always_ask or ()))
+                    # A real customer decision that a cascade just cleared
+                    # deserves to be re-asked, not silently re-guessed — same
+                    # "never blind-fill a real decision" principle as
+                    # productSelectionProduct_all above, generalized to any
+                    # attr whose cascade-dropped value was filled_source
+                    # "user" (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 4).
+                    and attr.entity_id not in user_answered_dropped_ids
                 ):
                     if attr.select_type == "multi":
                         # The allowed set from an active constraint IS the
@@ -4262,6 +4315,37 @@ class CpqEngine:
         "show me", "which", "can i choose", "what can",
     })
 
+    def detect_label_collision(
+        self, question: str, attrs: list[ConfigAttr],
+    ) -> list[ConfigAttr] | None:
+        """Detect an options-query naming a display_label 2+ distinct attrs
+        share (BigMachines source-data reuse — confirmed real, not an
+        ingestion artifact; see docs/CPQ_SESSION_2_OPEN_ISSUES.md item 2).
+
+        Only fires for the label-matching tier — a variable_name match is
+        already unambiguous by construction (variable_name is unique), so
+        this must run BEFORE detect_attr_query's own label fallback tier
+        silently resolves the tie via `max(..., key=len)`. Returns the tied
+        candidates so the caller can ask the user to disambiguate instead of
+        guessing, or None when there's no collision to report.
+        """
+        q_lower = question.lower()
+        if not any(kw in q_lower for kw in self._OPTIONS_KEYWORDS):
+            return None
+        q_flat = q_lower.replace("_", "")
+        vn_matches = [
+            attr for attr in attrs
+            if attr.variable_name.lower().replace("_", "") in q_flat
+            or attr.variable_name.lower() in q_lower
+        ]
+        if vn_matches:
+            return None
+        label_matches = [attr for attr in attrs if attr.display_label.lower() in q_lower]
+        distinct_vns = {a.variable_name for a in label_matches}
+        if len(distinct_vns) >= 2:
+            return label_matches
+        return None
+
     def detect_attr_query(
         self, question: str, attrs: list[ConfigAttr],
     ) -> ConfigAttr | None:
@@ -4617,6 +4701,15 @@ class CpqEngine:
             attr = attr_by_vn.get(k)
             if attr is not None and attr.hide_in_trans:
                 continue
+            if attr is not None and attr.is_array_control:
+                # is_array_control_attr=1 (e.g. mountingArrayControl_viSoln)
+                # is BigMachines-internal array-size scaffolding, hidden=1 in
+                # the raw XML and never surfaced by the native UI. Its value
+                # has no real connection to the answered per-row quantity —
+                # that's captured separately by resolve_pending_grid_quantities
+                # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3) — so shipping it
+                # would only ever be a coincidental, disconnected number.
+                continue
             if attr is not None and attr.set_type == "2":
                 # Transient UI/action-layer attr (see ConfigAttr.set_type) —
                 # confirmed live: the real CPQ API rejects every one of
@@ -4803,6 +4896,16 @@ class CpqEngine:
             return []
         by_vn: dict[str, "ConfigAttr"] = {a.variable_name: a for a in attrs} if attrs else {}
         label_map: dict[str, str] = {vn: a.display_label for vn, a in by_vn.items()}
+        # Disambiguate a display_label 2+ distinct attrs share (real
+        # BigMachines source-data reuse, docs/CPQ_SESSION_2_OPEN_ISSUES.md
+        # item 2) by appending variable_name — otherwise two unrelated rows
+        # render as identical, unreadable duplicate lines in the summary.
+        _label_counts: dict[str, int] = {}
+        for _lbl in label_map.values():
+            _label_counts[_lbl] = _label_counts.get(_lbl, 0) + 1
+        for vn, lbl in list(label_map.items()):
+            if _label_counts.get(lbl, 0) >= 2:
+                label_map[vn] = f"{lbl} ({vn})"
         items = [
             (var, label) for var, label in display_filled.items()
             if not self._is_html_value(label)

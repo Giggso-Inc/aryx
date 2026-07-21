@@ -281,6 +281,19 @@ class CpqSession:
     # which SUBMITTED the current quote). Old payloads default to [] via
     # from_dict, same as every other newer field.
     pending_switch_candidates: list[str] = field(default_factory=list)
+    # Per-product snapshot of config-scoped state, keyed by product_name (the
+    # FAMILY/catalog key detect_product_mention resolves to -- same identity
+    # that already gates a switch). Captured on switch-AWAY (before the reset
+    # below wipes it) and restored on switch-TO when the target was visited
+    # earlier this session, so A -> B -> A no longer discards A's answers by
+    # design (see docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md). Restored
+    # values are seeded back in as auto_fill's already_filled -- the SAME
+    # re-validation every normal turn already relies on, so a value that's no
+    # longer valid under current rules is naturally dropped/re-asked, never
+    # blindly trusted. Capped at 5 entries (evict-oldest) to bound payload
+    # growth. Each snapshot dict has keys: filled, filled_multi,
+    # display_filled, filled_source, country, negated_vns, product_entity_id.
+    product_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

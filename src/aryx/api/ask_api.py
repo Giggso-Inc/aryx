@@ -388,6 +388,30 @@ def _handle_cpq_qa(
     answer, then appends the current config resume prompt so the user knows where
     they were. The session state is preserved unchanged.
     """
+    # Label collision check first — a shared display_label across 2+ distinct
+    # attrs (real BigMachines source-data reuse, docs/CPQ_SESSION_2_OPEN_ISSUES.md
+    # item 2) must be disambiguated, never silently resolved to whichever
+    # attr happens to be first in list order.
+    _collision = _cpq_engine.detect_label_collision(req.question, attrs)
+    if _collision:
+        _lines = "\n".join(
+            f"- **{a.variable_name}**"
+            f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
+            for a in _collision
+        )
+        qa_answer = (
+            f"There are {len(_collision)} different attributes labeled "
+            f"**\"{_collision[0].display_label}\"** in this catalog — which one "
+            f"did you mean?\n\n{_lines}"
+        )
+        _persist_cpq_history(req.workspace_id, req.question, qa_answer)
+        return {
+            "answer": qa_answer, "terms": [], "tools_called": ["cpq_label_collision()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
     # Fast path: question asks about a specific attribute's available options.
     # Uses attr.options already in memory from BmMenuItem — no graph query,
     # no LLM synthesis, no schema leakage possible.
@@ -729,34 +753,92 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # asked the user to confirm before discarding the in-progress config. THIS
     # turn's raw reply is that yes/no answer, not a new CPQ hint (Andie-planned
     # fix for: "CPQ for two products is not working in the single session").
+    _PRODUCT_SNAPSHOT_CAP = 5
+
     def _complete_product_switch(new_product: str, new_country: str) -> None:
-        """Reset config-scoped state and commit the switch. `new_country`
-        is carried over as-is (already validated by the caller, or simply
-        never set) — never blindly cleared, so a client who already gave a
-        valid country for the new product doesn't have to repeat it."""
+        """Snapshot the outgoing product's state, restore the incoming
+        product's own prior state if it was visited earlier this session,
+        and commit the switch. `new_country` is carried over as-is (already
+        validated by the caller, or simply never set) — never blindly
+        cleared, so a client who already gave a valid country for the new
+        product doesn't have to repeat it.
+
+        Restored values are NOT trusted blindly — Step 2/3 below feed
+        session.filled into auto_fill as `already_filled` on every turn
+        regardless of where it came from, so a restored value that's no
+        longer valid under current rules/constraints is naturally dropped
+        and re-asked, exactly like any other turn's continuation (see
+        docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md §3)."""
         session.cascade_log.append({
             "event": "product_switch", "from": session.product_name,
             "to": new_product, "turn": session.turn,
         })
-        session.filled = {}
-        session.filled_multi = {}
-        session.display_filled = {}
-        session.filled_source = {}
+        # Snapshot the OUTGOING product before wiping it — even a
+        # product visited only once is captured, ready for a much later
+        # switch-back. Skipped on the very first-ever turn (no prior
+        # product to snapshot). Re-inserted (not just updated) so dict
+        # iteration order tracks recency for the cap below.
+        if session.product_name:
+            session.product_snapshots.pop(session.product_name, None)
+            session.product_snapshots[session.product_name] = {
+                "filled": dict(session.filled),
+                "filled_multi": dict(session.filled_multi),
+                "display_filled": dict(session.display_filled),
+                "filled_source": dict(session.filled_source),
+                "country": session.country,
+                "negated_vns": list(session.negated_vns),
+                "product_entity_id": session.product_entity_id,
+            }
+            while len(session.product_snapshots) > _PRODUCT_SNAPSHOT_CAP:
+                oldest = next(iter(session.product_snapshots))
+                session.product_snapshots.pop(oldest)
+
+        snap = session.product_snapshots.get(new_product)
+        if snap:
+            session.filled = dict(snap["filled"])
+            session.filled_multi = dict(snap["filled_multi"])
+            session.display_filled = dict(snap["display_filled"])
+            session.filled_source = dict(snap["filled_source"])
+            session.negated_vns = list(snap["negated_vns"])
+            session.product_entity_id = snap["product_entity_id"]
+            # Only fall back to the snapshot's own country when THIS turn's
+            # caller didn't already determine one — both call sites
+            # (confirm_switch's carried-over country, switch_country's
+            # freshly-validated replacement) always pass a non-empty value
+            # when they have one; new_country is empty here only when
+            # neither had anything to contribute (docs/CPQ_MULTI_PRODUCT_
+            # SESSION_SNAPSHOT_PLAN.md §"Country carry-over — RESOLVED").
+            # The snapshot's country needs no re-validation either: it was
+            # captured while THIS SAME product was previously configured,
+            # so it was already valid for it.
+            if not new_country:
+                new_country = snap["country"]
+            logger.info(
+                "cpq_switch: restored prior snapshot for product=%r turn=%s "
+                "(%d filled attrs)", new_product, session.turn, len(snap["filled"]),
+            )
+        else:
+            session.filled = {}
+            session.filled_multi = {}
+            session.display_filled = {}
+            session.filled_source = {}
+            session.negated_vns = []
+            session.product_entity_id = 0
+
         session.pending_variables = []
         session.status = "configuring"
         session.country = new_country
         # NOTE: catalog_prefix is not a CpqSession field — it's derived
         # fresh from attrs[0].catalog_prefix every turn in Step 2 below,
         # so there's nothing session-scoped to reset here.
-        session.product_entity_id = 0
-        session.negated_vns = []
         session.product_name = new_product
         session.pending_switch_product = ""
         session.pending_switch_candidates = []
         session.pending_anchor = ""
         logger.info(
-            "cpq_switch: switched turn=%s new_product=%r country=%r — config state reset",
+            "cpq_switch: switched turn=%s new_product=%r country=%r — config state %s",
             session.turn, new_product, new_country or "(none — will be asked fresh)",
+            "restored from snapshot" if snap else "reset",
         )
 
     def _country_available_for(product_name: str, country_value: str) -> bool:
@@ -939,6 +1021,43 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # country for the new product only if it's still empty (a
             # validated carried-over country is preserved, never re-asked).
         else:
+            # Before treating this as a flat decline, check whether the
+            # reply itself names a DIFFERENT real, ingested product — e.g.
+            # replying to "Switch to X?" with "Quote Y for a US customer"
+            # is not a decline, it's a new switch request that got swallowed
+            # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 1). Only re-prompt when
+            # the detected product differs from both the current product and
+            # the one just declined; otherwise fall through to a normal
+            # decline exactly as before.
+            _redetected = _cpq_engine.detect_product_mention(
+                req.question, hints, reader, req.workspace_id,
+            )
+            _old_pending = session.pending_switch_product
+            if (
+                _redetected
+                and _redetected != session.product_name
+                and _redetected != _old_pending
+            ):
+                session.pending_switch_product = _redetected
+                session.pending_switch_question = req.question
+                logger.info(
+                    "cpq_switch: decline-reply named a different product "
+                    "turn=%s old_pending=%r new_pending=%r",
+                    session.turn, _old_pending, _redetected,
+                )
+                answer = (
+                    f"It looks like you're asking about **{_redetected}**, but "
+                    f"this session is configuring **{session.product_name}**. "
+                    f"Switch to **{_redetected}** and discard the current "
+                    f"configuration? (yes/no)"
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_switch_reoffer()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
             session.pending_switch_product = ""
             session.pending_switch_question = ""
             session.pending_anchor = ""
@@ -1431,6 +1550,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # first: a message like "show me the json so far" doesn't match any
     # menu option and would otherwise be rejected as an invalid answer. ────
     mode_request = _cpq_engine.detect_response_mode_request(req.question)
+
+    # ── Label collision: shared display_label across 2+ distinct attrs must
+    # be disambiguated, never silently resolved (docs/CPQ_SESSION_2_OPEN_ISSUES.md
+    # item 2). Checked before the options-query fast path below. ─────────────
+    _collision = _cpq_engine.detect_label_collision(req.question, attrs)
+    if _collision:
+        _lines = "\n".join(
+            f"- **{a.variable_name}**"
+            f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
+            for a in _collision
+        )
+        answer = (
+            f"There are {len(_collision)} different attributes labeled "
+            f"**\"{_collision[0].display_label}\"** in this catalog — which one "
+            f"did you mean?\n\n{_lines}"
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_label_collision()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
 
     # ── Attribute option query: "what values are available for X?" ────────────
     queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)

@@ -356,3 +356,45 @@ already-written, already-tested recognizer into the ingestion pipeline)
 rather than parallel, duplicated pattern-matching logic. Approach B is a
 genuinely valuable next step once A proves the recognizer is solid against
 real catalogs, not a competing choice.
+
+## Status: Approach B implemented
+
+Per explicit direction, **Approach B was built directly** (the recognizer
+was implemented as a prerequisite, standalone runtime evaluator tier/
+call-site threading from Approach A was NOT built):
+
+- `parse_array_iteration()` + `ArrayIterationShape` — `src/aryx/cpq/bml.py`
+  (the recognizer section, just above `_first_matching_branch`). Recognizes
+  both the boolean-flag variant (`val=true` gated on selector+qty) and the
+  quantity-copy variant (`val=qty[idx]`/bare `return qty[idx]`), and
+  correctly bails (`None`) on unrelated `for`-containing scripts (dictionary
+  lookups, `jsonarraysize`, etc.) — same "match or bail" discipline as
+  Tier 1.
+- `_detect_script_data_flow_links()` — `src/aryx/pipeline/doc_discovery.py`,
+  sibling to `_detect_fk_links`. Locates the workspace's `*BmFunction` and
+  `*BmConfigAttr` plans, runs `parse_array_iteration()` over every
+  `script_text` row, and — for each recognized script — appends 3 derived
+  columns (`_array_control_attr_ref`/`_array_selector_attr_ref`/
+  `_array_qty_attr_ref`) to the `bm_function` plan's own CSV data so the
+  existing value-equality `link_by_attribute` mechanism can join them
+  against `bm_config_attr.variable_name`. Emits the 3 fk_link specs
+  (`BMFUNCTION_ARRAY_ITERATES`/`BMFUNCTION_READS_SELECTOR`/
+  `BMFUNCTION_READS_QUANTITY`) in the same `{source_type, source_attr,
+  target_type, target_attr, name}` shape `_detect_fk_links` already
+  produces — no new pipeline plumbing needed.
+- Wired into `ingest_confirmed()` immediately after the existing
+  `_detect_fk_links(valid_plans, ...)` call, extending the same `auto_fk`
+  list — additive, runs before any plan's CSV is read into entities so the
+  column mutation is visible to the graph writer.
+- Tests: `tests/test_cpq_bml_array_iteration.py` (8 tests) — covers both
+  recognizer variants, the unrecognized-shape bail case, the empty-script
+  edge case, link emission + column materialization, the no-bm_function-
+  plan case, and non-collision with `_detect_fk_links`'s own output.
+
+**Still open (correctly out of scope for this pass):** the runtime
+consumption side — a future evaluator tier or `resolve_array_grid_links`
+follow-up querying `BMFUNCTION_ARRAY_ITERATES` edges instead of the current
+variable-name heuristic — remains Approach A's territory, not built here.
+Existing catalogs need a fresh ingest to pick up these new edges (an
+enrichment, not a retroactive migration, per this plan's own risk note
+above).

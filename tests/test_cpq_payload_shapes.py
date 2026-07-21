@@ -54,6 +54,29 @@ def test_set_type_2_multi_attr_is_excluded_too():
     assert "multiSel" not in out
 
 
+def test_array_control_attr_is_excluded_from_payload():
+    # docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3: mountingArrayControl_viSoln's
+    # value has no real connection to the answered per-row quantity — it's
+    # BigMachines-internal array-size scaffolding, hidden=1 in the raw XML,
+    # never surfaced by the native UI. Shipping it is a coincidental,
+    # disconnected number, so it's dropped like hide_in_trans/set_type=2.
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="mountingArrayControl_viSoln",
+                   display_label="Mounting Array Control", required=False,
+                   default_value="", options=_menu("5", "7"), is_array_control=True),
+        ConfigAttr(entity_id=2, variable_name="mountingTypeLockingMolleMountQuantity_viSoln",
+                   display_label="Locking Molle Mount Quantity", required=False,
+                   default_value="", options=[]),
+    ]
+    out = _payload(attrs, {
+        "mountingArrayControl_viSoln": "5",
+        "mountingTypeLockingMolleMountQuantity_viSoln": "7",
+    })
+
+    assert "mountingArrayControl_viSoln" not in out
+    assert out["mountingTypeLockingMolleMountQuantity_viSoln"] == "7"
+
+
 def test_menu_backed_integer_uses_menu_shape_not_bare_number():
     attrs = [ConfigAttr(entity_id=1, variable_name="numRefreshes", display_label="Refreshes",
                         required=False, default_value="", options=_menu("1", "2", "3"),

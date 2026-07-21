@@ -909,6 +909,108 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
     return links
 
 
+def _detect_script_data_flow_links(plans: list[dict], log_id: str | None = None) -> list[dict]:
+    """Ingestion-time static analysis: recognize the array-iteration BML
+    idiom in ``bm_function.script_text`` and materialize what it finds as
+    permanent, queryable fk_link specs (docs/CPQ_BML_ARRAY_ITERATION_TIER_PLAN.md,
+    Approach B).
+
+    Sibling to ``_detect_fk_links`` — same {source_type, source_attr,
+    target_type, target_attr, name} spec shape, consumed by the same
+    ``link_by_attribute`` value-equality join, just a different discovery
+    mechanism (script-text pattern recognition instead of column-name
+    inference). Reuses ``aryx.cpq.bml.parse_array_iteration`` — the SAME
+    recognizer a future runtime evaluator tier (Approach A) would use — as
+    the single source of truth for this idiom; this pass never
+    re-implements the pattern independently.
+
+    Mechanism: ``link_by_attribute`` only knows how to join by VALUE
+    equality between an existing column on each side — it has no way to
+    join "a variable name parsed out of a free-text script column" without
+    a real column to hold that value. So for each ``bm_function`` row
+    whose script recognizes, three derived columns are appended to that
+    plan's own CSV data (the parsed control/selector/quantity attribute
+    names) and 3 fk_link specs point those new columns at the matching
+    ``bm_config_attr`` rows' ``variable_name`` column — reusing the exact
+    same materialization path ``_detect_fk_links``'s own output already
+    goes through, no new pipeline plumbing required.
+
+    Returns [] when no bm_function/bm_config_attr plan pair is present, or
+    when no script in the bm_function plan recognizes as this idiom — a
+    catalog with no array-iteration scripts is left completely unchanged.
+    """
+    from aryx.cpq.bml import parse_array_iteration
+
+    fn_plan = next((p for p in plans if p["ontology_type"].endswith("BmFunction")), None)
+    attr_plan = next((p for p in plans if p["ontology_type"].endswith("BmConfigAttr")), None)
+    if fn_plan is None or attr_plan is None:
+        return []
+
+    try:
+        text = fn_plan["data"].decode("utf-8", "ignore")
+        rows = list(csv.reader(io.StringIO(text)))
+    except Exception:  # noqa: BLE001
+        logger.warning("script-data-flow log_id=%s: could not parse %s CSV",
+                        log_id, fn_plan["ontology_type"])
+        return []
+    if not rows:
+        return []
+    header = rows[0]
+    script_col = next(
+        (h for h in header if h.lower() in ("script_text", "script")), None,
+    )
+    if script_col is None:
+        return []
+    script_idx = header.index(script_col)
+
+    _CONTROL_COL, _SELECTOR_COL, _QTY_COL = (
+        "_array_control_attr_ref", "_array_selector_attr_ref", "_array_qty_attr_ref",
+    )
+    rows_out = [header + [_CONTROL_COL, _SELECTOR_COL, _QTY_COL]]
+    recognized = 0
+    for row in rows[1:]:
+        row = list(row) + [""] * max(0, len(header) - len(row))
+        script = row[script_idx] if script_idx < len(row) else ""
+        shape = parse_array_iteration(script)
+        if shape:
+            recognized += 1
+            extra = [shape.control_attr, shape.selector_attr, shape.qty_attr or ""]
+        else:
+            extra = ["", "", ""]
+        rows_out.append(row + extra)
+
+    if not recognized:
+        return []
+
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows_out)
+    fn_plan["data"] = buf.getvalue().encode("utf-8")
+
+    links = [
+        {
+            "source_type": fn_plan["ontology_type"], "source_attr": _CONTROL_COL,
+            "target_type": attr_plan["ontology_type"], "target_attr": "variable_name",
+            "name": "BMFUNCTION_ARRAY_ITERATES",
+        },
+        {
+            "source_type": fn_plan["ontology_type"], "source_attr": _SELECTOR_COL,
+            "target_type": attr_plan["ontology_type"], "target_attr": "variable_name",
+            "name": "BMFUNCTION_READS_SELECTOR",
+        },
+        {
+            "source_type": fn_plan["ontology_type"], "source_attr": _QTY_COL,
+            "target_type": attr_plan["ontology_type"], "target_attr": "variable_name",
+            "name": "BMFUNCTION_READS_QUANTITY",
+        },
+    ]
+    logger.info(
+        "script-data-flow log_id=%s: recognized %d/%d array-iteration script(s) in %s, "
+        "emitting %d link spec(s)",
+        log_id, recognized, len(rows) - 1, fn_plan["ontology_type"], len(links),
+    )
+    return links
+
+
 def _detect_fk_links_workspace(
     plan: dict, known_types: list[str], seen: set[tuple[str, str]] | None = None,
     job_id: str | None = None,
@@ -1004,6 +1106,17 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
                     job_id, len(auto_fk), auto_fk)
+
+    # Array-iteration BML idiom recognition (Approach B, docs/
+    # CPQ_BML_ARRAY_ITERATION_TIER_PLAN.md) — additive, alongside the
+    # column-name-based FK detection above. Mutates the bm_function plan's
+    # own CSV data (adds 3 derived columns) when it finds recognized
+    # scripts, so this must run before _run_one_plan below reads plan["data"].
+    script_flow_links = _detect_script_data_flow_links(valid_plans, log_id=job_id)
+    if script_flow_links:
+        auto_fk.extend(script_flow_links)
+        logger.info("confirm job=%s array-iteration script analysis: %d link spec(s): %s",
+                    job_id, len(script_flow_links), script_flow_links)
 
     # Detect FK links from the last plan to types already in the workspace.
     # Fires for single-file jobs where _detect_fk_links returns [].

@@ -128,3 +128,41 @@ def test_unchanged_value_is_not_reported_as_a_change():
     )
 
     assert result is None
+
+
+def test_reordered_phrase_still_matches_dropping_the_generic_prefix_too():
+    """docs/CPQ_SESSION_2_OPEN_ISSUES.md item 1: a message stating the
+    quantity BEFORE the mount name — reversed from the label's own
+    "...Jacket Magnetic Mount Quantity" word order — while ALSO dropping
+    the generic "mounting type" prefix in the same breath, previously fell
+    through to no match at all (neither the drop-leading-words tier nor a
+    naive order-blind full-word-set check succeeds, since the dropped
+    prefix words are never in a reordered message and the leftover words
+    are out of order). `_label_mention_span`'s word-set fallback now tries
+    progressively shorter leading-word-dropped suffixes as an order-blind
+    SET, closing this gap without weakening the "match fully or bail"
+    contract for any individual candidate."""
+    engine = CpqEngine()
+    attr = _qty_attr(
+        "mountingTypeJacketMagneticMountQuantity_viSoln",
+        "mounting type Jacket Magnetic Mount Quantity")
+    filled = {"mountingTypeJacketMagneticMountQuantity_viSoln": "10"}
+
+    result = engine.detect_change_request(
+        "change the quantity of jacket magnetic mount to 15", [attr], filled=filled,
+    )
+    assert result is not None
+    assert result[0].variable_name == attr.variable_name
+    assert result[1] == "15"
+
+    # A genuinely ambiguous message (no specific mount named at all) must
+    # still decline rather than guess which sibling attr is meant.
+    pouch = _qty_attr(
+        "mountingTypePouchMountQuantity_viSoln", "mounting type Pouch Mount Quantity")
+    filled_both = {**filled, "mountingTypePouchMountQuantity_viSoln": "3"}
+    ambiguous = engine.detect_change_request(
+        "change the mounting type quantity to 15", [attr, pouch], filled=filled_both,
+    )
+    assert ambiguous is None, (
+        "a message naming no specific mount type must never guess which "
+        "sibling attr was meant")
