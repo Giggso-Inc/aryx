@@ -181,3 +181,155 @@ machinery) on switch-back, capped at 5 entries. Country carry-over
 precedence against the existing switch-confirmation logic traced and
 confirmed conflict-free. Still a client-held JSON blob — no new DB table
 required.
+
+---
+
+## 9. Duplicate attribute labels in Beautify/review output — confirmed cross-catalog, not SVX-only
+**Status: scoped, not yet implemented**
+
+**Problem:** The Beautify table/text view (and, by extension,
+`render_filled_summary`'s prose fallback, since both share the same source)
+shows multiple rows under the SAME label with different values — e.g. SVX's
+two "Mounting Type" rows ("Swivel Clip and Adjustable Lanyard" and "Jacket
+Magnetic Mount"). **Confirmed this is not SVX-specific or a missing-rule
+bug**: checked a full APX NEXT quote payload against the raw XML and found
+3 separate collision groups in a SINGLE quote:
+
+| Shared label | Distinct attrs, distinct values |
+|---|---|
+| "Service Type" | `serviceType_astro`→Advantage, `serviceTypeRSM_astro`→1 Year Standard Warranty, `serviceTypeAdditionalDMSCoverage_astro`→Premier (a THREE-way collision) |
+| "Duration" | `serviceDuration_astro`→10 Years, `solutionTypeDuration_astro`→5 Years |
+| 'Is this a "SPARE radio"' | `isThisASPARERadioBatt_astro`→Yes, `isThisASPARERadioAntenna_astro`→Yes |
+
+Root cause traced to the catalogs' own source data (not an ingestion or
+matching bug — already verified the NL matcher correctly disambiguates
+same-label attrs by option vocabulary, see the earlier `mountType_viSoln`
+vs `mountingTypeArray_viSoln` analysis): BigMachines' native XML
+genuinely gives multiple, functionally distinct attributes the identical
+short display label. All of them flow through
+`CpqEngine._filled_summary_triples()`
+([engine.py:4719](../src/aryx/cpq/engine.py)) — the shared source
+`beautify_text()`/`beautify_rows()`/`render_filled_summary()`/
+`categorized_summary_groups()` all build on — which keys purely off
+`display_label`, so any group of attrs sharing a label produces
+identical-looking rows with no way to tell them apart.
+
+**Scoped fix (display path):** in `_filled_summary_triples()`, after
+building the filtered `(var, label, value)` list, detect labels that
+occur more than once and disambiguate ONLY those duplicates by appending
+the `variable_name` in parentheses — e.g. `"Mounting Type
+(mountType_viSoln)"` vs `"Mounting Type
+(mountingTypeArray_viSoln)"`. Deterministic (variable_name is always
+unique, so this never needs a semantic guess at what distinguishes them),
+generic across any catalog (no per-catalog literal), and zero-risk to
+every attr that ISN'T part of a collision (single-occurrence labels are
+untouched). Small, localized change — one method, no interface change,
+since it operates on the triples list before `filled_summary_pairs()`/
+`categorized_summary_groups()` consume it downstream.
+
+**Widened problem — the QUERY path has the same collision, and
+variable-name disambiguation doesn't help a real rep there.** A rep
+asking mid-conversation "what are the options for service type" or
+"change the service type" hits `detect_attr_query()`
+([engine.py:4208](../src/aryx/cpq/engine.py)) /
+`detect_change_request()`'s label-mention gate, both of which also key
+off `display_label`. `detect_attr_query`'s own tie-break — "the
+LONGEST/most specific match wins" — is a no-op when every colliding
+label is the identical string (all 3 "Service Type" attrs), so it
+silently resolves to whichever one happens to be first in list order,
+not necessarily the one meant. Checked whether the native BigMachines UI
+gives a rep some OTHER visible signal to disambiguate by (a layout
+section/page name, a grouping label) — traced through the two Menu/Text
+Attribute Editor screenshots and `ConfigAttr`'s own fields
+([state.py:125](../src/aryx/cpq/state.py)): **no such field exists.**
+Every editor field shown (Category, Data Type, Array Type, Display
+Order) is backend-only metadata never surfaced to an actual quoting rep,
+and `ConfigAttr` captures no layout/section grouping at all. Asking a
+rep to know or supply the `variable_name` (the only currently-unambiguous
+identifier) is not realistic — they never see it.
+
+**Fix (query path) — reuse the existing clarify-before-guessing
+pattern:** this codebase already has the right shape for this in the
+product-switch flow — `suggest_switch` ([ask_api.py:864](../src/aryx/api/ask_api.py))
+lists every real candidate and asks "Which one did you mean?" instead of
+picking one when detection is ambiguous. Extend `detect_attr_query`
+(and the `detect_change_request` label-mention gate) the same way: when
+2+ attrs share a label with no other signal to break the tie, don't
+resolve silently — return all candidates, and prompt using each one's
+**current value** as the human-readable distinguisher (visible in the
+review screen already, unlike variable_name or admin metadata), e.g.:
+
+> "Service Type" is ambiguous — which one? **Advantage** (main service),
+> **1 Year Standard Warranty** (RSM warranty), or **Premier** (DMS
+> coverage)?
+
+This closes the gap for the whole conversational flow, not just the
+static Beautify/summary display — the display fix (variable_name suffix)
+and the query fix (clarify-with-values prompt) are companion pieces of
+the same underlying issue, not alternatives.
+
+**Test plan:**
+1. Display path: a regression test constructing two `ConfigAttr`s with
+   the same `display_label` and different `variable_name`s, asserting
+   `filled_summary_pairs()` returns two visibly distinct labels (both
+   suffixed) while a third, non-colliding label in the same call stays
+   unsuffixed.
+2. Query path: `detect_attr_query`/`detect_change_request` given 3
+   filled attrs sharing one label and no variable_name/value hint in the
+   question — assert a clarify-style result (all 3 candidates + their
+   current values) is returned/raised instead of an arbitrary single
+   pick; a control case with a value-specific question ("...to Premier")
+   still resolves directly, unaffected.
+
+---
+
+## 10. `mountingArrayControl_viSoln` value doesn't match the actual per-row quantity entered
+**Status: found, not yet investigated at the code level**
+
+**Problem:** Live transcript (SVX, Locking Molle Mount, quantity "7"):
+the payload correctly shows `mountingTypeLockingMolleMountQuantity_viSoln:
+7`, but `mountingArrayControl_viSoln.items[0].value` is `"5"` — the
+array Configurable Attribute Set's own size/control attribute (see item
+7's analysis of `bm_config_attr_set` / `size_attr_id`) doesn't reflect
+the row's real quantity. These two values represent the same underlying
+fact (how many Locking Molle Mounts) and must agree.
+
+**Not yet root-caused:** haven't traced which code path writes
+`mountingArrayControl_viSoln`'s value — worth checking whether it's
+being set from a stale/earlier turn's quantity (e.g. the FIRST previously
+attempted mount type before the cascade-driven Mounting Type re-ask), or
+from an unrelated recommendation/default rule that doesn't actually track
+the live row. Needs a live-session repro (Docker) to inspect
+`session.filled["mountingArrayControl_viSoln"]` across the turn where
+the quantity "7" was answered, to see exactly when/how "5" got written.
+
+---
+
+## 11. Cascade-invalidated non-hidden attribute silently vanishes, but the flow still claims "Configuration complete"
+**Status: found, not yet investigated at the code level**
+
+**Problem:** Same transcript: picking "Locking Molle Mount" triggers a
+cascade removing `serviceType_viSoln`'s prior answer ("Removed TECH
+SUPPORT AND HARDWARE REPAIR from Service Type — no longer valid after
+this change" — `find_cascade_dependents`/`_handle_cascade`'s
+invalidation mechanism, confirmed working as designed for THIS part).
+But `serviceType_viSoln` is never re-asked afterward, and is missing
+from both the final categorized summary and the submitted JSON payload
+— confirmed via the raw XML that this attr is **not** hidden
+(`hidden=0`) and **not** suppressed by the active Solution Type=CapEx
+Purchase condition (the rule that fires there,
+`hideServiceDurationIfSolutionTypeIsCapExPurchaseBOM`, targets *Service
+Duration*, a different attr — not Service Type). Despite this, the flow
+says "Configuration complete" and offers to submit, even though a
+real, visible, previously-answered decision was silently dropped.
+
+**Not yet root-caused:** this looks like a gap in how invalidated
+dependents get folded back into `pending_variables` after a cascade —
+`_handle_cascade` strips the dependent's value from `filled` (correct,
+since it's now stale) but the completeness check that decides
+"Configuration complete" vs. "N attribute(s) still need input" may not
+be re-running against the FULL required/decision-attr set after a
+cascade the same way it does on a normal turn. Needs a live-session
+repro to inspect `session.pending_variables` right after this specific
+cascade fires, to see whether `serviceType_viSoln` briefly enters
+`pending_variables` and gets dropped, or never enters it at all.
