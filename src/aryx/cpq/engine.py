@@ -4561,9 +4561,22 @@ class CpqEngine:
         by_label: dict[str, list[ConfigAttr]] = {}
         for a in candidates:
             by_label.setdefault(a.display_label.lower(), []).append(a)
-        for group in by_label.values():
-            if len({a.variable_name for a in group}) >= 2:
-                return group
+        all_labels = set(by_label.keys())
+        for label, group in by_label.items():
+            if len({a.variable_name for a in group}) < 2:
+                continue
+            # A more specific match already present (e.g. "mounting type
+            # Shirt Magnetic Mount Quantity" contains this group's generic
+            # "mounting type" as its own prefix) resolves the request on its
+            # own — the generic label's collision is superseded, not real
+            # (confirmed live: "change mounting type Shirt Magnetic Mount
+            # Quantity to 88" false-positived a "Mounting Type" collision
+            # between mountType_viSoln/mountingTypeArray_viSoln even though
+            # neither was meant — same principle as detect_change_request's
+            # own _superseded mechanism, just not yet applied here).
+            if any(other != label and label in other for other in all_labels):
+                continue
+            return group
         return None
 
     def detect_attr_query(
