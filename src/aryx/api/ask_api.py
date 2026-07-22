@@ -1044,8 +1044,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # the detected product differs from both the current product and
             # the one just declined; otherwise fall through to a normal
             # decline exactly as before.
+            _decline_alias_map = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
             _redetected = _cpq_engine.detect_product_mention(
                 req.question, hints, reader, req.workspace_id,
+                alias_map=_decline_alias_map,
             )
             _old_pending = session.pending_switch_product
             if (
