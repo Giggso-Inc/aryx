@@ -2359,6 +2359,48 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
 
+    # ── STEP 5b: removal while blocked with no pending question ──────────────
+    # `session.pending_variables` is empty whenever the previous turn ended
+    # on unresolved_grid_quantity_options' block (a selected grid option has
+    # no resolvable per-row quantity attr — e.g. SVX's bare "Magnetic Mount")
+    # rather than on a genuine next question, so STEP 5 above never fires and
+    # the turn fell straight to STEP 3 with filled_multi unchanged, re-hitting
+    # the identical block. Live-verified bug (2026-07-22): "okay remove it"
+    # was silently discarded this way — the block even told the user to
+    # "remove it" but nothing ever tried to parse that as a removal. Tried
+    # here, before STEP 3 re-runs the loop and re-emits the same warning.
+    if not session.pending_variables and session.turn > 1 and not mode_request:
+        _gap_removal_match = _cpq_engine.detect_multi_select_removal(
+            req.question, attrs, session.filled_multi)
+        if _gap_removal_match:
+            _gap_attr, _gap_to_remove = _gap_removal_match
+            return _handle_multi_select_removal(
+                req, session, attrs, _gap_attr, _gap_to_remove,
+                hiding_rules, rec_rules, con_rules,
+            )
+        # The block's own wording says "remove it" — a pronoun, not a named
+        # option, so detect_multi_select_removal (which requires the option
+        # to actually be named) never matches it. When the message still
+        # carries a removal verb and there's exactly one unresolved gap
+        # option, resolve "it" to that one unambiguous gap directly.
+        elif _cpq_engine._REMOVE_VERB_RE.search(req.question):
+            _by_vn = {a.variable_name: a for a in attrs}
+            _grid_links = _cpq_engine.resolve_array_grid_links(attrs)
+            _gaps = [
+                (selector_vn, item_value)
+                for selector_vn, item_map in _grid_links.items()
+                for item_value in (session.filled_multi.get(selector_vn) or [])
+                if item_value.strip().lower() not in item_map
+            ]
+            if len(_gaps) == 1:
+                _gap_selector_vn, _gap_item_value = _gaps[0]
+                _gap_attr = _by_vn.get(_gap_selector_vn)
+                if _gap_attr is not None:
+                    return _handle_multi_select_removal(
+                        req, session, attrs, _gap_attr, [_gap_item_value],
+                        hiding_rules, rec_rules, con_rules,
+                    )
+
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
     prev_filled_snapshot = dict(session.filled)
     dropped_multi: dict[str, list[str]] = {}
