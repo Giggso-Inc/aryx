@@ -9,13 +9,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: aryx
     restart: unless-stopped
-    # Host port 15432 avoids colliding with other stacks already on 5432.
+    # Host port 55432 avoids colliding with other stacks already on 5432.
     # In-network clients still reach this as postgres:5432.
-    # (Temporarily moved off 55432 — Windows had that port in a dynamic
-    # excluded-port range (`netsh interface ipv4 show excludedportrange`),
-    # which blocks Docker's host-port bind regardless of container state.)
     ports:
-      - "15432:5432"
+      - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
