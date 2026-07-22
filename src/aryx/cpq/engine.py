@@ -4274,6 +4274,59 @@ class CpqEngine:
         including the explicitly-declined empty selection; for multi attrs
         a "different value" means the mentioned option isn't already in
         the selected rows.
+
+        Just the first match from `_change_request_matches` — see
+        `detect_change_requests_multi` for a message naming several
+        attrs at once.
+        """
+        return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
+
+    # Cap on detect_change_requests_multi's result — a message naming more
+    # than this is unusual enough that blindly trusting every match risks
+    # silently misapplying something the user didn't actually intend
+    # (product decision: cap 3, apply whichever parse, report the rest).
+    _MAX_MULTI_CHANGE_REQUESTS = 3
+
+    def detect_change_requests_multi(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> list[tuple[ConfigAttr, str]]:
+        """Up to `_MAX_MULTI_CHANGE_REQUESTS` (attr, new_value_hint) matches
+        from a SINGLE message naming several attrs at once — e.g. "change
+        the Shirt Magnetic Mount Quantity to 25 and the Jacket Magnetic
+        Mount Quantity to 25". `detect_change_request` only ever returns
+        the first match (`_change_request_matches` is a generator; each
+        `for attr in _try_order` iteration yields independently, so
+        collecting more than one is exactly this: keep scanning instead of
+        stopping at the first).
+
+        Returns [] when no match is found, mirroring the "no change
+        detected" contract callers already expect from the singular form.
+        """
+        out: list[tuple[ConfigAttr, str]] = []
+        for match in self._change_request_matches(question, attrs, filled, filled_multi):
+            out.append(match)
+            if len(out) >= self._MAX_MULTI_CHANGE_REQUESTS:
+                break
+        return out
+
+    def _change_request_matches(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ):
+        """Generator yielding every (attr, new_value_hint) match — shared by
+        `detect_change_request` (first match only) and
+        `detect_change_requests_multi` (up to `_MAX_MULTI_CHANGE_REQUESTS`).
+        See `detect_change_request`'s docstring for the matching contract;
+        this is the same body with `return` turned into `yield` + `continue`
+        so the `for attr in _try_order` loop keeps scanning afterward
+        instead of exiting the whole function.
         """
         q_lower = question.lower()
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question)) or bool(self._ARROW_RE.search(question))
@@ -4357,12 +4410,13 @@ class CpqEngine:
                 mentioned = self.apply_multi_answer(attr, question)
                 current_rows = set(multi.get(attr.variable_name, []))
                 if any(iv not in current_rows for iv, _dn in mentioned):
-                    return attr, question
+                    yield attr, question
                 continue
             if attr.options:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
-                    return attr, question
+                    yield attr, question
+                    continue
             elif has_change_verb:
                 # Free-text attr (e.g. a per-mount quantity field) with an
                 # explicit change verb — the label-mention gate above has
@@ -4409,7 +4463,8 @@ class CpqEngine:
                     m2 = re.search(r"-?\d+(?:\.\d+)?", search_text)
                     value = m2.group(0) if m2 else None
                 if value is not None and value != filled.get(attr.variable_name, ""):
-                    return attr, value
+                    yield attr, value
+                    continue
 
             # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
             # the attr is mentioned but may not identify the exact option. Only reached
@@ -4421,9 +4476,8 @@ class CpqEngine:
                 hk_flat = hk.lower().replace("_", "")
                 if hk_flat in vn_flat or vn_flat in hk_flat:
                     if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        return attr, question
-
-        return None
+                        yield attr, question
+                        break
 
     def find_cascade_dependents(
         self,

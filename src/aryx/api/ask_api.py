@@ -719,6 +719,227 @@ def _handle_cascade(
     }
 
 
+def _handle_cascade_multi(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    matches: list,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> "dict[str, Any] | None":
+    """STEP 6 (multi) — apply every change a single message names at once
+    (up to `detect_change_requests_multi`'s cap), union their cascade
+    dependents, then re-run the rule loop ONCE — not once per change, or a
+    dependent could get re-derived against a stale intermediate state
+    between two changes applied in the same turn.
+
+    Product decision: partial apply. Whichever of the named changes parse
+    (a real value found for that attr) are applied; any that don't are
+    reported by label, not silently dropped and not rejecting the whole
+    turn. Returns None (caller falls through to the normal "didn't catch
+    that" nudge) only when NONE of the named changes could be applied —
+    mirrors `detect_change_request` returning None today.
+    """
+    by_eid = {a.entity_id: a for a in attrs}
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    for vn, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
+        hints.setdefault(vn, iv)
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
+
+    applied_notes: list[str] = []
+    failed_labels: list[str] = []
+    all_dependent_eids: set[int] = set()
+    changed_vns: set[str] = set()
+
+    for changed_attr, new_value_hint in matches:
+        if changed_attr.variable_name in changed_vns:
+            continue  # same attr matched twice in one message — apply once
+
+        dependent_eids = _cpq_engine.find_cascade_dependents(
+            changed_attr, attrs, hiding_rules, rec_rules, con_rules,
+        )
+        # Strip this attr + its dependents from filled before re-applying —
+        # same as the single-change path (_handle_cascade).
+        session.filled.pop(changed_attr.variable_name, None)
+        session.display_filled.pop(changed_attr.variable_name, None)
+        session.filled_source.pop(changed_attr.variable_name, None)
+        for eid in dependent_eids:
+            a = by_eid.get(eid)
+            if a:
+                session.filled.pop(a.variable_name, None)
+                session.display_filled.pop(a.variable_name, None)
+                session.filled_source.pop(a.variable_name, None)
+
+        if changed_attr.select_type == "multi":
+            mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+            result = ("", "") if not mentioned else mentioned[0]
+            if mentioned:
+                existing = session.filled_multi.get(changed_attr.variable_name, [])
+                merged = list(existing) + [iv for iv, _dn in mentioned if iv not in existing]
+                session.filled_multi[changed_attr.variable_name] = merged
+                session.display_filled[changed_attr.variable_name] = ", ".join(
+                    next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+                    for v in merged
+                )
+                session.filled_source[changed_attr.variable_name] = "user"
+            else:
+                result = None
+        else:
+            result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+            if result:
+                session.filled[changed_attr.variable_name] = result[0]
+                session.display_filled[changed_attr.variable_name] = result[1]
+                session.filled_source[changed_attr.variable_name] = "user"
+
+        if not result:
+            failed_labels.append(changed_attr.display_label)
+            continue
+
+        changed_vns.add(changed_attr.variable_name)
+        all_dependent_eids |= set(dependent_eids)
+        changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
+        applied_notes.append(f"Updated **{changed_attr.display_label}** → **{changed_disp}**.")
+
+    if not changed_vns:
+        # None of the named changes could be applied at all — let the
+        # caller fall through to the normal "didn't catch that" nudge,
+        # same as detect_change_request returning None.
+        return None
+
+    dependent_labels = [
+        by_eid[eid].display_label for eid in all_dependent_eids
+        if eid in by_eid and by_eid[eid].variable_name not in changed_vns
+    ]
+
+    # Re-run full rule evaluation loop ONCE with every change applied.
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    prev_filled_snapshot = dict(session.filled)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+    for var, new_val in filled.items():
+        old_val = prev_filled_snapshot.get(var)
+        if old_val != new_val:
+            session.cascade_log.append({
+                "var": var, "old": old_val, "new": new_val,
+                "rule": "cascade" if var in changed_vns else "cascade-dependent",
+                "turn": session.turn,
+            })
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    # Build the combined cascade notice — one line per applied change,
+    # then one combined "these depend on what changed" note (same
+    # plain-English framing as the single-change path).
+    cascade_note = " ".join(applied_notes)
+    if failed_labels:
+        cascade_note += (
+            f" Couldn't match a value for {', '.join(f'**{lbl}**' for lbl in failed_labels)} "
+            f"— left unchanged."
+        )
+    if dependent_labels:
+        if len(dependent_labels) == 1:
+            cascade_note += (
+                f" Because those changed, **{dependent_labels[0]}** depends "
+                f"on them and needs a fresh value — recalculating now."
+            )
+        else:
+            dep_list = ", ".join(f"**{lbl}**" for lbl in dependent_labels)
+            cascade_note += (
+                f" Because those changed, these depend on them and need "
+                f"fresh values: {dep_list} — recalculating now."
+            )
+    for dvar, dvals in dropped_multi.items():
+        dattr = next((a for a in attrs if a.variable_name == dvar), None)
+        dlabel = dattr.display_label if dattr else dvar
+        cascade_note += (
+            f" Removed **{', '.join(dvals)}** from **{dlabel}** — "
+            f"no longer valid after this change."
+        )
+
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    elif unresolved_grid_gaps:
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            cascade_note + "\n\n"
+            f"⚠️ {gap_list} has no quantity field configured in this "
+            f"catalog. Please remove it or choose a different option "
+            f"before this configuration can be completed."
+        )
+    else:
+        session.status = "awaiting_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_cascade_multi()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
 def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     """Execute one turn of the 8-step CPQ guided-configuration conversation.
 
@@ -1574,14 +1795,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
 
-        change_result = _cpq_engine.detect_change_request(
+        # Try multi-attribute first ("change X to A and Y to B" — up to
+        # detect_change_requests_multi's cap) — only route to the multi
+        # handler when it actually found 2+ distinct attrs; a single match
+        # falls through to the existing, more heavily-tested single-change
+        # path unchanged, so the common case has zero behavior change.
+        _multi_matches = _cpq_engine.detect_change_requests_multi(
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
-        if change_result:
-            changed_attr, new_value_hint = change_result
-            return _handle_cascade(
-                req, session, attrs, changed_attr, new_value_hint,
+        if len(_multi_matches) >= 2:
+            _multi_result = _handle_cascade_multi(
+                req, session, attrs, _multi_matches,
                 hiding_rules, rec_rules, con_rules,
             )
+            if _multi_result is not None:
+                return _multi_result
+        else:
+            change_result = _cpq_engine.detect_change_request(
+                req.question, attrs, session.filled, filled_multi=session.filled_multi)
+            if change_result:
+                changed_attr, new_value_hint = change_result
+                return _handle_cascade(
+                    req, session, attrs, changed_attr, new_value_hint,
+                    hiding_rules, rec_rules, con_rules,
+                )
 
         # Could not parse as approval, Q&A, change, or JSON request — nudge
         # with the verbose summary, NOT the raw JSON (§6/Phase K: JSON stays
