@@ -58,6 +58,53 @@ _TIER1_BLOCKERS = re.compile(
 )
 
 
+def _strip_line_comments(text: str) -> str:
+    """Strip `// ...` line comments, but never inside a quoted string
+    literal (a `"http://..."` value must survive intact).
+
+    Every Tier-1 regex scanner (`_ASSIGN_RE`, `_BOOL_RETURN_RE`, `_IF_RE`,
+    `_CMP_RE` via _parse_condition) previously scanned the RAW script text,
+    including comments — so an author's own commented-out scratch line
+    (e.g. `//returnVal = "APX NEXT Enhanced";`) matched BEFORE the real,
+    live statement right after it (`returnVal = "APX NEXT ENHANCED";`),
+    confirmed live: a real "Default APX Next Enhanced based on HW version"
+    recommendation script returned the commented-out (wrong-cased) string
+    instead of its actual executed assignment. _parse_branches strips
+    comments once at entry so every downstream scan (bodies/conditions
+    sliced from that same text) sees comment-free source.
+    """
+    out: list[str] = []
+    in_str = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            if j == -1:
+                break
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _find_block(text: str, open_idx: int) -> tuple[str, int] | None:
     """Return (block_body, index_after_close) for the {...} starting at open_idx."""
     depth = 0
@@ -122,6 +169,7 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
     condition is the _parse_condition output, or None for the else branch.
     Returns None when the script doesn't fit the Tier-1 idiom.
     """
+    script = _strip_line_comments(script)
     if _TIER1_BLOCKERS.search(script):
         return None
     branches: list[tuple[list | None, str]] = []
