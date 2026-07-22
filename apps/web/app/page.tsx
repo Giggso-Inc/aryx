@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Clock, Plus, X } from "lucide-react";
+import { Clock, Plus } from "lucide-react";
 import { Header } from "@/components/brand/Header";
+import { AskHistoryDrawer } from "@/components/ask/AskHistoryDrawer";
+import { AskSearchInput } from "@/components/ask/AskSearchInput";
 import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
 import { FollowupChips } from "@/components/ask/FollowupChips";
-import { WorkspacePeek } from "@/components/ask/WorkspacePeek";
 import { api } from "@/lib/api";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
-import type { AskThreadMessage, AskThreadSummary, ChatTurn, Citation } from "@/lib/types";
+import type { AskThreadMessage, ChatTurn, Citation } from "@/lib/types";
 
 const FOLLOWUPS = [
   "What else do we know about that Customer?",
@@ -51,24 +52,6 @@ function askThreadHref(shayWorkspaceId: string, threadId?: string) {
     : `/workspaces/${shayWorkspaceId}/ask`;
 }
 
-function relativeTimeLabel(value?: string) {
-  if (!value) return "";
-  const time = new Date(value).getTime();
-  if (Number.isNaN(time)) return "";
-  const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} ${minutes === 1 ? "min" : "mins"} ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} ${days === 1 ? "day" : "days"} ago`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months} ${months === 1 ? "month" : "months"} ago`;
-  const years = Math.floor(months / 12);
-  return `${years} ${years === 1 ? "year" : "years"} ago`;
-}
-
 function threadMessageToTurn(message: AskThreadMessage): ChatTurn {
   return {
     id: message.id,
@@ -87,81 +70,6 @@ function threadMessageToTurn(message: AskThreadMessage): ChatTurn {
   };
 }
 
-function HistoryDrawer({
-  workspaceId,
-  shayWorkspaceId,
-  selectedThreadId,
-  onClose,
-  onSelectThread,
-  onNewChat,
-}: {
-  workspaceId: number;
-  shayWorkspaceId: string | null;
-  selectedThreadId: string | null;
-  onClose: () => void;
-  onSelectThread: (threadId: string) => void;
-  onNewChat: () => void;
-}) {
-  const [threads, setThreads] = useState<AskThreadSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!shayWorkspaceId) {
-      setThreads([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    api.listAskThreads(workspaceId, shayWorkspaceId, 100)
-      .then(setThreads)
-      .catch(() => setThreads([]))
-      .finally(() => setLoading(false));
-  }, [shayWorkspaceId, workspaceId]);
-
-  return (
-    <div className="fixed top-[68px] right-0 bottom-0 z-30 flex w-96 flex-col border-l border-navy-100 bg-white shadow-soft animate-rise">
-      <div className="flex items-center justify-between border-b border-navy-100 px-4 py-3">
-        <h2 className="font-semibold text-navy-900">Ask Threads</h2>
-        <div className="flex items-center gap-1">
-          <button type="button" onClick={onNewChat}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1.5 text-[11px] font-medium text-navy-600 shadow-sm hover:bg-navy-50">
-            <Plus size={11} /> New
-          </button>
-          <button type="button" onClick={onClose}
-            className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-2">
-        {loading ? (
-          <div className="py-8 text-center text-[12px] text-subtle">Loading…</div>
-        ) : threads.length === 0 ? (
-          <div className="py-8 text-center text-[12px] text-subtle italic">No threads yet</div>
-        ) : (
-          <ul className="space-y-2">
-            {threads.map((thread) => (
-              <li key={thread.id}
-                className={`cursor-pointer rounded-lg border p-3 transition-colors ${
-                  thread.id === selectedThreadId
-                    ? "border-steel-300 bg-navy-50"
-                    : "border-navy-100 bg-white hover:border-steel-300 hover:bg-navy-50"
-                }`}
-                onClick={() => { onSelectThread(thread.id); onClose(); }}>
-                <p className="text-[12px] font-medium text-navy-800 line-clamp-2">{thread.title}</p>
-                <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-subtle">
-                  <span>{thread.message_count || 0} messages</span>
-                  <span className="shrink-0">{relativeTimeLabel(thread.updated_at)}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function HomePage() {
   const router = useRouter();
   const pathname = usePathname();
@@ -171,6 +79,7 @@ export default function HomePage() {
   const selectedThreadId = searchParams.get("thread");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
+  const [messageSearch, setMessageSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
@@ -194,6 +103,8 @@ export default function HomePage() {
   const optimisticThreadRef = useRef<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   useEffect(() => () => { cancelRecoveryRef.current = true; }, []);
+
+  useEffect(() => { setMessageSearch(""); }, [selectedThreadId]);
 
   useEffect(() => {
     activeThreadRef.current = selectedThreadId;
@@ -505,12 +416,19 @@ export default function HomePage() {
 
   const empty = turns.length === 0;
   const showEmpty = empty && !loadingThread;
+  const normalizedMessageSearch = messageSearch.trim().toLocaleLowerCase();
+  const filteredTurns = useMemo(() => {
+    if (!normalizedMessageSearch) return turns;
+    return turns.filter((turn) =>
+      turn.content.toLocaleLowerCase().includes(normalizedMessageSearch),
+    );
+  }, [normalizedMessageSearch, turns]);
 
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
       {showHistory && (
-        <HistoryDrawer
+        <AskHistoryDrawer
           workspaceId={workspaceId}
           shayWorkspaceId={shayWorkspaceId}
           selectedThreadId={selectedThreadId}
@@ -521,6 +439,7 @@ export default function HomePage() {
           onNewChat={() => {
             if (shayWorkspaceId) router.push(askThreadHref(shayWorkspaceId));
             setTurns([]);
+            setMessageSearch("");
             setSessionData({});
             setShowHistory(false);
           }}
@@ -529,13 +448,26 @@ export default function HomePage() {
 
       <div className="app-shell-offset flex min-h-0 flex-1">
         <main className="workspace-section-shell flex h-[calc(100dvh-68px)] min-h-[calc(100vh-68px)] flex-1 flex-col overflow-hidden pt-4 pb-6">
-          <div className="mb-4 flex shrink-0 items-start gap-3">
-            <WorkspacePeek workspaceId={workspaceId} className="mb-0 min-w-0 flex-1" />
+          <section
+            aria-label="Ask controls"
+            className="mb-4 flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-navy-100 bg-white p-3 shadow-soft"
+          >
+            <AskSearchInput
+              value={messageSearch}
+              onChange={setMessageSearch}
+              placeholder="Search this conversation..."
+              ariaLabel="Search this conversation"
+              resultLabel={normalizedMessageSearch
+                ? `${filteredTurns.length} ${filteredTurns.length === 1 ? "match" : "matches"}`
+                : undefined}
+              disabled={turns.length === 0}
+              className="h-10 min-w-0 flex-1 max-w-96 rounded-xl border-navy-200 bg-navy-50 shadow-none"
+            />
             <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
                 onClick={() => setShowHistory((v) => !v)}
-                className="focus-ring inline-flex h-[52px] items-center gap-1.5 rounded-2xl border border-navy-100 bg-white px-4 text-[12px] font-medium text-navy-600 shadow-soft hover:bg-navy-50"
+                className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-3.5 text-[12px] font-medium text-navy-600 shadow-sm hover:bg-navy-50"
               >
                 <Clock size={12} /> History
               </button>
@@ -546,15 +478,16 @@ export default function HomePage() {
                     router.push(askThreadHref(shayWorkspaceId));
                     setTurns([]);
                     setInput("");
+                    setMessageSearch("");
                     setSessionData({});
                   }}
-                  className="focus-ring inline-flex h-[52px] items-center gap-1.5 rounded-2xl border border-navy-800 bg-navy-800 px-4 text-[12px] font-semibold text-white shadow-soft hover:bg-navy-700"
+                  className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl border border-navy-800 bg-navy-800 px-3.5 text-[12px] font-semibold text-white shadow-sm hover:bg-navy-700"
                 >
                   <Plus size={12} /> New Ask
                 </button>
               )}
             </div>
-          </div>
+          </section>
 
           {loadingThread ? (
             <div className="flex min-h-0 flex-1 items-center justify-center text-[12px] text-subtle">
@@ -579,13 +512,19 @@ export default function HomePage() {
                   Loading older messages…
                 </div>
               )}
-              <MessageList
-                turns={turns}
-                workspaceId={workspaceId}
-                conversationId={conversationIdRef.current}
-                autoScroll={autoScrollTranscript}
-              />
-              {!busy && (
+              {normalizedMessageSearch && filteredTurns.length === 0 ? (
+                <div className="py-12 text-center text-[12px] text-subtle" aria-live="polite">
+                  No messages match “{messageSearch.trim()}”.
+                </div>
+              ) : (
+                <MessageList
+                  turns={filteredTurns}
+                  workspaceId={workspaceId}
+                  conversationId={conversationIdRef.current}
+                  autoScroll={autoScrollTranscript && !normalizedMessageSearch}
+                />
+              )}
+              {!busy && !normalizedMessageSearch && (
                 <div className="mt-6 pl-12">
                   <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
                 </div>
