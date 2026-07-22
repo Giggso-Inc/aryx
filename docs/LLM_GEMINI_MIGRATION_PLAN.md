@@ -24,7 +24,7 @@ Two completely separate subsystems, with very different amounts of work ahead:
 |---|---|---|
 | Current provider | Grok (`ARYX_LLM_PROVIDER=openai`, `ARYX_LLM_BASE_URL=https://api.x.ai/v1`, `.env`) | Ollama `nomic-embed-text`, 768-dim (`docker-compose.yml`, `broker/catalog.json`) |
 | Code path | `src/aryx/llm.py` — anything other than `"anthropic"`/`"ollama"` falls through to a generic **OpenAI-compatible `/chat/completions` caller** (`openai_json`/`complete_text`, `src/aryx/llm_providers.py`) | `src/aryx/broker/__init__.py`'s `Broker.embed()` — hardcoded to exactly two backends: `_ollama_embed` (native Ollama `/api/embed`) and `_oci_embed` (OCI GenAI Cohere) |
-| Gemini support | **Already designed in** — `discover_openai_compatible`'s own docstring: *"Works for xAI (Grok), Google (Gemini OpenAI-compat), OpenRouter, vLLM..."* (`broker/discovery.py:58`) | **Does not exist.** Gemini's embedding API (`:embedContent`/`:batchEmbedContents`) is not OpenAI-compatible — it's Google's own wire protocol, with the API key as a query param, not a Bearer header. No third branch in `embed()` today. |
+| Gemini support | **Already designed in** — `discover_openai_compatible`'s own docstring: *"Works for xAI (Grok), Google (Gemini OpenAI-compat), OpenRouter, vLLM..."* (`broker/discovery.py:58`) | **Implemented in this change.** Gemini's embedding API (`:embedContent`/`:batchEmbedContents`) is not OpenAI-compatible, so it uses Google's native wire protocol and sends the API key in the `x-goog-api-key` header. |
 
 ## 2. This isn't the first time — Gemini was already run here once
 
@@ -82,12 +82,13 @@ ARYX_LLM_TIMEOUT=900                       # keep, or re-tune after latency test
 ### 4.2 New code required
 
 1. **`src/aryx/broker/__init__.py`** — add a `_gemini_embed(texts, settings)` method alongside `_ollama_embed`/`_oci_embed`:
-   - Endpoint: `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents?key={api_key}`
+   - Endpoint: `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents`
+   - Authentication: `x-goog-api-key: <api_key>` request header. The key is never placed in the URL or query string.
    - Body shape differs from Ollama's: `{"requests": [{"model": "models/{model}", "content": {"parts": [{"text": t}]}} for t in texts]}`
    - Response: `{"embeddings": [{"values": [...]}, ...]}` — note the extra nesting (`values`, not a bare list) vs. Ollama's flat `embeddings: [[...], ...]`.
 2. **`src/aryx/config.py`** — extend `embed_backend`'s allowed values / docstring to include `"gemini"`, and `effective_embed_backend()`'s `_resolve()` call sites accordingly (currently a strict `"local"`/`"oci"` binary).
 3. **`Broker.embed()`** dispatch — add the third branch.
-4. **New env vars**: `ARYX_EMBED_BACKEND=gemini`, reuse `ARYX_LLM_API_KEY` (one Gemini key covers both chat and embeddings) or set `ARYX_EMBED_MODEL_OVERRIDE` (e.g. `text-embedding-004` or `gemini-embedding-2`).
+4. **New env vars**: `ARYX_EMBED_BACKEND=gemini`, reuse `ARYX_LLM_API_KEY` (one Gemini key covers both chat and embeddings), and optionally set `ARYX_EMBED_MODEL_OVERRIDE` (the default is `gemini-embedding-2`).
 
 ### 4.3 The real blocker: vector dimension is baked into the schema
 
@@ -95,7 +96,6 @@ ARYX_LLM_TIMEOUT=900                       # keep, or re-tune after latency test
 
 - Ollama's `nomic-embed-text` → 768-dim (matches the column as-is).
 - OCI's `cohere.embed-multilingual-v3.0` → 1024-dim (already a mismatch if that path is ever live simultaneously — out of scope here).
-- Gemini `text-embedding-004` → 768-dim **by default** (configurable via `output_dimensionality`, matches without a migration).
 - Gemini `gemini-embedding-2` (current default in code — natively multimodal, generally better quality) → 3072-dim **by default**, but explicitly supports `output_dimensionality: 768` — Google's own docs recommend exactly this as the production sweet spot, with auto-normalization of the truncated vector. **Must be set explicitly** (it's implemented as always-sent in `_gemini_embed`, never left to the default) — verify live it isn't silently returning 3072 anyway.
 
 **Two paths:**
@@ -131,11 +131,11 @@ Both phases are env-var/config-gated (`ARYX_LLM_PROVIDER`, `ARYX_EMBED_BACKEND`)
 
 **Done:**
 - `.env`: `ARYX_LLM_PROVIDER/BASE_URL/MENIAL_MODEL/REASON_MODEL` set to Gemini; `ARYX_EMBED_BACKEND=gemini` added.
-- `src/aryx/broker/__init__.py`: `_gemini_embed()` implemented (path A, 768-dim pinned, reuses `ARYX_LLM_API_KEY`, routed through `post_json` for 429 retry + no URL-in-logs), `embed()` dispatch extended.
+- `src/aryx/broker/__init__.py`: `_gemini_embed()` implemented (path A, 768-dim pinned, reuses `ARYX_LLM_API_KEY` through the `x-goog-api-key` header, routed through `post_json` for 429 retry), `embed()` dispatch extended, and persisted model identity now follows the effective embedding backend.
 - `src/aryx/config.py`: `embed_backend`/`embed_model_override` descriptions document the new value.
 - `.env.example`: documents `ARYX_EMBED_BACKEND=gemini` for future setup.
-- `scripts/reembed_gemini.py`: backfill script, `--dry-run` supported, refuses to run unless `ARYX_EMBED_BACKEND=gemini` is actually set.
-- `tests/test_broker_gemini_embed.py`: 5 tests, all passing (mocked HTTP, no real Gemini calls made).
+- `scripts/reembed_gemini.py`: bounded keyset-paged backfill script, `--dry-run` supported, refuses to run unless `ARYX_EMBED_BACKEND=gemini` is actually set, and aborts on partial or wrong-dimension responses before persistence.
+- Regression tests cover Gemini dispatch and authentication, backend-aware model identity, bounded backfill paging, response cardinality/dimension checks, and documentation claims (mocked HTTP, no real Gemini calls made).
 
 **Not done — needs you:**
 1. Put a real Gemini API key into `.env`'s `ARYX_LLM_API_KEY` (currently `REPLACE_WITH_YOUR_GEMINI_API_KEY`).

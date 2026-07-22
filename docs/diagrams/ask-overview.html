@@ -303,12 +303,12 @@
   <canvas id="heroCanvas" aria-hidden="true"></canvas>
   <div class="hero-inner">
     <span class="eyebrow"><span class="dot"></span> Ask pipeline &middot; client walkthrough</span>
-    <h1>A question in,<br /><em>a cited answer out.</em></h1>
+    <h1>A question in,<br /><em>an evidence-aware answer out.</em></h1>
     <p class="lede">
-      Once your data is in the knowledge graph, Ask turns a plain-English question into a
-      grounded, cited answer, checking its own work before it ever shows you a result. Here's
-      exactly what happens at each step, in plain language, and underneath that, exactly what's
-      happening technically.
+      Once your data is in the knowledge graph, Ask retrieves relevant records, drafts a
+      plain-English response, and reports which retrieved entities appear in that response.
+      Here's exactly what happens at each step, in plain language, and underneath that,
+      exactly what's happening technically.
     </p>
     <div class="hero-nav">
       <a href="#ask-pipeline">↓ Ask flow</a>
@@ -318,7 +318,7 @@
     <div class="hero-stats">
       <div class="stat"><div class="num">5</div><div class="lbl">Ask steps</div></div>
       <div class="stat"><div class="num">1</div><div class="lbl">Automatic trust check</div></div>
-      <div class="stat"><div class="num">0</div><div class="lbl">Answers without a citation</div></div>
+      <div class="stat"><div class="num">1</div><div class="lbl">Grounding coverage record</div></div>
       <div class="stat"><div class="num">&infin;</div><div class="lbl">Follow-up questions</div></div>
     </div>
   </div>
@@ -330,7 +330,7 @@
     <div class="section-head">
       <span class="kicker">Once the graph exists</span>
       <h2>What happens when someone asks a question</h2>
-      <p>Ask turns a plain-English question into a grounded, cited answer, checking its own work before it ever shows you a result.</p>
+      <p>Ask turns a plain-English question into an evidence-aware answer and reports how much retrieved evidence the response names.</p>
     </div>
 
     <div class="rail-wrap">
@@ -360,9 +360,9 @@
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H8l-4 4V5z" stroke-linejoin="round"/><path d="M7.5 9h9M7.5 12.5h6" stroke-linecap="round"/></svg></div>
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 03</div><h3>Answer</h3></div><span class="stage-tag">Drafted response</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>The retrieved evidence</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A draft plain-English answer, with citations</span></div>
-          <p class="what">The AI turns the retrieved evidence into a clear, plain-English answer, with the original source records cited alongside it.</p>
-          <p class="why"><b>Why it matters —</b> you can always click through and see exactly where an answer came from.</p>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The retrieved evidence</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A draft plain-English answer</span></div>
+          <p class="what">The AI turns the retrieved evidence into a clear, plain-English answer. The next step measures which retrieved entity names the response uses.</p>
+          <p class="why"><b>Why it matters —</b> the response is generated from a bounded evidence set rather than an unrestricted prompt.</p>
         </div>
       </div>
 
@@ -370,12 +370,12 @@
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v9.6L12 21l-7.5-4.2V7.2L12 3z"/><path d="M8.7 11.3l2.4 2.4 4.6-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 04</div><h3>Ground</h3></div><span class="stage-tag">Check the answer</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>The draft answer</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A verified answer, unconfirmed claims flagged</span></div>
-          <p class="what">The draft answer is checked against the evidence that was actually retrieved for it. Anything the answer claims that isn't backed up by a real record is flagged rather than shown as fact.</p>
-          <p class="why"><b>Why it matters —</b> this is what keeps Ask from ever confidently making something up, checked after every answer, not just trusted upfront.</p>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The draft answer</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A grounding coverage record</span></div>
+          <p class="what">A deterministic matcher records which retrieved entity names appear in the answer and which retrieved entities were not mentioned.</p>
+          <p class="why"><b>Why it matters —</b> this makes evidence usage visible. It is a coverage metric, not claim-level fact verification, and it does not suppress the answer.</p>
           <div class="checkpoint trust">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v4.6c0 4.6-3.1 8.4-7.5 9.6-4.4-1.2-7.5-5-7.5-9.6V7.2L12 3z"/><path d="M9 12l2 2 4-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <div><div class="lbl">Automatic check, no AI involved</div><p>This is a plain match against the evidence, not another AI judgment call, so it can't itself get this part wrong. It runs every time, on every answer, with zero exceptions.</p></div>
+            <div><div class="lbl">Deterministic coverage metric, no extra AI call</div><p>The matcher compares entity names in the answer with retrieved entities. It reports coverage consistently, while leaving claim verification to downstream review or application policy.</p></div>
           </div>
         </div>
       </div>
@@ -413,7 +413,7 @@
       </div>
       <div class="panel-foot">
         <div class="kv"><b>1</b> automatic check, every single answer: Ground</div>
-        <div class="kv"><b>0</b> answers shown without a source citation</div>
+        <div class="kv"><b>1</b> structured grounding record returned with each general answer</div>
         <div class="kv"><b>&infin;</b> follow-up questions, same context</div>
       </div>
     </div>
@@ -476,12 +476,12 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4.5" width="16" height="5" rx="1.2"/><rect x="4" y="14.5" width="16" height="5" rx="1.2"/><circle cx="7" cy="7" r="0.5" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="0.5" fill="currentColor" stroke="none"/></svg></div>
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 03</div><h3>API checks who's asking</h3></div><span class="stage-tag">Core service</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>Forwarded request</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>An authorized request, scoped to one workspace</span></div>
-          <p class="what">Before anything else happens, the API confirms the request is authorized and scoped to the right workspace.</p>
-          <p class="why"><b>Why it matters —</b> one team's data is never reachable from another team's question, even by accident.</p>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Forwarded request</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>An authenticated request with a valid workspace ID</span></div>
+          <p class="what">The deployment's API-auth mode is applied, then the API confirms that the requested workspace ID exists.</p>
+          <p class="why"><b>Why it matters —</b> unknown workspace IDs are rejected. API keys are currently global credentials; they are not bound to individual workspaces.</p>
           <div class="example">
             <div class="ex-label">Example — the check</div>
-            <div class="ex-caption"><code>workspace_id=13</code> is confirmed to belong to the caller's API key before <code>question</code> is even looked at.</div>
+            <div class="ex-caption"><code>workspace_id=13</code> is checked for existence. Any finer-grained tenant authorization must be enforced by the calling platform.</div>
           </div>
         </div>
       </div>
@@ -490,7 +490,7 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4v16M6 8h9a3 3 0 0 1 3 3v1M6 16h9a3 3 0 0 0 3-3v-1" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="4" r="2"/><circle cx="6" cy="20" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="18" cy="16" r="2"/></svg></div>
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 04</div><h3>Aryx decides: general question, or product configuration?</h3></div><span class="stage-tag">Conditional route</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>The authorized request</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Routed to the general path (STEP 05) or the CPQ path (STEP 09)</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The validated request</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Routed to the general path (STEP 05) or the CPQ path (STEP 09)</span></div>
           <p class="what">Before doing any retrieval, Aryx checks two things: does the incoming <code>session_data</code> already say this conversation is mid-configuration (<code>mode: "cpq"</code>), or, if it's a fresh conversation, does the question itself read as a request to configure or price a product? Either one routes to the CPQ path; a session already in CPQ mode stays there even if the wording of this particular message looks generic.</p>
           <p class="why"><b>Why it matters —</b> quotes have to obey the real catalog's rules, what's hidden, what's required, what's restricted; a general-purpose retrieve-and-answer flow can't be trusted to get that right, so it's routed differently from the start.</p>
           <div class="example">
@@ -546,7 +546,7 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.8 5.4L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.6L12 3z" stroke-linejoin="round"/></svg></div>
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 07</div><h3>An AI Model is called</h3></div><span class="stage-tag ai">AI call · general path</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>Retrieved records + connections</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A draft plain-English answer, with citations</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Retrieved records + connections</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A draft plain-English answer</span></div>
           <p class="what">The retrieved evidence, not a blank slate, is handed to an AI model to reason over and draft a plain-English answer from.</p>
           <p class="why"><b>Why it matters —</b> the AI only ever reasons over facts already confirmed in steps 5-6; it doesn't get to invent them.</p>
           <div class="example">
@@ -559,10 +559,10 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
       <div class="station" data-stage="8">
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v4.6c0 4.6-3.1 8.4-7.5 9.6-4.4-1.2-7.5-5-7.5-9.6V7.2L12 3z"/><path d="M9 12l2 2 4-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
         <div class="card">
-          <div class="head"><div><div class="stage-no">STEP 08</div><h3>The draft answer is grounded</h3></div><span class="stage-tag">No AI, plain matching · general path</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>The draft answer</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A verified answer, unconfirmed claims flagged</span></div>
-          <p class="what">The draft answer is checked, by plain text matching, against the records that were actually retrieved for it, not another AI judgment call. Anything the answer claims that isn't backed up is flagged, not shown as fact.</p>
-          <p class="why"><b>Why it matters —</b> this happens automatically, on every single answer, after the AI has spoken, not before, and it can't itself hallucinate, since it isn't making a judgment call, just checking for a match.</p>
+          <div class="head"><div><div class="stage-no">STEP 08</div><h3>Grounding coverage is calculated</h3></div><span class="stage-tag">No AI, plain matching · general path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The draft answer</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Entity and source coverage metadata</span></div>
+          <p class="what">Plain text matching checks which retrieved entity names appear in the response. Matching entities contribute their source records to the grounding metadata.</p>
+          <p class="why"><b>Why it matters —</b> the API exposes evidence coverage without another model call. It does not validate every factual claim or prevent the answer from being returned.</p>
           <div class="example">
             <div class="ex-label">Example — the actual Grounding record, and what the browser receives</div>
             <pre><code>"grounding": {
@@ -573,7 +573,7 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
                   "entity_type": "Rule" }],
   "uncited_entities": []
 }</code></pre>
-            <div class="ex-caption">The final response to the browser also carries <code>answer</code>, <code>terms</code>, <code>tools_called</code>, and <code>usage</code> (token counts, latency, which models were used) alongside this. An empty <code>uncited_entities</code> list means nothing retrieved got left out of the answer unexplained; anything that did would be named here.</div>
+            <div class="ex-caption">The final response also carries <code>answer</code>, <code>terms</code>, <code>tools_called</code>, and <code>usage</code>. An empty <code>uncited_entities</code> list means every retrieved entity name appeared in the response; it does not prove every sentence.</div>
           </div>
         </div>
       </div>
@@ -636,13 +636,13 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
         <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 12</div><h3>Conversation is stored in PostgreSQL</h3></div><span class="stage-tag db">Database write · both paths</span></div>
-          <div class="flowbar"><span class="chip in"><span class="k">In</span>The verified answer, or the CPQ session's next question/quote</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A stored conversation row</span></div>
-          <p class="what">Whichever path this turn took, the question, the result, and its citations or session state are saved back to PostgreSQL, so the next turn in this conversation has full context.</p>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The answer, or the CPQ session's next question/quote</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A stored conversation row</span></div>
+          <p class="what">Whichever path this turn took, the question and result are saved back to PostgreSQL with retrieval/usage metadata or CPQ session state.</p>
           <p class="why"><b>Why it matters —</b> this is what makes Continue, above, possible: nothing about the conversation only lives in the browser tab.</p>
           <div class="example">
             <div class="ex-label">Example — what's stored for each path</div>
             <div class="ex-list">
-              <div class="row"><span class="k">General path</span><span class="v">the question, the answer text, and the grounding/citations shown above</span></div>
+              <div class="row"><span class="k">General path</span><span class="v">the question, answer text, retrieval calls, and model-usage metadata</span></div>
               <div class="row"><span class="k">CPQ path</span><span class="v">the question, the next question asked back, and the full session_data (filled, filled_source, turn, status)</span></div>
             </div>
           </div>
@@ -654,7 +654,7 @@ x-aryx-api-key: •••• (added here, never sent to the browser)
         <div class="card">
           <div class="head"><div><div class="stage-no">STEP 13</div><h3>The result returns to the screen</h3></div><span class="stage-tag">Response · both paths</span></div>
           <div class="flowbar"><span class="chip in"><span class="k">In</span>Stored result</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Rendered response in the browser</span></div>
-          <p class="what">The finished result, a cited answer, or the next quoting question, travels back through the API, to the Web App, and onto the browser, the same round trip every time.</p>
+          <p class="what">The finished answer, grounding metadata, or next quoting question travels back through the API to the Web App and browser.</p>
           <p class="why"><b>Why it matters —</b> a quick question and a long product-configuration conversation both follow this identical, predictable path back to the screen.</p>
           <div class="example">
             <div class="ex-label">Example — the two real response shapes</div>

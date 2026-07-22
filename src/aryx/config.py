@@ -406,7 +406,7 @@ class Settings(BaseSettings):
         return self._resolve(self.parse_backend)
 
     def effective_embed_backend(self) -> str:
-        """Return the resolved embedding backend (oci or ollama)."""
+        """Return the resolved embedding backend (local, OCI, or Gemini)."""
         return self._resolve(self.embed_backend)
 
     def effective_llm_cheap_backend(self) -> str:
