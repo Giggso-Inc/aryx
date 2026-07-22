@@ -275,6 +275,9 @@ class FakeCpqRdb:
                 out.append((rid, cid))
         return out
 
+    def fetch_attr_set_assoc(self, workspace_id, catalog_prefix=""):
+        return {}
+
     def fetch_function_scripts(self, workspace_id, catalog_prefix=""):
         scripts = {}
         for _i, f in self.fetch_entities_by_type(workspace_id, "bm_function"):

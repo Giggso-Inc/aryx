@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aryx · How Ask Answers Your Questions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500;1,9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #F5F7FC;
+    --paper-raise: #FFFFFF;
+    --ink: #0A0F1C;
+    --subtle: #566080;
+    --line: #DEE4F2;
+    --line-soft: #EAEEF8;
+    --steel: #4C74D6;
+    --steel-strong: #3A5CB8;
+    --steel-tint: #EAF0FD;
+    --amber: #C7791A;
+    --amber-tint: #FFF4E1;
+    --amber-line: #F0C888;
+    --emerald: #1F9D74;
+    --emerald-tint: #E7F7F1;
+    --shadow: 0 1px 2px rgba(8,13,31,0.04), 0 12px 28px rgba(8,13,31,0.06);
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --paper: #0B1020;
+    --paper-raise: #10182E;
+    --ink: #EAF0FE;
+    --subtle: #97A3C4;
+    --line: #232E52;
+    --line-soft: #1A2340;
+    --steel: #86A6F5;
+    --steel-strong: #A9C0FA;
+    --steel-tint: #16204A;
+    --amber: #E7B368;
+    --amber-tint: #241C0E;
+    --amber-line: #4A3A18;
+    --emerald: #63D9AE;
+    --emerald-tint: #0E241D;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.35);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0B1020;
+      --paper-raise: #10182E;
+      --ink: #EAF0FE;
+      --subtle: #97A3C4;
+      --line: #232E52;
+      --line-soft: #1A2340;
+      --steel: #86A6F5;
+      --steel-strong: #A9C0FA;
+      --steel-tint: #16204A;
+      --amber: #E7B368;
+      --amber-tint: #241C0E;
+      --amber-line: #4A3A18;
+      --emerald: #63D9AE;
+      --emerald-tint: #0E241D;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.35);
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  }
+
+  .measure { max-width: 1100px; margin: 0 auto; padding: 0 28px; }
+  a { color: inherit; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px;
+    background: color-mix(in srgb, var(--paper) 82%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .topbar .brand { display: inline-flex; align-items: center; gap: 10px; }
+  .topbar .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  .topbar .brand span { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.28em; font-weight: 600; }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--subtle); background: var(--paper-raise); border: 1px solid var(--line);
+    padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--steel); color: var(--steel); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+  .theme-toggle svg { width: 13px; height: 13px; }
+
+  /* ---------- Hero (white ground) ---------- */
+  .hero {
+    position: relative;
+    background: linear-gradient(180deg, var(--paper-raise) 0%, var(--paper) 100%);
+    color: var(--ink);
+    overflow: hidden;
+    padding: 84px 28px 88px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.9; }
+  .hero-inner { position: relative; z-index: 2; max-width: 780px; margin: 0 auto; text-align: center; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--steel-strong); border: 1px solid var(--line); background: var(--paper-raise); padding: 6px 14px; border-radius: 999px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 0 3px var(--emerald-tint); }
+  .hero h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2.4rem, 5vw, 3.6rem);
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+    margin: 26px 0 20px;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .hero h1 em { font-style: italic; font-weight: 500; color: var(--steel-strong); }
+  .hero p.lede {
+    font-size: 17px; line-height: 1.65; color: var(--subtle); max-width: 640px; margin: 0 auto;
+  }
+  .hero-nav { margin-top: 26px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+  .hero-nav a {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.05em; text-decoration: none;
+    color: var(--steel-strong); background: var(--steel-tint); border: 1px solid var(--line); padding: 7px 14px; border-radius: 999px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .hero-nav a:hover { border-color: var(--steel); }
+  .hero-stats {
+    margin-top: 40px; display: flex; justify-content: center; gap: 0;
+    flex-wrap: wrap; border-top: 1px solid var(--line);
+  }
+  .hero-stats .stat {
+    flex: 1; min-width: 140px; padding: 20px 18px 0; text-align: center;
+    border-right: 1px solid var(--line);
+  }
+  .hero-stats .stat:last-child { border-right: none; }
+  .hero-stats .num { font-family: 'Fraunces', serif; font-size: 1.9rem; color: var(--ink); }
+  .hero-stats .lbl { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 4px; }
+
+  /* ---------- Sections ---------- */
+  section { padding: 80px 0; }
+  .section-head { max-width: 620px; margin-bottom: 44px; }
+  .section-head .kicker {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--steel); font-weight: 600;
+  }
+  .section-head h2 {
+    font-family: 'Fraunces', serif; font-weight: 500; font-size: clamp(1.7rem, 3vw, 2.15rem);
+    margin: 10px 0 12px; text-wrap: balance;
+  }
+  .section-head p { color: var(--subtle); font-size: 15px; line-height: 1.65; }
+
+  /* ---------- Pipeline rail ---------- */
+  .rail-wrap { position: relative; }
+  .rail-track {
+    position: absolute; left: 27px; top: 8px; bottom: 8px; width: 2px;
+    background: var(--line);
+  }
+  .rail-track .fill {
+    position: absolute; top: 0; left: 0; width: 100%; height: 0%;
+    background: linear-gradient(var(--steel), var(--emerald));
+    transition: height 0.4s ease-out;
+  }
+  .station { position: relative; display: grid; grid-template-columns: 56px 1fr; gap: 22px; padding-bottom: 40px; }
+  .station:last-of-type { padding-bottom: 0; }
+  .node {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--paper-raise); border: 2px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--subtle); position: relative; z-index: 2;
+    transition: border-color 0.4s ease, color 0.4s ease, background 0.4s ease;
+  }
+  .node svg { width: 22px; height: 22px; }
+  .station.seen .node { border-color: var(--steel); color: var(--steel); background: var(--steel-tint); }
+  .card {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 16px;
+    padding: 24px 26px; box-shadow: var(--shadow);
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .station.seen .card { opacity: 1; transform: translateY(0); }
+  .card .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card .stage-no { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--steel); letter-spacing: 0.06em; }
+  .card h3 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.25rem; margin: 4px 0 0; }
+  .card .stage-tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--subtle); border: 1px solid var(--line); padding: 3px 9px; border-radius: 999px;
+  }
+  .card .stage-tag.db { color: var(--steel-strong); border-color: color-mix(in srgb, var(--steel) 35%, var(--line)); }
+  .card .stage-tag.ai { color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 35%, var(--line)); }
+  .card .what { font-size: 14.5px; line-height: 1.65; margin-top: 12px; }
+  .card .why {
+    font-size: 13px; line-height: 1.6; color: var(--subtle); margin-top: 12px;
+    padding-left: 14px; border-left: 2px solid var(--line);
+  }
+  .card .why b { color: var(--ink); font-weight: 600; }
+  .card .eg { font-size: 12.5px; line-height: 1.6; color: var(--subtle); margin-top: 10px; font-style: italic; }
+  .card .eg b { color: var(--steel-strong); font-style: normal; font-weight: 600; }
+
+  /* ---------- IN / OUT flow bar (what feeds this step, what it hands to the next) ---------- */
+  .flowbar { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .flowbar .chip {
+    font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.5;
+    padding: 5px 11px; border-radius: 7px; max-width: 100%;
+  }
+  .flowbar .chip .k { font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.65; margin-right: 5px; }
+  .flowbar .in { background: var(--line-soft); color: var(--subtle); }
+  .flowbar .out { background: var(--steel-tint); color: var(--steel-strong); }
+  .flowbar .arrow { color: var(--line); font-size: 14px; }
+
+  /* ---------- Real-data example block ---------- */
+  .example { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .example .ex-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--steel-strong); background: var(--steel-tint); padding: 8px 14px; border-bottom: 1px solid var(--line);
+  }
+  .example .ex-caption {
+    padding: 10px 16px 14px; font-size: 12px; color: var(--subtle); line-height: 1.55; background: var(--paper-raise);
+  }
+  .example .ex-caption b { color: var(--ink); font-weight: 600; }
+  .example .ex-list { padding: 12px 16px; background: var(--paper); font-size: 12px; line-height: 1.9; }
+  .example .ex-list .row { display: flex; gap: 8px; }
+  .example .ex-list .k { font-family: 'JetBrains Mono', monospace; color: var(--steel-strong); min-width: 150px; flex-shrink: 0; }
+  .example .ex-list .v { color: var(--ink); }
+
+  .checkpoint {
+    margin-top: 16px; display: flex; gap: 12px; align-items: flex-start;
+    background: var(--amber-tint); border: 1px solid var(--amber-line); border-radius: 12px; padding: 14px 16px;
+  }
+  .checkpoint svg { width: 18px; height: 18px; color: var(--amber); flex-shrink: 0; margin-top: 2px; }
+  .checkpoint .lbl { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--amber); font-weight: 600; }
+  .checkpoint p { font-size: 13px; line-height: 1.55; color: var(--ink); margin-top: 3px; }
+  .checkpoint.trust { background: var(--emerald-tint); border-color: color-mix(in srgb, var(--emerald) 45%, var(--line)); }
+  .checkpoint.trust svg { color: var(--emerald); }
+  .checkpoint.trust .lbl { color: var(--emerald); }
+  .checkpoint.note { background: var(--steel-tint); border-color: var(--line); }
+  .checkpoint.note svg { color: var(--steel-strong); }
+  .checkpoint.note .lbl { color: var(--steel-strong); }
+
+  /* ---------- Recap panel (light) ---------- */
+  .panel {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 22px; padding: 40px 32px; box-shadow: var(--shadow);
+  }
+  .flow-strip { display: flex; gap: 1px; overflow-x: auto; padding-bottom: 8px; }
+  .flow-chip {
+    flex: 1; min-width: 108px; text-align: center; padding: 16px 10px;
+    background: var(--steel-tint); border: 1px solid var(--line); border-radius: 12px;
+  }
+  .flow-chip svg { width: 18px; height: 18px; color: var(--steel); }
+  .flow-chip .t { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; margin-top: 8px; color: var(--ink); }
+  .flow-arrow { display: flex; align-items: center; color: var(--line); font-size: 15px; padding: 0 2px; }
+  .panel-foot { margin-top: 26px; display: flex; gap: 20px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 20px; }
+  .panel-foot .kv { font-size: 13px; color: var(--subtle); }
+  .panel-foot .kv b { color: var(--ink); font-weight: 600; }
+
+  footer { text-align: center; padding: 40px 28px 56px; color: var(--subtle); font-size: 12.5px; }
+  footer .fname { font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; }
+  footer a { color: var(--steel-strong); text-decoration: none; font-weight: 500; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    .hero { padding: 64px 20px 72px; }
+    section { padding: 56px 0; }
+    .station { grid-template-columns: 44px 1fr; gap: 14px; }
+    .node { width: 44px; height: 44px; }
+    .node svg { width: 18px; height: 18px; }
+    .rail-track { left: 21px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="aryx-logo.png" alt="Aryx" />
+    <span>ARYX</span>
+  </div>
+  <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2"/><path d="M12 3v2.2M12 18.8V21M4.2 12H2M22 12h-2.2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5" stroke-linecap="round"/></svg>
+    <span id="themeLabel">Light</span>
+  </button>
+</header>
+
+<section class="hero">
+  <canvas id="heroCanvas" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <span class="eyebrow"><span class="dot"></span> Ask pipeline &middot; client walkthrough</span>
+    <h1>A question in,<br /><em>an evidence-aware answer out.</em></h1>
+    <p class="lede">
+      Once your data is in the knowledge graph, Ask retrieves relevant records, drafts a
+      plain-English response, and reports which retrieved entities appear in that response.
+      Here's exactly what happens at each step, in plain language, and underneath that,
+      exactly what's happening technically.
+    </p>
+    <div class="hero-nav">
+      <a href="#ask-pipeline">↓ Ask flow</a>
+      <a href="#ask-technical">↓ Ask (technical)</a>
+      <a href="ingestion-overview.html">↓ See the Ingestion flow →</a>
+    </div>
+    <div class="hero-stats">
+      <div class="stat"><div class="num">5</div><div class="lbl">Ask steps</div></div>
+      <div class="stat"><div class="num">1</div><div class="lbl">Automatic trust check</div></div>
+      <div class="stat"><div class="num">1</div><div class="lbl">Grounding coverage record</div></div>
+      <div class="stat"><div class="num">&infin;</div><div class="lbl">Follow-up questions</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="measure">
+
+  <section id="ask-pipeline">
+    <div class="section-head">
+      <span class="kicker">Once the graph exists</span>
+      <h2>What happens when someone asks a question</h2>
+      <p>Ask turns a plain-English question into an evidence-aware answer and reports how much retrieved evidence the response names.</p>
+    </div>
+
+    <div class="rail-wrap">
+      <div class="rail-track"><div class="fill"></div></div>
+
+      <div class="station" data-stage="1">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.5c-4.7 0-8.5 3.1-8.5 7s3.8 7 8.5 7c.9 0 1.8-.1 2.6-.3l4.4 1.8-1-3.8c1.6-1.2 2.5-2.9 2.5-4.7 0-3.9-3.8-7-8.5-7z"/><circle cx="8.5" cy="10.5" r="0.7" fill="currentColor" stroke="none"/><circle cx="12" cy="10.5" r="0.7" fill="currentColor" stroke="none"/><circle cx="15.5" cy="10.5" r="0.7" fill="currentColor" stroke="none"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 01</div><h3>Ask</h3></div><span class="stage-tag">Plain English</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>A question, in your own words</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A question ready to search on</span></div>
+          <p class="what">Someone types a question the way they'd ask a colleague, no query language, no dashboard to build first.</p>
+          <p class="why"><b>Why it matters —</b> anyone can get an answer, not just the person who knows how the data is structured.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="2">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 02</div><h3>Retrieve</h3></div><span class="stage-tag">Search the graph</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>A question ready to search on</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>The relevant records and connections</span></div>
+          <p class="what">Aryx looks through the knowledge graph and pulls out the specific records and connections relevant to the question.</p>
+          <p class="why"><b>Why it matters —</b> this step follows fixed, predictable rules rather than letting the AI decide what to look at, so results are consistent.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="3">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H8l-4 4V5z" stroke-linejoin="round"/><path d="M7.5 9h9M7.5 12.5h6" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 03</div><h3>Answer</h3></div><span class="stage-tag">Drafted response</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The retrieved evidence</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A draft plain-English answer</span></div>
+          <p class="what">The AI turns the retrieved evidence into a clear, plain-English answer. The next step measures which retrieved entity names the response uses.</p>
+          <p class="why"><b>Why it matters —</b> the response is generated from a bounded evidence set rather than an unrestricted prompt.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="4">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v9.6L12 21l-7.5-4.2V7.2L12 3z"/><path d="M8.7 11.3l2.4 2.4 4.6-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 04</div><h3>Ground</h3></div><span class="stage-tag">Check the answer</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The draft answer</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A grounding coverage record</span></div>
+          <p class="what">A deterministic matcher records which retrieved entity names appear in the answer and which retrieved entities were not mentioned.</p>
+          <p class="why"><b>Why it matters —</b> this makes evidence usage visible. It is a coverage metric, not claim-level fact verification, and it does not suppress the answer.</p>
+          <div class="checkpoint trust">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v4.6c0 4.6-3.1 8.4-7.5 9.6-4.4-1.2-7.5-5-7.5-9.6V7.2L12 3z"/><path d="M9 12l2 2 4-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div><div class="lbl">Deterministic coverage metric, no extra AI call</div><p>The matcher compares entity names in the answer with retrieved entities. It reports coverage consistently, while leaving claim verification to downstream review or application policy.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="5">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h10" stroke-linecap="round"/><path d="M18 15.5l3 1.5-3 1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 05</div><h3>Continue</h3></div><span class="stage-tag">Stay in context</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The answer just given</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Context for the next question</span></div>
+          <p class="what">The conversation remembers what was already asked, so a follow-up question builds naturally on the last answer instead of starting from scratch.</p>
+          <p class="why"><b>Why it matters —</b> it works like a real conversation, not a series of disconnected searches.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section id="ask-recap">
+    <div class="panel">
+      <div class="section-head">
+        <span class="kicker">Leave this on screen</span>
+        <h2>The Ask flow, at a glance</h2>
+        <p>The same five steps, end to end, for a quick recap during the conversation.</p>
+      </div>
+      <div class="flow-strip">
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.5c-4.7 0-8.5 3.1-8.5 7s3.8 7 8.5 7c.9 0 1.8-.1 2.6-.3l4.4 1.8-1-3.8c1.6-1.2 2.5-2.9 2.5-4.7 0-3.9-3.8-7-8.5-7z"/></svg><div class="t">Ask</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5" stroke-linecap="round"/></svg><div class="t">Retrieve</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H8l-4 4V5z" stroke-linejoin="round"/></svg><div class="t">Answer</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v4.6c0 4.6-3.1 8.4-7.5 9.6-4.4-1.2-7.5-5-7.5-9.6V7.2L12 3z"/></svg><div class="t">Ground</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h10" stroke-linecap="round"/></svg><div class="t">Continue</div></div>
+      </div>
+      <div class="panel-foot">
+        <div class="kv"><b>1</b> automatic check, every single answer: Ground</div>
+        <div class="kv"><b>1</b> structured grounding record returned with each general answer</div>
+        <div class="kv"><b>&infin;</b> follow-up questions, same context</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ask-technical">
+    <div class="section-head">
+      <span class="kicker">For the technical folks in the room</span>
+      <h2>Under the hood: how Ask actually flows, step by step</h2>
+      <p>The same five steps from above, broken into 13, each one showing exactly what feeds into it and what it hands to the step after, including precisely where the database and the AI models get called, and where the flow branches into a dedicated path for product-configuration questions.</p>
+    </div>
+
+    <div class="rail-wrap">
+      <div class="rail-track"><div class="fill"></div></div>
+
+      <div class="station" data-stage="1">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 8.5h18"/><circle cx="6" cy="6.7" r="0.4" fill="currentColor" stroke="none"/><circle cx="8.3" cy="6.7" r="0.4" fill="currentColor" stroke="none"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 01</div><h3>Browser opens the request</h3></div><span class="stage-tag">Client</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Someone types a question</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>An HTTP request carrying the question text</span></div>
+          <p class="what">Someone using Aryx types a question in their regular web browser.</p>
+          <p class="why"><b>Why it matters —</b> nothing special has to be installed; it starts the same way any web page does.</p>
+          <div class="example">
+            <div class="ex-label">Example — the actual request shape (AskRequest)</div>
+            <pre><code>{
+  "question": "What does the Hide UDCC rule affect?",
+  "workspace_id": 13,
+  "session_data": {},
+  "history": []
+}</code></pre>
+            <div class="ex-caption">On a brand-new conversation, <code>session_data</code> starts empty. <code>history</code> holds prior turns' role/text pairs, for a follow-up question it would already have entries.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="2">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M3.5 9h17M9 9v11"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 02</div><h3>Web App forwards it to the API</h3></div><span class="stage-tag">Next.js UI</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Question text from the browser</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>The same request, forwarded to the core service</span></div>
+          <p class="what">The Ask screen passes the question to the API over one internal connection.</p>
+          <p class="why"><b>Why it matters —</b> the browser only ever talks to one place, so there's nothing extra to configure or secure separately.</p>
+          <div class="example">
+            <div class="ex-label">Example — what actually goes over the wire internally</div>
+            <pre><code>POST /api/ask
+x-aryx-api-key: •••• (added here, never sent to the browser)
+
+{ "question": "What does the Hide UDCC rule affect?",
+  "workspace_id": 13, "session_data": {} }</code></pre>
+            <div class="ex-caption">The request body the browser sent is passed through unchanged; only the internal API key is added at this hop.</div>
+          </div>
+          <div class="checkpoint note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5.5" r="2"/><circle cx="6" cy="17" r="2"/><circle cx="18" cy="17" r="2"/><path d="M10.6 7.1L7.4 15.3M13.4 7.1l3.2 8.2M8 17h8" stroke-linecap="round"/></svg>
+            <div><div class="lbl">Alternate entry: Agent tools</div><p>Outside AI assistants (Claude, Cursor, and similar) can ask Aryx directly here too, through the same door, under the same rules.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="3">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4.5" width="16" height="5" rx="1.2"/><rect x="4" y="14.5" width="16" height="5" rx="1.2"/><circle cx="7" cy="7" r="0.5" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="0.5" fill="currentColor" stroke="none"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 03</div><h3>API checks who's asking</h3></div><span class="stage-tag">Core service</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Forwarded request</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>An authenticated request with a valid workspace ID</span></div>
+          <p class="what">The deployment's API-auth mode is applied, then the API confirms that the requested workspace ID exists.</p>
+          <p class="why"><b>Why it matters —</b> unknown workspace IDs are rejected. API keys are currently global credentials; they are not bound to individual workspaces.</p>
+          <div class="example">
+            <div class="ex-label">Example — the check</div>
+            <div class="ex-caption"><code>workspace_id=13</code> is checked for existence. Any finer-grained tenant authorization must be enforced by the calling platform.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="4">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4v16M6 8h9a3 3 0 0 1 3 3v1M6 16h9a3 3 0 0 0 3-3v-1" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="4" r="2"/><circle cx="6" cy="20" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="18" cy="16" r="2"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 04</div><h3>Aryx decides: general question, or product configuration?</h3></div><span class="stage-tag">Conditional route</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The validated request</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Routed to the general path (STEP 05) or the CPQ path (STEP 09)</span></div>
+          <p class="what">Before doing any retrieval, Aryx checks two things: does the incoming <code>session_data</code> already say this conversation is mid-configuration (<code>mode: "cpq"</code>), or, if it's a fresh conversation, does the question itself read as a request to configure or price a product? Either one routes to the CPQ path; a session already in CPQ mode stays there even if the wording of this particular message looks generic.</p>
+          <p class="why"><b>Why it matters —</b> quotes have to obey the real catalog's rules, what's hidden, what's required, what's restricted; a general-purpose retrieve-and-answer flow can't be trusted to get that right, so it's routed differently from the start.</p>
+          <div class="example">
+            <div class="ex-label">Example — two real questions, two real routes</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">"What does the Hide UDCC rule affect?"</span><span class="v">session_data={} and not a configure request → general path (STEP 05)</span></div>
+              <div class="row"><span class="k">"Help me configure a Product"</span><span class="v">detected as a configure request → CPQ path (STEP 09), session_data will come back with mode="cpq"</span></div>
+            </div>
+            <div class="ex-caption">Once a session's <code>session_data.mode</code> is <code>"cpq"</code>, every following turn in that conversation routes here automatically, the catalog rule that governs <b>Hide UDCC for Non-Privileged Users</b> stays enforced for the whole conversation, not just the turn that started it.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="5">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 05</div><h3>PostgreSQL is queried</h3></div><span class="stage-tag db">Database read · general path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>A general (non-CPQ) question</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Candidate records matching the question's terms</span></div>
+          <p class="what">For everything that isn't a product-configuration conversation, the API's first move is to look up whatever records already exist relevant to the question, in PostgreSQL, the single source of truth.</p>
+          <p class="why"><b>Why it matters —</b> nothing is trusted until it's confirmed against the real, durable data.</p>
+          <div class="example">
+            <div class="ex-label">Example — one retrieved entity (RetrievedEntity)</div>
+            <pre><code>{
+  "id": 47633456,
+  "type": "Rule",
+  "name": "Hide UDCC for Non-Privileged Users",
+  "attributes": { "rule_type": 11 }
+}</code></pre>
+            <div class="ex-caption">"Hide UDCC" in the question is enough to match this rule's name in PostgreSQL. Its <code>neighbors</code> and <code>sources</code> lists start empty here, FalkorDB fills those in next.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="6">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.3 11l7.4-4M8.3 13l7.4 4" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 06</div><h3>FalkorDB is queried</h3></div><span class="stage-tag db">Graph read · general path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Candidate records</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Their connections and neighbors in the graph</span></div>
+          <p class="what">The API follows the connections between those records in the knowledge graph, who's linked to what. This is the technical version of Retrieve, above.</p>
+          <p class="why"><b>Why it matters —</b> this is what turns a handful of records into a genuinely connected answer.</p>
+          <div class="example">
+            <div class="ex-label">Example — the same entity, now with neighbors filled in</div>
+            <pre><code>"neighbors": [
+  { "id": 39426962, "type": "ConfigAttribute", "relation": "HIDES" },
+  { "id": 43022701, "type": "ConfigAttribute", "relation": "HIDES" }
+]</code></pre>
+            <div class="ex-caption">This is what actually answers "what does the rule affect": the two attribute IDs it hides, discovered by walking the graph edge built back at ingestion's Relate step.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="7">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.8 5.4L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.6L12 3z" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 07</div><h3>An AI Model is called</h3></div><span class="stage-tag ai">AI call · general path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Retrieved records + connections</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A draft plain-English answer</span></div>
+          <p class="what">The retrieved evidence, not a blank slate, is handed to an AI model to reason over and draft a plain-English answer from.</p>
+          <p class="why"><b>Why it matters —</b> the AI only ever reasons over facts already confirmed in steps 5-6; it doesn't get to invent them.</p>
+          <div class="example">
+            <div class="ex-label">Example — the draft answer</div>
+            <div class="ex-caption">"The <b>Hide UDCC for Non-Privileged Users</b> rule hides two catalog settings unless a privileged-user flag is set to YES." The AI only names entities it was actually handed, not ones it recalls from training.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="8">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7.5 4.2v4.6c0 4.6-3.1 8.4-7.5 9.6-4.4-1.2-7.5-5-7.5-9.6V7.2L12 3z"/><path d="M9 12l2 2 4-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 08</div><h3>Grounding coverage is calculated</h3></div><span class="stage-tag">No AI, plain matching · general path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The draft answer</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Entity and source coverage metadata</span></div>
+          <p class="what">Plain text matching checks which retrieved entity names appear in the response. Matching entities contribute their source records to the grounding metadata.</p>
+          <p class="why"><b>Why it matters —</b> the API exposes evidence coverage without another model call. It does not validate every factual claim or prevent the answer from being returned.</p>
+          <div class="example">
+            <div class="ex-label">Example — the actual Grounding record, and what the browser receives</div>
+            <pre><code>"grounding": {
+  "grounded": true, "entity_count": 3, "cited_count": 3,
+  "source_count": 1, "score": 1.0,
+  "citations": [{ "marker": 1, "entity_id": 47633456,
+                  "entity_name": "Hide UDCC for Non-Privileged Users",
+                  "entity_type": "Rule" }],
+  "uncited_entities": []
+}</code></pre>
+            <div class="ex-caption">The final response also carries <code>answer</code>, <code>terms</code>, <code>tools_called</code>, and <code>usage</code>. An empty <code>uncited_entities</code> list means every retrieved entity name appeared in the response; it does not prove every sentence.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="9">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 09</div><h3>Catalog attributes and rules are loaded, fresh</h3></div><span class="stage-tag db">Database read · CPQ path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The CPQ session (new or continuing) + which catalog</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>This turn's attributes and rules</span></div>
+          <p class="what">The configuration assistant reads the catalog's attributes and every rule that governs them straight from PostgreSQL again, every single turn, never carried over or cached from earlier in the conversation.</p>
+          <p class="why"><b>Why it matters —</b> a correction to a rule is picked up on the very next turn, without needing to restart the conversation.</p>
+          <div class="example">
+            <div class="ex-label">Example — the same real catalog data from ingestion</div>
+            <div class="ex-caption">This turn loads the <b>Product</b> attribute and the <b>Hide UDCC for Non-Privileged Users</b> rule ingested earlier, along with everything else in this catalog.</div>
+          </div>
+          <div class="checkpoint note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4v7a5 5 0 0 0 5 5h6a5 5 0 0 0 5-5V4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20v-4M20 20v-4" stroke-linecap="round"/></svg>
+            <div><div class="lbl">How the session actually works</div><p>The API itself keeps no memory between turns. The entire session, every answer filled in so far, is a plain object the browser sends back on every request (<code>session_data</code>) and gets back updated on every response. Nothing about "where this conversation is" lives on the server between calls.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="10">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4v16h16" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 15l3-4 3 2 4-6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 5h3v3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 10</div><h3>Rules are evaluated in a loop, until nothing changes</h3></div><span class="stage-tag">Mostly deterministic · CPQ path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>This turn's rules + the answers filled in so far</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A settled set of visible, hidden, and auto-filled attributes</span></div>
+          <p class="what">For the answers given so far in this conversation, each rule's condition is checked, hide, then auto-fill, then recommend, then constrain, and the whole pass repeats from the top, since hiding one field can change what should be auto-filled next, which can trigger another rule. It stops once nothing changes, or after 8 passes. Most conditions are checked directly and deterministically; a minority of rules are written as legacy scripts too complex to parse directly, for those, an AI model is asked what the script would decide.</p>
+          <p class="why"><b>Why it matters —</b> a single pass isn't enough to guarantee a consistent result; looping to a fixed point is what makes the outcome the same regardless of which order rules happened to fire in.</p>
+          <div class="example">
+            <div class="ex-label">Example — the session's answers so far, and a real rule firing</div>
+            <pre><code>"filled": {
+  "isPrivilegedUser": "NO",
+  "productSelectionProduct_all": "APX6500"
+},
+"filled_source": {
+  "isPrivilegedUser": "user",
+  "productSelectionProduct_all": "user"
+}</code></pre>
+            <div class="ex-caption">Reading straight from <code>filled</code>: the privileged-user flag is <code>NO</code>, not <code>YES</code>, so <b>Hide UDCC for Non-Privileged Users</b> fires. Attribute 39426962 and attribute 43022701 are removed from what will be asked or shown next. <code>filled_source</code> records that both values came from the user directly, not a default or an earlier rule, useful later for explaining why a field has the value it does.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="11">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.5c-4.7 0-8.5 3.1-8.5 7s3.8 7 8.5 7c.9 0 1.8-.1 2.6-.3l4.4 1.8-1-3.8c1.6-1.2 2.5-2.9 2.5-4.7 0-3.9-3.8-7-8.5-7z"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 11</div><h3>The next question, or the final quote, is decided</h3></div><span class="stage-tag">CPQ path</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Whatever's still visible and unanswered after the loop settles</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>The next question to ask, or a finished quote</span></div>
+          <p class="what">Once the rule loop stops changing anything, the assistant looks at what's left. If there's still a visible, unanswered attribute, that becomes the next question. If nothing's left to ask, the filled answers become the finished quote.</p>
+          <p class="why"><b>Why it matters —</b> this is what makes the conversation feel guided rather than like filling out a long form, only ever asking about what's still actually relevant, given everything hidden or auto-filled above.</p>
+          <div class="example">
+            <div class="ex-label">Example — the next question, and the session going back out</div>
+            <div class="ex-caption">The next unanswered, un-hidden attribute becomes the question text itself, phrased in plain English with its options listed inline, there's no separate structured "options" field, the question and its choices are one piece of text. Alongside it, <code>session_data</code> goes back to the browser with <code>filled</code>, <code>turn</code> incremented, and <code>status: "configuring"</code>, ready to be sent right back on the next request at STEP 01.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="12">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 12</div><h3>Conversation is stored in PostgreSQL</h3></div><span class="stage-tag db">Database write · both paths</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The answer, or the CPQ session's next question/quote</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A stored conversation row</span></div>
+          <p class="what">Whichever path this turn took, the question and result are saved back to PostgreSQL with retrieval/usage metadata or CPQ session state.</p>
+          <p class="why"><b>Why it matters —</b> this is what makes Continue, above, possible: nothing about the conversation only lives in the browser tab.</p>
+          <div class="example">
+            <div class="ex-label">Example — what's stored for each path</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">General path</span><span class="v">the question, answer text, retrieval calls, and model-usage metadata</span></div>
+              <div class="row"><span class="k">CPQ path</span><span class="v">the question, the next question asked back, and the full session_data (filled, filled_source, turn, status)</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="13">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 8.5h18"/><path d="M8 13l2.5 2.5L16 10" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 13</div><h3>The result returns to the screen</h3></div><span class="stage-tag">Response · both paths</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Stored result</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Rendered response in the browser</span></div>
+          <p class="what">The finished answer, grounding metadata, or next quoting question travels back through the API to the Web App and browser.</p>
+          <p class="why"><b>Why it matters —</b> a quick question and a long product-configuration conversation both follow this identical, predictable path back to the screen.</p>
+          <div class="example">
+            <div class="ex-label">Example — the two real response shapes</div>
+            <pre><code>// general path
+{ "answer": "...", "terms": [...], "tools_called": [...],
+  "usage": {...}, "grounding": {...} }
+
+// CPQ path
+{ "answer": "...", "terms": [...], "tools_called": [...],
+  "usage": {...}, "grounding": null,
+  "session_data": { "filled": {...}, "turn": 2, ... },
+  "cpq_payload": null }</code></pre>
+            <div class="ex-caption">The CPQ response carries <code>session_data</code> forward so the browser can send it right back on the next question, that round trip is the entire mechanism behind "how the session works." <code>cpq_payload</code> stays <code>null</code> until the quote is actually finished and approved.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <span class="fname">ARYX</span> &middot; ask pipeline &middot; prepared for client walkthrough
+  <div style="margin-top:10px;"><a href="ingestion-overview.html">See the Ingestion flow →</a></div>
+</footer>
+
+<script>
+  // Theme toggle, persisted
+  (function() {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeToggle');
+    var label = document.getElementById('themeLabel');
+    var stored = localStorage.getItem('aryx-theme');
+    root.setAttribute('data-theme', stored || 'light');
+    function current() {
+      if (root.getAttribute('data-theme') === 'dark') return 'dark';
+      if (root.getAttribute('data-theme') === 'light') return 'light';
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function paint() { label.textContent = current() === 'dark' ? 'Dark' : 'Light'; }
+    btn.addEventListener('click', function() {
+      var next = current() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      localStorage.setItem('aryx-theme', next);
+      paint();
+      window.dispatchEvent(new CustomEvent('aryx-theme-change'));
+    });
+    paint();
+  })();
+
+  // Scroll-linked pipeline reveal + rail fill, one independent rail per .rail-wrap
+  (function() {
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var rails = Array.prototype.slice.call(document.querySelectorAll('.rail-wrap'));
+
+    rails.forEach(function(rail) {
+      var stations = Array.prototype.slice.call(rail.querySelectorAll('.station'));
+      var fill = rail.querySelector('.fill');
+      if (reduced) {
+        stations.forEach(function(s) { s.classList.add('seen'); });
+        if (fill) fill.style.height = '100%';
+        return;
+      }
+      var seenCount = 0;
+      var io = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('seen');
+            io.unobserve(entry.target);
+            seenCount++;
+            if (fill) fill.style.height = Math.round((seenCount / stations.length) * 100) + '%';
+          }
+        });
+      }, { threshold: 0.35, rootMargin: '0px 0px -10% 0px' });
+      stations.forEach(function(s) { io.observe(s); });
+    });
+  })();
+
+  // Hero canvas: scattered points self-organizing into a connected graph
+  (function() {
+    var canvas = document.getElementById('heroCanvas');
+    var ctx = canvas.getContext('2d');
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var w, h, dpr;
+    var points = [];
+    var N = 34;
+    var lineRGB = '76,116,214', dotRGB = '58,92,184';
+
+    function isDark() {
+      var root = document.documentElement;
+      if (root.getAttribute('data-theme') === 'dark') return true;
+      if (root.getAttribute('data-theme') === 'light') return false;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    function updateColors() {
+      if (isDark()) { lineRGB = '134,166,245'; dotRGB = '159,180,242'; }
+      else { lineRGB = '76,116,214'; dotRGB = '58,92,184'; }
+    }
+    window.addEventListener('aryx-theme-change', updateColors);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateColors);
+    updateColors();
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = canvas.clientWidth; h = canvas.clientHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+
+    function init() {
+      points = [];
+      for (var i = 0; i < N; i++) {
+        points.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          tx: w / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.42,
+          ty: h / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.42,
+          r: 1.6 + Math.random() * 1.6,
+          drift: Math.random() * Math.PI * 2
+        });
+      }
+    }
+
+    var t = 0;
+    function frame() {
+      t += 0.006;
+      ctx.clearRect(0, 0, w, h);
+      var settle = Math.min(1, t / 1.6);
+
+      var pos = points.map(function(p) {
+        var x = p.x + (p.tx - p.x) * settle + Math.sin(t * 0.6 + p.drift) * 6 * (1 - settle * 0.6);
+        var y = p.y + (p.ty - p.y) * settle + Math.cos(t * 0.5 + p.drift) * 6 * (1 - settle * 0.6);
+        return { x: x, y: y, r: p.r };
+      });
+
+      ctx.lineWidth = 1;
+      for (var i = 0; i < pos.length; i++) {
+        for (var j = i + 1; j < pos.length; j++) {
+          var dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          var maxD = 70 + settle * 40;
+          if (d < maxD) {
+            var alpha = (1 - d / maxD) * 0.16 * (0.3 + settle * 0.9);
+            ctx.strokeStyle = 'rgba(' + lineRGB + ',' + alpha.toFixed(3) + ')';
+            ctx.beginPath();
+            ctx.moveTo(pos[i].x, pos[i].y);
+            ctx.lineTo(pos[j].x, pos[j].y);
+            ctx.stroke();
+          }
+        }
+      }
+      for (var k = 0; k < pos.length; k++) {
+        ctx.beginPath();
+        ctx.arc(pos[k].x, pos[k].y, pos[k].r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(' + dotRGB + ',' + (0.45 + settle * 0.35).toFixed(3) + ')';
+        ctx.fill();
+      }
+
+      if (t < 40) requestAnimationFrame(frame);
+    }
+
+    resize(); init();
+    if (reduced) {
+      t = 3; frame();
+    } else {
+      requestAnimationFrame(frame);
+    }
+  })();
+</script>
+</body>
+</html>

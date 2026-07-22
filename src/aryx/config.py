@@ -317,11 +317,15 @@ class Settings(BaseSettings):
     )
     embed_backend: str = Field(
         default="",
-        description="Embedding backend: 'local' (Ollama) or 'oci' (OCI GenAI Cohere Embed v3).",
+        description=(
+            "Embedding backend: 'local' (Ollama), 'oci' (OCI GenAI Cohere "
+            "Embed v3), or 'gemini' (Gemini batchEmbedContents, requires "
+            "ARYX_LLM_API_KEY — see docs/LLM_GEMINI_MIGRATION_PLAN.md)."
+        ),
     )
     embed_model_override: str = Field(
         default="",
-        description="Override embed model for either backend (empty = use backend default).",
+        description="Override embed model for any backend (empty = use backend default).",
     )
     llm_cheap_backend: str = Field(
         default="",
@@ -402,7 +406,7 @@ class Settings(BaseSettings):
         return self._resolve(self.parse_backend)
 
     def effective_embed_backend(self) -> str:
-        """Return the resolved embedding backend (oci or ollama)."""
+        """Return the resolved embedding backend (local, OCI, or Gemini)."""
         return self._resolve(self.embed_backend)
 
     def effective_llm_cheap_backend(self) -> str:
