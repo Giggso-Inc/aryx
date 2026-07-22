@@ -62,18 +62,32 @@ class ChunkStore:
                     embeddings[0].model_id if embeddings else "—")
 
     def check_embed_compat(self, model_id: str, dim: int) -> None:
-        """Fail-closed startup check: raise if stored model/dim differs from configured."""
+        """Fail-closed startup check: raise if the configured model's stored dim differs.
+
+        Scoped to `model_id` (rather than an unscoped `SELECT DISTINCT ...
+        LIMIT 1` over every stored embedding) so the result is deterministic
+        even while two model_ids legitimately coexist mid-migration (e.g.
+        scripts/reembed_gemini.py's backfill window, before its documented
+        manual DELETE of the old model's rows) — previously, an arbitrary
+        row from whichever model Postgres happened to return first could
+        flip this check's verdict across restarts with nothing actually
+        wrong. No stored row for `model_id` yet (nothing embedded under it
+        so far) is not itself a mismatch — same "nothing to compare
+        against" pass as before, just scoped to this model rather than the
+        whole table; a real dim mismatch is also caught at INSERT time by
+        aryx_chunk_embedding.embedding's fixed vector(768) column.
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(load("select_embedding_model"))
+                cur.execute(load("select_embedding_model"), (model_id,))
                 row = cur.fetchone()
         if row is None:
             return
-        stored_model, stored_dim = row[0], int(row[1])
-        if stored_model != model_id or stored_dim != dim:
+        stored_dim = int(row[0])
+        if stored_dim != dim:
             raise RuntimeError(
-                f"embed model mismatch: stored=({stored_model}, {stored_dim}) "
-                f"configured=({model_id}, {dim}). Re-embed or update config."
+                f"embed model mismatch: stored dim for model={model_id!r} is "
+                f"{stored_dim}, configured dim={dim}. Re-embed or update config."
             )
 
     def close(self) -> None:

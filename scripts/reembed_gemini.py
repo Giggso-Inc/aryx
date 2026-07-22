@@ -11,11 +11,13 @@ IMPORTANT — do not run this until:
   1. ARYX_LLM_API_KEY holds a real Gemini key and ARYX_EMBED_BACKEND=gemini
      has been live-verified on at least one fresh document (Phase 2 test
      plan, docs/LLM_GEMINI_MIGRATION_PLAN.md §3.4/§4).
-  2. You are ready to also DELETE the old model_id's rows afterward —
-     ChunkStore.check_embed_compat() does `SELECT DISTINCT model_id, dim
-     ... LIMIT 1`, which becomes non-deterministic once two model_ids
-     coexist across different chunks. This script does NOT delete the old
-     rows itself (kept as a manual, deliberate step — see bottom of file).
+  2. You are ready to also DELETE the old model_id's rows afterward, once
+     Gemini embeddings are verified — this script does NOT delete them
+     itself (kept as a manual, deliberate step — see bottom of file).
+     ChunkStore.check_embed_compat() now scopes its query to the
+     configured model_id, so it stays deterministic while both coexist
+     (it no longer depended on this cleanup for correctness); the old
+     rows are cleaned up for storage cost, not to fix a startup-check bug.
 
 Usage:
     PYTHONPATH=src python3 scripts/reembed_gemini.py [--batch-size 50] [--dry-run]
@@ -159,8 +161,9 @@ def main() -> int:
             "Old-model rows were NOT deleted — once Gemini embeddings are "
             "verified (similarity/resolution spot-checks look right), run:\n"
             "  DELETE FROM aryx_chunk_embedding WHERE model_id != %r;\n"
-            "manually, so ChunkStore.check_embed_compat()'s single-row check "
-            "stops seeing two coexisting model_ids.", model_id,
+            "manually, to reclaim storage (not required for "
+            "ChunkStore.check_embed_compat(), which stays correct with "
+            "both model_ids coexisting).", model_id,
         )
     return 0
 
