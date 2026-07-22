@@ -75,6 +75,25 @@ def test_summary_excludes_optional_tier_fill():
     assert triples == []
 
 
+def test_summary_includes_confirmed_product_switch_anchor():
+    # Real transcript (confirmed live): productSelectionProduct_all is
+    # seeded with filled_source="product_anchor" right after a CONFIRMED
+    # product switch ("yes" to "Switch to aSTRO25_bom?") — a genuine
+    # decision, just under its own distinct source tag rather than "user".
+    # Omitting it from the active-sources set meant "Product" was missing
+    # from the summary on exactly the turn it was decided, only
+    # reappearing later once a cascade happened to re-tag it "rule".
+    eng = CpqEngine()
+    attrs = [_attr(1, "productSelectionProduct_all", "Product")]
+    display_filled = {"productSelectionProduct_all": "APX NEXT Enhanced"}
+    rule_governed_ids = {1}
+    sources = {"productSelectionProduct_all": "product_anchor"}
+
+    triples = eng._filled_summary_triples(
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
+    assert [t[0] for t in triples] == ["productSelectionProduct_all"]
+
+
 def test_summary_excludes_administrative_associated_options_attr():
     # Curated business-relevance narrowing (product decision, follow-up
     # after "narrow to rules that actually fired" still left ~24 largely
