@@ -119,16 +119,36 @@ class Broker:
                 Ignored on the local Ollama and Gemini paths.
 
         Returns an empty list if no embed model is configured, so callers can
-        gracefully fall back to string-only similarity.
+        gracefully fall back to string-only similarity. Also returns an empty
+        list — never a short/misaligned one — if the backend's vector count
+        doesn't match len(texts): every real caller (pipeline/embed.py's
+        embed_chunks, resolution/run.py's _block_embeddings) zips the result
+        positionally against its input with no independent count check of
+        its own, so a partial-batch response (a plausible edge case on any
+        of the 3 backends — a 200-OK reply that's structurally short) would
+        otherwise silently attribute a vector to the wrong text/chunk rather
+        than failing loudly. Checked ONCE here, at the shared chokepoint all
+        3 backends and every caller go through, rather than duplicated per
+        backend or per call site — this exact count check already existed,
+        duplicated, only in scripts/reembed_gemini.py's own batch helper.
         """
         from aryx.config import get_settings
         settings = get_settings()
         backend = settings.effective_embed_backend()
         if backend == "oci":
-            return self._oci_embed(texts, settings, input_type=input_type)
-        if backend == "gemini":
-            return self._gemini_embed(texts, settings)
-        return self._ollama_embed(texts)
+            result = self._oci_embed(texts, settings, input_type=input_type)
+        elif backend == "gemini":
+            result = self._gemini_embed(texts, settings)
+        else:
+            result = self._ollama_embed(texts)
+        if result and len(result) != len(texts):
+            logger.error(
+                "broker.embed() backend=%s returned %d vector(s) for %d text(s) "
+                "— discarding to avoid a misaligned embedding-to-text mapping",
+                backend, len(result), len(texts),
+            )
+            return []
+        return result
 
     def _ollama_embed(self, texts: list[str]) -> list[list[float]]:
         """Embed via local Ollama /api/embed endpoint."""

@@ -51,6 +51,50 @@ def test_embed_dispatches_to_gemini_when_backend_configured() -> None:
     assert body["requests"][0]["content"]["parts"][0]["text"] == "hello"
 
 
+def test_embed_discards_a_short_gemini_batch_instead_of_misaligning() -> None:
+    """A partial-batch response (fewer vectors than texts — a plausible
+    200-OK edge case, not just a hard API failure post_json already
+    raises on) must never reach the caller as a short list that would
+    silently misalign against the input via positional zip() in
+    pipeline/embed.py / resolution/run.py. Discarded to an empty list —
+    the same "unavailable, fall back gracefully" signal every real
+    caller already handles correctly."""
+    broker = _broker()
+    settings = _settings()
+    # 3 texts requested, only 2 vectors returned.
+    fake_response = {"embeddings": [{"values": [0.1] * 768}, {"values": [0.2] * 768}]}
+
+    with patch("aryx.config.get_settings") as mock_get_settings, \
+         patch("aryx.llm_providers.post_json", return_value=fake_response):
+        mock_get_settings.return_value = SimpleNamespace(
+            effective_embed_backend=lambda: "gemini", **vars(settings),
+        )
+        vectors = broker.embed(["hello", "world", "extra"])
+
+    assert vectors == []
+
+
+def test_embed_discards_a_short_ollama_batch_instead_of_misaligning() -> None:
+    """Same count-mismatch guard, exercised via the default Ollama path —
+    the check lives once in embed() itself, not duplicated per backend."""
+    broker = Broker(
+        Registry(), TokenGovernor({}),
+        embed_config={"model": "nomic-embed-text", "endpoint": "http://ollama:11434"},
+    )
+    fake_response = {"embeddings": [[0.1] * 768]}  # 1 vector for 2 texts
+
+    with patch("aryx.config.get_settings") as mock_get_settings, \
+         patch("urllib.request.urlopen") as mock_urlopen:
+        mock_get_settings.return_value = SimpleNamespace(effective_embed_backend=lambda: "local")
+        import json as _json
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            _json.dumps(fake_response).encode("utf-8")
+        )
+        vectors = broker.embed(["hello", "world"])
+
+    assert vectors == []
+
+
 def test_gemini_embed_defaults_model_when_no_override() -> None:
     """Gemini embedding uses the supported stable model by default."""
     broker = _broker()
