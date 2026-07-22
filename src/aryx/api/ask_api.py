@@ -642,9 +642,25 @@ def _handle_cascade(
     changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
     cascade_note = f"Updated **{changed_attr.display_label}** → **{changed_disp}**."
     if dependent_labels:
-        cascade_note += (
-            f" This invalidated: *{', '.join(dependent_labels)}* — re-evaluating."
-        )
+        # Plain-English framing, not a raw label dump — "This invalidated:
+        # X, Y — re-evaluating." read as internal/mechanical shorthand
+        # rather than something a sales rep could act on. Names WHY (the
+        # change just made) and WHAT is happening (fresh values being
+        # computed), singular/plural phrased so one dependent doesn't read
+        # oddly as a list.
+        if len(dependent_labels) == 1:
+            cascade_note += (
+                f" Because **{changed_attr.display_label}** changed, "
+                f"**{dependent_labels[0]}** depends on it and needs a fresh "
+                f"value — recalculating now."
+            )
+        else:
+            dep_list = ", ".join(f"**{lbl}**" for lbl in dependent_labels)
+            cascade_note += (
+                f" Because **{changed_attr.display_label}** changed, these "
+                f"depend on it and need fresh values: {dep_list} — "
+                f"recalculating now."
+            )
     for dvar, dvals in dropped_multi.items():
         dattr = next((a for a in attrs if a.variable_name == dvar), None)
         dlabel = dattr.display_label if dattr else dvar
