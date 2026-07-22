@@ -230,9 +230,40 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
 
 
 def _branch_values(body: str) -> list[str] | None:
-    """Extract the pipe-delimited allowed-value list from a branch body."""
+    """Extract the pipe-delimited allowed-value list from a branch body.
+
+    Returns None (unparseable — caller falls through to Tier 2/unknown,
+    never a guess) when the assignment's right-hand side continues past
+    the pipe-delimited literal list `_ASSIGN_RE` captures — e.g. string
+    concatenation (`+`). Without this check, a real SVX script
+
+        returnval ="<model style="+"\\""+"color:#2B8838;..."+link+"</b></model>";
+
+    silently matched only its FIRST quoted fragment (`"<model style="`)
+    and returned that truncated garbage as if it were the whole,
+    intentional value (confirmed live: sVXTAAKitHelpText_viSoln's real
+    payload value was the literal truncated string `<model style=`).
+    `_ASSIGN_RE`'s own alternation only accepts `"literal"` segments
+    joined by `|`, so it stops matching (without erroring) at the first
+    `+` — this check catches exactly that silent truncation.
+    """
     m = _ASSIGN_RE.search(body)
     if not m:
+        return None
+    tail = body[m.end():].lstrip()
+    if tail.startswith("+"):
+        # WARNING, not info — this deployment's root logger is configured
+        # at WARNING (confirmed live: aryx.cpq.bml's effective level was
+        # WARNING, silently dropping an earlier INFO call here), and this
+        # signals a real BML script shape the evaluator can't safely
+        # resolve — worth surfacing, not just informational chatter.
+        logger.warning(
+            "cpq: Tier-1 _branch_values found a returnVal assignment "
+            "whose right-hand side continues past the pipe-delimited "
+            "literal list (string concatenation) — treating as "
+            "unparseable rather than returning a truncated value. "
+            "matched=%r body=%.200r", m.group(0), body,
+        )
         return None
     values = [v.strip() for v in _STR_RE.findall(m.group(1))]
     return [v for v in values if v and v != "|"]

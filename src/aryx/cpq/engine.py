@@ -5222,6 +5222,17 @@ class CpqEngine:
     # — subscription/service term lines the summary should not list.
     _YEAR_VALUE_RE: re.Pattern[str] = re.compile(r"\byears?\b", re.IGNORECASE)
 
+    # filled_source values that represent a genuine per-turn decision — a
+    # rule whose condition actually held (source="rule"/"country_derived"),
+    # or the user's own answer/hint/cascade-driven change — as opposed to a
+    # bland "default"/"optional"/"auto" fill nobody actually reasoned about
+    # this turn. Used to narrow "Associated Options" to attrs that were
+    # genuinely decided, not merely targeted by some rule somewhere in the
+    # catalog (see _filled_summary_triples).
+    _SUMMARY_ACTIVE_SOURCES: frozenset[str] = frozenset({
+        "rule", "country_derived", "user", "hint", "cascade", "cascade-dependent",
+    })
+
     def _is_summary_excluded(
         self, variable_name: str, display_label: str, value: str,
         attr: "ConfigAttr | None", source: str | None = None,
@@ -5325,6 +5336,19 @@ class CpqEngine:
             items = [
                 (var, label) for var, label in items
                 if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
+                # rule_governed_ids alone is STATIC — "targeted by some rule
+                # somewhere in the catalog," regardless of whether that
+                # rule's condition actually held THIS turn. As more real
+                # rules got correctly wired up this session, that static set
+                # grew, silently widening "Associated Options" past the
+                # intended "key attributes actually decided" scope. Narrow
+                # further to filled_source, the one per-turn signal that
+                # tracks whether a rule genuinely fired (source="rule"/
+                # "country_derived") or the user genuinely chose something
+                # (source="user"/"hint"/"cascade"/"cascade-dependent") —
+                # excluding bland "default"/"optional"/"auto" fills that
+                # were never actually reasoned about this turn.
+                and (sources is None or sources.get(var) in self._SUMMARY_ACTIVE_SOURCES)
             ]
         return [(var, label_map.get(var, var), label) for var, label in items]
 
