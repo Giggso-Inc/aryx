@@ -469,6 +469,27 @@ _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 _SUMMARY_FALLBACK_CATEGORY = "Associated Options"
 
+# Curated "business-relevant" fragments for the catch-all Associated
+# Options section ONLY — Product Name/Service Plan/Quantity & Duration
+# stay unaffected (already narrow by category definition). Generic
+# technical/customer-facing configuration dimensions common across every
+# catalog this engine has ingested (APX NEXT, SVX, DM4400, SL3500e) — a
+# sales rep would actually read these out loud. Deliberately excludes
+# internal/administrative fields a rule may well govern but nobody
+# customer-facing cares about (validation org, order type, software
+# release, provisioning-agency status, config-process markers, "agency
+# has Motorola evidence solution" style CRM context) — narrower than
+# "any rule fired" (product decision, confirmed live: that scope still
+# left ~24 largely-administrative items in a real APX NEXT quote).
+_ASSOCIATED_OPTIONS_KEY_FRAGMENTS: frozenset[str] = frozenset({
+    "frequency", "band", "antenna", "battery", "carrier", "keypad",
+    "housing", "channel", "hardware", "video", "mount", "training",
+    "wireless", "display", "knob", "packaging", "packing", "spare",
+    "endusertype", "coverage", "accidentaldamage", "rsm", "region",
+    "color", "voltage", "certification", "connector", "cable", "earpiece",
+    "case", "bracket", "screenprotector", "manual", "charger", "power",
+})
+
 # Public alias so ask_api can identify the catch-all category by name
 # (e.g. to tighten its own narration instructions for it) without a
 # private-name cross-module import.
@@ -5349,6 +5370,19 @@ class CpqEngine:
                 # excluding bland "default"/"optional"/"auto" fills that
                 # were never actually reasoned about this turn.
                 and (sources is None or sources.get(var) in self._SUMMARY_ACTIVE_SOURCES)
+            ]
+            # Curated business-relevance filter — Associated Options only
+            # (the catch-all fallback category); Product Name/Service Plan/
+            # Quantity & Duration are already narrow by category definition
+            # and stay as-is. Gated the same as the narrowing above — only
+            # for callers that opted into the narrowed "sales rep talking
+            # points" scope (rule_governed_ids supplied); beautify_rows'/
+            # beautify_text's full-detail dump (rule_governed_ids=None)
+            # must keep showing every filled attr, unaffected.
+            items = [
+                (var, label) for var, label in items
+                if self._summary_category(var) != _SUMMARY_FALLBACK_CATEGORY
+                or any(frag in var.lower().replace("_", "") for frag in _ASSOCIATED_OPTIONS_KEY_FRAGMENTS)
             ]
         return [(var, label_map.get(var, var), label) for var, label in items]
 
