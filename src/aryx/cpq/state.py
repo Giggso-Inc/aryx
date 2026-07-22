@@ -178,6 +178,31 @@ class ConfigAttr:
     # sized/populated by a rec/constraint rule conditioned on this control
     # (see docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5 Change B).
     is_array_control: bool = False
+    # True for BM attrs flagged auto_lock=1 — confirmed live (docs/
+    # CPQ_SESSION_2_OPEN_ISSUES.md, auto_lock double-wrap finding) this
+    # overrides the set_type=="2" exclusion in build_payload: a set_type=="2"
+    # attr with auto_lock=1 (e.g. archeType_viSoln, modelSelectionSelectModel_
+    # viSoln) is a real, includable value that ships double-wrapped
+    # ({"value": {"value":..,"displayValue":..}}), not dropped like the
+    # genuinely transient set_type=="2"/auto_lock=0 attrs.
+    auto_lock: bool = False
+    # BigMachines composite "array set" membership (docs/
+    # CPQ_ARRAY_SET_PAYLOAD_PLAN.md) — a driver/control attr (already
+    # flagged is_array_control above) plus ordered member columns (e.g.
+    # Mounting Type's selector + its own per-row quantity), grouped by a
+    # shared bm_config_attr_set id and serialized as one _index-keyed row
+    # per selection rather than flat per-column lists. None/"" = not part
+    # of any array-set.
+    array_set_id: int | None = None
+    array_set_role: str = ""              # "driver" | "member" | ""
+    array_col_order: int = 999            # member ordinal within the set's row
+    # DRIVER attrs only — the set's own variable_name (from the
+    # bm_config_attr_set driver row, a distinct, never-ConfigAttr-ingested
+    # entity) precomputed into the real wire-format top-level key, e.g.
+    # "_setmountingTypeArrayset_viSoln". Members leave this "" — the
+    # wrapper key is looked up via the driver, never reconstructed by
+    # build_payload from a template.
+    array_set_wrapper_key: str = ""
 
 
 @dataclass
@@ -281,6 +306,19 @@ class CpqSession:
     # which SUBMITTED the current quote). Old payloads default to [] via
     # from_dict, same as every other newer field.
     pending_switch_candidates: list[str] = field(default_factory=list)
+    # Per-product snapshot of config-scoped state, keyed by product_name (the
+    # FAMILY/catalog key detect_product_mention resolves to -- same identity
+    # that already gates a switch). Captured on switch-AWAY (before the reset
+    # below wipes it) and restored on switch-TO when the target was visited
+    # earlier this session, so A -> B -> A no longer discards A's answers by
+    # design (see docs/CPQ_MULTI_PRODUCT_SESSION_SNAPSHOT_PLAN.md). Restored
+    # values are seeded back in as auto_fill's already_filled -- the SAME
+    # re-validation every normal turn already relies on, so a value that's no
+    # longer valid under current rules is naturally dropped/re-asked, never
+    # blindly trusted. Capped at 5 entries (evict-oldest) to bound payload
+    # growth. Each snapshot dict has keys: filled, filled_multi,
+    # display_filled, filled_source, country, negated_vns, product_entity_id.
+    product_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -61,6 +61,59 @@ def test_apx_model_code_digit_no_longer_wins_over_the_real_quantity():
     assert result[1] == "3", "must extract the value after 'to', not the '6500' embedded in the model code"
 
 
+def test_generic_label_does_not_shadow_a_more_specific_one_it_subsumes():
+    # Confirmed live (SVX, workspace 19): "Change the mounting type Locking
+    # Molle Mount Quantity to 10" matched the generic
+    # accecsssoriesQuantityArray_viSoln (real label "Quantity") instead of
+    # mountingTypeLockingMolleMountQuantity_viSoln (real label "mounting
+    # type Locking Molle Mount Quantity") — purely because the generic attr
+    # happened to sit earlier in catalog order. "Quantity" is a literal
+    # substring of the specific label, so it must be deprioritized.
+    engine = CpqEngine()
+    generic = _qty_attr("accecsssoriesQuantityArray_viSoln", "Quantity")
+    specific = _qty_attr(
+        "mountingTypeLockingMolleMountQuantity_viSoln",
+        "mounting type Locking Molle Mount Quantity",
+    )
+    filled = {
+        "accecsssoriesQuantityArray_viSoln": "1",
+        "mountingTypeLockingMolleMountQuantity_viSoln": "7",
+    }
+    result = engine.detect_change_request(
+        "Change the mounting type Locking Molle Mount Quantity to 10.",
+        [generic, specific], filled=filled,
+    )
+
+    assert result is not None
+    assert result[0].variable_name == "mountingTypeLockingMolleMountQuantity_viSoln", (
+        "the specific, fully-mentioned label must win over the generic "
+        "substring label it subsumes"
+    )
+    assert result[1] == "10"
+
+
+def test_sibling_labels_that_dont_subsume_each_other_keep_order_dependent_result():
+    # Regression guard: two independent sibling labels (neither a substring
+    # of the other) must NOT be reordered by the subsumption fix — the
+    # existing "whichever attr the caller lists first, if both would
+    # independently match" contract stays intact.
+    engine = CpqEngine()
+    jacket = _qty_attr(
+        "mountingTypeJacketMagneticMountQuantity_viSoln",
+        "mounting type Jacket Magnetic Mount Quantity")
+    pouch = _qty_attr(
+        "mountingTypePouchMountQuantity_viSoln",
+        "mounting type Pouch Mount Quantity")
+    filled = {
+        "mountingTypeJacketMagneticMountQuantity_viSoln": "1",
+        "mountingTypePouchMountQuantity_viSoln": "1",
+    }
+    question = "change the jacket magnetic mount quantity to 15 and the pouch mount quantity to 8"
+
+    result_pouch_first = engine.detect_change_request(question, [pouch, jacket], filled=filled)
+    assert result_pouch_first[0].variable_name == pouch.variable_name
+
+
 def test_from_verb_also_anchors_correctly():
     engine = CpqEngine()
     attr = _qty_attr("v200BodyWornCameraQuantity_viSoln", "V200 Body Worn Camera Quantity")
@@ -128,3 +181,77 @@ def test_unchanged_value_is_not_reported_as_a_change():
     )
 
     assert result is None
+
+
+def test_reordered_phrase_still_matches_dropping_the_generic_prefix_too():
+    """docs/CPQ_SESSION_2_OPEN_ISSUES.md item 1: a message stating the
+    quantity BEFORE the mount name — reversed from the label's own
+    "...Jacket Magnetic Mount Quantity" word order — while ALSO dropping
+    the generic "mounting type" prefix in the same breath, previously fell
+    through to no match at all (neither the drop-leading-words tier nor a
+    naive order-blind full-word-set check succeeds, since the dropped
+    prefix words are never in a reordered message and the leftover words
+    are out of order). `_label_mention_span`'s word-set fallback now tries
+    progressively shorter leading-word-dropped suffixes as an order-blind
+    SET, closing this gap without weakening the "match fully or bail"
+    contract for any individual candidate."""
+    engine = CpqEngine()
+    attr = _qty_attr(
+        "mountingTypeJacketMagneticMountQuantity_viSoln",
+        "mounting type Jacket Magnetic Mount Quantity")
+    filled = {"mountingTypeJacketMagneticMountQuantity_viSoln": "10"}
+
+    result = engine.detect_change_request(
+        "change the quantity of jacket magnetic mount to 15", [attr], filled=filled,
+    )
+    assert result is not None
+    assert result[0].variable_name == attr.variable_name
+    assert result[1] == "15"
+
+    # A genuinely ambiguous message (no specific mount named at all) must
+    # still decline rather than guess which sibling attr is meant.
+    pouch = _qty_attr(
+        "mountingTypePouchMountQuantity_viSoln", "mounting type Pouch Mount Quantity")
+    filled_both = {**filled, "mountingTypePouchMountQuantity_viSoln": "3"}
+    ambiguous = engine.detect_change_request(
+        "change the mounting type quantity to 15", [attr, pouch], filled=filled_both,
+    )
+    assert ambiguous is None, (
+        "a message naming no specific mount type must never guess which "
+        "sibling attr was meant")
+
+
+def test_arrow_notation_works_without_a_recognized_change_verb():
+    # Confirmed live (SVX, workspace 19): "chnage mounting type Jacket
+    # Magnetic Mount Quantity → 89" has NO word _CHANGE_VERB_RE recognizes
+    # (the typo "chnage" doesn't contain "chang"), so the entire free-text
+    # number-extraction branch never ran, producing "I didn't quite catch
+    # that." An arrow ("→"/"->") is unambiguous "set to" notation on its
+    # own and must trigger the same detection path as a real verb.
+    engine = CpqEngine()
+    attr = _qty_attr(
+        "mountingTypeJacketMagneticMountQuantity_viSoln",
+        "mounting type Jacket Magnetic Mount Quantity")
+    filled = {"mountingTypeJacketMagneticMountQuantity_viSoln": "66"}
+
+    result = engine.detect_change_request(
+        "chnage mounting type Jacket Magnetic Mount Quantity → 89",
+        [attr], filled=filled,
+    )
+    assert result is not None
+    assert result[0].variable_name == attr.variable_name
+    assert result[1] == "89"
+
+
+def test_ascii_arrow_notation_also_works():
+    engine = CpqEngine()
+    attr = _qty_attr(
+        "mountingTypeJacketMagneticMountQuantity_viSoln",
+        "mounting type Jacket Magnetic Mount Quantity")
+    filled = {"mountingTypeJacketMagneticMountQuantity_viSoln": "66"}
+
+    result = engine.detect_change_request(
+        "mounting type Jacket Magnetic Mount Quantity -> 89", [attr], filled=filled,
+    )
+    assert result is not None
+    assert result[1] == "89"

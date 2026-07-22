@@ -54,6 +54,89 @@ def test_set_type_2_multi_attr_is_excluded_too():
     assert "multiSel" not in out
 
 
+def test_set_type_2_attr_with_auto_lock_is_included_double_wrapped():
+    # docs/CPQ_SESSION_2_OPEN_ISSUES.md, auto_lock double-wrap finding:
+    # a genuine reference payload showed archeType_viSoln/modelSelectionSelect
+    # Model_viSoln (set_type=="2", auto_lock=1) present, NOT excluded — one
+    # extra nesting level beyond the normal single-select shape. auto_lock=1
+    # overrides the set_type=="2" transient-layer exclusion.
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="archeType_viSoln", display_label="Solution Type",
+                   required=False, default_value="", options=_menu("CAPEX PURCHASE"),
+                   set_type="2", auto_lock=True),
+    ]
+    out = _payload(attrs, {"archeType_viSoln": "CAPEX PURCHASE"})
+
+    assert out["archeType_viSoln"] == {
+        "value": {"value": "CAPEX PURCHASE", "displayValue": "Display CAPEX PURCHASE"},
+    }
+
+
+def test_set_type_2_attr_without_auto_lock_still_excluded():
+    # Regression guard: the ORIGINAL workspace-14 evidence (genuinely
+    # transient UI/action-layer attrs, auto_lock=0 by default) must be
+    # completely unaffected by the auto_lock override.
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="_price_book_var_name", display_label="Price Book",
+                   required=False, default_value="", options=[], set_type="2"),
+    ]
+    out = _payload(attrs, {"_price_book_var_name": "PB1"})
+
+    assert "_price_book_var_name" not in out
+
+
+def test_array_control_attr_derives_row_count_when_link_is_unambiguous():
+    # docs/CPQ_SESSION_2_OPEN_ISSUES.md item 3, corrected: a genuine
+    # reference payload confirmed mountingArrayControl_viSoln IS expected
+    # in the real payload, as a bare int equal to the array-set's row
+    # count — NOT excluded (the original fix's assumption was wrong; its
+    # raw filled value is still disconnected/coincidental, but the
+    # COUNT of selected rows is a real, derivable fact when there's
+    # exactly one array-control attr and exactly one select_type=="multi"
+    # attr to link it to, avoiding any name-matching guess).
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="mountingArrayControl_viSoln",
+                   display_label="Mounting Array Control", required=False,
+                   default_value="", options=_menu("5", "7"), is_array_control=True),
+        ConfigAttr(entity_id=2, variable_name="mountingTypeArray_viSoln",
+                   display_label="Mounting Type", required=False,
+                   default_value="", options=_menu("Shirt Magnetic Mount", "Jacket Magnetic Mount"),
+                   select_type="multi"),
+    ]
+    out = _payload(
+        attrs,
+        {"mountingArrayControl_viSoln": "5"},  # stale/disconnected raw value — must be ignored
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]},
+    )
+
+    assert out["mountingArrayControl_viSoln"] == 2, (
+        "must derive the real row count (2 selected), not the stale raw value (5)"
+    )
+
+
+def test_array_control_attr_abstains_when_the_link_is_ambiguous():
+    # No select_type=="multi" attr present to link to (or 2+ candidates) —
+    # deriving a count would require guessing WHICH multi-select this
+    # control attr belongs to, which this engine's design principle
+    # forbids (same discipline as resolve_array_grid_links). Abstain
+    # entirely rather than ship a wrong or coincidental number.
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="mountingArrayControl_viSoln",
+                   display_label="Mounting Array Control", required=False,
+                   default_value="", options=_menu("5", "7"), is_array_control=True),
+        ConfigAttr(entity_id=2, variable_name="mountingTypeLockingMolleMountQuantity_viSoln",
+                   display_label="Locking Molle Mount Quantity", required=False,
+                   default_value="", options=[]),
+    ]
+    out = _payload(attrs, {
+        "mountingArrayControl_viSoln": "5",
+        "mountingTypeLockingMolleMountQuantity_viSoln": "7",
+    })
+
+    assert "mountingArrayControl_viSoln" not in out
+    assert out["mountingTypeLockingMolleMountQuantity_viSoln"] == "7"
+
+
 def test_menu_backed_integer_uses_menu_shape_not_bare_number():
     attrs = [ConfigAttr(entity_id=1, variable_name="numRefreshes", display_label="Refreshes",
                         required=False, default_value="", options=_menu("1", "2", "3"),
