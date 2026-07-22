@@ -136,6 +136,34 @@ def test_detect_change_request_collision_does_not_break_sibling_substring_case()
         "Change the mounting type Locking Molle Mount Quantity to 10", attrs, filled) is None
 
 
+def test_detect_change_request_collision_finds_specific_match_with_dropped_prefix():
+    # Real SVX transcript (confirmed live): "change the Shirt Magnetic
+    # Mount Quantity to 99" — the specific attr's real label is "mounting
+    # type Shirt Magnetic Mount Quantity", but the user's phrasing drops
+    # the generic "mounting type" prefix entirely. A strict substring
+    # check never sees the specific attr as a candidate at all (only the
+    # 3 unrelated generic "Quantity" attrs), wrongly reporting a 3-way
+    # collision — must use the same fuzzy _label_mentioned matcher
+    # detect_change_request's own resolver uses, so the specific match is
+    # found and supersedes the generic collision.
+    eng = CpqEngine()
+    attrs = [
+        _attr(1, "accecsssoriesQuantityArray_viSoln", "Quantity"),
+        _attr(2, "mountingTypeArrayqty_viSoln", "Quantity"),
+        _attr(3, "Accessories2Quantity_viSoln", "Quantity"),
+        _attr(4, "mountingTypeShirtMagneticMountQuantity_viSoln",
+              "mounting type Shirt Magnetic Mount Quantity"),
+    ]
+    filled = {
+        "accecsssoriesQuantityArray_viSoln": "",
+        "mountingTypeArrayqty_viSoln": "",
+        "Accessories2Quantity_viSoln": "",
+        "mountingTypeShirtMagneticMountQuantity_viSoln": "88",
+    }
+    assert eng.detect_change_request_collision(
+        "change the Shirt Magnetic Mount Quantity to 99", attrs, filled) is None
+
+
 def test_detect_change_request_collision_superseded_by_a_more_specific_match():
     # Real SVX transcript (confirmed live): "change mounting type Shirt
     # Magnetic Mount Quantity to 88" false-positived a "Mounting Type"

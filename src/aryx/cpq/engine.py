@@ -87,7 +87,18 @@ def _label_mention_span(
         idx = q_lower.index(label_lower)
         return idx, idx + len(label_lower)
     words = label_lower.split()
-    min_words = max(2, len(words) - max_dropped_leading)
+    # Floor of 1, not 2 — a genuine 2-word label (e.g. SVX's "Select
+    # Model") naturally gets its generic leading qualifier dropped just
+    # like longer labels do ("change the model to X" for "Select Model"),
+    # but the old floor of 2 meant a 2-word label could NEVER drop any
+    # word at all (max(2, 2-2)=2, requiring the exact 2-word phrase
+    # verbatim) — confirmed live: "change the model to SVX Video Remote
+    # Speaker Mic TAA" fell through to "I didn't quite catch that"
+    # because "select" never appears in the message. Docstring's own
+    # "at least half the label's own words remain" already implies a
+    # floor of 1 for a 2-word label; this was an off-by-one versus that
+    # stated intent.
+    min_words = max(1, len(words) - max_dropped_leading)
     if len(words) > min_words:
         for start in range(1, len(words) - min_words + 1):
             suffix = " ".join(words[start:])
@@ -4569,10 +4580,23 @@ class CpqEngine:
             return None
         q_lower = question.lower()
         multi = filled_multi or {}
+        # _label_mentioned, not a strict substring check — detect_change_
+        # request's own resolution uses this same fuzzy matcher (drops up
+        # to 2 leading words, e.g. the generic "mounting type" prefix), so
+        # a real user phrasing like "change the Shirt Magnetic Mount
+        # Quantity to 99" (the specific attr's actual label is "mounting
+        # type Shirt Magnetic Mount Quantity") must be seen as a candidate
+        # here too — confirmed live: the strict substring check never saw
+        # the specific attr as a candidate at all (its full label never
+        # literally appears when the "mounting type" prefix is dropped),
+        # only the generic "Quantity" attrs, so the supersession check
+        # below never fired and a bogus 3-way "Quantity" collision was
+        # reported even though detect_change_request's own resolver would
+        # have resolved it unambiguously.
         candidates = [
             a for a in attrs
             if (a.variable_name in filled or a.variable_name in multi)
-            and a.display_label.lower() in q_lower
+            and _label_mentioned(a.display_label.lower(), q_lower)
         ]
         # Group by the EXACT label text, not just "2+ candidates matched at
         # all" — a substring containment match (e.g. "Quantity" inside
@@ -5250,8 +5274,18 @@ class CpqEngine:
     # this turn. Used to narrow "Associated Options" to attrs that were
     # genuinely decided, not merely targeted by some rule somewhere in the
     # catalog (see _filled_summary_triples).
+    #
+    # "product_anchor" (ask_api.py) — productSelectionProduct_all seeded
+    # from a CONFIRMED product switch (the user explicitly answered "yes")
+    # — a genuine decision, just tagged with its own distinct source string
+    # rather than "user". Confirmed live: omitting it meant "Product" was
+    # missing from the summary right after a switch, only reappearing once
+    # a LATER cascade happened to re-tag it "rule" (e.g. a Hardware
+    # Version change) — the exact turn where the product was actually
+    # decided showed the least information about it.
     _SUMMARY_ACTIVE_SOURCES: frozenset[str] = frozenset({
         "rule", "country_derived", "user", "hint", "cascade", "cascade-dependent",
+        "product_anchor",
     })
 
     def _is_summary_excluded(
