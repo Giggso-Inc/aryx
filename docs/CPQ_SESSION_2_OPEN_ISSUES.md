@@ -416,3 +416,186 @@ call-site threading — so `BmlEvaluator` still falls through to Tier 2 for
 these scripts at evaluation time; only already-ingested catalogs re-ingested
 after this change gain the new graph edges. Tests:
 `tests/test_cpq_bml_array_iteration.py` (8 tests).
+
+---
+
+## 6. `detect_change_request` has no longest/most-specific-label tiebreak (new finding, fixed)
+
+**Problem Statement:** Confirmed live (SVX, workspace 19): "Change the
+mounting type Locking Molle Mount Quantity to 10." matched the WRONG
+attribute — `accecsssoriesQuantityArray_viSoln` (real label `"Quantity"`)
+— instead of `mountingTypeLockingMolleMountQuantity_viSoln` (real label
+`"mounting type Locking Molle Mount Quantity"`, an exact substring of the
+user's own message). The generic attr won purely because it sits earlier
+in catalog `order_number`, producing a confusing `"I couldn't match that
+to a valid option for Quantity"` fallback and never applying the intended
+update.
+
+**Why It's Occurring:** `detect_change_request()` (`engine.py:4114`)
+iterates `attrs` in catalog order and returns on the FIRST attr whose
+label passes the mention-gate — no tiebreak for label specificity at all,
+unlike `detect_attr_query()`, which already has one ("the longest/most
+specific match wins", confirmed and reused for the Item 2 label-collision
+fix earlier this session).
+
+**Where in the Code:** `engine.py:4165` (the main per-attr loop) — no
+ordering logic prior to this fix.
+
+**Fix implemented:** a candidate whose label is a literal substring of
+another matching candidate's label is deprioritized — tried only as a
+fallback if no more-specific candidate produces a result. Deliberately
+narrower than a blanket "sort by label length" (which broke an existing,
+correct test: two independent sibling labels that don't subsume each
+other, e.g. "Jacket Magnetic Mount Quantity" vs "Pouch Mount Quantity",
+must keep the existing order-dependent-when-both-match contract — only a
+genuine substring/subsumption relationship reorders anything). Tests:
+`test_generic_label_does_not_shadow_a_more_specific_one_it_subsumes`,
+`test_sibling_labels_that_dont_subsume_each_other_keep_order_dependent_result`
+(`tests/test_cpq_change_request_number_extraction.py`). Verified live:
+the same real message now correctly resolves and applies the update.
+
+**Root cause of the observed bug's initial appearance to persist across
+several "already-fixed" turns**: unrelated to the bug itself — the running
+Docker container's `ask_api.py`/`bml.py`/`doc_discovery.py` had never
+actually been copied into the container this session (only `engine.py`/
+`state.py`/`rdb.py` were), so several already-shipped fixes (Item 1's
+confirm_switch reoffer, in particular) were silently not live until this
+was discovered and corrected mid-session.
+
+---
+
+## 7. `detect_change_request` requires a recognized change-verb — typos and arrow notation silently fail (new finding, fixed)
+
+**Problem Statement:** Confirmed live (SVX, workspace 19, rebuilt container):
+"chnage mounting type Jacket Magnetic Mount Quantity → 89" (a typo of
+"change", using informal "→" arrow notation instead of "to") produced
+"I didn't quite catch that." and left the quantity unchanged, despite the
+message unambiguously naming the exact attribute and a clear target value.
+
+**Why It's Occurring:** `has_change_verb = bool(self._CHANGE_VERB_RE.
+search(question))` requires a literal substring match against a fixed verb
+list (`chang(?:e|ing)`, `updat(?:e|ing)`, etc.) — "chnage" doesn't contain
+"chang", so `has_change_verb` is `False`. The entire free-text quantity-
+extraction branch (`engine.py:4236` onward) only runs `elif has_change_
+verb:` — so it never even attempts to parse a number out of the message.
+
+**Where in the Code:** `engine.py:4072` (`_CHANGE_VERB_RE`), `engine.py:
+4148` (`has_change_verb` computation), `engine.py:4273-4275` (the
+"to N"/"from N" directional-value regex).
+
+**Fix implemented:** rather than attempt general typo-tolerance (fuzzy,
+risky — this engine's "never guess" discipline), an arrow (`→` or `->`)
+is treated as an equally unambiguous, independent change signal — added
+to `has_change_verb`'s computation via a new `_ARROW_RE`, and added as a
+directional-value cue alongside "to"/"from" in the number-extraction
+regex. This fixes exactly the observed case (arrow notation) without
+broadening verb-typo tolerance, which could introduce false positives on
+unrelated Q&A messages. Tests:
+`test_arrow_notation_works_without_a_recognized_change_verb`,
+`test_ascii_arrow_notation_also_works`
+(`tests/test_cpq_change_request_number_extraction.py`). Verified live
+against the exact real message on a freshly rebuilt container (`docker
+compose build api && up -d --force-recreate api`): correctly updates and
+reports "Updated **mounting type Jacket Magnetic Mount Quantity** →
+**89**."
+
+---
+
+## 8. Duplicate `pending_variables` — entire SL3500e catalog ingested twice into workspace 19 (new finding, code fix implemented; data cleanup still needed)
+
+**Problem Statement:** Confirmed live (workspace 19): a fresh DM4400 quote's
+`pending_variables` showed several attributes duplicated — e.g.
+`modelSelectionCertification_apcr`, `modelSelectionWattage_apcr`,
+`modelSelectionNoOfChannels_apcr`, `modelSelectionChannel_apcr`,
+`modelSelectionChannelSpacing_apcr`, `modelSelectionPlugType_apcr` each
+appeared TWICE in the same list, surfacing as the same question asked
+twice in one turn.
+
+**Why It's Occurring:** Confirmed via direct Postgres query
+(`aryx_entity_ws19`): the ENTIRE `Sl3500EConfigBmConfigAttr` catalog was
+ingested twice — 554 total rows / 277 distinct `variable_name`s = exactly
+2× for every single attribute, and this extends to every other entity
+type for the same catalog (`BmConfigRule` 1100, `BmConfigRuleInput` 2240,
+`BmFunction` 1616, `BmMenuItem` 11570, `BmPrdFamily` 2, etc. — all exactly
+doubled). Timestamp proof: `ultimateDestinationCountry`'s two graph
+entities (188302, 212455) both carry the same real BM attribute id
+(39426962) but were created `2026-07-18 04:16:46` and `2026-07-19
+05:38:46` — exactly one day apart, a genuine duplicate-ingestion event
+(the same XML confirmed into this workspace twice), not a narrow
+per-attribute quirk. `load_product_config()`'s `ConfigAttr` construction
+loop appended one `ConfigAttr` per graph entity with no dedup by
+`variable_name`/`source_id`, so every duplicated attribute became two
+independent `ConfigAttr` objects — both landing in `pending` whenever
+unfilled.
+
+**Where in the Code:** `engine.py:1873-1953` (the `ConfigAttr`
+construction loop in `load_product_config`) — no dedup existed before this
+fix.
+
+**Fix implemented (code, defensive):** a dedup pass after construction,
+keyed by `variable_name`, keeping the attr with the highest `entity_id`
+(the later-ingested copy — `aryx_entity.id` is a monotonic insert-order
+sequence, the same proxy the existing "duplicate entity per real id"
+handling elsewhere in this file already relies on for menu-option
+recovery). Verified live: DM4400 now loads 220 distinct attrs (0
+duplicates, was 400 total attrs pre-fix) and the conversation resolves
+straight to "Configuration complete" with no duplicate questions. Tests:
+`tests/test_cpq_duplicate_ingested_attrs.py` (3 tests).
+
+**Still needed — data cleanup (destructive, requires explicit approval
+before performed):** the underlying duplicate graph/RDB rows in workspace
+19's SL3500e catalog remain in the database. The code fix above prevents
+them from ever surfacing as duplicate questions again, but the duplicate
+data itself (roughly 2x the real row count across ~30 entity types for
+this catalog) has not been removed. Recommend a one-time cleanup pass
+(delete the older 2026-07-18 batch, keep 2026-07-19) once explicitly
+approved — out of scope for this pass, deliberately not performed without
+that approval.
+
+---
+
+## 9. Array-set selection with no resolvable quantity attr silently completes with a permanent gap (new finding, fixed)
+
+**Problem Statement:** Confirmed live (SVX, workspace 19): selecting BOTH
+"Locking Molle Mount" and the bare "Magnetic Mount" option only ever asked
+for one quantity ("mounting type Locking Molle Mount Quantity"), then
+declared "Configuration complete" — the resulting array-set row for
+"Magnetic Mount" shipped with no `mountingTypeArrayqty_viSoln` key at all.
+
+**Why It's Occurring:** Investigated the raw source XML directly — the
+"Magnetic Mount" `bm_menu_item` node is structurally identical to every
+real sibling option (`std_sys_obj=0`, no deprecation flag, same metadata
+shape as `Jacket Magnetic Mount`/`Shirt Magnetic Mount`), so it's a
+genuinely real, selectable option, not a stray/legacy item (`qty_attr_id`
+is unpopulated `-1` catalog-wide, for every option — not authoritative,
+confirms nothing). The catalog simply never gave the bare "Magnetic
+Mount" option its own dedicated quantity attribute — a genuine gap in
+BigMachines' own source data. `resolve_array_grid_links()`'s token-match
+correctly refuses to guess (the normalized token "magneticmount" matches
+BOTH `mountingTypeJacketMagneticMountQuantity_viSoln` and
+`mountingTypeShirtMagneticMountQuantity_viSoln` — 2 candidates, not 1),
+but nothing downstream ever surfaced this as a blocking gap — the
+completeness check only ever consulted `pending`, which this option was
+structurally incapable of ever entering.
+
+**Where in the Code:** `engine.py:2347` (`resolve_pending_grid_quantities`,
+unchanged) — the gap was the absence of any check for "selected but
+unresolvable" options. `ask_api.py`'s two completeness checks
+(`if pending: ... else: "Configuration complete"` and `if not pending:
+... "Configuration complete"`) had no awareness of this class of gap at
+all.
+
+**Fix implemented:** new `CpqEngine.unresolved_grid_quantity_options()`
+(`engine.py`) returns `(selector_display_label, item_value)` pairs for
+every selected grid option with no resolvable quantity link, scoped to
+attrs that genuinely participate in the grid-quantity mechanism (at least
+one sibling option DOES resolve — never fires for an ordinary multi-select
+with no grid mechanism at all). Wired into BOTH `ask_api.py` completeness
+checks: when `pending` is empty but this list is non-empty, the flow now
+blocks with an explicit message (`"⚠️ {option} has no quantity field
+configured in this catalog. Please remove it or choose a different option
+before this configuration can be completed."`) and keeps `session.status
+= "configuring"` — never `"awaiting_approval"` — so `confirm` can't
+submit an incomplete BOM. Verified live end-to-end on a freshly rebuilt
+container: the exact real scenario now blocks instead of silently
+completing. Tests: `tests/test_cpq_unresolved_grid_quantity.py` (4 tests).

@@ -69,3 +69,30 @@ def test_fetch_attr_set_assoc_ignores_assoc_rows_for_unknown_sets(monkeypatch):
     result = rdb.fetch_attr_set_assoc(workspace_id=19)
 
     assert result == {}
+
+
+def test_fetch_attr_set_assoc_skips_the_internal_array_key_counterpart(monkeypatch):
+    # Confirmed live (workspace 19 SVX + workspace 25 APX NEXT, re-ingested
+    # from the real source XML): BigMachines emits a redundant 1-member
+    # "_array_key_{ControlAttr}" set alongside every real business set,
+    # sharing the SAME size_attr_id. Without filtering it out, whichever
+    # set is fetched last would silently win the driver->set mapping.
+    set_rows = [
+        {"id": "19435387505", "variable_name": "_array_key_vX650ItemTypeArrayControl_astro",
+         "size_attr_id": "19435387207"},
+        {"id": "19435387553", "variable_name": "vX650EnergySolutions_astro",
+         "size_attr_id": "19435387207"},
+    ]
+    assoc_rows = [
+        {"set_id": "19435387505", "attr_id": "19435387209", "display_order_number": "1"},
+        {"set_id": "19435387553", "attr_id": "19435387313", "display_order_number": "1"},
+        {"set_id": "19435387553", "attr_id": "19435387349", "display_order_number": "2"},
+    ]
+    rdb = _rdb(monkeypatch, set_rows, assoc_rows)
+
+    result = rdb.fetch_attr_set_assoc(workspace_id=25)
+
+    assert 19435387505 not in result, "the internal _array_key_ set must never appear"
+    assert 19435387553 in result
+    assert result[19435387553]["variable_name"] == "vX650EnergySolutions_astro"
+    assert len(result[19435387553]["members"]) == 2

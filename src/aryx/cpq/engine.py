@@ -1952,6 +1952,25 @@ class CpqEngine:
                 array_set_wrapper_key=(wrapper_key_by_attr_id.get(source_id, "") if source_id else ""),
             ))
 
+        # Dedup by variable_name (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 8):
+        # a catalog accidentally re-ingested wholesale (confirmed live,
+        # workspace 19's SL3500e catalog — every entity type doubled,
+        # timestamps exactly one day apart) produces 2+ ConfigAttr entries
+        # sharing the same variable_name, each independently landing in
+        # `pending` when unfilled — surfacing as duplicate questions for the
+        # SAME real attribute (confirmed live: modelSelectionCertification_
+        # apcr and 5 siblings each asked twice in one turn). Keep only the
+        # highest entity_id per variable_name — aryx_entity.id is a
+        # monotonic insert-order sequence, so this keeps whichever ingest
+        # ran LAST, the same proxy the existing "duplicate entity per real
+        # id" handling already relies on elsewhere (menu-option loss fix).
+        by_vn: dict[str, ConfigAttr] = {}
+        for a in config_attrs:
+            existing = by_vn.get(a.variable_name)
+            if existing is None or a.entity_id > existing.entity_id:
+                by_vn[a.variable_name] = a
+        config_attrs = list(by_vn.values())
+
         config_attrs.sort(key=lambda a: a.order)
         return config_attrs, product_hint
 
@@ -2357,6 +2376,45 @@ class CpqEngine:
                 extra.append(qty_attr)
                 seen.add(qty_vn)
         return extra
+
+    def unresolved_grid_quantity_options(
+        self, attrs: list[ConfigAttr], filled_multi: dict[str, list[str]],
+    ) -> list[tuple[str, str]]:
+        """Selected grid-selector options with NO resolvable quantity attr
+        at all (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 9).
+
+        `resolve_array_grid_links`'s own token-matching deliberately skips
+        an option when its token is too short or ambiguous (matches 2+
+        quantity-attr candidates) — confirmed live real example: SVX's
+        bare "Magnetic Mount" option (distinct from "Jacket Magnetic
+        Mount"/"Shirt Magnetic Mount") has no dedicated quantity attr in
+        the catalog's own data at all (`qty_attr_id` is unpopulated,
+        `-1`, catalog-wide — not authoritative), so its token
+        "magneticmount" ambiguously matches BOTH siblings' quantity attrs
+        and is correctly never guessed. Left unchecked, that selection's
+        quantity is silently, permanently unaskable, yet the conversation
+        still declares "Configuration complete" with a real per-row gap.
+
+        Returns (selector_display_label, item_value) pairs for every
+        selected option that participates in the grid-quantity mechanism
+        (the selector has at least one OTHER option that DOES resolve —
+        proving this is a real per-row-quantity construct, not a plain
+        multi-select) but has no resolvable link of its own — so the
+        caller can surface and block on this instead of completing.
+        """
+        links = self.resolve_array_grid_links(attrs)
+        if not links:
+            return []
+        by_vn = {a.variable_name: a for a in attrs}
+        unresolved: list[tuple[str, str]] = []
+        for selector_vn, item_map in links.items():
+            selector = by_vn.get(selector_vn)
+            if selector is None:
+                continue
+            for item_value in filled_multi.get(selector_vn) or []:
+                if item_value.strip().lower() not in item_map:
+                    unresolved.append((selector.display_label, item_value))
+        return unresolved
 
     def load_hiding_rules(self, workspace_id: int, catalog_prefix: str = "") -> list[HidingRule]:
         """Load hiding rules (rule_type=11) from the RDB.
@@ -3344,21 +3402,34 @@ class CpqEngine:
         Priority order (first match wins):
           1. Already filled in a prior turn.
           2. User-stated value matched from NL hints.
-          3. Valid default_value from XML (not None/null/0).
-          4. Rule-governed default-or-first (D2/§3) — only for attrs in
-             `governed_ids`; everything else falls through to (5). Before
-             falling to "first by order", checks whether `rec_rules` has a
-             recommendation targeting this exact attr whose condition is
-             ALREADY satisfied by the current `filled` state — if so, uses
-             that value instead. Without this check, a rule-governed attr
-             whose real recommendation condition happens to already be true
-             this same pass still got the blind first-option pick here
-             (this method runs before `apply_recommendation_rules()` in
+          3. A `rec_rules` recommendation targeting this exact attr whose
+             condition is ALREADY satisfied by the current `filled` state
+             (via `_satisfied_recommendation`) — checked BEFORE the generic
+             XML default_value below, because a targeted, condition-matched
+             recommendation is more specific than a catalog-wide default and
+             must win over it. Without this, an attr with a non-empty
+             default_value got locked in by step 4 unconditionally, before
+             `apply_recommendation_rules()` (which runs later in
+             `evaluate_rules_loop` and never revisits an attr already in
+             `filled`) ever got a chance to apply (confirmed live:
+             solutionTypeDevices_astro's own default_value silently beat
+             the "Set CLOUD RC as default value" rule this way).
+          4. Valid default_value from XML (not None/null/0).
+          5. Rule-governed default-or-first (D2/§3) — only for attrs in
+             `governed_ids`; everything else falls through to (6). Before
+             falling to "first by order", re-checks `_satisfied_recommendation`
+             (same helper as step 3, needed here for attrs with NO
+             default_value at all, which skip step 3's `attr.options` guard
+             only when they still lack a value) — if so, uses that value
+             instead. Without this check, a rule-governed attr whose real
+             recommendation condition happens to already be true this same
+             pass still got the blind first-option pick here (this method
+             runs before `apply_recommendation_rules()` in
              `evaluate_rules_loop`), permanently locking in the wrong value
              since neither mechanism revisits an attr already in `filled`
              (confirmed live: hWVersion_astro's region=NA recommendation
              never fired because first-by-order claimed it first).
-          5. First eligible item_value by order_number, but ONLY when exactly
+          6. First eligible item_value by order_number, but ONLY when exactly
              one option remains after constraint filtering (NO EAGER
              EVALUATION — Issue 6's "Stop and Wait" safeguard for anything
              not rule-governed).
@@ -3461,6 +3532,39 @@ class CpqEngine:
             for _r in rec_rules:
                 rec_by_target.setdefault(_r.target_attr_id, []).append(_r)
         attr_by_rule_id = self._attr_index(attrs) if rec_by_target else {}
+
+        def _satisfied_recommendation(
+            attr: "ConfigAttr", candidate_opts: list["MenuOption"],
+        ) -> tuple[str, str] | None:
+            """A targeted recommendation whose condition is ALREADY true
+            in the current `filled` state — more specific than a generic
+            XML default_value and must win over it (confirmed live:
+            solutionTypeDevices_astro's own default_value silently beat
+            the "Set CLOUD RC as default value" rule because the old step
+            3 ran unconditionally before any rule got a chance to apply,
+            since apply_recommendation_rules() never revisits an attr
+            already in `filled` — docs/CPQ_SESSION_2_OPEN_ISSUES.md).
+            """
+            for aid_key in (attr.entity_id, attr.source_id):
+                if aid_key is None:
+                    continue
+                for rrule in rec_by_target.get(aid_key, []):
+                    cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
+                    if not cond_attr:
+                        continue
+                    cond_val = filled.get(cond_attr.variable_name)
+                    if cond_val is None or not _condition_value_matches(
+                        cond_val, rrule.condition_value
+                    ):
+                        continue
+                    match = next(
+                        (o for o in candidate_opts
+                         if o.item_value.lower() == rrule.recommended_value.lower()),
+                        None,
+                    )
+                    if match:
+                        return match.item_value, match.display_name
+            return None
 
         # Selectors resolve_array_grid_links() confirmed drive a real
         # quantity attr (e.g. mountingTypeArray_viSoln -> the 6 mounting-
@@ -3640,7 +3744,16 @@ class CpqEngine:
                         source = "hint"
                     break
 
-            # 2. Default value (pointer-defaults excluded — see
+            # 2. Recommendation rule already satisfied by the current filled
+            # state — takes priority over the catalog's generic default_value
+            # (see _satisfied_recommendation's docstring for the bug this closes).
+            if not value and rec_by_target and attr.options:
+                rec_match = _satisfied_recommendation(attr, attr.options)
+                if rec_match:
+                    value, display = rec_match
+                    source = "rule"
+
+            # 3. Default value (pointer-defaults excluded — see
             # _is_pointer_default above; the post-pass resolves them)
             if not value and _valid(attr.default_value) and not _is_pointer_default(attr):
                 value = attr.default_value
@@ -3798,27 +3911,13 @@ class CpqEngine:
                         # (see docstring — apply_recommendation_rules() runs
                         # AFTER this method in evaluate_rules_loop and never
                         # revisits an attr already in `filled`).
-                        rec_value = rec_display = None
-                        for aid_key in (attr.entity_id, attr.source_id):
-                            if aid_key is None or rec_value:
-                                continue
-                            for rrule in rec_by_target.get(aid_key, []):
-                                cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
-                                if not cond_attr:
-                                    continue
-                                cond_val = filled.get(cond_attr.variable_name)
-                                if (cond_val is not None
-                                        and _condition_value_matches(cond_val, rrule.condition_value)):
-                                    match = next(
-                                        (o for o in valid_opts
-                                         if o.item_value.lower() == rrule.recommended_value.lower()),
-                                        None,
-                                    )
-                                    if match:
-                                        rec_value, rec_display = match.item_value, match.display_name
-                                        break
-                        if rec_value:
-                            value, display, source = rec_value, rec_display, "rule"
+                        rec_match = (
+                            _satisfied_recommendation(attr, valid_opts)
+                            if rec_by_target else None
+                        )
+                        if rec_match:
+                            value, display = rec_match
+                            source = "rule"
                         else:
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
@@ -4076,6 +4175,15 @@ class CpqEngine:
         r"make\s+it|i\s+want|use\s+.+\s+instead)\b",
         re.IGNORECASE,
     )
+    # An arrow ("→" or "->") is unambiguous "set this to that" notation on
+    # its own — confirmed live: "chnage mounting type Jacket Magnetic Mount
+    # Quantity → 89" has NO word _CHANGE_VERB_RE recognizes (the typo
+    # "chnage" doesn't contain "chang"), so has_change_verb was False and
+    # the entire free-text number-extraction branch below never ran at all.
+    # Rather than attempt general typo-tolerance (fuzzy, risky — this
+    # engine's "never guess" discipline), the arrow itself is treated as an
+    # equally strong, unambiguous change signal — same tier as a real verb.
+    _ARROW_RE = re.compile(r"->|→")
 
     def detect_approval(self, question: str) -> bool:
         """True when the user is approving/confirming the configuration (Step 8)."""
@@ -4136,7 +4244,7 @@ class CpqEngine:
         the selected rows.
         """
         q_lower = question.lower()
-        has_change_verb = bool(self._CHANGE_VERB_RE.search(question))
+        has_change_verb = bool(self._CHANGE_VERB_RE.search(question)) or bool(self._ARROW_RE.search(question))
         multi = filled_multi or {}
 
         # Each candidate attr's own label-mention span (start, end) in the
@@ -4161,8 +4269,39 @@ class CpqEngine:
             if span:
                 label_spans[_attr.variable_name] = span
 
+        # A candidate whose label is a literal SUBSTRING of another matching
+        # candidate's label (e.g. "Quantity" inside "mounting type Locking
+        # Molle Mount Quantity") is deprioritized — tried only as a fallback
+        # if no more-specific candidate produces a result. This is narrower
+        # than "shorter label loses": two independent sibling labels that
+        # don't subsume each other (e.g. "Jacket Magnetic Mount Quantity" vs
+        # "Pouch Mount Quantity") are NOT affected, preserving the existing
+        # iteration-order contract for genuine siblings — only a real
+        # substring/subsumption relationship reorders anything (confirmed
+        # live: "Change the mounting type Locking Molle Mount Quantity to
+        # 10" matched the generic accecsssoriesQuantityArray_viSoln — label
+        # "Quantity" — instead of mountingTypeLockingMolleMountQuantity_
+        # viSoln, whose real label IS "mounting type Locking Molle Mount
+        # Quantity" — same principle detect_attr_query's own longest-match
+        # tiebreak already applies, docs/CPQ_SESSION_2_OPEN_ISSUES.md item 2).
+        _candidates = [a for a in attrs if a.variable_name in filled or a.variable_name in multi]
+        _superseded: set[str] = set()
+        for _a in _candidates:
+            _a_label = _a.display_label.lower()
+            for _b in _candidates:
+                if _b is _a or _b.variable_name in _superseded:
+                    continue
+                _b_label = _b.display_label.lower()
+                if _a_label != _b_label and _a_label in _b_label:
+                    _superseded.add(_a.variable_name)
+                    break
+        _try_order = (
+            [a for a in attrs if a.variable_name not in _superseded]
+            + [a for a in attrs if a.variable_name in _superseded]
+        )
+
         # Try each filled attr — find one where the user's message implies a different value
-        for attr in attrs:
+        for attr in _try_order:
             if attr.variable_name not in filled and attr.variable_name not in multi:
                 continue
             vn_flat = attr.variable_name.lower().replace("_", "")
@@ -4231,6 +4370,7 @@ class CpqEngine:
                     # never types the internal snake_case variable name).
                     search_text = question
                 m = (re.search(r"\bto\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE)
+                     or re.search(r"(?:->|→)\s*(-?\d+(?:\.\d+)?)", search_text)
                      or re.search(r"\bfrom\s+(-?\d+(?:\.\d+)?)", search_text, re.IGNORECASE))
                 value = m.group(1) if m else None
                 if value is None:
@@ -4733,6 +4873,35 @@ class CpqEngine:
                 selector_vn = multi_attrs[0].variable_name
                 selected = (filled_multi or {}).get(selector_vn) or []
                 array_control_count = len(selected)
+
+        # Real per-option quantity attrs feeding an array-set's own qty
+        # member column (docs/CPQ_ARRAY_SET_PAYLOAD_PLAN.md, quantity-
+        # nesting gap): mountingTypeArrayqty_viSoln-style array-set qty
+        # members are NEVER themselves populated by the real conversation
+        # flow — resolve_pending_grid_quantities fills the per-option NAMED
+        # attrs instead (e.g. mountingTypeLockingMolleMountQuantity_viSoln,
+        # confirmed live against real workspace-19 sessions). Computed once,
+        # before either serialization loop below, so both the flat scalar
+        # loop (which must SKIP these, not ship them standalone) and the
+        # array-set grouping pass (which folds their value into the row
+        # under the qty member's own key name) agree on the same mapping.
+        grid_links = self.resolve_array_grid_links(attrs or [])
+        array_set_qty_source: dict[str, str] = {}  # per-option qty vn -> owning qty-member vn
+        consumed_by_array_set: set[str] = set()
+        if attrs:
+            _by_set: dict[int, list[ConfigAttr]] = {}
+            for a in attrs:
+                if a.array_set_id is not None and a.array_set_role == "member":
+                    _by_set.setdefault(a.array_set_id, []).append(a)
+            for _members in _by_set.values():
+                _selector = next((a for a in _members if a.options), None)
+                _qty_member = next((a for a in _members if not a.options), None)
+                if not _selector or not _qty_member:
+                    continue
+                for _qty_vn in grid_links.get(_selector.variable_name, {}).values():
+                    array_set_qty_source[_qty_vn] = _qty_member.variable_name
+                    consumed_by_array_set.add(_qty_vn)
+
         if hidden:
             dropped = [k for k in filled if k in hidden and filled[k]]
             if dropped:
@@ -4752,6 +4921,11 @@ class CpqEngine:
             if k in hidden:
                 continue
             if not v or self._is_html_value(v) or self._is_noise_var(k):
+                continue
+            if k in consumed_by_array_set:
+                # Folded into its array-set row under the qty member's own
+                # key name instead (see array_set_qty_source above) — must
+                # not ALSO ship as a separate flat top-level key.
                 continue
             attr = attr_by_vn.get(k)
             if attr is not None and attr.hide_in_trans:
@@ -4854,12 +5028,20 @@ class CpqEngine:
             attr = attr_by_vn.get(k)
             if attr is not None and attr.hide_in_trans:
                 continue
-            if attr is not None and attr.set_type == "2":
-                continue  # transient layer — same exclusion as above
             if (attr is not None and attr.array_set_id is not None
                     and attr.array_set_role == "member"):
+                # Array-set membership takes precedence over the generic
+                # set_type=="2" exclusion below — confirmed live (APX NEXT/
+                # DM4400, re-ingested workspace 25): quantityVX650ItemType_
+                # astro (a REAL array-set member, needed in every row) is
+                # itself flagged set_type=="2", which would otherwise drop
+                # it entirely before it ever reaches the grouping pass. The
+                # set_type=="2" exclusion's own evidence (workspace 14) was
+                # about standalone transient UI attrs, never array-set rows.
                 array_set_rows.setdefault(attr.array_set_id, {})[k] = list(vals)
                 continue
+            if attr is not None and attr.set_type == "2":
+                continue  # transient layer — same exclusion as above
             if attr is not None:
                 out[k] = {"items": [
                     {"value": val, "displayValue": _display_for(attr, val)}
@@ -4890,6 +5072,19 @@ class CpqEngine:
                 if not member_attrs:
                     continue
                 max_len = max(len(member_vals[a.variable_name]) for a in member_attrs)
+                # Quantity fallback: a qty-type member (no options) that has
+                # no filled_multi entry of its own — the real conversation
+                # flow instead filled a per-option NAMED attr for it (see
+                # array_set_qty_source above). Sourced per-row from the
+                # selector's own selected value at that index.
+                selector = next((a for a in member_attrs if a.options), None)
+                qty_fallback_members = [
+                    a for a in (attrs or [])
+                    if a.array_set_id == set_id and a.array_set_role == "member"
+                    and not a.hidden and not a.options
+                    and a.variable_name not in member_vals
+                ]
+                item_map = grid_links.get(selector.variable_name, {}) if selector else {}
                 rows: list[dict[str, Any]] = []
                 for idx in range(max_len):
                     row: dict[str, Any] = {"_index": idx}
@@ -4906,6 +5101,17 @@ class CpqEngine:
                             row[a.variable_name] = int(val)
                         else:
                             row[a.variable_name] = val
+                    if selector and qty_fallback_members:
+                        sel_vlist = member_vals[selector.variable_name]
+                        sel_val = sel_vlist[idx] if idx < len(sel_vlist) else None
+                        if sel_val:
+                            real_qty_vn = item_map.get(sel_val.strip().lower())
+                            if real_qty_vn and real_qty_vn in filled:
+                                raw = filled[real_qty_vn]
+                                for qty_member in qty_fallback_members:
+                                    row[qty_member.variable_name] = (
+                                        int(raw) if re.fullmatch(r"-?\d+", raw) else raw
+                                    )
                     rows.append(row)
                 out[driver.array_set_wrapper_key] = {"items": rows}
                 # The driver's own value ships as a SIBLING bare int (row

@@ -387,6 +387,20 @@ class PostgresCpqRdb:
         with `size_attr_id=-1` — NOT real array-sets (confirmed live,
         docs/CPQ_RULE_TOOL_FLOW_PLAN.md §15c) — those are skipped here, so
         only genuine driver rows populate the returned dict.
+
+        BigMachines ALSO emits a redundant internal "array key" set
+        alongside every real one — a 1-member self-referential row named
+        ``_array_key_{ControlAttrName}`` sharing the SAME ``size_attr_id``
+        as the real, multi-column business set (confirmed live across both
+        SVX and APX NEXT/DM4400: every real driver has exactly one such
+        counterpart, e.g. ``vX650EnergySolutions_astro`` (4 real members)
+        vs. ``_array_key_vX650ItemTypeArrayControl_astro`` (1 member, pure
+        bookkeeping) — both size_attr_id=19435387207). Without filtering
+        these out, whichever set happens to be fetched last would silently
+        win the driver_attr_id -> set_id mapping — non-deterministic and
+        occasionally wrong. Skipped by the stable, universal ``_array_key_``
+        variable_name prefix, not by member count (a real set could in
+        principle also have just 1 member).
         """
         sets: dict[int, dict[str, Any]] = {}
         for _eid, attrs in self.fetch_entities_by_type(
@@ -396,6 +410,8 @@ class PostgresCpqRdb:
             driver_attr_id = _as_int(attrs.get("size_attr_id"))
             var_name = str(attrs.get("variable_name") or "").strip()
             if not set_id or not driver_attr_id or driver_attr_id <= 0 or not var_name:
+                continue
+            if var_name.startswith("_array_key_"):
                 continue
             sets[set_id] = {
                 "driver_attr_id": driver_attr_id,

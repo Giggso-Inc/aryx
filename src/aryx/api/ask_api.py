@@ -653,6 +653,8 @@ def _handle_cascade(
             f"no longer valid after this change."
         )
 
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
     if pending:
         # New conflicts to resolve → FORMAT A (change notice + next question only)
         session.status = "configuring"
@@ -664,6 +666,19 @@ def _handle_cascade(
             next_attr, ctx, constrained_opts.get(next_attr.entity_id),
         )
         answer = cascade_note + "\n\n" + q_block
+    elif unresolved_grid_gaps:
+        # A selected grid option has NO resolvable quantity attr at all
+        # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 9) — never silently
+        # complete with a permanent per-row gap; block and ask the
+        # customer to resolve it (remove the selection or pick another).
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            cascade_note + "\n\n"
+            f"⚠️ {gap_list} has no quantity field configured in this "
+            f"catalog. Please remove it or choose a different option "
+            f"before this configuration can be completed."
+        )
     else:
         # All resolved → verbose summary, JSON only on request (§6/Phase K)
         session.status = "awaiting_approval"
@@ -1792,7 +1807,22 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "rule": session.filled_source.get(var, ""), "turn": session.turn,
             })
 
-    if not pending:
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
+    if not pending and unresolved_grid_gaps:
+        # A selected grid option has NO resolvable quantity attr at all
+        # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 9) — never silently
+        # complete with a permanent per-row gap; block and ask the
+        # customer to resolve it (remove the selection or pick another).
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            (f"{dropped_note.strip()}\n\n" if dropped_note else "")
+            + f"⚠️ {gap_list} has no quantity field configured in this "
+              f"catalog. Please remove it or choose a different option "
+              f"before this configuration can be completed."
+        )
+    elif not pending:
         # ── STEP 6: FORMAT B — verbose summary, JSON only on request ─────────
         # (§6/Phase K: JSON is never shown unasked, even at completion —
         # only the earlier "still configuring" responses honored this

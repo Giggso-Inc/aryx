@@ -378,16 +378,33 @@ An exact structural match to the original reference payload (row count
 reflects the 2 simulated selections here vs. the original's 6 — the shape
 is what's being verified). Neither member appears as a flat top-level key.
 
-**Still genuinely open**: Open Question 2 (does ARYX's own `filled_multi`
-population for `mountingTypeArrayqty_viSoln` actually get filled at all by
-any existing mechanism, and does it stay positionally aligned with
-`mountingTypeArray_viSoln`'s own list?) remains UNRESOLVED — this
-implementation correctly GROUPS whatever is present, but does not add any
-new mechanism to populate `mountingTypeArrayqty_viSoln` itself, since that
-was explicitly out of scope (a guess this plan refused to make). In a real
-conversation flow, that attr's `filled_multi` entry may currently be empty
-until/unless something else fills it — worth a follow-up trace of
-`resolve_pending_grid_quantities` before relying on this in production.
+**Open Question 2 — RESOLVED (and fixed).** Traced `resolve_pending_grid_
+quantities` directly and confirmed live against real workspace-19
+conversation transcripts: `mountingTypeArrayqty_viSoln` is indeed NEVER
+populated by the real conversation flow — quantities are filled via
+per-option NAMED attrs instead (e.g. `mountingTypeLockingMolleMountQuantity_
+viSoln`), one per real mount option, via the existing
+`resolve_array_grid_links`/`resolve_pending_grid_quantities` heuristic.
+Confirmed live this left the real per-option quantity leaking as a
+SEPARATE flat top-level key (e.g. `"mountingTypeLockingMolleMountQuantity_
+viSoln": 7`) alongside the correctly-grouped `_setmountingTypeArrayset_
+viSoln` row — which then had NO quantity nested inside it at all, a real
+gap in the initial implementation.
+
+**Fix implemented**: `build_payload()` now computes, once before either
+serialization loop, which real per-option quantity attrs feed which
+array-set qty member (`resolve_array_grid_links(attrs)` scoped to the
+set's own selector member). The array-set grouping pass folds each row's
+real per-option quantity value into that row under the qty member's own
+key name (`mountingTypeArrayqty_viSoln`), sourced per-row from the
+selector's own selected value at that index; the flat scalar loop excludes
+these per-option attrs from shipping as separate top-level keys, since
+they're now represented inside the row instead. Verified live end-to-end
+(SVX, workspace 19) including through a real "change quantity to 10"
+request — the updated value correctly appears nested in the row, and the
+per-option attr no longer leaks flat. Test:
+`test_array_set_qty_member_falls_back_to_the_real_per_option_quantity_attr`
+(`tests/test_cpq_array_set_payload.py`).
 
 ## Re-ingestion Verification (from the real source XML, not just pre-existing data)
 
@@ -421,3 +438,58 @@ This confirms the fix works from a genuine, fresh ingestion of the actual
 BigMachines export — not just against data that happened to already be in
 the store. Workspace 24 was left in place (not deleted) as a clean,
 disposable verification fixture; safe to remove if no longer needed.
+
+## Cross-Catalog Verification (APX NEXT/DM4400) — 2 real bugs found and fixed
+
+Re-ingested `APX_Next_config.xml` (46,837 lines, ~24MB) from scratch into a
+new workspace (25) — same read → confirm flow, no shortcuts. Result: 1
+entity, 48,093 relationships, 46,498 graph nodes. Confirmed 37
+`BmConfigAttrSet` + 31 `BmConfigAttrSetAssoc` rows, matching `CPQ_RULE_TOOL_
+FLOW_PLAN.md` §15c's original count exactly.
+
+Testing against this SECOND, differently-shaped catalog (not just SVX)
+surfaced two real bugs the SVX-only verification had accidentally masked:
+
+**Bug 1 — duplicate driver rows, non-deterministic winner.** BigMachines
+emits a redundant, 1-member internal set alongside every real business
+set — named `_array_key_{ControlAttrName}`, sharing the exact same
+`size_attr_id` as the real set. Confirmed present in BOTH catalogs (SVX
+had `_array_key_mountingArrayControl_viSoln` sitting right next to the
+real `mountingTypeArrayset_viSoln` — this was in the data all along, just
+not flagged during the SVX-only pass). Without a filter, `fetch_attr_set_
+assoc`'s dict-building loop let whichever set was fetched LAST silently
+win the driver→set mapping — non-deterministic, and wrong whenever the
+`_array_key_` row happened to win. **Fixed**: skip any `BmConfigAttrSet`
+row whose own `variable_name` starts with `_array_key_` — a stable,
+universal BigMachines naming convention confirmed across both catalogs,
+not a guess.
+
+**Bug 2 — a real array-set member excluded by the generic `set_type=="2"`
+check.** APX's `quantityVX650ItemType_astro` (a genuine, needed-in-every-
+row array-set member) is itself flagged `set_type=="2"` — the same code
+used to drop genuinely transient UI/action-layer attrs (the original
+workspace-14 evidence). Because that exclusion ran BEFORE the array-set
+member-routing check, this real member was silently dropped entirely
+instead of being grouped into its row. SVX's own members happened to be
+`set_type=="1"`, so this never surfaced there. **Fixed**: array-set
+membership now checked and routed FIRST, before the `set_type=="2"`
+exclusion — membership in a real array-set is a more specific fact than
+the generic transient-layer heuristic and takes precedence.
+
+Both fixes verified live against the fresh workspace-25 ingest:
+`vX650ItemTypeArrayControl_astro` correctly resolves to the REAL driver
+set (`vX650EnergySolutions_astro`, 4 real members) rather than its
+`_array_key_` counterpart, and the resulting row correctly nests BOTH
+`itemTypeVX650_astro` and `quantityVX650ItemType_astro` (the latter
+despite `set_type=="2"`), with the driver shipping as the correct sibling
+row-count int.
+
+2 new tests: `test_fetch_attr_set_assoc_skips_the_internal_array_key_
+counterpart` (`tests/test_cpq_rdb_attr_set_assoc.py`),
+`test_array_set_member_included_even_when_flagged_set_type_2`
+(`tests/test_cpq_array_set_payload.py`). Full CPQ/BML suite: 144/144.
+
+**Takeaway for future catalog verification**: single-catalog verification
+is not sufficient proof for a cross-catalog mechanism — both of these bugs
+were latent in the FIRST (SVX) pass and only surfaced once tested against
+a second, independently-modeled real catalog.
