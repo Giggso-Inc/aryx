@@ -4217,6 +4217,57 @@ class CpqEngine:
     # equally strong, unambiguous change signal — same tier as a real verb.
     _ARROW_RE = re.compile(r"->|→")
 
+    # Removal verbs — user wants to DESELECT an already-chosen multi-select
+    # option, not add a new one (docs: Ask page needs to let a customer
+    # deselect a mount type, not just add more). Deliberately distinct from
+    # _CHANGE_VERB_RE: "change X to Y" replaces a single-select's value,
+    # while "remove X" subtracts one option from an existing multi-select
+    # selection — different verbs, different target data structure
+    # (filled_multi, never filled).
+    _REMOVE_VERB_RE = re.compile(
+        r"\b(remove|deselect|de-select|delete|drop|uncheck|take\s+out|"
+        r"get\s+rid\s+of|don'?t\s+need)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_multi_select_removal(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled_multi: dict[str, list[str]],
+    ) -> "tuple[ConfigAttr, list[str]] | None":
+        """Detect "remove X"/"deselect X" against an already-selected
+        multi-select option (e.g. "remove Jacket Magnetic Mount" after
+        selecting both Shirt and Jacket).
+
+        Confirmed live this was a real gap: apply_multi_answer/
+        _handle_cascade's multi-select branch only ever UNIONS mentioned
+        options with the current selection (by design, for the "also
+        include X" add case) — there was no removal path at all, so
+        "remove Jacket Magnetic Mount" fell straight through to "I didn't
+        quite catch that" with both mounts still selected.
+
+        Returns (attr, item_values_to_remove) or None. Only fires when a
+        removal verb is present AND at least one mentioned option is
+        genuinely already in the current selection — naming an option
+        that isn't currently selected is not a removal request (falls
+        through to the normal change-request/collision paths instead, same
+        "never guess" discipline as everywhere else in this file).
+        """
+        if not self._REMOVE_VERB_RE.search(question):
+            return None
+        for attr in attrs:
+            if attr.select_type != "multi":
+                continue
+            current = filled_multi.get(attr.variable_name)
+            if not current:
+                continue
+            mentioned = self.apply_multi_answer(attr, question)
+            to_remove = [iv for iv, _dn in mentioned if iv in current]
+            if to_remove:
+                return attr, to_remove
+        return None
+
     def detect_approval(self, question: str) -> bool:
         """True when the user is approving/confirming the configuration (Step 8)."""
         return bool(self._APPROVAL_RE.search(question.strip()))
@@ -4801,7 +4852,22 @@ class CpqEngine:
                 f"{i + 1}. {opt.display_name}"
                 for i, opt in enumerate(effective_opts)
             )
-            return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}"
+            # An optional multi-select reaching this prompt at all is, by
+            # construction, a grid selector (resolve_array_grid_links) —
+            # every OTHER optional multi-select is auto-filled empty
+            # without ever being asked (auto_fill's own optional-tier
+            # branch). ask_api.py already recognizes "skip"/"none"/"no...
+            # needed" as a valid decline for exactly this case (confirmed
+            # live: mountingTypeArray_viSoln correctly resolves to an
+            # empty selection), but the prompt never told the user that —
+            # confirmed live: nobody would think to type "skip" without
+            # being told it's an option.
+            skip_hint = (
+                "\n\n*(Optional — say \"skip\" or \"none needed\" if you "
+                "don't need any.)*"
+                if attr.select_type == "multi" and not attr.required else ""
+            )
+            return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}{skip_hint}"
         return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value."
 
     def apply_answer(
