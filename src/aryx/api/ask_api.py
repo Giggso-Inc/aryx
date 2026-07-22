@@ -1097,7 +1097,40 @@ def _handle_cascade_multi(
     }
 
 
-_LLM_INTENT_ATTRS_CAP = 40
+_LLM_INTENT_ATTRS_CAP_HARD = 500  # safety bound on relevance-scoring work, not a relevance cutoff
+_LLM_INTENT_RELEVANT_CAP = 10
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _relevant_intent_candidates(question: str, candidates: list) -> list:
+    """Narrow the candidate list to the attrs the question is actually
+    plausibly about, by simple word overlap against display_label and
+    option display names.
+
+    Live-verified need (2026-07-22): handing the full ~40-attr candidate
+    list to the classifier — even one restricted to filled attrs — diluted
+    the signal enough that a phrase the model correctly classified in
+    isolation came back "none" once real catalog noise was mixed in.
+    Keeping only the attrs whose own vocabulary overlaps the question
+    keeps the prompt small and on-topic; falls back to the full (capped)
+    list only when nothing overlaps at all, so an unanticipated phrasing
+    still gets a chance rather than being silently starved to zero attrs.
+    """
+    q_words = set(_WORD_RE.findall(question.lower()))
+    if not q_words:
+        return candidates[:_LLM_INTENT_RELEVANT_CAP]
+    scored = []
+    for a in candidates:
+        vocab = set(_WORD_RE.findall(a.display_label.lower()))
+        for o in a.options:
+            vocab |= set(_WORD_RE.findall(o.display_name.lower()))
+        overlap = len(q_words & vocab)
+        if overlap:
+            scored.append((overlap, a))
+    if not scored:
+        return candidates[:_LLM_INTENT_RELEVANT_CAP]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [a for _score, a in scored[:_LLM_INTENT_RELEVANT_CAP]]
 
 
 def _llm_classify_change_intent(
@@ -1111,28 +1144,52 @@ def _llm_classify_change_intent(
 
     Same never-guess discipline as the regex path: any attribute name the
     model returns that isn't one of the attrs actually present in the
-    current session is discarded, and the caller re-validates the value
-    against real options before acting on it.
+    current session is discarded. Live-verified finding (2026-07-22): two
+    real attrs in this catalog share the display_label "Mounting Type"
+    (mountType_viSoln, single, vs. mountingTypeArray_viSoln, multi) — the
+    label alone isn't enough to disambiguate, so the prompt keys on
+    variable_name + select_type + the attr's real option list, and the
+    returned value is re-validated against that specific attr's own
+    options before being trusted (a "remove" against a single-select attr,
+    or a value not in the target attr's option set, is discarded).
     """
-    candidates = [
+    filled_candidates = [
         a for a in attrs
         if a.variable_name in session.filled or a.variable_name in session.filled_multi
-    ][:_LLM_INTENT_ATTRS_CAP]
-    if not candidates:
-        return None
-    catalog_lines = [
-        f"- {a.variable_name} ({a.display_label}): current="
-        f"{session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)!r}"
-        for a in candidates
     ]
+    if not filled_candidates:
+        return None
+    # Relevance-score BEFORE capping — a catalog with dozens of filled
+    # attrs (promotions, accessories, etc.) can push the actually-relevant
+    # attr past a fixed positional cap if capped by catalog order first.
+    # Live-verified bug (2026-07-22): capping to the first 40 filled attrs
+    # by catalog order cut mountingTypeArray_viSoln out entirely before
+    # relevance scoring ever saw it, because dozens of unrelated
+    # promotion/accessory attrs came first in attrs' catalog order.
+    candidates = _relevant_intent_candidates(
+        question, filled_candidates[:_LLM_INTENT_ATTRS_CAP_HARD])
+    by_vn = {a.variable_name: a for a in candidates}
+    catalog_lines = []
+    for a in candidates:
+        current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
+        opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
+        catalog_lines.append(
+            f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
+            f"current={current!r}; options=[{opts}]"
+        )
     sys = (
         "You classify a user's message about an in-progress product configuration. "
-        "Decide if they want to REMOVE an already-selected multi-select option, or "
-        "CHANGE a single attribute's value. Only use attribute names from the list "
-        "given — never invent one. If neither intent clearly applies, say none."
+        "Decide if they want to REMOVE an already-selected option from a [multi] "
+        "attribute, or CHANGE a [single] attribute's value. Attributes can share the "
+        "same display label but are different fields — pick by variable_name, "
+        "select_type, and which one's current value or options actually match what "
+        "the user is talking about. Only use attribute names from the list given — "
+        "never invent one. If neither intent clearly applies, or you're unsure which "
+        "of two similarly-labeled attrs is meant, say none."
     )
     user = (
-        "ATTRIBUTES (name / label / current value):\n" + "\n".join(catalog_lines) +
+        "ATTRIBUTES (variable_name [select_type] (label): current=...; options=[...]):\n"
+        + "\n".join(catalog_lines) +
         f"\n\nUSER MESSAGE: {question}\n\n"
         'Reply ONLY as JSON: {"intent": "remove"|"change"|"none", '
         '"variable_name": "<exact name from list, or empty>", '
@@ -1142,15 +1199,29 @@ def _llm_classify_change_intent(
         text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
         s, e = text.find("{"), text.rfind("}")
         parsed = json.loads(text[s:e + 1])
-    except Exception:  # noqa: BLE001 — fallback must never crash the turn
+    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
+        logger.debug("llm intent fallback: llm call or parse failed: %r", exc)
         return None
     intent = parsed.get("intent")
     vn = parsed.get("variable_name") or ""
     value = parsed.get("value") or ""
     if intent not in ("remove", "change") or not vn or not value:
         return None
-    if vn not in {a.variable_name for a in candidates}:
+    attr = by_vn.get(vn)
+    if attr is None:
+        logger.debug("llm intent fallback: model named vn %r not in candidates %r",
+                      vn, list(by_vn))
         return None
+    if intent == "remove" and attr.select_type != "multi":
+        logger.debug("llm intent fallback: rejected remove on non-multi attr %r", vn)
+        return None
+    if attr.options:
+        valid_values = {o.display_name.lower() for o in attr.options} | {
+            o.item_value.lower() for o in attr.options
+        }
+        if value.lower() not in valid_values:
+            logger.debug("llm intent fallback: value %r not a real option for %r", value, vn)
+            return None
     return {"intent": intent, "variable_name": vn, "value": value}
 
 
