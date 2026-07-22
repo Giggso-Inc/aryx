@@ -136,6 +136,30 @@ def test_detect_change_request_collision_does_not_break_sibling_substring_case()
         "Change the mounting type Locking Molle Mount Quantity to 10", attrs, filled) is None
 
 
+def test_detect_change_request_collision_superseded_by_a_more_specific_match():
+    # Real SVX transcript (confirmed live): "change mounting type Shirt
+    # Magnetic Mount Quantity to 88" false-positived a "Mounting Type"
+    # collision between mountType_viSoln/mountingTypeArray_viSoln, purely
+    # because the message's own text happens to start with "mounting type"
+    # — even though the actual target (the quantity attr) is unambiguous
+    # on its own and fully accounts for that substring.
+    eng = CpqEngine()
+    attrs = [
+        _attr(1, "mountType_viSoln", "Mounting Type"),
+        _attr(2, "mountingTypeArray_viSoln", "Mounting Type"),
+        _attr(3, "mountingTypeShirtMagneticMountQuantity_viSoln",
+              "mounting type Shirt Magnetic Mount Quantity"),
+    ]
+    filled = {
+        "mountType_viSoln": "Swivel Clip and Adjustable Lanyard",
+        "mountingTypeArray_viSoln": "Shirt Magnetic Mount, Jacket Magnetic Mount",
+        "mountingTypeShirtMagneticMountQuantity_viSoln": "44",
+    }
+    result = eng.detect_change_request_collision(
+        "change mounting type Shirt Magnetic Mount Quantity to 88", attrs, filled)
+    assert result is None
+
+
 def test_filled_summary_disambiguates_colliding_labels_with_variable_name():
     eng = CpqEngine()
     attrs = [
