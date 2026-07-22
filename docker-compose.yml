@@ -29,23 +29,11 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      # FalkorDB's own entrypoint runs redis-server --dir "$FALKORDB_DATA_PATH",
-      # which defaults to /var/lib/falkordb/data — NOT /data. Mounting at /data
-      # (the old value here) persisted nothing; every container recreate lost
-      # the graph because RDB saves landed in the ephemeral container layer.
-      - graphdata:/var/lib/falkordb/data
+      - graphdata:/data
 
   worker:
     build: .
     env_file: .env
-    # Same issue as api/shay-api/mcp below: .env's ARYX_RDB_DSN/ARYX_GRAPH_URL
-    # are the host-oriented localhost DSNs (for the host-run uvicorn dev
-    # workflow) — env_file: .env above would otherwise leak them straight
-    # into this container, where "localhost" means the container itself,
-    # not the host, causing "connection refused" on every startup migration.
-    environment:
-      - ARYX_RDB_DSN=postgresql://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      - ARYX_GRAPH_URL=redis://falkordb:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,13 +76,6 @@ services:
     # Ollama service URL uses the docker-network hostname — must be set here.
     # All other ARYX_* vars are read from env_file: .env (pydantic-settings).
     environment:
-      # Same issue as shay-api: .env's ARYX_RDB_DSN/ARYX_GRAPH_URL are the
-      # host-oriented localhost DSNs (for the host-run uvicorn dev workflow)
-      # — env_file: .env above would otherwise leak them straight into this
-      # container, where "localhost" means the container itself, not the
-      # host, causing "connection refused" on every startup migration.
-      - ARYX_RDB_DSN=postgresql://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      - ARYX_GRAPH_URL=redis://falkordb:6379
       - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
       - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
       - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-llama3.2:3b}
@@ -138,20 +119,7 @@ services:
     environment:
       # Shay must use the same relational database URL as Aryx so both apps
       # operate on the same Postgres instance and credentials.
-      # NOT ${ARYX_RDB_DSN:-...}: .env's ARYX_RDB_DSN is the host-oriented
-      # localhost:55432 DSN (for the host-run uvicorn dev workflow) — Compose
-      # reads .env for variable substitution too, so that fallback silently
-      # wins over the docker-internal default below, and every real DB call
-      # from inside this container (e.g. POST /company-signup) fails with
-      # "Connect call failed ('127.0.0.1', 55432)" despite the healthcheck
-      # passing. Always use the docker-network hostname here.
-      - DATABASE_URL=postgresql+asyncpg://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      # shay_backend's own config.py defaults this to "http://localhost:8088"
-      # when unset — inside this container that means itself, not the real
-      # Aryx api container, so every internal call (e.g. workspace lookups
-      # backing /workspaces/{id}) fails with "All connection attempts failed".
-      # Only the `web` service had this set before; shay-api needs it too.
-      - ARYX_API_URL_INTERNAL=http://api:8000
+      - DATABASE_URL=${ARYX_RDB_DSN:-postgresql+asyncpg://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx}
       - SHAY_RUN_MIGRATIONS=false
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - SHAY_BE_PUBLIC_URL=${SHAY_BE_PUBLIC_URL:-http://localhost:3000/shay}
@@ -179,9 +147,6 @@ services:
     env_file: .env
     command: ["uvicorn", "aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"]
     environment:
-      # Same docker-network override as the api service above.
-      - ARYX_RDB_DSN=postgresql://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      - ARYX_GRAPH_URL=redis://falkordb:6379
       - ARYX_API_URL=http://api:8000
     ports:
       - "127.0.0.1:8765:8765"
