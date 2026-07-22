@@ -4268,6 +4268,75 @@ class CpqEngine:
                 return attr, to_remove
         return None
 
+    # "change/set/update/make ... quantit(y|ies) ... to <number>" — a bulk
+    # per-row quantity update ("change both the mounting types quantity to
+    # 67"), distinct from _CHANGE_VERB_RE's single-attribute value change:
+    # the target here is never the grid selector's own value (67 is never a
+    # real mount option), it's every already-selected row's quantity attr.
+    _BULK_QTY_RE = re.compile(
+        r"\b(?:change|set|update|make)\b.{0,60}\bquantit(?:y|ies)\b.{0,40}"
+        r"\bto\b\s*(\d+(?:\.\d+)?)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def detect_bulk_quantity_change(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled_multi: dict[str, list[str]],
+    ) -> "tuple[str, list[str], str] | None":
+        """Detect "change both/all the mounting types quantity to 67" — set
+        every currently-selected grid-row's quantity to one value at once.
+
+        Live-verified gap: this phrasing was previously misread as a
+        single-attribute value change ("change Mounting Type to 67"),
+        which either mis-set the grid selector's own value or, on a
+        catalog with two identically-labeled "Mounting Type" attrs (one
+        single-select, one the real multi-select grid), forced an
+        unresolvable disambiguation prompt — 67 was never going to be a
+        valid answer for either one, since the real target is each row's
+        quantity attr, not the selector's own value.
+
+        Restricting candidates to `resolve_array_grid_links`' selectors
+        sidesteps that label collision entirely: a plain single-select
+        sibling (e.g. mountType_viSoln) never has grid links and so is
+        never a candidate here, regardless of a shared display_label.
+
+        Returns (selector_variable_name, item_values_to_update, new_qty)
+        or None. Only matches selectors with at least one already-selected,
+        quantity-resolvable row — never guesses at an unfilled selector.
+        """
+        m = self._BULK_QTY_RE.search(question)
+        if not m:
+            return None
+        new_qty = m.group(1)
+        grid_links = self.resolve_array_grid_links(attrs)
+        if not grid_links:
+            return None
+        by_vn = {a.variable_name: a for a in attrs}
+        candidates: list[tuple[str, list[str]]] = []
+        for selector_vn, item_map in grid_links.items():
+            selected = filled_multi.get(selector_vn) or []
+            resolvable = [iv for iv in selected if iv.strip().lower() in item_map]
+            if resolvable:
+                candidates.append((selector_vn, resolvable))
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0][0], candidates[0][1], new_qty
+        # Multiple grid selectors are in play — narrow by word overlap
+        # against each selector's own display_label rather than guess.
+        q_words = set(_variable_words(question.replace("_", " ")))
+        scored = []
+        for selector_vn, resolvable in candidates:
+            attr = by_vn.get(selector_vn)
+            label_words = set(_variable_words(attr.display_label)) if attr else set()
+            if q_words & label_words:
+                scored.append((selector_vn, resolvable))
+        if len(scored) == 1:
+            return scored[0][0], scored[0][1], new_qty
+        return None
+
     def detect_approval(self, question: str) -> bool:
         """True when the user is approving/confirming the configuration (Step 8)."""
         return bool(self._APPROVAL_RE.search(question.strip()))

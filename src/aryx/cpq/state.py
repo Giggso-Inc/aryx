@@ -319,6 +319,18 @@ class CpqSession:
     # growth. Each snapshot dict has keys: filled, filled_multi,
     # display_filled, filled_source, country, negated_vns, product_entity_id.
     product_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Set when a change request's target attr was ambiguous (two attrs share
+    # a display_label — see detect_change_request_collision) and the
+    # "which one did you mean?" prompt was shown. The candidate
+    # variable_names and the ORIGINAL question (which carries the intended
+    # new value) so the NEXT turn's reply — a bare variable_name or a list
+    # index, not a fresh CPQ hint — can resolve the collision and still
+    # apply the original value, instead of being read as an unrelated
+    # message (live-verified gap, 2026-07-22: the collision prompt had no
+    # memory at all, so answering it did nothing). Empty when no collision
+    # is pending, same convention as pending_switch_product.
+    pending_change_collision_vns: list[str] = field(default_factory=list)
+    pending_change_collision_question: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

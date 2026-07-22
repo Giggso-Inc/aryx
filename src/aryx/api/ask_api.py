@@ -876,6 +876,136 @@ def _handle_multi_select_removal(
     }
 
 
+def _handle_bulk_quantity_change(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    selector_vn: str,
+    item_values: list[str],
+    new_qty: str,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> dict[str, Any]:
+    """STEP 6 (bulk quantity) — set every already-selected row's quantity
+    attr for one grid selector to the same value in one turn (e.g. "change
+    both the mounting types quantity to 67").
+    """
+    grid_links = _cpq_engine.resolve_array_grid_links(attrs)
+    item_map = grid_links.get(selector_vn, {})
+    by_vn = {a.variable_name: a for a in attrs}
+    selector_attr = by_vn.get(selector_vn)
+    updated_labels: list[str] = []
+    _seen_qty_vns: set[str] = set()
+    for item_value in item_values:
+        qty_vn = item_map.get(item_value.strip().lower())
+        # resolve_array_grid_links' substring heuristic can map two
+        # distinct options (e.g. "MOLLE Mount" and "Locking Molle Mount")
+        # to the SAME quantity attr — set it once, not once per option, so
+        # the cascade note doesn't list the same attr twice.
+        if not qty_vn or qty_vn in _seen_qty_vns:
+            continue
+        _seen_qty_vns.add(qty_vn)
+        qty_attr = by_vn.get(qty_vn)
+        session.filled[qty_vn] = new_qty
+        session.display_filled[qty_vn] = new_qty
+        session.filled_source[qty_vn] = "user"
+        updated_labels.append(qty_attr.display_label if qty_attr else qty_vn)
+
+    selector_label = selector_attr.display_label if selector_attr else selector_vn
+    cascade_note = (
+        f"Set {', '.join(f'**{lbl}**' for lbl in updated_labels)} to **{new_qty}**."
+        if updated_labels else
+        f"Couldn't find a quantity field for the selected **{selector_label}** options."
+    )
+
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    session.negated_vns = sorted(set(session.negated_vns))
+    negated_vns = set(session.negated_vns)
+
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    elif unresolved_grid_gaps:
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            cascade_note + "\n\n"
+            f"⚠️ {gap_list} has no quantity field configured in this "
+            f"catalog. Please remove it or choose a different option "
+            f"before this configuration can be completed."
+        )
+    else:
+        session.status = "awaiting_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_bulk_quantity_change()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
 def _handle_cascade_multi(
     req: "AskRequest",
     session: Any,
@@ -2051,7 +2181,79 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_qa_question(req.question, strict=False):
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
+        # Pending collision resolution — a PRIOR turn asked "which one did
+        # you mean?" (detect_change_request_collision, below) and stored
+        # the candidates + original question. This turn's reply answers
+        # that, not a fresh CPQ hint: accept either the literal
+        # variable_name or a 1-based list index (the order the candidates
+        # were shown in). Live-verified gap (2026-07-22): the collision
+        # prompt had no memory at all, so the very next turn — even a
+        # verbatim variable_name — fell through to the generic nudge.
+        if session.pending_change_collision_vns:
+            _resolved_vn = None
+            _reply = req.question.strip()
+            if _reply in session.pending_change_collision_vns:
+                _resolved_vn = _reply
+            elif _reply.isdigit():
+                _idx = int(_reply) - 1
+                if 0 <= _idx < len(session.pending_change_collision_vns):
+                    _resolved_vn = session.pending_change_collision_vns[_idx]
+            if _resolved_vn:
+                _resolved_attr = next(
+                    (a for a in attrs if a.variable_name == _resolved_vn), None)
+                _orig_question = session.pending_change_collision_question
+                session.pending_change_collision_vns = []
+                session.pending_change_collision_question = ""
+                if _resolved_attr is not None:
+                    _resolved_change = _cpq_engine.detect_change_request(
+                        _orig_question, [_resolved_attr], session.filled,
+                        filled_multi=session.filled_multi)
+                    if _resolved_change:
+                        _, _resolved_value = _resolved_change
+                        return _handle_cascade(
+                            req, session, attrs, _resolved_attr, _resolved_value,
+                            hiding_rules, rec_rules, con_rules,
+                        )
+                    opts_prompt = (
+                        _cpq_engine.next_question_prompt(_resolved_attr)
+                        if _resolved_attr.options else ""
+                    )
+                    answer = (
+                        f"Couldn't find a value for **{_resolved_attr.display_label}** in "
+                        f"\"{_orig_question}\". Please say what to change it to."
+                        + (f"\n\n{opts_prompt}" if opts_prompt else "")
+                    )
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_change_label_collision_resolved()"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    }
+            # Unrecognized reply — clear the stale pending state and fall
+            # through to normal routing rather than getting stuck forever.
+            session.pending_change_collision_vns = []
+            session.pending_change_collision_question = ""
+
         # STEP 6: change request → cascade
+        # Bulk quantity check first — "change both the mounting types
+        # quantity to 67" targets every already-selected row's quantity
+        # attr, never the grid selector's own value, so it must run before
+        # both the removal check (a different verb-and-verb-shape entirely)
+        # and the collision check below (which would otherwise ask to
+        # disambiguate between two identically-labeled "Mounting Type"
+        # attrs even though only the real multi-select grid ever has
+        # resolvable quantity links in the first place).
+        _bulk_qty_match = _cpq_engine.detect_bulk_quantity_change(
+            req.question, attrs, session.filled_multi)
+        if _bulk_qty_match:
+            _bulk_selector_vn, _bulk_item_values, _bulk_new_qty = _bulk_qty_match
+            return _handle_bulk_quantity_change(
+                req, session, attrs, _bulk_selector_vn, _bulk_item_values, _bulk_new_qty,
+                hiding_rules, rec_rules, con_rules,
+            )
+
         # Deselect check first — "remove X"/"deselect X" is a distinct
         # intent from both the collision check and detect_change_request
         # below (subtracting one option from an existing multi-select
@@ -2077,15 +2279,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if _change_collision:
             _lines = "\n".join(
-                f"- **{a.variable_name}**"
+                f"{i}. **{a.variable_name}**"
                 f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
-                for a in _change_collision
+                for i, a in enumerate(_change_collision, start=1)
             )
             answer = (
                 f"There are {len(_change_collision)} different attributes labeled "
                 f"**\"{_change_collision[0].display_label}\"** in this catalog — which one "
-                f"did you mean to change?\n\n{_lines}"
+                f"did you mean to change? Reply with the number or the variable_name.\n\n{_lines}"
             )
+            session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
+            session.pending_change_collision_question = req.question
             _persist_cpq_history(req.workspace_id, req.question, answer)
             return {
                 "answer": answer, "terms": [], "tools_called": ["cpq_change_label_collision()"],
