@@ -4516,6 +4516,56 @@ class CpqEngine:
             return label_matches
         return None
 
+    def detect_change_request_collision(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> list[ConfigAttr] | None:
+        """Same identical-label ambiguity as detect_label_collision, but for
+        change requests rather than options-queries (docs/CPQ_SESSION_2_
+        OPEN_ISSUES.md item 2 — that doc claimed this closed the gap for
+        "the whole conversational flow", but detect_change_request only
+        ever had the separate, narrower substring-subsumption fix, which
+        does nothing when two candidates' labels are IDENTICAL rather than
+        one subsuming the other — confirmed: "change service type to
+        Premier" against 3 identically-labeled "Service Type" attrs
+        resolved silently to whichever was first in catalog order).
+
+        detect_label_collision itself isn't reused directly — it gates on
+        _OPTIONS_KEYWORDS ("what options...", never present in a change
+        request) and considers every attr, not just already-filled ones.
+        Here the gate is a change-verb/arrow (mirrors detect_change_
+        request's own has_change_verb check) and candidates are restricted
+        to attrs actually in `filled`/`filled_multi` — an unfilled attr
+        can't be the target of a "change X" request in the first place.
+
+        Returns the tied candidates (so the caller can ask which one was
+        meant), or None when there's no collision to report.
+        """
+        if not (self._CHANGE_VERB_RE.search(question) or self._ARROW_RE.search(question)):
+            return None
+        q_lower = question.lower()
+        multi = filled_multi or {}
+        candidates = [
+            a for a in attrs
+            if (a.variable_name in filled or a.variable_name in multi)
+            and a.display_label.lower() in q_lower
+        ]
+        # Group by the EXACT label text, not just "2+ candidates matched at
+        # all" — a substring containment match (e.g. "Quantity" inside
+        # "...Locking Molle Mount Quantity to 10") can pull in candidates
+        # with genuinely DIFFERENT labels, which is detect_change_request's
+        # own _superseded subsumption case, not an identical-label collision.
+        by_label: dict[str, list[ConfigAttr]] = {}
+        for a in candidates:
+            by_label.setdefault(a.display_label.lower(), []).append(a)
+        for group in by_label.values():
+            if len({a.variable_name for a in group}) >= 2:
+                return group
+        return None
+
     def detect_attr_query(
         self, question: str, attrs: list[ConfigAttr],
     ) -> ConfigAttr | None:

@@ -1530,6 +1530,34 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
         # STEP 6: change request → cascade
+        # Identical-label collision check first — same reasoning as the
+        # detect_attr_query collision check above, but scoped to change
+        # requests (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 2's fix never
+        # actually covered this path — see detect_change_request_collision's
+        # docstring). Must run before detect_change_request, which would
+        # otherwise silently resolve the tie to whichever attr is first in
+        # catalog order.
+        _change_collision = _cpq_engine.detect_change_request_collision(
+            req.question, attrs, session.filled, filled_multi=session.filled_multi)
+        if _change_collision:
+            _lines = "\n".join(
+                f"- **{a.variable_name}**"
+                f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
+                for a in _change_collision
+            )
+            answer = (
+                f"There are {len(_change_collision)} different attributes labeled "
+                f"**\"{_change_collision[0].display_label}\"** in this catalog — which one "
+                f"did you mean to change?\n\n{_lines}"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_change_label_collision()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
         change_result = _cpq_engine.detect_change_request(
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if change_result:
