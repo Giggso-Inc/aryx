@@ -32,8 +32,12 @@ def _local_broker() -> Broker:
 
     Reads aryx.llm_runtime.status() so the doc ingest pipeline + the Ask API
     share ONE config. Switching provider/model in the Settings panel now
-    drives both. Embeddings stay on local Ollama (nomic-embed-text) — text
-    similarity is provider-agnostic for the demo path.
+    drives both. `embed_config` below is always Ollama-shaped (model +
+    endpoint) — harmless when ARYX_EMBED_BACKEND is "oci" or "gemini",
+    since Broker.embed() checks that global setting BEFORE ever touching
+    this dict, routing to _oci_embed/_gemini_embed instead (see
+    docs/LLM_GEMINI_MIGRATION_PLAN.md). Only actually used on the default
+    "local" (Ollama) backend.
     """
     cfg = llm_runtime.status()
     provider = str(cfg.get("provider") or "ollama")
