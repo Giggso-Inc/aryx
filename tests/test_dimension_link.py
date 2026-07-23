@@ -30,7 +30,7 @@ def _settings(**overrides):
         dimension_max_cardinality_ratio=0.5,
         dimension_min_overlap=0.5,
         dimension_min_types=2,
-        max_relationships_per_fk_spec=10_000,
+        dimension_max_edges_per_group=10_000,
     )
     defaults.update(overrides)
     return type("S", (), defaults)()
@@ -187,8 +187,9 @@ def test_detect_and_link_dimensions_noop_when_no_shared_dimension_exists():
 
 
 def test_detect_and_link_dimensions_caps_edges_per_dimension_group():
-    """Consistent with fk_edges.py's max_relationships_per_fk_spec guard —
-    but weak/best-effort: save what was collected instead of aborting."""
+    """dimension_max_edges_per_group is a distinct, much larger cap than
+    fk_edges.py's max_relationships_per_fk_spec — but weak/best-effort:
+    save what was collected instead of aborting."""
     entities = [(i, "Surplus", {"State": "PA"}) for i in range(1, 6)]
     entities += [(50, "Surplus", {"State": "CA"})]
     entities += [
@@ -197,7 +198,7 @@ def test_detect_and_link_dimensions_caps_edges_per_dimension_group():
     ]
     store = _store(entities)
     with patch("aryx.pipeline.dimension_link.get_settings",
-               return_value=_settings(max_relationships_per_fk_spec=2)):
+               return_value=_settings(dimension_max_edges_per_group=2)):
         edges = detect_and_link_dimensions(store)
     assert edges == 2
     store.save_relationships.assert_called_once()

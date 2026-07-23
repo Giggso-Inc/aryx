@@ -174,6 +174,23 @@ class Settings(BaseSettings):
             "Override with ARYX_DIMENSION_MIN_TYPES."
         ),
     )
+    dimension_max_edges_per_group: int = Field(
+        default=2_000_000,
+        description=(
+            "Max hub edges detect_and_link_dimensions() will write for a "
+            "single dimension group. Deliberately much larger than "
+            "max_relationships_per_fk_spec: that cap defends against a "
+            "dangerous O(entities x entities) cross-product from a bad FK "
+            "join key. Dimension-hub linking is O(entities) — one edge per "
+            "row to its hub, never a cross-product — so a large edge count "
+            "here reflects a large, legitimately-connected dataset, not a "
+            "runaway join. A real incident: reusing the FK-spec cap here "
+            "truncated a real dimension link at 50,000 edges, leaving most "
+            "of a 300K-row table still isolated even after a real, valid "
+            "shared dimension was correctly found. "
+            "Override with ARYX_DIMENSION_MAX_EDGES_PER_GROUP."
+        ),
+    )
     relate_isolated_max_anchors: int = Field(
         default=5,
         description=(

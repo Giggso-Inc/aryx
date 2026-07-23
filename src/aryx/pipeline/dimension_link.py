@@ -156,7 +156,7 @@ def detect_and_link_dimensions(estore: EntityStore) -> int:
         logger.info("dimension_link: no cross-type dimension groups found")
         return 0
 
-    max_rels = cfg.max_relationships_per_fk_spec
+    max_rels = cfg.dimension_max_edges_per_group
     total_edges = 0
     for group in dimension_groups:
         name_counts: dict[str, int] = defaultdict(int)
@@ -194,7 +194,7 @@ def detect_and_link_dimensions(estore: EntityStore) -> int:
             # Weak/best-effort linking, unlike hard FK detection: save the
             # partial edges collected so far instead of aborting the group.
             logger.warning(
-                "dimension_link: dimension=%s exceeded max_relationships_per_fk_spec=%d "
+                "dimension_link: dimension=%s exceeded dimension_max_edges_per_group=%d "
                 "— saving %d edges collected so far, not aborting",
                 dim_name, max_rels, len(rels),
             )
