@@ -125,6 +125,55 @@ class Settings(BaseSettings):
             "Override with ARYX_RELATE_PAIR_TIMEOUT."
         ),
     )
+    dimension_link_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Tier-2 deterministic dimension-hub linking: connects "
+            "entities across types that share a low-cardinality dimension "
+            "column (state, fiscal period, category code) with no row-level "
+            "key, via a shared hub entity — a weaker, distinctly-named edge "
+            "than a real FK. A real incident: a 300K-row table had no usable "
+            "key and stayed 100% isolated even though its dimension columns "
+            "had full value overlap with other ingested tables. "
+            "Override with ARYX_DIMENSION_LINK_ENABLED."
+        ),
+    )
+    dimension_min_distinct_values: int = Field(
+        default=2,
+        description=(
+            "Minimum distinct values a column must have to be considered a "
+            "dimension candidate (a constant column carries no linking "
+            "information). Override with ARYX_DIMENSION_MIN_DISTINCT_VALUES."
+        ),
+    )
+    dimension_max_cardinality_ratio: float = Field(
+        default=0.05,
+        description=(
+            "Max distinct-values/total-rows ratio for a column to count as a "
+            "dimension (the opposite profile of a usable FK key, which must "
+            "be near-unique). A column above this ratio is treated as a "
+            "candidate identifier, not a shared dimension, and left to "
+            "dynamic_fk.py. Override with ARYX_DIMENSION_MAX_CARDINALITY_RATIO."
+        ),
+    )
+    dimension_min_overlap: float = Field(
+        default=0.3,
+        description=(
+            "Min value-overlap ratio (|intersection| / min(|A|,|B|)) for two "
+            "dimension candidate columns from DIFFERENT types to be clustered "
+            "into the same dimension group. Override with "
+            "ARYX_DIMENSION_MIN_OVERLAP."
+        ),
+    )
+    dimension_min_types: int = Field(
+        default=2,
+        description=(
+            "Minimum distinct ontology types a dimension group must span "
+            "before hub entities are materialized for it — a dimension only "
+            "shared within one type provides no cross-type linking value. "
+            "Override with ARYX_DIMENSION_MIN_TYPES."
+        ),
+    )
     relate_isolated_max_anchors: int = Field(
         default=5,
         description=(

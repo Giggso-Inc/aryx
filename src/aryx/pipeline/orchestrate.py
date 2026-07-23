@@ -18,6 +18,7 @@ from aryx.discover import discover
 from aryx.graph import FalkorStore
 from aryx.naming import ws_graph
 from aryx.models import OntologyType
+from aryx.pipeline.dimension_link import detect_and_link_dimensions
 from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
@@ -176,6 +177,17 @@ def run_pipeline(
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
                 relationships += _relate_isolated(estore, broker)
+        if not skip_graph and not runner.skip("dimension_link"):
+            # Tier-2 deterministic linking: connect entity types that share a
+            # low-cardinality dimension (state, fiscal period, category code)
+            # but have no row-level key, via a shared hub entity. Runs once,
+            # on the final plan, after FK linking and the LLM safety net —
+            # by that point every entity that COULD be linked to a specific
+            # other entity already is; this only ever adds coverage for
+            # entities still isolated, so it must run last, before projection.
+            _emit(on_progress, "Link", 89, "Linking shared dimensions (state, period, category)")
+            with runner.stage("dimension_link"):
+                relationships += detect_and_link_dimensions(estore)
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):
