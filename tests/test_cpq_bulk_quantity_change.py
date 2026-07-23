@@ -62,6 +62,22 @@ def test_bulk_quantity_change_none_without_quantity_keyword():
     assert result is None
 
 
+def test_bulk_quantity_change_detected_without_the_word_quantity():
+    # Live-verified gap (2026-07-22): "change both the mounting type to 25"
+    # says "both" but never says "quantity" -- must still be recognized as
+    # a bulk quantity update, not fall through to the label-collision path.
+    eng = CpqEngine()
+    attrs = _mount_attrs()
+    filled_multi = {"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]}
+    result = eng.detect_bulk_quantity_change(
+        "change both the mounting type to 25", attrs, filled_multi)
+    assert result is not None
+    selector_vn, item_values, new_qty = result
+    assert selector_vn == "mountingTypeArray_viSoln"
+    assert set(item_values) == {"Shirt Magnetic Mount", "Jacket Magnetic Mount"}
+    assert new_qty == "25"
+
+
 def test_bulk_quantity_change_none_when_nothing_selected():
     eng = CpqEngine()
     attrs = _mount_attrs()

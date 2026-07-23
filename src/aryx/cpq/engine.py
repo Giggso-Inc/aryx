@@ -4268,13 +4268,20 @@ class CpqEngine:
                 return attr, to_remove
         return None
 
-    # "change/set/update/make ... quantit(y|ies) ... to <number>" — a bulk
-    # per-row quantity update ("change both the mounting types quantity to
-    # 67"), distinct from _CHANGE_VERB_RE's single-attribute value change:
-    # the target here is never the grid selector's own value (67 is never a
-    # real mount option), it's every already-selected row's quantity attr.
+    # "change/set/update/make ... quantit(y|ies) ... to <number>" OR
+    # "change/set/... both/all/every ... to <number>" — a bulk per-row
+    # quantity update, distinct from _CHANGE_VERB_RE's single-attribute
+    # value change. Live-verified gap (2026-07-22): "change both the
+    # mounting type to 25" — no "quantity" word at all, just "both" —
+    # missed the original quantity-only regex and fell into
+    # detect_change_request_collision instead, where 25 (never a real
+    # mount option) couldn't resolve either. The "both/all/every" branch
+    # is intentionally broader; detect_bulk_quantity_change's own
+    # restriction to resolve_array_grid_links' selectors with actually
+    # resolvable selected rows is the real safety net, not this regex.
     _BULK_QTY_RE = re.compile(
-        r"\b(?:change|set|update|make)\b.{0,60}\bquantit(?:y|ies)\b.{0,40}"
+        r"\b(?:change|set|update|make)\b.{0,80}"
+        r"\b(?:quantit(?:y|ies)|both|all|every)\b.{0,60}"
         r"\bto\b\s*(\d+(?:\.\d+)?)",
         re.IGNORECASE | re.DOTALL,
     )

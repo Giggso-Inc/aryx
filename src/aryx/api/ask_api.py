@@ -2214,6 +2214,15 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                             req, session, attrs, _resolved_attr, _resolved_value,
                             hiding_rules, rec_rules, con_rules,
                         )
+                    # No parseable value for the resolved attr (e.g. the
+                    # original message's target was really a per-row
+                    # quantity, not this attr's own value) — re-ask it as a
+                    # genuine pending question, same as any other unanswered
+                    # attr, so the NEXT reply is captured by STEP 5 instead
+                    # of being orphaned (live-verified gap, 2026-07-22: the
+                    # prior version showed the same options list but never
+                    # registered pending_variables, so the follow-up reply
+                    # fell through to the generic nudge).
                     opts_prompt = (
                         _cpq_engine.next_question_prompt(_resolved_attr)
                         if _resolved_attr.options else ""
@@ -2223,6 +2232,12 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         f"\"{_orig_question}\". Please say what to change it to."
                         + (f"\n\n{opts_prompt}" if opts_prompt else "")
                     )
+                    session.status = "configuring"
+                    session.pending_variables = [
+                        _resolved_attr.variable_name,
+                        *[v for v in session.pending_variables
+                          if v != _resolved_attr.variable_name],
+                    ]
                     _persist_cpq_history(req.workspace_id, req.question, answer)
                     return {
                         "answer": answer, "terms": [],
