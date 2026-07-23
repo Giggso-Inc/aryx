@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from pathlib import Path
@@ -69,6 +70,32 @@ _PER_DOC_TIMEOUT = get_settings().per_doc_timeout
 # where parallelism adds queue overhead without throughput gain. Set to 3-5
 # when using a cloud LLM (Anthropic/OpenAI) that handles concurrent requests.
 _DOC_WORKERS = get_settings().doc_workers
+
+
+def _log_timed_out(path: Path, elapsed: float) -> None:
+    """Log a FuturesTimeout with the real elapsed time, not the configured budget.
+
+    future.result(timeout=_PER_DOC_TIMEOUT) raises the same TimeoutError whether
+    the outer per-document budget genuinely expired, or an inner call (e.g. the
+    embedding HTTP request) already failed with its own, shorter timeout — since
+    Python unifies socket.timeout/TimeoutError/concurrent.futures.TimeoutError
+    into one class. Elapsed time distinguishes the two: it will sit near
+    _PER_DOC_TIMEOUT for a genuine outer expiry, and well under it when an inner
+    call is what actually failed.
+    """
+    if elapsed >= _PER_DOC_TIMEOUT * 0.95:
+        logger.error(
+            "ingest TIMED OUT path=%s after %.1fs — exceeded the per-document "
+            "budget (ARYX_PER_DOC_TIMEOUT=%ss); skipping; batch continues",
+            path.name, elapsed, _PER_DOC_TIMEOUT,
+        )
+    else:
+        logger.error(
+            "ingest TIMED OUT path=%s after %.1fs — an inner call timed out well "
+            "before the %ss per-document budget (ARYX_PER_DOC_TIMEOUT); "
+            "skipping; batch continues",
+            path.name, elapsed, _PER_DOC_TIMEOUT,
+        )
 
 
 def _ingest_with_timeout(
@@ -141,6 +168,7 @@ class DocumentRouterConnector(Connector):
     def extract(self) -> Iterator[RawRecord]:
         if _DOC_WORKERS <= 1 or len(self._paths) <= 1:
             for path in self._paths:
+                start = time.monotonic()
                 try:
                     yield from _ingest_with_timeout(
                         path, self._system, self._broker, self._chunk_store,
@@ -148,8 +176,7 @@ class DocumentRouterConnector(Connector):
                         self._expected_embed_dim, self._run_pii, self._context,
                     )
                 except FuturesTimeout:
-                    logger.error("ingest TIMED OUT path=%s after %ss — skipping; "
-                                 "batch continues", path.name, _PER_DOC_TIMEOUT)
+                    _log_timed_out(path, time.monotonic() - start)
                 except Exception as exc:
                     logger.error("ingest failed path=%s error=%s", path.name, exc)
         else:
@@ -158,6 +185,7 @@ class DocumentRouterConnector(Connector):
             logger.info("parallel doc ingest workers=%d docs=%d",
                         _DOC_WORKERS, len(self._paths))
             with ThreadPoolExecutor(max_workers=_DOC_WORKERS) as pool:
+                batch_start = time.monotonic()
                 futures = {
                     pool.submit(
                         _ingest_with_timeout,
@@ -172,8 +200,7 @@ class DocumentRouterConnector(Connector):
                     try:
                         yield from future.result()
                     except FuturesTimeout:
-                        logger.error("ingest TIMED OUT path=%s after %ss — skipping",
-                                     path.name, _PER_DOC_TIMEOUT)
+                        _log_timed_out(path, time.monotonic() - batch_start)
                     except Exception as exc:
                         logger.error("ingest failed path=%s error=%s", path.name, exc)
 

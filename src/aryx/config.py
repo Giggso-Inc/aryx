@@ -187,6 +187,87 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Dynamic (value-based + LLM) FK detection ──────────────────────────────
+    # Runs after the existing column-name passes (_detect_fk_links), over
+    # whatever pairs those passes did NOT already resolve, so it never
+    # duplicates or regresses the fast heuristics — only fills the gap they
+    # can't see (differently-named columns, derived/semantic joins).
+    fk_dynamic_detection_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Stage 1 (value-overlap sampling) + Stage 2 (LLM judge) "
+            "dynamic FK detection for tabular ingestion, covering pairs the "
+            "column-name passes in _detect_fk_links miss entirely. "
+            "Override with ARYX_FK_DYNAMIC_DETECTION_ENABLED=false."
+        ),
+    )
+    fk_value_sample_size: int = Field(
+        default=200,
+        description=(
+            "Max distinct (deduplicated) values sampled per column for Stage 1 "
+            "value-overlap scoring. Sampling distinct values, not raw rows, "
+            "keeps this cheap even for sources with heavy row duplication. "
+            "Override with ARYX_FK_VALUE_SAMPLE_SIZE."
+        ),
+    )
+    fk_value_overlap_threshold: float = Field(
+        default=0.05,
+        description=(
+            "Min shared-normalized-value overlap ratio (0-1) for a column pair "
+            "to become a Stage 2 LLM-judge candidate. Deliberately low: this is "
+            "only a cheap pre-filter, not the final relationship decision — the "
+            "LLM makes the real call, with a reason, on every pair that clears "
+            "this bar. Override with ARYX_FK_VALUE_OVERLAP_THRESHOLD."
+        ),
+    )
+    fk_dynamic_judge_workers: int = Field(
+        default=4,
+        description=(
+            "Concurrent LLM-judge calls for Stage 2 candidate pairs "
+            "(ThreadPoolExecutor). This bounds THROUGHPUT only — every "
+            "candidate pair that clears Stage 1 is judged; none are dropped "
+            "or capped by count, only processed with bounded concurrency so a "
+            "large batch stays fast without ever silently skipping a pair. "
+            "Override with ARYX_FK_DYNAMIC_JUDGE_WORKERS."
+        ),
+    )
+    fk_fanout_scan_rows: int = Field(
+        default=20000,
+        description=(
+            "Max rows scanned per side when estimating a candidate FK pair's "
+            "join fan-out (sum of matching-value-count products). Bounds the "
+            "cost of the estimate regardless of table size — a capped partial "
+            "scan is still a valid conservative signal. "
+            "Override with ARYX_FK_FANOUT_SCAN_ROWS."
+        ),
+    )
+    fk_max_estimated_fanout: int = Field(
+        default=5000,
+        description=(
+            "Max estimated join fan-out (approximate relationship-row count) "
+            "a candidate FK pair may produce before it is rejected as too "
+            "low-selectivity to be a safe join key (e.g. a shared category/"
+            "group code rather than a real identifier) — rejected candidates "
+            "never reach the Stage 2 LLM judge and never become an fk_link. "
+            "Found via a real incident: a shared low-cardinality 'Matl Group' "
+            "column the LLM correctly judged as 'the same kind of value' "
+            "produced 1.5M+ relationship rows from one spec, stalling "
+            "ingestion for hours. Override with ARYX_FK_MAX_ESTIMATED_FANOUT."
+        ),
+    )
+    max_relationships_per_fk_spec: int = Field(
+        default=50000,
+        description=(
+            "Hard cap on relationships written by link_by_attribute() for a "
+            "single FK spec — defense in depth alongside fk_max_estimated_"
+            "fanout, so ANY spec (column-name-detected or dynamic-detected) "
+            "that slips through with a non-selective join key logs a clear "
+            "warning and stops instead of silently writing millions of rows "
+            "and stalling the ingest job for hours. "
+            "Override with ARYX_MAX_RELATIONSHIPS_PER_FK_SPEC."
+        ),
+    )
+
     # ── Entity resolution thresholds ─────────────────────────────────────────
     er_auto_merge: float = Field(
         default=0.92,
@@ -211,9 +292,88 @@ class Settings(BaseSettings):
             "previous fuzzy behavior."
         ),
     )
+    er_chunk_threshold: int = Field(
+        default=100_000,
+        description=(
+            "Record count above which resolve_run() dispatches to the "
+            "streaming block-wise resolver (aryx.resolution.chunked."
+            "resolve_chunked, backed by Postgres — resumable, bounded memory) "
+            "instead of the in-memory resolve(). Below this threshold the "
+            "in-memory path stays the fast path — chunking adds Postgres "
+            "round-trips that aren't worth it for small runs. "
+            "A large tabular sheet with no natural row cap (e.g. a 300K-row "
+            "CSV/XLSX Data tab) previously ran the in-memory O(block-size²) "
+            "blocking/scoring pass unconditionally and could stall ingestion "
+            "for hours; this threshold is what activates the bounded, "
+            "already-implemented alternative. Override with "
+            "ARYX_ER_CHUNK_THRESHOLD. Ignored when exact_ids matching applies "
+            "(id-keyed sources resolve by exact equality regardless of size, "
+            "so chunking has nothing to add there)."
+        ),
+    )
+    er_min_key_selectivity: float = Field(
+        default=0.01,
+        description=(
+            "Min distinct-value ratio (0-1) the match-key text must clear "
+            "before resolution runs its blocking/scoring pass at all. Below "
+            "this, the key has too little identity signal to produce a "
+            "meaningful block (e.g. a table whose match-key columns are "
+            "each a single constant value across every row) — blocking "
+            "still collapses everything into one oversized block that gets "
+            "skipped, but only after paying the full cost of the key/"
+            "blocking pass to discover that. Below the threshold, resolution "
+            "is skipped entirely and one entity is materialized per record "
+            "directly — same eventual outcome, none of the wasted work. "
+            "Every skip is logged with the measured ratio and the match key "
+            "involved, so a genuinely bad key choice stays visible and "
+            "fixable. Ignored when exact_ids matching applies. Override "
+            "with ARYX_ER_MIN_KEY_SELECTIVITY."
+        ),
+    )
+    er_key_selectivity_sample_size: int = Field(
+        default=2000,
+        description=(
+            "Max records sampled to measure match-key selectivity (see "
+            "er_min_key_selectivity) before deciding whether to run "
+            "resolution at all. Bounds the cost of the check itself "
+            "regardless of table size. Override with "
+            "ARYX_ER_KEY_SELECTIVITY_SAMPLE_SIZE."
+        ),
+    )
+    er_max_edges_per_run: int = Field(
+        default=2_000_000,
+        description=(
+            "Max match edges the chunked resolver's cluster pass will "
+            "consume for a single run. A real incident: a 308,104-record "
+            "run whose columns were mostly low-cardinality produced "
+            "14,374,847 match edges from scoring (46x the record count) — "
+            "materializing that many edges plus the same-size pair_scores "
+            "dict was enough memory pressure to crash the container mid-run, "
+            "silently orphaning the job with no logged error. Edges beyond "
+            "this cap are not consumed — logged clearly as a warning, never "
+            "silent — so those specific pairs simply don't merge (safe "
+            "degradation: under-clustering, not data loss) instead of risking "
+            "another unbounded-memory crash. Override with "
+            "ARYX_ER_MAX_EDGES_PER_RUN."
+        ),
+    )
     embed_batch_size: int = Field(
         default=50,
-        description="Records per embedding batch during entity resolution.",
+        description=(
+            "Texts per embedding HTTP call — used both by entity resolution "
+            "and by document-ingestion chunk embedding. Keeps each call's "
+            "duration roughly constant regardless of how many chunks/records "
+            "a document or batch has, so it stays comfortably inside "
+            "embed_http_timeout."
+        ),
+    )
+    embed_http_timeout: float = Field(
+        default=60.0,
+        description=(
+            "Per-call HTTP timeout in seconds for the local Ollama /api/embed "
+            "request. Override with ARYX_EMBED_HTTP_TIMEOUT if embed_batch_size "
+            "is raised and needs a longer allowance."
+        ),
     )
 
     # ── LLM provider ─────────────────────────────────────────────────────────

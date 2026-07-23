@@ -163,7 +163,9 @@ class Broker:
             endpoint.rstrip("/") + "/api/embed",
             data=body, headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+        from aryx.config import get_settings
+        embed_timeout = get_settings().embed_http_timeout
+        with urllib.request.urlopen(req, timeout=embed_timeout) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8"))
         embeddings = payload.get("embeddings", [])
         logger.debug("ollama_embed ok vectors=%d dim=%d", len(embeddings), len(embeddings[0]) if embeddings else 0)

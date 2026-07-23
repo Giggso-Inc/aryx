@@ -28,6 +28,7 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
+from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
@@ -1141,6 +1142,20 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             auto_fk.extend(workspace_fk)
             logger.info("confirm job=%s workspace FK links detected count=%d specs=%s",
                         job_id, len(workspace_fk), workspace_fk)
+
+    # Dynamic (value-overlap + LLM judge) detection — fills the gap the
+    # column-name passes above cannot see (differently-named columns,
+    # derived/semantic joins). Runs once over the whole batch, only on pairs
+    # not already resolved above, so it's purely additive.
+    if valid_plans:
+        already_linked = {(lk["source_type"], lk["target_type"]) for lk in auto_fk}
+        dynamic_fk = detect_dynamic_fk_links(
+            valid_plans, broker, already_linked=already_linked, log_id=job_id,
+        )
+        if dynamic_fk:
+            auto_fk.extend(dynamic_fk)
+            logger.info("confirm job=%s dynamic (value+LLM) fk-link spec(s): %d: %s",
+                        job_id, len(dynamic_fk), dynamic_fk)
 
     def _run_one_plan(plan: dict, is_last: bool, plan_step: int) -> None:
         """Run a single tabular plan through the pipeline."""
