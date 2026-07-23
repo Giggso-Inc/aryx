@@ -530,8 +530,16 @@ def _handle_cascade(
     dependent_eids = _cpq_engine.find_cascade_dependents(
         changed_attr, attrs, hiding_rules, rec_rules, con_rules,
     )
+    # set_type=="2" attrs are transient UI/action-layer fields, always
+    # excluded from the final payload (build_payload's own unconditional
+    # rule) — they never re-enter `filled`/`pending_variables` after this
+    # rerun either, so naming them here as "needing fresh values" is
+    # misleading (live-verified: "Include a Spare Battery with each body
+    # camera" was announced as recalculating, then silently never
+    # reappeared anywhere — correct outcome, confusing wording).
     dependent_labels = [
-        by_eid[eid].display_label for eid in dependent_eids if eid in by_eid
+        by_eid[eid].display_label for eid in dependent_eids
+        if eid in by_eid and by_eid[eid].set_type != "2"
     ]
 
     # Strip changed attr + all dependents from filled
@@ -1101,9 +1109,13 @@ def _handle_cascade_multi(
         # same as detect_change_request returning None.
         return None
 
+    # set_type=="2" attrs never re-enter filled/pending after this rerun
+    # and are always excluded from the final payload — see _handle_cascade's
+    # identical filter for the live-verified finding this addresses.
     dependent_labels = [
         by_eid[eid].display_label for eid in all_dependent_eids
         if eid in by_eid and by_eid[eid].variable_name not in changed_vns
+        and by_eid[eid].set_type != "2"
     ]
 
     # Re-run full rule evaluation loop ONCE with every change applied.
