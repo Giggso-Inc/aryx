@@ -125,6 +125,19 @@ class Settings(BaseSettings):
             "Override with ARYX_RELATE_PAIR_TIMEOUT."
         ),
     )
+    relate_isolated_max_anchors: int = Field(
+        default=5,
+        description=(
+            "Max candidate anchor types _relate_isolated() tries per isolated "
+            "type before giving up on it. Previously only ONE fixed anchor "
+            "(the first other type in sample order) was ever tried — a real "
+            "relationship to a DIFFERENT type was permanently missed whenever "
+            "that single pairing came back unrelated. Bounded (not unbounded "
+            "over every other type) to keep worst-case cost at "
+            "O(isolated_types × max_anchors), not O(isolated_types × all_types). "
+            "Override with ARYX_RELATE_ISOLATED_MAX_ANCHORS."
+        ),
+    )
 
     extract_mention_retries: int = Field(
         default=3,

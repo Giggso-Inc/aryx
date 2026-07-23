@@ -128,6 +128,68 @@ def test_relate_isolated_skips_a_stuck_type_instead_of_hanging(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_relate_isolated_tries_a_second_anchor_when_the_first_is_unrelated(monkeypatch):
+    """Real incident: a poorly-keyed type stayed isolated across an entire
+    dataset because _relate_isolated only ever tried ONE fixed anchor (the
+    first other type in sample order) and gave up the instant that single
+    pairing came back unrelated — even when a different type genuinely was
+    related. It must now try more than one candidate before giving up."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(3, "Surplus", {"fsc": "84"})]
+    store.list_entities_typed_sample.return_value = [
+        (3, "Surplus", {"fsc": "84"}),
+        (1, "Unrelated", {"x": "1"}),
+        (2, "Material", {"matl_group": "84"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        if right.get("_ontology_type") == "Material":
+            return "is_material_of", 0.9
+        return None, 0.0
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert calls == ["Unrelated", "Material"]  # tried the first, then kept going
+    assert count == 1
+    store.save_relationships.assert_called_once()
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_respects_max_anchors_cap(monkeypatch):
+    """The retry must be bounded, not exhaustive over every other type."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "2")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(9, "Surplus", {"fsc": "84"})]
+    store.list_entities_typed_sample.return_value = [
+        (9, "Surplus", {"fsc": "84"}),
+        (1, "TypeA", {}), (2, "TypeB", {}), (3, "TypeC", {}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        return None, 0.0  # never relates — forces exhausting the candidate list
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert len(calls) == 2  # capped at ARYX_RELATE_ISOLATED_MAX_ANCHORS, not 3
+    assert count == 0
+    get_settings.cache_clear()
+
+
 def test_relate_isolated_is_noop_when_nothing_is_isolated():
     store = MagicMock()
     store.list_isolated_entities.return_value = []

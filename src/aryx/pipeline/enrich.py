@@ -313,13 +313,15 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
 
 
 def _relate_isolated(store: EntityStore, broker: Broker) -> int:
-    """Connect isolated entity types via one LLM call per type, not per entity.
+    """Connect isolated entity types via a few LLM calls per type, not per entity.
 
     Runs after _relate, schema_fk, and link_by_attribute. Operates type-aware:
-    makes ONE LLM inference call per isolated type (using a sample entity), then
-    if related=true creates one edge per isolated entity of that type to the
-    confirmed anchor entity. This is O(isolated_types) not O(isolated_entities),
-    keeping the cost bounded even for large XML files with thousands of entities.
+    tries up to relate_isolated_max_anchors LLM inference calls per isolated
+    type — one per candidate anchor type, stopping at the first confirmed
+    relationship — then if related=true creates one edge per isolated entity
+    of that type to the confirmed anchor entity. This is O(isolated_types ×
+    max_anchors), not O(isolated_entities), keeping the cost bounded even for
+    large XML files with thousands of entities.
 
     For the small-file CSV case (a handful of unreferenced supplier rows), the
     cost is trivially low. For large XML files with 20+ types, at most ~20 LLM
@@ -369,24 +371,31 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
                 break
         return out
 
-    def _pick_anchor(iso_type: str) -> tuple[int, str, dict] | None:
-        """Return one anchor entity from any type other than iso_type."""
-        for t, anchor in anchors.items():
-            if t != iso_type:
-                return anchor
-        return None
+    def _anchor_candidates(iso_type: str) -> list[tuple[int, str, dict]]:
+        """Return up to relate_isolated_max_anchors anchor entities from
+        OTHER types, to try in turn. Previously only the first non-matching
+        type in dict order was ever tried — a genuine relationship to a
+        DIFFERENT type was permanently missed whenever that one pairing
+        came back unrelated (a real incident: a poorly-keyed 300K-row sheet
+        stayed isolated across an entire dataset because its one fixed
+        anchor happened to be a poor match, even after the LLM call itself
+        started working correctly)."""
+        candidates = [anchor for t, anchor in anchors.items() if t != iso_type]
+        return candidates[:cfg.relate_isolated_max_anchors]
 
     def _infer_type(iso_type: str, sample_entity: tuple[int, str, dict]) -> tuple[str, int, str | None, float]:
-        """One LLM call for a sample entity of iso_type vs an anchor."""
-        anchor = _pick_anchor(iso_type)
-        if not anchor:
-            return iso_type, -1, None, 0.0
+        """Try each candidate anchor in turn, stopping at the first confirmed
+        relationship. Bounded by relate_isolated_max_anchors, not by how many
+        entities are isolated."""
         _, iso_type_, iso_attrs = sample_entity
-        a_id, a_type, a_attrs = anchor
-        name, conf = infer_relationship(
-            _trim(iso_attrs, iso_type_), _trim(a_attrs, a_type), broker,
-        )
-        return iso_type, a_id, name, conf
+        left = _trim(iso_attrs, iso_type_)
+        last_result: tuple[str, int, str | None, float] = (iso_type, -1, None, 0.0)
+        for a_id, a_type, a_attrs in _anchor_candidates(iso_type):
+            name, conf = infer_relationship(left, _trim(a_attrs, a_type), broker)
+            if name:
+                return iso_type, a_id, name, conf
+            last_result = (iso_type, a_id, name, conf)
+        return last_result
 
     # ONE LLM call per isolated type (not per entity).
     rels: list[Relationship] = []
