@@ -35,7 +35,9 @@ from aryx.store.datasource_store import DatasourceStore
 from aryx.store.ontology_store import OntologyStore
 from aryx.source_catalog import (
     restore_generic_source_entry,
+    upsert_xlsx_catalog_entry,
     upsert_xml_catalog_entry,
+    xlsx_asset_record,
     xml_asset_record,
 )
 
@@ -1133,7 +1135,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                    (next((p for p in data["tabular"] if p["filename"] == fn), None)
                     for fn in approved_files)
                    if p is not None]
-    _persist_xml_sources(valid_plans, workspace_id, settings.rdb_dsn)
+    _persist_tabular_sources(valid_plans, workspace_id, settings.rdb_dsn)
     auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
@@ -1302,16 +1304,29 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                            exc_info=True)
 
 
-def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
-    """Persist XML parent metadata for the source catalog."""
+def _persist_tabular_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
+    """Persist parent-workbook metadata for the source catalog.
+
+    Every confirmed plan derived from an XML or XLSX upload carries its
+    original source_filename/source_bytes (set in read_files() for both
+    suffixes alike — see converted_tabular above). The catalog entry kind
+    must match the ORIGINAL file's own suffix, not always "xml": writing
+    every source as an xml catalog entry mislabeled .xlsx uploads as
+    "XML File" in the Data tab and left their generated-asset metadata
+    under the wrong catalog key.
+    """
     grouped: dict[str, dict[str, Any]] = {}
     for plan in valid_plans:
         source_filename = plan.get("source_filename")
         source_bytes = plan.get("source_bytes")
         if not source_filename or source_bytes is None:
             continue
-        group = grouped.setdefault(source_filename, {"source_bytes": source_bytes, "assets": []})
-        group["assets"].append(xml_asset_record(
+        group = grouped.setdefault(
+            source_filename, {"source_bytes": source_bytes, "assets": []},
+        )
+        is_xlsx = Path(source_filename).suffix.lower() == ".xlsx"
+        asset_record = xlsx_asset_record if is_xlsx else xml_asset_record
+        group["assets"].append(asset_record(
             filename=plan["filename"],
             dataset=Path(plan["filename"]).stem,
             ontology_type=plan["ontology_type"],
@@ -1321,10 +1336,19 @@ def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, d
         return
     store = DatasourceStore(dsn)
     for source_filename, payload in grouped.items():
-        upsert_xml_catalog_entry(
-            store,
-            workspace_id=workspace_id,
-            source_filename=source_filename,
-            xml_bytes=payload["source_bytes"],
-            assets=payload["assets"],
-        )
+        if Path(source_filename).suffix.lower() == ".xlsx":
+            upsert_xlsx_catalog_entry(
+                store,
+                workspace_id=workspace_id,
+                source_filename=source_filename,
+                xlsx_bytes=payload["source_bytes"],
+                assets=payload["assets"],
+            )
+        else:
+            upsert_xml_catalog_entry(
+                store,
+                workspace_id=workspace_id,
+                source_filename=source_filename,
+                xml_bytes=payload["source_bytes"],
+                assets=payload["assets"],
+            )
