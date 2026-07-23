@@ -163,6 +163,41 @@ def test_relate_isolated_tries_a_second_anchor_when_the_first_is_unrelated(monke
     get_settings.cache_clear()
 
 
+def test_relate_isolated_tries_next_anchor_when_one_candidate_errors(monkeypatch):
+    """Real incident: gemini-pro-latest occasionally returns empty/truncated
+    content, raising inside infer_relationship() for that one candidate. That
+    must not abort every remaining candidate for the type — it collapses the
+    multi-anchor retry back to the original single-shot behavior whenever
+    the FIRST candidate happens to error rather than cleanly answer
+    "unrelated"."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(3, "Surplus", {"fsc": "84"})]
+    store.list_entities_typed_sample.return_value = [
+        (3, "Surplus", {"fsc": "84"}),
+        (1, "Broken", {"x": "1"}),
+        (2, "Material", {"matl_group": "84"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        if right.get("_ontology_type") == "Broken":
+            raise ValueError("no JSON block found: line 1 column 1 (char 0)")
+        return "is_material_of", 0.9
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert calls == ["Broken", "Material"]  # errored candidate skipped, not fatal
+    assert count == 1
+    get_settings.cache_clear()
+
+
 def test_relate_isolated_respects_max_anchors_cap(monkeypatch):
     """The retry must be bounded, not exhaustive over every other type."""
     monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "2")

@@ -386,12 +386,30 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
     def _infer_type(iso_type: str, sample_entity: tuple[int, str, dict]) -> tuple[str, int, str | None, float]:
         """Try each candidate anchor in turn, stopping at the first confirmed
         relationship. Bounded by relate_isolated_max_anchors, not by how many
-        entities are isolated."""
+        entities are isolated.
+
+        One candidate's call raising (e.g. the model returning empty or
+        malformed JSON — observed in production) must not abort every
+        remaining candidate for this type: that would silently collapse the
+        multi-anchor retry back into the original single-shot behavior
+        whenever the FIRST candidate happened to error rather than cleanly
+        answer "unrelated". Each candidate is tried independently; the type
+        is only given up on after every candidate has either errored or
+        come back unrelated.
+        """
         _, iso_type_, iso_attrs = sample_entity
         left = _trim(iso_attrs, iso_type_)
         last_result: tuple[str, int, str | None, float] = (iso_type, -1, None, 0.0)
         for a_id, a_type, a_attrs in _anchor_candidates(iso_type):
-            name, conf = infer_relationship(left, _trim(a_attrs, a_type), broker)
+            try:
+                name, conf = infer_relationship(left, _trim(a_attrs, a_type), broker)
+            except Exception as exc:  # noqa: BLE001 — try the next candidate, don't abort the type
+                logger.warning(
+                    "_relate_isolated type=%s anchor_type=%s inference failed, "
+                    "trying next candidate: %s", iso_type, a_type, exc,
+                )
+                last_result = (iso_type, -1, None, 0.0)
+                continue
             if name:
                 return iso_type, a_id, name, conf
             last_result = (iso_type, a_id, name, conf)
