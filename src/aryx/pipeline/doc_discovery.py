@@ -71,7 +71,31 @@ def _stem_type(filename: str) -> str:
     return "".join(_singular(w).title() for w in words if w)
 
 
-_KEY_SUFFIXES = ("_code", "_id", "_key", "_num", "_ref", "_no", "_cage")
+def _key_suffixes() -> tuple[str, ...]:
+    """Config-driven column-name suffixes treated as generic key/code
+    indicators — domain-agnostic naming conventions, not specific to any
+    one dataset. Override with ARYX_FK_KEY_SUFFIXES."""
+    return tuple(
+        s.strip() for s in get_settings().fk_key_suffixes.split(",") if s.strip()
+    )
+
+
+def _id_like_names() -> frozenset[str]:
+    """Config-driven column names treated as a generic opaque-identifier
+    signal. Override with ARYX_ID_LIKE_COLUMN_NAMES."""
+    return frozenset(
+        s.strip().lower() for s in get_settings().id_like_column_names.split(",")
+        if s.strip()
+    )
+
+
+def _name_like_names() -> frozenset[str]:
+    """Config-driven column names treated as a generic display-name
+    signal. Override with ARYX_NAME_LIKE_COLUMN_NAMES."""
+    return frozenset(
+        s.strip().lower() for s in get_settings().name_like_column_names.split(",")
+        if s.strip()
+    )
 
 
 def _guess_key_col(sample: str) -> str:
@@ -84,8 +108,9 @@ def _guess_key_col(sample: str) -> str:
     try:
         first_line = sample.split("\n")[0]
         headers = next(csv.reader(io.StringIO(first_line)))
+        suffixes = _key_suffixes()
         for h in headers[:6]:
-            if any(h.lower().endswith(sfx) for sfx in _KEY_SUFFIXES):
+            if any(h.lower().endswith(sfx) for sfx in suffixes):
                 return h
         return headers[0] if headers else "name"
     except Exception:  # noqa: BLE001
@@ -93,7 +118,8 @@ def _guess_key_col(sample: str) -> str:
 
 
 def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
-    """Promote an explicit 'id'/'uuid'/'guid' column to primary match_key.
+    """Promote an explicit id-like column (see ARYX_ID_LIKE_COLUMN_NAMES) to
+    primary match_key.
 
     When a CSV has an explicit PK column the LLM sometimes picks a FK column
     (e.g. bm_config_rule_id) instead.  In Pass 2 FK detection that causes
@@ -101,12 +127,13 @@ def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
     creating thousands of false edges.  Returning 'id' early avoids this because
     short keys like 'id' have mk_stem length < 3 and are skipped by Pass 2.
     """
-    if mk and mk[0].lower() in ("id", "uuid", "guid"):
+    id_names = _id_like_names()
+    if mk and mk[0].lower() in id_names:
         return mk
     try:
         hdr_line = sample.split("\n")[0]
         hdrs = next(csv.reader(io.StringIO(hdr_line)), [])
-        id_hdr = next((h for h in hdrs[:8] if h.lower() in ("id", "uuid", "guid")), None)
+        id_hdr = next((h for h in hdrs[:8] if h.lower() in id_names), None)
         if id_hdr:
             return [id_hdr]
     except Exception:  # noqa: BLE001
@@ -643,6 +670,10 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
     if len(plans) < 2:
         return []
 
+    key_suffixes = _key_suffixes()
+    id_names = _id_like_names()
+    name_names = _name_like_names()
+
     def _headers(data: bytes) -> list[str]:
         try:
             line = data.split(b"\n")[0].decode("utf-8", "ignore")
@@ -716,8 +747,8 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                     tag_candidates.add(form)
                     tag_candidates.add(_singular(form))
             headers_b = plan_headers[j]
-            id_col = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
-            name_col = next((c for c in headers_b if c.lower() in ("name", "full_name", "title")), None)
+            id_col = next((c for c in headers_b if c.lower() in id_names), None)
+            name_col = next((c for c in headers_b if c.lower() in name_names), None)
             mk0 = plan_b["match_keys"][0] if plan_b.get("match_keys") else None
 
             for col in plan_headers[i]:
@@ -789,7 +820,7 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 #   own_mk_l — skip when both A and B are siblings sharing a parent FK
                 #   _col_is_varying — skip single-value context fields
                 if (col_l == mk_b_l and col_l != own_mk_l
-                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
+                        and any(col_l.endswith(sfx) for sfx in key_suffixes)
                         and _is_varying(i, col)):
                     seen2.add(col2_key)
                     links.append({
@@ -805,7 +836,7 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 # Rule B: column contains B's match-key stem as a fragment AND has
                 # a key suffix — catches hierarchical/reference column patterns
                 if (mk_stem in col_l and col_l != mk_b_l
-                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
+                        and any(col_l.endswith(sfx) for sfx in key_suffixes)
                         and _is_varying(i, col)
                         and _is_varying(j, mk_b)):
                     seen2.add(col2_key)
@@ -824,8 +855,8 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 # Target cardinality guard: if the join target column has only one
                 # distinct value (e.g. company_id = constant) it cannot produce
                 # meaningful per-row joins — only false cartesian-product edges.
-                col_sfx = next((s for s in _KEY_SUFFIXES if col_l.endswith(s)), None)
-                mk_sfx = next((s for s in _KEY_SUFFIXES if mk_b_l.endswith(s)), None)
+                col_sfx = next((s for s in key_suffixes if col_l.endswith(s)), None)
+                mk_sfx = next((s for s in key_suffixes if mk_b_l.endswith(s)), None)
                 if (col_sfx and mk_sfx and col_sfx == mk_sfx
                         and col_l != mk_b_l and col_l != own_mk_l
                         and _is_varying(i, col)
@@ -875,7 +906,7 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
             continue
         fk_col_l = f"{elem_b}_id"
         headers_b = plan_headers[j]
-        id_col_b = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
+        id_col_b = next((c for c in headers_b if c.lower() in id_names), None)
         mk0_b = plan_b["match_keys"][0] if plan_b.get("match_keys") else None
         target_attr = id_col_b or mk0_b
         if not target_attr:

@@ -231,6 +231,53 @@ class Settings(BaseSettings):
             "Override with ARYX_FK_DYNAMIC_JUDGE_WORKERS."
         ),
     )
+    fk_prefix_transform_lengths: str = Field(
+        default="2,3,4",
+        description=(
+            "Comma-separated prefix lengths tried as a fallback when a "
+            "column pair's raw values don't overlap enough — catches "
+            "DERIVED relationships like a truncated/grouped code (e.g. a "
+            "2-digit category derived from a longer code's first 2 "
+            "characters), which no naming convention or raw value match can "
+            "find. Generic by design: no column name or specific transform "
+            "is hardcoded, only a small set of lengths tried on both sides. "
+            "Still LLM-judged and fanout-guarded like any other candidate — "
+            "this only widens what reaches Stage 1's candidate list. Empty "
+            "string disables prefix-transform matching entirely. Override "
+            "with ARYX_FK_PREFIX_TRANSFORM_LENGTHS."
+        ),
+    )
+    fk_key_suffixes: str = Field(
+        default="_code,_id,_key,_num,_ref,_no,_cage",
+        description=(
+            "Comma-separated column-name suffixes treated as generic "
+            "key/code indicators by the column-name FK passes (e.g. "
+            "'sales_order_ref' ends with '_ref'). Domain-agnostic — these "
+            "are structural naming conventions, not references to any "
+            "specific dataset's columns. Override with ARYX_FK_KEY_SUFFIXES."
+        ),
+    )
+    id_like_column_names: str = Field(
+        default="id,uuid,guid,key",
+        description=(
+            "Comma-separated column names (case-insensitive, exact match) "
+            "treated as a generic opaque-identifier signal — used both by "
+            "the column-name FK passes (picking a join target column) and "
+            "by entity resolution (deciding whether a source's match keys "
+            "are all identifier-like, triggering exact-equality matching "
+            "instead of fuzzy scoring). Override with "
+            "ARYX_ID_LIKE_COLUMN_NAMES."
+        ),
+    )
+    name_like_column_names: str = Field(
+        default="name,full_name,title",
+        description=(
+            "Comma-separated column names (case-insensitive, exact match) "
+            "treated as a generic display-name signal by the column-name FK "
+            "passes when no id-like column is available as a join target. "
+            "Override with ARYX_NAME_LIKE_COLUMN_NAMES."
+        ),
+    )
     fk_fanout_scan_rows: int = Field(
         default=20000,
         description=(

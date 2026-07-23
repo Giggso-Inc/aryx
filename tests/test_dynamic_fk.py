@@ -41,6 +41,7 @@ def _settings(**overrides):
         fk_dynamic_judge_workers=4,
         fk_fanout_scan_rows=20000,
         fk_max_estimated_fanout=5000,
+        fk_prefix_transform_lengths="2,3,4",
     )
     base.update(overrides)
     return SimpleNamespace(**base)

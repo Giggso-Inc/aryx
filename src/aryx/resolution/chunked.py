@@ -23,7 +23,7 @@ from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
 from aryx.resolution.blocking import _keys_for
 from aryx.resolution.classical import score_pair
 from aryx.resolution.cluster import UnionFind
-from aryx.resolution.run import _materialize
+from aryx.resolution.run import _materialize, _partition_pair_scores
 from aryx.resolution.survivorship import SurvivorshipPolicy
 
 logger = logging.getLogger(__name__)
@@ -150,8 +150,16 @@ def _cluster_pass(
         for record in backend.load_records(batch_ids):
             by_id[record.record_id] = record
 
-    for member_ids in union.groups().values():
-        entity = _materialize(member_ids, by_id, pair_scores,
+    # Partition pair_scores by cluster root ONCE — a third real incident
+    # (found during verification, not yet hit in production): _materialize
+    # -> cluster_edges() scans its ENTIRE pair_scores argument for every
+    # cluster. Passing the same run-wide dict (up to er_max_edges_per_run
+    # entries) to every one of ~106,000 clusters made total cost scale as
+    # clusters x edges instead of just edges — for this run, over a
+    # trillion dict-item checks. See _partition_pair_scores (run.py).
+    pair_scores_by_root = _partition_pair_scores(union, pair_scores)
+    for root, member_ids in union.groups().items():
+        entity = _materialize(member_ids, by_id, pair_scores_by_root.get(root, {}),
                               ontology_type, policy)
         yield entity, [EntityMember(landed_record_id=m) for m in member_ids]
 

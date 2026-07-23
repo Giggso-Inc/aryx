@@ -246,3 +246,35 @@ def test_pg_chunk_backend_edges_uses_streaming_named_cursor() -> None:
     _, kwargs = mock_conn.cursor.call_args
     assert kwargs.get("name") == "aryx_edges_42"
     assert mock_cursor.itersize == 10_000
+
+
+# ── pair_scores partitioning (cluster_edges O(clusters x edges) fix) ───────
+# Regression coverage for a third real incident: _materialize() ->
+# cluster_edges() scans its ENTIRE pair_scores argument for every cluster.
+# Passing the same run-wide dict to every one of ~106,000 clusters made
+# total cost scale as clusters x edges instead of just edges.
+
+def test_cluster_pass_gives_each_cluster_only_its_own_pair_scores() -> None:
+    """Each cluster's _materialize() call must receive ONLY its own relevant
+    pair_scores subset, not the full run-wide dict."""
+    records = [ResolutionRecord(record_id=i, text=f"r{i}", payload={}) for i in range(4)]
+    backend = InMemoryBackend(records)
+    # Two independent pairs -> two independent clusters: {0,1} and {2,3}.
+    backend.match_edges = [(0, 1, 1.0), (2, 3, 1.0)]
+
+    seen_sizes = []
+    import aryx.resolution.chunked as chunked_module
+    original_materialize = chunked_module._materialize
+
+    def spy_materialize(member_ids, by_id, pair_scores, ontology_type, policy):
+        seen_sizes.append(len(pair_scores))
+        return original_materialize(member_ids, by_id, pair_scores, ontology_type, policy)
+
+    with patch("aryx.resolution.chunked._materialize", side_effect=spy_materialize):
+        results = list(resolve_chunked(1, records, [r.record_id for r in records],
+                                       backend, "Thing"))
+
+    assert len(results) == 2  # two clusters of size 2 each
+    # Each cluster must see only its OWN 1 edge — never both (2) — which is
+    # what "partitioned once" vs "full dict every time" actually proves.
+    assert sorted(seen_sizes) == [1, 1]

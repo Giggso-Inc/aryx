@@ -23,10 +23,17 @@ Progress = Callable[[str, int, str], None]
 
 _DEFAULT_SURVIVORSHIP_STRATEGY = "most_complete"
 
-# Match keys that denote opaque unique identifiers — same convention as
-# _id_priority_mk / _guess_key_col in doc_discovery.py. When ALL match keys
-# are id-like, identity is exact by definition and fuzzy scoring is invalid.
-_ID_LIKE_KEYS: frozenset[str] = frozenset({"id", "uuid", "guid", "key"})
+
+def _id_like_keys() -> frozenset[str]:
+    """Config-driven match-key names that denote opaque unique identifiers —
+    same convention (and same setting, ARYX_ID_LIKE_COLUMN_NAMES) as
+    _id_priority_mk / _guess_key_col in doc_discovery.py. When ALL match
+    keys are id-like, identity is exact by definition and fuzzy scoring is
+    invalid."""
+    return frozenset(
+        s.strip().lower() for s in get_settings().id_like_column_names.split(",")
+        if s.strip()
+    )
 
 
 def _key_selectivity(records: list[ResolutionRecord], sample_size: int) -> float:
@@ -100,7 +107,7 @@ def resolve_run(
     # bool(key_attrs) is load-bearing: all([]) is True, and an empty match-key
     # list must never trigger exact mode.
     exact_ids = (settings.er_exact_id_match and bool(key_attrs)
-                 and all(k.lower() in _ID_LIKE_KEYS for k in key_attrs))
+                 and all(k.lower() in _id_like_keys() for k in key_attrs))
     if exact_ids:
         logger.info("resolve_run run_id=%s exact_ids=True match_keys=%s", run_id, key_attrs)
 

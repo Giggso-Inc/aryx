@@ -139,6 +139,8 @@ def estimate_join_fanout(
     data_a: bytes, headers_a: list[str], col_a: str,
     data_b: bytes, headers_b: list[str], col_b: str,
     max_rows: int,
+    prefix_len_a: int | None = None,
+    prefix_len_b: int | None = None,
 ) -> int:
     """Estimate how many relationship rows joining col_a to col_b would
     produce: for every value shared by both sides, its occurrence count on
@@ -148,10 +150,56 @@ def estimate_join_fanout(
     shared low-cardinality category code: a category shared by hundreds of
     rows on each side multiplies into a huge number of pairs even though its
     *distinct*-value overlap ratio looks perfectly reasonable.
+
+    prefix_len_a/prefix_len_b apply the same prefix truncation used to find
+    a derived-relationship candidate (see try_prefix_transforms) before
+    counting — truncation only ever MERGES groups (never splits them), so
+    fanout must be estimated on the actual values being joined, not the
+    untransformed originals, or a derived join's real fan-out risk would be
+    underestimated.
     """
     counts_a = sample_value_counts(data_a, headers_a, col_a, max_rows)
     counts_b = sample_value_counts(data_b, headers_b, col_b, max_rows)
+    if prefix_len_a is not None:
+        counts_a = _truncate_counts(counts_a, prefix_len_a)
+    if prefix_len_b is not None:
+        counts_b = _truncate_counts(counts_b, prefix_len_b)
     return sum(counts_a[v] * counts_b[v] for v in counts_a.keys() & counts_b.keys())
+
+
+def _truncate_counts(counts: Counter[str], length: int) -> Counter[str]:
+    out: Counter[str] = Counter()
+    for v, c in counts.items():
+        out[v[:length]] += c
+    return out
+
+
+def try_prefix_transforms(
+    values_a: set[str], values_b: set[str], lengths: list[int],
+) -> tuple[float, int | None, int | None, set[str], set[str]] | None:
+    """Fallback when raw values don't overlap enough: try truncating each
+    side to a small set of configured lengths, compared against the OTHER
+    side's raw values — catches a derived/grouped relationship (e.g. a
+    shorter code that is really a prefix of a longer one in another table)
+    that no naming convention or literal value match can find. Generic: no
+    column name or specific transform is hardcoded, only prefix lengths.
+
+    Returns (best_ratio, prefix_len_a, prefix_len_b, values_a', values_b')
+    for the best-scoring transform tried, or None if no lengths configured.
+    Exactly one of prefix_len_a/prefix_len_b is set (whichever side was
+    truncated); the other is None.
+    """
+    best: tuple[float, int | None, int | None, set[str], set[str]] | None = None
+    for length in lengths:
+        trunc_a = {v[:length] for v in values_a}
+        ratio_a = value_overlap_ratio(trunc_a, values_b)
+        if best is None or ratio_a > best[0]:
+            best = (ratio_a, length, None, trunc_a, values_b)
+        trunc_b = {v[:length] for v in values_b}
+        ratio_b = value_overlap_ratio(values_a, trunc_b)
+        if best is None or ratio_b > best[0]:
+            best = (ratio_b, None, length, values_a, trunc_b)
+    return best
 
 
 def _candidate_columns(headers: list[str]) -> list[str]:
@@ -181,6 +229,9 @@ def generate_candidate_pairs(
     threshold = settings.fk_value_overlap_threshold
     fanout_scan_rows = settings.fk_fanout_scan_rows
     max_fanout = settings.fk_max_estimated_fanout
+    prefix_lengths = [
+        int(n) for n in settings.fk_prefix_transform_lengths.split(",") if n.strip()
+    ]
 
     plan_headers = [_headers(p["data"]) for p in plans]
     value_cache: dict[tuple[int, str], set[str]] = {}
@@ -217,6 +268,25 @@ def generate_candidate_pairs(
                     if len(values_b) < 2:
                         continue
                     ratio = value_overlap_ratio(values_a, values_b)
+                    prefix_len_a: int | None = None
+                    prefix_len_b: int | None = None
+                    transform_desc: str | None = None
+                    eval_a, eval_b = values_a, values_b
+                    if ratio < threshold and prefix_lengths:
+                        # Fallback: raw values don't overlap enough — try a
+                        # derived (prefix-truncated) relationship instead,
+                        # e.g. a short grouped code that is really a prefix
+                        # of a longer code in the other table. Generic: no
+                        # column name or specific transform is hardcoded,
+                        # only a small set of configured lengths.
+                        best = try_prefix_transforms(values_a, values_b, prefix_lengths)
+                        if best and best[0] >= threshold:
+                            ratio, prefix_len_a, prefix_len_b, eval_a, eval_b = best
+                            transform_desc = (
+                                f"Table A's column truncated to its first {prefix_len_a} character(s)"
+                                if prefix_len_a is not None else
+                                f"Table B's column truncated to its first {prefix_len_b} character(s)"
+                            )
                     if ratio < threshold:
                         continue
                     # Selectivity guard: a candidate can have a perfectly
@@ -227,20 +297,24 @@ def generate_candidate_pairs(
                     # distinct values overlap. Estimate the actual join
                     # fan-out before this candidate is even considered, so a
                     # non-selective pair never reaches the LLM judge or
-                    # becomes an fk_link.
+                    # becomes an fk_link. Uses the SAME prefix transform (if
+                    # any) the candidate was found under, since truncation
+                    # only ever merges groups and would otherwise understate
+                    # the real fan-out risk.
                     fanout = estimate_join_fanout(
                         plans[i]["data"], plan_headers[i], col_a,
                         plans[j]["data"], plan_headers[j], col_b,
                         fanout_scan_rows,
+                        prefix_len_a=prefix_len_a, prefix_len_b=prefix_len_b,
                     )
                     if fanout > max_fanout:
                         logger.info(
                             "value_overlap log_id=%s type_a=%s col_a=%s "
-                            "type_b=%s col_b=%s ratio=%.3f REJECTED "
+                            "type_b=%s col_b=%s ratio=%.3f transform=%r REJECTED "
                             "estimated_fanout=%d exceeds max=%d — non-selective "
                             "join key, skipping",
                             log_id, type_a, col_a, type_b, col_b, ratio,
-                            fanout, max_fanout,
+                            transform_desc, fanout, max_fanout,
                         )
                         seen_cols.add(pair_key)
                         continue
@@ -249,13 +323,15 @@ def generate_candidate_pairs(
                         "type_a": type_a, "col_a": col_a,
                         "type_b": type_b, "col_b": col_b,
                         "overlap": ratio,
-                        "samples_a": sorted(values_a)[:5],
-                        "samples_b": sorted(values_b)[:5],
+                        "transform": transform_desc,
+                        "samples_a": sorted(eval_a)[:5],
+                        "samples_b": sorted(eval_b)[:5],
                     })
                     logger.info(
                         "value_overlap log_id=%s type_a=%s col_a=%s "
-                        "type_b=%s col_b=%s ratio=%.3f estimated_fanout=%d",
-                        log_id, type_a, col_a, type_b, col_b, ratio, fanout,
+                        "type_b=%s col_b=%s ratio=%.3f transform=%r estimated_fanout=%d",
+                        log_id, type_a, col_a, type_b, col_b, ratio,
+                        transform_desc, fanout,
                     )
     return candidates
 
@@ -276,12 +352,22 @@ def _judge_one(candidate: dict, broker: Broker, log_id: str | None) -> dict | No
         "conservative: only say linked=true when the evidence genuinely "
         "supports it."
     )
+    transform = candidate.get("transform")
+    transform_note = (
+        f"\nNote: this candidate was only found after applying a value "
+        f"transform — {transform}. The sample values shown below are AFTER "
+        f"that transform, not the raw column values. Judge whether this "
+        f"derived relationship (e.g. one column being a grouped/truncated "
+        f"code derived from the other) is a genuine one.\n"
+        if transform else ""
+    )
     user = (
         f"Table A type={candidate['type_a']!r} column={candidate['col_a']!r} "
         f"sample values={candidate['samples_a']!r}\n"
         f"Table B type={candidate['type_b']!r} column={candidate['col_b']!r} "
         f"sample values={candidate['samples_b']!r}\n"
         f"Cheap value-overlap ratio already measured: {candidate['overlap']:.3f}\n"
+        f"{transform_note}"
         "Is table A's column a valid reference to table B's column?"
     )
     try:

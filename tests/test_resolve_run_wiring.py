@@ -112,6 +112,7 @@ def _settings_stub(**overrides):
     base = dict(
         er_exact_id_match=True, er_chunk_threshold=100_000,
         er_min_key_selectivity=0.01, er_key_selectivity_sample_size=2000,
+        id_like_column_names="id,uuid,guid,key",
         rdb_dsn="postgresql://x",
     )
     base.update(overrides)
