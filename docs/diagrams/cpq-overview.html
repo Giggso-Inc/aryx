@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aryx · How CPQ Builds a Quote</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500;1,9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #F5F7FC;
+    --paper-raise: #FFFFFF;
+    --ink: #0A0F1C;
+    --subtle: #566080;
+    --line: #DEE4F2;
+    --line-soft: #EAEEF8;
+    --steel: #4C74D6;
+    --steel-strong: #3A5CB8;
+    --steel-tint: #EAF0FD;
+    --amber: #C7791A;
+    --amber-tint: #FFF4E1;
+    --amber-line: #F0C888;
+    --emerald: #1F9D74;
+    --emerald-tint: #E7F7F1;
+    --shadow: 0 1px 2px rgba(8,13,31,0.04), 0 12px 28px rgba(8,13,31,0.06);
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --paper: #0B1020;
+    --paper-raise: #10182E;
+    --ink: #EAF0FE;
+    --subtle: #97A3C4;
+    --line: #232E52;
+    --line-soft: #1A2340;
+    --steel: #86A6F5;
+    --steel-strong: #A9C0FA;
+    --steel-tint: #16204A;
+    --amber: #E7B368;
+    --amber-tint: #241C0E;
+    --amber-line: #4A3A18;
+    --emerald: #63D9AE;
+    --emerald-tint: #0E241D;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.35);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0B1020;
+      --paper-raise: #10182E;
+      --ink: #EAF0FE;
+      --subtle: #97A3C4;
+      --line: #232E52;
+      --line-soft: #1A2340;
+      --steel: #86A6F5;
+      --steel-strong: #A9C0FA;
+      --steel-tint: #16204A;
+      --amber: #E7B368;
+      --amber-tint: #241C0E;
+      --amber-line: #4A3A18;
+      --emerald: #63D9AE;
+      --emerald-tint: #0E241D;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.35);
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  }
+
+  .measure { max-width: 1100px; margin: 0 auto; padding: 0 28px; }
+  a { color: inherit; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px;
+    background: color-mix(in srgb, var(--paper) 82%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .topbar .brand { display: inline-flex; align-items: center; gap: 10px; }
+  .topbar .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  .topbar .brand span { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.28em; font-weight: 600; }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--subtle); background: var(--paper-raise); border: 1px solid var(--line);
+    padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--steel); color: var(--steel); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+  .theme-toggle svg { width: 13px; height: 13px; }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    position: relative;
+    background: linear-gradient(180deg, var(--paper-raise) 0%, var(--paper) 100%);
+    color: var(--ink);
+    overflow: hidden;
+    padding: 84px 28px 88px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.9; }
+  .hero-inner { position: relative; z-index: 2; max-width: 780px; margin: 0 auto; text-align: center; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--steel-strong); border: 1px solid var(--line); background: var(--paper-raise); padding: 6px 14px; border-radius: 999px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 0 3px var(--emerald-tint); }
+  .hero h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2.3rem, 5vw, 3.5rem);
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    margin: 26px 0 20px;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .hero h1 em { font-style: italic; font-weight: 500; color: var(--steel-strong); }
+  .hero p.lede {
+    font-size: 17px; line-height: 1.65; color: var(--subtle); max-width: 660px; margin: 0 auto;
+  }
+  .hero-nav { margin-top: 26px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+  .hero-nav a {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.05em; text-decoration: none;
+    color: var(--steel-strong); background: var(--steel-tint); border: 1px solid var(--line); padding: 7px 14px; border-radius: 999px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .hero-nav a:hover { border-color: var(--steel); }
+  .hero-stats {
+    margin-top: 40px; display: flex; justify-content: center; gap: 0;
+    flex-wrap: wrap; border-top: 1px solid var(--line);
+  }
+  .hero-stats .stat {
+    flex: 1; min-width: 130px; padding: 20px 18px 0; text-align: center;
+    border-right: 1px solid var(--line);
+  }
+  .hero-stats .stat:last-child { border-right: none; }
+  .hero-stats .num { font-family: 'Fraunces', serif; font-size: 1.9rem; color: var(--ink); }
+  .hero-stats .lbl { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 4px; }
+
+  /* ---------- Sections ---------- */
+  section { padding: 80px 0; }
+  section + section { border-top: 1px solid var(--line-soft); }
+  .section-head { max-width: 640px; margin-bottom: 44px; }
+  .section-head .kicker {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--steel); font-weight: 600;
+  }
+  .section-head h2 {
+    font-family: 'Fraunces', serif; font-weight: 500; font-size: clamp(1.7rem, 3vw, 2.15rem);
+    margin: 10px 0 12px; text-wrap: balance;
+  }
+  .section-head p { color: var(--subtle); font-size: 15px; line-height: 1.65; }
+
+  /* ---------- Legend ---------- */
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 18px; }
+  .legend .item { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--subtle); }
+  .legend .sw { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .legend .sw.steel { background: var(--steel); }
+  .legend .sw.amber { background: var(--amber); }
+  .legend .sw.emerald { background: var(--emerald); }
+
+  /* ---------- Pipeline rail ---------- */
+  .rail-wrap { position: relative; }
+  .rail-track { position: absolute; left: 27px; top: 8px; bottom: 8px; width: 2px; background: var(--line); }
+  .rail-track .fill { position: absolute; top: 0; left: 0; width: 100%; height: 0%; background: linear-gradient(var(--steel), var(--emerald)); transition: height 0.4s ease-out; }
+  .station { position: relative; display: grid; grid-template-columns: 56px 1fr; gap: 22px; padding-bottom: 40px; }
+  .station:last-of-type { padding-bottom: 0; }
+  .node {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--paper-raise); border: 2px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Fraunces', serif; font-size: 1.15rem; color: var(--subtle); position: relative; z-index: 2;
+    transition: border-color 0.4s ease, color 0.4s ease, background 0.4s ease;
+  }
+  .station.seen .node { border-color: var(--steel); color: var(--steel-strong); background: var(--steel-tint); }
+  .card {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 16px;
+    padding: 24px 26px; box-shadow: var(--shadow);
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .station.seen .card { opacity: 1; transform: translateY(0); }
+  .card .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card .stage-no { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--steel); letter-spacing: 0.06em; }
+  .card h3 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.25rem; margin: 4px 0 0; }
+  .card .stage-tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--subtle); border: 1px solid var(--line); padding: 3px 9px; border-radius: 999px;
+  }
+  .card .stage-tag.ai { color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 35%, var(--line)); }
+  .card .stage-tag.wait { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); }
+  .card .what { font-size: 14.5px; line-height: 1.65; margin-top: 12px; }
+  .card .why {
+    font-size: 13px; line-height: 1.6; color: var(--subtle); margin-top: 12px;
+    padding-left: 14px; border-left: 2px solid var(--line);
+  }
+  .card .why b { color: var(--ink); font-weight: 600; }
+  .card code { font-family: 'JetBrains Mono', monospace; font-size: 0.92em; background: var(--line-soft); padding: 1px 6px; border-radius: 5px; }
+
+  /* ---------- Real-example block ---------- */
+  .example { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .example .ex-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--steel-strong); background: var(--steel-tint); padding: 8px 14px; border-bottom: 1px solid var(--line);
+  }
+  .example .ex-caption { padding: 10px 16px 14px; font-size: 12px; color: var(--subtle); line-height: 1.55; background: var(--paper-raise); }
+  .example .ex-caption b { color: var(--ink); font-weight: 600; }
+  .example .ex-list { padding: 12px 16px; background: var(--paper); font-size: 12px; line-height: 1.9; overflow-x: auto; }
+  .example .ex-list .row { display: flex; gap: 8px; white-space: nowrap; }
+  .example .ex-list .k { font-family: 'JetBrains Mono', monospace; color: var(--steel-strong); min-width: 190px; flex-shrink: 0; }
+  .example .ex-list .v { color: var(--ink); white-space: normal; }
+
+  .checkpoint {
+    margin-top: 16px; display: flex; gap: 12px; align-items: flex-start;
+    background: var(--amber-tint); border: 1px solid var(--amber-line); border-radius: 12px; padding: 14px 16px;
+  }
+  .checkpoint svg { width: 18px; height: 18px; color: var(--amber); flex-shrink: 0; margin-top: 2px; }
+  .checkpoint .lbl { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--amber); font-weight: 600; }
+  .checkpoint p { font-size: 13px; line-height: 1.55; color: var(--ink); margin-top: 3px; }
+  .checkpoint.trust { background: var(--emerald-tint); border-color: color-mix(in srgb, var(--emerald) 45%, var(--line)); }
+  .checkpoint.trust svg { color: var(--emerald); }
+  .checkpoint.trust .lbl { color: var(--emerald); }
+  .checkpoint.note { background: var(--steel-tint); border-color: var(--line); }
+  .checkpoint.note svg { color: var(--steel-strong); }
+  .checkpoint.note .lbl { color: var(--steel-strong); }
+
+  /* ---------- Rule-loop diagram (non-linear) ---------- */
+  .loop-diagram {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 20px;
+    padding: 36px 30px; box-shadow: var(--shadow);
+  }
+  .loop-ring { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; position: relative; }
+  .loop-step {
+    background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 18px 16px;
+    text-align: left; position: relative;
+  }
+  .loop-step .n { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--steel); letter-spacing: 0.08em; text-transform: uppercase; }
+  .loop-step h4 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.02rem; margin: 6px 0 8px; }
+  .loop-step p { font-size: 12.5px; line-height: 1.55; color: var(--subtle); }
+  .loop-arrow-row { display: flex; align-items: center; justify-content: center; color: var(--line); font-size: 20px; }
+  .loop-repeat {
+    margin-top: 18px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; color: var(--subtle);
+    padding-top: 18px; border-top: 1px dashed var(--line);
+  }
+  .loop-repeat svg { width: 15px; height: 15px; color: var(--steel); }
+  @media (max-width: 780px) {
+    .loop-ring { grid-template-columns: 1fr; }
+    .loop-arrow-row { transform: rotate(90deg); padding: 4px 0; }
+  }
+
+  .rule-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 28px; }
+  .rule-type { border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 20px; background: var(--paper-raise); }
+  .rule-type .tag { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--steel-strong); }
+  .rule-type h4 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.05rem; margin: 8px 0 8px; }
+  .rule-type p { font-size: 12.5px; line-height: 1.6; color: var(--subtle); }
+  @media (max-width: 780px) { .rule-types { grid-template-columns: 1fr; } }
+
+  .tier-strip { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+  .tier { flex: 1; min-width: 220px; border-radius: 12px; padding: 14px 16px; border: 1px solid var(--line); }
+  .tier .t-lbl { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .tier.t1 { background: var(--steel-tint); border-color: color-mix(in srgb, var(--steel) 35%, var(--line)); }
+  .tier.t1 .t-lbl { color: var(--steel-strong); }
+  .tier.t2 { background: var(--line-soft); }
+  .tier.t2 .t-lbl { color: var(--subtle); }
+  .tier p { font-size: 12.5px; line-height: 1.55; color: var(--ink); margin-top: 6px; }
+
+  /* ---------- Post-approval card grid ---------- */
+  .status-strip { display: flex; align-items: center; gap: 0; flex-wrap: wrap; margin-bottom: 40px; }
+  .status-pill {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 10px 16px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--paper-raise); color: var(--subtle);
+  }
+  .status-pill.active { color: var(--steel-strong); border-color: color-mix(in srgb, var(--steel) 45%, var(--line)); background: var(--steel-tint); }
+  .status-pill.final { color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 45%, var(--line)); background: var(--emerald-tint); }
+  .status-arrow { color: var(--line); font-size: 16px; padding: 0 10px; }
+  .status-loop { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--subtle); margin-left: 14px; }
+
+  .action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+  .action-card { border: 1px solid var(--line); border-radius: 16px; padding: 20px 20px 22px; background: var(--paper-raise); box-shadow: var(--shadow); }
+  .action-card .verb { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--steel-strong); }
+  .action-card h4 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.1rem; margin: 8px 0 10px; }
+  .action-card p { font-size: 13px; line-height: 1.6; color: var(--subtle); }
+  .action-card .ex { margin-top: 12px; font-size: 12px; font-style: italic; color: var(--subtle); border-left: 2px solid var(--line); padding-left: 10px; }
+  .action-card .ex b { font-style: normal; color: var(--steel-strong); font-weight: 600; }
+
+  /* ---------- Principles ---------- */
+  .principle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .principle { border: 1px solid var(--line); border-radius: 16px; padding: 22px 22px 24px; background: var(--paper-raise); }
+  .principle .num { font-family: 'Fraunces', serif; font-size: 1.6rem; color: var(--line); }
+  .principle h4 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.1rem; margin: 6px 0 10px; }
+  .principle p { font-size: 13px; line-height: 1.62; color: var(--subtle); }
+  .principle .live { margin-top: 12px; font-size: 11.5px; font-family: 'JetBrains Mono', monospace; color: var(--steel-strong); }
+  @media (max-width: 900px) { .principle-grid { grid-template-columns: 1fr; } }
+
+  /* ---------- Recap panel ---------- */
+  .panel { background: var(--paper-raise); border: 1px solid var(--line); border-radius: 22px; padding: 40px 32px; box-shadow: var(--shadow); }
+  .flow-strip { display: flex; gap: 1px; overflow-x: auto; padding-bottom: 8px; }
+  .flow-chip { flex: 1; min-width: 100px; text-align: center; padding: 16px 8px; background: var(--steel-tint); border: 1px solid var(--line); border-radius: 12px; }
+  .flow-chip .t { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink); }
+  .flow-arrow { display: flex; align-items: center; color: var(--line); font-size: 15px; padding: 0 2px; }
+  .panel-foot { margin-top: 26px; display: flex; gap: 20px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 20px; }
+  .panel-foot .kv { font-size: 13px; color: var(--subtle); }
+  .panel-foot .kv b { color: var(--ink); font-weight: 600; }
+
+  footer { text-align: center; padding: 40px 28px 56px; color: var(--subtle); font-size: 12.5px; }
+  footer .fname { font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; }
+  footer a { color: var(--steel-strong); text-decoration: none; font-weight: 500; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    .hero { padding: 64px 20px 72px; }
+    section { padding: 56px 0; }
+    .station { grid-template-columns: 44px 1fr; gap: 14px; }
+    .node { width: 44px; height: 44px; font-size: 0.95rem; }
+    .rail-track { left: 21px; }
+    .rule-types { grid-template-columns: 1fr; }
+    .principle-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="aryx-logo.png" alt="Aryx" />
+    <span>ARYX</span>
+  </div>
+  <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2"/><path d="M12 3v2.2M12 18.8V21M4.2 12H2M22 12h-2.2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5" stroke-linecap="round"/></svg>
+    <span id="themeLabel">Light</span>
+  </button>
+</header>
+
+<section class="hero">
+  <canvas id="heroCanvas" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <span class="eyebrow"><span class="dot"></span> CPQ engine &middot; internal walkthrough</span>
+    <h1>One question in,<br /><em>a rule-checked quote out.</em></h1>
+    <p class="lede">
+      "Quote APX Next Enhanced radios for a US customer" turns into a fully-configured,
+      rule-validated BOM in one conversational thread. Every value that lands in the final
+      JSON was either stated by the customer or derived by a real catalog rule &mdash;
+      never guessed by a model. Here's exactly what happens at each step, and what stays
+      open for editing after the quote is "done."
+    </p>
+    <div class="hero-nav">
+      <a href="#conversation">↓ The 8-step conversation</a>
+      <a href="#rule-loop">↓ Inside the rule loop</a>
+      <a href="#post-approval">↓ Editing after confirm</a>
+      <a href="ask-overview.html">See the Ask flow →</a>
+    </div>
+    <div class="hero-stats">
+      <div class="stat"><div class="num">8</div><div class="lbl">Conversation steps</div></div>
+      <div class="stat"><div class="num">3</div><div class="lbl">Rule types</div></div>
+      <div class="stat"><div class="num">2</div><div class="lbl">Evaluator tiers</div></div>
+      <div class="stat"><div class="num">5</div><div class="lbl">Post-confirm actions</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="measure">
+
+  <section id="conversation">
+    <div class="section-head">
+      <span class="kicker">Part 1 &middot; The main thread</span>
+      <h2>Eight steps, one conversation</h2>
+      <p>
+        <code>_run_cpq_turn()</code> (<code>src/aryx/api/ask_api.py</code>) drives every turn
+        through the same eight stages. Most turns skip straight to Step 3 once the product
+        and country are known &mdash; the full sequence only plays out once, at the very
+        start of a quote.
+      </p>
+      <div class="legend">
+        <span class="item"><span class="sw steel"></span> Deterministic (engine/rules)</span>
+        <span class="item"><span class="sw amber"></span> Waiting on the customer</span>
+        <span class="item"><span class="sw emerald"></span> Narrated by the LLM (with a fallback)</span>
+      </div>
+    </div>
+
+    <div class="rail-wrap">
+      <div class="rail-track"><div class="fill"></div></div>
+
+      <div class="station">
+        <div class="node">1</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 1</div><h3>Anchor validation</h3></div>
+            <span class="stage-tag wait">waits for product + country</span>
+          </div>
+          <p class="what">
+            Nothing else can run until the product family and destination country are known.
+            <code>detect_product_mention()</code> tries to resolve the family from free text
+            first; if it can't, the engine lists the families actually ingested in this
+            workspace rather than a hardcoded guess.
+          </p>
+          <div class="example">
+            <div class="ex-label">Real turn</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">customer says</span><span class="v">"Quote APX Next Enhanced radios for a US customer."</span></div>
+              <div class="row"><span class="k">resolved product</span><span class="v">aSTRO25_bom</span></div>
+              <div class="row"><span class="k">resolved country</span><span class="v">United States</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">2</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 2</div><h3>Value mapping</h3></div>
+            <span class="stage-tag">catalog lookup</span>
+          </div>
+          <p class="what">
+            The resolved product name is matched against the catalog's real
+            <code>productSelectionProduct_all</code> option list via
+            <code>apply_answer()</code> &mdash; fuzzy option matching, never a raw string
+            passthrough. <code>load_product_config()</code> then loads every
+            <code>ConfigAttr</code> for this catalog, scoped by <code>catalog_prefix</code>
+            so a workspace holding two ingested products never cross-contaminates rules.
+          </p>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">3</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 3</div><h3>Rule evaluation loop</h3></div>
+            <span class="stage-tag">runs on every turn</span>
+          </div>
+          <p class="what">
+            Hide &rarr; recommend &rarr; constrain &rarr; auto-fill, repeated until nothing
+            changes (<code>evaluate_rules_loop()</code>, capped at 8 passes). This is the
+            engine's core &mdash; see <a href="#rule-loop">Part 2</a> for what happens inside it.
+          </p>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">4</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 4</div><h3>Hybrid prompting</h3></div>
+            <span class="stage-tag wait">asks the customer</span>
+          </div>
+          <p class="what">
+            Whatever the loop couldn't resolve becomes <code>pending</code>. The first
+            pending attribute is asked with a plain-English context sentence
+            (<code>build_context_sentence()</code> &mdash; "Since we locked in X, please
+            choose Y") plus its numbered real option list, never a raw internal field name.
+          </p>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">5</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 5</div><h3>Lock &amp; loop</h3></div>
+            <span class="stage-tag">re-enters Step 3</span>
+          </div>
+          <p class="what">
+            The customer's reply is matched against that attribute's real options and locked
+            in with <code>filled_source = "user"</code> &mdash; a provenance tag the rest of
+            the engine treats specially (see the "never silently re-guess" principle below).
+            Control returns to Step 3.
+          </p>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">6</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 6</div><h3>Review &amp; cascade</h3></div>
+            <span class="stage-tag ai">LLM-narrated summary</span>
+          </div>
+          <p class="what">
+            Once nothing is left pending, a categorized summary is narrated in plain prose
+            (<code>_cpq_summary_text()</code>) &mdash; Product, Service Plan, Quantity &amp;
+            Duration, and a curated "Associated Options" catch-all. If the narration call
+            fails, a deterministic bullet renderer (<code>render_filled_summary()</code>)
+            takes over instead &mdash; the flow never blocks on the model being reachable.
+            Changing anything from here re-invalidates dependents and re-runs Step 3.
+          </p>
+          <div class="example">
+            <div class="ex-label">Real turn</div>
+            <div class="ex-caption">
+              Changing <b>Hardware Version</b> mid-review: "Because Hardware Version changed,
+              Product depends on it and needs a fresh value &mdash; recalculating now." The new
+              JSON reflects every recalculated dependent, not just the one field named.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">7</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 7</div><h3>Contextual Q&amp;A</h3></div>
+            <span class="stage-tag ai">graph + LLM synthesis</span>
+          </div>
+          <p class="what">
+            A genuine question ("what's included with the Video RSM?") pauses the
+            configuration, answers from the graph, then re-shows exactly where the
+            conversation left off. A question about one attribute's own available options
+            is answered straight from <code>attr.options</code> already in memory &mdash;
+            no graph query, no LLM call needed for that fast path.
+          </p>
+        </div>
+      </div>
+
+      <div class="station">
+        <div class="node">8</div>
+        <div class="card">
+          <div class="head">
+            <div><div class="stage-no">STEP 8</div><h3>JSON payload synthesis</h3></div>
+            <span class="stage-tag">only on "confirm"</span>
+          </div>
+          <p class="what">
+            <code>build_payload()</code> assembles the real BOM API shape &mdash; per-type
+            serialization (bare booleans, <code>{"value","displayValue"}</code> menus,
+            <code>{"items":[...]}</code> multi-selects) &mdash; and excludes anything that
+            was never a real customer decision (transient UI fields, flow-excluded mirrors,
+            an active hiding rule's own match). The JSON is only ever generated here, never
+            shown unasked before this.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="rule-loop">
+    <div class="section-head">
+      <span class="kicker">Part 2 &middot; Step 3, expanded</span>
+      <h2>Inside the rule evaluation loop</h2>
+      <p>
+        This is the only place a value gets assigned without the customer typing it &mdash;
+        so it's the one part of the engine held to the strictest "never guess" discipline.
+      </p>
+    </div>
+
+    <div class="loop-diagram">
+      <div class="loop-ring">
+        <div class="loop-step">
+          <div class="n">1 &middot; Hide</div>
+          <h4>Hiding rules</h4>
+          <p><code>apply_hiding_rules()</code> &mdash; reveals or hides attributes based on
+          what's already filled. Runs first so auto-fill only ever considers visible fields.</p>
+        </div>
+        <div class="loop-arrow-row">&rarr;</div>
+        <div class="loop-step">
+          <div class="n">2 &middot; Fill</div>
+          <h4>Auto-fill</h4>
+          <p><code>auto_fill()</code> &mdash; hint match, then a valid catalog default, then a
+          rule-governed pick. Blind guessing only ever happens for genuinely optional fields,
+          and never overrides a value the customer already answered this turn.</p>
+        </div>
+        <div class="loop-arrow-row">&rarr;</div>
+        <div class="loop-step">
+          <div class="n">3 &middot; Recommend</div>
+          <h4>Recommendation rules</h4>
+          <p><code>apply_recommendation_rules()</code> &mdash; a condition-matched rule fills
+          a target field with its recommended value, e.g. Region derived from Country.</p>
+        </div>
+        <div class="loop-arrow-row">&rarr;</div>
+        <div class="loop-step">
+          <div class="n">4 &middot; Constrain</div>
+          <h4>Constraint rules</h4>
+          <p><code>apply_constraint_rules()</code> &mdash; narrows which options remain valid
+          for a field given the rest of the state. Multiple active constraints intersect.</p>
+        </div>
+      </div>
+      <div class="loop-repeat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 1 3 6.7M3 12v5h5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        repeats until nothing changes &mdash; capped at 8 passes per turn
+      </div>
+    </div>
+
+    <div class="rule-types">
+      <div class="rule-type">
+        <div class="tag">rule_type = 11</div>
+        <h4>Hiding rules</h4>
+        <p>Show or hide a field when a condition is met. ~62% of real hiding rules in a
+        production catalog are BML-script-backed, not a single condition/value pair.</p>
+      </div>
+      <div class="rule-type">
+        <div class="tag">rule_type = 10</div>
+        <h4>Recommendation rules</h4>
+        <p>Auto-select a value for a target field when its condition holds &mdash; the
+        mechanism behind the Billing Option / CapEx Purchase example below.</p>
+      </div>
+      <div class="rule-type">
+        <div class="tag">rule_type = 5</div>
+        <h4>Constraint rules</h4>
+        <p>Narrow the allowed option set for a field &mdash; e.g. Region = NA restricts
+        Frequency Band to only the codes valid in North America.</p>
+      </div>
+    </div>
+
+    <div class="tier-strip">
+      <div class="tier t1">
+        <div class="t-lbl">Tier 1 &middot; default</div>
+        <p>A real deterministic parser for the BigMachines script language &mdash; regex-based
+        condition and assignment matching. Handles the large majority of real scripts with
+        zero model calls.</p>
+      </div>
+      <div class="tier t2">
+        <div class="t-lbl">Tier 2 &middot; off by default</div>
+        <p>LLM fallback for scripts Tier 1 can't parse. Gated behind
+        <code>ARYX_BML_USE_LLM=false</code> &mdash; a slow/rate-limited call inside a live
+        request is a real risk this flag exists to avoid.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="post-approval">
+    <div class="section-head">
+      <span class="kicker">Part 3 &middot; After "confirm"</span>
+      <h2>The quote stays editable</h2>
+      <p>
+        Saying "confirm" shows the JSON &mdash; it doesn't lock the conversation.
+        The same session keeps accepting Q&amp;A and edits, re-showing updated JSON after
+        every change, exactly like it did before confirmation.
+      </p>
+    </div>
+
+    <div class="status-strip">
+      <span class="status-pill">configuring</span>
+      <span class="status-arrow">&rarr;</span>
+      <span class="status-pill active">awaiting_approval</span>
+      <span class="status-arrow">&rarr;</span>
+      <span class="status-pill final">post_approval</span>
+      <span class="status-loop">stays here through every further edit &mdash; never reverts</span>
+    </div>
+
+    <div class="action-grid">
+      <div class="action-card">
+        <div class="verb">Ask</div>
+        <h4>Question about a value</h4>
+        <p>Answered straight from memory, or the graph if it's a broader question. Session
+        state is untouched.</p>
+        <div class="ex">"What's Hardware Version set to?"</div>
+      </div>
+      <div class="action-card">
+        <div class="verb">Change</div>
+        <h4>Replace a value</h4>
+        <p>Runs the exact same cascade as pre-confirmation &mdash; dependents are
+        invalidated and recalculated, never left stale.</p>
+        <div class="ex">"Change Hardware Version to <b>4G LTE Only</b>"</div>
+      </div>
+      <div class="action-card">
+        <div class="verb">Remove</div>
+        <h4>Deselect an optional item</h4>
+        <p>Scoped to optional/multi-select fields only &mdash; a required field can be
+        changed, never removed outright.</p>
+        <div class="ex">"Remove the surveillance package"</div>
+      </div>
+      <div class="action-card">
+        <div class="verb">Add back</div>
+        <h4>Re-activate an excluded field</h4>
+        <p>Only for real, currently-excluded, optional catalog fields &mdash; never an
+        invented one, and never while its hiding rule is still genuinely true.</p>
+        <div class="ex">"Add Surveillance Package Type"</div>
+      </div>
+      <div class="action-card">
+        <div class="verb">Clear</div>
+        <h4>Blank an optional value</h4>
+        <p>Nulls a single-select field back to empty &mdash; refused if a still-active rule
+        would just refill it right back.</p>
+        <div class="ex">"Clear Surveillance Package Type"</div>
+      </div>
+    </div>
+
+    <div class="checkpoint note" style="margin-top:28px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 8v5M12 16h.01" stroke-linecap="round"/><circle cx="12" cy="12" r="9"/></svg>
+      <div><span class="lbl">Design doc</span><p>Full spec: <code>docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md</code>.</p></div>
+    </div>
+  </section>
+
+  <section id="principles">
+    <div class="section-head">
+      <span class="kicker">Part 4 &middot; What holds the whole thing together</span>
+      <h2>Never a guessed value in the final quote</h2>
+      <p>Three rules, enforced (or actively being hardened) across every step above.</p>
+    </div>
+
+    <div class="principle-grid">
+      <div class="principle">
+        <div class="num">01</div>
+        <h4>Deterministic first, LLM for narration only</h4>
+        <p>Intent detection, rule evaluation, and cascading are all regex/rule-graph
+        mechanics &mdash; no model call decides what value goes in the payload. The LLM
+        writes the prose summary and handles genuinely loose phrasing, always with a
+        non-LLM fallback if it fails.</p>
+        <div class="live">verified live &middot; Gemini reason-tier misconfig fell back cleanly</div>
+      </div>
+      <div class="principle">
+        <div class="num">02</div>
+        <h4>A real decision is re-asked, never re-guessed</h4>
+        <p>When a cascade invalidates a value the customer explicitly chose
+        (<code>filled_source == "user"</code>), the engine asks again instead of silently
+        substituting something else &mdash; <code>user_answered_dropped_ids</code> is the
+        mechanism, extended twice this session to close gaps it didn't originally cover.</p>
+        <div class="live">hardening in progress &middot; docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md</div>
+      </div>
+      <div class="principle">
+        <div class="num">03</div>
+        <h4>A collision is disambiguated, never silently resolved</h4>
+        <p>Two catalog fields sharing one display label ("Mounting Type" appearing twice)
+        must never resolve to "whichever is first in the list" &mdash; the customer is asked
+        which one, and the reply is remembered across the next turn.</p>
+        <div class="live">fixed &middot; deterministic match, gated LLM fallback for loose phrasing</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="recap">
+    <div class="panel">
+      <div class="section-head" style="margin-bottom:26px;">
+        <span class="kicker">In one line</span>
+        <h2>The whole conversation, end to end</h2>
+      </div>
+      <div class="flow-strip">
+        <div class="flow-chip"><div class="t">Anchor</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Map</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Evaluate</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Prompt</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Lock</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Review</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Q&amp;A</div></div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-chip"><div class="t">Confirm</div></div>
+      </div>
+      <div class="panel-foot">
+        <div class="kv"><b>Source</b> &nbsp;src/aryx/api/ask_api.py, src/aryx/cpq/engine.py</div>
+        <div class="kv"><b>Base spec</b> &nbsp;docs/CPQ_CASCADE_CONVERSATION_PLAN.md</div>
+        <div class="kv"><b>Post-confirm editing</b> &nbsp;docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <span class="fname">cpq-overview.html</span> &middot; generated from the live engine and real catalog data, not a mockup &middot;
+  <a href="ask-overview.html">Ask flow</a> &middot; <a href="ingestion-overview.html">Ingestion flow</a>
+</footer>
+
+<script>
+  // Theme toggle
+  (function() {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeToggle');
+    var label = document.getElementById('themeLabel');
+    function current() {
+      var stored = localStorage.getItem('aryx-theme');
+      if (stored) return stored;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function paint() {
+      var t = current();
+      root.setAttribute('data-theme', t);
+      label.textContent = t === 'dark' ? 'Dark' : 'Light';
+    }
+    btn.addEventListener('click', function() {
+      var next = current() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      localStorage.setItem('aryx-theme', next);
+      paint();
+      window.dispatchEvent(new CustomEvent('aryx-theme-change'));
+    });
+    paint();
+  })();
+
+  // Scroll-linked pipeline reveal + rail fill
+  (function() {
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var rails = Array.prototype.slice.call(document.querySelectorAll('.rail-wrap'));
+    rails.forEach(function(rail) {
+      var stations = Array.prototype.slice.call(rail.querySelectorAll('.station'));
+      var fill = rail.querySelector('.fill');
+      if (reduced) {
+        stations.forEach(function(s) { s.classList.add('seen'); });
+        if (fill) fill.style.height = '100%';
+        return;
+      }
+      var seenCount = 0;
+      var io = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('seen');
+            io.unobserve(entry.target);
+            seenCount++;
+            if (fill) fill.style.height = Math.round((seenCount / stations.length) * 100) + '%';
+          }
+        });
+      }, { threshold: 0.35, rootMargin: '0px 0px -10% 0px' });
+      stations.forEach(function(s) { io.observe(s); });
+    });
+  })();
+
+  // Hero canvas: scattered points self-organizing into a connected graph
+  (function() {
+    var canvas = document.getElementById('heroCanvas');
+    var ctx = canvas.getContext('2d');
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var w, h, dpr;
+    var points = [];
+    var N = 30;
+    var lineRGB = '76,116,214', dotRGB = '58,92,184';
+
+    function isDark() {
+      var root = document.documentElement;
+      if (root.getAttribute('data-theme') === 'dark') return true;
+      if (root.getAttribute('data-theme') === 'light') return false;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    function updateColors() {
+      if (isDark()) { lineRGB = '134,166,245'; dotRGB = '159,180,242'; }
+      else { lineRGB = '76,116,214'; dotRGB = '58,92,184'; }
+    }
+    window.addEventListener('aryx-theme-change', updateColors);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateColors);
+    updateColors();
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = canvas.clientWidth; h = canvas.clientHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+
+    function init() {
+      points = [];
+      for (var i = 0; i < N; i++) {
+        points.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          tx: w / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.42,
+          ty: h / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.42,
+          r: 1.6 + Math.random() * 1.6,
+          drift: Math.random() * Math.PI * 2
+        });
+      }
+    }
+
+    var t = 0;
+    function frame() {
+      t += 0.006;
+      ctx.clearRect(0, 0, w, h);
+      var settle = Math.min(1, t / 1.6);
+      var pos = points.map(function(p) {
+        var x = p.x + (p.tx - p.x) * settle + Math.sin(t * 0.6 + p.drift) * 6 * (1 - settle * 0.6);
+        var y = p.y + (p.ty - p.y) * settle + Math.cos(t * 0.5 + p.drift) * 6 * (1 - settle * 0.6);
+        return { x: x, y: y, r: p.r };
+      });
+      ctx.lineWidth = 1;
+      for (var i = 0; i < pos.length; i++) {
+        for (var j = i + 1; j < pos.length; j++) {
+          var dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          var maxD = 70 + settle * 40;
+          if (d < maxD) {
+            var alpha = (1 - d / maxD) * 0.16 * (0.3 + settle * 0.9);
+            ctx.strokeStyle = 'rgba(' + lineRGB + ',' + alpha.toFixed(3) + ')';
+            ctx.beginPath();
+            ctx.moveTo(pos[i].x, pos[i].y);
+            ctx.lineTo(pos[j].x, pos[j].y);
+            ctx.stroke();
+          }
+        }
+      }
+      for (var k = 0; k < pos.length; k++) {
+        ctx.beginPath();
+        ctx.arc(pos[k].x, pos[k].y, pos[k].r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(' + dotRGB + ',' + (0.45 + settle * 0.35).toFixed(3) + ')';
+        ctx.fill();
+      }
+      if (t < 40) requestAnimationFrame(frame);
+    }
+
+    resize(); init();
+    if (reduced) { t = 3; frame(); } else { requestAnimationFrame(frame); }
+  })();
+</script>
+</body>
+</html>

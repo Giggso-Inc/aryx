@@ -41,12 +41,33 @@ from aryx.cpq.logging_context import install_run_id_logging
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
 
-# variable == "value" / variable <> "value" comparisons inside a condition
-_CMP_RE = re.compile(r'^\s*(\w+)\s*(==|<>|!=)\s*"([^"]*)"\s*$')
+# variable == "value" / variable <> "value" comparisons inside a condition.
+# The RHS also accepts a bare true/false literal (variable == true), not just
+# a quoted string — confirmed live: a real recommendation script gates on
+# `includeASpareBatteryWithEachBodyCamera_viSoln == true` (a boolean-typed
+# attr compared against a bare, unquoted literal). Without this,
+# _parse_condition silently rejected the ENTIRE condition (never matched
+# _CMP_RE at all), so the script's real conditional logic could never be
+# evaluated deterministically — it always fell to Tier 2, which got this
+# specific case wrong (returned "YES" for a customer whose spare-battery
+# flag was false). Group 3 is the quoted-string RHS, group 4 the bare
+# boolean RHS — callers use whichever matched.
+_CMP_RE = re.compile(r'^\s*(\w+)\s*(==|<>|!=)\s*(?:"([^"]*)"|(true|false))\s*$', re.IGNORECASE)
 
-# returnVal = "A"|"B"|... assignment inside a branch body
-_ASSIGN_RE = re.compile(r'return[Vv]al\s*=\s*((?:"[^"]*"\s*(?:\|\s*)?)+);?')
+# returnVal = "A"|"B"|... assignment inside a branch body. Also matches
+# `retVal = ...` (no "urn") — confirmed live: dozens of real APX NEXT
+# constraint/recommendation scripts (docs/CPQ_APX_NEXT_RULE_CATALOG.md) use
+# "retVal" interchangeably with "returnVal"; the old pattern required the
+# literal substring "return", which "retVal" doesn't contain at all, so
+# every such script silently fell through to Tier 2 instead of Tier 1.
+_ASSIGN_RE = re.compile(r're(?:t|turn)[Vv]al\s*=\s*((?:"[^"]*"\s*(?:\|\s*)?)+);?')
 _STR_RE = re.compile(r'"([^"]*)"')
+
+# return "literal"; directly inside a branch body — a different idiom from
+# the returnVal assignment above. Confirmed live: the same recommendation
+# script above returns "YES" (or "" outside any branch) as a literal
+# string, never assigning to returnVal at all.
+_RETURN_STR_RE = re.compile(r'\breturn\s+"([^"]*)"\s*;?')
 
 # if (...) { ... } chain scanner
 _IF_RE = re.compile(r'\bif\s*\(', re.IGNORECASE)
@@ -155,11 +176,15 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
                 m = _CMP_RE.match(_strip_wrapping_parens(part))
                 if not m:
                     return None
-                out.append(("" if i == 0 else joiner, m.group(1), m.group(2), m.group(3)))
+                # group(3) is the quoted-string RHS, group(4) the bare
+                # true/false literal RHS — exactly one is populated.
+                out.append(("" if i == 0 else joiner, m.group(1), m.group(2),
+                            m.group(3) if m.group(3) is not None else m.group(4)))
             return out
     m = _CMP_RE.match(_strip_wrapping_parens(cond))
     if m:
-        return [("", m.group(1), m.group(2), m.group(3))]
+        return [("", m.group(1), m.group(2),
+                 m.group(3) if m.group(3) is not None else m.group(4))]
     return None
 
 
@@ -229,6 +254,30 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
     return branches or None
 
 
+def _split_pipe_caret_values(values: list[str]) -> list[str]:
+    """Expand any `A|^|B|^|C`-shaped entry into separate values.
+
+    `|^|` is a real, common BM delimiter for a multi-value allowed-list
+    packed inside a SINGLE quoted string (confirmed live: dozens of real
+    APX NEXT/SVX constraint/recommendation scripts —
+    docs/CPQ_APX_NEXT_RULE_CATALOG.md — e.g. `retVal =
+    "SMARTMESSAGING|^|VIQI VIRTUAL PARTNER|^|SMARTINCIDENT";`) — a
+    different convention from the `"A"|"B"` multi-QUOTE pipe format
+    `_ASSIGN_RE` otherwise splits on. Without this, a single `|^|`-packed
+    quoted string collapsed into ONE bogus concatenated "value" that never
+    matches any real item_value — confirmed live: "Restrict Service Type
+    Based on the Solution Type" corrupted Service Type resolution for
+    every CapEx-purchase SVX quote this way.
+    """
+    out: list[str] = []
+    for v in values:
+        if "|^|" in v:
+            out.extend(part.strip() for part in v.split("|^|") if part.strip())
+        elif v:
+            out.append(v)
+    return out
+
+
 def _branch_values(body: str) -> list[str] | None:
     """Extract the pipe-delimited allowed-value list from a branch body.
 
@@ -249,7 +298,27 @@ def _branch_values(body: str) -> list[str] | None:
     """
     m = _ASSIGN_RE.search(body)
     if not m:
-        return None
+        # A DIFFERENT idiom from the returnVal assignment above — some
+        # real scripts `return "literal";` directly (confirmed live: SVX's
+        # "Set defaults for VX650" — `if (spareBattery == true) { return
+        # "YES"; }`). Same concatenation guard as the returnVal path: a
+        # tail continuing with `+` past the matched literal means this
+        # isn't a clean single-value return, so bail rather than truncate.
+        m2 = _RETURN_STR_RE.search(body)
+        if not m2:
+            return None
+        tail2 = body[m2.end():].lstrip()
+        if tail2.startswith("+"):
+            logger.warning(
+                "cpq: Tier-1 _branch_values found a `return \"...\";` whose "
+                "value continues past the matched literal (string "
+                "concatenation) — treating as unparseable rather than "
+                "returning a truncated value. matched=%r body=%.200r",
+                m2.group(0), body,
+            )
+            return None
+        value = m2.group(1)
+        return _split_pipe_caret_values([value]) if value else []
     tail = body[m.end():].lstrip()
     if tail.startswith("+"):
         # WARNING, not info — this deployment's root logger is configured
@@ -266,7 +335,7 @@ def _branch_values(body: str) -> list[str] | None:
         )
         return None
     values = [v.strip() for v in _STR_RE.findall(m.group(1))]
-    return [v for v in values if v and v != "|"]
+    return _split_pipe_caret_values([v for v in values if v and v != "|"])
 
 
 # `return true;` / `return false;` inside a hiding-rule branch body — a
@@ -287,8 +356,32 @@ def _branch_bool(body: str) -> bool | None:
 
 
 def referenced_variables(script: str) -> set[str]:
-    """Variable names compared in the script (Tier-1 scan, best effort)."""
-    return {m.group(1) for m in re.finditer(r'(\w+)\s*(?:==|<>|!=)\s*"', script)}
+    """Variable names compared in the script (Tier-1 scan, best effort).
+
+    Live-verified gap (2026-07-24): only matched a quoted-string RHS
+    (`var == "X"`), missing bare boolean literal comparisons (`var ==
+    true`) entirely — the exact same idiom `_CMP_RE` in evaluate_tier1
+    already had to learn to parse (bare booleans are common, e.g. "if
+    (spareBattery == true)"). Since this function's result scopes
+    allowed_values_for_script's cache key (BmlEvaluator._SHARED_SCRIPT_
+    CACHE), missing a variable here means the cache key never varies
+    with that variable's value — the FIRST-ever evaluation's result gets
+    reused for every later call regardless of what that variable's
+    current value actually is, a much worse bug than a cache miss.
+
+    Regression caught in review (PR #117): the first attempt at this fix
+    put a trailing `\b` after the WHOLE alternation, including the
+    quoted-string branch — a word boundary can never match right after a
+    closing `"`, so it silently broke the far more common quoted-string
+    case (`var == "X"` matched nothing at all). The `\b` belongs only on
+    the bare boolean literals, to stop them matching as a substring of a
+    longer identifier (e.g. "truely") — it must not apply to the
+    quoted-string alternative at all.
+    """
+    return {
+        m.group(1) for m in re.finditer(
+            r'(\w+)\s*(?:==|<>|!=)\s*(?:"[^"]*"|true\b|false\b)', script, re.IGNORECASE)
+    }
 
 
 _VAR_VALUE_RE = re.compile(r'(\w+)\s*(?:==|<>|!=)\s*"([^"]*)"')

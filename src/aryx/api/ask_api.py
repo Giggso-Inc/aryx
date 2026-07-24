@@ -404,6 +404,14 @@ def _handle_cpq_qa(
             f"**\"{_collision[0].display_label}\"** in this catalog — which one "
             f"did you mean?\n\n{_lines}"
         )
+        # Remembered so the NEXT turn's reply (a bare variable_name, a list
+        # index, or looser phrasing an LLM fallback resolves — see
+        # _run_cpq_turn's resolution block) answers THIS prompt instead of
+        # being read as an unrelated message (live-verified gap,
+        # 2026-07-23 — same class of bug already fixed for the
+        # change-request collision via pending_change_collision_vns).
+        session.pending_label_collision_vns = [a.variable_name for a in _collision]
+        session.pending_label_collision_question = req.question
         _persist_cpq_history(req.workspace_id, req.question, qa_answer)
         return {
             "answer": qa_answer, "terms": [], "tools_called": ["cpq_label_collision()"],
@@ -530,8 +538,16 @@ def _handle_cascade(
     dependent_eids = _cpq_engine.find_cascade_dependents(
         changed_attr, attrs, hiding_rules, rec_rules, con_rules,
     )
+    # set_type=="2" attrs are transient UI/action-layer fields, always
+    # excluded from the final payload (build_payload's own unconditional
+    # rule) — they never re-enter `filled`/`pending_variables` after this
+    # rerun either, so naming them here as "needing fresh values" is
+    # misleading (live-verified: "Include a Spare Battery with each body
+    # camera" was announced as recalculating, then silently never
+    # reappeared anywhere — correct outcome, confusing wording).
     dependent_labels = [
-        by_eid[eid].display_label for eid in dependent_eids if eid in by_eid
+        by_eid[eid].display_label for eid in dependent_eids
+        if eid in by_eid and by_eid[eid].set_type != "2"
     ]
 
     # Strip changed attr + all dependents from filled
@@ -610,7 +626,7 @@ def _handle_cascade(
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
-        skip_always_ask=skip_always_ask,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -638,10 +654,43 @@ def _handle_cascade(
         if any(a.variable_name == k for a in visible_attrs)
     }
 
+    # D1, docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md: the value the customer
+    # just explicitly chose is authoritative input for the REST of this
+    # turn's evaluation — if the rule pass above silently reassigned it
+    # (e.g. a stably-true recommendation rule targeting the same attr,
+    # live-verified: Billing Option -> "Annual" silently became
+    # "Immediate"), revert rather than reporting the substituted value as
+    # if it were accepted. Scoped to single-select only (a multi-select's
+    # own union semantics are a different question, not this bug's
+    # shape). Checking the OUTCOME here catches the bug regardless of
+    # which internal mechanism causes it — no changes to auto_fill/
+    # apply_recommendation_rules/evaluate_rules_loop needed, and every
+    # OTHER attribute's cascade above is completely unaffected.
+    _user_value_overridden = (
+        changed_attr.select_type != "multi" and result
+        and session.filled.get(changed_attr.variable_name) != result[0]
+    )
+    if _user_value_overridden:
+        _requested_display = result[1]
+        session.filled.pop(changed_attr.variable_name, None)
+        session.display_filled.pop(changed_attr.variable_name, None)
+        session.filled_source.pop(changed_attr.variable_name, None)
+        pending = [changed_attr] + [
+            a for a in pending if a.variable_name != changed_attr.variable_name
+        ]
+        session.pending_variables = [a.variable_name for a in pending]
+
     # Build cascade notice
-    changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
-    cascade_note = f"Updated **{changed_attr.display_label}** → **{changed_disp}**."
-    if dependent_labels:
+    if _user_value_overridden:
+        cascade_note = (
+            f"Your choice for **{changed_attr.display_label}** "
+            f"(**{_requested_display}**) isn't valid given the rest of this "
+            f"configuration — please choose a different value:"
+        )
+    else:
+        changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
+        cascade_note = f"Updated **{changed_attr.display_label}** → **{changed_disp}**."
+    if dependent_labels and not _user_value_overridden:
         # Plain-English framing, not a raw label dump — "This invalidated:
         # X, Y — re-evaluating." read as internal/mechanical shorthand
         # rather than something a sales rep could act on. Names WHY (the
@@ -717,6 +766,993 @@ def _handle_cascade(
                   "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
         "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
     }
+
+
+def _handle_multi_select_removal(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    changed_attr: Any,
+    to_remove: list[str],
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> dict[str, Any]:
+    """STEP 6 (removal) — deselect one or more options from an already-
+    selected multi-select (e.g. "remove Jacket Magnetic Mount" after both
+    Shirt and Jacket were selected).
+
+    Also drops the removed option's own per-option quantity attr (via
+    resolve_array_grid_links) — a quantity for a mount no longer selected
+    is stale data, not a value worth keeping around or re-showing.
+    """
+    current = session.filled_multi.get(changed_attr.variable_name, [])
+    remaining = [v for v in current if v not in to_remove]
+    removed_display = [
+        next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+        for v in to_remove
+    ]
+    session.filled_multi[changed_attr.variable_name] = remaining
+    if remaining:
+        session.display_filled[changed_attr.variable_name] = ", ".join(
+            next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+            for v in remaining
+        )
+    else:
+        # An empty selection after an explicit removal is a settled,
+        # user-confirmed answer (same "(none)" convention auto_fill's own
+        # decline-handling uses) — never silently re-guessed or re-asked.
+        session.display_filled[changed_attr.variable_name] = "(none)"
+    session.filled_source[changed_attr.variable_name] = "user"
+
+    grid_links = _cpq_engine.resolve_array_grid_links(attrs)
+    qty_map = grid_links.get(changed_attr.variable_name, {})
+    dropped_qty_labels: list[str] = []
+    for removed_iv in to_remove:
+        qty_vn = qty_map.get(removed_iv.strip().lower())
+        if qty_vn and qty_vn in session.filled:
+            qty_attr = next((a for a in attrs if a.variable_name == qty_vn), None)
+            dropped_qty_labels.append(qty_attr.display_label if qty_attr else qty_vn)
+            session.filled.pop(qty_vn, None)
+            session.display_filled.pop(qty_vn, None)
+            session.filled_source.pop(qty_vn, None)
+            session.pending_variables = [v for v in session.pending_variables if v != qty_vn]
+
+    cascade_note = (
+        f"Removed **{', '.join(removed_display)}** from **{changed_attr.display_label}** "
+        f"— now: **{session.display_filled[changed_attr.variable_name]}**."
+    )
+    if dropped_qty_labels:
+        cascade_note += (
+            f" Also cleared {', '.join(f'**{lbl}**' for lbl in dropped_qty_labels)} "
+            f"— no longer needed."
+        )
+
+    # Re-run the rule loop once, same as the single-change cascade path —
+    # a removal can un-invalidate a constraint or re-open an option the
+    # prior selection had closed off.
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    for vn, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
+        hints.setdefault(vn, iv)
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
+
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    elif unresolved_grid_gaps:
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            cascade_note + "\n\n"
+            f"⚠️ {gap_list} has no quantity field configured in this "
+            f"catalog. Please remove it or choose a different option "
+            f"before this configuration can be completed."
+        )
+    else:
+        session.status = "awaiting_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_multi_select_removal()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _handle_attr_activation(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    activated_attr: Any,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> dict[str, Any]:
+    """STEP 6 (activation) — re-activate a real, currently-excluded,
+    optional catalog attribute back into the quote (D2,
+    docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md).
+
+    Re-runs the rule loop once, same as every other change/removal
+    handler (re-activating an attr can itself affect other rules, e.g. a
+    constraint that was only ever evaluated against attrs visible before
+    this one existed). `auto_fill`'s existing blind first-by-order
+    fallback would happily guess a value for this attr the same way it
+    does for any other ordinary optional attr — but the user just
+    explicitly asked for THIS one, so it deserves a real question, not a
+    guess (D2 §4.3 "never silently guesses"). A genuine rule-derived fill
+    (filled_source == "rule"/"country_derived") is a determined value,
+    not a guess, and is left alone.
+    """
+    activated_vn = activated_attr.variable_name
+
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    for vn, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
+        hints.setdefault(vn, iv)
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
+
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+
+    if (activated_vn in filled
+            and session.filled_source.get(activated_vn) not in ("rule", "country_derived")
+            and activated_vn not in _grid_qty_vns):
+        filled.pop(activated_vn, None)
+        display_filled.pop(activated_vn, None)
+        _act_attr_resolved = next(
+            (a for a in visible_attrs if a.variable_name == activated_vn), None)
+        if _act_attr_resolved is not None:
+            pending.insert(0, _act_attr_resolved)
+
+    # Built AFTER the override decision above — a real determined value
+    # (e.g. a source="default"/"rule" fill this same pass) gets stated
+    # directly rather than a misleading "what value would you like?"
+    # when nothing further is actually being asked.
+    if activated_vn in filled:
+        _act_display = display_filled.get(activated_vn, filled[activated_vn])
+        cascade_note = (
+            f"Added **{activated_attr.display_label}** → **{_act_display}**."
+        )
+    else:
+        cascade_note = (
+            f"Added **{activated_attr.display_label}** to your quote — "
+            f"what value would you like?"
+        )
+
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    else:
+        session.status = "post_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_attr_activation()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _handle_attr_clear(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    cleared_attr: Any,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> dict[str, Any]:
+    """STEP 6 (nullify) — clear an optional single-select attribute's
+    current value back to empty (D4, docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md).
+
+    Sets the value to the empty-string "user"-sourced marker `auto_fill`'s
+    single-select branch now respects (mirrors `filled_multi`'s existing
+    empty-plus-"user" "(none)" convention) — never immediately re-guessed
+    by the blind first-by-order fallback on the rule-loop pass this same
+    handler triggers. `detect_attr_clear` already verified live that no
+    active rule would refire for this attr before this handler is ever
+    called.
+    """
+    vn = cleared_attr.variable_name
+    prev_display = session.display_filled.get(vn, session.filled.get(vn, ""))
+    session.filled[vn] = ""
+    session.display_filled[vn] = "(none)"
+    session.filled_source[vn] = "user"
+    cascade_note = f"Cleared **{cleared_attr.display_label}** (was **{prev_display}**)."
+
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn2, iv in catalog_hints.items():
+        hints.setdefault(vn2, iv)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    for vn2, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
+        hints.setdefault(vn2, iv)
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
+
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    else:
+        session.status = "post_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_attr_clear()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _handle_bulk_quantity_change(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    selector_vn: str,
+    item_values: list[str],
+    new_qty: str,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> dict[str, Any]:
+    """STEP 6 (bulk quantity) — set every already-selected row's quantity
+    attr for one grid selector to the same value in one turn (e.g. "change
+    both the mounting types quantity to 67").
+    """
+    grid_links = _cpq_engine.resolve_array_grid_links(attrs)
+    item_map = grid_links.get(selector_vn, {})
+    by_vn = {a.variable_name: a for a in attrs}
+    selector_attr = by_vn.get(selector_vn)
+    updated_labels: list[str] = []
+    _seen_qty_vns: set[str] = set()
+    for item_value in item_values:
+        qty_vn = item_map.get(item_value.strip().lower())
+        # resolve_array_grid_links' substring heuristic can map two
+        # distinct options (e.g. "MOLLE Mount" and "Locking Molle Mount")
+        # to the SAME quantity attr — set it once, not once per option, so
+        # the cascade note doesn't list the same attr twice.
+        if not qty_vn or qty_vn in _seen_qty_vns:
+            continue
+        _seen_qty_vns.add(qty_vn)
+        qty_attr = by_vn.get(qty_vn)
+        session.filled[qty_vn] = new_qty
+        session.display_filled[qty_vn] = new_qty
+        session.filled_source[qty_vn] = "user"
+        updated_labels.append(qty_attr.display_label if qty_attr else qty_vn)
+
+    selector_label = selector_attr.display_label if selector_attr else selector_vn
+    cascade_note = (
+        f"Set {', '.join(f'**{lbl}**' for lbl in updated_labels)} to **{new_qty}**."
+        if updated_labels else
+        f"Couldn't find a quantity field for the selected **{selector_label}** options."
+    )
+
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    session.negated_vns = sorted(set(session.negated_vns))
+    negated_vns = set(session.negated_vns)
+
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    elif unresolved_grid_gaps:
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            cascade_note + "\n\n"
+            f"⚠️ {gap_list} has no quantity field configured in this "
+            f"catalog. Please remove it or choose a different option "
+            f"before this configuration can be completed."
+        )
+    else:
+        session.status = "awaiting_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_bulk_quantity_change()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _handle_cascade_multi(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    matches: list,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+) -> "dict[str, Any] | None":
+    """STEP 6 (multi) — apply every change a single message names at once
+    (up to `detect_change_requests_multi`'s cap), union their cascade
+    dependents, then re-run the rule loop ONCE — not once per change, or a
+    dependent could get re-derived against a stale intermediate state
+    between two changes applied in the same turn.
+
+    Product decision: partial apply. Whichever of the named changes parse
+    (a real value found for that attr) are applied; any that don't are
+    reported by label, not silently dropped and not rejecting the whole
+    turn. Returns None (caller falls through to the normal "didn't catch
+    that" nudge) only when NONE of the named changes could be applied —
+    mirrors `detect_change_request` returning None today.
+    """
+    by_eid = {a.entity_id: a for a in attrs}
+    hints = _cpq_engine.extract_hints(req.question)
+    catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
+    for vn, iv in catalog_hints.items():
+        hints.setdefault(vn, iv)
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    for vn, iv in _cpq_engine.extract_flag_hints(
+        req.question, attrs, req.workspace_id, catalog_prefix,
+    ).items():
+        hints.setdefault(vn, iv)
+    session.negated_vns = sorted(set(session.negated_vns) | negated_now)
+    negated_vns = set(session.negated_vns)
+
+    applied_notes: list[str] = []
+    failed_labels: list[str] = []
+    all_dependent_eids: set[int] = set()
+    changed_vns: set[str] = set()
+    # D1, docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md: single-select applies
+    # are checked against the outcome AFTER the rule pass below (a
+    # recommendation rule could silently reassign one) — their notes are
+    # built then, not immediately, so a reverted one gets the honest
+    # "isn't valid" wording instead of "Updated". Multi-select applies
+    # aren't subject to this check (different, union-based semantics —
+    # same scope boundary as the single-change path).
+    _user_requested_single: dict[str, tuple[Any, str, str]] = {}
+
+    for changed_attr, new_value_hint in matches:
+        if changed_attr.variable_name in changed_vns:
+            continue  # same attr matched twice in one message — apply once
+
+        dependent_eids = _cpq_engine.find_cascade_dependents(
+            changed_attr, attrs, hiding_rules, rec_rules, con_rules,
+        )
+        # Strip this attr + its dependents from filled before re-applying —
+        # same as the single-change path (_handle_cascade).
+        session.filled.pop(changed_attr.variable_name, None)
+        session.display_filled.pop(changed_attr.variable_name, None)
+        session.filled_source.pop(changed_attr.variable_name, None)
+        for eid in dependent_eids:
+            a = by_eid.get(eid)
+            if a:
+                session.filled.pop(a.variable_name, None)
+                session.display_filled.pop(a.variable_name, None)
+                session.filled_source.pop(a.variable_name, None)
+
+        if changed_attr.select_type == "multi":
+            mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+            result = ("", "") if not mentioned else mentioned[0]
+            if mentioned:
+                existing = session.filled_multi.get(changed_attr.variable_name, [])
+                merged = list(existing) + [iv for iv, _dn in mentioned if iv not in existing]
+                session.filled_multi[changed_attr.variable_name] = merged
+                session.display_filled[changed_attr.variable_name] = ", ".join(
+                    next((o.display_name for o in changed_attr.options if o.item_value == v), v)
+                    for v in merged
+                )
+                session.filled_source[changed_attr.variable_name] = "user"
+            else:
+                result = None
+        else:
+            result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+            if result:
+                session.filled[changed_attr.variable_name] = result[0]
+                session.display_filled[changed_attr.variable_name] = result[1]
+                session.filled_source[changed_attr.variable_name] = "user"
+
+        if not result:
+            failed_labels.append(changed_attr.display_label)
+            continue
+
+        changed_vns.add(changed_attr.variable_name)
+        all_dependent_eids |= set(dependent_eids)
+        if changed_attr.select_type == "multi":
+            changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
+            applied_notes.append(f"Updated **{changed_attr.display_label}** → **{changed_disp}**.")
+        else:
+            # Note built after the rule pass below, once we know whether
+            # this value actually stuck (D1).
+            _user_requested_single[changed_attr.variable_name] = (
+                changed_attr, result[0], result[1],
+            )
+
+    if not changed_vns:
+        # None of the named changes could be applied at all — let the
+        # caller fall through to the normal "didn't catch that" nudge,
+        # same as detect_change_request returning None.
+        return None
+
+    # set_type=="2" attrs never re-enter filled/pending after this rerun
+    # and are always excluded from the final payload — see _handle_cascade's
+    # identical filter for the live-verified finding this addresses.
+    dependent_labels = [
+        by_eid[eid].display_label for eid in all_dependent_eids
+        if eid in by_eid and by_eid[eid].variable_name not in changed_vns
+        and by_eid[eid].set_type != "2"
+    ]
+
+    # Re-run full rule evaluation loop ONCE with every change applied.
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    prev_filled_snapshot = dict(session.filled)
+    dropped_multi: dict[str, list[str]] = {}
+    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+        req.workspace_id, catalog_prefix, attrs)
+    visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
+        attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
+        bml_eval=bml_eval, filled_source=session.filled_source,
+        filled_multi=session.filled_multi, dropped_multi=dropped_multi,
+        country=session.country, negated_vns=negated_vns,
+        skip_always_ask=skip_always_ask,
+    )
+    governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    _, _, pending = _cpq_engine.auto_fill(
+        visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
+        governed_ids=governed_ids, already_filled_multi=session.filled_multi,
+        dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
+        negated_vns=negated_vns, filled_source=session.filled_source,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+    )
+    _grid_qty_vns = {a.variable_name for a in pending}
+    for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
+        visible_attrs, filled, session.filled_multi):
+        if _qty_attr.variable_name not in _grid_qty_vns:
+            pending.append(_qty_attr)
+            _grid_qty_vns.add(_qty_attr.variable_name)
+    for var, new_val in filled.items():
+        old_val = prev_filled_snapshot.get(var)
+        if old_val != new_val:
+            session.cascade_log.append({
+                "var": var, "old": old_val, "new": new_val,
+                "rule": "cascade" if var in changed_vns else "cascade-dependent",
+                "turn": session.turn,
+            })
+    session.filled = filled
+    session.display_filled = display_filled
+    session.pending_variables = [a.variable_name for a in pending]
+    session.filled_source = {
+        k: v for k, v in session.filled_source.items()
+        if k in filled or k in session.filled_multi
+    }
+    session.filled_multi = {
+        k: v for k, v in session.filled_multi.items()
+        if any(a.variable_name == k for a in visible_attrs)
+    }
+
+    # D1, docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md: check every single-select
+    # change against the outcome — revert any the rule pass silently
+    # reassigned, in the order the message named them, so each gets the
+    # honest "isn't valid" wording and is re-asked instead of reported as
+    # accepted. See _handle_cascade's identical check for the full
+    # rationale (same live-verified bug: a stably-true recommendation
+    # rule reasserting its own value over the customer's explicit choice).
+    _overridden_attrs: list[Any] = []
+    for _vn, (_attr, _want_value, _want_display) in _user_requested_single.items():
+        if session.filled.get(_vn) == _want_value:
+            changed_disp = session.display_filled.get(_vn, _want_display)
+            applied_notes.append(f"Updated **{_attr.display_label}** → **{changed_disp}**.")
+        else:
+            session.filled.pop(_vn, None)
+            session.display_filled.pop(_vn, None)
+            session.filled_source.pop(_vn, None)
+            _overridden_attrs.append(_attr)
+            applied_notes.append(
+                f"Your choice for **{_attr.display_label}** (**{_want_display}**) "
+                f"isn't valid given the rest of this configuration — please "
+                f"choose a different value."
+            )
+    if _overridden_attrs:
+        pending = _overridden_attrs + [
+            a for a in pending
+            if a.variable_name not in {a2.variable_name for a2 in _overridden_attrs}
+        ]
+        session.pending_variables = [a.variable_name for a in pending]
+
+    # Build the combined cascade notice — one line per applied change,
+    # then one combined "these depend on what changed" note (same
+    # plain-English framing as the single-change path).
+    cascade_note = " ".join(applied_notes)
+    if failed_labels:
+        cascade_note += (
+            f" Couldn't match a value for {', '.join(f'**{lbl}**' for lbl in failed_labels)} "
+            f"— left unchanged."
+        )
+    if dependent_labels:
+        if len(dependent_labels) == 1:
+            cascade_note += (
+                f" Because those changed, **{dependent_labels[0]}** depends "
+                f"on them and needs a fresh value — recalculating now."
+            )
+        else:
+            dep_list = ", ".join(f"**{lbl}**" for lbl in dependent_labels)
+            cascade_note += (
+                f" Because those changed, these depend on them and need "
+                f"fresh values: {dep_list} — recalculating now."
+            )
+    for dvar, dvals in dropped_multi.items():
+        dattr = next((a for a in attrs if a.variable_name == dvar), None)
+        dlabel = dattr.display_label if dattr else dvar
+        cascade_note += (
+            f" Removed **{', '.join(dvals)}** from **{dlabel}** — "
+            f"no longer valid after this change."
+        )
+
+    unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
+        visible_attrs, session.filled_multi)
+    if pending:
+        session.status = "configuring"
+        next_attr = pending[0]
+        ctx = _cpq_engine.build_context_sentence(
+            next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
+        )
+        q_block = _cpq_engine.next_question_prompt(
+            next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+        )
+        answer = cascade_note + "\n\n" + q_block
+    elif unresolved_grid_gaps:
+        session.status = "configuring"
+        gap_list = "; ".join(f"**{val}** ({label})" for label, val in unresolved_grid_gaps)
+        answer = (
+            cascade_note + "\n\n"
+            f"⚠️ {gap_list} has no quantity field configured in this "
+            f"catalog. Please remove it or choose a different option "
+            f"before this configuration can be completed."
+        )
+    else:
+        session.status = "awaiting_approval"
+        summary = _cpq_summary_text(
+            display_filled, visible_attrs, rule_ids,
+            session.product_name, req.workspace_id, sources=session.filled_source,
+        )
+        answer = (
+            cascade_note + "\n\n"
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            + (f"{summary}\n\n" if summary else "")
+            + f"Click **JSON** below to see the full payload, "
+              f"say **confirm** to submit, or describe any changes."
+        )
+
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_cascade_multi()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+_LLM_INTENT_ATTRS_CAP_HARD = 500  # safety bound on relevance-scoring work, not a relevance cutoff
+_LLM_INTENT_RELEVANT_CAP = 10
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _relevant_intent_candidates(question: str, candidates: list) -> list:
+    """Narrow the candidate list to the attrs the question is actually
+    plausibly about, by simple word overlap against display_label and
+    option display names.
+
+    Live-verified need (2026-07-22): handing the full ~40-attr candidate
+    list to the classifier — even one restricted to filled attrs — diluted
+    the signal enough that a phrase the model correctly classified in
+    isolation came back "none" once real catalog noise was mixed in.
+    Keeping only the attrs whose own vocabulary overlaps the question
+    keeps the prompt small and on-topic; falls back to the full (capped)
+    list only when nothing overlaps at all, so an unanticipated phrasing
+    still gets a chance rather than being silently starved to zero attrs.
+    """
+    q_words = set(_WORD_RE.findall(question.lower()))
+    if not q_words:
+        return candidates[:_LLM_INTENT_RELEVANT_CAP]
+    scored = []
+    for a in candidates:
+        vocab = set(_WORD_RE.findall(a.display_label.lower()))
+        for o in a.options:
+            vocab |= set(_WORD_RE.findall(o.display_name.lower()))
+        overlap = len(q_words & vocab)
+        if overlap:
+            scored.append((overlap, a))
+    if not scored:
+        return candidates[:_LLM_INTENT_RELEVANT_CAP]
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [a for _score, a in scored[:_LLM_INTENT_RELEVANT_CAP]]
+
+
+def _llm_classify_change_intent(
+    question: str, attrs: list, session: Any, workspace_id: int,
+) -> dict[str, str] | None:
+    """LLM fallback for remove/change intent, tried only after every regex
+    detector (detect_multi_select_removal, detect_change_request(s_multi))
+    found nothing. Reuses the existing menial-tier model already wired for
+    term extraction (`_extract_terms`) — no new model config. Classify-only:
+    it never synthesizes prose, only picks {intent, variable_name, value}.
+
+    Same never-guess discipline as the regex path: any attribute name the
+    model returns that isn't one of the attrs actually present in the
+    current session is discarded. Live-verified finding (2026-07-22): two
+    real attrs in this catalog share the display_label "Mounting Type"
+    (mountType_viSoln, single, vs. mountingTypeArray_viSoln, multi) — the
+    label alone isn't enough to disambiguate, so the prompt keys on
+    variable_name + select_type + the attr's real option list, and the
+    returned value is re-validated against that specific attr's own
+    options before being trusted (a "remove" against a single-select attr,
+    or a value not in the target attr's option set, is discarded).
+    """
+    filled_candidates = [
+        a for a in attrs
+        if a.variable_name in session.filled or a.variable_name in session.filled_multi
+    ]
+    if not filled_candidates:
+        return None
+    # Relevance-score BEFORE capping — a catalog with dozens of filled
+    # attrs (promotions, accessories, etc.) can push the actually-relevant
+    # attr past a fixed positional cap if capped by catalog order first.
+    # Live-verified bug (2026-07-22): capping to the first 40 filled attrs
+    # by catalog order cut mountingTypeArray_viSoln out entirely before
+    # relevance scoring ever saw it, because dozens of unrelated
+    # promotion/accessory attrs came first in attrs' catalog order.
+    candidates = _relevant_intent_candidates(
+        question, filled_candidates[:_LLM_INTENT_ATTRS_CAP_HARD])
+    by_vn = {a.variable_name: a for a in candidates}
+    catalog_lines = []
+    for a in candidates:
+        current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
+        opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
+        catalog_lines.append(
+            f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
+            f"current={current!r}; options=[{opts}]"
+        )
+    sys = (
+        "You classify a user's message about an in-progress product configuration. "
+        "Decide if they want to REMOVE an already-selected option from a [multi] "
+        "attribute, or CHANGE a [single] attribute's value. Attributes can share the "
+        "same display label but are different fields — pick by variable_name, "
+        "select_type, and which one's current value or options actually match what "
+        "the user is talking about. Only use attribute names from the list given — "
+        "never invent one. If neither intent clearly applies, or you're unsure which "
+        "of two similarly-labeled attrs is meant, say none."
+    )
+    user = (
+        "ATTRIBUTES (variable_name [select_type] (label): current=...; options=[...]):\n"
+        + "\n".join(catalog_lines) +
+        f"\n\nUSER MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"intent": "remove"|"change"|"none", '
+        '"variable_name": "<exact name from list, or empty>", '
+        '"value": "<option text or new value, or empty>"}'
+    )
+    try:
+        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        s, e = text.find("{"), text.rfind("}")
+        parsed = json.loads(text[s:e + 1])
+    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
+        logger.debug("llm intent fallback: llm call or parse failed: %r", exc)
+        return None
+    intent = parsed.get("intent")
+    vn = parsed.get("variable_name") or ""
+    value = parsed.get("value") or ""
+    if intent not in ("remove", "change") or not vn or not value:
+        return None
+    attr = by_vn.get(vn)
+    if attr is None:
+        logger.debug("llm intent fallback: model named vn %r not in candidates %r",
+                      vn, list(by_vn))
+        return None
+    if intent == "remove" and attr.select_type != "multi":
+        logger.debug("llm intent fallback: rejected remove on non-multi attr %r", vn)
+        return None
+    if attr.options:
+        valid_values = {o.display_name.lower() for o in attr.options} | {
+            o.item_value.lower() for o in attr.options
+        }
+        if value.lower() not in valid_values:
+            logger.debug("llm intent fallback: value %r not a real option for %r", value, vn)
+            return None
+    return {"intent": intent, "variable_name": vn, "value": value}
+
+
+def _llm_resolve_label_collision(
+    reply: str, candidates: list, session: Any, workspace_id: int,
+) -> str | None:
+    """LLM fallback for resolving a label-collision reply, tried only
+    after the deterministic check (exact variable_name or 1-based list
+    index) finds nothing — same gating discipline as
+    `_llm_classify_change_intent` (8bc505a): deterministic first, LLM
+    only for genuinely looser phrasing ("the second one," "the array
+    one"), never the first resort.
+
+    Classify-only, over a FIXED, already-known candidate list (unlike the
+    general remove/change fallback, there's no attribute discovery here —
+    the 2+ candidates were already produced by detect_label_collision).
+    Any name the model returns that isn't one of the actual candidates is
+    discarded — same never-guess discipline as every other detector in
+    this file.
+
+    Includes each candidate's CURRENT value — live-verified gap (2026-07-23):
+    an earlier version omitted it, and a reply like "the one that
+    currently has jacket magnetic mount" (exactly the disambiguating
+    detail the original collision prompt itself displays) had no way to
+    resolve correctly, since the model was never told what either
+    candidate's current value even was.
+    """
+    catalog_lines = [
+        f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
+        f"current={session.filled_multi.get(a.variable_name) or session.display_filled.get(a.variable_name)!r}"
+        for a in candidates
+    ]
+    sys = (
+        "You resolve which of several similarly-labeled attributes a user "
+        "meant, from their reply to a disambiguation prompt. Only use "
+        "variable_names from the list given — never invent one. If the "
+        "reply doesn't clearly point to exactly one, say none."
+    )
+    user = (
+        "CANDIDATES (variable_name [select_type] (label): current=...):\n"
+        + "\n".join(catalog_lines)
+        + f"\n\nUSER REPLY: {reply}\n\n"
+        'Reply ONLY as JSON: {"variable_name": "<exact name from list, or empty>"}'
+    )
+    try:
+        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        s, e = text.find("{"), text.rfind("}")
+        parsed = json.loads(text[s:e + 1])
+    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
+        logger.debug("llm label-collision fallback: llm call or parse failed: %r", exc)
+        return None
+    vn = parsed.get("variable_name") or ""
+    valid_vns = {a.variable_name for a in candidates}
+    if vn not in valid_vns:
+        logger.debug("llm label-collision fallback: model named vn %r not in candidates %r",
+                      vn, valid_vns)
+        return None
+    return vn
 
 
 def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
@@ -1489,8 +2525,16 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             _array_grid_vns,
         )
 
-    # ── STEP 6 / 7 / 8 routing: awaiting_approval status ────────────────────
-    if session.status == "awaiting_approval":
+    # ── STEP 6 / 7 / 8 routing: awaiting_approval / post_approval status ────
+    # "approved" is a legacy dead-end value (pre-
+    # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D1) that used to be set once
+    # at STEP 8 and never checked again — normalized here so a session
+    # confirmed before this shipped (still held by a client that hasn't
+    # refreshed) converges onto the real status instead of silently
+    # falling through to the generic top-of-turn path.
+    if session.status == "approved":
+        session.status = "post_approval"
+    if session.status in ("awaiting_approval", "post_approval"):
         # Explicit JSON request while awaiting approval — checked BEFORE
         # approval/Q&A/change detection so "show me the json" is never
         # misread as one of those (same reasoning as the early mode_request
@@ -1522,9 +2566,12 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "preview": True,
             }
 
-        # STEP 8: explicit approval → generate BOM payload
+        # STEP 8: explicit approval → generate BOM payload. Saying
+        # "confirm" again while already post_approval is idempotent — it
+        # just re-shows the CURRENT (possibly edited) JSON, nothing new
+        # to run (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md §4.1).
         if _cpq_engine.detect_approval(req.question):
-            session.status = "approved"
+            session.status = "post_approval"
             session.complete = True
             payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
@@ -1541,11 +2588,200 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": payload,
             }
 
+        # Pending OPTIONS-QUERY collision resolution — a PRIOR turn's
+        # detect_label_collision (inside _handle_cpq_qa) asked "which one
+        # did you mean?" and stored the candidates + original question.
+        # Checked BEFORE STEP 7 so this turn's reply resolves THAT prompt
+        # instead of _handle_cpq_qa treating it as a fresh, unrelated
+        # question (live-verified gap, 2026-07-23 — same class of bug
+        # already fixed for the change-request collision below, never
+        # applied to this separate options-query collision path).
+        # Deterministic first (exact variable_name or 1-based list index —
+        # the common case, zero latency/cost); an LLM fallback only for
+        # looser phrasing the deterministic check can't resolve, gated
+        # exactly like _llm_classify_change_intent (deterministic first,
+        # never invents a name outside the candidate list).
+        if session.pending_label_collision_vns:
+            _lc_reply = req.question.strip()
+            _lc_resolved_vn = None
+            if _lc_reply in session.pending_label_collision_vns:
+                _lc_resolved_vn = _lc_reply
+            elif _lc_reply.isdigit():
+                _lc_idx = int(_lc_reply) - 1
+                if 0 <= _lc_idx < len(session.pending_label_collision_vns):
+                    _lc_resolved_vn = session.pending_label_collision_vns[_lc_idx]
+            if _lc_resolved_vn is None:
+                _lc_candidates = [
+                    a for a in attrs
+                    if a.variable_name in session.pending_label_collision_vns
+                ]
+                if _lc_candidates:
+                    _lc_resolved_vn = _llm_resolve_label_collision(
+                        _lc_reply, _lc_candidates, session, req.workspace_id)
+            if _lc_resolved_vn:
+                _lc_resolved_attr = next(
+                    (a for a in attrs if a.variable_name == _lc_resolved_vn), None)
+                _lc_orig_question = session.pending_label_collision_question
+                session.pending_label_collision_vns = []
+                session.pending_label_collision_question = ""
+                if _lc_resolved_attr is not None:
+                    _lc_req = req.model_copy(update={"question": _lc_orig_question})
+                    return _handle_cpq_qa(
+                        _lc_req, session, [_lc_resolved_attr], reader, resume_review=True)
+            # Unrecognized reply (deterministic AND LLM fallback both
+            # came up empty) — clear the stale pending state and fall
+            # through to normal routing rather than getting stuck forever.
+            session.pending_label_collision_vns = []
+            session.pending_label_collision_question = ""
+
         # STEP 7: Q&A during review — answer graph question, then show review again
         if _cpq_engine.detect_qa_question(req.question, strict=False):
             return _handle_cpq_qa(req, session, attrs, reader, resume_review=True)
 
+        # Pending collision resolution — a PRIOR turn asked "which one did
+        # you mean?" (detect_change_request_collision, below) and stored
+        # the candidates + original question. This turn's reply answers
+        # that, not a fresh CPQ hint: accept either the literal
+        # variable_name or a 1-based list index (the order the candidates
+        # were shown in). Live-verified gap (2026-07-22): the collision
+        # prompt had no memory at all, so the very next turn — even a
+        # verbatim variable_name — fell through to the generic nudge.
+        if session.pending_change_collision_vns:
+            _resolved_vn = None
+            _reply = req.question.strip()
+            if _reply in session.pending_change_collision_vns:
+                _resolved_vn = _reply
+            elif _reply.isdigit():
+                _idx = int(_reply) - 1
+                if 0 <= _idx < len(session.pending_change_collision_vns):
+                    _resolved_vn = session.pending_change_collision_vns[_idx]
+            if _resolved_vn is None:
+                # LLM fallback for looser phrasing (the whole pasted
+                # option line, "the second one", etc.) — same as the
+                # options-query collision path (pending_label_collision_
+                # vns) already had. Missing here in review (PR #117):
+                # this path only ever handled exact match/index, so a
+                # pasted full line hit "Unrecognized reply" and silently
+                # cleared the pending state instead of resolving.
+                _candidates = [
+                    a for a in attrs
+                    if a.variable_name in session.pending_change_collision_vns
+                ]
+                if _candidates:
+                    _resolved_vn = _llm_resolve_label_collision(
+                        _reply, _candidates, session, req.workspace_id)
+            if _resolved_vn:
+                _resolved_attr = next(
+                    (a for a in attrs if a.variable_name == _resolved_vn), None)
+                _orig_question = session.pending_change_collision_question
+                session.pending_change_collision_vns = []
+                session.pending_change_collision_question = ""
+                if _resolved_attr is not None:
+                    _resolved_change = _cpq_engine.detect_change_request(
+                        _orig_question, [_resolved_attr], session.filled,
+                        filled_multi=session.filled_multi)
+                    if _resolved_change:
+                        _, _resolved_value = _resolved_change
+                        return _handle_cascade(
+                            req, session, attrs, _resolved_attr, _resolved_value,
+                            hiding_rules, rec_rules, con_rules,
+                        )
+                    # No parseable value for the resolved attr (e.g. the
+                    # original message's target was really a per-row
+                    # quantity, not this attr's own value) — re-ask it as a
+                    # genuine pending question, same as any other unanswered
+                    # attr, so the NEXT reply is captured by STEP 5 instead
+                    # of being orphaned (live-verified gap, 2026-07-22: the
+                    # prior version showed the same options list but never
+                    # registered pending_variables, so the follow-up reply
+                    # fell through to the generic nudge).
+                    opts_prompt = (
+                        _cpq_engine.next_question_prompt(_resolved_attr)
+                        if _resolved_attr.options else ""
+                    )
+                    answer = (
+                        f"Couldn't find a value for **{_resolved_attr.display_label}** in "
+                        f"\"{_orig_question}\". Please say what to change it to."
+                        + (f"\n\n{opts_prompt}" if opts_prompt else "")
+                    )
+                    session.status = "configuring"
+                    session.pending_variables = [
+                        _resolved_attr.variable_name,
+                        *[v for v in session.pending_variables
+                          if v != _resolved_attr.variable_name],
+                    ]
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_change_label_collision_resolved()"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    }
+            # Unrecognized reply — clear the stale pending state and fall
+            # through to normal routing rather than getting stuck forever.
+            session.pending_change_collision_vns = []
+            session.pending_change_collision_question = ""
+
         # STEP 6: change request → cascade
+        # Bulk quantity check first — "change both the mounting types
+        # quantity to 67" targets every already-selected row's quantity
+        # attr, never the grid selector's own value, so it must run before
+        # both the removal check (a different verb-and-verb-shape entirely)
+        # and the collision check below (which would otherwise ask to
+        # disambiguate between two identically-labeled "Mounting Type"
+        # attrs even though only the real multi-select grid ever has
+        # resolvable quantity links in the first place).
+        _bulk_qty_match = _cpq_engine.detect_bulk_quantity_change(
+            req.question, attrs, session.filled_multi)
+        if _bulk_qty_match:
+            _bulk_selector_vn, _bulk_item_values, _bulk_new_qty = _bulk_qty_match
+            return _handle_bulk_quantity_change(
+                req, session, attrs, _bulk_selector_vn, _bulk_item_values, _bulk_new_qty,
+                hiding_rules, rec_rules, con_rules,
+            )
+
+        # Deselect check first — "remove X"/"deselect X" is a distinct
+        # intent from both the collision check and detect_change_request
+        # below (subtracting one option from an existing multi-select
+        # selection, never a single-select value replacement), so it's
+        # handled entirely separately before either of those runs.
+        _removal_match = _cpq_engine.detect_multi_select_removal(
+            req.question, attrs, session.filled_multi)
+        if _removal_match:
+            _removal_attr, _to_remove = _removal_match
+            return _handle_multi_select_removal(
+                req, session, attrs, _removal_attr, _to_remove,
+                hiding_rules, rec_rules, con_rules,
+            )
+
+        # Attribute activation — "add X"/"activate X" re-enabling a real,
+        # currently-excluded optional catalog attr (D2,
+        # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md). Same priority
+        # position as the removal check above — a distinct intent from
+        # both removal and a normal value-replacement change request.
+        _activation_match = _cpq_engine.detect_attr_activation(
+            req.question, attrs, session.filled, session.filled_multi,
+            hiding_rules, req.workspace_id, catalog_prefix, bml_eval=bml_eval,
+        )
+        if _activation_match:
+            return _handle_attr_activation(
+                req, session, attrs, _activation_match,
+                hiding_rules, rec_rules, con_rules,
+            )
+
+        # Attribute nullify — "clear X"/"unset X" blanking an optional
+        # single-select attr's current value back to empty (D4). Same
+        # priority position as activation.
+        _clear_match = _cpq_engine.detect_attr_clear(
+            req.question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
+        )
+        if _clear_match:
+            return _handle_attr_clear(
+                req, session, attrs, _clear_match,
+                hiding_rules, rec_rules, con_rules,
+            )
+
         # Identical-label collision check first — same reasoning as the
         # detect_attr_query collision check above, but scoped to change
         # requests (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 2's fix never
@@ -1557,15 +2793,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if _change_collision:
             _lines = "\n".join(
-                f"- **{a.variable_name}**"
+                f"{i}. **{a.variable_name}**"
                 f"{f' (currently: {session.display_filled.get(a.variable_name)})' if session.display_filled.get(a.variable_name) else ''}"
-                for a in _change_collision
+                for i, a in enumerate(_change_collision, start=1)
             )
             answer = (
                 f"There are {len(_change_collision)} different attributes labeled "
                 f"**\"{_change_collision[0].display_label}\"** in this catalog — which one "
-                f"did you mean to change?\n\n{_lines}"
+                f"did you mean to change? Reply with the number or the variable_name.\n\n{_lines}"
             )
+            session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
+            session.pending_change_collision_question = req.question
             _persist_cpq_history(req.workspace_id, req.question, answer)
             return {
                 "answer": answer, "terms": [], "tools_called": ["cpq_change_label_collision()"],
@@ -1574,14 +2812,57 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
 
-        change_result = _cpq_engine.detect_change_request(
+        # Try multi-attribute first ("change X to A and Y to B" — up to
+        # detect_change_requests_multi's cap) — only route to the multi
+        # handler when it actually found 2+ distinct attrs; a single match
+        # falls through to the existing, more heavily-tested single-change
+        # path unchanged, so the common case has zero behavior change.
+        _multi_matches = _cpq_engine.detect_change_requests_multi(
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
-        if change_result:
-            changed_attr, new_value_hint = change_result
-            return _handle_cascade(
-                req, session, attrs, changed_attr, new_value_hint,
+        if len(_multi_matches) >= 2:
+            _multi_result = _handle_cascade_multi(
+                req, session, attrs, _multi_matches,
                 hiding_rules, rec_rules, con_rules,
             )
+            if _multi_result is not None:
+                return _multi_result
+        else:
+            change_result = _cpq_engine.detect_change_request(
+                req.question, attrs, session.filled, filled_multi=session.filled_multi)
+            if change_result:
+                changed_attr, new_value_hint = change_result
+                return _handle_cascade(
+                    req, session, attrs, changed_attr, new_value_hint,
+                    hiding_rules, rec_rules, con_rules,
+                )
+
+        # LLM fallback: every regex detector above found nothing — try the
+        # existing menial-tier classifier before giving up (Andie scoping,
+        # 2026-07-22: regex-first, LLM-fallback via the model tier already
+        # wired for term extraction; no new model config). Reuses the exact
+        # same downstream handlers as the regex path, so all their
+        # guardrails (real-value validation, orphan quantity cleanup,
+        # single rule-loop pass) apply identically.
+        _llm_intent = _llm_classify_change_intent(
+            req.question, attrs, session, req.workspace_id)
+        if _llm_intent:
+            _llm_attr = next(
+                (a for a in attrs if a.variable_name == _llm_intent["variable_name"]), None)
+            if _llm_attr is not None:
+                if _llm_intent["intent"] == "remove":
+                    _current = session.filled_multi.get(_llm_attr.variable_name) or []
+                    _mentioned = _cpq_engine.apply_multi_answer(_llm_attr, _llm_intent["value"])
+                    _to_remove = [iv for iv, _dn in _mentioned if iv in _current]
+                    if _to_remove:
+                        return _handle_multi_select_removal(
+                            req, session, attrs, _llm_attr, _to_remove,
+                            hiding_rules, rec_rules, con_rules,
+                        )
+                elif _llm_intent["intent"] == "change":
+                    return _handle_cascade(
+                        req, session, attrs, _llm_attr, _llm_intent["value"],
+                        hiding_rules, rec_rules, con_rules,
+                    )
 
         # Could not parse as approval, Q&A, change, or JSON request — nudge
         # with the verbose summary, NOT the raw JSON (§6/Phase K: JSON stays
@@ -1796,8 +3077,60 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
 
+    # ── STEP 5b: removal while blocked with no pending question ──────────────
+    # `session.pending_variables` is empty whenever the previous turn ended
+    # on unresolved_grid_quantity_options' block (a selected grid option has
+    # no resolvable per-row quantity attr — e.g. SVX's bare "Magnetic Mount")
+    # rather than on a genuine next question, so STEP 5 above never fires and
+    # the turn fell straight to STEP 3 with filled_multi unchanged, re-hitting
+    # the identical block. Live-verified bug (2026-07-22): "okay remove it"
+    # was silently discarded this way — the block even told the user to
+    # "remove it" but nothing ever tried to parse that as a removal. Tried
+    # here, before STEP 3 re-runs the loop and re-emits the same warning.
+    if not session.pending_variables and session.turn > 1 and not mode_request:
+        _gap_removal_match = _cpq_engine.detect_multi_select_removal(
+            req.question, attrs, session.filled_multi)
+        if _gap_removal_match:
+            _gap_attr, _gap_to_remove = _gap_removal_match
+            return _handle_multi_select_removal(
+                req, session, attrs, _gap_attr, _gap_to_remove,
+                hiding_rules, rec_rules, con_rules,
+            )
+        # The block's own wording says "remove it" — a pronoun, not a named
+        # option, so detect_multi_select_removal (which requires the option
+        # to actually be named) never matches it. When the message still
+        # carries a removal verb and there's exactly one unresolved gap
+        # option, resolve "it" to that one unambiguous gap directly.
+        elif _cpq_engine._REMOVE_VERB_RE.search(req.question):
+            _by_vn = {a.variable_name: a for a in attrs}
+            _grid_links = _cpq_engine.resolve_array_grid_links(attrs)
+            _gaps = [
+                (selector_vn, item_value)
+                for selector_vn, item_map in _grid_links.items()
+                for item_value in (session.filled_multi.get(selector_vn) or [])
+                if item_value.strip().lower() not in item_map
+            ]
+            if len(_gaps) == 1:
+                _gap_selector_vn, _gap_item_value = _gaps[0]
+                _gap_attr = _by_vn.get(_gap_selector_vn)
+                if _gap_attr is not None:
+                    return _handle_multi_select_removal(
+                        req, session, attrs, _gap_attr, [_gap_item_value],
+                        hiding_rules, rec_rules, con_rules,
+                    )
+
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
     prev_filled_snapshot = dict(session.filled)
+    # Also snapshotted for dropped_note's wording below — distinguishes a
+    # value the SESSION already held before this turn (a real prior
+    # answer, now invalidated by whatever this turn changed) from one
+    # evaluate_rules_loop's own internal iteration filled AND discarded
+    # within this SAME turn (turn 1's settling churn, before the
+    # customer ever gave any input at all — confirmed live: a fresh
+    # "Quote SVX..." turn 1 showed 3 single-select attrs "Removed ... —
+    # no longer valid after this change" despite session.filled starting
+    # completely empty that turn).
+    prev_filled_multi_snapshot = {k: list(v) for k, v in session.filled_multi.items()}
     dropped_multi: dict[str, list[str]] = {}
     skip_always_ask = _cpq_engine.resolve_always_ask_skips(
         req.workspace_id, catalog_prefix, attrs)
@@ -1815,7 +3148,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, rule_governed_ids=rule_ids, country=session.country,
         negated_vns=negated_vns, filled_source=session.filled_source,
-        skip_always_ask=skip_always_ask,
+        skip_always_ask=skip_always_ask, bml_eval=bml_eval,
     )
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
@@ -1823,11 +3156,26 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _qty_attr.variable_name not in _grid_qty_vns:
             pending.append(_qty_attr)
             _grid_qty_vns.add(_qty_attr.variable_name)
+    def _dropped_phrase(dvar: str, dvals: list[str]) -> str:
+        label = next((a.display_label for a in attrs if a.variable_name == dvar), dvar)
+        had_prior_value = dvar in prev_filled_snapshot or bool(prev_filled_multi_snapshot.get(dvar))
+        if had_prior_value:
+            # A real prior value (this session already held it before
+            # this turn started) genuinely got invalidated by whatever
+            # this turn changed — the customer-facing "after this
+            # change" framing is accurate here.
+            return (
+                f" Removed **{', '.join(dvals)}** from **{label}** "
+                f"— no longer valid after this change."
+            )
+        # evaluate_rules_loop's own internal settling filled AND
+        # discarded this within the SAME turn — never a value the
+        # customer (or a prior turn) ever actually held, so "after this
+        # change" would misleadingly imply a customer action caused it.
+        return f" **{label}** doesn't currently offer **{', '.join(dvals)}** as a valid option."
+
     dropped_note = "".join(
-        f" Removed **{', '.join(dvals)}** from **"
-        f"{next((a.display_label for a in attrs if a.variable_name == dvar), dvar)}"
-        f"** — no longer valid after this change."
-        for dvar, dvals in dropped_multi.items()
+        _dropped_phrase(dvar, dvals) for dvar, dvals in dropped_multi.items()
     )
 
     session.filled = filled

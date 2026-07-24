@@ -162,6 +162,40 @@ def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 
     return _label_mention_span(label_lower, q_lower, max_dropped_leading) is not None
 
 
+def _label_mentioned_strict(label_lower: str, q_lower: str) -> bool:
+    """Exact-phrase match, or a leading-word-dropped suffix that NEVER
+    degrades to a single generic shared word (e.g. "Type"/"Package").
+
+    Live-verified gap: `_label_mentioned`'s word-set fallback tier is
+    explicitly safe only as a coarse pre-filter (its own docstring: "a
+    false-positive span here costs an extra attr considered, never a
+    wrongly-resolved value") because `detect_change_request` always
+    requires a SEPARATE value-match (apply_answer/numeric extraction)
+    before actually resolving anything — a loose label match alone never
+    directly causes a wrong resolution there. `detect_attr_activation`/
+    `detect_attr_clear` (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2/D4)
+    have no such secondary check: the label match itself IS the final
+    decision. Confirmed live: "add surveillance package type" — meant for
+    "Surveillance Package Type" — instead matched an unrelated "Customer
+    Type" attr, because dropping "Customer" leaves the single word
+    "type", which trivially appears in almost any message mentioning any
+    "*Type"-suffixed attr. This helper keeps the same leading-word-drop
+    tolerance for 3+-word labels (dropping down to 2+ remaining words is
+    still discriminating) but requires the FULL label verbatim for a
+    2-word label — no single-word degradation, ever.
+    """
+    if label_lower in q_lower:
+        return True
+    words = label_lower.split()
+    if len(words) < 3:
+        return False  # 2-word (or shorter) labels: exact phrase only
+    for start in range(1, len(words) - 1):  # always leaves >= 2 words
+        suffix = " ".join(words[start:])
+        if suffix in q_lower:
+            return True
+    return False
+
+
 def _condition_value_matches(current_val: str, condition_value: str) -> bool:
     """True when current_val satisfies a single condition_attr/condition_value pair.
 
@@ -456,6 +490,23 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Attrs confirmed live (docs/CPQ_SCRIPT_GOVERNED_GUESS_ISSUE.md) to be
+# governed EXCLUSIVELY by a script-based recommendation rule that can
+# legitimately resolve to "no recommendation" (not just "unknown") — for
+# these, auto_fill's blind first-by-order fallback ("safe because a rule
+# REQUIRES this attr to be resolved") must not fire, since the rule can
+# validly decline to recommend anything. Deliberately an explicit,
+# narrow allowlist rather than a blanket "any script-only-governed attr"
+# rule: the blanket version (commit 59074de, reverted) silenced this
+# fallback for APX Next's entire catalog too (601 recommendation rules,
+# almost all script-only, per the same pattern) — turning its working
+# instant-complete flow into ~30 unwanted questions on a fresh quote.
+# Add a new variable_name here only after live-reproducing the same
+# failure mode, the same way this one was found.
+_NEVER_GUESS_SCRIPT_GOVERNED: frozenset[str] = frozenset({
+    "wouldYouLikeToIncludeABatterySubscription_viSoln",
+})
+
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
 # _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
@@ -473,8 +524,18 @@ _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # its actual model/product attr), so a loose "model" substring sweeps
     # those in too. These fragments target the attr that names the product
     # itself, not siblings that merely share its naming prefix.
+    # "hwversion" added live-verified (2026-07-24): hWVersion_astro matched
+    # none of the original fragments, so it fell into the fallback
+    # "Associated Options" category — which the LLM narrator is explicitly
+    # allowed to only PARTIALLY cover (never claims completeness, by
+    # design, to avoid hallucinated placeholders for omitted facts). That
+    # meant a customer's own explicit "change the hardware version to X"
+    # could silently vanish from the "Configuration complete" summary even
+    # though the JSON payload had it correctly — a real product-identifying
+    # decision deserves the same always-fully-shown treatment as Base
+    # Model/Product Name, not partial-coverage treatment.
     ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
-                       "productselection", "producttype")),
+                       "productselection", "producttype", "hwversion")),
     ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
     ("Quantity & Duration", ("quantity", "duration", "qty")),
 )
@@ -2920,7 +2981,14 @@ class CpqEngine:
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
-            if not target or target.variable_name in filled:
+            # A truthy check, not `in filled` — an empty string is D4's
+            # deliberate "user cleared this" marker
+            # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md), the single-select
+            # counterpart of filled_multi's existing "(none)" convention.
+            # A genuine rule re-assertion must still override it (same as
+            # it would override any other stale value) — only a REAL
+            # value already present blocks this rule from firing.
+            if not target or filled.get(target.variable_name):
                 continue
             if rule.script is not None:
                 if bml_eval is None:
@@ -3244,6 +3312,7 @@ class CpqEngine:
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
+                bml_eval=bml_eval,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
@@ -3261,7 +3330,12 @@ class CpqEngine:
                     else:
                         filled[k] = iv
                     display_filled[k] = d
-                    sources.setdefault(k, "rule")
+                    # Force-set, not setdefault: `k` only ever reaches here
+                    # via the truthy (not `in filled`) check above, so any
+                    # existing tag is either absent or D4's empty-value
+                    # "user"-cleared marker being genuinely overridden by a
+                    # real rule firing — never a real prior value's tag.
+                    sources[k] = "rule"
 
             constrained_opts = self.apply_constraint_rules(
                 attrs, con_rules, filled, bml_eval=bml_eval,
@@ -3428,6 +3502,7 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] | None = None,
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
+        bml_eval: BmlEvaluator | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -3576,22 +3651,48 @@ class CpqEngine:
             3 ran unconditionally before any rule got a chance to apply,
             since apply_recommendation_rules() never revisits an attr
             already in `filled` — docs/CPQ_SESSION_2_OPEN_ISSUES.md).
+
+            Also handles script/condition_script-backed rules (via
+            bml_eval), not just the plain condition_attr_id/condition_value
+            pair — same Tier-1/Tier-2 machinery apply_recommendation_rules
+            uses. Purely additive: a script that resolves is always a
+            correct answer, never a wrong guess, and never asks a
+            question that wasn't already going to be asked (it can only
+            resolve an attr that would otherwise stay unfilled/pending).
+            bml_eval=None (caller opted out) falls back to skipping script
+            rules entirely, same as apply_recommendation_rules.
             """
             for aid_key in (attr.entity_id, attr.source_id):
                 if aid_key is None:
                     continue
                 for rrule in rec_by_target.get(aid_key, []):
-                    cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
-                    if not cond_attr:
-                        continue
-                    cond_val = filled.get(cond_attr.variable_name)
-                    if cond_val is None or not _condition_value_matches(
-                        cond_val, rrule.condition_value
-                    ):
-                        continue
+                    if rrule.script is not None:
+                        if bml_eval is None:
+                            continue
+                        allowed = bml_eval.allowed_values_for_script(rrule.script, filled)
+                        if not allowed or len(allowed) != 1:
+                            continue  # unknown, or ambiguous — never guess
+                        recommended_value = allowed[0]
+                    elif rrule.condition_script is not None:
+                        if bml_eval is None:
+                            continue
+                        fires = bml_eval.condition_holds(rrule.condition_script, filled)
+                        if fires is not True:
+                            continue  # False or unknown — never guess, doesn't fire
+                        recommended_value = rrule.recommended_value
+                    else:
+                        cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
+                        if not cond_attr:
+                            continue
+                        cond_val = filled.get(cond_attr.variable_name)
+                        if cond_val is None or not _condition_value_matches(
+                            cond_val, rrule.condition_value
+                        ):
+                            continue
+                        recommended_value = rrule.recommended_value
                     match = next(
                         (o for o in candidate_opts
-                         if o.item_value.lower() == rrule.recommended_value.lower()),
+                         if o.item_value.lower() == recommended_value.lower()),
                         None,
                     )
                     if match:
@@ -3639,6 +3740,19 @@ class CpqEngine:
             vn = attr.variable_name
 
             if vn in filled:
+                # Deliberately cleared by the user (D4,
+                # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md) — an empty
+                # value tagged filled_source="user" is a standing "leave
+                # this blank" decision, the single-select counterpart of
+                # filled_multi's existing empty-plus-"user" "(none)"
+                # convention below. Never re-guessed by the blind
+                # first-by-order fallback on a later pass; only a genuine
+                # rule re-assertion (apply_recommendation_rules' truthy
+                # check, not `in filled`) overrides it, exactly like it
+                # would override any other stale value.
+                if filled[vn] == "" and sources.get(vn) == "user":
+                    display_filled[vn] = "(none)"
+                    continue
                 # Already answered in a prior turn — but a cascade may have
                 # narrowed this attr's allowed set since then (single-select
                 # counterpart of the multi-select re-validation below, §5/
@@ -3884,8 +3998,26 @@ class CpqEngine:
                     if _valid(o.item_value)
                     and (allowed_for_attr is None or o.item_value in allowed_for_attr)
                 ]
-                if len(valid_opts) == 1:
-                    # Exactly one choice — auto-fill, no user decision needed
+                if len(valid_opts) == 1 and attr.entity_id not in user_answered_dropped_ids:
+                    # Exactly one choice — auto-fill, no user decision needed.
+                    #
+                    # EXCLUDED when this attr's only-one-option state exists
+                    # because a constraint just rejected the CUSTOMER'S OWN
+                    # explicit answer this same turn (live-verified bug,
+                    # 2026-07-23: changing Billing Option to "Annual" got
+                    # silently replaced with "Immediate" — the drop was
+                    # correctly detected and noted, but this branch — a
+                    # DIFFERENT, earlier branch than the blind first-by-order
+                    # fallback the existing user_answered_dropped_ids guard
+                    # protects a few lines below — filled the one remaining
+                    # option unconditionally, with no awareness that "only
+                    # one option remains" was true BECAUSE it just excluded
+                    # what the customer picked). Falls through to `pending`
+                    # instead, same "a real decision deserves to be re-asked,
+                    # not silently re-guessed" principle as the sibling fix
+                    # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 4) — the
+                    # resume prompt shown for `pending` already tells the
+                    # customer the one remaining valid option.
                     value = valid_opts[0].item_value
                     display = valid_opts[0].display_name
                 elif (
@@ -3950,6 +4082,14 @@ class CpqEngine:
                         if rec_match:
                             value, display = rec_match
                             source = "rule"
+                        elif vn in _NEVER_GUESS_SCRIPT_GOVERNED:
+                            # This attr's only governing rule is script-based
+                            # and just failed to resolve to a value above —
+                            # confirmed live to legitimately mean "no
+                            # recommendation applies" for this specific attr,
+                            # not "unknown, guess anyway". Falls through to
+                            # pending/ungoverned handling instead of guessing.
+                            pass
                         else:
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
@@ -4217,6 +4357,247 @@ class CpqEngine:
     # equally strong, unambiguous change signal — same tier as a real verb.
     _ARROW_RE = re.compile(r"->|→")
 
+    # Removal verbs — user wants to DESELECT an already-chosen multi-select
+    # option, not add a new one (docs: Ask page needs to let a customer
+    # deselect a mount type, not just add more). Deliberately distinct from
+    # _CHANGE_VERB_RE: "change X to Y" replaces a single-select's value,
+    # while "remove X" subtracts one option from an existing multi-select
+    # selection — different verbs, different target data structure
+    # (filled_multi, never filled).
+    _REMOVE_VERB_RE = re.compile(
+        r"\b(remove|deselect|de-select|delete|drop|uncheck|take\s+out|"
+        r"get\s+rid\s+of|don'?t\s+need)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_multi_select_removal(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled_multi: dict[str, list[str]],
+    ) -> "tuple[ConfigAttr, list[str]] | None":
+        """Detect "remove X"/"deselect X" against an already-selected
+        multi-select option (e.g. "remove Jacket Magnetic Mount" after
+        selecting both Shirt and Jacket).
+
+        Confirmed live this was a real gap: apply_multi_answer/
+        _handle_cascade's multi-select branch only ever UNIONS mentioned
+        options with the current selection (by design, for the "also
+        include X" add case) — there was no removal path at all, so
+        "remove Jacket Magnetic Mount" fell straight through to "I didn't
+        quite catch that" with both mounts still selected.
+
+        Returns (attr, item_values_to_remove) or None. Only fires when a
+        removal verb is present AND at least one mentioned option is
+        genuinely already in the current selection — naming an option
+        that isn't currently selected is not a removal request (falls
+        through to the normal change-request/collision paths instead, same
+        "never guess" discipline as everywhere else in this file).
+        """
+        if not self._REMOVE_VERB_RE.search(question):
+            return None
+        for attr in attrs:
+            if attr.select_type != "multi":
+                continue
+            current = filled_multi.get(attr.variable_name)
+            if not current:
+                continue
+            mentioned = self.apply_multi_answer(attr, question)
+            to_remove = [iv for iv, _dn in mentioned if iv in current]
+            if to_remove:
+                return attr, to_remove
+        return None
+
+    # "add/activate/include/bring back/turn on X" — re-activating a real,
+    # currently-excluded, optional catalog attr post-quote-generation
+    # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2). Deliberately distinct
+    # from _CHANGE_VERB_RE: "change X to Y" replaces an already-visible
+    # attr's value, while "add X" re-activates something not currently
+    # part of the quote at all.
+    _ADD_VERB_RE = re.compile(
+        r"\b(add|activate|include|bring\s+back|re-?add|reactivate|turn\s+on)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_attr_activation(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        hiding_rules: list[HidingRule],
+        workspace_id: int,
+        catalog_prefix: str,
+        bml_eval: BmlEvaluator | None = None,
+    ) -> ConfigAttr | None:
+        """Detect "add X"/"activate X" re-activating a real, currently-
+        excluded, optional attribute (D2). Never an invented field, never
+        a required one, never a bypass of a currently-active hiding rule.
+
+        A single unified eligibility check covers all 3 of D2's source
+        pools at once: `required == False`, not `attr.hidden` (BM-native
+        permanent hidden — a different concept from rule-conditional
+        hiding, never surfaced regardless of rule state), not already
+        filled/selected, and NOT currently hidden by an active hiding
+        rule (re-checked live against the CURRENT filled state via
+        `apply_hiding_rules`, never a cached/stale exclusion set — an
+        attr whose hiding condition is still true is never a candidate,
+        full stop). This naturally covers a declined multi-select (empty
+        `filled_multi`), a flow-exclusion-dropped attr
+        (`payload_flow_exclusions`), and a hiding-rule-excluded attr
+        whose condition lapsed — all three reduce to the same "real,
+        optional, currently invisible, not rule-blocked" predicate.
+        """
+        if not self._ADD_VERB_RE.search(question):
+            return None
+        _visible_now, _msgs, hidden_now = self.apply_hiding_rules(
+            attrs, filled, hiding_rules, bml_eval=bml_eval)
+        q_lower = question.lower()
+        for attr in attrs:
+            vn = attr.variable_name
+            if attr.required or attr.hidden:
+                continue
+            if vn in filled or filled_multi.get(vn):
+                continue
+            if vn in hidden_now:
+                continue  # still genuinely hidden by an active rule
+            if _label_mentioned_strict(attr.display_label.lower(), q_lower):
+                return attr
+        return None
+
+    # "clear/unset/blank X" — nullifying an optional SINGLE-select attr's
+    # current value back to empty (D4). Distinct from _REMOVE_VERB_RE
+    # (multi-select deselection, a different data structure entirely) and
+    # from _CHANGE_VERB_RE (replacing with a different concrete value).
+    _CLEAR_VERB_RE = re.compile(
+        r"\b(clear|unset|blank|leave\s+(?:it\s+)?(?:blank|empty|unset))\b",
+        re.IGNORECASE,
+    )
+
+    def detect_attr_clear(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+        bml_eval: BmlEvaluator | None = None,
+    ) -> ConfigAttr | None:
+        """Detect "clear X"/"unset X" nullifying an optional single-select
+        attribute's CURRENT value back to blank (D4) — never a required
+        attr, and never one a still-active rule would immediately refill.
+
+        Live-checked, not a static flag: simulates removing each
+        candidate from `filled` and re-runs
+        apply_recommendation_rules/apply_constraint_rules against that
+        trial state — if a recommendation would refire, or a constraint
+        narrows the attr to exactly one remaining valid option, clearing
+        is refused (the very next rule pass would just put the same value
+        straight back, silently, making the "clear" a no-op at best).
+        """
+        if not self._CLEAR_VERB_RE.search(question):
+            return None
+        q_lower = question.lower()
+        for attr in attrs:
+            vn = attr.variable_name
+            if attr.required or attr.select_type == "multi":
+                continue
+            if not filled.get(vn):
+                continue
+            if not _label_mentioned_strict(attr.display_label.lower(), q_lower):
+                continue
+            trial_filled = dict(filled)
+            trial_filled.pop(vn, None)
+            rec_fires = self.apply_recommendation_rules(
+                attrs, trial_filled, rec_rules, bml_eval=bml_eval)
+            if vn in rec_fires:
+                continue  # a recommendation would immediately refill it
+            constrained = self.apply_constraint_rules(
+                attrs, con_rules, trial_filled, bml_eval=bml_eval)
+            allowed = constrained.get(attr.entity_id)
+            if allowed is not None:
+                valid_opts = [o for o in attr.options if o.item_value in allowed]
+                if len(valid_opts) == 1:
+                    continue  # constraint narrows to one — would refill immediately
+            return attr
+        return None
+
+    # "change/set/update/make ... quantit(y|ies) ... to <number>" OR
+    # "change/set/... both/all/every ... to <number>" — a bulk per-row
+    # quantity update, distinct from _CHANGE_VERB_RE's single-attribute
+    # value change. Live-verified gap (2026-07-22): "change both the
+    # mounting type to 25" — no "quantity" word at all, just "both" —
+    # missed the original quantity-only regex and fell into
+    # detect_change_request_collision instead, where 25 (never a real
+    # mount option) couldn't resolve either. The "both/all/every" branch
+    # is intentionally broader; detect_bulk_quantity_change's own
+    # restriction to resolve_array_grid_links' selectors with actually
+    # resolvable selected rows is the real safety net, not this regex.
+    _BULK_QTY_RE = re.compile(
+        r"\b(?:change|set|update|make)\b.{0,80}"
+        r"\b(?:quantit(?:y|ies)|both|all|every)\b.{0,60}"
+        r"\bto\b\s*(\d+(?:\.\d+)?)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def detect_bulk_quantity_change(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled_multi: dict[str, list[str]],
+    ) -> "tuple[str, list[str], str] | None":
+        """Detect "change both/all the mounting types quantity to 67" — set
+        every currently-selected grid-row's quantity to one value at once.
+
+        Live-verified gap: this phrasing was previously misread as a
+        single-attribute value change ("change Mounting Type to 67"),
+        which either mis-set the grid selector's own value or, on a
+        catalog with two identically-labeled "Mounting Type" attrs (one
+        single-select, one the real multi-select grid), forced an
+        unresolvable disambiguation prompt — 67 was never going to be a
+        valid answer for either one, since the real target is each row's
+        quantity attr, not the selector's own value.
+
+        Restricting candidates to `resolve_array_grid_links`' selectors
+        sidesteps that label collision entirely: a plain single-select
+        sibling (e.g. mountType_viSoln) never has grid links and so is
+        never a candidate here, regardless of a shared display_label.
+
+        Returns (selector_variable_name, item_values_to_update, new_qty)
+        or None. Only matches selectors with at least one already-selected,
+        quantity-resolvable row — never guesses at an unfilled selector.
+        """
+        m = self._BULK_QTY_RE.search(question)
+        if not m:
+            return None
+        new_qty = m.group(1)
+        grid_links = self.resolve_array_grid_links(attrs)
+        if not grid_links:
+            return None
+        by_vn = {a.variable_name: a for a in attrs}
+        candidates: list[tuple[str, list[str]]] = []
+        for selector_vn, item_map in grid_links.items():
+            selected = filled_multi.get(selector_vn) or []
+            resolvable = [iv for iv in selected if iv.strip().lower() in item_map]
+            if resolvable:
+                candidates.append((selector_vn, resolvable))
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0][0], candidates[0][1], new_qty
+        # Multiple grid selectors are in play — narrow by word overlap
+        # against each selector's own display_label rather than guess.
+        q_words = set(_variable_words(question.replace("_", " ")))
+        scored = []
+        for selector_vn, resolvable in candidates:
+            attr = by_vn.get(selector_vn)
+            label_words = set(_variable_words(attr.display_label)) if attr else set()
+            if q_words & label_words:
+                scored.append((selector_vn, resolvable))
+        if len(scored) == 1:
+            return scored[0][0], scored[0][1], new_qty
+        return None
+
     def detect_approval(self, question: str) -> bool:
         """True when the user is approving/confirming the configuration (Step 8)."""
         return bool(self._APPROVAL_RE.search(question.strip()))
@@ -4274,6 +4655,59 @@ class CpqEngine:
         including the explicitly-declined empty selection; for multi attrs
         a "different value" means the mentioned option isn't already in
         the selected rows.
+
+        Just the first match from `_change_request_matches` — see
+        `detect_change_requests_multi` for a message naming several
+        attrs at once.
+        """
+        return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
+
+    # Cap on detect_change_requests_multi's result — a message naming more
+    # than this is unusual enough that blindly trusting every match risks
+    # silently misapplying something the user didn't actually intend
+    # (product decision: cap 3, apply whichever parse, report the rest).
+    _MAX_MULTI_CHANGE_REQUESTS = 3
+
+    def detect_change_requests_multi(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> list[tuple[ConfigAttr, str]]:
+        """Up to `_MAX_MULTI_CHANGE_REQUESTS` (attr, new_value_hint) matches
+        from a SINGLE message naming several attrs at once — e.g. "change
+        the Shirt Magnetic Mount Quantity to 25 and the Jacket Magnetic
+        Mount Quantity to 25". `detect_change_request` only ever returns
+        the first match (`_change_request_matches` is a generator; each
+        `for attr in _try_order` iteration yields independently, so
+        collecting more than one is exactly this: keep scanning instead of
+        stopping at the first).
+
+        Returns [] when no match is found, mirroring the "no change
+        detected" contract callers already expect from the singular form.
+        """
+        out: list[tuple[ConfigAttr, str]] = []
+        for match in self._change_request_matches(question, attrs, filled, filled_multi):
+            out.append(match)
+            if len(out) >= self._MAX_MULTI_CHANGE_REQUESTS:
+                break
+        return out
+
+    def _change_request_matches(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ):
+        """Generator yielding every (attr, new_value_hint) match — shared by
+        `detect_change_request` (first match only) and
+        `detect_change_requests_multi` (up to `_MAX_MULTI_CHANGE_REQUESTS`).
+        See `detect_change_request`'s docstring for the matching contract;
+        this is the same body with `return` turned into `yield` + `continue`
+        so the `for attr in _try_order` loop keeps scanning afterward
+        instead of exiting the whole function.
         """
         q_lower = question.lower()
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question)) or bool(self._ARROW_RE.search(question))
@@ -4357,12 +4791,13 @@ class CpqEngine:
                 mentioned = self.apply_multi_answer(attr, question)
                 current_rows = set(multi.get(attr.variable_name, []))
                 if any(iv not in current_rows for iv, _dn in mentioned):
-                    return attr, question
+                    yield attr, question
                 continue
             if attr.options:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
-                    return attr, question
+                    yield attr, question
+                    continue
             elif has_change_verb:
                 # Free-text attr (e.g. a per-mount quantity field) with an
                 # explicit change verb — the label-mention gate above has
@@ -4409,7 +4844,8 @@ class CpqEngine:
                     m2 = re.search(r"-?\d+(?:\.\d+)?", search_text)
                     value = m2.group(0) if m2 else None
                 if value is not None and value != filled.get(attr.variable_name, ""):
-                    return attr, value
+                    yield attr, value
+                    continue
 
             # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
             # the attr is mentioned but may not identify the exact option. Only reached
@@ -4421,9 +4857,8 @@ class CpqEngine:
                 hk_flat = hk.lower().replace("_", "")
                 if hk_flat in vn_flat or vn_flat in hk_flat:
                     if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        return attr, question
-
-        return None
+                        yield attr, question
+                        break
 
     def find_cascade_dependents(
         self,
@@ -4747,7 +5182,22 @@ class CpqEngine:
                 f"{i + 1}. {opt.display_name}"
                 for i, opt in enumerate(effective_opts)
             )
-            return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}"
+            # An optional multi-select reaching this prompt at all is, by
+            # construction, a grid selector (resolve_array_grid_links) —
+            # every OTHER optional multi-select is auto-filled empty
+            # without ever being asked (auto_fill's own optional-tier
+            # branch). ask_api.py already recognizes "skip"/"none"/"no...
+            # needed" as a valid decline for exactly this case (confirmed
+            # live: mountingTypeArray_viSoln correctly resolves to an
+            # empty selection), but the prompt never told the user that —
+            # confirmed live: nobody would think to type "skip" without
+            # being told it's an option.
+            skip_hint = (
+                "\n\n*(Optional — say \"skip\" or \"none needed\" if you "
+                "don't need any.)*"
+                if attr.select_type == "multi" and not attr.required else ""
+            )
+            return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}{skip_hint}"
         return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value."
 
     def apply_answer(
