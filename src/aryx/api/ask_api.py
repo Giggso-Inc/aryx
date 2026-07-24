@@ -2655,6 +2655,21 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 _idx = int(_reply) - 1
                 if 0 <= _idx < len(session.pending_change_collision_vns):
                     _resolved_vn = session.pending_change_collision_vns[_idx]
+            if _resolved_vn is None:
+                # LLM fallback for looser phrasing (the whole pasted
+                # option line, "the second one", etc.) — same as the
+                # options-query collision path (pending_label_collision_
+                # vns) already had. Missing here in review (PR #117):
+                # this path only ever handled exact match/index, so a
+                # pasted full line hit "Unrecognized reply" and silently
+                # cleared the pending state instead of resolving.
+                _candidates = [
+                    a for a in attrs
+                    if a.variable_name in session.pending_change_collision_vns
+                ]
+                if _candidates:
+                    _resolved_vn = _llm_resolve_label_collision(
+                        _reply, _candidates, session, req.workspace_id)
             if _resolved_vn:
                 _resolved_attr = next(
                     (a for a in attrs if a.variable_name == _resolved_vn), None)

@@ -368,10 +368,19 @@ def referenced_variables(script: str) -> set[str]:
     with that variable's value — the FIRST-ever evaluation's result gets
     reused for every later call regardless of what that variable's
     current value actually is, a much worse bug than a cache miss.
+
+    Regression caught in review (PR #117): the first attempt at this fix
+    put a trailing `\b` after the WHOLE alternation, including the
+    quoted-string branch — a word boundary can never match right after a
+    closing `"`, so it silently broke the far more common quoted-string
+    case (`var == "X"` matched nothing at all). The `\b` belongs only on
+    the bare boolean literals, to stop them matching as a substring of a
+    longer identifier (e.g. "truely") — it must not apply to the
+    quoted-string alternative at all.
     """
     return {
         m.group(1) for m in re.finditer(
-            r'(\w+)\s*(?:==|<>|!=)\s*(?:"[^"]*"|true|false)\b', script, re.IGNORECASE)
+            r'(\w+)\s*(?:==|<>|!=)\s*(?:"[^"]*"|true\b|false\b)', script, re.IGNORECASE)
     }
 
 
