@@ -1,5 +1,5 @@
-## Version: 1.3
-## Last Updated: 2026-06-22
+## Version: 1.4
+## Last Updated: 2026-07-21
 ## Project: Aryx
 
 ### System Overview
@@ -24,8 +24,11 @@ stages so the model only touches the hard ~1–5% of decisions.
 - **Broker** (`broker/`) — provider-agnostic model gateway. `registry` holds
   `ModelSpec`s queryable by `Tier` (local/cheap/frontier); `governor` enforces
   budget/routing; `discovery` finds available models; `secrets` resolves
-  credentials; supports Anthropic, Ollama, OpenAI-compatible, and OCI GenAI
-  (4th provider path, activated via `ARYX_OCI_MODE` or per-service backend vars).
+  credentials; supports Anthropic, Ollama, OpenAI-compatible, OCI GenAI, and
+  Gemini's native embedding API. `ARYX_EMBED_BACKEND=gemini` selects
+  `gemini-embedding-2`, pins output to the schema's 768 dimensions, and sends
+  credentials in the `x-goog-api-key` header. Persisted embedding model IDs
+  follow the effective backend, including configured model overrides.
   `embed()` accepts an `input_type` param (`SEARCH_DOCUMENT` for indexing,
   `SEARCH_QUERY` for retrieval) forwarded to the OCI Cohere Embed v3 path.
 - **Ontology mapping** (`ontology/`) — `mapping.py` is the frontier-tier agent
@@ -102,7 +105,7 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
 | Streaming, one-record-at-a-time spine (no full-dataset load) | Same code path serves a small table or a terabyte — slower, not crashing | 2026-05-28 |
 | Resolution funnel; frontier LLM only on the ambiguous ~1–5% | Cheap/local/deterministic layers shrink n² so frontier dollars are rationed | 2026-05-28 |
 | Provider-agnostic Broker with tiered routing | Decouple from any single vendor (Anthropic/Ollama/OpenAI-compatible) | 2026-05-28 |
-| Local Ollama embeddings for blocking | Anthropic has no embeddings API; keeps private data on-box, avoids egress | 2026-05-28 |
+| Local Ollama is the default embedding backend | Keeps private data on-box unless an operator explicitly selects a managed backend | 2026-05-28 |
 | HITL gate for new ontology types + low-confidence merges | Nothing untraceable lands; human decisions become future ER training labels | 2026-05-28 |
 | SQL kept out of Python via `queries/*.sql` loader | DB-Guard discipline; reviewable, lint-able SQL | 2026-05-28 |
 | OpenAI endpoints blocked in manifest | Prevent private-data egress to non-approved providers | 2026-05-28 |
@@ -110,6 +113,8 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
 | Lazy OCI SDK imports (inside function bodies) | `oci` package never imported at module level — local deployments work without it installed | 2026-06-22 |
 | OCI auth singleton with instance-principal fallback | Single `oci_client.py` factory covers all OCI services; uses IAM instance principal on OCI Compute, falls back to `~/.oci/config` for local dev | 2026-06-22 |
 | `input_type` on `Broker.embed()` | Cohere Embed v3 accuracy depends on whether the text is a document being indexed or a query at retrieval time; callers explicitly pass the type | 2026-06-22 |
+| Gemini embeddings are explicit opt-in | `ARYX_EMBED_BACKEND=gemini` sends source text to Google; deployments must approve that egress and applicable data-handling terms. API keys travel in the `x-goog-api-key` header, never the URL | 2026-07-21 |
+| Embedding identity follows the effective backend | Every persisted vector is labeled with the model that produced it, preventing Gemini vectors from being stored as `nomic-embed-text` | 2026-07-21 |
 | Oracle pool wrapper (oracle_pool.py) translates psycopg3 → oracledb | All 19 store classes work unchanged; translation (param style, RETURNING, Json unwrap) happens in wrapper — no store edits needed | 2026-06-22 |
 | Oracle Property Graph uses relational backing tables | Vertex/edge/source/provenance stored as plain Oracle tables; `CREATE PROPERTY GRAPH` maps them for SQL/PGQ traversals — rebuildable same as FalkorDB path | 2026-06-22 |
 | OCI Functions worker uses `invoke_type="detached"` | Fire-and-forget (HTTP 202) — function runs async; ingest API returns immediately; job progress written from inside the function via DSN in payload | 2026-06-22 |

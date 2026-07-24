@@ -159,8 +159,26 @@ def get_job(job_id: str) -> dict[str, Any]:
     return _get(f"/admin/jobs/{job_id}")
 
 
-def ask(question: str, history: list[dict] | None = None) -> dict[str, Any]:
-    return _post("/ask", {"question": question, "history": history or []}, timeout=180)
+def ask(question: str, history: list[dict] | None = None,
+        session_data: dict | None = None) -> dict[str, Any]:
+    return _post("/ask", {"question": question, "history": history or [],
+                          "session_data": session_data or {}}, timeout=180)
+
+
+def share_config(conversation_id: str, config_json: dict, endpoint_url: str,
+                 auth_header_name: str = "Authorization", auth_header_value: str = "") -> dict[str, Any]:
+    """POST the current CPQ config payload to a caller-supplied partner endpoint.
+
+    Streamlit talks to the Aryx API directly (no Next.js proxy stripping the
+    /api prefix), so this hits /share-config, not /api/share-config.
+    """
+    return _post("/share-config", {
+        "conversation_id": conversation_id,
+        "config_json": config_json,
+        "endpoint_url": endpoint_url,
+        "auth_header_name": auth_header_name,
+        "auth_header_value": auth_header_value,
+    }, timeout=30)
 
 
 def get_llm_config() -> dict[str, Any]:

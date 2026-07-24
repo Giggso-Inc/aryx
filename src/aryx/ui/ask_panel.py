@@ -1,7 +1,9 @@
 """Ask panel — LLM-backed chat over the graph via the REST /ask endpoint."""
 from __future__ import annotations
 
+import json
 import re
+import uuid
 
 import streamlit as st
 
@@ -69,6 +71,55 @@ def _render_usage(usage: dict) -> None:
     cols[2].caption(f"🧠 {usage.get('answer_model', '?')}")
 
 
+def _render_cpq_buttons(msg: dict, idx: int) -> None:
+    """JSON / Beautify / Share action buttons — driven by flags the backend
+    already computed from session state (no extra LLM call on click)."""
+    if not (msg.get("json_button_flag") or msg.get("beautify_button_flag")
+            or msg.get("api_share_button_flag")):
+        return
+    cols = st.columns(3)
+    if msg.get("json_button_flag") and cols[0].button("📋 JSON", key=f"json_btn_{idx}"):
+        st.session_state[f"show_json_{idx}"] = not st.session_state.get(f"show_json_{idx}", False)
+    if msg.get("beautify_button_flag") and cols[1].button("✨ Beautify", key=f"beautify_btn_{idx}"):
+        st.session_state[f"show_beautify_{idx}"] = not st.session_state.get(f"show_beautify_{idx}", False)
+    if msg.get("api_share_button_flag") and cols[2].button("📤 Share", key=f"share_btn_{idx}"):
+        st.session_state[f"show_share_{idx}"] = not st.session_state.get(f"show_share_{idx}", False)
+
+    if st.session_state.get(f"show_json_{idx}"):
+        st.code(json.dumps(msg.get("json_response") or {}, indent=2), language="json")
+    if st.session_state.get(f"show_beautify_{idx}"):
+        st.code(msg.get("beautify") or "", language="text")
+    if st.session_state.get(f"show_share_{idx}"):
+        with st.form(key=f"share_form_{idx}"):
+            endpoint_url = st.text_input(
+                "Endpoint URL", key=f"share_url_{idx}",
+                placeholder="https://api.example.com/v1/customers")
+            col_a, col_b = st.columns(2)
+            auth_header_name = col_a.text_input(
+                "Auth header name", value="Authorization", key=f"share_hname_{idx}")
+            auth_header_value = col_b.text_input(
+                "Auth header value", type="password", key=f"share_hval_{idx}")
+            submitted = st.form_submit_button("Share")
+        if submitted:
+            if not endpoint_url.strip():
+                st.error("Endpoint URL is required.")
+            else:
+                try:
+                    api.share_config(
+                        st.session_state.cpq_conversation_id, msg.get("json_response") or {},
+                        endpoint_url=endpoint_url.strip(),
+                        auth_header_name=auth_header_name.strip() or "Authorization",
+                        auth_header_value=auth_header_value,
+                    )
+                    _toast.notify(
+                        "Configuration shared", kind="success", stage="Ask", action="share_config",
+                        target=st.session_state.cpq_conversation_id, workspace_id=api.current_workspace(),
+                        audit_event=True,
+                    )
+                except Exception as exc:
+                    st.error(f"Share failed: {exc}")
+
+
 def _render_msg(msg: dict, idx: int = 0) -> None:
     with st.chat_message(msg["role"]):
         st.markdown(msg["text"])
@@ -84,6 +135,7 @@ def _render_msg(msg: dict, idx: int = 0) -> None:
             st.session_state["focus_ids"] = ids
             st.session_state["nav_target"] = "🕸️  Graph"
             st.rerun()
+        _render_cpq_buttons(msg, idx)
         if msg.get("usage"):
             _render_usage(msg["usage"])
 
@@ -94,6 +146,8 @@ def render() -> None:
 
     if "chat" not in st.session_state:
         st.session_state.chat = []
+        st.session_state.cpq_session_data = {}
+        st.session_state.cpq_conversation_id = str(uuid.uuid4())
 
     if not st.session_state.chat:
         _sample_chips()
@@ -120,9 +174,10 @@ def render() -> None:
     with st.chat_message("assistant"):
         with st.spinner("Thinking — reading the graph…"):
             try:
-                resp = api.ask(question, history)
+                resp = api.ask(question, history, session_data=st.session_state.cpq_session_data)
             except Exception as exc:
                 resp = {"answer": f"Error reaching Ask API: {exc}", "tools_called": [], "usage": {}}
+        st.session_state.cpq_session_data = resp.get("session_data") or {}
         st.markdown(resp.get("answer", "(no answer)"))
         tools = resp.get("tools_called", [])
         if tools:
@@ -138,6 +193,11 @@ def render() -> None:
         "tools": tools,
         "entity_ids": _entity_ids_from(resp),
         "usage": resp.get("usage", {}),
+        "json_button_flag": resp.get("json_button_flag", False),
+        "json_response": resp.get("json_response"),
+        "beautify_button_flag": resp.get("beautify_button_flag", False),
+        "beautify": resp.get("beautify"),
+        "api_share_button_flag": resp.get("api_share_button_flag", False),
     })
     _toast.notify(
         f"Ask answered ({resp.get('usage', {}).get('latency_ms', 0)} ms)",

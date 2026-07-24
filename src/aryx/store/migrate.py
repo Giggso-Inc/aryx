@@ -62,6 +62,8 @@ def apply_migrations(dsn: str) -> None:
 
     Statements are split on ';' (respecting dollar-quoted DO blocks) and run
     one at a time, since psycopg runs a single statement per call.
+    Files marked ``-- migration: required`` fail closed; unmarked migrations
+    retain the existing best-effort behavior for optional features.
 
     Args:
         dsn: Database connection string (Postgres DSN or Oracle ADB DSN).
@@ -75,6 +77,7 @@ def apply_migrations(dsn: str) -> None:
     with psycopg.connect(dsn, autocommit=True) as conn:
         for path in files:
             raw = path.read_text(encoding="utf-8")
+            required = "-- migration: required" in raw
             # Strip line comments first so a ';' inside a comment can't be
             # mistaken for a statement separator.
             code = "\n".join(line.split("--", 1)[0] for line in raw.splitlines())
@@ -84,6 +87,10 @@ def apply_migrations(dsn: str) -> None:
                     try:
                         cur.execute(statement)  # type: ignore[arg-type]
                     except psycopg.Error as exc:
+                        if required:
+                            logger.error("required migration failed file=%s error=%s",
+                                         path.name, exc)
+                            raise
                         # An optional/unavailable feature (e.g. a missing
                         # extension) must not block unrelated later migrations.
                         logger.warning("migration statement skipped file=%s error=%s",

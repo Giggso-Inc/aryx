@@ -1,41 +1,23 @@
 import type {
-  AbResult, AskResponse, AskHistoryTurn, Axiom, Brief, DataEntitiesPage,
-  DataSummary, Datasource, DiscoveryHistoryItem, DiscoverySummary, GraphView,
+  AbResult, AskResponse, AskHistoryTurn, AskThreadMessage, AskThreadResponse,
+  AskThreadSummary, Axiom, Brief, DataEntitiesPage,
+  DataSourceCatalogItem, DataSourceCatalogPage, DataSourceDetail, DataSummary,
+  Datasource, DiscoveryHistoryItem, DiscoverySummary, GraphView,
   IngestQuestion, McpToken, McpTokenIssued, ObservabilityData, OntologyChange,
   OntologyDoc, OntologyVersion, QuizSpec, ReasonerCheck, Rule,
+  GenericSourcePreview, SourceEntityTypesPage, SourceRecordsPage,
   SurvivorshipPolicy, Workspace,
 } from "./types";
-import { SHAY_SESSION_STORAGE_KEY } from "./shay-auth";
+import {
+  createHttpStatusError,
+  fetchWithShayAuth,
+  readErrorDetail,
+} from "./shay-session";
 
 // Same-origin relative path. Next.js rewrites /api/* → FastAPI internally
 // (see next.config.mjs). Works in dev (proxies to localhost:8088) and in
 // production (proxies to api:8000) without any client-side knowledge.
 const BASE = "/api";
-
-function getAccessTokenFromSessionStorage(): string | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const raw = window.localStorage.getItem(SHAY_SESSION_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
-  try {
-    const session = JSON.parse(raw) as { access_token?: string };
-    return typeof session.access_token === "string" && session.access_token
-      ? session.access_token
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function applyAuthHeader(headers: Headers) {
-  const token = getAccessTokenFromSessionStorage();
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-}
 
 /** Throw on non-2xx; return parsed JSON otherwise. */
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
@@ -43,17 +25,24 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  applyAuthHeader(headers);
-  const res = await fetch(`${BASE}${path}`, {
-    cache: "no-store",
+  const res = await fetchWithShayAuth(`${BASE}${path}`, {
     ...init,
     headers,
   });
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+    const detail = await readErrorDetail(res);
+    throw createHttpStatusError(res.status, res.statusText, detail);
   }
   return res.json() as Promise<T>;
+}
+
+async function fetchBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const res = await fetchWithShayAuth(`${BASE}${path}`, init);
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw createHttpStatusError(res.status, res.statusText, detail);
+  }
+  return res.blob();
 }
 
 export const api = {
@@ -66,10 +55,48 @@ export const api = {
       body: JSON.stringify({ name, description, context }),
     }),
 
-  ask: (question: string, workspaceId: number, history: unknown[] = []) =>
+  ask: (question: string, workspaceId: number, history: unknown[] = [], sessionData: Record<string, unknown> = {}) =>
     fetchJSON<AskResponse>("/ask", {
       method: "POST",
-      body: JSON.stringify({ question, workspace_id: workspaceId, history }),
+      body: JSON.stringify({ question, workspace_id: workspaceId, history, session_data: sessionData }),
+    }),
+
+  askThreadMessage: (args: {
+    workspaceId: number;
+    shayWorkspaceId: string;
+    threadId: string;
+    requestId: string;
+    question: string;
+    sessionData?: Record<string, unknown>;
+  }) =>
+    fetchJSON<AskThreadResponse>("/ask/threads/message", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: args.workspaceId,
+        shay_workspace_id: args.shayWorkspaceId,
+        thread_id: args.threadId,
+        request_id: args.requestId,
+        question: args.question,
+        session_data: args.sessionData ?? {},
+      }),
+    }),
+
+  shareConfig: (args: {
+    workspaceId: number; conversationId: string; configJson: Record<string, unknown>;
+    endpointUrl: string; authHeaderName: string; authHeaderValue: string;
+    extraHeaders?: Record<string, string>;
+  }) =>
+    fetchJSON<{ shared: boolean; partner_response: unknown }>("/share-config", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: args.workspaceId,
+        conversation_id: args.conversationId,
+        config_json: args.configJson,
+        endpoint_url: args.endpointUrl,
+        auth_header_name: args.authHeaderName,
+        auth_header_value: args.authHeaderValue,
+        extra_headers: args.extraHeaders ?? {},
+      }),
     }),
 
   // ── Accuracy Lab (v2) ────────────────────────────────────────────────
@@ -101,6 +128,66 @@ export const api = {
   dataGraph: (workspaceId: number) =>
     fetchJSON<GraphView & { error?: string }>(
       `/data/graph?workspace_id=${workspaceId}`,
+    ),
+
+  listDataSources: (workspaceId: number) =>
+    fetchJSON<DataSourceCatalogItem[]>(`/data/sources?workspace_id=${workspaceId}`),
+
+  listDataSourcesPage: (
+    workspaceId: number,
+    args: { page?: number; pageSize?: number; query?: string; category?: string } = {},
+  ) => {
+    const params = new URLSearchParams({
+      workspace_id: String(workspaceId),
+      page: String(args.page ?? 1),
+      page_size: String(args.pageSize ?? 50),
+      q: args.query ?? "",
+      category: args.category ?? "all",
+    });
+    return fetchJSON<DataSourceCatalogPage>(`/data/sources/page?${params.toString()}`);
+  },
+
+  getDataSourceDetail: (workspaceId: number, sourceKey: string) =>
+    fetchJSON<DataSourceDetail>(
+      `/data/sources/${encodeURIComponent(sourceKey)}?workspace_id=${workspaceId}`,
+    ),
+
+  getSourceEntityTypes: (
+    workspaceId: number, sourceKey: string, page = 1, query = "",
+  ) => fetchJSON<SourceEntityTypesPage>(
+    `/data/sources/${encodeURIComponent(sourceKey)}/entity-types` +
+    `?workspace_id=${workspaceId}&page=${page}&page_size=50&q=${encodeURIComponent(query)}`,
+  ),
+
+  getSourceRecords: (workspaceId: number, sourceKey: string, page = 1) =>
+    fetchJSON<SourceRecordsPage>(
+      `/data/sources/${encodeURIComponent(sourceKey)}/records` +
+      `?workspace_id=${workspaceId}&page=${page}&page_size=25`,
+    ),
+
+  getDataSourcePreview: (workspaceId: number, sourceKey: string) =>
+    fetchJSON<GenericSourcePreview>(
+      `/data/sources/${encodeURIComponent(sourceKey)}/preview?workspace_id=${workspaceId}`,
+    ),
+
+  downloadDataSource: (workspaceId: number, sourceKey: string) =>
+    fetchBlob(`/data/sources/${encodeURIComponent(sourceKey)}/download?workspace_id=${workspaceId}`),
+
+  deleteDataSource: (workspaceId: number, sourceKey: string) =>
+    fetchJSON<{ status: string; source_key: string }>(
+      `/data/sources/${encodeURIComponent(sourceKey)}?workspace_id=${workspaceId}`,
+      { method: "DELETE" },
+    ),
+
+  downloadGeneratedAsset: (workspaceId: number, sourceKey: string, assetKey: string) =>
+    fetchBlob(
+      `/data/sources/${encodeURIComponent(sourceKey)}/assets/${encodeURIComponent(assetKey)}/download?workspace_id=${workspaceId}`,
+    ),
+
+  deleteGeneratedAsset: (workspaceId: number, sourceKey: string, assetKey: string) =>
+    fetchJSON<{ status: string; source_key: string; asset_key: string }>(
+      `/data/sources/${encodeURIComponent(sourceKey)}/assets/${encodeURIComponent(assetKey)}?workspace_id=${workspaceId}`,
+      { method: "DELETE" },
     ),
 
   // ── Ontology / modelling ──────────────────────────────────────────────
@@ -296,16 +383,13 @@ export const api = {
     form.append("ontology_type", ontologyType);
     form.append("match_keys", matchKeys);
     form.append("workspace_id", String(workspaceId));
-    const headers = new Headers();
-    applyAuthHeader(headers);
-    const res = await fetch(`${BASE}/admin/ingest/file`, {
+    const res = await fetchWithShayAuth(`${BASE}/admin/ingest/file`, {
       method: "POST",
       body: form,
-      headers,
     });
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      const detail = await readErrorDetail(res);
+      throw createHttpStatusError(res.status, res.statusText, detail);
     }
     return res.json() as Promise<{ status: string; job_id: string }>;
   },
@@ -323,14 +407,42 @@ export const api = {
     ),
 
   // ── Entity graph (FalkorDB) ───────────────────────────────────────────
+  getEntity: (entityId: number, workspaceId: number) =>
+    fetchJSON<{
+      id: number;
+      type: string;
+      name: string;
+      attributes?: Record<string, unknown>;
+    }>(`/entities/${entityId}?workspace_id=${workspaceId}`),
+
   getEntityGraph: (workspaceId: number) =>
     fetchJSON<{
       entities: Array<{ id: number; type: string; name: string; attributes?: Record<string, unknown> }>;
       relationships: Array<{ source: number; target: number; name: string }>;
     }>(`/graph?workspace_id=${workspaceId}`),
 
+  getEntityGraphOverview: (workspaceId: number) =>
+    fetchJSON<{
+      domain: string;
+      overview_nodes: Array<{ id: string; type: string; count: number; entity_ids: number[] }>;
+      overview_edges: Array<{ source: string; target: string; name: string; count: number }>;
+      matched_entity_ids: number[];
+      matched_edge_pairs: Array<{ source: number; target: number }>;
+      matched_types: string[];
+      fallback_used: boolean;
+      entity_count: number;
+      relationship_count: number;
+    }>(`/graph/overview?workspace_id=${workspaceId}`),
+
   getEntityNeighbors: (entityId: number, workspaceId: number) =>
-    fetchJSON<Array<{ id: number; type: string; name: string; relationship: string }>>(
+    fetchJSON<Array<{
+      id: number;
+      type: string;
+      name: string;
+      attributes?: Record<string, unknown>;
+      relationship: string;
+      direction: "in" | "out";
+    }>>(
       `/entities/${entityId}/neighbors?workspace_id=${workspaceId}`,
     ),
 
@@ -349,6 +461,24 @@ export const api = {
   getAskHistory: (workspaceId: number, limit = 50) =>
     fetchJSON<AskHistoryTurn[]>(
       `/ask/history?workspace_id=${workspaceId}&limit=${limit}`,
+    ),
+
+  listAskThreads: (workspaceId: number, shayWorkspaceId: string, limit = 50) =>
+    fetchJSON<AskThreadSummary[]>(
+      `/ask/threads?workspace_id=${workspaceId}&shay_workspace_id=${encodeURIComponent(shayWorkspaceId)}&limit=${limit}`,
+    ),
+
+  getAskThreadMessages: (
+    workspaceId: number,
+    shayWorkspaceId: string,
+    threadId: string,
+    beforeSequence?: number,
+    limit = 50,
+  ) =>
+    fetchJSON<AskThreadMessage[]>(
+      `/ask/threads/${encodeURIComponent(threadId)}/messages?workspace_id=${workspaceId}` +
+        `&shay_workspace_id=${encodeURIComponent(shayWorkspaceId)}&limit=${limit}` +
+        (beforeSequence ? `&before_sequence=${beforeSequence}` : ""),
     ),
 
   // ── Database connect → discover → ingest ─────────────────────────────
@@ -382,16 +512,13 @@ export const api = {
     for (const f of files) form.append("files", f);
     form.append("context", context);
     form.append("workspace_id", String(workspaceId));
-    const headers = new Headers();
-    applyAuthHeader(headers);
-    const res = await fetch("/api/admin/docs/read", {
+    const res = await fetchWithShayAuth("/api/admin/docs/read", {
       method: "POST",
       body: form,
-      headers,
     });
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      const detail = await readErrorDetail(res);
+      throw createHttpStatusError(res.status, res.statusText, detail);
     }
     return res.json() as Promise<{ discovery_id: string }>;
   },
@@ -539,13 +666,13 @@ export const api = {
     ),
 
   exportOntology: async (workspaceId: number, format: string): Promise<Blob> => {
-    const res = await fetch(
+    const res = await fetchWithShayAuth(
       `${BASE}/ontology/export?workspace_id=${workspaceId}&format=${encodeURIComponent(format)}`,
-      { cache: "no-store" },
+      undefined,
     );
     if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      const detail = await readErrorDetail(res);
+      throw createHttpStatusError(res.status, res.statusText, detail);
     }
     return res.blob();
   },

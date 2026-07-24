@@ -213,6 +213,48 @@ class EntityStore:
                 cur.execute(load("select_entities_typed_sample"), (self._ws, n_per_type))
                 return [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
+    def conflict_aliases(self, attribute: str) -> dict[str, int]:
+        """Map every historical *losing* value of `attribute` to the entity
+        that absorbed it during survivorship merge.
+
+        Entity resolution can merge two records sharing a near-identical
+        `attribute` value into one entity, keeping only one winner
+        (aryx_attribute_conflict.winning_value) and discarding the rest as
+        losing_values. Anything that referenced a since-discarded value by
+        exact match (e.g. an FK column pointing at the old value) would
+        silently fail to link post-merge without this — see link_by_attribute.
+        """
+        aliases: dict[str, int] = {}
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_conflict_losing_values"), (self._ws, attribute))
+                for entity_id, losing_values in cur.fetchall():
+                    for lv in losing_values or []:
+                        val = lv.get("value") if isinstance(lv, dict) else None
+                        if val:
+                            aliases[str(val).strip().lower()] = entity_id
+        return aliases
+
+    def overview_inputs(
+        self,
+    ) -> tuple[list[tuple[int, str, dict[str, Any]]], list[tuple[int, int, str]], dict[str, Any]]:
+        """Return brief, entities, and relationships for /graph/overview in one store path."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_workspace_brief"), (self._ws,))
+                row = cur.fetchone()
+                brief = (row[0] or {}) if row else {}
+
+            with conn.cursor() as cur:
+                cur.execute(load("select_entities"), (self._ws,))
+                entities = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+            with conn.cursor() as cur:
+                cur.execute(load("select_relationships"), (self._ws,))
+                relationships = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+        return entities, relationships, brief
+
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
 
@@ -238,6 +280,41 @@ class EntityStore:
                 cur.execute(load("select_members_provenance"), (self._ws,))
                 while batch := cur.fetchmany(batch_size):
                     yield from ((r[0], r[1], r[2], r[3]) for r in batch)
+
+    def list_source_payloads(
+        self,
+        source_system: str,
+        source_dataset: str,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return landed payloads for one source dataset."""
+        query_name = "select_landed_by_source_limited" if limit is not None else "select_landed_by_source"
+        params: tuple[Any, ...]
+        if limit is None:
+            params = (self._ws, source_system, source_dataset)
+        else:
+            params = (self._ws, source_system, source_dataset, int(limit))
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load(query_name), params)
+                rows = cur.fetchall()
+        payloads: list[dict[str, Any]] = []
+        for _record_id, payload, _system, _dataset, _source_record_id in rows:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            payloads.append(payload or {})
+        return payloads
+
+    def list_source_activity(self) -> dict[tuple[str, str], Any]:
+        """Return the latest landed-record timestamp per source dataset."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_latest_source_activity"), (self._ws,))
+                return {
+                    (str(row[0]), str(row[1])): row[2]
+                    for row in cur.fetchall()
+                }
 
     def list_isolated_entities(self) -> list[tuple[int, str, dict]]:
         """Return entities that have no relationship edges (source or target).

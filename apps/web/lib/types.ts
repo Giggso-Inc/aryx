@@ -24,7 +24,21 @@ export interface AskResponse {
   terms: string[];
   tools_called: unknown[];
   usage: Usage;
+  citations?: Citation[];
   grounding?: Grounding | null;
+  session_data?: Record<string, unknown>;
+  cpq_payload?: Record<string, unknown> | null;
+  // CPQ action buttons — populated once the guided config has enough
+  // substance (3+ answered attrs, or past the configuring stage). No
+  // second LLM call: these are projections of session state the engine
+  // already computed this turn.
+  json_response?: Record<string, unknown> | null;
+  json_button_flag?: boolean;
+  beautify?: string;
+  beautify_rows?: { label: string; value: string }[];
+  beautify_button_flag?: boolean;
+  api_share?: Record<string, unknown> | null;
+  api_share_button_flag?: boolean;
 }
 
 // ── Accuracy Lab (v2) ───────────────────────────────────────────────────
@@ -139,9 +153,49 @@ export interface ChatTurn {
   id: string;
   role: "user" | "assistant";
   content: string;
+  sequenceNumber?: number;
+  requestId?: string | null;
   citations?: Citation[];
   usage?: Usage;
   streaming?: boolean;
+  jsonResponse?: Record<string, unknown> | null;
+  jsonButtonFlag?: boolean;
+  beautify?: string;
+  beautifyRows?: { label: string; value: string }[];
+  beautifyButtonFlag?: boolean;
+  apiShareButtonFlag?: boolean;
+  sessionData?: Record<string, unknown>;
+}
+
+export interface AskThreadSummary {
+  id: string;
+  title: string;
+  message_count: number;
+  updated_at?: string;
+}
+
+export interface AskThreadMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sequence_number?: number;
+  request_id?: string | null;
+  created_at?: string;
+  citations?: Citation[];
+  usage?: Usage;
+  json_response?: Record<string, unknown> | null;
+  json_button_flag?: boolean;
+  beautify?: string;
+  beautify_button_flag?: boolean;
+  api_share_button_flag?: boolean;
+  session_data?: Record<string, unknown>;
+}
+
+export interface AskThreadResponse extends AskResponse {
+  thread_id: string;
+  request_id: string;
+  replayed?: boolean;
+  persistence_error?: string | null;
 }
 
 // ─── Ontology / modelling layer ───────────────────────────────────────────
@@ -243,6 +297,97 @@ export interface Datasource {
   config: Record<string, unknown>;
   mask: string;
   ready: boolean;
+}
+
+export interface SourceActionState {
+  view: boolean;
+  download: boolean;
+  delete: boolean;
+}
+
+export interface DataSourceCatalogItem {
+  source_key: string;
+  name: string;
+  display_kind: string;
+  kind: string;
+  ready: boolean;
+  record_count: number;
+  isXmlParent: boolean;
+  generatedAssetCount: number;
+  total_entities: number;
+  entity_type_count: number;
+  node_count?: number;
+  edge_count?: number;
+  actions: SourceActionState;
+}
+
+export interface DataSourceCatalogPage {
+  items: DataSourceCatalogItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface GenericSourcePreview {
+  source_key: string;
+  name: string;
+  rows: Record<string, unknown>[];
+}
+
+export interface XmlGeneratedAsset {
+  asset_key: string;
+  filename: string;
+  dataset: string;
+  ontology_type: string;
+  status: string;
+  record_count: number;
+  preview_rows: Record<string, string>[];
+  actions: SourceActionState;
+}
+
+export interface SourceEntitySummary {
+  total_entities: number;
+  type_count: number;
+  node_count?: number;
+  edge_count?: number;
+  types: DataTypeCount[];
+}
+
+export interface DataSourceDetail {
+  source_key: string;
+  name: string;
+  display_kind: string;
+  kind: string;
+  status: string;
+  ready: boolean;
+  actions: SourceActionState;
+  isXmlParent: boolean;
+  detail_kind: "grouped_assets" | "preview" | "configured";
+  entity_summary: SourceEntitySummary;
+  generatedAssetCount: number;
+  record_count: number;
+  primary: {
+    label: string;
+    status: string;
+    actions: SourceActionState;
+  };
+  assets: XmlGeneratedAsset[];
+}
+
+export type XmlSourceDetail = DataSourceDetail;
+
+export interface SourceEntityTypesPage {
+  items: DataTypeCount[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface SourceRecordsPage {
+  rows: Record<string, unknown>[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 // ── Observability ────────────────────────────────────────────────────────────

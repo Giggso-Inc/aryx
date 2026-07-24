@@ -92,7 +92,7 @@ export default function ModelPage() {
       <div className={cn("app-shell-offset flex min-w-0 flex-1 flex-col", isDiagram ? "min-h-0" : "")}>
         {/* Tab bar */}
         <div className="border-b border-navy-100 bg-white">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-end gap-0 px-6">
+          <div className="workspace-section-shell flex max-w-none flex-wrap items-end gap-0">
             {TABS.map((t) => (
               <button
                 key={t.id}
@@ -114,7 +114,7 @@ export default function ModelPage() {
 
         {/* Lifecycle summary (collapsed hint) */}
         {!isDiagram && (
-          <div className="border-b border-navy-50 bg-navy-50/40 px-6 py-2 text-[11px] text-navy-500">
+          <div className="border-b border-navy-50 bg-navy-50/40 px-5 py-2 text-[11px] text-navy-500">
             Brief → Ingest →
             <span className="inline-flex items-center gap-1.5 align-middle font-semibold text-steel-600">
               <Weight size={11} /> Lightweight
@@ -133,7 +133,7 @@ export default function ModelPage() {
         {isDiagram ? (
           <Canvas key={diagramKey} />
         ) : (
-          <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-6">
+          <main className="workspace-section-shell flex-1 py-6">
             {tab === "lightweight" && (
               <LightweightTab workspaceId={workspaceId} onChanged={handleChanged} />
             )}
