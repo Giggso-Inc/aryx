@@ -229,6 +229,22 @@ class Settings(BaseSettings):
             "Override with ARYX_RELATE_ISOLATED_MAX_ANCHORS."
         ),
     )
+    relate_isolated_max_samples_per_type: int = Field(
+        default=3,
+        description=(
+            "Max isolated entities of the SAME type _relate_isolated() "
+            "samples and tries per anchor, before giving up on that type. "
+            "Previously only the FIRST isolated entity of a type was ever "
+            "tried — for a type whose members vary a lot (a real incident: "
+            "document-extracted list-style mentions of one type where "
+            "different members are substantively unrelated topics despite "
+            "sharing a type name), the single sampled member easily missed "
+            "a real relationship a DIFFERENT member of the same type would "
+            "have shown. Bounded together with relate_isolated_max_anchors "
+            "at O(isolated_types × max_samples × max_anchors). "
+            "Override with ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE."
+        ),
+    )
 
     extract_mention_retries: int = Field(
         default=3,

@@ -225,6 +225,77 @@ def test_relate_isolated_respects_max_anchors_cap(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_relate_isolated_tries_a_second_sample_entity_when_the_first_is_unrelated(monkeypatch):
+    """Real incident: a 97-type PDF batch left MarketSegment 100% isolated
+    even with multi-anchor retry, because only the FIRST isolated
+    MarketSegment entity ("Region 1") was ever tried against anchors — a
+    completely different member of the same type ("untapped industry
+    verticals") would have shown a real relationship to a different
+    anchor. It must now try more than one member of the isolated type
+    before giving up on that type entirely."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE", "3")
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [
+        (1, "MarketSegment", {"name": "Region 1"}),
+        (2, "MarketSegment", {"name": "untapped industry verticals"}),
+    ]
+    store.list_entities_typed_sample.return_value = [
+        (1, "MarketSegment", {"name": "Region 1"}),
+        (10, "Territory", {"name": "West"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(left.get("name"))
+        if left.get("name") == "untapped industry verticals":
+            return "expands_into", 0.85
+        return None, 0.0
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert calls == ["Region 1", "untapped industry verticals"]
+    assert count == 2  # BOTH isolated MarketSegment entities linked to the anchor
+    store.save_relationships.assert_called_once()
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_respects_max_samples_per_type_cap(monkeypatch):
+    """The retry must be bounded, not exhaustive over every isolated entity
+    of a type — consistent with how max_anchors is already bounded."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE", "2")
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "1")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [
+        (i, "MarketSegment", {"name": f"Region {i}"}) for i in range(1, 6)
+    ]
+    store.list_entities_typed_sample.return_value = [
+        (1, "MarketSegment", {"name": "Region 1"}),
+        (10, "Territory", {"name": "West"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(left.get("name"))
+        return None, 0.0  # never relates — forces exhausting the sample list
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert len(calls) == 2  # capped at ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE, not 5
+    assert count == 0
+    get_settings.cache_clear()
+
+
 def test_relate_isolated_is_noop_when_nothing_is_isolated():
     store = MagicMock()
     store.list_isolated_entities.return_value = []
