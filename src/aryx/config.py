@@ -10,7 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Aryx runtime settings sourced from ARYX_-prefixed env variables."""
 
-    model_config = SettingsConfigDict(env_prefix="ARYX_", env_file=".env")
+    # extra="ignore": the .env file is shared with docker-compose services
+    # (SMTP, SSO, frontend URLs, ...) — keys that aren't Aryx settings must
+    # not fail validation.
+    model_config = SettingsConfigDict(env_prefix="ARYX_", env_file=".env",
+                                      extra="ignore")
 
     rdb_dsn: str = Field(
         default="postgresql://aryx:aryx@localhost:5432/aryx",
@@ -33,6 +37,35 @@ class Settings(BaseSettings):
     graph_query_limit: int = Field(
         default=2000,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
+    )
+    graph_lift_mode: str = Field(
+        default="all_scalars",
+        description=(
+            "How entity attributes are projected onto graph nodes: "
+            "'all_scalars' lifts every scalar attribute as a native, queryable "
+            "node property; 'off' writes only id/type/name/iri. "
+            "Override with ARYX_GRAPH_LIFT_MODE."
+        ),
+    )
+    graph_attr_value_cap: int = Field(
+        default=500,
+        description=(
+            "Max characters for a string attribute value stored as a graph node "
+            "property. Longer values are truncated in the graph projection only "
+            "— the RDB (aryx_entity.attributes) keeps full fidelity. Key-like "
+            "attributes (*_id, guid, variable_name, ...) are exempt because a "
+            "truncated identifier silently breaks exact-match joins. "
+            "Override with ARYX_GRAPH_ATTR_VALUE_CAP."
+        ),
+    )
+    graph_lift_nested: bool = Field(
+        default=True,
+        description=(
+            "When lifting attributes to graph node properties, JSON-stringify "
+            "nested dict/list values per key (subject to the value cap). "
+            "False skips nested values entirely. "
+            "Override with ARYX_GRAPH_LIFT_NESTED."
+        ),
     )
     max_relate_pairs: int = Field(
         default=10,
@@ -80,7 +113,39 @@ class Settings(BaseSettings):
             "with _element_type always included. Override with ARYX_RELATE_MAX_ATTRS."
         ),
     )
+    relate_pair_timeout: float = Field(
+        default=30.0,
+        description=(
+            "Max seconds _relate()/_relate_isolated() wait with no in-flight "
+            "pair completing before abandoning the rest of that stage. Relate "
+            "is best-effort enrichment, not a correctness requirement — "
+            "_relate_isolated() (or a later ingest) still connects anything "
+            "left isolated, so a stuck LLM call must not block the whole "
+            "ingest run for the full ARYX_LLM_TIMEOUT. "
+            "Override with ARYX_RELATE_PAIR_TIMEOUT."
+        ),
+    )
 
+    extract_mention_retries: int = Field(
+        default=3,
+        description=(
+            "Max attempts per document chunk for extract_mentions()'s LLM "
+            "call before giving up on that chunk. A single malformed/ "
+            "unparseable JSON response (common with local models under "
+            "load) previously dropped the chunk on the first failure with "
+            "no retry, silently zeroing out a document's discovered entity "
+            "types if it happened to hit every chunk in one run. "
+            "Override with ARYX_EXTRACT_MENTION_RETRIES."
+        ),
+    )
+    extract_mention_retry_delay: float = Field(
+        default=0.5,
+        description=(
+            "Base seconds between extract_mentions() retry attempts "
+            "(linear backoff: delay * attempt_number). "
+            "Override with ARYX_EXTRACT_MENTION_RETRY_DELAY."
+        ),
+    )
     csv_chunk_rows: int = Field(
         default=0,
         description=(
@@ -135,6 +200,17 @@ class Settings(BaseSettings):
         default=0.75,
         description="Score in [er_review, er_adjudicate) queues the pair for human review.",
     )
+    er_exact_id_match: bool = Field(
+        default=True,
+        description=(
+            "When every match key is an opaque identifier (id/uuid/guid/key), "
+            "resolve by exact equality instead of fuzzy scoring. Fuzzy similarity "
+            "is semantically invalid for ids: sequential ids like 18722401146 vs "
+            "18722401147 score 0.909+ and transitively collapse whole id ranges "
+            "into one entity. Set ARYX_ER_EXACT_ID_MATCH=false to restore the "
+            "previous fuzzy behavior."
+        ),
+    )
     embed_batch_size: int = Field(
         default=50,
         description="Records per embedding batch during entity resolution.",
@@ -172,6 +248,23 @@ class Settings(BaseSettings):
             "768 fits schema-FK responses for up to ~25 entity types. "
             "Raise to 1024+ only if schema_fk returns truncated JSON. "
             "Override with ARYX_LLM_NUM_PREDICT."
+        ),
+    )
+    bml_use_llm: bool = Field(
+        default=False,
+        description=(
+            "Enable Tier-2 LLM fallback for BML constraint-script evaluation "
+            "(aryx.cpq.bml.BmlEvaluator). Off by default: a single slow/"
+            "rate-limited call can cost up to 5 retries x llm_timeout plus "
+            "backoff sleeps (tens of minutes in the worst case) INSIDE one "
+            "CPQ turn, since constraint evaluation runs synchronously in the "
+            "request path. Disabling Tier-2 only drops evaluation for "
+            "script-backed constraints Tier-1's deterministic parser can't "
+            "handle — those already fell back to 'no constraint enforced' "
+            "before Tier-2 existed, so this is not a new correctness gap, "
+            "just reverting to that same safe fallback. Override with "
+            "ARYX_BML_USE_LLM=true once the LLM provider path is fast/"
+            "reliable enough not to risk stalling a live request."
         ),
     )
 
@@ -224,11 +317,15 @@ class Settings(BaseSettings):
     )
     embed_backend: str = Field(
         default="",
-        description="Embedding backend: 'local' (Ollama) or 'oci' (OCI GenAI Cohere Embed v3).",
+        description=(
+            "Embedding backend: 'local' (Ollama), 'oci' (OCI GenAI Cohere "
+            "Embed v3), or 'gemini' (Gemini batchEmbedContents, requires "
+            "ARYX_LLM_API_KEY — see docs/LLM_GEMINI_MIGRATION_PLAN.md)."
+        ),
     )
     embed_model_override: str = Field(
         default="",
-        description="Override embed model for either backend (empty = use backend default).",
+        description="Override embed model for any backend (empty = use backend default).",
     )
     llm_cheap_backend: str = Field(
         default="",
@@ -309,7 +406,7 @@ class Settings(BaseSettings):
         return self._resolve(self.parse_backend)
 
     def effective_embed_backend(self) -> str:
-        """Return the resolved embedding backend (oci or ollama)."""
+        """Return the resolved embedding backend (local, OCI, or Gemini)."""
         return self._resolve(self.embed_backend)
 
     def effective_llm_cheap_backend(self) -> str:

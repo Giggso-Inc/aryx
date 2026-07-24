@@ -71,6 +71,14 @@ class UserInviteResponse(BaseModel):
     expires_at: datetime = Field(..., description="Invitation expiration time")
 
 
+class RegistrationInviteResponse(BaseModel):
+    """Encrypted invitation payload decrypted for the registration form."""
+    email_id: str = Field(..., description="Email address invited")
+    invite_id: str = Field(..., description="Invitation ID")
+    company_id: str = Field(..., description="Company ID")
+    role: str = Field(..., description="User role")
+
+
 class BulkUserInviteItem(BaseModel):
     """Individual user invitation item for bulk operations"""
     email: EmailStr = Field(..., description="Email address to send invitation to")

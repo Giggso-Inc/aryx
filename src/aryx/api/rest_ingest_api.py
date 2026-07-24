@@ -1,70 +1,22 @@
 """REST API ingest — fetch records from any JSON endpoint and pipeline to graph."""
 from __future__ import annotations
 
-import ipaddress
 import logging
 import re
 import uuid
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from aryx.api.admin_api import _local_broker
+from aryx.api.ssrf_guard import check_outbound_headers, check_outbound_url
 from aryx.config import get_settings
 from aryx.connectors.rest_api import RestApiConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.job_store import JobStore
 
 logger = logging.getLogger(__name__)
-
-# Hop-by-hop and host-override headers that must never be forwarded to
-# third-party endpoints — prevents header injection attacks.
-_BLOCKED_HEADERS = frozenset({
-    "host", "connection", "transfer-encoding", "upgrade",
-    "proxy-authorization", "proxy-authenticate", "te", "trailers",
-})
-
-# RFC-1918, loopback, and cloud IMDS ranges blocked to prevent SSRF.
-_BLOCKED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0",
-                             "metadata.google.internal"})
-_PRIVATE_NETS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),  # link-local / IMDS
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-]
-
-
-def _check_url(v: str) -> str:
-    parsed = urlparse(v)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("url must use http or https")
-    host = (parsed.hostname or "").lower()
-    if not host:
-        raise ValueError("url must include a hostname")
-    if host in _BLOCKED_HOSTS:
-        raise ValueError(f"url targets a blocked host: {host}")
-    try:
-        addr = ipaddress.ip_address(host)
-        if any(addr in net for net in _PRIVATE_NETS):
-            raise ValueError(f"url targets a private or reserved address: {host}")
-    except ValueError as exc:
-        if "url targets" in str(exc):
-            raise
-        # Not an IP literal — hostname allowed; DNS resolved at request time
-    return v
-
-
-def _check_headers(v: dict[str, str]) -> dict[str, str]:
-    bad = {k for k in v if k.lower() in _BLOCKED_HEADERS}
-    if bad:
-        raise ValueError(f"headers may not include: {sorted(bad)}")
-    return v
 
 
 class RestPreviewRequest(BaseModel):
@@ -79,12 +31,12 @@ class RestPreviewRequest(BaseModel):
     @field_validator("url")
     @classmethod
     def _no_ssrf(cls, v: str) -> str:
-        return _check_url(v)
+        return check_outbound_url(v)
 
     @field_validator("headers")
     @classmethod
     def _safe_headers(cls, v: dict[str, str]) -> dict[str, str]:
-        return _check_headers(v)
+        return check_outbound_headers(v)
 
 
 class RestIngestRequest(BaseModel):
@@ -102,12 +54,12 @@ class RestIngestRequest(BaseModel):
     @field_validator("url")
     @classmethod
     def _no_ssrf(cls, v: str) -> str:
-        return _check_url(v)
+        return check_outbound_url(v)
 
     @field_validator("headers")
     @classmethod
     def _safe_headers(cls, v: dict[str, str]) -> dict[str, str]:
-        return _check_headers(v)
+        return check_outbound_headers(v)
 
 
 def _type_from_url(url: str) -> str:

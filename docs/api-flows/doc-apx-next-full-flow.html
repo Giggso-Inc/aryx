@@ -1,0 +1,246 @@
+<title>APX Next — Full XML Flow Walkthrough</title>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface2: #eef1f4; --border: #d0d7de;
+    --text: #1f2328; --muted: #57606a; --accent: #0969da; --green: #1a7f37;
+    --yellow: #9a6700; --red: #cf222e; --purple: #8250df; --orange: #bc4c00;
+    --teal: #0f7b6c; --pill-bg: #eaeef2;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.6;
+    padding: 32px 24px; max-width: 980px; margin: 0 auto;
+  }
+  h1 { font-size: 21px; color: var(--accent); margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .note { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 6px; padding: 12px 16px; font-size: 12px; margin: 16px 0 28px; }
+  .note b { color: var(--accent); }
+  h2 { font-size: 15px; color: var(--teal); margin: 34px 0 12px; border-bottom: 2px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 13px; color: var(--purple); margin: 20px 0 8px; }
+  p { margin-bottom: 10px; }
+  code { background: var(--pill-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 12px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--surface2); color: var(--text); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--surface); }
+  .cut-row td { background: #fff1f0 !important; border-top: 2px solid var(--red); font-weight: 600; }
+
+  .flow { display: flex; flex-direction: column; gap: 0; align-items: center; width: 100%; margin: 0 auto 24px; }
+  .conn { display: flex; flex-direction: column; align-items: center; margin: 0; }
+  .conn-line { width: 2px; background: var(--border); height: 20px; }
+  .conn-arrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid var(--border); }
+
+  .step-card { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; }
+  .step-card.read    { border-color: var(--accent); }
+  .step-card.confirm { border-color: var(--green); }
+  .step-card.ask     { border-color: var(--orange); }
+  .step-card.warn    { border-color: var(--red); background: #fff8f6; }
+  .step-card.info    { border-color: var(--purple); background: #faf5ff; }
+
+  .step-num { display: inline-block; background: var(--pill-bg); color: var(--muted); font-size: 10px; padding: 2px 8px; border-radius: 12px; margin-bottom: 6px; letter-spacing: 0.04em; }
+  .read    .step-num { color: var(--accent); }
+  .confirm .step-num { color: var(--green); }
+  .ask     .step-num { color: var(--orange); }
+  .warn    .step-num { color: var(--red); }
+  .info    .step-num { color: var(--purple); }
+
+  .step-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .read    .step-title { color: var(--accent); }
+  .confirm .step-title { color: var(--green); }
+  .ask     .step-title { color: var(--orange); }
+  .warn    .step-title { color: var(--red); }
+  .info    .step-title { color: var(--purple); }
+
+  .step-body { font-size: 12px; color: var(--text); }
+  .step-body ul, .step-body ol { margin: 6px 0 0 18px; }
+  .step-body li { margin-bottom: 4px; }
+  .plain { color: var(--muted); font-style: italic; font-size: 11.5px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+
+  .kv-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .kv-badge { font-size: 10.5px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); }
+  .kv-badge.hi { border-color: var(--green); color: var(--green); background: #eaf6ec; }
+
+  .summary-table th { background: var(--accent); color: #fff; }
+</style>
+
+<h1>APX Next — Full XML Flow Walkthrough</h1>
+<div class="subtitle">Postgres backend, no OCI. A concrete, verified, three-phase trace of one real file (APX_Next_config.xml, 23.8 MB) through discover-read → discover-confirm → ask.</div>
+
+<div class="note">
+Every number on this page was verified directly against the real file and against the live <code>workspace_id=14</code> database — nothing here is hypothetical. See <code>doc-discover-read.md</code> / <code>doc-discover-confirm.md</code> for the generic, any-file mechanics, and <code>doc-cpq-ask-flow.md</code> for the generic ask-flow mechanics — this page is the concrete instance of all three, for this one file.
+</div>
+
+<h2>Ground truth — what's actually inside this file</h2>
+<p><b>31 distinct entity element types, 46,500 total entity rows</b>, parsed directly from the raw XML.</p>
+
+<table>
+  <tr><th>Rank</th><th>Entity type</th><th>Row count</th><th>What it is</th></tr>
+  <tr><td>1</td><td><code>bm_config_layout_attr_prop</code></td><td>32,268</td><td>Per-field UI formatting properties</td></tr>
+  <tr><td>2</td><td><code>bm_menu_item</code></td><td>3,423</td><td>Dropdown/radio option values</td></tr>
+  <tr><td>3</td><td><code>bm_config_rule_input</code></td><td>1,694</td><td>Rule condition clauses</td></tr>
+  <tr><td>4</td><td><code>bm_layout_model</code></td><td>1,154</td><td>Layout tree nodes (tabs/sections/rows/fields)</td></tr>
+  <tr><td>5</td><td><code>bm_entity_image</code></td><td>1,148</td><td>Product images</td></tr>
+  <tr><td>6</td><td><code>bm_config_rule_action</code></td><td>1,007</td><td>Rule outcomes (hide/recommend/constrain)</td></tr>
+  <tr><td>7</td><td><code>bm_config_layout_attr_assoc</code></td><td>1,001</td><td>Field ↔ layout-position ↔ flow linkage</td></tr>
+  <tr><td>8</td><td><code>bm_config_rule_input_action</code></td><td>955</td><td>Combined input+action linkage rows</td></tr>
+  <tr><td>9</td><td><code>bm_function</code></td><td>923</td><td>BML script function bodies</td></tr>
+  <tr><td>10</td><td><code>bm_config_rule</code></td><td>688</td><td>The rules themselves</td></tr>
+  <tr><td>11</td><td><code>bm_layout_model_props</code></td><td>557</td><td>Layout node formatting properties</td></tr>
+  <tr><td>12</td><td><code>bm_lib_func_assoc</code></td><td>551</td><td>Function-to-library linkage</td></tr>
+  <tr><td>13</td><td><code>bm_config_marked_attr</code></td><td>457</td><td>Real target linkage for declarative hiding rules</td></tr>
+  <tr><td>14</td><td><b><code>bm_config_attr</code></b></td><td><b>427</b></td><td><b>The actual configurable fields — the point of this file</b></td></tr>
+  <tr><td>15</td><td><code>bm_config_rule_assoc</code></td><td>104</td><td>Rule-chains-to-child-rule linkage</td></tr>
+  <tr><td>16–20</td><td><code>bm_config_attr_set</code>, <code>_set_assoc</code>, <code>bm_shared_file</code>, <code>bm_config_att_override</code>, <code>bm_config_page_template</code></td><td>37 / 31 / 17 / 14 / 12</td><td>Minor structural/asset types</td></tr>
+  <tr class="cut-row"><td colspan="4">↑ ARYX_XML_MAX_ENTITY_TYPES cap sits here (code default = 20) — see warning below</td></tr>
+  <tr><td>21–31</td><td><code>bm_layout</code>, <code>bm_config_rule_layout_assoc</code>, <code>bm_config_layout_properties</code>, <b><code>bm_catalog</code></b>(3), <code>bm_config_flow_properties</code>, <code>bm_config_sspl_props</code>, <code>bm_config_layout_perm</code>, <b><code>bm_prd_family</code></b>(1), <code>bm_config_pick_map_assoc</code>, <code>bm_config_integration</code>, <code>bm_config_layout_access</code></td><td>6/6/6/3/3/2/2/1/1/1/1</td><td>Rare, one-off structural types</td></tr>
+</table>
+
+<p>Of the 427 real <code>bm_config_attr</code> fields, <b>688 real rules govern them, backed by 292 script-conditioned rules</b> (of 923 total functions defined) and <b>1,694 declarative condition clauses</b>.</p>
+
+<div class="step-card warn">
+  <div class="step-num">VERIFIED CONFIGURATION FINDING</div>
+  <div class="step-title">This deployment overrides the ingestion safety caps</div>
+  <div class="step-body">
+    Code defaults: <code>ARYX_XML_MAX_ENTITY_TYPES=20</code>, <code>ARYX_XML_MAX_ROWS_PER_TYPE=500</code>.<br>
+    This repo's <code>.env</code>: <code>ARYX_XML_MAX_ENTITY_TYPES=50</code>, <code>ARYX_XML_MAX_ROWS_PER_TYPE=1200000</code>.
+    <ul>
+      <li>With the <b>code's own defaults</b>: 11 of the 31 types (ranks 21–31 above, including <code>bm_catalog</code> and <code>bm_prd_family</code>) would be silently <b>dropped entirely</b>, and 12 of the 14 CPQ-relevant types (rules, rule inputs/actions, layout data) would be <b>truncated to their first 500 rows</b>.</li>
+      <li>With the <b>actual deployed settings</b>: nothing is lost — all 46,500 rows survive intact.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="step-card info">
+  <div class="step-num">VERIFIED FINDING</div>
+  <div class="step-title"><code>bm_catalog</code> / <code>bm_prd_family</code> aren't what drives product detection</div>
+  <div class="step-body">Both are tiny (3 and 1 rows) and carry no usable <code>name</code> field. "APX Next" product detection actually resolves from the <code>catalog_prefix</code> ("ApxNextConfig") derived from the source filename, combined with real option data inside <code>bm_config_attr</code>/<code>bm_menu_item</code> — confirmed live: the system correctly resolves <code>aPXNext_BOM</code> regardless.</div>
+</div>
+
+<h2>PHASE 1 — POST /admin/docs/read</h2>
+<div class="flow">
+  <div class="step-card read">
+    <div class="step-num">HTTP HANDLER</div>
+    <div class="step-title">Upload accepted, job scheduled</div>
+    <div class="step-body">
+      <ol>
+        <li>Read file bytes, check 50 MB per-file limit — 23.8 MB passes</li>
+        <li><code>discovery_id = uuid4().hex</code></li>
+        <li><code>JobStore.create(discovery_id, "discovery", "APX_Next_config.xml", workspace_id)</code> → <code>INSERT aryx_jobs</code> (status=queued)</li>
+        <li>Schedule <code>_read_job()</code> as a background task</li>
+        <li>Return <code>{"discovery_id": "&lt;hex&gt;"}</code> immediately — long before parsing finishes</li>
+      </ol>
+    </div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card read">
+    <div class="step-num">§1.1</div>
+    <div class="step-title">XML → CSV extraction (_xml_to_csvs)</div>
+    <div class="step-body">
+      <ol>
+        <li>Parse the XML tree</li>
+        <li>Recursively walk it: an element counts as a real "entity" only if it has 2+ distinct non-container child tags, or (if childless) at least one attribute of its own</li>
+        <li>Bucket every matching element by tag name, count occurrences</li>
+        <li>Apply the two caps (see the warning above — both are overridden in this deployment, so nothing is dropped or truncated for this file)</li>
+        <li>One CSV produced per surviving type — e.g. <code>APX_Next_config_bm_config_attr.csv</code> (427 rows), <code>APX_Next_config_bm_config_rule.csv</code> (688 rows)</li>
+      </ol>
+    </div>
+    <div class="plain">Plain English: Aryx reads the whole file, recognizes 31 distinct "kinds of things" inside it, and — because this deployment raised the normal safety caps — keeps every one of the 46,500 rows intact for review.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card read">
+    <div class="step-num">§1.2</div>
+    <div class="step-title">Per-type extraction pipeline</div>
+    <div class="step-body">For each of the 31 CSVs: schema inference, FK-column detection (columns ending "_id" matched against other types' own id/guid columns), entity-mention extraction. All still in-memory/preview — nothing hits <code>aryx_entity</code> yet.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card read">
+    <div class="step-num">RESULT</div>
+    <div class="step-title">GET /admin/docs/summary/{discovery_id}</div>
+    <div class="step-body">Returns the full preview: 31 discovered types, row counts, inferred FK relationships (e.g. <code>bm_config_rule_input.bm_config_rule_id → bm_config_rule.id</code>).</div>
+  </div>
+</div>
+
+<h2>PHASE 2 — POST /admin/docs/confirm</h2>
+<div class="flow">
+  <div class="step-card confirm">
+    <div class="step-num">ENTRY</div>
+    <div class="step-title">All 31 discovered types approved</div>
+    <div class="step-body"><code>ingest_confirmed() → run_pipeline() → resolve_run()</code>. For each approved type, an <code>aryx_entity</code> row is created per real record:
+      <div class="kv-row">
+        <span class="kv-badge hi">ontology_type = SourceFilePrefix + PascalCase(tag)</span>
+      </div>
+      e.g. <code>"APX_Next_config"</code> → prefix <code>"ApxNextConfig"</code> → <code>bm_config_attr</code> becomes <code>"ApxNextConfigBmConfigAttr"</code>.
+      This prefix is exactly the <code>catalog_prefix</code> the CPQ engine later uses to scope every query to just this one export.
+    </div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card confirm">
+    <div class="step-num">§2.1</div>
+    <div class="step-title">Entity resolution</div>
+    <div class="step-body">427 <code>bm_config_attr</code> rows → 427 real <code>aryx_entity</code> rows (native BM <code>id</code> preserved, e.g. <code>id=39427001</code> for the "commerceAttrs" field). Exact-ID fast path (<code>ARYX_ER_EXACT_ID_MATCH</code>, default on) skips full resolution when the native id already matches an existing entity.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card confirm">
+    <div class="step-num">§2.2</div>
+    <div class="step-title">FK / relationship detection</div>
+    <div class="step-body">Two passes: within this confirm batch, and against ontology types from earlier confirms in the same workspace. Concretely: <code>bm_config_rule_input.bm_config_rule_id → bm_config_rule.id</code> (1,694 edges), <code>bm_config_layout_attr_assoc.attr_id → bm_config_attr.id</code> (1,001 edges), and every other real FK-shaped column across all 31 types.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card confirm">
+    <div class="step-num">§2.3</div>
+    <div class="step-title">Golden-record survivorship + isolated-node safety net</div>
+    <div class="step-body">Per-workspace merge policy (default <code>"most_complete"</code>) reconciles duplicates. <code>_relate_isolated()</code> runs unconditionally afterward — any entity with zero relationships gets a best-effort fallback edge.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card confirm">
+    <div class="step-num">§2.4</div>
+    <div class="step-title">Graph projection + zero-loss validation</div>
+    <div class="step-body"><code>project_graph()</code>/<code>project_incremental()</code> mirrors the new rows into FalkorDB. Post-ingest validation confirms row-count parity — this run: 46,500 in, 46,500 projected, 0 lost.</div>
+    <div class="plain">Plain English: every one of the 46,500 discovered rows becomes a real, permanent, correctly-linked database record, scoped so this catalog's data can never collide with a different product's data in the same workspace.</div>
+  </div>
+</div>
+
+<h2>PHASE 3 — POST /ask (CPQ conversation)</h2>
+<div class="flow">
+  <div class="step-card ask">
+    <div class="step-num">TURN 1</div>
+    <div class="step-title">"Quote APX Next Enhanced radios for a US customer." (workspace_id=14)</div>
+    <div class="step-body">
+      <b>Step 1 — Anchor gate:</b> product detected against real catalog_prefix "ApxNextConfig" instantly; country hint "for a US customer" → "United States" — <i>both anchors satisfied in this one message</i> (confirmed live: this exact scenario resolves in a single turn).<br><br>
+      <b>Step 2 — Load configuration:</b> all 427 <code>ApxNextConfigBmConfigAttr</code> entities loaded, product resolves to <code>"aPXNext_BOM"</code>. Hiding/recommendation/constraint rules drawn from 688 real rules; BML evaluator loads all 923 script bodies.<br><br>
+      <b>Step 3 — Rule loop:</b> using the real 1,694 condition clauses and 1,007 action outcomes, "Hardware Version = Enhanced" + "Country = US" together satisfy enough real rules that <i>every</i> remaining field resolves automatically — Region→NA, Frequency Bands→700/800 MHz, Housing→Black, Battery Type→Standard, Solution Type→RadioCentral + CPS Programming, and ~45 more real decisions.
+    </div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card ask">
+    <div class="step-num">RESULT</div>
+    <div class="step-title">pending is EMPTY after just this one message</div>
+    <div class="step-body">Status → <code>awaiting_approval</code>. Plain-English summary of ~50 real decisions shown; JSON only on request.</div>
+  </div>
+  <div class="conn"><div class="conn-line"></div><div class="conn-arrow"></div></div>
+
+  <div class="step-card ask">
+    <div class="step-num">TURN 2</div>
+    <div class="step-title">"confirm"</div>
+    <div class="step-body">Status → <code>approved</code>. <code>build_payload()</code> emits the real BOM JSON — variable_name → item_value for every resolved field. Noise/system fields (company-level currency/language/number-format, <code>_BM_</code>-prefixed, <code>CRM_</code>-prefixed) excluded from the payload.</div>
+    <div class="plain">Plain English: by the time a customer's opening sentence gives just two real facts (product + country), the 688 real rules already ingested from this exact file are enough to resolve an entire APX Next radio order automatically.</div>
+  </div>
+</div>
+
+<h2>End-to-end summary</h2>
+<table class="summary-table">
+  <tr><th>Phase</th><th>Endpoint</th><th>Input</th><th>Output</th><th>Real count for this file</th></tr>
+  <tr><td>1</td><td><code>POST /admin/docs/read</code></td><td>23.8 MB XML</td><td>31 discovered types, preview only</td><td>46,500 rows recognized, 0 written to DB</td></tr>
+  <tr><td>2</td><td><code>POST /admin/docs/confirm</code></td><td>31 approved types</td><td>Permanent <code>aryx_entity</code> rows + graph projection</td><td>46,500 rows committed, 0 lost</td></tr>
+  <tr><td>3</td><td><code>POST /ask</code> (×N turns)</td><td>Natural-language quote request</td><td>Configured BOM payload</td><td>427 configurable fields, 688 rules, resolves a full quote in as few as 2 turns</td></tr>
+</table>

@@ -12,6 +12,7 @@ manifest.secrets.json
 .raven/.cache/
 .raven/audit/
 .raven/guard/digest.log
+.raven/.model-session.json
 
 # Raven framework — never commit (lives outside project)
 raven-claude/

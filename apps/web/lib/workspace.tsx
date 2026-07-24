@@ -1,7 +1,8 @@
 "use client";
 
 import {
-  createContext, useCallback, useContext, useEffect, useState, type ReactNode,
+  createContext, useCallback, useContext, useEffect, useMemo, useState,
+  type ReactNode,
 } from "react";
 import { api } from "./api";
 import { useShayAuth } from "./shay-auth";
@@ -75,15 +76,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, [ready, session?.access_token]);
 
-  const setWorkspaceId = (id: number) => {
+  const setWorkspaceId = useCallback((id: number) => {
     setWorkspaceIdState(Number(id));
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, String(id));
     }
-  };
+  }, []);
+
+  const value = useMemo<WorkspaceContext>(() => ({
+    ready,
+    workspaceId,
+    workspaces,
+    setWorkspaceId,
+    refresh,
+  }), [ready, refresh, setWorkspaceId, workspaceId, workspaces]);
 
   return (
-    <Ctx.Provider value={{ ready, workspaceId, workspaces, setWorkspaceId, refresh }}>
+    <Ctx.Provider value={value}>
       {children}
     </Ctx.Provider>
   );

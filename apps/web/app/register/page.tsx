@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, Eye, EyeOff, Info, Lock, Mail, User } from "lucide-react";
@@ -67,6 +67,7 @@ function RegisterPageContent() {
   const [companyId, setCompanyId] = useState(searchParams.get("company_id") || "");
   const [role, setRole] = useState(searchParams.get("role") || "user");
   const [encryptedInvite] = useState(searchParams.get("e") || "");
+  const [inviteLoaded, setInviteLoaded] = useState(!encryptedInvite);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,6 +83,36 @@ function RegisterPageContent() {
     }
     router.push("/start");
   };
+
+  useEffect(() => {
+    if (!encryptedInvite) return;
+    let cancelled = false;
+
+    const loadInvite = async () => {
+      try {
+        const invite = await shayApi.decryptRegistrationInvite(encryptedInvite);
+        if (cancelled) return;
+        setEmail(invite.email_id);
+        setInviteId(invite.invite_id);
+        setCompanyId(invite.company_id);
+        setRole(invite.role);
+      } catch {
+        if (!cancelled) {
+          setError("Invalid or expired invitation link.");
+        }
+      } finally {
+        if (!cancelled) {
+          setInviteLoaded(true);
+        }
+      }
+    };
+
+    void loadInvite();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [encryptedInvite]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -156,7 +187,7 @@ function RegisterPageContent() {
               label="Email Address"
               required
               icon={<Mail size={18} />}
-              note={encryptedInvite ? "Enter the invited email address from your secure link." : undefined}
+              note={encryptedInvite ? "This email was prefilled from your secure invitation and cannot be changed." : undefined}
             >
               <input
                 type="email"
@@ -166,7 +197,10 @@ function RegisterPageContent() {
                 className={[
                   "focus-ring h-12 w-full rounded-xl border px-12 text-sm text-navy-900 placeholder:text-slate-400",
                   encryptedInvite ? "border-blue-100 bg-blue-50/70" : "border-navy-100 bg-white",
+                  encryptedInvite ? "cursor-not-allowed" : "",
                 ].join(" ")}
+                readOnly={Boolean(encryptedInvite)}
+                aria-readonly={Boolean(encryptedInvite)}
               />
             </Field>
 
@@ -217,7 +251,7 @@ function RegisterPageContent() {
 
             <button
               type="submit"
-              disabled={!email.trim() || !name.trim() || !password || !confirmPassword || saving}
+              disabled={!inviteLoaded || !email.trim() || !name.trim() || !password || !confirmPassword || saving}
               className="focus-ring inline-flex h-12 w-full items-center justify-center rounded-2xl bg-navy-800 text-sm font-semibold text-white shadow-lg shadow-navy-900/20 transition-transform hover:-translate-y-0.5 hover:bg-navy-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? "Creating account..." : "Create account"}

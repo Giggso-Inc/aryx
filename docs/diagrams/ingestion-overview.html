@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aryx · How Data Becomes Knowledge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500;1,9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #F5F7FC;
+    --paper-raise: #FFFFFF;
+    --ink: #0A0F1C;
+    --subtle: #566080;
+    --line: #DEE4F2;
+    --line-soft: #EAEEF8;
+    --navy-900: #080D1F;
+    --navy-800: #0E1630;
+    --navy-700: #17224A;
+    --steel: #4C74D6;
+    --steel-strong: #3A5CB8;
+    --steel-tint: #EAF0FD;
+    --amber: #C7791A;
+    --amber-tint: #FFF4E1;
+    --amber-line: #F0C888;
+    --emerald: #1F9D74;
+    --emerald-tint: #E7F7F1;
+    --shadow: 0 1px 2px rgba(8,13,31,0.04), 0 12px 28px rgba(8,13,31,0.06);
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --paper: #0B1020;
+    --paper-raise: #10182E;
+    --ink: #EAF0FE;
+    --subtle: #97A3C4;
+    --line: #232E52;
+    --line-soft: #1A2340;
+    --steel: #86A6F5;
+    --steel-strong: #A9C0FA;
+    --steel-tint: #16204A;
+    --amber: #E7B368;
+    --amber-tint: #241C0E;
+    --amber-line: #4A3A18;
+    --emerald: #63D9AE;
+    --emerald-tint: #0E241D;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.35);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0B1020;
+      --paper-raise: #10182E;
+      --ink: #EAF0FE;
+      --subtle: #97A3C4;
+      --line: #232E52;
+      --line-soft: #1A2340;
+      --steel: #86A6F5;
+      --steel-strong: #A9C0FA;
+      --steel-tint: #16204A;
+      --amber: #E7B368;
+      --amber-tint: #241C0E;
+      --amber-line: #4A3A18;
+      --emerald: #63D9AE;
+      --emerald-tint: #0E241D;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 20px 40px rgba(0,0,0,0.35);
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  }
+
+  .measure { max-width: 1100px; margin: 0 auto; padding: 0 28px; }
+  a { color: inherit; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px;
+    background: color-mix(in srgb, var(--paper) 82%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .topbar .brand { display: inline-flex; align-items: center; gap: 10px; }
+  .topbar .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  .topbar .brand span { font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.28em; font-weight: 600; }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--subtle); background: var(--paper-raise); border: 1px solid var(--line);
+    padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--steel); color: var(--steel); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+  .theme-toggle svg { width: 13px; height: 13px; }
+
+  /* ---------- Hero (white ground) ---------- */
+  .hero {
+    position: relative;
+    background: linear-gradient(180deg, var(--paper-raise) 0%, var(--paper) 100%);
+    color: var(--ink);
+    overflow: hidden;
+    padding: 84px 28px 88px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.9; }
+  .hero-inner { position: relative; z-index: 2; max-width: 780px; margin: 0 auto; text-align: center; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--steel-strong); border: 1px solid var(--line); background: var(--paper-raise); padding: 6px 14px; border-radius: 999px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 0 3px var(--emerald-tint); }
+  .hero h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2.4rem, 5vw, 3.6rem);
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+    margin: 26px 0 20px;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .hero h1 em { font-style: italic; font-weight: 500; color: var(--steel-strong); }
+  .hero p.lede {
+    font-size: 17px; line-height: 1.65; color: var(--subtle); max-width: 640px; margin: 0 auto;
+  }
+  .hero-nav { margin-top: 26px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+  .hero-nav a {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.05em; text-decoration: none;
+    color: var(--steel-strong); background: var(--steel-tint); border: 1px solid var(--line); padding: 7px 14px; border-radius: 999px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .hero-nav a:hover { border-color: var(--steel); }
+  .hero-stats {
+    margin-top: 40px; display: flex; justify-content: center; gap: 0;
+    flex-wrap: wrap; border-top: 1px solid var(--line);
+  }
+  .hero-stats .stat {
+    flex: 1; min-width: 140px; padding: 20px 18px 0; text-align: center;
+    border-right: 1px solid var(--line);
+  }
+  .hero-stats .stat:last-child { border-right: none; }
+  .hero-stats .num { font-family: 'Fraunces', serif; font-size: 1.9rem; color: var(--ink); }
+  .hero-stats .lbl { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 4px; }
+
+  /* ---------- Sections ---------- */
+  section { padding: 80px 0; }
+  .section-head { max-width: 620px; margin-bottom: 44px; }
+  .section-head .kicker {
+    font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--steel); font-weight: 600;
+  }
+  .section-head h2 {
+    font-family: 'Fraunces', serif; font-weight: 500; font-size: clamp(1.7rem, 3vw, 2.15rem);
+    margin: 10px 0 12px; text-wrap: balance;
+  }
+  .section-head p { color: var(--subtle); font-size: 15px; line-height: 1.65; }
+
+  /* ---------- Source ports ---------- */
+  .ports { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .port {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px; box-shadow: var(--shadow);
+  }
+  .port .icon { width: 30px; height: 30px; color: var(--steel); }
+  .port h3 { font-family: 'Fraunces', serif; font-size: 1.05rem; font-weight: 500; margin: 14px 0 6px; }
+  .port p { color: var(--subtle); font-size: 13px; line-height: 1.55; margin: 0 0 12px; }
+  .port .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .port .tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;
+    color: var(--steel-strong); background: var(--steel-tint); padding: 4px 9px; border-radius: 6px;
+  }
+
+  /* ---------- Pipeline rail ---------- */
+  .rail-wrap { position: relative; }
+  .rail-track {
+    position: absolute; left: 27px; top: 8px; bottom: 8px; width: 2px;
+    background: var(--line);
+  }
+  .rail-track .fill {
+    position: absolute; top: 0; left: 0; width: 100%; height: 0%;
+    background: linear-gradient(var(--steel), var(--emerald));
+    transition: height 0.4s ease-out;
+  }
+  .station { position: relative; display: grid; grid-template-columns: 56px 1fr; gap: 22px; padding-bottom: 40px; }
+  .station:last-of-type { padding-bottom: 0; }
+  .node {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--paper-raise); border: 2px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--subtle); position: relative; z-index: 2;
+    transition: border-color 0.4s ease, color 0.4s ease, background 0.4s ease;
+  }
+  .node svg { width: 22px; height: 22px; }
+  .station.seen .node { border-color: var(--steel); color: var(--steel); background: var(--steel-tint); }
+  .card {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 16px;
+    padding: 24px 26px; box-shadow: var(--shadow);
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .station.seen .card { opacity: 1; transform: translateY(0); }
+  .card .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .card .stage-no { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--steel); letter-spacing: 0.06em; }
+  .card h3 { font-family: 'Fraunces', serif; font-weight: 500; font-size: 1.25rem; margin: 4px 0 0; }
+  .card .stage-tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--subtle); border: 1px solid var(--line); padding: 3px 9px; border-radius: 999px;
+  }
+  .card .what { font-size: 14.5px; line-height: 1.65; margin-top: 12px; }
+  .card .why {
+    font-size: 13px; line-height: 1.6; color: var(--subtle); margin-top: 12px;
+    padding-left: 14px; border-left: 2px solid var(--line);
+  }
+  .card .why b { color: var(--ink); font-weight: 600; }
+  .card .eg { font-size: 12.5px; line-height: 1.6; color: var(--subtle); margin-top: 10px; font-style: italic; }
+  .card .eg b { color: var(--steel-strong); font-style: normal; font-weight: 600; }
+
+  /* ---------- IN / OUT flow bar (what feeds this step, what it hands to the next) ---------- */
+  .flowbar { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .flowbar .chip {
+    font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.5;
+    padding: 5px 11px; border-radius: 7px; max-width: 100%;
+  }
+  .flowbar .chip .k { font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.65; margin-right: 5px; }
+  .flowbar .in { background: var(--line-soft); color: var(--subtle); }
+  .flowbar .out { background: var(--steel-tint); color: var(--steel-strong); }
+  .flowbar .arrow { color: var(--line); font-size: 14px; }
+
+  /* ---------- Real-data example block (technical rails) ---------- */
+  .example { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .example .ex-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--steel-strong); background: var(--steel-tint); padding: 8px 14px; border-bottom: 1px solid var(--line);
+  }
+  .example pre { margin: 0; padding: 14px 16px; overflow-x: auto; background: var(--paper); }
+  .example code { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; color: var(--ink); white-space: pre; }
+  .example .ex-caption {
+    padding: 10px 16px 14px; font-size: 12px; color: var(--subtle); line-height: 1.55;
+    border-top: 1px dashed var(--line); background: var(--paper-raise);
+  }
+  .example .ex-caption b { color: var(--ink); font-weight: 600; }
+  .example .ex-list { padding: 12px 16px; background: var(--paper); font-size: 12px; line-height: 1.9; }
+  .example .ex-list .row { display: flex; gap: 8px; }
+  .example .ex-list .k { font-family: 'JetBrains Mono', monospace; color: var(--steel-strong); min-width: 190px; flex-shrink: 0; }
+  .example .ex-list .v { color: var(--ink); }
+
+  .checkpoint {
+    margin-top: 16px; display: flex; gap: 12px; align-items: flex-start;
+    background: var(--amber-tint); border: 1px solid var(--amber-line); border-radius: 12px; padding: 14px 16px;
+  }
+  .checkpoint svg { width: 18px; height: 18px; color: var(--amber); flex-shrink: 0; margin-top: 2px; }
+  .checkpoint .lbl { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--amber); font-weight: 600; }
+  .checkpoint p { font-size: 13px; line-height: 1.55; color: var(--ink); margin-top: 3px; }
+  .checkpoint.trust { background: var(--emerald-tint); border-color: color-mix(in srgb, var(--emerald) 45%, var(--line)); }
+  .checkpoint.trust svg { color: var(--emerald); }
+  .checkpoint.trust .lbl { color: var(--emerald); }
+
+  /* ---------- Recap panel (light) ---------- */
+  .panel {
+    background: var(--paper-raise); border: 1px solid var(--line); border-radius: 22px; padding: 40px 32px; box-shadow: var(--shadow);
+  }
+  .flow-strip { display: flex; gap: 1px; overflow-x: auto; padding-bottom: 8px; }
+  .flow-chip {
+    flex: 1; min-width: 108px; text-align: center; padding: 16px 10px;
+    background: var(--steel-tint); border: 1px solid var(--line); border-radius: 12px;
+  }
+  .flow-chip svg { width: 18px; height: 18px; color: var(--steel); }
+  .flow-chip .t { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; margin-top: 8px; color: var(--ink); }
+  .flow-arrow { display: flex; align-items: center; color: var(--line); font-size: 15px; padding: 0 2px; }
+  .panel-foot { margin-top: 26px; display: flex; gap: 20px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 20px; }
+  .panel-foot .kv { font-size: 13px; color: var(--subtle); }
+  .panel-foot .kv b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- Component note (inline aside within a technical rail) ---------- */
+  .checkpoint.note { background: var(--steel-tint); border-color: var(--line); }
+  .checkpoint.note svg { color: var(--steel-strong); }
+  .checkpoint.note .lbl { color: var(--steel-strong); }
+  .card .stage-tag.db { color: var(--steel-strong); border-color: color-mix(in srgb, var(--steel) 35%, var(--line)); }
+  .card .stage-tag.ai { color: var(--emerald); border-color: color-mix(in srgb, var(--emerald) 35%, var(--line)); }
+
+  footer { text-align: center; padding: 40px 28px 56px; color: var(--subtle); font-size: 12.5px; }
+  footer .fname { font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; }
+  footer a { color: var(--steel-strong); text-decoration: none; font-weight: 500; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    .hero { padding: 64px 20px 72px; }
+    section { padding: 56px 0; }
+    .station { grid-template-columns: 44px 1fr; gap: 14px; }
+    .node { width: 44px; height: 44px; }
+    .node svg { width: 18px; height: 18px; }
+    .rail-track { left: 21px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="aryx-logo.png" alt="Aryx" />
+    <span>ARYX</span>
+  </div>
+  <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle color theme">
+    <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2"/><path d="M12 3v2.2M12 18.8V21M4.2 12H2M22 12h-2.2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5" stroke-linecap="round"/></svg>
+    <span id="themeLabel">Light</span>
+  </button>
+</header>
+
+<section class="hero">
+  <canvas id="heroCanvas" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <span class="eyebrow"><span class="dot"></span> Ingestion pipeline &middot; client walkthrough</span>
+    <h1>Scattered data,<br /><em>one trusted graph.</em></h1>
+    <p class="lede">
+      Every record Aryx ingests, from a database, a spreadsheet, a PDF, moves through the same
+      seven checkpoints before it earns a place in your knowledge graph. Here's exactly what
+      happens at each one, in plain language, and underneath that, exactly what's happening
+      technically.
+    </p>
+    <div class="hero-nav">
+      <a href="#pipeline">↓ Ingestion flow</a>
+      <a href="#ingestion-technical">↓ Ingestion (technical)</a>
+      <a href="ask-overview.html">↓ See the Ask flow →</a>
+    </div>
+    <div class="hero-stats">
+      <div class="stat"><div class="num">7</div><div class="lbl">Ingestion stages</div></div>
+      <div class="stat"><div class="num">2</div><div class="lbl">Human checkpoints</div></div>
+      <div class="stat"><div class="num">&infin;</div><div class="lbl">Scale, same process</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="measure">
+
+  <section id="sources">
+    <div class="section-head">
+      <span class="kicker">Step zero</span>
+      <h2>Where the data comes from</h2>
+      <p>Aryx connects to what you already run, no migration, no special format, no waiting on IT to build an export.</p>
+    </div>
+    <div class="ports">
+      <div class="port">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>
+        <h3>Live databases</h3>
+        <p>Aryx reads records directly from your database, on a schedule or on demand, without disrupting anything downstream.</p>
+        <div class="tags"><span class="tag">PostgreSQL</span><span class="tag">MySQL</span><span class="tag">Oracle</span></div>
+      </div>
+      <div class="port">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/><path d="M9 12.5h6M9 15.5h6M9 9.5h3"/></svg>
+        <h3>Files &amp; documents</h3>
+        <p>Drop in a file and Aryx reads the content itself, pulling out the meaningful information automatically.</p>
+        <div class="tags"><span class="tag">Spreadsheets</span><span class="tag">PDF</span><span class="tag">Word</span><span class="tag">PowerPoint</span><span class="tag">Images</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="pipeline">
+    <div class="section-head">
+      <span class="kicker">The ingestion journey</span>
+      <h2>Seven checkpoints, one record at a time</h2>
+      <p>Whether it's the 1st record or the 10-millionth, every one takes the same path, which is exactly what keeps the result trustworthy at any scale.</p>
+    </div>
+
+    <div class="rail-wrap">
+      <div class="rail-track"><div class="fill" id="railFill"></div></div>
+
+      <div class="station" data-stage="1">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12h11M11 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 5v14" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 01</div><h3>Extract</h3></div><span class="stage-tag">Read</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Your database or file</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>One record, read</span></div>
+          <p class="what">Aryx reads records from the connected database or file, one at a time, without altering the original source.</p>
+          <p class="why"><b>Why it matters —</b> the source system is never touched or put at risk. Aryx only ever works from a copy.</p>
+          <p class="eg"><b>Example —</b> in a real ingested product catalog, one of the first things read is a field called Product, offering choices like Model 6500, Model 6500L, Model 5500, and VX-451, 325 choices in total.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="2">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M4 9l2.5-4.5A1 1 0 0 1 7.4 4h9.2a1 1 0 0 1 .9.5L20 9"/><path d="M9 13.5h6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 02</div><h3>Land</h3></div><span class="stage-tag">Store safely</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>One record, read</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Safely stored copy</span></div>
+          <p class="what">Each raw record is saved into Aryx's own storage, along with a note of exactly where it came from.</p>
+          <p class="why"><b>Why it matters —</b> every piece of information stays traceable back to its original source, permanently.</p>
+          <p class="eg"><b>Example —</b> that Product field, and the business rule tied to it (see Relate below), are both saved exactly as they were read, before anything is interpreted.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="3">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M11 3l7 7-8 8-7-7 8-8z" stroke-linejoin="round"/><circle cx="9" cy="9" r="1.3" fill="currentColor" stroke="none"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 03</div><h3>Tag</h3></div><span class="stage-tag">Understand fields</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Safely stored copy</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Labeled fields</span></div>
+          <p class="what">AI looks at each field and labels what it actually is: an email address, a phone number, an amount of money, and so on.</p>
+          <p class="why"><b>Why it matters —</b> this runs on inexpensive AI, so understanding your data doesn't get costly as volume grows.</p>
+          <p class="eg"><b>Example —</b> AI recognizes Product as a "choice list" field, pick one from a list, not a free-text field or a number, purely from how it's structured in the source.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="4">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke-linecap="round"/><circle cx="12" cy="12" r="5.5"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 04</div><h3>Map</h3></div><span class="stage-tag">Classify</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Labeled fields</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Proposed record type</span></div>
+          <p class="what">Aryx proposes what kind of real-world thing each record represents: a customer, a product, a support ticket, based on its fields.</p>
+          <p class="why"><b>Why it matters —</b> nothing is assumed silently. Every new classification waits for a person's sign-off first.</p>
+          <p class="eg"><b>Example —</b> Aryx proposes Product represents a "configuration option" on a product catalog, the first time this exact catalog structure is seen, so a person confirms it.</p>
+          <div class="checkpoint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1.4.9-1.4 1.9v.3" stroke-linecap="round"/><circle cx="12" cy="16.6" r="0.4" fill="currentColor"/></svg>
+            <div><div class="lbl">Human checkpoint</div><p>"This looks like a Customer, is that right, or is it really an Account?" Aryx pauses and asks whenever it isn't confident.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="5">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="3.3"/><circle cx="16" cy="8" r="3.3"/><path d="M6 19c0-3 2.5-5 6-5s6 2 6 5" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 05</div><h3>Resolve</h3></div><span class="stage-tag">Find duplicates</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Proposed record type</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Matched or merged record</span></div>
+          <p class="what">Aryx compares records to find ones describing the same real-world thing, even if they came from different systems and don't look identical.</p>
+          <p class="why"><b>Why it matters —</b> clear duplicates merge automatically; anything genuinely uncertain waits for a person, never a guess.</p>
+          <p class="eg"><b>Example —</b> Aryx checks whether a field also called "Product" already exists from a different, previously ingested catalog, and keeps them separate, so choices from one product line never bleed into another.</p>
+          <div class="checkpoint">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1.4.9-1.4 1.9v.3" stroke-linecap="round"/><circle cx="12" cy="16.6" r="0.4" fill="currentColor"/></svg>
+            <div><div class="lbl">Human checkpoint</div><p>Ambiguous matches wait in a review queue. Every decision made here is saved, so matching keeps improving over time.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="6">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.3 11l7.4-4M8.3 13l7.4 4" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 06</div><h3>Relate</h3></div><span class="stage-tag">Connect</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Matched or merged record</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Connected record</span></div>
+          <p class="what">Aryx works out how the now-deduplicated records relate to one another: which customer placed which order, which ticket concerns which product.</p>
+          <p class="why"><b>Why it matters —</b> this is what turns a pile of clean records into a genuinely connected picture, not just a tidy list.</p>
+          <p class="eg"><b>Example —</b> a real business rule, "Hide UDCC for Non-Privileged Users," gets connected to the two specific settings it's allowed to hide, so the rule and the fields it affects travel together.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="7">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5c2.6 2.6 4 5.4 4 8.5s-1.4 5.9-4 8.5M12 3.5c-2.6 2.6-4 5.4-4 8.5s1.4 5.9 4 8.5M3.5 12h17"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STAGE 07</div><h3>Project</h3></div><span class="stage-tag">Publish to the graph</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Connected record</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Entry in the knowledge graph</span></div>
+          <p class="what">The finished entities and their relationships are published into the knowledge graph, ready to be explored or asked about.</p>
+          <p class="why"><b>Why it matters —</b> the graph is always rebuilt from this trusted data, so it can be safely refreshed any time, with nothing lost.</p>
+          <p class="eg"><b>Example —</b> the Product field and the rule that governs it both become connected nodes in the graph, ready for the product-configuration assistant or Ask to use immediately.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section id="ingestion-recap">
+    <div class="panel">
+      <div class="section-head">
+        <span class="kicker">Leave this on screen</span>
+        <h2>The ingestion flow, at a glance</h2>
+        <p>The same seven checkpoints, end to end, for a quick recap during the conversation.</p>
+      </div>
+      <div class="flow-strip">
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12h11M11 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="t">Extract</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="9" width="16" height="11" rx="1.5"/><path d="M4 9l2.5-4.5A1 1 0 0 1 7.4 4h9.2a1 1 0 0 1 .9.5L20 9"/></svg><div class="t">Land</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M11 3l7 7-8 8-7-7 8-8z" stroke-linejoin="round"/></svg><div class="t">Tag</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="5.5"/></svg><div class="t">Map</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="3.3"/><circle cx="16" cy="8" r="3.3"/></svg><div class="t">Resolve</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/></svg><div class="t">Relate</div></div>
+        <div class="flow-arrow">&rsaquo;</div>
+        <div class="flow-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="12" r="8.5"/></svg><div class="t">Project</div></div>
+      </div>
+      <div class="panel-foot">
+        <div class="kv"><b>2</b> human checkpoints: Map &amp; Resolve</div>
+        <div class="kv"><b>1</b> record at a time, from the 1st to the 10-millionth</div>
+        <div class="kv"><b>0</b> risk to the original source systems</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ingestion-technical">
+    <div class="section-head">
+      <span class="kicker">The ingestion flow, technically</span>
+      <h2>Ingestion, step by step: where the database and the AI calls happen</h2>
+      <p>The same ingestion journey from earlier, broken into 13 steps, with a single real record traced through every one: an attribute called <b>Product</b> and a rule called <b>Hide UDCC for Non-Privileged Users</b>, both pulled from an actual ingested product catalog (<code>sample.xml</code>). Each step shows exactly what feeds into it and what it hands to the step after.</p>
+    </div>
+
+    <div class="rail-wrap">
+      <div class="rail-track"><div class="fill"></div></div>
+
+      <div class="station" data-stage="1">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18V7z"/><path d="M4 7l2-3.5h12L20 7"/><circle cx="12" cy="13" r="2.6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 01</div><h3>A job is created</h3></div><span class="stage-tag">Trigger</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>A person starts an ingest, via the web app or the API</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A tracked job record</span></div>
+          <p class="what">Someone points Aryx at a source, a database, or an uploaded file, and confirms they want it ingested. This creates a job the system can track, report on, and resume if interrupted.</p>
+          <p class="why"><b>Why it matters —</b> nothing starts silently in the background; every ingest is a visible, resumable job from the very first moment.</p>
+          <div class="example">
+            <div class="ex-label">Example — the job record</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">job_id</span><span class="v">8842</span></div>
+              <div class="row"><span class="k">source</span><span class="v">sample.xml</span></div>
+              <div class="row"><span class="k">workspace_id</span><span class="v">13</span></div>
+              <div class="row"><span class="k">status</span><span class="v">queued</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="2">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 7V3M15 7V3M7 7h10l-1 6a4 4 0 0 1-4 4v4M9 21h6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 02</div><h3>Worker connects to your source</h3></div><span class="stage-tag">Extract</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Queued job + source location</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>An open, read-only connection</span></div>
+          <p class="what">The background worker picks up the job and opens a connection to your database, or opens an uploaded file directly.</p>
+          <p class="why"><b>Why it matters —</b> the connection is read-only; Aryx cannot accidentally write back to your source system through it.</p>
+        </div>
+      </div>
+
+      <div class="station" data-stage="3">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/><path d="M9 12.5h6M9 15.5h6M9 9.5h3"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 03</div><h3>Structured files are converted to CSV</h3></div><span class="stage-tag">Reshape</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>The whole XML (or spreadsheet) file</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>One CSV per kind of record it detects</span></div>
+          <p class="what">If the source is a structured file like XML or a spreadsheet, Aryx first reshapes the whole file into CSV, one CSV per kind of element it detects, before anything else happens. Only then does row-by-row processing begin.</p>
+          <p class="why"><b>Why it matters —</b> this is the actual step that turns a proprietary export format into rows Aryx already knows how to process, so nothing downstream needs to understand XML specifically.</p>
+          <div class="example">
+            <div class="ex-label">Example — real conversion output</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">sample_bm_config_attr.csv</span><span class="v">427 rows (one per attribute, incl. "Product")</span></div>
+              <div class="row"><span class="k">sample_bm_config_rule.csv</span><span class="v">688 rows (one per rule, incl. "Hide UDCC...")</span></div>
+              <div class="row"><span class="k">sample_bm_menu_item.csv</span><span class="v">one row per selectable value (Model 6500, VX-451, ...)</span></div>
+            </div>
+            <div class="ex-caption">The single 46,837-line XML file becomes several plain CSV tables, each one a familiar shape Aryx already knows how to ingest.</div>
+          </div>
+          <div class="checkpoint note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/><path d="M9 12.5h6M9 15.5h6M9 9.5h3"/></svg>
+            <div><div class="lbl">A different path for messy documents</div><p>This conversion only applies to already-structured files. If the source were a PDF or Word document instead, a separate step reads the free text and uses AI to pull out named entities directly, that's where "entity extraction," in the traditional sense, actually happens, and it's a different code path than this one.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="4">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12h11M11 7l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 5v14" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 04</div><h3>One row is streamed</h3></div><span class="stage-tag">Extract</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>A generated CSV (or a live database connection)</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>One row, read into memory</span></div>
+          <p class="what">The worker reads a single row at a time, from the CSV built in the previous step, or directly from a database, never the whole table at once.</p>
+          <p class="why"><b>Why it matters —</b> this is what makes the exact same process work whether the file has 10 rows or 10 million.</p>
+          <div class="example">
+            <div class="ex-label">Example — one row from that CSV</div>
+            <pre><code>id,name,variable_name,menu_type,data_type
+39427019,Product,productSelectionProduct_all,1,1</code></pre>
+            <div class="ex-caption">The same "Product" attribute, now a single flat row read from <b>sample_bm_config_attr.csv</b>, one of 427.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="5">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 05</div><h3>Record lands in PostgreSQL</h3></div><span class="stage-tag db">Database write</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>One row</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A landed_record row</span></div>
+          <p class="what">The CSV row from the previous step is written into PostgreSQL immediately, along with a note of exactly where it came from.</p>
+          <p class="why"><b>Why it matters —</b> this happens before any interpretation, so the original data is always durably captured first, already in the flat shape Aryx works with everywhere else.</p>
+          <div class="example">
+            <div class="ex-label">Example — what gets written</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">source_file</span><span class="v">sample.xml (original upload)</span></div>
+              <div class="row"><span class="k">source_table</span><span class="v">bm_config_attr, row id=39427019</span></div>
+              <div class="row"><span class="k">raw_payload</span><span class="v">id=39427019, name=Product, variable_name=productSelectionProduct_all, menu_type=1, data_type=1</span></div>
+            </div>
+            <div class="ex-caption">The flat row from the generated CSV is stored as-is, still tagged back to the original XML file for provenance, but already in the shape Aryx works with everywhere else, not a nested XML block anymore.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="6">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.8 5.4L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.6L12 3z" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 06</div><h3>AI Model call: Tag</h3></div><span class="stage-tag ai">AI call</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>landed_record row</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Field-by-field type labels</span></div>
+          <p class="what">An AI model reads each column of the landed row and labels what it actually is: an email address, a phone number, an amount of money, a choice list, and so on.</p>
+          <p class="why"><b>Why it matters —</b> this runs on inexpensive AI, so it scales without getting costly as volume grows.</p>
+          <div class="example">
+            <div class="ex-label">Example — what the AI labels, column by column</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">id</span><span class="v">internal identifier</span></div>
+              <div class="row"><span class="k">name</span><span class="v">display label ("Product")</span></div>
+              <div class="row"><span class="k">variable_name</span><span class="v">internal field code ("productSelectionProduct_all")</span></div>
+              <div class="row"><span class="k">menu_type</span><span class="v">"choice list", pick one from several options</span></div>
+            </div>
+            <div class="ex-caption">None of this requires knowing anything about CPQ catalogs specifically, the AI is just labeling columns it can see. The 325 actual options don't live in this row anymore, they're their own related file (<code>bm_menu_item.csv</code>), one row per option, each carrying <code>ref_id=39427019</code> pointing back to this exact record. Relate, later in this flow, is what reconnects them.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="7">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke-linecap="round"/><circle cx="12" cy="12" r="5.5"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 07</div><h3>Classify: mostly the file name, not AI</h3></div><span class="stage-tag">Deterministic, plus a narrow AI check</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Field-by-field type labels + the file name</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A proposed entity type, pending approval</span></div>
+          <p class="what">For a file with a specific, non-generic name like this one, Aryx trusts the name itself to say what kind of real-world thing the record represents, and only falls back to asking an AI model when a file name is too vague to go on. A different, narrower AI call does run here regardless, not to name the type, but to spot which columns look like matching keys for the Resolve step ahead.</p>
+          <p class="why"><b>Why it matters —</b> the type itself is decided the same, reliable way every time a clearly-named file comes in; AI is reserved for the one part of this step that genuinely needs judgment.</p>
+          <div class="example">
+            <div class="ex-label">Example — the proposal</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">proposed_type</span><span class="v">bm_config_attr (from the file name, not a guess)</span></div>
+              <div class="row"><span class="k">status</span><span class="v">pending approval, first time seen on this workspace</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="8">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 08</div><h3>PostgreSQL comparison: Resolve</h3></div><span class="stage-tag db">Database read</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Proposed entity + its catalog scope</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A list of candidate matches (or none)</span></div>
+          <p class="what">Candidate duplicate or overlapping records already stored in PostgreSQL are looked up and compared against the new one.</p>
+          <p class="why"><b>Why it matters —</b> this is the step that catches the same field or product showing up from two different sources.</p>
+          <div class="example">
+            <div class="ex-label">Example — the scoping check</div>
+            <div class="ex-caption">A field code <code>productSelectionProduct_all</code> already exists, but from a <b>different</b>, separately ingested catalog. Aryx keeps them separate using a catalog scope, so this catalog's 325 product choices never mix with the other one's. This same comparison runs for every ingested record, catalog attributes included, not just customer or ticket data.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="9">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.8 5.4L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.6L12 3z" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 09</div><h3>AI Model call: Adjudicate</h3></div><span class="stage-tag ai">AI call</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>An uncertain candidate match</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A final merge / no-merge decision</span></div>
+          <p class="what">For genuinely uncertain matches, an AI model, or a person for the hardest cases, makes the final call. The decision is saved back to PostgreSQL.</p>
+          <p class="why"><b>Why it matters —</b> every decision made here becomes reusable data for making future matching smarter.</p>
+          <div class="example">
+            <div class="ex-label">Example — a genuinely uncertain case</div>
+            <div class="ex-caption">A field like <b>Country</b> appears in both of the two ingested catalogs with what looks like the exact same meaning. Is it one shared attribute, or two catalog-specific ones? That call gets made here, and the decision is saved for next time.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="10">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.8 5.4L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.6L12 3z" stroke-linejoin="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 10</div><h3>Rows are matched by shared ID</h3></div><span class="stage-tag db">Exact match, no AI</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Separate flat tables sharing a column name</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>An identified relationship</span></div>
+          <p class="what">The CSV conversion at STEP 03 split what used to be one nested XML block into several separate flat tables. This step notices that a column like <code>rule_id</code> in one table exactly matches the <code>id</code> in another, and connects them. No AI is involved, this is deliberately deterministic: exact column-name matches only, never a guess.</p>
+          <p class="why"><b>Why it matters —</b> without this step, a rule and the fields it actually controls would just be disconnected rows sitting in different tables. Keeping it deterministic means it's never wrong about which rows belong together.</p>
+          <div class="example">
+            <div class="ex-label">Example — three flat rows, reconnected by a shared ID</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">bm_config_rule.csv</span><span class="v">id=47633456, name="Hide UDCC for Non Previliged Users", rule_type=11</span></div>
+              <div class="row"><span class="k">bm_config_rule_input.csv</span><span class="v">rule_id=47633456, attribute_id=59082961, value1=YES</span></div>
+              <div class="row"><span class="k">bm_config_marked_attr.csv</span><span class="v">rule_id=47633456, attribute_id=39426962</span></div>
+              <div class="row"><span class="k">bm_config_marked_attr.csv</span><span class="v">rule_id=47633456, attribute_id=43022701</span></div>
+            </div>
+            <div class="ex-caption">Four separate rows, from three separate CSVs, all sharing <code>rule_id=47633456</code>. This step connects them into the real rule: unless attribute 59082961 (a privileged-user flag) equals <code>YES</code>, hide attributes 39426962 and 43022701.</div>
+          </div>
+          <div class="checkpoint note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1.4.9-1.4 1.9v.3" stroke-linecap="round"/><circle cx="12" cy="16.6" r="0.4" fill="currentColor"/></svg>
+            <div><div class="lbl">A useful, but not fully trusted, shortcut</div><p>This connection does get saved, and generically it's eligible to become a graph edge. But for catalog rules specifically, that saved edge isn't always reliable, so later, when the product-configuration assistant actually needs this rule, it re-derives the same connection itself, directly from these same tables, rather than trusting the edge built here.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="11">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><path d="M4 11.5v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 11</div><h3>Relationship is written to PostgreSQL</h3></div><span class="stage-tag db">Database write</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Identified relationship</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A stored relationship row</span></div>
+          <p class="what">The connection identified in the previous step, the rule, its condition, and the fields it controls, is saved as a linked record.</p>
+          <p class="why"><b>Why it matters —</b> most parts of Aryx can now look this rule up in one place instead of re-joining the original tables. As the next step notes, the product-configuration assistant specifically chooses not to rely on this and re-derives it directly, as an extra reliability check.</p>
+          <div class="example">
+            <div class="ex-label">Example — what's saved</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">rule</span><span class="v">hideUDCCForNonPreviligedUsers</span></div>
+              <div class="row"><span class="k">condition</span><span class="v">privileged-user flag = YES</span></div>
+              <div class="row"><span class="k">hides</span><span class="v">attribute 39426962, attribute 43022701</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="12">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.3 11l7.4-4M8.3 13l7.4 4" stroke-linecap="round"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 12</div><h3>Graph nodes &amp; edges are built</h3></div><span class="stage-tag">Translate</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>PostgreSQL rows: entity + relationship</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>Graph-shaped node &amp; edge objects</span></div>
+          <p class="what">Aryx translates the durable PostgreSQL rows into the graph's own node-and-edge shape, ready to write.</p>
+          <p class="why"><b>Why it matters —</b> this translation is what lets the graph be safely thrown away and rebuilt at any time; it is never the original source of the data.</p>
+          <div class="example">
+            <div class="ex-label">Example — the shapes being built</div>
+            <div class="ex-list">
+              <div class="row"><span class="k">node</span><span class="v">(ConfigAttribute: Product)</span></div>
+              <div class="row"><span class="k">node</span><span class="v">(Rule: Hide UDCC for Non-Privileged Users)</span></div>
+              <div class="row"><span class="k">edge</span><span class="v">Product —HIDDEN_BY→ Rule</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="station" data-stage="13">
+        <div class="node"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5c2.6 2.6 4 5.4 4 8.5s-1.4 5.9-4 8.5M12 3.5c-2.6 2.6-4 5.4-4 8.5s1.4 5.9 4 8.5M3.5 12h17"/></svg></div>
+        <div class="card">
+          <div class="head"><div><div class="stage-no">STEP 13</div><h3>FalkorDB is updated</h3></div><span class="stage-tag db">Graph write</span></div>
+          <div class="flowbar"><span class="chip in"><span class="k">In</span>Node &amp; edge objects</span><span class="arrow">→</span><span class="chip out"><span class="k">Out</span>A queryable knowledge graph</span></div>
+          <p class="what">The finished node and edge objects are written into the knowledge graph, ready to explore or ask about.</p>
+          <p class="why"><b>Why it matters —</b> the graph is always rebuilt from this trusted data, so it can be safely refreshed any time, nothing is lost.</p>
+          <div class="example">
+            <div class="ex-label">Example — what lands in the graph</div>
+            <div class="ex-caption">(Configuration Attribute: <b>Product</b>) —HIDDEN_BY→ (Rule: <b>Hide UDCC for Non-Privileged Users</b>) → (Configuration Attribute: the UDCC setting). Now explorable and queryable through Ask. The product-configuration assistant, notably, still re-derives this specific relationship itself from Postgres rather than reading this edge, see the note at "Rows are matched by shared ID" above.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <span class="fname">ARYX</span> &middot; ingestion pipeline &middot; prepared for client walkthrough
+  <div style="margin-top:10px;"><a href="ask-overview.html">See the Ask flow →</a></div>
+</footer>
+
+<script>
+  // Theme toggle, persisted
+  (function() {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeToggle');
+    var label = document.getElementById('themeLabel');
+    var stored = localStorage.getItem('aryx-theme');
+    root.setAttribute('data-theme', stored || 'light');
+    function current() {
+      if (root.getAttribute('data-theme') === 'dark') return 'dark';
+      if (root.getAttribute('data-theme') === 'light') return 'light';
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function paint() { label.textContent = current() === 'dark' ? 'Dark' : 'Light'; }
+    btn.addEventListener('click', function() {
+      var next = current() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      localStorage.setItem('aryx-theme', next);
+      paint();
+      window.dispatchEvent(new CustomEvent('aryx-theme-change'));
+    });
+    paint();
+  })();
+
+  // Scroll-linked pipeline reveal + rail fill, one independent rail per .rail-wrap
+  (function() {
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var rails = Array.prototype.slice.call(document.querySelectorAll('.rail-wrap'));
+
+    rails.forEach(function(rail) {
+      var stations = Array.prototype.slice.call(rail.querySelectorAll('.station'));
+      var fill = rail.querySelector('.fill');
+      if (reduced) {
+        stations.forEach(function(s) { s.classList.add('seen'); });
+        if (fill) fill.style.height = '100%';
+        return;
+      }
+      var seenCount = 0;
+      var io = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('seen');
+            io.unobserve(entry.target);
+            seenCount++;
+            if (fill) fill.style.height = Math.round((seenCount / stations.length) * 100) + '%';
+          }
+        });
+      }, { threshold: 0.35, rootMargin: '0px 0px -10% 0px' });
+      stations.forEach(function(s) { io.observe(s); });
+    });
+  })();
+
+  // Hero canvas: scattered points self-organizing into a connected graph
+  (function() {
+    var canvas = document.getElementById('heroCanvas');
+    var ctx = canvas.getContext('2d');
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var w, h, dpr;
+    var points = [];
+    var N = 34;
+    var lineRGB = '76,116,214', dotRGB = '58,92,184';
+
+    function isDark() {
+      var root = document.documentElement;
+      if (root.getAttribute('data-theme') === 'dark') return true;
+      if (root.getAttribute('data-theme') === 'light') return false;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    function updateColors() {
+      if (isDark()) { lineRGB = '134,166,245'; dotRGB = '159,180,242'; }
+      else { lineRGB = '76,116,214'; dotRGB = '58,92,184'; }
+    }
+    window.addEventListener('aryx-theme-change', updateColors);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateColors);
+    updateColors();
+
+    function resize() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = canvas.clientWidth; h = canvas.clientHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+
+    function init() {
+      points = [];
+      for (var i = 0; i < N; i++) {
+        var scattered = Math.random() < 0.5;
+        points.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          tx: w / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.42,
+          ty: h / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.42,
+          r: 1.6 + Math.random() * 1.6,
+          drift: Math.random() * Math.PI * 2
+        });
+      }
+    }
+
+    var t = 0;
+    function frame() {
+      t += 0.006;
+      ctx.clearRect(0, 0, w, h);
+      var settle = Math.min(1, t / 1.6);
+
+      var pos = points.map(function(p) {
+        var x = p.x + (p.tx - p.x) * settle + Math.sin(t * 0.6 + p.drift) * 6 * (1 - settle * 0.6);
+        var y = p.y + (p.ty - p.y) * settle + Math.cos(t * 0.5 + p.drift) * 6 * (1 - settle * 0.6);
+        return { x: x, y: y, r: p.r };
+      });
+
+      // connecting lines between near points, strengthening as they settle
+      ctx.lineWidth = 1;
+      for (var i = 0; i < pos.length; i++) {
+        for (var j = i + 1; j < pos.length; j++) {
+          var dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          var maxD = 70 + settle * 40;
+          if (d < maxD) {
+            var alpha = (1 - d / maxD) * 0.16 * (0.3 + settle * 0.9);
+            ctx.strokeStyle = 'rgba(' + lineRGB + ',' + alpha.toFixed(3) + ')';
+            ctx.beginPath();
+            ctx.moveTo(pos[i].x, pos[i].y);
+            ctx.lineTo(pos[j].x, pos[j].y);
+            ctx.stroke();
+          }
+        }
+      }
+      // points
+      for (var k = 0; k < pos.length; k++) {
+        ctx.beginPath();
+        ctx.arc(pos[k].x, pos[k].y, pos[k].r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(' + dotRGB + ',' + (0.45 + settle * 0.35).toFixed(3) + ')';
+        ctx.fill();
+      }
+
+      if (t < 40) requestAnimationFrame(frame);
+    }
+
+    resize(); init();
+    if (reduced) {
+      // static settled frame
+      t = 3; frame();
+    } else {
+      requestAnimationFrame(frame);
+    }
+  })();
+</script>
+</body>
+</html>

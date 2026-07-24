@@ -12,6 +12,9 @@
   --aryx-ink: #0F1726;
   --aryx-subtle: #5A6478;
   --app-shell-offset: 0px;
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-display: Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 html,
@@ -33,6 +36,22 @@ body:has([data-app-shell="sidebar"]) header[data-app-shell="sidebar"] {
   margin-left: var(--app-shell-offset);
   width: calc(100% - var(--app-shell-offset));
   transition: margin-left 180ms ease, width 180ms ease;
+}
+
+.workspace-section-shell {
+  margin-left: auto;
+  margin-right: auto;
+  width: 100%;
+  max-width: 72rem;
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+
+[data-workspace-detail-route="true"] .workspace-section-shell,
+[data-workspace-detail-route="true"] .shay-page-shell {
+  max-width: 96rem;
+  padding-left: clamp(1rem, 2vw, 2rem);
+  padding-right: clamp(1rem, 2vw, 2rem);
 }
 
 /* The wordmark cap — used for ARYX header, mimics the logo's spacing. */

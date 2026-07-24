@@ -6,15 +6,23 @@ import { Loader2, Shield } from "lucide-react";
 import { useShayAuth } from "@/lib/shay-auth";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { ready, session } = useShayAuth();
+  const { authState, ready, session } = useShayAuth();
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
     if (!ready || session) return;
-    const next = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    const nextPath = pathname && pathname !== "/"
+      ? `${pathname}${search}`
+      : "/workspaces";
+    const next = `?next=${encodeURIComponent(nextPath)}`;
+    if (authState === "expired") {
+      router.replace(`/session-expired${next}`);
+      return;
+    }
     router.replace(`/login${next}`);
-  }, [pathname, ready, router, session]);
+  }, [authState, pathname, ready, router, session]);
 
   if (!ready || !session) {
     return (

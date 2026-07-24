@@ -1,28 +1,132 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import dagre from "dagre";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWorkspace } from "@/lib/workspace";
 import { typeColor } from "@/lib/typeColor";
-import type { GraphView } from "@/lib/types";
+import type { DataTypeCount, GraphTypeEdge, GraphTypeNode, GraphView } from "@/lib/types";
 
-const W = 820;
-const H = 460;
-const CX = W / 2;
-const CY = H / 2;
-const RING = 165;
+const MIN_NODE_WIDTH = 132;
+const MAX_NODE_WIDTH = 188;
+const NODE_HEIGHT = 64;
+const MIN_GRAPH_WIDTH = 920;
+const MIN_GRAPH_HEIGHT = 540;
+const NODE_LABEL_LIMIT = 16;
+const EDGE_LABEL_LIMIT = 24;
 
-function radius(count: number): number {
-  return Math.max(20, Math.min(46, 16 + Math.sqrt(count) * 1.7));
+interface GraphLayoutNodeData {
+  color: string;
 }
 
-/** Type-level knowledge map: one node per type (sized by count), edges
- *  aggregated by relationship with counts. Legible at any scale. */
-export function GraphLens() {
+function truncateLabel(label: string, limit: number): string {
+  return label.length <= limit ? label : `${label.slice(0, Math.max(1, limit - 1))}\u2026`;
+}
+
+function nodeWidth(label: string): number {
+  return Math.max(MIN_NODE_WIDTH, Math.min(MAX_NODE_WIDTH, 64 + label.length * 7.1));
+}
+
+function edgeLabel(edge: GraphTypeEdge): string {
+  return `${edge.name} (${edge.count})`;
+}
+
+function edgePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  return points.map((point, index) =>
+    `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+}
+
+function buildGraphLayout(nodes: GraphTypeNode[], edges: GraphTypeEdge[], types: DataTypeCount[]) {
+  const graph = new dagre.graphlib.Graph<GraphLayoutNodeData>({ multigraph: true });
+  graph.setGraph({
+    rankdir: "LR",
+    align: "UL",
+    nodesep: 48,
+    ranksep: 92,
+    marginx: 40,
+    marginy: 36,
+    ranker: "network-simplex",
+  });
+  graph.setDefaultEdgeLabel(() => ({}));
+
+  const colorByType = new Map(types.map((type, index) => [type.name, typeColor(index)]));
+
+  nodes.forEach((node, index) => {
+    graph.setNode(node.type, {
+      width: nodeWidth(node.type),
+      height: NODE_HEIGHT,
+      color: colorByType.get(node.type) ?? typeColor(index),
+    });
+  });
+
+  edges.forEach((edge, index) => {
+    const label = edgeLabel(edge);
+    graph.setEdge(
+      edge.source,
+      edge.target,
+      {
+        width: Math.max(84, Math.min(192, 28 + label.length * 6.1)),
+        height: 28,
+        label,
+      },
+      `${edge.source}:${edge.target}:${edge.name}:${index}`,
+    );
+  });
+
+  dagre.layout(graph);
+
+  const laidOutNodes = nodes.map((node, index) => {
+    const layoutNode = graph.node(node.type);
+    return {
+      ...node,
+      x: layoutNode.x as number,
+      y: layoutNode.y as number,
+      width: layoutNode.width as number,
+      height: layoutNode.height as number,
+      color: (layoutNode.color as string) ?? colorByType.get(node.type) ?? typeColor(index),
+      shortLabel: truncateLabel(node.type, NODE_LABEL_LIMIT),
+    };
+  });
+
+  const laidOutEdges = edges.map((edge, index) => {
+    const layoutEdge = graph.edge({
+      v: edge.source,
+      w: edge.target,
+      name: `${edge.source}:${edge.target}:${edge.name}:${index}`,
+    });
+    const label = edgeLabel(edge);
+    return {
+      ...edge,
+      label,
+      shortLabel: truncateLabel(label, EDGE_LABEL_LIMIT),
+      points: (layoutEdge.points as Array<{ x: number; y: number }>) ?? [],
+      labelX: (layoutEdge.x as number | undefined) ?? 0,
+      labelY: (layoutEdge.y as number | undefined) ?? 0,
+    };
+  });
+
+  const graphMeta = graph.graph();
+  return {
+    nodes: laidOutNodes,
+    edges: laidOutEdges,
+    width: Math.max(MIN_GRAPH_WIDTH, Math.ceil((graphMeta.width as number | undefined) ?? 0) + 80),
+    height: Math.max(MIN_GRAPH_HEIGHT, Math.ceil((graphMeta.height as number | undefined) ?? 0) + 72),
+  };
+}
+
+/** Type-level knowledge map: one node per type with a layout that preserves
+ *  readable labels and avoids overlap across dense ontologies. */
+export function GraphLens({ types }: { types: DataTypeCount[] }) {
   const { workspaceId } = useWorkspace();
   const [g, setG] = useState<GraphView | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const layout = useMemo(
+    () => (g ? buildGraphLayout(g.type_nodes, g.type_edges, types) : null),
+    [g, types],
+  );
 
   useEffect(() => {
     let live = true;
@@ -35,24 +139,13 @@ export function GraphLens() {
 
   if (err) return <Box><span className="text-rose-600">{err}</span></Box>;
   if (!g) return <Box><Loader2 size={16} className="animate-spin" /> building map…</Box>;
-
-  const nodes = g.type_nodes;
-  const pos = new Map<string, { x: number; y: number; r: number; color: string }>();
-  nodes.forEach((n, i) => {
-    const a = (2 * Math.PI * i) / Math.max(1, nodes.length) - Math.PI / 2;
-    pos.set(n.type, {
-      x: CX + RING * Math.cos(a),
-      y: CY + RING * Math.sin(a),
-      r: radius(n.count),
-      color: typeColor(i),
-    });
-  });
+  if (!layout) return <Box><Loader2 size={16} className="animate-spin" /> building map…</Box>;
 
   return (
     <div className="rounded-2xl border border-navy-100 bg-white p-3">
       <div className="mb-1 flex items-center justify-between px-2 pt-1 text-[11px] text-subtle">
         <span>{g.entity_count} entities · {g.relationship_count} relationships</span>
-        <span>node size = count · edge label = relationship (count)</span>
+        <span>hover truncated labels to see the full name</span>
       </div>
       {g.relationship_count === 0 ? (
         <p className="px-2 py-6 text-center text-[12.5px] text-subtle">
@@ -60,51 +153,92 @@ export function GraphLens() {
           types; connect them with foreign-key links to see the graph.
         </p>
       ) : null}
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: "auto" }}>
-        <defs>
-          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
-                  markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0L10 5L0 10z" fill="#94A8CB" />
-          </marker>
-        </defs>
-        {g.type_edges.map((e, i) => {
-          const s = pos.get(e.source); const t = pos.get(e.target);
-          if (!s || !t) return null;
-          const dx = t.x - s.x, dy = t.y - s.y;
-          const len = Math.hypot(dx, dy) || 1;
-          const ux = dx / len, uy = dy / len;
-          const x1 = s.x + ux * s.r, y1 = s.y + uy * s.r;
-          const x2 = t.x - ux * (t.r + 8), y2 = t.y - uy * (t.r + 8);
-          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-          const label = `${e.name} (${e.count})`;
-          return (
-            <g key={i}>
-              <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#C2CFE3"
-                    strokeWidth={1.6} markerEnd="url(#arrow)" />
-              <g transform={`translate(${mx} ${my})`}>
-                <rect x={-label.length * 3.1} y={-8} width={label.length * 6.2}
-                      height={16} rx={8} fill="#fff" stroke="#E4EAF4" />
-                <text textAnchor="middle" y={3.5} fontSize="9.5"
-                      fontFamily="JetBrains Mono, monospace" fill="#2D4B8A">
-                  {label}
+      <div className="overflow-auto rounded-xl">
+        <svg
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          className="block"
+          style={{ width: `${layout.width}px`, height: `${layout.height}px`, maxWidth: "none" }}
+        >
+          <defs>
+            <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                    markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10z" fill="#A5B5D3" />
+            </marker>
+          </defs>
+
+          {layout.edges.map((edge, index) => (
+            <g key={`${edge.source}:${edge.target}:${edge.name}:${index}`}>
+              <title>{edge.label}</title>
+              <path
+                d={edgePath(edge.points)}
+                fill="none"
+                stroke="#C8D5E8"
+                strokeWidth={1.7}
+                markerEnd="url(#graph-arrow)"
+                opacity={0.95}
+              />
+              <g transform={`translate(${edge.labelX} ${edge.labelY})`} className="cursor-help">
+                <rect
+                  x={-Math.max(38, edge.shortLabel.length * 3.7)}
+                  y={-10}
+                  width={Math.max(76, edge.shortLabel.length * 7.4)}
+                  height={20}
+                  rx={10}
+                  fill="#FFFFFF"
+                  stroke="#D6E0F0"
+                />
+                <text
+                  textAnchor="middle"
+                  y={4}
+                  fontSize="9.75"
+                  fontFamily="JetBrains Mono, monospace"
+                  fill="#4068A8"
+                >
+                  {edge.shortLabel}
                 </text>
               </g>
             </g>
-          );
-        })}
-        {nodes.map((n) => {
-          const p = pos.get(n.type)!;
-          return (
-            <g key={n.type}>
-              <circle cx={p.x} cy={p.y} r={p.r} fill={p.color} />
-              <text x={p.x} y={p.y - 1} textAnchor="middle" fontSize="12"
-                    fontWeight="600" fill="#fff">{n.type}</text>
-              <text x={p.x} y={p.y + 12} textAnchor="middle" fontSize="10"
-                    fill="#fff" opacity="0.9">{n.count}</text>
+          ))}
+
+          {layout.nodes.map((node) => (
+            <g
+              key={node.type}
+              transform={`translate(${node.x - node.width / 2} ${node.y - node.height / 2})`}
+              className="cursor-help"
+            >
+              <title>{`${node.type} • ${node.count}`}</title>
+              <rect
+                width={node.width}
+                height={node.height}
+                rx={20}
+                fill={node.color}
+                stroke="#FFFFFF"
+                strokeWidth={2}
+              />
+              <text
+                x={node.width / 2}
+                y={26}
+                textAnchor="middle"
+                fontSize="14"
+                fontWeight="700"
+                fill="#FFFFFF"
+              >
+                {node.shortLabel}
+              </text>
+              <text
+                x={node.width / 2}
+                y={45}
+                textAnchor="middle"
+                fontSize="11.5"
+                fontWeight="500"
+                fill="rgba(255,255,255,0.92)"
+              >
+                {node.count} {node.count === 1 ? "record" : "records"}
+              </text>
             </g>
-          );
-        })}
-      </svg>
+          ))}
+        </svg>
+      </div>
     </div>
   );
 }

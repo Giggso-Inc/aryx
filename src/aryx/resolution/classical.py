@@ -1,6 +1,7 @@
 """Classical ER helpers: normalize, block, and score (cheap, deterministic)."""
 from __future__ import annotations
 
+import logging
 import math
 from difflib import SequenceMatcher
 
@@ -9,6 +10,8 @@ from aryx.resolution.blocking import MultiKeyBlocker, normalize  # noqa: F401  (
 
 # normalize is imported from blocking and re-exported for backward compatibility.
 __all__ = ["normalize", "block_key", "block", "string_score", "cosine", "score_pair"]
+
+logger = logging.getLogger(__name__)
 
 
 def block_key(text: str) -> str:
@@ -20,14 +23,15 @@ def block_key(text: str) -> str:
     return normalize(text)[:4]
 
 
-def block(records: list[ResolutionRecord], max_block_size: int | None = None) -> dict[str, list[ResolutionRecord]]:
+def block(records: list[ResolutionRecord], max_block_size: int | None = None,
+         run_id: int | None = None) -> dict[str, list[ResolutionRecord]]:
     """Group records into candidate blocks (shim for MultiKeyBlocker).
 
     Delegates to MultiKeyBlocker so all three key families (prefix, token-set,
     Soundex) are used.  Existing callers that import this function are
     unaffected.
     """
-    return MultiKeyBlocker(max_block_size).block(records)
+    return MultiKeyBlocker(max_block_size).block(records, run_id=run_id)
 
 
 def string_score(left: str, right: str) -> float:
@@ -49,9 +53,15 @@ def score_pair(
     right_text: str,
     left_emb: list[float] | None = None,
     right_emb: list[float] | None = None,
+    run_id: int | None = None,
 ) -> float:
     """Blend string similarity with embedding cosine when embeddings exist."""
     text = string_score(left_text, right_text)
     if left_emb and right_emb:
-        return 0.5 * text + 0.5 * cosine(left_emb, right_emb)
+        cos = cosine(left_emb, right_emb)
+        blended = 0.5 * text + 0.5 * cos
+        logger.debug("resolve run_id=%s score_pair text=%.3f cosine=%.3f blended=%.3f",
+                     run_id, text, cos, blended)
+        return blended
+    logger.debug("resolve run_id=%s score_pair text=%.3f (no embeddings)", run_id, text)
     return text

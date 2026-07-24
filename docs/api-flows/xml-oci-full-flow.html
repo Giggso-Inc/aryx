@@ -229,12 +229,104 @@
   <h1>XML File · OCI Mode — /read → /confirm Full Flow</h1>
   <p class="sub">
     XML is structured data (DATA_EXTS), not a document — it bypasses the document pipeline entirely.
-    OCI Document Understanding is never called. Every LLM + embed call routes to OCI GenAI.
-    Project stage writes to Oracle Graph, not FalkorDB.
+    OCI Document Understanding is never called. Every LLM chat + embed call re-checks the OCI settings
+    on every single call and routes to OCI GenAI when OCI mode is on — no matter which broker object
+    made the call. In full OCI mode the relational tables (aryx_runs, aryx_landed, aryx_entity, …) are
+    Oracle ADB 23ai tables too, not Postgres — reached through a shared connection-pool + SQL-translation
+    layer, not just the final graph-projection step.
+  </p>
+  <p class="sub" style="margin-top:6px; color:var(--yellow);">
+    ⟲ Re-verified against the current codebase on 2026-07-16 — see the
+    <a href="#corrections" style="color:var(--yellow)">Documentation Corrections</a> section at the
+    bottom for exactly what changed in this pass and why. One correction was confirmed by actually
+    running the parser code against the example XML, not just reading it.
   </p>
 </div>
 
 <div class="wrap">
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- MECHANISM PRIMER — how "OCI Mode" really works    -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="card oci">
+    <div class="c-lbl">Read this first — the mechanism behind every "OCI" badge on this page</div>
+    <div class="c-title">"OCI Mode" is not one switch — it's several independent settings that happen to default together</div>
+    <div class="detail">
+      Setting <code>ARYX_OCI_MODE=true</code> is a convenience toggle
+      (<code>settings._resolve()</code> in <code>config.py</code>): every per-service backend field
+      (<code>parse_backend</code>, <code>embed_backend</code>, <code>llm_cheap_backend</code>,
+      <code>llm_frontier_backend</code>, <code>db_backend</code>, <code>graph_backend</code>) defaults to
+      <code>"oci"</code> unless you explicitly set that one field to something else. Four separate
+      "effective_*_backend()" checks then decide, independently, whether each concern talks to OCI:
+    </div>
+    <div class="funnel" style="margin-top:10px">
+      <div class="stage-row">
+        <div class="sr-num" style="background:#1e1008;color:var(--oci);">1</div>
+        <div class="sr-body"><span class="k">Chat calls</span> (<code>aryx/llm.py: complete_text() / complete_json()</code>) call
+        <code>_use_oci_for(tier)</code> on <em>every single call</em>, before even looking at the Broker's
+        model registry. If <code>effective_llm_cheap_backend()</code> or
+        <code>effective_llm_frontier_backend()</code> says <code>"oci"</code>, the call short-circuits
+        straight to OCI GenAI (Cohere Command R / R+) — this is why even the "local-looking" broker built
+        for <code>/read</code> and <code>/confirm</code> (<code>_local_broker()</code> in
+        <code>admin_api.py</code>, registered with provider="ollama") still ends up calling OCI once OCI
+        mode is on. It is a global settings check, not a broker property.</div>
+      </div>
+      <div class="stage-row">
+        <div class="sr-num" style="background:#1e1008;color:var(--oci);">2</div>
+        <div class="sr-body"><span class="k">Embed calls</span> (<code>Broker.embed()</code> in <code>broker/__init__.py</code>)
+        do the same thing for <code>effective_embed_backend()</code> — same mechanism, same "checked fresh
+        on every call, independent of the broker instance" behaviour.</div>
+      </div>
+      <div class="stage-row">
+        <div class="sr-num" style="background:#1e1008;color:var(--oci);">3</div>
+        <div class="sr-body"><span class="k">Relational-store calls</span> (every <code>PostgresStore</code> /
+        <code>EntityStore</code> / <code>OntologyStore</code> / <code>DatasourceStore</code> / <code>JobStore</code>
+        write in Phases 1 and 2 of <em>this</em> flow) go through <code>get_pool(dsn)</code>
+        (<code>store/pool.py</code>), which checks <code>effective_db_backend()</code> and swaps the whole
+        connection pool from psycopg3 to <code>OraclePool</code> (<code>store/oracle_pool.py</code>,
+        python-oracledb-backed). This is the part the old version of this page never mentioned — it only
+        described the OCI switch for the final graph write.</div>
+      </div>
+      <div class="stage-row">
+        <div class="sr-num" style="background:#1e1008;color:var(--oci);">4</div>
+        <div class="sr-body"><span class="k">Graph calls</span> (Stage 5, below) check
+        <code>effective_graph_backend()</code> directly inside <code>orchestrate.py:run_pipeline()</code> and
+        construct an <code>OracleGraphStore</code> using <code>settings.oci_adb_dsn</code> — a
+        <em>different</em> setting from the one the relational stores use (see the DSN note below).</div>
+      </div>
+    </div>
+    <div class="alert no-doc" style="margin-top:8px">
+      ⚠ <strong>DSN split worth knowing:</strong> the relational stores above are constructed with
+      <code>settings.rdb_dsn</code> (env <code>ARYX_RDB_DSN</code>) everywhere in this flow — never
+      <code>settings.effective_dsn()</code> or <code>settings.oci_adb_dsn</code>. <code>get_pool()</code>
+      only decides <em>which driver</em> to use (psycopg vs. oracledb) from
+      <code>effective_db_backend()</code>; it still hands that driver the literal string in
+      <code>ARYX_RDB_DSN</code>. So a real OCI deployment must point <code>ARYX_RDB_DSN</code> itself at the
+      Oracle connect descriptor — <code>ARYX_OCI_ADB_DSN</code> is a second, separate setting used only by
+      the Stage 5 graph store (and a few other call sites that explicitly call <code>effective_dsn()</code>,
+      such as <code>main.py</code>'s stale-job sweep). The two values are not automatically kept in sync by
+      the code.
+    </div>
+    <div class="detail" style="margin-top:8px">
+      Once the pool is Oracle, <code>queries.load(name)</code> (<code>queries/__init__.py</code>) prefers a
+      hand-written override in <code>queries/oracle/&lt;name&gt;.sql</code> when one exists, otherwise
+      passes the ordinary Postgres-flavoured SQL through a regex translator
+      (<code>_translate_sql</code> in <code>oracle_pool.py</code>) that rewrites <code>%s</code>/<code>%(name)s</code>
+      placeholders to <code>:1</code>/<code>:name</code>, drops <code>::jsonb</code>/<code>::text</code>
+      casts, turns <code>RETURNING col</code> into an out-bound <code>RETURNING col INTO :out</code>,
+      rewrites <code>LIMIT n OFFSET m</code> into <code>OFFSET m ROWS FETCH NEXT n ROWS ONLY</code>, and
+      converts <code>ON CONFLICT DO NOTHING</code> into "catch Oracle's ORA-00001 unique-violation error
+      and swallow it." Parameter values are translated too — Python <code>bool</code> → <code>'Y'</code>/<code>'N'</code>
+      (Oracle has no native boolean column), <code>psycopg.Json()</code> wrappers → plain JSON strings for
+      CLOB columns, empty strings → a single space (Oracle treats <code>''</code> as <code>NULL</code>).
+    </div>
+    <div class="alert info" style="margin-top:8px">
+      <span class="k">Plain English:</span> think of it less as "XML goes to Postgres, then a copy gets
+      pushed to Oracle" and more as "every store class always writes the same logical rows — but in OCI
+      mode, a thin compatibility shim rewrites the SQL on the way out so it lands on Oracle instead of
+      Postgres, transparently, without the calling code knowing the difference."
+    </div>
+  </div>
 
   <!-- ════════════════════════════════════════════════ -->
   <!-- PHASE 1 — /read                                  -->
@@ -251,9 +343,19 @@
       <div class="c-title">Request Entry</div>
       <div class="detail">
         <span class="k">Body:</span> <code>catalog.xml</code> (multipart), <code>context="product catalog"</code>, <code>workspace_id=1</code><br>
-        Validates: ≤50 MB · extension in DOC_EXTS ∪ DATA_EXTS<br>
-        Creates: <code>discovery_id = uuid4().hex</code> · INSERT <code>aryx_jobs</code><br>
+        <span class="k">Only check made here:</span> each file ≤ 50 MB (<code>_MAX_FILE</code>) — an oversized
+        file gets a <code>400</code> immediately. The handler does <em>not</em> check the file extension at
+        all; that happens one step later, in the background job.<br>
+        Creates: <code>discovery_id = uuid4().hex</code> · <code>JobStore(settings.rdb_dsn).create(did, "discovery", …)</code>
+        → INSERT <code>aryx_jobs</code><br>
+        Queues <code>_read_job()</code> as a FastAPI background task and returns immediately — the actual
+        parsing happens after the HTTP response is already sent.<br>
         Returns immediately: <code>{"discovery_id": "a3f9..."}</code>
+      </div>
+      <div class="alert info" style="margin-top:8px">
+        <span class="k">Plain English:</span> uploading the file doesn't wait for it to be read. You get a
+        ticket (<code>discovery_id</code>) back straight away; the real work happens in the background and
+        you poll <code>GET /admin/docs/summary/{did}</code> to see when it's done.
       </div>
       <div class="badges">
         <span class="badge b-in">IN: catalog.xml (bytes)</span>
@@ -267,13 +369,24 @@
       <div class="c-lbl">File Router — _read_job()</div>
       <div class="c-title">XML → DATA_EXTS (tabular path)</div>
       <div class="alert no-doc">
-        ⚠ <strong>.xml is in DATA_EXTS, not DOC_EXTS</strong> — the entire 8-step document pipeline is skipped.
+        ⚠ <strong>.xml is in DATA_EXTS, not DOC_EXTS</strong> — the entire document pipeline is skipped.
         No OCI Document Understanding. No chunking. No PII screen. No embedding. No NER.
         No aryx_document / aryx_chunk / aryx_chunk_embedding writes.
       </div>
       <div class="detail" style="margin-top:8px">
-        <span class="k">DOC_EXTS</span> (.pdf .docx .pptx .ppt .rtf .html .htm images) → document pipeline → <span style="color:var(--muted)">not this path</span><br>
-        <span class="k">DATA_EXTS</span> (.json <strong>.csv <span style="color:var(--oci)">.xml</span></strong>) → tabular path → <span style="color:var(--oci)">this path ✓</span>
+        <span class="k">DOC_EXTS</span> (.pdf .docx .doc .pptx .ppt .rtf .html .htm + images) → document pipeline → <span style="color:var(--muted)">not this path</span><br>
+        <span class="k">DATA_EXTS</span> (.json <strong>.csv <span style="color:var(--oci)">.xml</span> .xlsx</strong>) → tabular path → <span style="color:var(--oci)">.xml goes here ✓</span><br>
+        <span class="k">Anything else</span> (an extension in neither set) is silently dropped —
+        <code>_read_job()</code> only builds <code>doc_paths</code> and <code>tabular</code> from files whose
+        suffix matches one of the two sets, so an unrecognised file type produces no error and simply never
+        gets processed.
+      </div>
+      <div class="alert info" style="margin-top:8px">
+        <span class="k">XLSX note:</span> since a recent change, <code>.xlsx</code> workbooks are also
+        DATA_EXTS and get expanded into one CSV per worksheet by a sibling function,
+        <code>_xlsx_to_csvs()</code>. That is a separate code path from the XML one below — this page is
+        specifically about <code>.xml</code>, and the XLSX addition did not change anything about how XML
+        is parsed.
       </div>
       <div class="badges">
         <span class="badge b-in">IN: catalog.xml bytes</span>
@@ -284,38 +397,107 @@
     <!-- _xml_to_csvs -->
     <div class="card">
       <div class="c-lbl">Local XML Parser — doc_discovery.py:_xml_to_csvs()</div>
-      <div class="c-title">XML → N CSVs (one per top-3 element type)</div>
+      <div class="c-title">XML → one CSV per detected entity element type</div>
       <div class="detail">
-        Parses with <code>defusedxml.ElementTree</code> (safe against XML bombs).<br>
-        Counts all child element tags across the whole tree, takes the top-3 tags appearing ≥2 times.
+        Parses with <code>defusedxml.ElementTree</code> (safe against XML bombs/billion-laughs attacks).
+        If the file fails to parse, or if no element in the whole tree qualifies as an "entity" (see below),
+        the function gives up and returns the raw, untouched bytes as a single opaque CSV named
+        <code>{stem}.csv</code> — nothing is invented, and nothing crashes the job.
+      </div>
+
+      <div style="font-size:10px; color:var(--muted); margin: 12px 0 5px; letter-spacing:0.06em; text-transform:uppercase;">
+        Six sub-steps inside one function call
+      </div>
+      <div class="funnel">
+        <div class="stage-row">
+          <div class="sr-num" style="background:var(--s3);color:var(--blue);">1</div>
+          <div class="sr-body"><span class="k">Decide what counts as an "entity"</span> — an XML element
+          qualifies only if <em>either</em> (a) it has ≥ 2 distinct child-element tag names (a multi-field
+          record), <em>or</em> (b) it has no children at all but ≥ 1 XML attribute (a self-closing leaf like
+          <code>&lt;Widget id="1" name="alpha"/&gt;</code>). An element with exactly one child tag name and
+          some attributes qualifies as <strong>neither</strong> — this single rule is the most common reason
+          a real-world XML file yields fewer CSVs than someone expects.</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:var(--s3);color:var(--blue);">2</div>
+          <div class="sr-body"><span class="k">Skip transparent containers</span> — tags starting with
+          <code>_</code> (e.g. <code>&lt;_children&gt;</code>) and ISO locale codes used as multilingual value
+          wrappers (<code>en</code>, <code>de</code>, <code>fr</code>, <code>ja_JP</code>, and 20+ others,
+          including bare 2-letter Oracle CPQ/BigMachines codes) are walked <em>through</em>, not counted as
+          entity types themselves — their real children inherit the FK lineage as if the wrapper weren't there.
+          <code>&lt;script&gt;</code>/<code>&lt;style&gt;</code>/<code>&lt;head&gt;</code> content is skipped outright.</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:var(--s3);color:var(--blue);">3</div>
+          <div class="sr-body"><span class="k">Extract fields</span> from both XML attributes and child-element
+          text. For a multilingual field (a child with locale sub-children), the <code>&lt;en&gt;</code> value is
+          preferred; otherwise the first non-empty locale value is used.</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:var(--s3);color:var(--blue);">4</div>
+          <div class="sr-body"><span class="k">Auto-fill a <code>name</code> field</span> when a row has no
+          <code>name</code> — checked against a priority list of candidate fields
+          (<code>variable_name</code>, <code>label</code>, <code>file_name</code> … plus CPQ/BigMachines-specific
+          hints like <code>bm_variable_name</code>, <code>func_name</code>, <code>rule_name</code>,
+          <code>java_class_name</code> that degrade gracefully to no-ops on non-CPQ data).</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:var(--s3);color:var(--blue);">5</div>
+          <div class="sr-body"><span class="k">Inject the FK column</span> — every entity row gets a
+          <code>{parent_tag}_id</code> column set to its nearest non-container ancestor's id/guid. This is how
+          <code>_detect_fk_links()</code> later finds the relationship automatically. If the parent has no
+          id/guid at all, no FK column is injected for its direct children (deliberately — a constant
+          placeholder value would create a spurious column that can never be joined).</div>
+        </div>
+        <div class="stage-row">
+          <div class="sr-num" style="background:var(--s3);color:var(--blue);">6</div>
+          <div class="sr-body"><span class="k">Rank, cap, and write CSVs</span> — of all qualifying entity
+          types, those with a real <code>name</code> field are preferred over unnamed ones (typically pure
+          junction/FK-only tables), ordered by frequency, and the list is capped at
+          <code>ARYX_XML_MAX_ENTITY_TYPES</code> (<strong>default 20</strong>, not a fixed "top 3"). Each
+          type's row count is separately capped at <code>ARYX_XML_MAX_ROWS_PER_TYPE</code> (default 500). One
+          CSV per surviving type is written as <code>{stem}_{tag}.csv</code>.</div>
+        </div>
       </div>
 
       <div class="xml-expand" style="margin-top:10px">
-        <div class="xe-title">Example — catalog.xml input:</div>
+        <div class="xe-title">Worked example — an XML shape that actually clears the entity-classification bar in step 1:</div>
         <pre>&lt;catalog&gt;
-  &lt;product id="P1" name="Widget A" price="9.99"&gt;
+  &lt;product id="P1" name="Widget A"&gt;
+    &lt;price&gt;9.99&lt;/price&gt;
     &lt;category id="C1" name="Widgets"/&gt;
   &lt;/product&gt;
-  &lt;product id="P2" name="Widget B" price="14.99"&gt;
+  &lt;product id="P2" name="Widget B"&gt;
+    &lt;price&gt;14.99&lt;/price&gt;
     &lt;category id="C1" name="Widgets"/&gt;
   &lt;/product&gt;
 &lt;/catalog&gt;</pre>
       </div>
+      <div class="detail" style="margin: 4px 0 8px">
+        Why this shape and not a simpler one: <code>&lt;product&gt;</code> has two distinct child tag names
+        (<code>price</code>, <code>category</code>) so it clears rule (a); <code>&lt;category&gt;</code> has no
+        children but does have attributes, so it clears rule (b). Verified by running
+        <code>_xml_to_csvs()</code> against this exact input:
+      </div>
       <div class="xml-expand">
-        <div class="xe-title">Output CSVs (<code>catalog_product.csv</code> + <code>catalog_category.csv</code>):</div>
+        <div class="xe-title">Output (confirmed by execution, not just read from source):</div>
         <pre>catalog_product.csv:
-  _element_type, id,  name,     price,   catalog_id
-  product,       P1,  Widget A, 9.99,    (root attr or None)
-  product,       P2,  Widget B, 14.99,   ...
+  _element_type, id, name,     price
+  product,       P1, Widget A, 9.99
+  product,       P2, Widget B, 14.99
 
 catalog_category.csv:
-  _element_type, id,  name,    product_id   ← injected FK
-  category,      C1,  Widgets, P1
-  category,      C1,  Widgets, P2</pre>
+  _element_type, product_id, id, name   ← product_id is the injected FK
+  category,      P1,         C1, Widgets
+  category,      P2,         C1, Widgets</pre>
       </div>
       <div class="alert info" style="margin-top:8px">
         Each child CSV gets a <code>{parent_tag}_id</code> column injected automatically.
-        This is how <code>_detect_fk_links()</code> later finds the relationship between entity types — it looks for the <code>{TypeB}_id</code> naming pattern.
+        This is how <code>_detect_fk_links()</code> later finds the relationship between entity types — it looks
+        for the <code>{TypeB}_id</code> naming pattern. See the corrections section for what happens if a
+        <code>&lt;product&gt;</code> element only has <em>one</em> child tag (like a bare nested
+        <code>&lt;category&gt;</code> with no <code>&lt;price&gt;</code> sibling) — that shape does not qualify
+        as an entity under the current rule, and the whole file falls back to a single raw-upload CSV instead.
       </div>
       <div class="badges">
         <span class="badge b-in">IN: catalog.xml bytes, stem="catalog"</span>
@@ -326,18 +508,25 @@ catalog_category.csv:
     <!-- _infer_type x2 — OCI GenAI -->
     <div class="card oci">
       <div class="c-lbl">Type Inference — _infer_type() × 2 CSVs</div>
-      <div class="c-title">OCI GenAI Chat (menial tier) — API Call D</div>
+      <div class="c-title">OCI GenAI Chat ("menial" role → broker tier "cheap") — API Call D</div>
       <div class="detail">
         Called once per CSV. Filename signal wins when non-generic:<br>
         <code>catalog_product.csv</code> → <code>_stem_type</code> → <code>"CatalogProduct"</code> (not generic → wins)<br>
         <code>catalog_category.csv</code> → <code>"CatalogCategory"</code> (not generic → wins)<br><br>
-        LLM is still called to determine <span class="k">match_keys</span> even when filename wins.
+        LLM is still called to determine <span class="k">match_keys</span> even when filename wins. Internally
+        this calls <code>llm_runtime.chat("menial", …)</code>, which calls
+        <code>aryx.llm.complete_text(broker, "cheap", …)</code> — the "menial" name is a UI/role label, the
+        actual broker tier passed through is <code>"cheap"</code>.
       </div>
       <div class="oci-call">
-        <div class="oci-tag">OCI GenAI Chat — menial tier</div>
+        <div class="oci-tag">OCI GenAI Chat — "cheap" tier</div>
         <div class="detail">
           <span class="k">Input:</span> first 600 bytes of CSV rows + filename + context<br>
           <span class="k">Prompt:</span> "Which 1-2 columns UNIQUELY IDENTIFY each row?"<br>
+          <span class="k">Why it still reaches OCI:</span> <code>complete_text()</code> calls
+          <code>_use_oci_for("cheap")</code> and short-circuits to OCI <em>before</em> even consulting the
+          broker's model registry — so it doesn't matter that this broker was built with a "local"
+          Ollama-style registry.
         </div>
         <pre>→ {"ontology_type": "CatalogProduct", "match_keys": ["id"]}
 → {"ontology_type": "CatalogCategory", "match_keys": ["id"]}
@@ -349,7 +538,7 @@ catalog_category.csv:
       <div class="badges">
         <span class="badge b-in">IN: CSV sample + filename + context</span>
         <span class="badge b-out">OUT: {ontology_type, match_keys} × 2</span>
-        <span class="badge b-oci">OCI GenAI Chat (menial)</span>
+        <span class="badge b-oci">OCI GenAI Chat (cheap tier)</span>
       </div>
     </div>
 
@@ -385,11 +574,13 @@ catalog_category.csv:
 }</pre>
       </div>
       <div class="alert ok" style="margin-top:8px">
-        <span class="k">GET /admin/docs/summary returns:</span> <code>{"types": [], "files": [{"filename":"catalog_product.csv", ...}, ...]}</code><br>
+        <span class="k">GET /admin/docs/summary/{did} returns:</span> <code>data["summary"]</code> directly —
+        <code>{"types": [], "files": [{"filename":"catalog_product.csv", ...}, ...]}</code> (an empty/expired
+        discovery_id returns <code>{}</code>, not a 404).<br>
         User sees no extracted entity types (expected for XML) — only the file type plans to approve.
       </div>
       <div class="badges">
-        <span class="badge b-mem">MEM: discoveries._STORE[did]</span>
+        <span class="badge b-mem">MEM: discoveries._STORE[did] (in-process, not persisted to DB)</span>
         <span class="badge b-db">aryx_jobs UPDATE (complete)</span>
       </div>
     </div>
@@ -423,9 +614,10 @@ catalog_category.csv:
       <div class="c-title">Request Entry</div>
       <div class="detail">
         <span class="k">Body:</span> <code>{"discovery_id":"a3f9...", "approved_types":[], "approved_files":["catalog_product.csv","catalog_category.csv"]}</code><br>
-        Guard: <code>discoveries.get(did)</code> → 404 if expired<br>
+        Guard: <code>discoveries.get(did)</code> → <code>404 "unknown or expired discovery"</code> if expired<br>
         Creates: <code>job_id = uuid4().hex</code> · INSERT <code>aryx_jobs</code><br>
-        Returns: <code>{"status":"queued","job_id":"b7c2..."}</code>
+        Returns: <code>{"status":"queued","job_id":"b7c2..."}</code> — same "answer now, work in the
+        background" shape as Phase 1.
       </div>
       <div class="badges">
         <span class="badge b-in">approved_types=[] · approved_files=[2 CSVs]</span>
@@ -434,12 +626,38 @@ catalog_category.csv:
       </div>
     </div>
 
-    <!-- FK DETECTION -->
+    <!-- PERSIST XML SOURCES -->
+    <div class="card fk">
+      <div class="c-lbl">Pre-loop — _persist_xml_sources(valid_plans)</div>
+      <div class="c-title">Save the original catalog.xml + its derived CSVs → aryx_datasource</div>
+      <div class="detail">
+        Not present in earlier versions of this page. Runs before FK detection: groups the approved CSV
+        plans back by their original source filename (<code>catalog.xml</code>) and, for each source file,
+        calls <code>upsert_xml_catalog_entry()</code> via <code>DatasourceStore</code>. This writes one row
+        into <code>aryx_datasource</code> with <code>kind="xml"</code> and a <code>config_json</code> column
+        holding the original XML bytes plus a base64-encoded copy of every derived CSV
+        (<code>xml_asset_record()</code>).
+      </div>
+      <div class="alert info" style="margin-top:8px">
+        <span class="k">Plain English:</span> this is what lets the UI later show "this workspace has a
+        source called catalog.xml, and here are the 2 CSVs we split it into" — and let a user re-download the
+        original file — even though the pipeline itself only ever ingests the derived CSVs from this point on.
+      </div>
+      <div class="badges">
+        <span class="badge b-db">aryx_datasource INSERT/UPDATE (kind="xml")</span>
+      </div>
+    </div>
+
+    <!-- FK DETECTION (batch-local) -->
     <div class="card fk">
       <div class="c-lbl">Pre-loop — _detect_fk_links(valid_plans)</div>
-      <div class="c-title">Auto FK Detection Across the Two CSVs</div>
+      <div class="c-title">Auto FK Detection Across the Files in <em>This</em> Batch</div>
       <div class="detail">
-        Scans headers of both CSVs for <code>{TypeB}_id</code> or <code>{TypeB}_name</code> patterns.<br><br>
+        Scans headers of both CSVs for <code>{TypeB}_id</code> or <code>{TypeB}_name</code> patterns
+        (case-insensitive, singular or plural, and — more thoroughly than a simple string match — also
+        tries partial camelCase-derived stems and skips any candidate column whose value never actually
+        varies across a 20-row sample, since a constant value is organisational context, not a real
+        foreign key).<br><br>
         <span class="k">catalog_category.csv</span> has column <code>product_id</code><br>
         → matches pattern <code>{CatalogProduct}_id</code> → <code>product_id</code> → FK detected
       </div>
@@ -459,18 +677,53 @@ catalog_category.csv:
       </div>
     </div>
 
+    <!-- FK DETECTION (workspace-wide) -->
+    <div class="card fk">
+      <div class="c-lbl">Pre-loop — _detect_fk_links_workspace(last_plan, known_types)</div>
+      <div class="c-title">Auto FK Detection Against Types Already In This Workspace</div>
+      <div class="detail">
+        Not present in earlier versions of this page. Looks up every ontology type already registered in
+        this workspace via <code>OntologyStore.list_types()</code>, then checks the <strong>last</strong>
+        approved file's column headers against each of those known types using the same
+        <code>{Type}_id</code>/<code>{Type}_name</code> pattern. This is what wires a brand-new upload to
+        entities from an <em>earlier, unrelated</em> ingest — it fires even for a single-file confirm job
+        where the batch-local pass above returns nothing, because there is no second file in the batch to
+        compare against.
+      </div>
+      <div class="alert info" style="margin-top:8px">
+        <span class="k">Plain English:</span> the batch-local pass only looks at the files you're
+        uploading right now. This second pass also looks at everything already in the workspace's
+        knowledge graph, so uploading <code>catalog_category.csv</code> alone, a week after
+        <code>catalog_product.csv</code> was ingested, still produces the same category→product edge.
+      </div>
+      <div class="badges">
+        <span class="badge b-in">IN: last approved plan + known workspace types</span>
+        <span class="badge b-out">OUT: additional auto_fk specs, merged with the batch-local list</span>
+      </div>
+    </div>
+
     <!-- LOOP LABEL -->
     <div style="font-size:10px; color:var(--muted); letter-spacing:0.07em; text-transform:uppercase; margin-bottom:8px; padding-left:2px;">
-      Loop — run_pipeline() called twice (once per approved file)
+      Ingest loop — run_pipeline() called once per approved file, non-last files in parallel
+    </div>
+    <div class="alert info" style="margin-bottom:12px;">
+      This is <em>not</em> a plain "for file in files" loop. All non-last approved files run
+      <strong>concurrently</strong> in a thread pool sized by <code>ARYX_INGEST_WORKERS</code> (default 3);
+      only the single <strong>last</strong> file then runs afterward, serially. Two reasons: the last file's
+      FK links (Stage 4 below) need every entity from every earlier file to already exist, and only one
+      process may safely rebuild the graph projection at a time (non-last files pass
+      <code>skip_graph=True</code>). With exactly two files, as in this example, the practical effect looks
+      like "product runs, then category runs" — but the mechanism is parallel-then-serial, and with three or
+      more approved files the first N-1 genuinely race each other.
     </div>
 
     <!-- STAGE 1 — DISCOVER -->
     <div class="card stage">
-      <div class="c-lbl">Stage 1 / 5 — Discover (× 2 files)</div>
+      <div class="c-lbl">Stage 1 / 6 — Discover (× 2 files)</div>
       <div class="c-title">Land CSV rows — run_spine() → aryx_landed</div>
       <div class="detail">
-        <span class="k">File 1:</span> <code>CsvConnector(catalog_product.csv, system="csv", dataset="catalog_product")</code><br>
-        <span class="k">File 2:</span> <code>CsvConnector(catalog_category.csv, system="csv", dataset="catalog_category")</code>
+        <span class="k">File 1 (non-last, parallel pool):</span> <code>CsvConnector(catalog_product.csv, system="csv", dataset="catalog_product")</code><br>
+        <span class="k">File 2 (last, serial):</span> <code>CsvConnector(catalog_category.csv, system="csv", dataset="catalog_category")</code>
       </div>
       <div class="funnel" style="margin-top:10px">
         <div class="stage-row">
@@ -480,7 +733,7 @@ catalog_category.csv:
         </div>
         <div class="stage-row">
           <div class="sr-num" style="background:#091508;color:var(--green);">b</div>
-          <div class="sr-body"><span class="k">run_spine(connector, sink)</span> → clean + profile each row → <code>sink.land(record)</code> → batched INSERT into aryx_landed (payload JSONB)</div>
+          <div class="sr-body"><span class="k">run_spine(connector, sink)</span> → clean + profile each row → <code>sink.land(record)</code> → batched INSERT into aryx_landed</div>
           <div class="sr-db">aryx_landed</div>
         </div>
         <div class="stage-row">
@@ -494,15 +747,22 @@ catalog_category.csv:
           <div class="sr-db">aryx_runs</div>
         </div>
       </div>
+      <div class="alert no-doc" style="margin-top:8px">
+        ⚠ In Postgres mode this INSERT literally carries <code>::jsonb</code>-cast payloads. In OCI mode
+        (see the mechanism primer above) the exact same <code>PostgresStore.insert_records()</code> call
+        runs against Oracle instead — the cast is stripped, the <code>psycopg.Json()</code> wrapper is
+        unwrapped to a plain string, and the row lands in a CLOB column on an Oracle table with the same
+        name, through the same Python code, with the calling code none the wiser.
+      </div>
       <div class="badges">
         <span class="badge b-out">OUT: run_id: int</span>
-        <span class="badge b-db">aryx_runs · aryx_landed · aryx_profile_columns</span>
+        <span class="badge b-db">aryx_runs · aryx_landed · aryx_profile_columns (Postgres OR Oracle ADB, per effective_db_backend())</span>
       </div>
     </div>
 
     <!-- STAGE 2 — RESOLVE -->
     <div class="card stage">
-      <div class="c-lbl">Stage 2 / 5 — Resolve (× 2 files)</div>
+      <div class="c-lbl">Stage 2 / 6 — Resolve (× 2 files)</div>
       <div class="c-title">Entity Resolution Funnel → aryx_entity</div>
       <div class="detail">
         <code>records = store.landed_records(run_id, ["id"])</code><br>
@@ -515,7 +775,7 @@ catalog_category.csv:
         </div>
         <div class="stage-row">
           <div class="sr-num" style="background:#120d28;color:var(--violet);">b</div>
-          <div class="sr-body"><span class="k">_block_embeddings(group, broker)</span> — embeds match texts for cosine similarity</div>
+          <div class="sr-body"><span class="k">_block_embeddings(group, broker)</span> — embeds match texts for cosine similarity, via <code>broker.embed()</code></div>
           <div class="sr-api">OCI GenAI Embed</div>
         </div>
         <div class="stage-row">
@@ -529,7 +789,9 @@ catalog_category.csv:
         <div class="oci-tag">OCI GenAI Embed — API A</div>
         <div class="detail"><span class="k">Input:</span> match text per record (e.g. "P1", "Widget A", …) · batched<br>
         <span class="k">Model:</span> cohere.embed-multilingual-v3.0 · dim=1024<br>
-        <span class="k">Skip when:</span> ARYX_ER_AUTO_MERGE ≥ 1.0 AND ARYX_ER_ADJUDICATE ≥ 1.0</div>
+        <span class="k">Skip when:</span> ARYX_ER_AUTO_MERGE ≥ 1.0 AND ARYX_ER_ADJUDICATE ≥ 1.0<br>
+        <span class="k">Mechanism:</span> <code>Broker.embed()</code> checks
+        <code>settings.effective_embed_backend()</code> fresh on every call — see the mechanism primer.</div>
       </div>
 
       <!-- Threshold -->
@@ -556,6 +818,11 @@ catalog_category.csv:
           <div class="t-api">no API</div>
         </div>
       </div>
+      <div class="detail" style="margin-top:6px">
+        For our example, IDs are exact strings ("P1" vs "P1") — <code>ARYX_ER_EXACT_ID_MATCH</code>
+        (default on) resolves opaque-identifier pairs by exact equality rather than fuzzy scoring, since
+        fuzzy similarity is semantically wrong for sequential IDs.
+      </div>
 
       <!-- OCI adjudicate callout -->
       <div class="oci-call">
@@ -572,6 +839,7 @@ Conservative: if OCI unavailable → pair goes to aryx_adjudication (pending)</p
       <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:10px; font-size:11px; color:var(--muted)">
         <span class="k">Golden record:</span> confidence-weighted merge per attribute · conflicts → <code>aryx_attribute_conflict</code><br>
         <span class="k">Ontology type seeded (idempotent):</span> INSERT <code>aryx_ontology_type</code> ON CONFLICT DO NOTHING
+        (in OCI mode: ON CONFLICT clause stripped, ORA-00001 caught instead — see mechanism primer)
       </div>
       <div class="badges">
         <span class="badge b-out">OUT: entities: int</span>
@@ -580,15 +848,27 @@ Conservative: if OCI unavailable → pair goes to aryx_adjudication (pending)</p
       </div>
     </div>
 
-    <!-- STAGE 3 — RELATE -->
+    <!-- STAGE 3 — RELATE (corrected gating) -->
     <div class="card stage">
-      <div class="c-lbl">Stage 3 / 5 — Relate (× 2 files, relate=True)</div>
+      <div class="c-lbl">Stage 3 / 6 — Relate (last file only, and OFF by default)</div>
       <div class="c-title">LLM Relationship Inference → aryx_relationship</div>
+      <div class="alert no-doc">
+        ⚠ Two gates, not one: <code>run_pipeline(..., relate=is_last and settings.ingest_relate)</code>. Both
+        must be true for this stage to run at all: (1) it must be the <strong>last</strong> approved file —
+        it never runs twice for a two-file batch — and (2) <code>ARYX_INGEST_RELATE</code> must be set to
+        <code>true</code>; it defaults to <code>false</code> because large payloads (e.g. CPQ function
+        bodies embedded in some XML exports) have been observed to make this stage hang. Out of the box,
+        for a plain XML/CSV confirm job, this stage does not run at all.
+      </div>
       <div class="detail">
-        For each entity pair (up to <code>ARYX_MAX_RELATE_PAIRS</code>): OCI GenAI infers whether a named relationship exists.
+        When enabled, for each candidate entity pair (up to <code>ARYX_MAX_RELATE_PAIRS</code>, default 10):
+        OCI GenAI infers whether a named relationship exists. A per-pair timeout
+        (<code>ARYX_RELATE_PAIR_TIMEOUT</code>, default 30s) means a stuck call abandons the rest of this
+        stage rather than blocking the whole confirm job — Stage 6 below is the actual correctness guarantee,
+        this stage is best-effort enrichment on top of it.
       </div>
       <div class="oci-call">
-        <div class="oci-tag">OCI GenAI Chat (frontier) — API C</div>
+        <div class="oci-tag">OCI GenAI Chat (frontier) — API C — only if ARYX_INGEST_RELATE=true</div>
         <pre>{"entity_a": {"type":"CatalogProduct","name":"Widget A","price":"9.99"},
  "entity_b": {"type":"CatalogProduct","name":"Widget B","price":"14.99"}}
 → {"has_relationship": false}        # different products, no relationship
@@ -599,18 +879,37 @@ Conservative: if OCI unavailable → pair goes to aryx_adjudication (pending)</p
 → INSERT aryx_relationship</pre>
       </div>
       <div class="badges">
-        <span class="badge b-db">aryx_relationship INSERT</span>
-        <span class="badge b-oci">OCI GenAI Chat (frontier)</span>
+        <span class="badge b-db">aryx_relationship INSERT (conditional)</span>
+        <span class="badge b-oci">OCI GenAI Chat (frontier) — gated off by default</span>
+      </div>
+    </div>
+
+    <!-- STAGE 3.5 — SCHEMA FK (new) -->
+    <div class="card stage">
+      <div class="c-lbl">Stage 3.5 / 6 — Schema-level FK inference (same gate as Stage 3)</div>
+      <div class="c-title">_infer_schema_fk_links() — one LLM call for ALL type schemas combined</div>
+      <div class="detail">
+        Not present in earlier versions of this page, and gated by the exact same
+        <code>relate and not runner.skip("schema_fk")</code> condition as Stage 3 — off by default for the
+        same reason. When it does run, it makes a <em>single</em> LLM call across every ontology type's
+        schema at once, looking for shared-value joins that don't follow the <code>{Type}_id</code>/
+        <code>{Type}_name</code> naming pattern the deterministic FK passes rely on. Any link it finds is
+        then applied to every matching entity via the same <code>link_by_attribute()</code> used in Stage 4.
+      </div>
+      <div class="badges">
+        <span class="badge b-db">aryx_relationship INSERT (conditional)</span>
+        <span class="badge b-oci">OCI GenAI Chat (frontier) — gated off by default, one call total</span>
       </div>
     </div>
 
     <!-- STAGE 4 — FK LINK (last file only) -->
     <div class="card fk">
-      <div class="c-lbl">Stage 4 / 5 — FK Link (catalog_category.csv only — last file)</div>
+      <div class="c-lbl">Stage 4 / 6 — FK Link (catalog_category.csv only — last file)</div>
       <div class="c-title">Deterministic Cross-file Join (no API)</div>
       <div class="detail">
-        Uses the <code>auto_fk</code> spec detected before the loop.
-        At this point all CatalogProduct entities exist in <code>aryx_entity</code> — the FK match can succeed.
+        Uses the merged <code>auto_fk</code> list from <em>both</em> pre-loop FK-detection passes
+        (batch-local + workspace-wide). At this point all CatalogProduct entities exist in
+        <code>aryx_entity</code> — the FK match can succeed.
       </div>
       <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:8px; font-size:10.5px; color:var(--text)">
         <pre>link_by_attribute(
@@ -623,20 +922,52 @@ Conservative: if OCI unavailable → pair goes to aryx_adjudication (pending)</p
       </div>
       <div class="alert ok" style="margin-top:8px">
         Passed to the last file only — <code>fk_links=auto_fk if is_last else None</code>.
-        All CatalogProduct entities must exist before category→product links can be wired.
+        All CatalogProduct entities must exist before category→product links can be wired. This always runs
+        (no settings gate) — unlike Stages 3 and 3.5, which are opt-in.
       </div>
       <div class="badges">
         <span class="badge b-db">aryx_relationship INSERT</span>
       </div>
     </div>
 
-    <!-- STAGE 5 — PROJECT to Oracle Graph -->
+    <!-- STAGE 5 (new) — RELATE ISOLATED safety net -->
+    <div class="card stage">
+      <div class="c-lbl">Stage 5 / 6 — Relate Isolated safety net (× 2 files, always runs)</div>
+      <div class="c-title">_relate_isolated() — the actual "no orphan nodes" guarantee</div>
+      <div class="detail">
+        Not present in earlier versions of this page, and — unlike Stages 3/3.5 — <strong>not gated</strong>
+        by <code>ARYX_INGEST_RELATE</code>. Every <code>run_pipeline()</code> call ends with this stage. It
+        finds every entity in the whole workspace with zero relationship edges (one anti-join query, not a
+        per-entity scan), groups them by ontology type, and makes <strong>one LLM call per isolated
+        type</strong> — not per isolated entity — using a single sample anchor from another type. If that
+        call says the types are related, one edge is created from every isolated entity of that type to the
+        anchor. Needs at least 2 distinct ontology types already resolved to do anything, so it is a
+        no-op the first time it runs (only CatalogProduct exists yet) and does its real work the second time
+        (after CatalogCategory is also resolved).
+      </div>
+      <div class="alert info" style="margin-top:8px">
+        <span class="k">Plain English:</span> this is the safety net that makes the earlier "Relate" stage
+        optional in the first place — even with <code>ARYX_INGEST_RELATE=false</code>, no entity is left
+        completely disconnected from the graph; it just gets connected by this cheaper, type-level pass
+        instead of the more expensive per-pair one.
+      </div>
+      <div class="badges">
+        <span class="badge b-db">aryx_relationship INSERT (only if ≥ 2 types + isolated entities exist)</span>
+        <span class="badge b-oci">OCI GenAI Chat (frontier) — always runs, cost bounded by type count not entity count</span>
+      </div>
+    </div>
+
+    <!-- STAGE 6 — PROJECT to Oracle Graph -->
     <div class="card graph">
-      <div class="c-lbl">Stage 5 / 5 — Project</div>
+      <div class="c-lbl">Stage 6 / 6 — Project (last file only)</div>
       <div class="c-title">Oracle Graph — OracleGraphStore (OCI mode)</div>
       <div class="detail">
-        <code>settings.effective_graph_backend()</code> returns <code>"oci_graph"</code> when <code>ARYX_OCI_MODE=True</code>.<br>
-        <code>OracleGraphStore(settings.oci_adb_dsn, workspace_id)</code> — connects to Oracle ADB 23ai.
+        <code>settings.effective_graph_backend()</code> returns <code>"oci_graph"</code> when
+        <code>ARYX_OCI_MODE=True</code> (or <code>ARYX_GRAPH_BACKEND=oci_graph</code> explicitly).<br>
+        <code>OracleGraphStore(settings.oci_adb_dsn, workspace_id)</code> — connects to Oracle ADB 23ai using
+        <code>oci_adb_dsn</code> directly, <em>not</em> the <code>rdb_dsn</code> value the relational stores
+        above all used (see the DSN-split note in the mechanism primer). Only runs for the last file —
+        non-last files pass <code>skip_graph=True</code> so two processes never rebuild the graph at once.
       </div>
       <div style="background:var(--s3); border-radius:4px; padding:8px 10px; margin-top:10px; font-size:10.5px;">
         <pre style="color:var(--text)">Reads: aryx_entity WHERE workspace_id=1
@@ -650,7 +981,6 @@ Reads: aryx_relationship WHERE workspace_id=1
 Writes:
   INSERT INTO ws1_edges (src, dst, label, confidence)
     VALUES (3, 1, 'CATALOGPRODUCT_HAS_CATALOGCATEGORY', 0.95)
-    VALUES (3, 1, 'CATEGORY_CONTAINS_PRODUCT', 0.91)
 
 # _build_type_ancestors(dsn) folds parent type labels
 # onto each node if aryx_ontology_type has parent links</pre>
@@ -665,11 +995,33 @@ Writes:
       </div>
     </div>
 
+    <!-- ZERO-LOSS VALIDATION -->
+    <div class="card mem">
+      <div class="c-lbl">After the loop — zero-loss validation (best-effort)</div>
+      <div class="c-title">ground_truth_from_tabular() + validate_workspace()</div>
+      <div class="detail">
+        Not present in earlier versions of this page. After both files finish, <code>ingest_confirmed()</code>
+        builds a "ground truth" record count from the original tabular plans and checks that the same count
+        made it all the way to the graph. This is <strong>logging only</strong> — a mismatch is written as a
+        warning line, it never fails or retries the confirm job. Wrapped in a try/except that swallows any
+        exception from the validation itself, so a bug in the validator cannot break ingestion either.
+      </div>
+      <div class="badges">
+        <span class="badge b-mem">Log-only — no DB write, never fails the job</span>
+      </div>
+    </div>
+
   </div><!-- /phase p2 -->
 
   <!-- ════════ COMPLETE DB WRITES ════════ -->
   <div style="margin-top:32px">
     <div style="font-size:11px; color:var(--blue); letter-spacing:0.08em; text-transform:uppercase; border-bottom:1px solid var(--border); padding-bottom:5px; margin-bottom:12px;">All DB Writes — XML + OCI Full Flow</div>
+    <div class="alert no-doc" style="margin-bottom:10px">
+      ⚠ Every row below marked "Yes" is a write to Oracle ADB 23ai in full OCI mode, not Postgres — the
+      table names and column shapes are identical, but the connection pool and SQL are translated per the
+      mechanism primer at the top of this page. Only the graph row was ever documented as OCI-specific
+      before this revision.
+    </div>
     <div class="scroll-x">
       <table>
         <tr><th>Table</th><th>Phase</th><th>Stage</th><th>Written?</th></tr>
@@ -677,6 +1029,7 @@ Writes:
         <tr><td class="c-m"><code>aryx_document</code></td><td>—</td><td>—</td><td class="c-r">No — XML is tabular, no document pipeline</td></tr>
         <tr><td class="c-m"><code>aryx_chunk</code></td><td>—</td><td>—</td><td class="c-r">No</td></tr>
         <tr><td class="c-m"><code>aryx_chunk_embedding</code></td><td>—</td><td>—</td><td class="c-r">No — no /ask RAG for XML content</td></tr>
+        <tr><td class="c-y"><code>aryx_datasource</code></td><td>Phase 2</td><td>Pre-loop</td><td class="c-g">Yes — original XML + derived CSVs, kind="xml"</td></tr>
         <tr><td class="c-y"><code>aryx_runs</code></td><td>Phase 2</td><td>Stage 1 (× 2)</td><td class="c-g">Yes — one per run_pipeline call</td></tr>
         <tr><td class="c-y"><code>aryx_landed</code></td><td>Phase 2</td><td>Stage 1 (× 2)</td><td class="c-g">Yes — one per CSV row</td></tr>
         <tr><td class="c-y"><code>aryx_profile_columns</code></td><td>Phase 2</td><td>Stage 1 (× 2)</td><td class="c-g">Yes</td></tr>
@@ -684,8 +1037,8 @@ Writes:
         <tr><td class="c-g"><code>aryx_entity_member</code></td><td>Phase 2</td><td>Stage 2 (× 2)</td><td class="c-g">Yes</td></tr>
         <tr><td class="c-y"><code>aryx_adjudication</code></td><td>Phase 2</td><td>Stage 2</td><td>Only if pairs in review/adj band</td></tr>
         <tr><td class="c-y"><code>aryx_ontology_type</code></td><td>Phase 2</td><td>After stage 2</td><td class="c-g">Yes (idempotent)</td></tr>
-        <tr><td class="c-g"><code>aryx_relationship</code></td><td>Phase 2</td><td>Stage 3 (LLM) + Stage 4 (FK)</td><td class="c-g">Yes</td></tr>
-        <tr><td class="c-g">Oracle Graph vertices/edges</td><td>Phase 2</td><td>Stage 5</td><td class="c-g">Yes — OCI ADB 23ai</td></tr>
+        <tr><td class="c-g"><code>aryx_relationship</code></td><td>Phase 2</td><td>Stage 4 (always) + 3/3.5/5 (conditional)</td><td class="c-g">Yes — at minimum from Stage 4's FK links</td></tr>
+        <tr><td class="c-g">Oracle Graph vertices/edges</td><td>Phase 2</td><td>Stage 6</td><td class="c-g">Yes — OCI ADB 23ai, via oci_adb_dsn (not rdb_dsn)</td></tr>
       </table>
     </div>
   </div>
@@ -706,9 +1059,9 @@ Writes:
         <tr>
           <td class="c-o">D · Type inference</td>
           <td>/read</td>
-          <td>OCI GenAI Chat (menial)</td>
+          <td>OCI GenAI Chat ("cheap" tier)</td>
           <td>Once per XML-derived CSV (for match_keys)</td>
-          <td>Same — Ollama /api/chat</td>
+          <td>Ollama /api/chat</td>
         </tr>
         <tr>
           <td class="c-o">A · Embed</td>
@@ -728,15 +1081,174 @@ Writes:
           <td class="c-o">C · Relate</td>
           <td>/confirm stage 3</td>
           <td>OCI GenAI Chat (frontier)</td>
-          <td>Every run (relate=True), capped at max_pairs</td>
+          <td>Last file only, and only when ARYX_INGEST_RELATE=true (default: never)</td>
           <td>Ollama /api/chat</td>
         </tr>
         <tr>
-          <td class="c-o">Graph write</td>
+          <td class="c-o">C2 · Schema FK</td>
+          <td>/confirm stage 3.5</td>
+          <td>OCI GenAI Chat (frontier)</td>
+          <td>Same gate as C — one call for all types combined</td>
+          <td>Ollama /api/chat</td>
+        </tr>
+        <tr>
+          <td class="c-o">E · Relate Isolated</td>
           <td>/confirm stage 5</td>
+          <td>OCI GenAI Chat (frontier)</td>
+          <td>Every run_pipeline call, one call per isolated ontology type (no gate, no-op if &lt; 2 types resolved yet)</td>
+          <td>Ollama /api/chat</td>
+        </tr>
+        <tr>
+          <td class="c-o">Relational writes</td>
+          <td>/read + /confirm, all stages</td>
+          <td>OCI ADB 23ai (oracledb + SQL translation shim)</td>
+          <td>Whenever ARYX_DB_BACKEND resolves to "oci" — every store class, not just the graph</td>
+          <td>Postgres via psycopg3</td>
+        </tr>
+        <tr>
+          <td class="c-o">Graph write</td>
+          <td>/confirm stage 6</td>
           <td>OCI ADB 23ai Oracle Graph</td>
-          <td>Always in OCI mode</td>
+          <td>Always in OCI mode, last file only</td>
           <td>FalkorDB</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- ════════ CORRECTIONS ════════ -->
+  <div id="corrections" style="margin-top:24px">
+    <div style="font-size:11px; color:var(--yellow); letter-spacing:0.08em; text-transform:uppercase; border-bottom:1px solid var(--border); padding-bottom:5px; margin-bottom:12px;">Documentation Corrections — What Changed In This Pass, And Why (audited 2026-07-16)</div>
+    <div class="alert info" style="margin-bottom:10px">
+      This page was compared line-by-line against the current source
+      (<code>doc_discover_api.py</code>, <code>doc_discovery.py</code>, <code>orchestrate.py</code>,
+      <code>config.py</code>, <code>store/pool.py</code>, <code>store/oracle_pool.py</code>,
+      <code>queries/__init__.py</code>, <code>broker/__init__.py</code>, <code>llm.py</code>,
+      <code>llm_runtime.py</code>, <code>source_catalog.py</code>) and one claim was additionally verified
+      by executing <code>_xml_to_csvs()</code> directly against a test payload rather than trusting a
+      source-code read alone.
+    </div>
+    <div class="scroll-x">
+      <table>
+        <tr><th>Area</th><th>Old page said / implied</th><th>Current code actually does</th><th>Why it matters</th></tr>
+        <tr>
+          <td class="c-r">XML worked example</td>
+          <td>The example XML (<code>&lt;product&gt;</code> with attributes id/name/price and one nested
+          <code>&lt;category&gt;</code> child) produces catalog_product.csv + catalog_category.csv.</td>
+          <td class="c-g">Running <code>_xml_to_csvs()</code> against that exact XML today returns
+          <strong>one</strong> raw-upload CSV (<code>catalog.csv</code> containing the untouched XML bytes)
+          — the log line is literally "no entity elements detected … falling back to raw upload." A
+          <code>&lt;product&gt;</code> with exactly one child tag type does not clear the current entity
+          classification rule.</td>
+          <td>The flagship example no longer demonstrates what it claims to. Replaced with an XML shape
+          (product has two child tags: <code>price</code> + <code>category</code>) that was confirmed by
+          execution to produce the expected two-CSV output.</td>
+        </tr>
+        <tr>
+          <td class="c-r">Entity-type cap</td>
+          <td>"top-3 tags appearing ≥ 2 times"</td>
+          <td class="c-g">Structural rule per element (≥2 distinct child tag types, or a childless leaf with
+          ≥1 attribute), capped at <code>ARYX_XML_MAX_ENTITY_TYPES</code> (default <strong>20</strong>), named
+          types preferred over unnamed, rows per type separately capped at
+          <code>ARYX_XML_MAX_ROWS_PER_TYPE</code> (default 500).</td>
+          <td>"Top 3" undersells real CPQ/ERP exports with 15-20 element types by an order of magnitude, and
+          the classification rule — not a frequency count — is what actually decides whether something
+          becomes an entity at all.</td>
+        </tr>
+        <tr>
+          <td class="c-y">Missing step</td>
+          <td>Not mentioned.</td>
+          <td class="c-g"><code>_persist_xml_sources()</code> writes the original XML + derived CSVs to
+          <code>aryx_datasource</code> before FK detection.</td>
+          <td>Without this, a reader would not know the original uploaded file is retrievable later — only
+          the derived CSVs were described as persisted.</td>
+        </tr>
+        <tr>
+          <td class="c-y">Missing step</td>
+          <td>Not mentioned.</td>
+          <td class="c-g"><code>_detect_fk_links_workspace()</code> links the last file to ontology types
+          already in the workspace, not just to other files in the same batch.</td>
+          <td>Explains how a single later XML upload still gets linked into an existing graph — the old page
+          implied FK detection only ever compared files within one confirm call.</td>
+        </tr>
+        <tr>
+          <td class="c-r">Relate stage gating</td>
+          <td>"Stage 3/5 — Relate (× 2 files, relate=True)" — implied it always runs, once per file.</td>
+          <td class="c-g"><code>relate=is_last and settings.ingest_relate</code> — runs at most
+          <strong>once</strong> (last file only) and <code>ARYX_INGEST_RELATE</code> defaults to
+          <strong>false</strong>. Out of the box this stage does not run at all for tabular/XML ingests.</td>
+          <td>This was the single most misleading claim about "every run" OCI chat usage — the OCI Chat
+          (frontier) relate call is opt-in and rare in practice, not routine.</td>
+        </tr>
+        <tr>
+          <td class="c-y">Missing step</td>
+          <td>Not mentioned.</td>
+          <td class="c-g"><code>_infer_schema_fk_links()</code> ("schema_fk" stage) — one LLM call across
+          all type schemas, gated the same as Relate.</td>
+          <td>Rounds out the picture of what "relate=True" actually turns on.</td>
+        </tr>
+        <tr>
+          <td class="c-y">Missing step</td>
+          <td>Not mentioned.</td>
+          <td class="c-g"><code>_relate_isolated()</code> — always runs (no settings gate), one LLM call per
+          isolated ontology type, guarantees no fully disconnected entity.</td>
+          <td>This is the actual "zero orphan nodes" guarantee, and it is unconditional — omitting it made
+          the gated Relate stage look load-bearing when it is actually optional enrichment.</td>
+        </tr>
+        <tr>
+          <td class="c-y">Ingest loop shape</td>
+          <td>"Loop — run_pipeline() called twice" (implied a plain sequential loop).</td>
+          <td class="c-g">Non-last files run concurrently in a thread pool
+          (<code>ARYX_INGEST_WORKERS</code>, default 3); only the last file runs serially afterward.</td>
+          <td>Correct for 2 files by coincidence; matters once 3+ files are approved in one batch.</td>
+        </tr>
+        <tr>
+          <td class="c-r">Scope of "OCI Mode"</td>
+          <td>Only Stage 5 (graph projection) was described as switching to Oracle; Stages 1-4 were shown
+          with Postgres-flavoured detail ("payload JSONB").</td>
+          <td class="c-g"><code>ARYX_OCI_MODE=true</code> also flips <code>effective_db_backend()</code> to
+          "oci" by the same convenience-toggle mechanism, which swaps <em>every</em> relational store's
+          connection pool (psycopg3 → oracledb) and runs all SQL through a translation shim — this affects
+          aryx_runs, aryx_landed, aryx_entity, aryx_relationship, aryx_datasource, aryx_jobs, everything, not
+          only the graph write.</td>
+          <td>This was the biggest gap relative to the page's own title — "OCI Mode" was really only
+          documented for one of its six-plus effects.</td>
+        </tr>
+        <tr>
+          <td class="c-y">DSN split</td>
+          <td>Not mentioned — implied one DSN setting drives OCI mode.</td>
+          <td class="c-g">Relational stores use <code>settings.rdb_dsn</code> (<code>ARYX_RDB_DSN</code>)
+          everywhere in this flow; the graph store uses <code>settings.oci_adb_dsn</code>
+          (<code>ARYX_OCI_ADB_DSN</code>) instead. The two are separate settings that a deployment must set
+          consistently itself.</td>
+          <td>Operationally important: setting only <code>ARYX_OCI_ADB_DSN</code> and leaving
+          <code>ARYX_RDB_DSN</code> at its Postgres default would not move the relational tables to Oracle.</td>
+        </tr>
+        <tr>
+          <td class="c-y">HTTP validation claim</td>
+          <td>"Validates: ≤50 MB · extension in DOC_EXTS ∪ DATA_EXTS" at the /read handler.</td>
+          <td class="c-g">The handler only checks the 50 MB size limit. Extension filtering happens later,
+          silently, inside <code>_read_job()</code> — a file whose extension is in neither set is dropped
+          with no error surfaced anywhere.</td>
+          <td>A user uploading an unsupported file type gets no feedback that it was ignored.</td>
+        </tr>
+        <tr>
+          <td class="c-g">Confirmed accurate (no change needed)</td>
+          <td>OCI GenAI Embed/Chat calls for type-inference, adjudication, and the four-way resolve
+          threshold routing.</td>
+          <td class="c-g">Confirmed: <code>Broker.embed()</code> and <code>aryx.llm.complete_text/json()</code>
+          both re-check the global OCI settings on every call, independent of which broker object is passed
+          in — so these routing claims hold even though the broker used here is nominally a "local" one.</td>
+          <td>Included so it's clear this pass wasn't only removing claims — the mechanism behind these was
+          traced and is now spelled out explicitly in the primer at the top instead of being implied.</td>
+        </tr>
+        <tr>
+          <td class="c-g">Confirmed unaffected</td>
+          <td>N/A — task explicitly asked to check.</td>
+          <td class="c-g">The recent multi-sheet XLSX ingestion feature (<code>_xlsx_to_csvs()</code>) is a
+          fully separate function from <code>_xml_to_csvs()</code>; nothing about how <code>.xml</code> files
+          are parsed changed as part of that work.</td>
+          <td>Explicitly verified rather than assumed, per the task's request.</td>
         </tr>
       </table>
     </div>
@@ -745,5 +1257,9 @@ Writes:
 </div><!-- /wrap -->
 
 <div style="max-width:940px; margin: 32px auto 0; font-size:10px; color:var(--muted); text-align:center; padding-top:12px; border-top:1px solid var(--border)">
-  doc_discover_api.py · doc_discovery.py (_xml_to_csvs, _infer_type, _detect_fk_links, ingest_confirmed) · orchestrate.py · discover.py · resolution/run.py · pipeline/fk_edges.py · project.py · graph/oracle_graph_store.py
+  doc_discover_api.py · doc_discovery.py (_xml_to_csvs, _infer_type, _detect_fk_links, _detect_fk_links_workspace,
+  _persist_xml_sources, ingest_confirmed) · orchestrate.py · config.py (effective_*_backend, _resolve) ·
+  store/pool.py · store/oracle_pool.py · queries/__init__.py · broker/__init__.py · llm.py · llm_runtime.py ·
+  source_catalog.py · discover.py · resolve_entities.py · pipeline/enrich.py (_relate, _relate_isolated,
+  _infer_schema_fk_links) · pipeline/fk_edges.py · project.py · graph/oracle_graph_store.py
 </div>
