@@ -332,6 +332,16 @@ class CpqSession:
     pending_change_collision_vns: list[str] = field(default_factory=list)
     pending_change_collision_question: str = ""
 
+    # Same convention as pending_change_collision_vns/_question above, but
+    # for the OPTIONS-QUERY collision prompt (detect_label_collision inside
+    # _handle_cpq_qa — "what are the mounting types available?" when 2+
+    # attrs share a display_label) — a separate code path from the
+    # change-request collision, never given the same memory when that one
+    # was fixed (live-verified gap, 2026-07-23: replying with the exact
+    # variable_name shown in the prompt fell through to a generic nudge).
+    pending_label_collision_vns: list[str] = field(default_factory=list)
+    pending_label_collision_question: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

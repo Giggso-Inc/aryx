@@ -162,6 +162,40 @@ def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 
     return _label_mention_span(label_lower, q_lower, max_dropped_leading) is not None
 
 
+def _label_mentioned_strict(label_lower: str, q_lower: str) -> bool:
+    """Exact-phrase match, or a leading-word-dropped suffix that NEVER
+    degrades to a single generic shared word (e.g. "Type"/"Package").
+
+    Live-verified gap: `_label_mentioned`'s word-set fallback tier is
+    explicitly safe only as a coarse pre-filter (its own docstring: "a
+    false-positive span here costs an extra attr considered, never a
+    wrongly-resolved value") because `detect_change_request` always
+    requires a SEPARATE value-match (apply_answer/numeric extraction)
+    before actually resolving anything — a loose label match alone never
+    directly causes a wrong resolution there. `detect_attr_activation`/
+    `detect_attr_clear` (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2/D4)
+    have no such secondary check: the label match itself IS the final
+    decision. Confirmed live: "add surveillance package type" — meant for
+    "Surveillance Package Type" — instead matched an unrelated "Customer
+    Type" attr, because dropping "Customer" leaves the single word
+    "type", which trivially appears in almost any message mentioning any
+    "*Type"-suffixed attr. This helper keeps the same leading-word-drop
+    tolerance for 3+-word labels (dropping down to 2+ remaining words is
+    still discriminating) but requires the FULL label verbatim for a
+    2-word label — no single-word degradation, ever.
+    """
+    if label_lower in q_lower:
+        return True
+    words = label_lower.split()
+    if len(words) < 3:
+        return False  # 2-word (or shorter) labels: exact phrase only
+    for start in range(1, len(words) - 1):  # always leaves >= 2 words
+        suffix = " ".join(words[start:])
+        if suffix in q_lower:
+            return True
+    return False
+
+
 def _condition_value_matches(current_val: str, condition_value: str) -> bool:
     """True when current_val satisfies a single condition_attr/condition_value pair.
 
@@ -2920,7 +2954,14 @@ class CpqEngine:
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
-            if not target or target.variable_name in filled:
+            # A truthy check, not `in filled` — an empty string is D4's
+            # deliberate "user cleared this" marker
+            # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md), the single-select
+            # counterpart of filled_multi's existing "(none)" convention.
+            # A genuine rule re-assertion must still override it (same as
+            # it would override any other stale value) — only a REAL
+            # value already present blocks this rule from firing.
+            if not target or filled.get(target.variable_name):
                 continue
             if rule.script is not None:
                 if bml_eval is None:
@@ -3261,7 +3302,12 @@ class CpqEngine:
                     else:
                         filled[k] = iv
                     display_filled[k] = d
-                    sources.setdefault(k, "rule")
+                    # Force-set, not setdefault: `k` only ever reaches here
+                    # via the truthy (not `in filled`) check above, so any
+                    # existing tag is either absent or D4's empty-value
+                    # "user"-cleared marker being genuinely overridden by a
+                    # real rule firing — never a real prior value's tag.
+                    sources[k] = "rule"
 
             constrained_opts = self.apply_constraint_rules(
                 attrs, con_rules, filled, bml_eval=bml_eval,
@@ -3639,6 +3685,19 @@ class CpqEngine:
             vn = attr.variable_name
 
             if vn in filled:
+                # Deliberately cleared by the user (D4,
+                # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md) — an empty
+                # value tagged filled_source="user" is a standing "leave
+                # this blank" decision, the single-select counterpart of
+                # filled_multi's existing empty-plus-"user" "(none)"
+                # convention below. Never re-guessed by the blind
+                # first-by-order fallback on a later pass; only a genuine
+                # rule re-assertion (apply_recommendation_rules' truthy
+                # check, not `in filled`) overrides it, exactly like it
+                # would override any other stale value.
+                if filled[vn] == "" and sources.get(vn) == "user":
+                    display_filled[vn] = "(none)"
+                    continue
                 # Already answered in a prior turn — but a cascade may have
                 # narrowed this attr's allowed set since then (single-select
                 # counterpart of the multi-select re-validation below, §5/
@@ -3884,8 +3943,26 @@ class CpqEngine:
                     if _valid(o.item_value)
                     and (allowed_for_attr is None or o.item_value in allowed_for_attr)
                 ]
-                if len(valid_opts) == 1:
-                    # Exactly one choice — auto-fill, no user decision needed
+                if len(valid_opts) == 1 and attr.entity_id not in user_answered_dropped_ids:
+                    # Exactly one choice — auto-fill, no user decision needed.
+                    #
+                    # EXCLUDED when this attr's only-one-option state exists
+                    # because a constraint just rejected the CUSTOMER'S OWN
+                    # explicit answer this same turn (live-verified bug,
+                    # 2026-07-23: changing Billing Option to "Annual" got
+                    # silently replaced with "Immediate" — the drop was
+                    # correctly detected and noted, but this branch — a
+                    # DIFFERENT, earlier branch than the blind first-by-order
+                    # fallback the existing user_answered_dropped_ids guard
+                    # protects a few lines below — filled the one remaining
+                    # option unconditionally, with no awareness that "only
+                    # one option remains" was true BECAUSE it just excluded
+                    # what the customer picked). Falls through to `pending`
+                    # instead, same "a real decision deserves to be re-asked,
+                    # not silently re-guessed" principle as the sibling fix
+                    # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 4) — the
+                    # resume prompt shown for `pending` already tells the
+                    # customer the one remaining valid option.
                     value = valid_opts[0].item_value
                     display = valid_opts[0].display_name
                 elif (
@@ -4266,6 +4343,120 @@ class CpqEngine:
             to_remove = [iv for iv, _dn in mentioned if iv in current]
             if to_remove:
                 return attr, to_remove
+        return None
+
+    # "add/activate/include/bring back/turn on X" — re-activating a real,
+    # currently-excluded, optional catalog attr post-quote-generation
+    # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2). Deliberately distinct
+    # from _CHANGE_VERB_RE: "change X to Y" replaces an already-visible
+    # attr's value, while "add X" re-activates something not currently
+    # part of the quote at all.
+    _ADD_VERB_RE = re.compile(
+        r"\b(add|activate|include|bring\s+back|re-?add|reactivate|turn\s+on)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_attr_activation(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        hiding_rules: list[HidingRule],
+        workspace_id: int,
+        catalog_prefix: str,
+        bml_eval: BmlEvaluator | None = None,
+    ) -> ConfigAttr | None:
+        """Detect "add X"/"activate X" re-activating a real, currently-
+        excluded, optional attribute (D2). Never an invented field, never
+        a required one, never a bypass of a currently-active hiding rule.
+
+        A single unified eligibility check covers all 3 of D2's source
+        pools at once: `required == False`, not `attr.hidden` (BM-native
+        permanent hidden — a different concept from rule-conditional
+        hiding, never surfaced regardless of rule state), not already
+        filled/selected, and NOT currently hidden by an active hiding
+        rule (re-checked live against the CURRENT filled state via
+        `apply_hiding_rules`, never a cached/stale exclusion set — an
+        attr whose hiding condition is still true is never a candidate,
+        full stop). This naturally covers a declined multi-select (empty
+        `filled_multi`), a flow-exclusion-dropped attr
+        (`payload_flow_exclusions`), and a hiding-rule-excluded attr
+        whose condition lapsed — all three reduce to the same "real,
+        optional, currently invisible, not rule-blocked" predicate.
+        """
+        if not self._ADD_VERB_RE.search(question):
+            return None
+        _visible_now, _msgs, hidden_now = self.apply_hiding_rules(
+            attrs, filled, hiding_rules, bml_eval=bml_eval)
+        q_lower = question.lower()
+        for attr in attrs:
+            vn = attr.variable_name
+            if attr.required or attr.hidden:
+                continue
+            if vn in filled or filled_multi.get(vn):
+                continue
+            if vn in hidden_now:
+                continue  # still genuinely hidden by an active rule
+            if _label_mentioned_strict(attr.display_label.lower(), q_lower):
+                return attr
+        return None
+
+    # "clear/unset/blank X" — nullifying an optional SINGLE-select attr's
+    # current value back to empty (D4). Distinct from _REMOVE_VERB_RE
+    # (multi-select deselection, a different data structure entirely) and
+    # from _CHANGE_VERB_RE (replacing with a different concrete value).
+    _CLEAR_VERB_RE = re.compile(
+        r"\b(clear|unset|blank|leave\s+(?:it\s+)?(?:blank|empty|unset))\b",
+        re.IGNORECASE,
+    )
+
+    def detect_attr_clear(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+        bml_eval: BmlEvaluator | None = None,
+    ) -> ConfigAttr | None:
+        """Detect "clear X"/"unset X" nullifying an optional single-select
+        attribute's CURRENT value back to blank (D4) — never a required
+        attr, and never one a still-active rule would immediately refill.
+
+        Live-checked, not a static flag: simulates removing each
+        candidate from `filled` and re-runs
+        apply_recommendation_rules/apply_constraint_rules against that
+        trial state — if a recommendation would refire, or a constraint
+        narrows the attr to exactly one remaining valid option, clearing
+        is refused (the very next rule pass would just put the same value
+        straight back, silently, making the "clear" a no-op at best).
+        """
+        if not self._CLEAR_VERB_RE.search(question):
+            return None
+        q_lower = question.lower()
+        for attr in attrs:
+            vn = attr.variable_name
+            if attr.required or attr.select_type == "multi":
+                continue
+            if not filled.get(vn):
+                continue
+            if not _label_mentioned_strict(attr.display_label.lower(), q_lower):
+                continue
+            trial_filled = dict(filled)
+            trial_filled.pop(vn, None)
+            rec_fires = self.apply_recommendation_rules(
+                attrs, trial_filled, rec_rules, bml_eval=bml_eval)
+            if vn in rec_fires:
+                continue  # a recommendation would immediately refill it
+            constrained = self.apply_constraint_rules(
+                attrs, con_rules, trial_filled, bml_eval=bml_eval)
+            allowed = constrained.get(attr.entity_id)
+            if allowed is not None:
+                valid_opts = [o for o in attr.options if o.item_value in allowed]
+                if len(valid_opts) == 1:
+                    continue  # constraint narrows to one — would refill immediately
+            return attr
         return None
 
     # "change/set/update/make ... quantit(y|ies) ... to <number>" OR
