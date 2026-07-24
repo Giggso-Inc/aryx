@@ -356,23 +356,8 @@ def _branch_bool(body: str) -> bool | None:
 
 
 def referenced_variables(script: str) -> set[str]:
-    """Variable names compared in the script (Tier-1 scan, best effort).
-
-    Live-verified gap (2026-07-24): only matched a quoted-string RHS
-    (`var == "X"`), missing bare boolean literal comparisons (`var ==
-    true`) entirely — the exact same idiom `_CMP_RE` in evaluate_tier1
-    already had to learn to parse (bare booleans are common, e.g. "if
-    (spareBattery == true)"). Since this function's result scopes
-    allowed_values_for_script's cache key (BmlEvaluator._SHARED_SCRIPT_
-    CACHE), missing a variable here means the cache key never varies
-    with that variable's value — the FIRST-ever evaluation's result gets
-    reused for every later call regardless of what that variable's
-    current value actually is, a much worse bug than a cache miss.
-    """
-    return {
-        m.group(1) for m in re.finditer(
-            r'(\w+)\s*(?:==|<>|!=)\s*(?:"[^"]*"|true|false)\b', script, re.IGNORECASE)
-    }
+    """Variable names compared in the script (Tier-1 scan, best effort)."""
+    return {m.group(1) for m in re.finditer(r'(\w+)\s*(?:==|<>|!=)\s*"', script)}
 
 
 _VAR_VALUE_RE = re.compile(r'(\w+)\s*(?:==|<>|!=)\s*"([^"]*)"')

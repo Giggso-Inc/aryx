@@ -3285,7 +3285,6 @@ class CpqEngine:
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
-                bml_eval=bml_eval,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
@@ -3475,7 +3474,6 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] | None = None,
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
-        bml_eval: BmlEvaluator | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -3624,55 +3622,22 @@ class CpqEngine:
             3 ran unconditionally before any rule got a chance to apply,
             since apply_recommendation_rules() never revisits an attr
             already in `filled` — docs/CPQ_SESSION_2_OPEN_ISSUES.md).
-
-            Also handles script/condition_script-backed rules (via
-            bml_eval), not just the plain condition_attr_id/condition_value
-            pair — same Tier-1/Tier-2 machinery apply_recommendation_rules
-            uses. Live-verified gap (2026-07-24): an attr backed ONLY by a
-            script-only recommendation rule (condition_attr_id=0, e.g.
-            "wouldYouLikeToIncludeABatterySubscription_viSoln", whose
-            script reads a sibling attr directly) is marked "governed"
-            purely by that rule's existence, but this function's
-            declarative-only check could never see the script's real
-            condition — so the "single/boolean, 2+ options, first-by-
-            menu-order — safe because a rule REQUIRES this attr to be
-            resolved" fallback a few lines below picked the FIRST listed
-            option ("YES") unconditionally, never actually evaluating
-            whether the script's condition was true. bml_eval=None (caller
-            opted out) falls back to skipping script rules entirely, same
-            as apply_recommendation_rules.
             """
             for aid_key in (attr.entity_id, attr.source_id):
                 if aid_key is None:
                     continue
                 for rrule in rec_by_target.get(aid_key, []):
-                    if rrule.script is not None:
-                        if bml_eval is None:
-                            continue
-                        allowed = bml_eval.allowed_values_for_script(rrule.script, filled)
-                        if not allowed or len(allowed) != 1:
-                            continue  # unknown, or ambiguous — never guess
-                        recommended_value = allowed[0]
-                    elif rrule.condition_script is not None:
-                        if bml_eval is None:
-                            continue
-                        fires = bml_eval.condition_holds(rrule.condition_script, filled)
-                        if fires is not True:
-                            continue  # False or unknown — never guess, doesn't fire
-                        recommended_value = rrule.recommended_value
-                    else:
-                        cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
-                        if not cond_attr:
-                            continue
-                        cond_val = filled.get(cond_attr.variable_name)
-                        if cond_val is None or not _condition_value_matches(
-                            cond_val, rrule.condition_value
-                        ):
-                            continue
-                        recommended_value = rrule.recommended_value
+                    cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
+                    if not cond_attr:
+                        continue
+                    cond_val = filled.get(cond_attr.variable_name)
+                    if cond_val is None or not _condition_value_matches(
+                        cond_val, rrule.condition_value
+                    ):
+                        continue
                     match = next(
                         (o for o in candidate_opts
-                         if o.item_value.lower() == recommended_value.lower()),
+                         if o.item_value.lower() == rrule.recommended_value.lower()),
                         None,
                     )
                     if match:
@@ -4063,45 +4028,12 @@ class CpqEngine:
                             value, display = rec_match
                             source = "rule"
                         else:
-                            governing_rules = (
-                                rec_by_target.get(attr.entity_id, [])
-                                + (rec_by_target.get(attr.source_id, [])
-                                   if attr.source_id is not None else [])
-                            )
-                            only_script_backed = bool(governing_rules) and all(
-                                r.script is not None or r.condition_script is not None
-                                for r in governing_rules
-                            )
-                            if only_script_backed:
-                                # Every rule governing this attr is script-backed
-                                # and none produced a value just now (_satisfied_
-                                # recommendation returned None above) — that can
-                                # mean either "the script legitimately says no
-                                # recommendation applies" or "still unknown"
-                                # (Tier1/Tier2 couldn't determine). Either way,
-                                # the "a rule REQUIRES this attr to be resolved"
-                                # assumption the blind first-by-order pick below
-                                # relies on does NOT hold for a script that can
-                                # validly return nothing. Live-verified bug
-                                # (2026-07-24):
-                                # wouldYouLikeToIncludeABatterySubscription_
-                                # viSoln's only governing rule is script-only;
-                                # its condition was false, yet this pick still
-                                # fired and blindly guessed "YES" (the first
-                                # listed menu option) regardless of the real
-                                # underlying condition. Falls through to
-                                # pending/ungoverned handling instead of
-                                # guessing — same "never guess" discipline as
-                                # every other script-backed check in this file.
-                                pass
-                            else:
-                                # single/boolean, 2+ options, no default: first
-                                # by menu order — well-defined for boolean (only
-                                # two states) and safe here because a
-                                # DECLARATIVE rule REQUIRES this attr to be
-                                # resolved for the cascade to proceed.
-                                value = valid_opts[0].item_value
-                                display = valid_opts[0].display_name
+                            # single/boolean, 2+ options, no default: first by
+                            # menu order — well-defined for boolean (only two
+                            # states) and safe here because a rule REQUIRES this
+                            # attr to be resolved for the cascade to proceed.
+                            value = valid_opts[0].item_value
+                            display = valid_opts[0].display_name
                             source = governed_source
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
