@@ -1106,13 +1106,29 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
 
+    # Same is_last/skip_graph pattern already used below for tabular plans
+    # (see _run_one_plan): a real incident with 96 mention types on one PDF
+    # showed every type's run_pipeline() call independently ran relate,
+    # schema_fk, relate_isolated, dimension_link, AND project_graph — and
+    # project_graph's own contract is to clear() and rebuild the ENTIRE
+    # workspace graph from every entity seen so far, so cost grew with every
+    # type instead of running once. Only the LAST type with any mentions
+    # now runs the expensive whole-workspace passes; earlier types just
+    # resolve their own records into entities.
+    types_with_recs = [
+        ot for ot in approved_types
+        if any(m.payload.get("type") == ot for m in data["mentions"])
+    ]
+    last_type_with_recs = types_with_recs[-1] if types_with_recs else None
+
     for otype in approved_types:
         step += 1
         jobs.update_stage(job_id, f"{step}/{total}", int(step * 90 / total), f"Adding {otype}")
         recs = [m for m in data["mentions"] if m.payload.get("type") == otype]
         if recs:
-            logger.info("confirm job=%s step=%d/%d otype=%s records=%d",
-                        job_id, step, total, otype, len(recs))
+            is_last = otype == last_type_with_recs
+            logger.info("confirm job=%s step=%d/%d otype=%s records=%d is_last=%s",
+                        job_id, step, total, otype, len(recs), is_last)
 
             def _progress_otype(stage: str, pct: int, detail: str, _otype: str = otype,
                                  _step: int = step) -> None:
@@ -1125,7 +1141,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.rdb_dsn,
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
-                         workspace_id=workspace_id, relate=True, on_progress=_progress_otype)
+                         workspace_id=workspace_id, relate=is_last, skip_graph=not is_last,
+                         on_progress=_progress_otype)
         else:
             logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
                         job_id, step, total, otype)

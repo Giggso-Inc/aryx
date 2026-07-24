@@ -164,7 +164,7 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
-        if not runner.skip("relate_isolated"):
+        if not skip_graph and not runner.skip("relate_isolated"):
             # Final safety net: any entity still isolated after FK linking and
             # sampled-pair inference gets one LLM call against the nearest anchor.
             # Enforces the rule: no FK link -> LLM inference, for any file type.
@@ -174,6 +174,16 @@ def run_pipeline(
             # completed (e.g. it hit relate_pair_timeout on a stuck LLM call).
             # _relate_isolated() is self-contained (queries isolated entities
             # itself) and a safe no-op when nothing is isolated.
+            #
+            # IS gated on skip_graph, unlike `relate` above: a real incident
+            # with 96 plans in one batch showed this running — and re-querying
+            # every isolated entity in the whole workspace, plus fresh LLM
+            # calls — on every non-final plan, even though skip_graph means
+            # none of that plan's state is ever projected until the final
+            # plan runs. The final plan's own call already re-scans ALL
+            # entities from every earlier plan, so it alone guarantees the
+            # zero-isolated-nodes contract; the intermediate calls were
+            # strictly wasted work, not additional coverage.
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
                 relationships += _relate_isolated(estore, broker)

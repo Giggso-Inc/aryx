@@ -274,6 +274,47 @@ def test_relate_isolated_runs_even_when_relate_flag_is_false():
     mock_relate_isolated.assert_called_once()  # safety net still runs
 
 
+def test_relate_isolated_skipped_when_skip_graph_true():
+    """Real incident: a 96-mention-type PDF batch called run_pipeline() once
+    per type with skip_graph=True for all but the last — but _relate_isolated
+    was unconditional, so it re-scanned every isolated entity in the whole
+    workspace and made fresh LLM calls on every one of the 95 intermediate
+    calls, even though none of that state is ever projected until the final
+    plan (which re-scans everything anyway). skip_graph=True must now skip
+    it too, unlike the relate=False case above which must NOT skip it."""
+    mock_runner = MagicMock()
+    mock_runner.skip.return_value = False
+    mock_cfg = MagicMock()
+    mock_cfg.rdb_dsn = "postgresql://x"
+    mock_cfg.graph_url = "redis://x"
+    mock_cfg.rules_db_warn_threshold = 20
+    mock_cfg.max_relate_pairs = 5
+
+    with patch("aryx.pipeline.orchestrate.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.orchestrate._relate_isolated", return_value=0) as mock_relate_isolated, \
+         patch("aryx.pipeline.orchestrate.discover", return_value=1), \
+         patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
+         patch("aryx.pipeline.orchestrate.detect_and_link_dimensions", return_value=0), \
+         patch("aryx.pipeline.orchestrate.project_graph", return_value={}), \
+         patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
+         patch("aryx.pipeline.orchestrate.StageTracker"), \
+         patch("aryx.pipeline.orchestrate.PostgresStore"), \
+         patch("aryx.pipeline.orchestrate.EntityStore"), \
+         patch("aryx.pipeline.orchestrate.FalkorStore"), \
+         patch("aryx.pipeline.orchestrate.OntologyStore"), \
+         patch("aryx.pipeline.orchestrate._build_type_ancestors", return_value={}), \
+         patch("aryx.workspaces.ws_graph", return_value="ws_1"):
+        from aryx.pipeline.orchestrate import run_pipeline
+        run_pipeline(
+            connector=MagicMock(), dsn="postgresql://x",
+            system="sys", dataset="ds", ontology_type="T",
+            match_keys=["name"], graph_url="redis://x",
+            broker=MagicMock(), relate=False, skip_graph=True,
+        )
+
+    mock_relate_isolated.assert_not_called()
+
+
 def test_done_progress_reports_real_entity_count_not_always_zero():
     """Regression: the "Done" progress message read counts.get("vertices", 0),
     a key project_graph() never returns (it returns entities/provenance/
