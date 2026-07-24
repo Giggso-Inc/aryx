@@ -18,6 +18,7 @@ from aryx.discover import discover
 from aryx.graph import FalkorStore
 from aryx.naming import ws_graph
 from aryx.models import OntologyType
+from aryx.pipeline.cooccurrence_link import detect_and_link_cooccurrence
 from aryx.pipeline.dimension_link import detect_and_link_dimensions
 from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
@@ -164,6 +165,17 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
+        if not skip_graph and not runner.skip("cooccurrence_link"):
+            # Tier-0 deterministic linking, document sources only: connects
+            # entities extracted from the SAME chunk of text — a real,
+            # cheap signal tabular data has no equivalent of, and one FK
+            # detection/dimension linking/the LLM safety net all miss
+            # entirely for free text. Runs before relate_isolated so that
+            # pass has fewer isolated entities left to spend LLM calls on.
+            # Safe no-op for tabular/XML sources (no chunk_index attribute).
+            _emit(on_progress, "Link", 87, "Linking entities mentioned in the same passage")
+            with runner.stage("cooccurrence_link"):
+                relationships += detect_and_link_cooccurrence(estore)
         if not skip_graph and not runner.skip("relate_isolated"):
             # Final safety net: any entity still isolated after FK linking and
             # sampled-pair inference gets one LLM call against the nearest anchor.

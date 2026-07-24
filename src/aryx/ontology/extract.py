@@ -158,6 +158,7 @@ def extract_mentions(chunks: list[DocumentChunk], broker: Broker,
                 payload={
                     "type": mention["type"],
                     "name": name,
+                    "doc_id": chunk.doc_id,
                     "chunk_index": chunk.chunk_index,
                     "span": span,
                     **(mention.get("attributes") or {}),

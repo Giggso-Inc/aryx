@@ -125,6 +125,31 @@ class Settings(BaseSettings):
             "Override with ARYX_RELATE_PAIR_TIMEOUT."
         ),
     )
+    cooccurrence_link_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Tier-0 deterministic co-occurrence linking: connects "
+            "entities extracted from the SAME document chunk (doc_id + "
+            "chunk_index) via a weak, distinctly-named edge. A real "
+            "incident: a 97-type PDF batch ended with 63% of its entities "
+            "isolated even after FK detection, dimension linking, and the "
+            "LLM safety net all ran — none of those signals exist for "
+            "free text, but chunk co-occurrence does. Safe no-op for "
+            "tabular/XML data (no chunk_index attribute exists there). "
+            "Override with ARYX_COOCCURRENCE_LINK_ENABLED."
+        ),
+    )
+    cooccurrence_max_pairs_per_chunk: int = Field(
+        default=200,
+        description=(
+            "Max entity pairs linked per document chunk. Defense in depth "
+            "against a pathological chunk with an unusually large mention "
+            "count — pair count grows quadratically with mentions per "
+            "chunk, though in practice a chunk maps to one passage of text "
+            "and typically has only a handful of mentions. "
+            "Override with ARYX_COOCCURRENCE_MAX_PAIRS_PER_CHUNK."
+        ),
+    )
     dimension_link_enabled: bool = Field(
         default=True,
         description=(
