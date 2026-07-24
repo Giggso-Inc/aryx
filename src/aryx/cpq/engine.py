@@ -524,8 +524,18 @@ _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # its actual model/product attr), so a loose "model" substring sweeps
     # those in too. These fragments target the attr that names the product
     # itself, not siblings that merely share its naming prefix.
+    # "hwversion" added live-verified (2026-07-24): hWVersion_astro matched
+    # none of the original fragments, so it fell into the fallback
+    # "Associated Options" category — which the LLM narrator is explicitly
+    # allowed to only PARTIALLY cover (never claims completeness, by
+    # design, to avoid hallucinated placeholders for omitted facts). That
+    # meant a customer's own explicit "change the hardware version to X"
+    # could silently vanish from the "Configuration complete" summary even
+    # though the JSON payload had it correctly — a real product-identifying
+    # decision deserves the same always-fully-shown treatment as Base
+    # Model/Product Name, not partial-coverage treatment.
     ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
-                       "productselection", "producttype")),
+                       "productselection", "producttype", "hwversion")),
     ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
     ("Quantity & Duration", ("quantity", "duration", "qty")),
 )
