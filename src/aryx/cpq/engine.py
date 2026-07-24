@@ -490,6 +490,23 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Attrs confirmed live (docs/CPQ_SCRIPT_GOVERNED_GUESS_ISSUE.md) to be
+# governed EXCLUSIVELY by a script-based recommendation rule that can
+# legitimately resolve to "no recommendation" (not just "unknown") — for
+# these, auto_fill's blind first-by-order fallback ("safe because a rule
+# REQUIRES this attr to be resolved") must not fire, since the rule can
+# validly decline to recommend anything. Deliberately an explicit,
+# narrow allowlist rather than a blanket "any script-only-governed attr"
+# rule: the blanket version (commit 59074de, reverted) silenced this
+# fallback for APX Next's entire catalog too (601 recommendation rules,
+# almost all script-only, per the same pattern) — turning its working
+# instant-complete flow into ~30 unwanted questions on a fresh quote.
+# Add a new variable_name here only after live-reproducing the same
+# failure mode, the same way this one was found.
+_NEVER_GUESS_SCRIPT_GOVERNED: frozenset[str] = frozenset({
+    "wouldYouLikeToIncludeABatterySubscription_viSoln",
+})
+
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
 # _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
@@ -3285,6 +3302,7 @@ class CpqEngine:
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
+                bml_eval=bml_eval,
             )
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
@@ -3474,6 +3492,7 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] | None = None,
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
+        bml_eval: BmlEvaluator | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -3622,22 +3641,48 @@ class CpqEngine:
             3 ran unconditionally before any rule got a chance to apply,
             since apply_recommendation_rules() never revisits an attr
             already in `filled` — docs/CPQ_SESSION_2_OPEN_ISSUES.md).
+
+            Also handles script/condition_script-backed rules (via
+            bml_eval), not just the plain condition_attr_id/condition_value
+            pair — same Tier-1/Tier-2 machinery apply_recommendation_rules
+            uses. Purely additive: a script that resolves is always a
+            correct answer, never a wrong guess, and never asks a
+            question that wasn't already going to be asked (it can only
+            resolve an attr that would otherwise stay unfilled/pending).
+            bml_eval=None (caller opted out) falls back to skipping script
+            rules entirely, same as apply_recommendation_rules.
             """
             for aid_key in (attr.entity_id, attr.source_id):
                 if aid_key is None:
                     continue
                 for rrule in rec_by_target.get(aid_key, []):
-                    cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
-                    if not cond_attr:
-                        continue
-                    cond_val = filled.get(cond_attr.variable_name)
-                    if cond_val is None or not _condition_value_matches(
-                        cond_val, rrule.condition_value
-                    ):
-                        continue
+                    if rrule.script is not None:
+                        if bml_eval is None:
+                            continue
+                        allowed = bml_eval.allowed_values_for_script(rrule.script, filled)
+                        if not allowed or len(allowed) != 1:
+                            continue  # unknown, or ambiguous — never guess
+                        recommended_value = allowed[0]
+                    elif rrule.condition_script is not None:
+                        if bml_eval is None:
+                            continue
+                        fires = bml_eval.condition_holds(rrule.condition_script, filled)
+                        if fires is not True:
+                            continue  # False or unknown — never guess, doesn't fire
+                        recommended_value = rrule.recommended_value
+                    else:
+                        cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
+                        if not cond_attr:
+                            continue
+                        cond_val = filled.get(cond_attr.variable_name)
+                        if cond_val is None or not _condition_value_matches(
+                            cond_val, rrule.condition_value
+                        ):
+                            continue
+                        recommended_value = rrule.recommended_value
                     match = next(
                         (o for o in candidate_opts
-                         if o.item_value.lower() == rrule.recommended_value.lower()),
+                         if o.item_value.lower() == recommended_value.lower()),
                         None,
                     )
                     if match:
@@ -4027,6 +4072,14 @@ class CpqEngine:
                         if rec_match:
                             value, display = rec_match
                             source = "rule"
+                        elif vn in _NEVER_GUESS_SCRIPT_GOVERNED:
+                            # This attr's only governing rule is script-based
+                            # and just failed to resolve to a value above —
+                            # confirmed live to legitimately mean "no
+                            # recommendation applies" for this specific attr,
+                            # not "unknown, guess anyway". Falls through to
+                            # pending/ungoverned handling instead of guessing.
+                            pass
                         else:
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
