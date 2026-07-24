@@ -19,7 +19,7 @@ export function FollowupChips({ prompts, onPick, className }: Props) {
           key={p}
           type="button"
           onClick={() => onPick(p)}
-          className="focus-ring rounded-full border border-navy-100 bg-white px-4 py-2 text-sm text-navy-700 transition-colors hover:border-steel-400 hover:bg-navy-50"
+          className="focus-ring rounded-full border border-steel-200 bg-steel-50/80 px-4 py-2 text-sm font-medium text-navy-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] transition-colors hover:border-steel-400 hover:bg-steel-100"
         >
           {p}
         </button>

@@ -5,9 +5,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 
+from aryx import explore
 from aryx.config import get_settings
 from aryx.graph import GraphReader
 from aryx.ports import ports
+from aryx.store.entity_store import EntityStore
 
 
 def _reader(workspace_id: int = 1) -> GraphReader:
@@ -15,6 +17,20 @@ def _reader(workspace_id: int = 1) -> GraphReader:
     # a different workspace.  Multi-tenant deployments should derive this from
     # the auth context instead of relying on the query-param default.
     return ports().graph_reader(workspace_id)  # type: ignore[return-value]
+
+
+def _overview_payload(workspace_id: int) -> dict[str, Any]:
+    """Build the brief-driven graph overview from the relational truth."""
+    store = EntityStore(get_settings().rdb_dsn, workspace_id)
+    try:
+        entities, relationships, brief = store.overview_inputs()
+        return explore.domain_overview_view(
+            entities,
+            relationships,
+            brief,
+        )
+    finally:
+        store.close()
 
 
 def graph_router() -> APIRouter:
@@ -44,6 +60,11 @@ def graph_router() -> APIRouter:
         instead of a linear list of orphan nodes.
         """
         return reader.subgraph(rel_limit=rel_limit)
+
+    @router.get("/graph/overview")
+    def graph_overview(workspace_id: int = 1) -> dict[str, Any]:
+        """Brief-driven overview graph plus domain highlight metadata."""
+        return _overview_payload(workspace_id)
 
     @router.post("/graph/cypher")
     def cypher_read(body: dict[str, Any]) -> dict[str, Any]:

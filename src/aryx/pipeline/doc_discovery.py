@@ -30,14 +30,20 @@ from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
+from aryx.store.datasource_store import DatasourceStore
 from aryx.store.ontology_store import OntologyStore
+from aryx.source_catalog import (
+    restore_generic_source_entry,
+    upsert_xml_catalog_entry,
+    xml_asset_record,
+)
 
 logger = logging.getLogger(__name__)
 
 DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
             ".html", ".htm",
             ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-DATA_EXTS = {".json", ".csv", ".xml"}
+DATA_EXTS = {".json", ".csv", ".xml", ".xlsx"}
 
 
 _GENERIC = {"table", "row", "record", "data", "file", "entity", "item", "object",
@@ -107,7 +113,7 @@ def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
     return mk
 
 
-def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
+def _infer_type(sample: str, filename: str, context: str, did: str | None = None) -> dict[str, Any]:
     # Filename is a reliable signal for the entity type; use it unless it's generic.
     stype = _stem_type(filename)
     use_filename_type = bool(stype) and stype.lower() not in _GENERIC
@@ -134,13 +140,19 @@ def _infer_type(sample: str, filename: str, context: str) -> dict[str, Any]:
         mk = d.get("match_keys")
         if not mk:
             mk = [_guess_key_col(sample)]
-        return {"ontology_type": otype, "match_keys": _id_priority_mk(sample, mk)}
-    except Exception:  # noqa: BLE001
+        result = {"ontology_type": otype, "match_keys": _id_priority_mk(sample, mk)}
+        logger.info("infer_type did=%s file=%s otype=%s match_keys=%s source=%s",
+                    did, filename, result["ontology_type"], result["match_keys"],
+                    "filename" if use_filename_type else "llm")
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("infer_type did=%s file=%s LLM inference failed, falling back to otype=%s: %s",
+                        did, filename, fallback, exc)
         return {"ontology_type": fallback,
                 "match_keys": _id_priority_mk(sample, [_guess_key_col(sample)])}
 
 
-def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
+def _xml_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tuple[bytes, str]]:
     """Parse XML → one CSV per discovered entity element type.
 
     Handles three common XML patterns that the naive approach misses:
@@ -232,7 +244,9 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
 
     try:
         root = defused_ET.fromstring(data)
-    except ET.ParseError:
+    except ET.ParseError as exc:
+        logger.warning("xml_to_csvs log_id=%s stem=%s parse failed, treating as raw upload: %s",
+                        log_id, stem, exc)
         return [(data, stem + ".csv")]
 
     # Candidate fields to use as entity name when no ``name`` field exists.
@@ -298,6 +312,9 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
 
     _walk(root)
     if not counts:
+        logger.warning(
+            "xml_to_csvs log_id=%s stem=%s no entity elements detected "
+            "(all leaves/containers), falling back to raw upload", log_id, stem)
         return [(data, stem + ".csv")]
 
     # Prefer entity types that carry a human-readable name field over pure
@@ -360,6 +377,7 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
     # direct children of a root with no id, which is the correct behaviour.
     root_id = _elem_id(root)
     results: list[tuple[bytes, str]] = []
+    total_rows = 0
 
     for target_tag in top_tags:
         if target_tag == root_tag:
@@ -383,10 +401,11 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
             continue
         if len(records) > _xml_max_rows:
             logger.warning(
-                "xml: %s has %d rows, capping at %d (set ARYX_XML_MAX_ROWS_PER_TYPE to change)",
-                target_tag, len(records), _xml_max_rows,
+                "xml log_id=%s: %s has %d rows, capping at %d (set ARYX_XML_MAX_ROWS_PER_TYPE to change)",
+                log_id, target_tag, len(records), _xml_max_rows,
             )
             records = records[:_xml_max_rows]
+        total_rows += len(records)
         all_keys: list[str] = []
         seen_keys: set[str] = set()
         for rec in records:
@@ -401,10 +420,98 @@ def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
         csv_name = f"{stem}_{target_tag}.csv"
         results.append((buf.getvalue().encode("utf-8"), csv_name))
 
-    return results if results else [(data, stem + ".csv")]
+    if not results:
+        logger.warning(
+            "xml_to_csvs log_id=%s stem=%s %d candidate type(s) considered but 0 rows "
+            "collected, falling back to raw upload", log_id, stem, len(top_tags))
+        return [(data, stem + ".csv")]
+    logger.info(
+        "xml_to_csvs log_id=%s stem=%s detected_types=%d capped_to=%d output_csvs=%d rows_total=%d",
+        log_id, stem, len(counts), len(top_tags), len(results), total_rows)
+    return results
 
 
-def _consolidate_csv_names(data: bytes) -> bytes:
+# Non-alphanumeric run -> single underscore, for turning an arbitrary sheet
+# title into a filesystem/dataset-key-safe slug ("Order Items!" -> "Order_Items").
+_SHEET_SLUG_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _sheet_slug(title: str) -> str:
+    slug = _SHEET_SLUG_RE.sub("_", title or "").strip("_")
+    return slug or "Sheet"
+
+
+def _xlsx_to_csvs(data: bytes, stem: str, log_id: str | None = None) -> list[tuple[bytes, str]]:
+    """Parse an Excel workbook -> one CSV per worksheet, each an independent dataset.
+
+    Mirrors _xml_to_csvs' shape (one source file -> N tabular CSV byte-strings
+    + names), so the caller wires xlsx sheets into the exact same per-file
+    run_pipeline() loop, FK-detection, and traceability machinery already
+    used for multi-entity XML uploads — no parallel ingestion path needed.
+
+    Naming: "{workbook_stem}__{sheet_slug}.csv" — the shared stem prefix is
+    what "maintains the association with the parent workbook" (a query for
+    datasets starting with "{stem}__" recovers every sheet from one upload),
+    while the sheet_slug suffix keeps each sheet's dataset key unique.
+
+    Skips (never silently ingested as garbage datasets):
+    - hidden/very-hidden sheets (ws.sheet_state != "visible")
+    - sheets with no header row at all (completely empty)
+    - sheets with a header but zero data rows (header-only / template tabs,
+      e.g. a blank "Template" tab shipped alongside real data tabs)
+    """
+    from openpyxl import load_workbook
+
+    prefix = f"[{log_id}] " if log_id else ""
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        results: list[tuple[bytes, str]] = []
+        for ws in wb.worksheets:
+            if ws.sheet_state != "visible":
+                logger.info("%sxlsx_to_csvs stem=%s: skipping hidden sheet %r",
+                           prefix, stem, ws.title)
+                continue
+            rows_iter = ws.iter_rows(values_only=True)
+            try:
+                header_row = next(rows_iter)
+            except StopIteration:
+                logger.info("%sxlsx_to_csvs stem=%s: skipping empty sheet %r",
+                           prefix, stem, ws.title)
+                continue
+            header = [str(h).strip() if h is not None else "" for h in header_row]
+            if not any(header):
+                logger.info("%sxlsx_to_csvs stem=%s: skipping sheet %r with no header",
+                           prefix, stem, ws.title)
+                continue
+
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(header)
+            row_count = 0
+            for row in rows_iter:
+                if row is None or all(v is None for v in row):
+                    continue
+                writer.writerow("" if v is None else v for v in row)
+                row_count += 1
+            if row_count == 0:
+                logger.info(
+                    "%sxlsx_to_csvs stem=%s: skipping header-only sheet %r (0 data rows)",
+                    prefix, stem, ws.title,
+                )
+                continue
+
+            csv_name = f"{stem}__{_sheet_slug(ws.title)}.csv"
+            results.append((buf.getvalue().encode("utf-8"), csv_name))
+        logger.info(
+            "xlsx_to_csvs log_id=%s stem=%s sheets_total=%d sheets_ingested=%d",
+            log_id, stem, len(wb.worksheets), len(results),
+        )
+        return results
+    finally:
+        wb.close()
+
+
+def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
     """Merge multi-part name columns into a single ``name`` field.
 
     Handles patterns like COMPANY_NAME / COMPANY_NAME_2 … COMPANY_NAME_5
@@ -458,15 +565,21 @@ def _consolidate_csv_names(data: bytes) -> bytes:
                 if "name" not in row or not row["name"]:
                     row["name"] = full
             writer.writerow(row)
+        logger.info("consolidate_csv_names did=%s merged_groups=%d columns=%s rows=%d",
+                    did, len(base_names), list(base_names.keys()), len(rows))
         return buf.getvalue().encode("utf-8")
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("consolidate_csv_names did=%s failed, returning original data unmodified: %s",
+                        did, exc)
         return data
 
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
-               broker: Broker, context: str) -> dict[str, Any]:
+               broker: Broker, context: str, did: str | None = None) -> dict[str, Any]:
     """Read everything; return {mentions, tabular, summary} without committing."""
     settings = get_settings()
+    logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
+                did, len(doc_paths), len(tabular), context)
     mentions = []
     if doc_paths:
         connector = DocumentRouterConnector(
@@ -476,20 +589,35 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             context=context)
         mentions = list(connector.extract())
 
-    # XML files: expand into one CSV per top-N element type so that
-    # _detect_fk_links can wire cross-type relationships automatically.
+    # XML/XLSX files: expand into one CSV per element type / worksheet so
+    # that _detect_fk_links can wire cross-type relationships automatically.
     # CSV files: apply name-field consolidation for multi-part name columns.
     converted_tabular = []
     for d, n in tabular:
-        if Path(n).suffix.lower() == ".xml":
-            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem):
-                converted_tabular.append((csv_bytes, csv_name))
+        suffix = Path(n).suffix.lower()
+        if suffix == ".xml":
+            for csv_bytes, csv_name in _xml_to_csvs(d, Path(n).stem, log_id=did):
+                converted_tabular.append((csv_bytes, csv_name, n, d))
+        elif suffix == ".xlsx":
+            for csv_bytes, csv_name in _xlsx_to_csvs(d, Path(n).stem, log_id=did):
+                converted_tabular.append((csv_bytes, csv_name, n, d))
         else:
-            converted_tabular.append((_consolidate_csv_names(d), n))
+            converted_tabular.append((_consolidate_csv_names(d, did=did), n, None, None))
 
-    tab_plans = [{"filename": n, "data": d,
-                  **_infer_type(d[:800].decode("utf-8", "ignore"), n, context)}
-                 for d, n in converted_tabular]
+    tab_plans = []
+    for data, filename, source_filename, source_bytes in converted_tabular:
+        inferred = _infer_type(data[:800].decode("utf-8", "ignore"), filename, context, did=did)
+        plan = {"filename": filename, "data": data, **inferred}
+        if source_filename is not None and source_bytes is not None:
+            plan["source_filename"] = source_filename
+            plan["source_bytes"] = source_bytes
+            try:
+                headers = next(csv.reader(io.StringIO(data.decode("utf-8", "ignore"))))
+            except Exception:  # noqa: BLE001
+                headers = []
+            if "_text" in headers:
+                plan["match_keys"] = ["_text"]
+        tab_plans.append(plan)
 
     by_type: dict[str, list[str]] = {}
     for m in mentions:
@@ -497,11 +625,13 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     types = [{"type": t, "count": len(v), "examples": list(dict.fromkeys(v))[:5]}
              for t, v in sorted(by_type.items(), key=lambda kv: -len(kv[1]))]
     files = [{"filename": p["filename"], "ontology_type": p["ontology_type"]} for p in tab_plans]
+    logger.info("read_files done did=%s mentions=%d tabular_plans=%d types=%d files=%d",
+                did, len(mentions), len(tab_plans), len(types), len(files))
     return {"mentions": mentions, "tabular": tab_plans,
             "summary": {"types": types, "files": files}}
 
 
-def _detect_fk_links(plans: list[dict]) -> list[dict]:
+def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]:
     """Detect FK-style joins between tabular plans by column name patterns.
 
     For each pair of plans (A, B), looks for columns in A whose names follow
@@ -569,9 +699,21 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
             type_b = plan_b["ontology_type"]
             type_b_l = type_b.lower()
             singular_b = _singular(type_b_l)
+            # Candidate stems: every trailing-word-run of the de-camelCased
+            # type name (not just the last word), in both snake_case and
+            # joined form, singular and plural. Catches columns whose FK
+            # prefix carries more context than the last word alone, e.g.
+            # "attr_set_id" -> BmConfigAttrSet ("attr"+"set" suffix) or
+            # "config_attr_id" -> BmConfigAttr ("config"+"attr" suffix) —
+            # purely derived from the type name, no hardcoded column list.
             _words = re.findall(r'[A-Z][a-z0-9]*', type_b)
-            tag_word = _words[-1].lower() if _words else type_b_l
-            tag_singular = _singular(tag_word)
+            tag_candidates: set[str] = {type_b_l, singular_b}
+            for k in range(1, len(_words) + 1):
+                suffix_words = _words[-k:]
+                for form in ("_".join(w.lower() for w in suffix_words),
+                             "".join(w.lower() for w in suffix_words)):
+                    tag_candidates.add(form)
+                    tag_candidates.add(_singular(form))
             headers_b = plan_headers[j]
             id_col = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
             name_col = next((c for c in headers_b if c.lower() in ("name", "full_name", "title")), None)
@@ -580,11 +722,9 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
             for col in plan_headers[i]:
                 col_l = col.lower()
                 target_attr: str | None = None
-                if col_l in (f"{type_b_l}_id", f"{singular_b}_id",
-                             f"{tag_word}_id", f"{tag_singular}_id"):
+                if col_l.endswith("_id") and col_l[:-3] in tag_candidates:
                     target_attr = id_col or mk0
-                elif col_l in (f"{type_b_l}_name", f"{singular_b}_name",
-                               f"{tag_word}_name", f"{tag_singular}_name"):
+                elif col_l.endswith("_name") and col_l[:-5] in tag_candidates:
                     target_attr = name_col or mk0
                 elif col_l in (type_b_l, singular_b) and (id_col or name_col):
                     target_attr = id_col or name_col
@@ -594,13 +734,16 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 src_upper = plan_a["ontology_type"].upper()
                 # Edge direction in link_by_attribute: target_type → source_type
                 # (parent has-child semantics). Name reflects that direction.
-                links.append({
+                link = {
                     "source_type": plan_a["ontology_type"],
                     "source_attr": col,
                     "target_type": type_b,
                     "target_attr": target_attr,
                     "name": f"{type_b.upper()}_HAS_{src_upper}",
-                })
+                }
+                links.append(link)
+                logger.info("fk-pass1 log_id=%s: %s.%s -> %s.%s (%s)",
+                            log_id, plan_a["ontology_type"], col, type_b, target_attr, link["name"])
                 break
 
     # ── Pass 2: code-keyed data (shared-suffix columns) ──────────────────────
@@ -655,6 +798,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "target_attr": mk_b,
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
+                    logger.info("fk-pass2-ruleA log_id=%s: %s.%s -> %s.%s",
+                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
                     continue
                 # Rule B: column contains B's match-key stem as a fragment AND has
                 # a key suffix — catches hierarchical/reference column patterns
@@ -670,6 +815,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "target_attr": mk_b,
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
+                    logger.info("fk-pass2-ruleB log_id=%s: %s.%s -> %s.%s",
+                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
                     continue
                 # Rule C: same key-suffix — both columns share a suffix like _CODE,
                 # signalling a replacement / alternate-entity reference.
@@ -690,6 +837,8 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                         "target_attr": mk_b,
                         "name": f"{plan_b['ontology_type'].upper()}_HAS_{src_upper}",
                     })
+                    logger.info("fk-pass2-ruleC log_id=%s: %s.%s -> %s.%s",
+                                log_id, plan_a["ontology_type"], col, plan_b["ontology_type"], mk_b)
 
     # ── Pass 3: XML element-type FK detection ─────────────────────────────────
     # _collect_tag injects {parent_tag}_id columns into child entity rows.
@@ -751,16 +900,120 @@ def _detect_fk_links(plans: list[dict]) -> list[dict]:
                 "name": f"{plan_b['ontology_type'].upper()}_HAS_{plan_a['ontology_type'].upper()}",
             })
             logger.debug(
-                "fk-pass3: %s.%s → %s.%s",
-                plan_a["ontology_type"], actual_col,
+                "fk-pass3 log_id=%s: %s.%s → %s.%s",
+                log_id, plan_a["ontology_type"], actual_col,
                 plan_b["ontology_type"], target_attr,
             )
 
+    logger.info("detect_fk_links log_id=%s plans=%d links_found=%d", log_id, len(plans), len(links))
+    return links
+
+
+def _detect_script_data_flow_links(plans: list[dict], log_id: str | None = None) -> list[dict]:
+    """Ingestion-time static analysis: recognize the array-iteration BML
+    idiom in ``bm_function.script_text`` and materialize what it finds as
+    permanent, queryable fk_link specs (docs/CPQ_BML_ARRAY_ITERATION_TIER_PLAN.md,
+    Approach B).
+
+    Sibling to ``_detect_fk_links`` — same {source_type, source_attr,
+    target_type, target_attr, name} spec shape, consumed by the same
+    ``link_by_attribute`` value-equality join, just a different discovery
+    mechanism (script-text pattern recognition instead of column-name
+    inference). Reuses ``aryx.cpq.bml.parse_array_iteration`` — the SAME
+    recognizer a future runtime evaluator tier (Approach A) would use — as
+    the single source of truth for this idiom; this pass never
+    re-implements the pattern independently.
+
+    Mechanism: ``link_by_attribute`` only knows how to join by VALUE
+    equality between an existing column on each side — it has no way to
+    join "a variable name parsed out of a free-text script column" without
+    a real column to hold that value. So for each ``bm_function`` row
+    whose script recognizes, three derived columns are appended to that
+    plan's own CSV data (the parsed control/selector/quantity attribute
+    names) and 3 fk_link specs point those new columns at the matching
+    ``bm_config_attr`` rows' ``variable_name`` column — reusing the exact
+    same materialization path ``_detect_fk_links``'s own output already
+    goes through, no new pipeline plumbing required.
+
+    Returns [] when no bm_function/bm_config_attr plan pair is present, or
+    when no script in the bm_function plan recognizes as this idiom — a
+    catalog with no array-iteration scripts is left completely unchanged.
+    """
+    from aryx.cpq.bml import parse_array_iteration
+
+    fn_plan = next((p for p in plans if p["ontology_type"].endswith("BmFunction")), None)
+    attr_plan = next((p for p in plans if p["ontology_type"].endswith("BmConfigAttr")), None)
+    if fn_plan is None or attr_plan is None:
+        return []
+
+    try:
+        text = fn_plan["data"].decode("utf-8", "ignore")
+        rows = list(csv.reader(io.StringIO(text)))
+    except Exception:  # noqa: BLE001
+        logger.warning("script-data-flow log_id=%s: could not parse %s CSV",
+                        log_id, fn_plan["ontology_type"])
+        return []
+    if not rows:
+        return []
+    header = rows[0]
+    script_col = next(
+        (h for h in header if h.lower() in ("script_text", "script")), None,
+    )
+    if script_col is None:
+        return []
+    script_idx = header.index(script_col)
+
+    _CONTROL_COL, _SELECTOR_COL, _QTY_COL = (
+        "_array_control_attr_ref", "_array_selector_attr_ref", "_array_qty_attr_ref",
+    )
+    rows_out = [header + [_CONTROL_COL, _SELECTOR_COL, _QTY_COL]]
+    recognized = 0
+    for row in rows[1:]:
+        row = list(row) + [""] * max(0, len(header) - len(row))
+        script = row[script_idx] if script_idx < len(row) else ""
+        shape = parse_array_iteration(script)
+        if shape:
+            recognized += 1
+            extra = [shape.control_attr, shape.selector_attr, shape.qty_attr or ""]
+        else:
+            extra = ["", "", ""]
+        rows_out.append(row + extra)
+
+    if not recognized:
+        return []
+
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows_out)
+    fn_plan["data"] = buf.getvalue().encode("utf-8")
+
+    links = [
+        {
+            "source_type": fn_plan["ontology_type"], "source_attr": _CONTROL_COL,
+            "target_type": attr_plan["ontology_type"], "target_attr": "variable_name",
+            "name": "BMFUNCTION_ARRAY_ITERATES",
+        },
+        {
+            "source_type": fn_plan["ontology_type"], "source_attr": _SELECTOR_COL,
+            "target_type": attr_plan["ontology_type"], "target_attr": "variable_name",
+            "name": "BMFUNCTION_READS_SELECTOR",
+        },
+        {
+            "source_type": fn_plan["ontology_type"], "source_attr": _QTY_COL,
+            "target_type": attr_plan["ontology_type"], "target_attr": "variable_name",
+            "name": "BMFUNCTION_READS_QUANTITY",
+        },
+    ]
+    logger.info(
+        "script-data-flow log_id=%s: recognized %d/%d array-iteration script(s) in %s, "
+        "emitting %d link spec(s)",
+        log_id, recognized, len(rows) - 1, fn_plan["ontology_type"], len(links),
+    )
     return links
 
 
 def _detect_fk_links_workspace(
-    plan: dict, known_types: list[str], seen: set[tuple[str, str]] | None = None
+    plan: dict, known_types: list[str], seen: set[tuple[str, str]] | None = None,
+    job_id: str | None = None,
 ) -> list[dict]:
     """Detect FK links between one plan and workspace types already in OntologyStore.
 
@@ -773,7 +1026,9 @@ def _detect_fk_links_workspace(
     try:
         line = plan["data"].split(b"\n")[0].decode("utf-8", "ignore")
         headers = next(csv.reader(io.StringIO(line)), [])
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("detect_fk_links_workspace job=%s file=%s header parse failed: %s",
+                        job_id, plan.get("filename"), exc)
         return []
 
     src_type = plan.get("ontology_type", "")
@@ -801,6 +1056,8 @@ def _detect_fk_links_workspace(
                     "target_attr": match_key,
                     "name": f"{known.upper()}_HAS_{src_type.upper()}",
                 })
+                logger.info("fk-workspace job=%s: %s.%s -> %s.%s",
+                            job_id, src_type, col, known, match_key)
                 break
 
     return links
@@ -829,6 +1086,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     it left off.
     """
     settings = get_settings()
+    datasource_store = DatasourceStore(settings.rdb_dsn)
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
 
@@ -851,10 +1109,14 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 logger.info("confirm job=%s otype=%s stage=%s pct=%d %s",
                             job_id, _otype, stage, pct, detail)
 
-            run_pipeline(connector=RecordsConnector(recs), dsn=settings.rdb_dsn,
+            # TODO: pass job_id=job_id once run_pipeline supports it
+            run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.rdb_dsn,
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
                          workspace_id=workspace_id, relate=True, on_progress=_progress_otype)
+        else:
+            logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
+                        job_id, step, total, otype)
 
     # Collect valid plans in approval order so FK detection sees the full picture.
     # Filter out already-completed plans when resuming.
@@ -867,10 +1129,22 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
                     job_id, len(all_valid_plans) - len(valid_plans),
                     [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
-    auto_fk = _detect_fk_links(valid_plans)
+    _persist_xml_sources(valid_plans, workspace_id, settings.rdb_dsn)
+    auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
                     job_id, len(auto_fk), auto_fk)
+
+    # Array-iteration BML idiom recognition (Approach B, docs/
+    # CPQ_BML_ARRAY_ITERATION_TIER_PLAN.md) — additive, alongside the
+    # column-name-based FK detection above. Mutates the bm_function plan's
+    # own CSV data (adds 3 derived columns) when it finds recognized
+    # scripts, so this must run before _run_one_plan below reads plan["data"].
+    script_flow_links = _detect_script_data_flow_links(valid_plans, log_id=job_id)
+    if script_flow_links:
+        auto_fk.extend(script_flow_links)
+        logger.info("confirm job=%s array-iteration script analysis: %d link spec(s): %s",
+                    job_id, len(script_flow_links), script_flow_links)
 
     # Detect FK links from the last plan to types already in the workspace.
     # Fires for single-file jobs where _detect_fk_links returns [].
@@ -881,13 +1155,15 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 known_types = [t.name for t in onto.list_types()]
             finally:
                 onto.close()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("confirm job=%s OntologyStore lookup failed, skipping workspace FK "
+                           "detection: %s", job_id, exc, exc_info=True)
             known_types = []
         existing_pairs: set[tuple[str, str]] = {
             (lk["source_type"], lk["target_type"]) for lk in auto_fk
         }
         workspace_fk = _detect_fk_links_workspace(
-            valid_plans[-1], known_types, seen=existing_pairs
+            valid_plans[-1], known_types, seen=existing_pairs, job_id=job_id
         )
         if workspace_fk:
             auto_fk.extend(workspace_fk)
@@ -929,6 +1205,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             # then rebuilds the entire workspace graph — concurrent calls race and
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
             # it calls estore.list_entities() which covers ALL workspace entities.
+            # TODO: pass job_id=job_id once run_pipeline supports it
             run_pipeline(connector=conn, dsn=settings.rdb_dsn,
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=otype, match_keys=plan["match_keys"],
@@ -937,6 +1214,14 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          relate=is_last and settings.ingest_relate,
                          skip_graph=not is_last,
                          on_progress=_progress_plan)
+            suffix = Path(fname).suffix.lower()
+            if suffix in {".csv", ".json"}:
+                restore_generic_source_entry(
+                    datasource_store,
+                    workspace_id=workspace_id,
+                    source_system=suffix.lstrip("."),
+                    source_dataset=Path(fname).stem,
+                )
             logger.info("confirm job=%s file=%s done", job_id, fname)
             # Persist progress after each plan so a restart can resume here.
             if discovery_id:
@@ -988,3 +1273,49 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         jobs.update_stage(job_id, f"{last_step}/{total} · FK links",
                           int(last_step * 90 / total), f"Finalising FK links for {last['filename']}…")
         _run_one_plan(last, is_last=True, plan_step=last_step)
+
+    # Zero-loss validation: prove every source record reached the graph.
+    # Best-effort by contract — validation surfaces problems, never fails the job.
+    if valid_plans:
+        try:
+            from aryx.pipeline.ingest_validation import (
+                ground_truth_from_tabular, validate_workspace,
+            )
+            gt = ground_truth_from_tabular(valid_plans)
+            report = validate_workspace(workspace_id, gt, settings.rdb_dsn,
+                                        settings.graph_url)
+            logger.info("confirm job=%s validation passed=%s %s",
+                        job_id, report.passed, report.summary_line())
+            for line in report.failures():
+                logger.warning("confirm job=%s validation FAIL %s", job_id, line)
+        except Exception as exc:  # noqa: BLE001 — never fail the ingest over validation
+            logger.warning("confirm job=%s validation crashed: %s", job_id, exc,
+                           exc_info=True)
+
+
+def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
+    """Persist XML parent metadata for the source catalog."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for plan in valid_plans:
+        source_filename = plan.get("source_filename")
+        source_bytes = plan.get("source_bytes")
+        if not source_filename or source_bytes is None:
+            continue
+        group = grouped.setdefault(source_filename, {"source_bytes": source_bytes, "assets": []})
+        group["assets"].append(xml_asset_record(
+            filename=plan["filename"],
+            dataset=Path(plan["filename"]).stem,
+            ontology_type=plan["ontology_type"],
+            content_bytes=plan["data"],
+        ))
+    if not grouped:
+        return
+    store = DatasourceStore(dsn)
+    for source_filename, payload in grouped.items():
+        upsert_xml_catalog_entry(
+            store,
+            workspace_id=workspace_id,
+            source_filename=source_filename,
+            xml_bytes=payload["source_bytes"],
+            assets=payload["assets"],
+        )

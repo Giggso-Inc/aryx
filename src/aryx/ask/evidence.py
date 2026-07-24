@@ -19,3 +19,4 @@ class RetrievedEntity:
     name: str
     neighbors: list[dict[str, Any]] = field(default_factory=list)
     sources: list[dict[str, Any]] = field(default_factory=list)
+    attributes: dict[str, Any] = field(default_factory=dict)

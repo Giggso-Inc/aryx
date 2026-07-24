@@ -97,7 +97,7 @@ export default function ObservabilityPage() {
       <Header workspaceId={workspaceId} onWorkspaceChange={setWorkspaceId} />
 
       <div className="app-shell-offset flex-1">
-        <main className="mx-auto w-full max-w-6xl px-6 py-8">
+        <main className="workspace-section-shell pb-6 pt-6">
           <div className="mb-6 flex items-center justify-between">
             <div>
               <h1 className="font-display text-2xl font-bold text-navy-900">Observability</h1>
@@ -141,7 +141,7 @@ export default function ObservabilityPage() {
               <Metric icon={<Zap size={16} />} label="LLM Calls" value={fmtNum(data.llm.total_calls)} color="amber" />
               <Metric icon={<BarChart3 size={16} />} label="Total Tokens" value={fmtNum(data.llm.total_tokens)} color="amber" />
               <Metric icon={<Clock size={16} />} label="Avg Latency" value={fmt(data.llm.avg_latency_ms)} color="steel" />
-              <Metric icon={<Cpu size={16} />} label="Model" value={mc?.menial_model || mc?.model || "—"} sub={mc?.provider} color="navy" />
+              <Metric icon={<Cpu size={16} />} label="Reason Model" value={mc?.answer_model || mc?.model || "—"} sub={mc?.provider} color="navy" />
             </div>
 
             {/* Jobs table */}

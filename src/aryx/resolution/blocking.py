@@ -81,12 +81,13 @@ class MultiKeyBlocker:
         self.max_block_size = max_block_size if max_block_size is not None else get_settings().max_block_size
 
     def block(
-        self, records: list[ResolutionRecord]
+        self, records: list[ResolutionRecord], run_id: int | None = None
     ) -> dict[str, list[ResolutionRecord]]:
         """Assign records to blocks and return key -> record-list mapping.
 
         Args:
             records: Records to block.
+            run_id: Discovery run being resolved, for log correlation.
 
         Returns:
             Mapping of blocking key to the list of records in that block.
@@ -101,10 +102,8 @@ class MultiKeyBlocker:
         for key, members in raw.items():
             if len(members) > self.max_block_size:
                 logger.warning(
-                    "Block '%s' has %d members (> max_block_size=%d) -- skipping.",
-                    key,
-                    len(members),
-                    self.max_block_size,
+                    "resolve run_id=%s block=%s oversized members=%d max_block_size=%d -- skipping.",
+                    run_id, key, len(members), self.max_block_size,
                 )
                 continue
             result[key] = members

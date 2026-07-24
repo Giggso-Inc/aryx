@@ -24,6 +24,8 @@ services:
   falkordb:
     image: falkordb/falkordb:latest
     restart: unless-stopped
+    environment:
+      FALKORDB_ARGS: MAX_QUEUED_QUERIES 25 TIMEOUT 5000 RESULTSET_SIZE 10000
     ports:
       - "6379:6379"
     volumes:
@@ -78,7 +80,7 @@ services:
       - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
       - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-llama3.2:3b}
       - ARYX_LLM_REASON_MODEL=${ARYX_LLM_REASON_MODEL:-llama3.2:3b}
-      - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-360}
+      - ARYX_LLM_TIMEOUT=${ARYX_LLM_TIMEOUT:-900}
       - ARYX_PER_DOC_TIMEOUT=${ARYX_PER_DOC_TIMEOUT:-600}
       - ARYX_DOC_WORKERS=${ARYX_DOC_WORKERS:-1}
       - ARYX_LLM_API_KEY=${ARYX_LLM_API_KEY:-}
@@ -91,6 +93,7 @@ services:
       - ARYX_INGEST_WORKERS=${ARYX_INGEST_WORKERS:-3}
       - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
+      - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
     ports:
       - "127.0.0.1:8088:8000"
     depends_on:
@@ -175,7 +178,6 @@ services:
       # Aryx API is proxied by Next.js route handlers / rewrites for local and container use.
       - ARYX_API_URL_INTERNAL=${ARYX_API_URL_INTERNAL:-http://api:8000}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
-      - ARYX_PROXY_SECRET=${ARYX_PROXY_SECRET}
       # Shay is publicly exposed by nginx in OCI dev, but these internal handlers still need
       # direct container access for workspace bridge routes under apps/web/app/api/shay/*.
       - SHAY_API_URL_INTERNAL=${SHAY_API_URL_INTERNAL:-http://shay-api:8000}

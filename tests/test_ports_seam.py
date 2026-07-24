@@ -88,7 +88,7 @@ class _StubGraphReader:
         self.url = url
         self.graph = graph
 
-    def find_entities(self, ontology_type=None, name=None, limit=50):  # noqa: ANN001, ANN201, D102
+    def find_entities(self, ontology_type=None, name=None, limit=50, offset=0):  # noqa: ANN001, ANN201, D102
         return []
 
 

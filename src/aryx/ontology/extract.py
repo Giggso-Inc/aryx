@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.llm import complete_json
 from aryx.models import DocumentChunk, RawRecord, SourceRef
 
@@ -95,21 +97,50 @@ def extract_mentions(chunks: list[DocumentChunk], broker: Broker,
         RawRecord list where each record is one entity mention that passed the
         verbatim-span gate. Mentions whose name is absent from their cited span
         are silently dropped (logged at DEBUG).
+
+    Reliability: a single malformed/unparseable JSON response from the LLM
+    (observed with local models under load — occasional truncated or
+    non-conforming generations) used to drop that chunk permanently with no
+    retry. If that hit every chunk of a document in one run, the whole
+    document silently produced zero discovered types — indistinguishable
+    from "this document has no entities." Each chunk's call is now retried
+    (ARYX_EXTRACT_MENTION_RETRIES attempts, linear backoff) before being
+    counted as a real failure; failed_chunks in the log line tells you when
+    that safety net actually fired.
     """
+    settings = get_settings()
+    max_attempts = max(1, settings.extract_mention_retries)
+    retry_delay = settings.extract_mention_retry_delay
     records: list[RawRecord] = []
     rejected = 0
+    failed_chunks = 0
     system_prompt = _system_prompt(context)
 
     for chunk in chunks:
         user = json.dumps({"chunk_index": chunk.chunk_index, "text": chunk.text})
-        try:
-            result = complete_json(broker, "cheap", system_prompt, user, _SCHEMA)
-            logger.info("[step 8/8] extract  chunk=%d mentions=%d  doc=%s",
-                        chunk.chunk_index, len(result.get("mentions", [])), chunk.doc_id[:8])
-        except Exception as exc:
-            logger.warning("extraction failed chunk=%d doc=%s error=%s",
-                           chunk.chunk_index, chunk.doc_id[:8], exc)
+        result = None
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = complete_json(broker, "cheap", system_prompt, user, _SCHEMA)
+                break
+            except Exception as exc:  # noqa: BLE001 — any provider/parse failure is retryable
+                last_exc = exc
+                if attempt < max_attempts:
+                    logger.warning(
+                        "extraction attempt %d/%d failed chunk=%d doc=%s error=%s — retrying",
+                        attempt, max_attempts, chunk.chunk_index, chunk.doc_id[:8], exc,
+                    )
+                    time.sleep(retry_delay * attempt)
+        if result is None:
+            failed_chunks += 1
+            logger.warning(
+                "extraction failed chunk=%d doc=%s after %d attempt(s), giving up: %s",
+                chunk.chunk_index, chunk.doc_id[:8], max_attempts, last_exc,
+            )
             continue
+        logger.info("[step 8/8] extract  chunk=%d mentions=%d  doc=%s",
+                    chunk.chunk_index, len(result.get("mentions", [])), chunk.doc_id[:8])
 
         for i, mention in enumerate(result.get("mentions", [])):
             name = mention.get("name", "")
@@ -133,6 +164,12 @@ def extract_mentions(chunks: list[DocumentChunk], broker: Broker,
                 },
             ))
 
-    logger.info("extract_mentions chunks=%d mentions=%d rejected=%d",
-                len(chunks), len(records), rejected)
+    logger.info("extract_mentions chunks=%d mentions=%d rejected=%d failed_chunks=%d",
+                len(chunks), len(records), rejected, failed_chunks)
+    if failed_chunks and not records:
+        logger.warning(
+            "extract_mentions: ALL %d chunk(s) failed extraction after retries — "
+            "0 discovered types is due to LLM extraction failure, not an empty document",
+            failed_chunks,
+        )
     return records

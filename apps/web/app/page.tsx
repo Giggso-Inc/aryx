@@ -1,18 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import { Clock, Download, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Clock, Plus } from "lucide-react";
 import { Header } from "@/components/brand/Header";
+import { AskHistoryDrawer } from "@/components/ask/AskHistoryDrawer";
+import { AskSearchInput } from "@/components/ask/AskSearchInput";
 import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
 import { FollowupChips } from "@/components/ask/FollowupChips";
-import { WorkspacePeek } from "@/components/ask/WorkspacePeek";
 import { api } from "@/lib/api";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
-import type { AskHistoryTurn, ChatTurn, Citation } from "@/lib/types";
+import type { AskThreadMessage, ChatTurn, Citation } from "@/lib/types";
 
 const STARTERS = [
   "Who are our top customers by revenue?",
@@ -27,110 +28,126 @@ const FOLLOWUPS = [
 ];
 
 function uid() {
-  return Math.random().toString(36).slice(2, 10);
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(
+    bytes,
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
 }
 
-function HistoryDrawer({
-  workspaceId,
-  onClose,
-  onReplay,
-}: {
-  workspaceId: number;
-  onClose: () => void;
-  onReplay: (q: string) => void;
-}) {
-  const [history, setHistory] = useState<AskHistoryTurn[]>([]);
-  const [loading, setLoading] = useState(true);
+function askThreadHref(shayWorkspaceId: string, threadId?: string) {
+  return threadId
+    ? `/workspaces/${shayWorkspaceId}/ask?thread=${encodeURIComponent(threadId)}`
+    : `/workspaces/${shayWorkspaceId}/ask`;
+}
 
-  useEffect(() => {
-    api.getAskHistory(workspaceId, 50)
-      .then(setHistory)
-      .catch(() => setHistory([]))
-      .finally(() => setLoading(false));
-  }, [workspaceId]);
-
-  const downloadCsv = () => {
-    const rows = [["question", "answer", "ts"], ...history.map((h) => [
-      `"${h.question.replace(/"/g, '""')}"`,
-      `"${h.answer.replace(/"/g, '""')}"`,
-      h.ts,
-    ])];
-    const blob = new Blob([rows.map((r) => r.join(",")).join("\n")], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `aryx-history-ws${workspaceId}.csv`;
-    a.click();
+function threadMessageToTurn(message: AskThreadMessage): ChatTurn {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    sequenceNumber: message.sequence_number,
+    requestId: message.request_id ?? null,
+    citations: message.citations,
+    usage: message.usage,
+    jsonResponse: message.json_response ?? null,
+    jsonButtonFlag: message.json_button_flag ?? false,
+    beautify: message.beautify ?? "",
+    beautifyButtonFlag: message.beautify_button_flag ?? false,
+    apiShareButtonFlag: message.api_share_button_flag ?? false,
+    sessionData: message.session_data ?? {},
   };
-
-  const downloadJson = () => {
-    const blob = new Blob([JSON.stringify(history, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `aryx-history-ws${workspaceId}.json`;
-    a.click();
-  };
-
-  return (
-    <div className="fixed top-[68px] right-0 bottom-0 z-30 flex w-96 flex-col border-l border-navy-100 bg-white shadow-soft animate-rise">
-      <div className="flex items-center justify-between border-b border-navy-100 px-4 py-3">
-        <h2 className="font-semibold text-navy-900">Ask History</h2>
-        <div className="flex items-center gap-1">
-          <button type="button" onClick={downloadCsv}
-            className="focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-navy-600 hover:bg-navy-50">
-            <Download size={11} /> CSV
-          </button>
-          <button type="button" onClick={downloadJson}
-            className="focus-ring flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-navy-600 hover:bg-navy-50">
-            <Download size={11} /> JSON
-          </button>
-          <button type="button" onClick={onClose}
-            className="focus-ring rounded-md p-1 text-subtle hover:bg-navy-50">
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-2">
-        {loading ? (
-          <div className="py-8 text-center text-[12px] text-subtle">Loading…</div>
-        ) : history.length === 0 ? (
-          <div className="py-8 text-center text-[12px] text-subtle italic">No history yet</div>
-        ) : (
-          <ul className="space-y-3">
-            {history.map((h) => (
-              <li key={h.id}
-                className="cursor-pointer rounded-xl border border-navy-100 bg-white p-3 hover:border-steel-300 hover:bg-navy-50 transition-colors"
-                onClick={() => { onReplay(h.question); onClose(); }}>
-                {/* Question */}
-                <div className="flex items-start gap-2">
-                  <span className="mt-0.5 shrink-0 rounded-full bg-navy-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">Q</span>
-                  <p className="text-[12px] font-medium text-navy-800 line-clamp-2">{h.question}</p>
-                </div>
-                {/* Answer */}
-                {h.answer && (
-                  <div className="mt-2 flex items-start gap-2">
-                    <span className="mt-0.5 shrink-0 rounded-full bg-steel-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-steel-600">A</span>
-                    <p className="text-[11px] text-navy-600 line-clamp-3">{h.answer}</p>
-                  </div>
-                )}
-                <p className="mt-2 text-[10px] text-subtle">{new Date(h.ts).toLocaleString()}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
 }
 
 export default function HomePage() {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { workspaceId } = useWorkspace();
   const { shayWorkspaceId } = parseWorkspaceScope(pathname);
+  const selectedThreadId = searchParams.get("thread");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
+  const [messageSearch, setMessageSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [loadingThread, setLoadingThread] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [oldestSequence, setOldestSequence] = useState<number | null>(null);
+  const [autoScrollTranscript, setAutoScrollTranscript] = useState(true);
+  // CPQ session state — echoed back to the API on every turn so the engine
+  // can continue the guided configuration without a server-side session store.
+  const [sessionData, setSessionData] = useState<Record<string, unknown>>({});
+  // Stable id for the lifetime of this chat — correlates Share-button posts
+  // to /share-config with the conversation they came from.
+  const conversationIdRef = useRef(uid());
+  // Cancels an in-flight recovery poll when the component unmounts or a new
+  // question is submitted before the previous recovery finishes.
+  const cancelRecoveryRef = useRef(false);
+  // React state updates are asynchronous, so busy alone cannot reject two
+  // submit events fired in the same render. This ref is the synchronous gate.
+  const sendInFlightRef = useRef(false);
+  const activeThreadRef = useRef<string | null>(selectedThreadId);
+  const optimisticThreadRef = useRef<string | null>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  useEffect(() => () => { cancelRecoveryRef.current = true; }, []);
+
+  useEffect(() => { setMessageSearch(""); }, [selectedThreadId]);
+
+  useEffect(() => {
+    activeThreadRef.current = selectedThreadId;
+    if (!shayWorkspaceId) return;
+    if (!selectedThreadId) {
+      setTurns([]);
+      setSessionData({});
+      return;
+    }
+    if (selectedThreadId === optimisticThreadRef.current) {
+      setLoadingThread(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingThread(true);
+    api.getAskThreadMessages(workspaceId, shayWorkspaceId, selectedThreadId, undefined, 50)
+      .then((messages) => {
+        if (cancelled) return;
+        const nextTurns = messages.map(threadMessageToTurn);
+        setTurns(nextTurns);
+        setOldestSequence(messages[0]?.sequence_number ?? null);
+        setHasOlderMessages(messages.length === 50);
+        setAutoScrollTranscript(true);
+        const lastSession = [...nextTurns]
+          .reverse()
+          .find((turn) => turn.role === "assistant" && turn.sessionData)?.sessionData;
+        setSessionData(lastSession ?? {});
+      })
+      .catch(() => {
+        if (!cancelled) setTurns([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingThread(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedThreadId, shayWorkspaceId, workspaceId]);
 
   // First-run redirect: empty workspace → guided setup. "Empty" means
   // zero records, regardless of whether stub types exist.
@@ -147,11 +164,29 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, shayWorkspaceId, turns.length, workspaceId]);
 
+  const finishSend = () => {
+    sendInFlightRef.current = false;
+    setBusy(false);
+  };
+
   const send = async (question?: string) => {
     const q = (question ?? input).trim();
-    if (!q || busy) return;
+    if (!q || busy || sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    setAutoScrollTranscript(true);
+
+    // Stamp submit time (with 5 s clock-skew buffer) so the recovery poll
+    // never surfaces a stale answer from a prior identical question.
+    const requestStartMs = Date.now() - 5_000;
+    // Cancel any previous recovery poll that is still looping.
+    cancelRecoveryRef.current = true;
+    // Allow the new poll loop to run.
+    cancelRecoveryRef.current = false;
+
     setInput("");
     setBusy(true);
+    setAutoScrollTranscript(true);
+    const requestId = uid();
 
     const userTurn: ChatTurn = { id: uid(), role: "user", content: q };
     const assistantId = uid();
@@ -164,11 +199,43 @@ export default function HomePage() {
     setTurns((t) => [...t, userTurn, placeholder]);
 
     try {
-      const resp = await api.ask(q, workspaceId);
-      // Lightweight citation extraction — V1: derive from terms.
-      const citations: Citation[] = (resp.terms || [])
-        .slice(0, 5)
-        .map((label, i) => ({ entity_id: i, label }));
+      // Build conversation history from completed turns (exclude in-flight placeholder).
+      const history = turns
+        .filter((t) => t.role === "user" || (t.content && !t.streaming))
+        .slice(-8)
+        .map((t) => ({ role: t.role, text: t.content }));
+      const threadId = shayWorkspaceId
+        ? (selectedThreadId || activeThreadRef.current || uid())
+        : "";
+      if (shayWorkspaceId && !selectedThreadId) {
+        activeThreadRef.current = threadId;
+        optimisticThreadRef.current = threadId;
+        router.replace(askThreadHref(shayWorkspaceId, threadId));
+      }
+      const resp = shayWorkspaceId
+        ? await api.askThreadMessage({
+            workspaceId,
+            shayWorkspaceId,
+            threadId,
+            requestId,
+            question: q,
+            sessionData,
+          })
+        : await api.ask(q, workspaceId, history, sessionData);
+      const citations: Citation[] =
+        resp.citations ??
+        (resp.terms || [])
+          .slice(0, 5)
+          .map((label, i) => ({ entity_id: i, label }));
+      const responseRequestId =
+        "request_id" in resp && typeof resp.request_id === "string"
+          ? resp.request_id
+          : requestId;
+
+      // Persist CPQ session state so the next turn continues the configuration.
+      if (resp.session_data && Object.keys(resp.session_data).length > 0) {
+        setSessionData(resp.session_data);
+      }
 
       streamReveal(resp.answer, (full) => {
         setTurns((prev) =>
@@ -187,67 +254,283 @@ export default function HomePage() {
               ? {
                   ...t,
                   content: resp.answer,
+                  requestId: responseRequestId,
                   citations,
                   usage: resp.usage,
                   streaming: false,
+                  jsonResponse: resp.json_response ?? null,
+                  jsonButtonFlag: resp.json_button_flag ?? false,
+                  beautify: resp.beautify ?? "",
+                  beautifyRows: resp.beautify_rows ?? [],
+                  beautifyButtonFlag: resp.beautify_button_flag ?? false,
+                  apiShareButtonFlag: resp.api_share_button_flag ?? false,
+                  sessionData: resp.session_data ?? {},
                 }
               : t,
           ),
         );
-        setBusy(false);
+        if (threadId === optimisticThreadRef.current) {
+          optimisticThreadRef.current = null;
+        }
+        finishSend();
       }, totalMs);
     } catch (err: unknown) {
+      if (shayWorkspaceId && activeThreadRef.current === optimisticThreadRef.current) {
+        optimisticThreadRef.current = null;
+      }
       const message = err instanceof Error ? err.message : String(err);
-      setTurns((prev) =>
-        prev.map((t) =>
-          t.id === assistantId
-            ? {
-                ...t,
-                content: `Couldn't reach the API — ${message}`,
-                streaming: false,
-              }
-            : t,
-        ),
+
+      // 502 / fetch-failed: TCP connection dropped after the LLM finished but before
+      // the response reached the browser. FastAPI already persisted the answer to
+      // ask_history — poll for it rather than immediately surfacing the error.
+      // Skip recovery when the device is offline (those polls would also fail).
+      const isFetchFailed =
+        message.includes("fetch failed") ||
+        message.includes("502") ||
+        message.includes("Bad Gateway");
+      const isOnline = typeof navigator === "undefined" || navigator.onLine;
+
+      if (isFetchFailed && isOnline) {
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId
+              ? { ...t, content: "Still processing — recovering your answer…", streaming: true }
+              : t,
+          ),
+        );
+
+        let recovered = false;
+        // Two-phase poll: fast (20 × 3 s = 60 s) for typical cases, then slow
+        // (56 × 15 s = 840 s) to cover the full 900 s headersTimeout window.
+        const schedule = [
+          ...Array(20).fill(3_000),
+          ...Array(56).fill(15_000),
+        ];
+        for (const interval of schedule) {
+          if (recovered || cancelRecoveryRef.current) break;
+          await new Promise((r) => setTimeout(r, interval));
+          if (cancelRecoveryRef.current) break;
+          try {
+            const match = shayWorkspaceId && activeThreadRef.current
+              ? (await api.getAskThreadMessages(
+                  workspaceId,
+                  shayWorkspaceId,
+                  activeThreadRef.current,
+                  undefined,
+                  50,
+                )).find(
+                  (h) =>
+                    h.role === "assistant" &&
+                    h.request_id === requestId &&
+                    h.content &&
+                    new Date(h.created_at ?? 0).getTime() >= requestStartMs,
+                )
+              : (await api.getAskHistory(workspaceId, 50)).find(
+                  (h) =>
+                    h.question.trim().toLowerCase() === q.trim().toLowerCase() &&
+                    h.answer &&
+                    new Date(h.ts).getTime() >= requestStartMs,
+                );
+            if (match) {
+              recovered = true;
+              const recoveredAnswer = "content" in match ? match.content : match.answer;
+              // History entries don't carry terms, so citations aren't available
+              // for recovered answers — the answer itself is still complete.
+              const recoveryCitations: Citation[] = [];
+              streamReveal(recoveredAnswer, (full) => {
+                setTurns((prev) =>
+                  prev.map((t) => (t.id === assistantId ? { ...t, content: full } : t)),
+                );
+              }, { msPerChunk: 18, chunkSize: 5 });
+              const totalMs = Math.ceil(recoveredAnswer.length / 5) * 18 + 250;
+              setTimeout(() => {
+                if (cancelRecoveryRef.current) return;
+                setTurns((prev) =>
+                  prev.map((t) =>
+                    t.id === assistantId
+                      ? {
+                          ...t,
+                          content: recoveredAnswer,
+                          requestId,
+                          citations: recoveryCitations,
+                          streaming: false,
+                        }
+                      : t,
+                  ),
+                );
+                finishSend();
+              }, totalMs);
+            }
+          } catch {
+            // poll error — keep retrying
+          }
+        }
+
+        if (!recovered && !cancelRecoveryRef.current) {
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === assistantId
+                ? { ...t, content: `Couldn't reach the API — ${message}`, streaming: false }
+                : t,
+            ),
+          );
+          finishSend();
+        }
+      } else {
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId
+              ? { ...t, content: `Couldn't reach the API — ${message}`, streaming: false }
+              : t,
+          ),
+        );
+        finishSend();
+      }
+    }
+  };
+
+  const loadOlderMessages = async () => {
+    if (!selectedThreadId || !oldestSequence || loadingOlder || !hasOlderMessages) return;
+    const transcript = transcriptRef.current;
+    const previousScrollHeight = transcript?.scrollHeight ?? 0;
+    const previousScrollTop = transcript?.scrollTop ?? 0;
+    setLoadingOlder(true);
+    setAutoScrollTranscript(false);
+    try {
+      if (!shayWorkspaceId) return;
+      const older = await api.getAskThreadMessages(
+        workspaceId,
+        shayWorkspaceId,
+        selectedThreadId,
+        oldestSequence,
+        50,
       );
-      setBusy(false);
+      if (older.length > 0) {
+        setTurns((prev) => [...older.map(threadMessageToTurn), ...prev]);
+        setOldestSequence(older[0]?.sequence_number ?? oldestSequence);
+        window.requestAnimationFrame(() => {
+          if (!transcript) return;
+          transcript.scrollTop =
+            transcript.scrollHeight - previousScrollHeight + previousScrollTop;
+        });
+      }
+      setHasOlderMessages(older.length === 50);
+    } finally {
+      setLoadingOlder(false);
     }
   };
 
   const empty = turns.length === 0;
+  const showEmpty = empty && !loadingThread;
+  const normalizedMessageSearch = messageSearch.trim().toLocaleLowerCase();
+  const filteredTurns = useMemo(() => {
+    if (!normalizedMessageSearch) return turns;
+    return turns.filter((turn) =>
+      turn.content.toLocaleLowerCase().includes(normalizedMessageSearch),
+    );
+  }, [normalizedMessageSearch, turns]);
 
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
       {showHistory && (
-        <HistoryDrawer
+        <AskHistoryDrawer
           workspaceId={workspaceId}
+          shayWorkspaceId={shayWorkspaceId}
+          selectedThreadId={selectedThreadId}
           onClose={() => setShowHistory(false)}
-          onReplay={(q) => { setInput(q); send(q); }}
+          onSelectThread={(threadId) => {
+            if (shayWorkspaceId) router.push(askThreadHref(shayWorkspaceId, threadId));
+          }}
+          onNewChat={() => {
+            if (shayWorkspaceId) router.push(askThreadHref(shayWorkspaceId));
+            setTurns([]);
+            setMessageSearch("");
+            setSessionData({});
+            setShowHistory(false);
+          }}
         />
       )}
 
-      <div className="app-shell-offset flex flex-1">
-        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 pt-4 pb-10 lg:px-5">
-          <div className="mb-2 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setShowHistory((v) => !v)}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-lg border border-navy-100 bg-white px-2.5 py-1 text-[12px] text-navy-600 hover:bg-navy-50"
-            >
-              <Clock size={12} /> History
-            </button>
-          </div>
-          {empty ? (
-            <div className="flex flex-1 flex-col animate-fade-in">
-              <div className="w-full">
-                <WorkspacePeek workspaceId={workspaceId} />
-              </div>
+      <div className="app-shell-offset flex min-h-0 flex-1">
+        <main className="workspace-section-shell flex h-[calc(100dvh-68px)] min-h-[calc(100vh-68px)] flex-1 flex-col overflow-hidden pt-4 pb-6">
+          <section
+            aria-label="Ask controls"
+            className="mb-4 flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-navy-100 bg-white p-3 shadow-soft"
+          >
+            <AskSearchInput
+              value={messageSearch}
+              onChange={setMessageSearch}
+              placeholder="Search this conversation..."
+              ariaLabel="Search this conversation"
+              resultLabel={normalizedMessageSearch
+                ? `${filteredTurns.length} ${filteredTurns.length === 1 ? "match" : "matches"}`
+                : undefined}
+              disabled={turns.length === 0}
+              className="h-10 min-w-0 flex-1 max-w-96 rounded-xl border-navy-200 bg-navy-50 shadow-none"
+            />
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowHistory((v) => !v)}
+                className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl border border-navy-200 bg-white px-3.5 text-[12px] font-medium text-navy-600 shadow-sm hover:bg-navy-50"
+              >
+                <Clock size={12} /> History
+              </button>
+              {shayWorkspaceId && selectedThreadId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    router.push(askThreadHref(shayWorkspaceId));
+                    setTurns([]);
+                    setInput("");
+                    setMessageSearch("");
+                    setSessionData({});
+                  }}
+                  className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-xl border border-navy-800 bg-navy-800 px-3.5 text-[12px] font-semibold text-white shadow-sm hover:bg-navy-700"
+                >
+                  <Plus size={12} /> New Ask
+                </button>
+              )}
+            </div>
+          </section>
+
+          {loadingThread ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center text-[12px] text-subtle">
+              Loading thread…
+            </div>
+          ) : showEmpty ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto animate-fade-in">
+              <div className="w-full pb-6" />
             </div>
           ) : (
-            <div className="flex-1">
-              <WorkspacePeek workspaceId={workspaceId} />
-              <MessageList turns={turns} />
-              {!busy && (
+            <div
+              ref={transcriptRef}
+              className="min-h-0 flex-1 overflow-y-auto pb-6 pr-1"
+              onScroll={(event) => {
+                if (event.currentTarget.scrollTop < 48) {
+                  void loadOlderMessages();
+                }
+              }}
+            >
+              {loadingOlder && (
+                <div className="mb-3 text-center text-[11px] text-subtle">
+                  Loading older messages…
+                </div>
+              )}
+              {normalizedMessageSearch && filteredTurns.length === 0 ? (
+                <div className="py-12 text-center text-[12px] text-subtle" aria-live="polite">
+                  No messages match “{messageSearch.trim()}”.
+                </div>
+              ) : (
+                <MessageList
+                  turns={filteredTurns}
+                  workspaceId={workspaceId}
+                  conversationId={conversationIdRef.current}
+                  autoScroll={autoScrollTranscript && !normalizedMessageSearch}
+                />
+              )}
+              {!busy && !normalizedMessageSearch && (
                 <div className="mt-6 pl-12">
                   <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
                 </div>
@@ -255,7 +538,7 @@ export default function HomePage() {
             </div>
           )}
 
-          <div className="sticky bottom-6 mt-8">
+          <div className="shrink-0 border-t border-transparent bg-canvas/95 pt-4 backdrop-blur supports-[backdrop-filter]:bg-canvas/88">
             <Composer
               value={input}
               onChange={setInput}

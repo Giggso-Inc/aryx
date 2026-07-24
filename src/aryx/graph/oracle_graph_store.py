@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from aryx.queries import load
 
@@ -159,15 +159,20 @@ class OracleGraphStore:
     def add_entities_batch(
         self,
         rows: list[tuple[int, str, dict, list | None, str | None]],
-    ) -> None:
-        """Batch-upsert entity vertices in one Oracle round-trip.
+        on_batch: "Callable[[int], None] | None" = None,
+    ) -> int:
+        """Batch-upsert entity vertices in Oracle round-trips, one per chunk.
 
         Each row: (entity_id, ontology_type, attributes, labels, iri).
         ``labels`` is accepted for API parity with add_entity but not stored
         (Oracle backing table has no labels column).
+
+        on_batch — optional callback invoked with the running total of rows
+        written after each executemany chunk, for sub-progress reporting
+        (mirrors FalkorGraphStore.add_entities_batch).
         """
         if not rows:
-            return
+            return 0
         logger.info("graph vertices batch start count=%d", len(rows))
         # Build and deduplicate by (ws, eid) — same entity from multiple source rows
         # keeps last occurrence. Prevents ORA-00001 within a single executemany batch.
@@ -182,17 +187,23 @@ class OracleGraphStore:
                 "attrs": _safe_attrs_json(attrs),
             }
         batch = list(seen.values())
+        written = 0
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 for chunk in _iter_chunks(batch, payload_key="attrs"):
                     cur.executemany(load("merge_graph_vertex"), chunk)
+                    written += len(chunk)
                     logger.info("graph vertices chunk rows=%d done", len(chunk))
+                    if on_batch is not None:
+                        on_batch(written)
         logger.info("graph vertices batch done count=%d", len(rows))
+        return written
 
     def add_provenance_batch(
         self,
         rows: list[tuple[int, str, str, str]],
-    ) -> None:
+        on_batch: "Callable[[int], None] | None" = None,
+    ) -> int:
         """Batch-upsert provenance edges in three Oracle round-trips.
 
         Each row: (entity_id, system, dataset, record_id).
@@ -201,15 +212,20 @@ class OracleGraphStore:
           1. executemany merge_graph_source   — upsert all source records
           2. SELECT source_id back for the workspace
           3. executemany merge_graph_provenance — link entity → source
+
+        on_batch — optional callback invoked with the running total of
+        provenance links written after each executemany chunk in step 3
+        (mirrors FalkorGraphStore.add_provenance_batch).
         """
         if not rows:
-            return
+            return 0
         logger.info("graph provenance batch start count=%d", len(rows))
         source_rows = [
             {"ws": self._workspace_id, "sys": system, "ds": dataset, "rid": record_id}
             for _eid, system, dataset, record_id in rows
         ]
         missing = 0
+        written = 0
         prov_rows: list[dict] = []
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
@@ -237,8 +253,12 @@ class OracleGraphStore:
                 if prov_rows:
                     for i, chunk in enumerate(_iter_chunks(prov_rows, payload_key="sid")):
                         cur.executemany(load("merge_graph_provenance"), chunk)
+                        written += len(chunk)
                         logger.info("graph provenance chunk=%d rows=%d done", i + 1, len(chunk))
+                        if on_batch is not None:
+                            on_batch(written)
         logger.info("graph provenance batch done prov=%d missing=%d", len(prov_rows), missing)
+        return written
 
     def add_relationships_batch(
         self,

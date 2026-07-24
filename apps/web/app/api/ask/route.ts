@@ -1,33 +1,56 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Agent, fetch as undiciFetch } from "undici";
+
+import {
+  aryxTarget,
+  requireInternalApiKey,
+  requireShayBearerAuth,
+} from "../_aryxProxy";
 
 /**
- * Proxy for /ask — CPU LLM inference (Ollama llama3.2:3b) takes 90+ seconds,
- * which exceeds Node.js fetch's default socket timeout and triggers a 502 in
- * deployed environments. AbortSignal.timeout(900_000) gives a 15-minute ceiling
- * so the request survives the full synthesis cycle.
+ * Proxy for /ask — CPU LLM inference (Ollama llama3.2:3b) takes 90–300+ seconds.
  *
- * Trust model: these routes are only accessible from the browser via
- * same-origin requests. For production deployments exposed publicly, set
- * ARYX_PROXY_SECRET and configure your reverse proxy to inject the
- * x-aryx-key header — unauthenticated direct calls will be rejected.
+ * WHY undici Agent instead of global fetch + AbortSignal:
+ * Node's global fetch (undici under the hood) has a hardcoded default
+ * headersTimeout of 300 s that AbortSignal.timeout() does NOT override.
+ * When the ask pipeline crosses 5 minutes (large graphs, complex questions),
+ * undici kills the socket and throws "fetch failed" (ECONNRESET) — even though
+ * FastAPI is still running and will eventually persist the answer to history.
+ *
+ * The fix: pass an explicit undici Agent with headersTimeout and bodyTimeout
+ * both raised to 900 s. AbortSignal is kept as the outer ceiling (15 min) so
+ * runaway requests are still cancelled.
+ *
+ * Trust model: browser calls must carry a valid Shay bearer token; this route
+ * validates that token and then forwards the request to Aryx with the internal
+ * service key only.
  */
+
+// Module-level singleton — allocated once, reused across requests.
+const slowLlmAgent = new Agent({
+  headersTimeout: 900_000,   // wait up to 15 min for first response byte
+  bodyTimeout: 900_000,      // wait up to 15 min for full response body
+  keepAliveTimeout: 10_000,
+});
+
+// Drain keep-alive sockets on graceful shutdown so in-flight LLM requests are
+// not cut mid-stream by Node's forced exit after SIGTERM.
+process.once("SIGTERM", () => slowLlmAgent.close());
+process.once("SIGINT",  () => slowLlmAgent.close());
+
 export async function POST(req: NextRequest) {
-  const secret = process.env.ARYX_PROXY_SECRET;
-  if (secret && req.headers.get("x-aryx-key") !== secret) {
-    return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
+  const auth = await requireShayBearerAuth(req);
+  if (auth instanceof NextResponse) {
+    return auth;
   }
-  const internalApiKey = process.env.ARYX_INTERNAL_API_KEY;
-  if (!internalApiKey) {
-    return NextResponse.json({ detail: "ARYX_INTERNAL_API_KEY is not configured" }, { status: 500 });
+  const internalApiKey = requireInternalApiKey();
+  if (internalApiKey instanceof NextResponse) {
+    return internalApiKey;
   }
 
-  const target =
-    process.env.NODE_ENV === "development"
-      ? "http://localhost:8088"
-      : process.env.ARYX_API_URL_INTERNAL ?? "http://api:8000";
   const body = await req.text();
   try {
-    const upstream = await fetch(`${target}/ask`, {
+    const upstream = await undiciFetch(`${aryxTarget()}/ask`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -35,6 +58,7 @@ export async function POST(req: NextRequest) {
       },
       body,
       signal: AbortSignal.timeout(900_000),
+      dispatcher: slowLlmAgent,
     });
     const data = await upstream.text();
     return new NextResponse(data, {

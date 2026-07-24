@@ -13,6 +13,7 @@ from aryx.api.actions_api import actions_router
 from aryx.api.adjudication_api import adjudication_router
 from aryx.api.admin_api import admin_router
 from aryx.api.ask_api import ask_router
+from aryx.api.ask_thread_api import ask_thread_router
 from aryx.api.brief_api import brief_router
 from aryx.api.axioms_api import axioms_router, shapes_router
 from aryx.api.ask_history_api import ask_history_router
@@ -34,6 +35,7 @@ from aryx.api.relationship_type_api import relationship_type_router
 from aryx.api.rest_ingest_api import rest_ingest_router
 from aryx.api.rules_api import rules_router
 from aryx.api.shay_bridge_api import shay_bridge_router
+from aryx.api.share_config_api import share_config_router
 from aryx.api.versions_api import versions_router
 from aryx.api.workspace_api import workspace_router
 
@@ -140,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router())
     app.include_router(admin_router())
     app.include_router(ask_router())
+    app.include_router(ask_thread_router())
     app.include_router(lab_router())
     app.include_router(data_router())
     app.include_router(ask_history_router())
@@ -160,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(shapes_router())
     app.include_router(rules_router())
     app.include_router(shay_bridge_router())
+    app.include_router(share_config_router())
     app.include_router(rest_ingest_router())
     app.include_router(versions_router())
     app.include_router(mcp_tokens_router())

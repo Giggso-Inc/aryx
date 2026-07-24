@@ -6,7 +6,14 @@ provenance. Pure functions, no DB.
 """
 from __future__ import annotations
 
-from aryx.explore import display_name, entities_view, graph_view, summarize
+from aryx.explore import (
+    _matches,
+    display_name,
+    domain_overview_view,
+    entities_view,
+    graph_view,
+    summarize,
+)
 
 ENTITIES = [
     (1, "Customer", {"name": "Acme Corp", "tier": "Enterprise"}),
@@ -74,3 +81,77 @@ def test_graph_view_aggregates_edges_by_type_and_name() -> None:
 def test_graph_view_ignores_dangling_edges() -> None:
     g = graph_view(ENTITIES, [(1, 999, "X")])  # 999 not an entity
     assert g["type_edges"] == []
+
+
+def test_domain_overview_view_matches_domain_to_type_and_edges() -> None:
+    entities = [
+        (1, "SupportTicket", {"name": "Ticket-100"}),
+        (2, "SupportTicket", {"name": "Ticket-200"}),
+        (3, "Person", {"name": "Alex Agent"}),
+        (4, "Customer", {"name": "Acme Corp"}),
+    ]
+    rels = [
+        (1, 3, "ASSIGNED_TO"),
+        (2, 3, "ASSIGNED_TO"),
+        (1, 4, "FOR_CUSTOMER"),
+    ]
+    view = domain_overview_view(entities, rels, {"domain": "support tickets"})
+
+    assert view["fallback_used"] is False
+    assert view["matched_types"] == ["SupportTicket"]
+    assert view["matched_entity_ids"] == [1, 2]
+    assert view["overview_nodes"] == [{
+        "id": "overview::SupportTicket",
+        "type": "SupportTicket",
+        "count": 2,
+        "entity_ids": [1, 2],
+    }]
+    assert view["overview_edges"] == []
+
+
+def test_domain_overview_view_uses_aim_as_enrichment_before_fallback() -> None:
+    entities = [
+        (1, "SupportTicket", {"name": "Ticket-100"}),
+        (2, "Person", {"name": "Alex Agent"}),
+    ]
+    view = domain_overview_view(
+        entities,
+        [(1, 2, "ASSIGNED_TO")],
+        {"domain": "intake", "aim": "Resolve support tickets quickly"},
+    )
+
+    assert view["fallback_used"] is False
+    assert view["matched_types"] == ["SupportTicket"]
+    assert view["matched_entity_ids"] == [1]
+
+
+def test_matches_ignores_short_substring_false_positives() -> None:
+    assert _matches("support tickets", "SupportTicket") is True
+    assert _matches("IT", "SupportTicket") is False
+    assert _matches("or", "Customer") is False
+    assert _matches("an", "Channel") is False
+
+
+def test_domain_overview_view_falls_back_when_domain_is_empty() -> None:
+    rels = [(1, 3, "HAS_DEVICE"), (2, 3, "HAS_DEVICE")]
+    view = domain_overview_view(ENTITIES, rels, {"domain": ""})
+
+    assert view["fallback_used"] is True
+    assert view["matched_entity_ids"] == []
+    assert view["overview_nodes"][0]["type"] == "Customer"
+    assert view["overview_nodes"][0]["entity_ids"] == [1, 2]
+
+
+def test_domain_overview_view_deduplicates_matched_edge_pairs() -> None:
+    entities = [
+        (1, "SupportTicket", {"name": "Ticket-100"}),
+        (2, "SupportTicket", {"name": "Ticket-200"}),
+    ]
+    rels = [
+        (1, 2, "RELATED_TO"),
+        (1, 2, "BLOCKED_BY"),
+    ]
+
+    view = domain_overview_view(entities, rels, {"domain": "support tickets"})
+
+    assert view["matched_edge_pairs"] == [{"source": 1, "target": 2}]
