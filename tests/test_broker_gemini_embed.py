@@ -85,7 +85,9 @@ def test_embed_discards_a_short_ollama_batch_instead_of_misaligning() -> None:
 
     with patch("aryx.config.get_settings") as mock_get_settings, \
          patch("urllib.request.urlopen") as mock_urlopen:
-        mock_get_settings.return_value = SimpleNamespace(effective_embed_backend=lambda: "local")
+        mock_get_settings.return_value = SimpleNamespace(
+            effective_embed_backend=lambda: "local", embed_http_timeout=60.0,
+        )
         import json as _json
         mock_urlopen.return_value.__enter__.return_value.read.return_value = (
             _json.dumps(fake_response).encode("utf-8")

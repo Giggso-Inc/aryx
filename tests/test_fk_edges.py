@@ -7,7 +7,8 @@ that absorbed it — conflict_aliases() is what makes that possible.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from aryx.pipeline.fk_edges import link_by_attribute
 
@@ -76,3 +77,82 @@ def test_no_duplicate_when_alias_matches_an_existing_target() -> None:
     n = link_by_attribute(estore, "Prop", "assoc_id", "Assoc", "id", "ASSOC_HAS_PROP")
 
     assert n == 1
+
+
+def test_links_across_leading_zero_format_mismatch() -> None:
+    """A numeric-looking code stored as '007' in one source and 7 (or '7') in
+    another must still join — this is the exact format mismatch that used to
+    silently produce zero edges (isolated nodes) with no error, since the
+    prior exact-match-after-lower() join treated '007' and '7' as unrelated."""
+    estore = MagicMock()
+    estore.list_entities.return_value = [
+        (1, "Material", {"code": "7"}),
+        (2, "Transaction", {"material_code": "007"}),
+    ]
+    estore.conflict_aliases.return_value = {}
+
+    n = link_by_attribute(estore, "Transaction", "material_code", "Material", "code", "MATERIAL_HAS_TRANSACTION")
+
+    assert n == 1
+
+
+def test_links_across_case_and_whitespace_mismatch() -> None:
+    estore = MagicMock()
+    estore.list_entities.return_value = [
+        (1, "State", {"code": "AE"}),
+        (2, "Record", {"state_code": "  ae  "}),
+    ]
+    estore.conflict_aliases.return_value = {}
+
+    n = link_by_attribute(estore, "Record", "state_code", "State", "code", "STATE_HAS_RECORD")
+
+    assert n == 1
+
+
+# ── Defense-in-depth selectivity cap ─────────────────────────────────────────
+# Regression coverage for a real incident: a shared low-cardinality category
+# column ("Matl Group") produced 1,529,548 relationship rows from one FK
+# spec and stalled ingestion for hours. dynamic_fk's Stage 1 fanout guard is
+# meant to catch this before a spec ever reaches here, but link_by_attribute
+# must never trust that upstream guard alone — ANY spec (column-name- or
+# dynamic-detected) that turns out non-selective must abort loudly rather
+# than silently writing an unbounded number of rows.
+
+def _many_to_many_estore(group_count: int, rows_per_group: int) -> MagicMock:
+    """Build an estore where `group_count` shared category values each have
+    `rows_per_group` entities on BOTH the source and target side — a
+    classic non-selective join key."""
+    entities = []
+    tid = 0
+    for g in range(group_count):
+        for _ in range(rows_per_group):
+            entities.append((tid, "Target", {"code": f"G{g}"}))
+            tid += 1
+    for g in range(group_count):
+        for _ in range(rows_per_group):
+            entities.append((tid, "Source", {"ref": f"G{g}"}))
+            tid += 1
+    estore = MagicMock()
+    estore.list_entities.return_value = entities
+    estore.conflict_aliases.return_value = {}
+    return estore
+
+
+def test_aborts_and_saves_nothing_when_relationship_count_exceeds_cap() -> None:
+    # 5 groups x 20 rows each side -> 20*20*5 = 2000 potential relationships.
+    estore = _many_to_many_estore(group_count=5, rows_per_group=20)
+    with patch("aryx.pipeline.fk_edges.get_settings",
+               return_value=SimpleNamespace(max_relationships_per_fk_spec=100)):
+        n = link_by_attribute(estore, "Source", "ref", "Target", "code", "TARGET_HAS_SOURCE")
+    assert n == 0
+    estore.save_relationships.assert_not_called()
+
+
+def test_stays_under_cap_saves_normally() -> None:
+    # 2 groups x 3 rows each side -> 3*3*2 = 18 relationships, under a 100 cap.
+    estore = _many_to_many_estore(group_count=2, rows_per_group=3)
+    with patch("aryx.pipeline.fk_edges.get_settings",
+               return_value=SimpleNamespace(max_relationships_per_fk_spec=100)):
+        n = link_by_attribute(estore, "Source", "ref", "Target", "code", "TARGET_HAS_SOURCE")
+    assert n == 18
+    estore.save_relationships.assert_called_once()

@@ -62,15 +62,23 @@ class _Settings:
     er_review = 0.75
     max_block_size = 5000
     rdb_dsn = "postgresql://x"
+    id_like_column_names = "id,uuid,guid,key"
+    er_key_selectivity_sample_size = 2000
+    er_min_key_selectivity = 0.01
+    er_chunk_threshold = 100_000
 
 
 def _detect(key_attrs: list[str], flag: bool = True) -> bool:
     """Mirror of resolve_run's detection expression, kept in sync by the wiring test."""
-    from aryx.resolve_entities import _ID_LIKE_KEYS
+    from unittest.mock import patch
+    from aryx.resolve_entities import _id_like_keys
     s = _Settings()
     s.er_exact_id_match = flag
+    with patch("aryx.resolve_entities.get_settings",
+               return_value=type("S", (), {"id_like_column_names": "id,uuid,guid,key"})()):
+        id_names = _id_like_keys()
     return (s.er_exact_id_match and bool(key_attrs)
-            and all(k.lower() in _ID_LIKE_KEYS for k in key_attrs))
+            and all(k.lower() in id_names for k in key_attrs))
 
 
 def test_detection_id_like_keys() -> None:

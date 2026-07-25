@@ -89,12 +89,25 @@ class PgChunkBackend:
             with conn.cursor() as cur:
                 cur.execute(load("mark_block_done"), (run_id, key))
 
-    def edges(self, run_id: int) -> list[tuple[int, int, float]]:
-        """All match edges for the run (edges << records; fits in memory)."""
+    def edges(self, run_id: int) -> Iterator[tuple[int, int, float]]:
+        """Stream match edges for the run via a server-side cursor.
+
+        Was previously one unbatched fetchall() on the assumption "edges <<
+        records; fits in memory" — a real incident broke that assumption: a
+        308,104-record run produced 14,374,847 match edges (46x the record
+        count), and materializing all of them (plus the caller's same-size
+        pair_scores dict) as a single in-memory list caused enough memory
+        pressure to crash the container mid-run, silently orphaning the job
+        with no logged error. Streaming via a named cursor (same pattern as
+        todo_blocks) removes the single-giant-list allocation regardless of
+        how many edges a run produces.
+        """
         with self._pool.connection() as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(name=f"aryx_edges_{run_id}") as cur:
+                cur.itersize = 10_000
                 cur.execute(load("select_match_edges"), (run_id,))
-                return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+                for row in cur:
+                    yield (row[0], row[1], row[2])
 
     def close(self) -> None:
         """No-op: connections are managed by the shared pool (G12)."""

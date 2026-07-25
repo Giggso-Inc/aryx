@@ -18,6 +18,8 @@ from aryx.discover import discover
 from aryx.graph import FalkorStore
 from aryx.naming import ws_graph
 from aryx.models import OntologyType
+from aryx.pipeline.cooccurrence_link import detect_and_link_cooccurrence
+from aryx.pipeline.dimension_link import detect_and_link_dimensions
 from aryx.pipeline.enrich import _build_type_ancestors, _infer_schema_fk_links, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
@@ -163,7 +165,18 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
-        if not runner.skip("relate_isolated"):
+        if not skip_graph and not runner.skip("cooccurrence_link"):
+            # Tier-0 deterministic linking, document sources only: connects
+            # entities extracted from the SAME chunk of text — a real,
+            # cheap signal tabular data has no equivalent of, and one FK
+            # detection/dimension linking/the LLM safety net all miss
+            # entirely for free text. Runs before relate_isolated so that
+            # pass has fewer isolated entities left to spend LLM calls on.
+            # Safe no-op for tabular/XML sources (no chunk_index attribute).
+            _emit(on_progress, "Link", 87, "Linking entities mentioned in the same passage")
+            with runner.stage("cooccurrence_link"):
+                relationships += detect_and_link_cooccurrence(estore)
+        if not skip_graph and not runner.skip("relate_isolated"):
             # Final safety net: any entity still isolated after FK linking and
             # sampled-pair inference gets one LLM call against the nearest anchor.
             # Enforces the rule: no FK link -> LLM inference, for any file type.
@@ -173,9 +186,30 @@ def run_pipeline(
             # completed (e.g. it hit relate_pair_timeout on a stuck LLM call).
             # _relate_isolated() is self-contained (queries isolated entities
             # itself) and a safe no-op when nothing is isolated.
+            #
+            # IS gated on skip_graph, unlike `relate` above: a real incident
+            # with 96 plans in one batch showed this running — and re-querying
+            # every isolated entity in the whole workspace, plus fresh LLM
+            # calls — on every non-final plan, even though skip_graph means
+            # none of that plan's state is ever projected until the final
+            # plan runs. The final plan's own call already re-scans ALL
+            # entities from every earlier plan, so it alone guarantees the
+            # zero-isolated-nodes contract; the intermediate calls were
+            # strictly wasted work, not additional coverage.
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
                 relationships += _relate_isolated(estore, broker)
+        if not skip_graph and not runner.skip("dimension_link"):
+            # Tier-2 deterministic linking: connect entity types that share a
+            # low-cardinality dimension (state, fiscal period, category code)
+            # but have no row-level key, via a shared hub entity. Runs once,
+            # on the final plan, after FK linking and the LLM safety net —
+            # by that point every entity that COULD be linked to a specific
+            # other entity already is; this only ever adds coverage for
+            # entities still isolated, so it must run last, before projection.
+            _emit(on_progress, "Link", 89, "Linking shared dimensions (state, period, category)")
+            with runner.stage("dimension_link"):
+                relationships += detect_and_link_dimensions(estore)
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):

@@ -125,6 +125,126 @@ class Settings(BaseSettings):
             "Override with ARYX_RELATE_PAIR_TIMEOUT."
         ),
     )
+    cooccurrence_link_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Tier-0 deterministic co-occurrence linking: connects "
+            "entities extracted from the SAME document chunk (doc_id + "
+            "chunk_index) via a weak, distinctly-named edge. A real "
+            "incident: a 97-type PDF batch ended with 63% of its entities "
+            "isolated even after FK detection, dimension linking, and the "
+            "LLM safety net all ran — none of those signals exist for "
+            "free text, but chunk co-occurrence does. Safe no-op for "
+            "tabular/XML data (no chunk_index attribute exists there). "
+            "Override with ARYX_COOCCURRENCE_LINK_ENABLED."
+        ),
+    )
+    cooccurrence_max_pairs_per_chunk: int = Field(
+        default=200,
+        description=(
+            "Max entity pairs linked per document chunk. Defense in depth "
+            "against a pathological chunk with an unusually large mention "
+            "count — pair count grows quadratically with mentions per "
+            "chunk, though in practice a chunk maps to one passage of text "
+            "and typically has only a handful of mentions. "
+            "Override with ARYX_COOCCURRENCE_MAX_PAIRS_PER_CHUNK."
+        ),
+    )
+    dimension_link_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Tier-2 deterministic dimension-hub linking: connects "
+            "entities across types that share a low-cardinality dimension "
+            "column (state, fiscal period, category code) with no row-level "
+            "key, via a shared hub entity — a weaker, distinctly-named edge "
+            "than a real FK. A real incident: a 300K-row table had no usable "
+            "key and stayed 100% isolated even though its dimension columns "
+            "had full value overlap with other ingested tables. "
+            "Override with ARYX_DIMENSION_LINK_ENABLED."
+        ),
+    )
+    dimension_min_distinct_values: int = Field(
+        default=2,
+        description=(
+            "Minimum distinct values a column must have to be considered a "
+            "dimension candidate (a constant column carries no linking "
+            "information). Override with ARYX_DIMENSION_MIN_DISTINCT_VALUES."
+        ),
+    )
+    dimension_max_cardinality_ratio: float = Field(
+        default=0.05,
+        description=(
+            "Max distinct-values/total-rows ratio for a column to count as a "
+            "dimension (the opposite profile of a usable FK key, which must "
+            "be near-unique). A column above this ratio is treated as a "
+            "candidate identifier, not a shared dimension, and left to "
+            "dynamic_fk.py. Override with ARYX_DIMENSION_MAX_CARDINALITY_RATIO."
+        ),
+    )
+    dimension_min_overlap: float = Field(
+        default=0.3,
+        description=(
+            "Min value-overlap ratio (|intersection| / min(|A|,|B|)) for two "
+            "dimension candidate columns from DIFFERENT types to be clustered "
+            "into the same dimension group. Override with "
+            "ARYX_DIMENSION_MIN_OVERLAP."
+        ),
+    )
+    dimension_min_types: int = Field(
+        default=2,
+        description=(
+            "Minimum distinct ontology types a dimension group must span "
+            "before hub entities are materialized for it — a dimension only "
+            "shared within one type provides no cross-type linking value. "
+            "Override with ARYX_DIMENSION_MIN_TYPES."
+        ),
+    )
+    dimension_max_edges_per_group: int = Field(
+        default=2_000_000,
+        description=(
+            "Max hub edges detect_and_link_dimensions() will write for a "
+            "single dimension group. Deliberately much larger than "
+            "max_relationships_per_fk_spec: that cap defends against a "
+            "dangerous O(entities x entities) cross-product from a bad FK "
+            "join key. Dimension-hub linking is O(entities) — one edge per "
+            "row to its hub, never a cross-product — so a large edge count "
+            "here reflects a large, legitimately-connected dataset, not a "
+            "runaway join. A real incident: reusing the FK-spec cap here "
+            "truncated a real dimension link at 50,000 edges, leaving most "
+            "of a 300K-row table still isolated even after a real, valid "
+            "shared dimension was correctly found. "
+            "Override with ARYX_DIMENSION_MAX_EDGES_PER_GROUP."
+        ),
+    )
+    relate_isolated_max_anchors: int = Field(
+        default=5,
+        description=(
+            "Max candidate anchor types _relate_isolated() tries per isolated "
+            "type before giving up on it. Previously only ONE fixed anchor "
+            "(the first other type in sample order) was ever tried — a real "
+            "relationship to a DIFFERENT type was permanently missed whenever "
+            "that single pairing came back unrelated. Bounded (not unbounded "
+            "over every other type) to keep worst-case cost at "
+            "O(isolated_types × max_anchors), not O(isolated_types × all_types). "
+            "Override with ARYX_RELATE_ISOLATED_MAX_ANCHORS."
+        ),
+    )
+    relate_isolated_max_samples_per_type: int = Field(
+        default=3,
+        description=(
+            "Max isolated entities of the SAME type _relate_isolated() "
+            "samples and tries per anchor, before giving up on that type. "
+            "Previously only the FIRST isolated entity of a type was ever "
+            "tried — for a type whose members vary a lot (a real incident: "
+            "document-extracted list-style mentions of one type where "
+            "different members are substantively unrelated topics despite "
+            "sharing a type name), the single sampled member easily missed "
+            "a real relationship a DIFFERENT member of the same type would "
+            "have shown. Bounded together with relate_isolated_max_anchors "
+            "at O(isolated_types × max_samples × max_anchors). "
+            "Override with ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE."
+        ),
+    )
 
     extract_mention_retries: int = Field(
         default=3,
@@ -187,6 +307,134 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Dynamic (value-based + LLM) FK detection ──────────────────────────────
+    # Runs after the existing column-name passes (_detect_fk_links), over
+    # whatever pairs those passes did NOT already resolve, so it never
+    # duplicates or regresses the fast heuristics — only fills the gap they
+    # can't see (differently-named columns, derived/semantic joins).
+    fk_dynamic_detection_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable Stage 1 (value-overlap sampling) + Stage 2 (LLM judge) "
+            "dynamic FK detection for tabular ingestion, covering pairs the "
+            "column-name passes in _detect_fk_links miss entirely. "
+            "Override with ARYX_FK_DYNAMIC_DETECTION_ENABLED=false."
+        ),
+    )
+    fk_value_sample_size: int = Field(
+        default=200,
+        description=(
+            "Max distinct (deduplicated) values sampled per column for Stage 1 "
+            "value-overlap scoring. Sampling distinct values, not raw rows, "
+            "keeps this cheap even for sources with heavy row duplication. "
+            "Override with ARYX_FK_VALUE_SAMPLE_SIZE."
+        ),
+    )
+    fk_value_overlap_threshold: float = Field(
+        default=0.05,
+        description=(
+            "Min shared-normalized-value overlap ratio (0-1) for a column pair "
+            "to become a Stage 2 LLM-judge candidate. Deliberately low: this is "
+            "only a cheap pre-filter, not the final relationship decision — the "
+            "LLM makes the real call, with a reason, on every pair that clears "
+            "this bar. Override with ARYX_FK_VALUE_OVERLAP_THRESHOLD."
+        ),
+    )
+    fk_dynamic_judge_workers: int = Field(
+        default=4,
+        description=(
+            "Concurrent LLM-judge calls for Stage 2 candidate pairs "
+            "(ThreadPoolExecutor). This bounds THROUGHPUT only — every "
+            "candidate pair that clears Stage 1 is judged; none are dropped "
+            "or capped by count, only processed with bounded concurrency so a "
+            "large batch stays fast without ever silently skipping a pair. "
+            "Override with ARYX_FK_DYNAMIC_JUDGE_WORKERS."
+        ),
+    )
+    fk_prefix_transform_lengths: str = Field(
+        default="2,3,4",
+        description=(
+            "Comma-separated prefix lengths tried as a fallback when a "
+            "column pair's raw values don't overlap enough — catches "
+            "DERIVED relationships like a truncated/grouped code (e.g. a "
+            "2-digit category derived from a longer code's first 2 "
+            "characters), which no naming convention or raw value match can "
+            "find. Generic by design: no column name or specific transform "
+            "is hardcoded, only a small set of lengths tried on both sides. "
+            "Still LLM-judged and fanout-guarded like any other candidate — "
+            "this only widens what reaches Stage 1's candidate list. Empty "
+            "string disables prefix-transform matching entirely. Override "
+            "with ARYX_FK_PREFIX_TRANSFORM_LENGTHS."
+        ),
+    )
+    fk_key_suffixes: str = Field(
+        default="_code,_id,_key,_num,_ref,_no,_cage",
+        description=(
+            "Comma-separated column-name suffixes treated as generic "
+            "key/code indicators by the column-name FK passes (e.g. "
+            "'sales_order_ref' ends with '_ref'). Domain-agnostic — these "
+            "are structural naming conventions, not references to any "
+            "specific dataset's columns. Override with ARYX_FK_KEY_SUFFIXES."
+        ),
+    )
+    id_like_column_names: str = Field(
+        default="id,uuid,guid,key",
+        description=(
+            "Comma-separated column names (case-insensitive, exact match) "
+            "treated as a generic opaque-identifier signal — used both by "
+            "the column-name FK passes (picking a join target column) and "
+            "by entity resolution (deciding whether a source's match keys "
+            "are all identifier-like, triggering exact-equality matching "
+            "instead of fuzzy scoring). Override with "
+            "ARYX_ID_LIKE_COLUMN_NAMES."
+        ),
+    )
+    name_like_column_names: str = Field(
+        default="name,full_name,title",
+        description=(
+            "Comma-separated column names (case-insensitive, exact match) "
+            "treated as a generic display-name signal by the column-name FK "
+            "passes when no id-like column is available as a join target. "
+            "Override with ARYX_NAME_LIKE_COLUMN_NAMES."
+        ),
+    )
+    fk_fanout_scan_rows: int = Field(
+        default=20000,
+        description=(
+            "Max rows scanned per side when estimating a candidate FK pair's "
+            "join fan-out (sum of matching-value-count products). Bounds the "
+            "cost of the estimate regardless of table size — a capped partial "
+            "scan is still a valid conservative signal. "
+            "Override with ARYX_FK_FANOUT_SCAN_ROWS."
+        ),
+    )
+    fk_max_estimated_fanout: int = Field(
+        default=5000,
+        description=(
+            "Max estimated join fan-out (approximate relationship-row count) "
+            "a candidate FK pair may produce before it is rejected as too "
+            "low-selectivity to be a safe join key (e.g. a shared category/"
+            "group code rather than a real identifier) — rejected candidates "
+            "never reach the Stage 2 LLM judge and never become an fk_link. "
+            "Found via a real incident: a shared low-cardinality 'Matl Group' "
+            "column the LLM correctly judged as 'the same kind of value' "
+            "produced 1.5M+ relationship rows from one spec, stalling "
+            "ingestion for hours. Override with ARYX_FK_MAX_ESTIMATED_FANOUT."
+        ),
+    )
+    max_relationships_per_fk_spec: int = Field(
+        default=50000,
+        description=(
+            "Hard cap on relationships written by link_by_attribute() for a "
+            "single FK spec — defense in depth alongside fk_max_estimated_"
+            "fanout, so ANY spec (column-name-detected or dynamic-detected) "
+            "that slips through with a non-selective join key logs a clear "
+            "warning and stops instead of silently writing millions of rows "
+            "and stalling the ingest job for hours. "
+            "Override with ARYX_MAX_RELATIONSHIPS_PER_FK_SPEC."
+        ),
+    )
+
     # ── Entity resolution thresholds ─────────────────────────────────────────
     er_auto_merge: float = Field(
         default=0.92,
@@ -211,9 +459,88 @@ class Settings(BaseSettings):
             "previous fuzzy behavior."
         ),
     )
+    er_chunk_threshold: int = Field(
+        default=100_000,
+        description=(
+            "Record count above which resolve_run() dispatches to the "
+            "streaming block-wise resolver (aryx.resolution.chunked."
+            "resolve_chunked, backed by Postgres — resumable, bounded memory) "
+            "instead of the in-memory resolve(). Below this threshold the "
+            "in-memory path stays the fast path — chunking adds Postgres "
+            "round-trips that aren't worth it for small runs. "
+            "A large tabular sheet with no natural row cap (e.g. a 300K-row "
+            "CSV/XLSX Data tab) previously ran the in-memory O(block-size²) "
+            "blocking/scoring pass unconditionally and could stall ingestion "
+            "for hours; this threshold is what activates the bounded, "
+            "already-implemented alternative. Override with "
+            "ARYX_ER_CHUNK_THRESHOLD. Ignored when exact_ids matching applies "
+            "(id-keyed sources resolve by exact equality regardless of size, "
+            "so chunking has nothing to add there)."
+        ),
+    )
+    er_min_key_selectivity: float = Field(
+        default=0.01,
+        description=(
+            "Min distinct-value ratio (0-1) the match-key text must clear "
+            "before resolution runs its blocking/scoring pass at all. Below "
+            "this, the key has too little identity signal to produce a "
+            "meaningful block (e.g. a table whose match-key columns are "
+            "each a single constant value across every row) — blocking "
+            "still collapses everything into one oversized block that gets "
+            "skipped, but only after paying the full cost of the key/"
+            "blocking pass to discover that. Below the threshold, resolution "
+            "is skipped entirely and one entity is materialized per record "
+            "directly — same eventual outcome, none of the wasted work. "
+            "Every skip is logged with the measured ratio and the match key "
+            "involved, so a genuinely bad key choice stays visible and "
+            "fixable. Ignored when exact_ids matching applies. Override "
+            "with ARYX_ER_MIN_KEY_SELECTIVITY."
+        ),
+    )
+    er_key_selectivity_sample_size: int = Field(
+        default=2000,
+        description=(
+            "Max records sampled to measure match-key selectivity (see "
+            "er_min_key_selectivity) before deciding whether to run "
+            "resolution at all. Bounds the cost of the check itself "
+            "regardless of table size. Override with "
+            "ARYX_ER_KEY_SELECTIVITY_SAMPLE_SIZE."
+        ),
+    )
+    er_max_edges_per_run: int = Field(
+        default=2_000_000,
+        description=(
+            "Max match edges the chunked resolver's cluster pass will "
+            "consume for a single run. A real incident: a 308,104-record "
+            "run whose columns were mostly low-cardinality produced "
+            "14,374,847 match edges from scoring (46x the record count) — "
+            "materializing that many edges plus the same-size pair_scores "
+            "dict was enough memory pressure to crash the container mid-run, "
+            "silently orphaning the job with no logged error. Edges beyond "
+            "this cap are not consumed — logged clearly as a warning, never "
+            "silent — so those specific pairs simply don't merge (safe "
+            "degradation: under-clustering, not data loss) instead of risking "
+            "another unbounded-memory crash. Override with "
+            "ARYX_ER_MAX_EDGES_PER_RUN."
+        ),
+    )
     embed_batch_size: int = Field(
         default=50,
-        description="Records per embedding batch during entity resolution.",
+        description=(
+            "Texts per embedding HTTP call — used both by entity resolution "
+            "and by document-ingestion chunk embedding. Keeps each call's "
+            "duration roughly constant regardless of how many chunks/records "
+            "a document or batch has, so it stays comfortably inside "
+            "embed_http_timeout."
+        ),
+    )
+    embed_http_timeout: float = Field(
+        default=60.0,
+        description=(
+            "Per-call HTTP timeout in seconds for the local Ollama /api/embed "
+            "request. Override with ARYX_EMBED_HTTP_TIMEOUT if embed_batch_size "
+            "is raised and needs a longer allowance."
+        ),
     )
 
     # ── LLM provider ─────────────────────────────────────────────────────────

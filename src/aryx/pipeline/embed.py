@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.models import ChunkEmbedding, DocumentChunk
 
 logger = logging.getLogger(__name__)
@@ -39,12 +40,17 @@ def embed_chunks(
         )
 
     texts = [c.text for c in chunks]
-    vectors = broker.embed(texts)
-    if not vectors:
-        raise RuntimeError(
-            f"broker.embed() returned no vectors for model={model_id!r} — "
-            "is Ollama running and the model pulled?"
-        )
+    batch_size = get_settings().embed_batch_size
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        batch_vectors = broker.embed(batch)
+        if not batch_vectors:
+            raise RuntimeError(
+                f"broker.embed() returned no vectors for model={model_id!r} — "
+                "is Ollama running and the model pulled?"
+            )
+        vectors.extend(batch_vectors)
 
     dim = len(vectors[0])
     if expected_dim is not None and dim != expected_dim:
