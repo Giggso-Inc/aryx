@@ -368,16 +368,36 @@ class GraphReader:
                     connected_ids.add(bid)
 
         # Step 6 — add truly isolated entities (zero edges in FalkorDB, not just
-        # in the subgraph view) for debugging visibility.
+        # in the subgraph view) for debugging visibility. This is a structural
+        # "has zero edges in either direction" check across every Entity node —
+        # no index can accelerate it (it's not a property lookup), unlike the
+        # REL.name index that fixed steps 2/5's queries. Confirmed live: this
+        # query alone took ~16.5s on a 344,961-entity workspace, ~3.3x over
+        # FalkorDB's default 5000ms timeout, causing GET /graph to 500 even
+        # after the REL.name index fix. Skipped above a configurable entity
+        # count — a cheap COUNT query, not the expensive scan itself — rather
+        # than attempting it unconditionally on graphs of any size.
         remaining = capped - len(entity_map)
         if remaining > 0:
-            iso_rows = self._query(
-                "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
-                f"RETURN e.id, e.type, e.name, properties(e) LIMIT {remaining}"
-            )
-            for row in iso_rows:
-                if row[0] not in entity_map:
-                    entity_map[row[0]] = _entity(row)
+            max_scan = get_settings().graph_isolated_scan_max_entities
+            total_entities = self._query("MATCH (e:Entity) RETURN count(e)")[0][0]
+            if total_entities > max_scan:
+                logger.warning(
+                    "graph subgraph: skipping isolated-entity debug scan for "
+                    "%s — %d entities exceeds graph_isolated_scan_max_entities=%d; "
+                    "this step has no index to accelerate it and times out on "
+                    "large graphs. Override with "
+                    "ARYX_GRAPH_ISOLATED_SCAN_MAX_ENTITIES.",
+                    self._graph.name, total_entities, max_scan,
+                )
+            else:
+                iso_rows = self._query(
+                    "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+                    f"RETURN e.id, e.type, e.name, properties(e) LIMIT {remaining}"
+                )
+                for row in iso_rows:
+                    if row[0] not in entity_map:
+                        entity_map[row[0]] = _entity(row)
 
         result = {"entities": list(entity_map.values()), "relationships": rels}
         _subgraph_cache[cache_key] = (now, result)

@@ -69,6 +69,20 @@ class TestSourceIndex:
         store._graph.query = _raise
         store.clear()  # must not raise
 
+    def test_clear_creates_rel_name_index(self, store):
+        """Real incident: GraphReader.subgraph() (the /graph endpoint) issues
+        one query per relationship name, filtering on r.name with no index —
+        on a ~600K-node, ~1.2M-relationship workspace this full-scanned every
+        relationship (~1095ms per query), and stacking ~20 of them in one
+        request exceeded FalkorDB's TIMEOUT, producing a 500. Confirmed live:
+        the same query dropped to ~3ms once this index existed."""
+        store.clear()
+        index_queries = [q for q, _p in store._graph.queries if "CREATE INDEX" in q]
+        assert any("REL" in q and "name" in q for q in index_queries), (
+            "clear() must index REL.name — the unindexed relationship-name "
+            "filter was the root cause of /graph timing out on large graphs"
+        )
+
 
 class TestEntitiesBatch:
     def test_groups_rows_by_label_set_one_query_per_group(self, store):

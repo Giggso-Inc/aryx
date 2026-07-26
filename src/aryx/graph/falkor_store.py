@@ -172,6 +172,19 @@ class FalkorStore:
         except Exception as exc:  # noqa: BLE001 — perf optimization only
             logger.warning("falkor: failed to create index on Source.record_id, "
                            "provenance writes will fall back to full-scan MERGE: %s", exc)
+        try:
+            # /graph's reader issues one query per relationship name, filtering
+            # on r.name (see reader.py's subgraph()) — with no index on the
+            # generic REL edge type, each of those queries full-scans every
+            # relationship in the graph. Confirmed live: on a ~600K-node,
+            # ~1.2M-relationship workspace, a single such query took ~1095ms;
+            # /graph's ~20 relationship-name queries stacked in one request
+            # exceeded FalkorDB's TIMEOUT, aborting with "Query timed out" and
+            # a 500 from the API. This index took the same query to ~3ms.
+            self._graph.query("CREATE INDEX FOR ()-[r:REL]-() ON (r.name)")
+        except Exception as exc:  # noqa: BLE001 — perf optimization only
+            logger.warning("falkor: failed to create index on REL.name, "
+                           "relationship-name lookups will fall back to full-scan: %s", exc)
 
     def ensure_indexes(self) -> int:
         """Create exact-match indexes for Entity lookups (idempotent).
