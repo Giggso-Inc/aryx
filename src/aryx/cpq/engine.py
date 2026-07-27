@@ -3797,6 +3797,7 @@ class CpqEngine:
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
         bml_eval: BmlEvaluator | None = None,
+        validation_rules: list["ValidationRule"] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -4461,7 +4462,8 @@ class CpqEngine:
                     display_filled[vn] = fallback.display_name
                     sources.setdefault(vn, "default")
             elif (
-                (attr.options or is_decision_attr)
+                (attr.options or is_decision_attr
+                 or self.should_ask_free_text_attr(attr, validation_rules, bml_eval))
                 and not self._is_noise_var(vn)
                 # skip_always_ask means the native UI never shows a question
                 # for this attr in this catalog — it must be excluded from
@@ -4955,6 +4957,35 @@ class CpqEngine:
         attrs at once.
         """
         return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
+
+    def detect_change_target_without_value(
+        self, question: str, attrs: list[ConfigAttr], filled: dict[str, str],
+    ) -> ConfigAttr | None:
+        """A change-verb naming an already-filled attr, but with no
+        resolvable new value ("change hardware version", "change product")
+        — distinct from detect_change_request, which requires BOTH a verb
+        AND a value and returns None otherwise. Confirmed live
+        (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 1): a
+        valueless change message fell through every detector, regex and
+        LLM, straight to the generic "I didn't quite catch that" nudge —
+        this lets the caller instead ask which value, the same way
+        detect_attr_query's "what values are available" answer already
+        does. Only ever called AFTER detect_change_request/
+        detect_change_requests_multi have already returned nothing, so a
+        message with a resolvable value never reaches here.
+        """
+        if not self._CHANGE_VERB_RE.search(question):
+            return None
+        q_flat = question.lower().replace("_", " ")
+        matches = [
+            a for a in attrs
+            if filled.get(a.variable_name)
+            and (a.display_label.lower() in q_flat
+                 or a.variable_name.lower().replace("_", " ") in q_flat)
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda a: len(a.display_label))
 
     # Cap on detect_change_requests_multi's result — a message naming more
     # than this is unusual enough that blindly trusting every match risks
@@ -5485,6 +5516,37 @@ class CpqEngine:
             if desc:
                 return desc
         return None
+
+    def should_ask_free_text_attr(
+        self,
+        attr: ConfigAttr,
+        validation_rules: list["ValidationRule"] | None,
+        bml_eval: "BmlEvaluator | None",
+    ) -> bool:
+        """Generic (not catalog-specific) replacement for Amendment 19's
+        reverted blanket "has a ValidationRule -> ask" heuristic (Amendment
+        20, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md). Every deterministic
+        signal available in this data (required flag, default_value, script
+        shape, hiding-rule visibility) was confirmed identical between a
+        genuine case and Amendment 20's false-positive case — so this
+        escalates to a Tier-2 LLM judgment (Amendment 22), same discipline
+        as every other "no cheaper signal exists" case in this codebase.
+        Returns False (never asks) when there's no governing ValidationRule
+        at all, or when bml_eval wasn't supplied — same opt-out convention
+        every other bml_eval=None caller already gets elsewhere.
+        """
+        if bml_eval is None:
+            return False
+        target_ids = {attr.entity_id, attr.source_id}
+        rule = next(
+            (r for r in (validation_rules or []) if r.target_attr_id in target_ids),
+            None,
+        )
+        if rule is None:
+            return False
+        return bml_eval.classify_ask_worthy(
+            attr.display_label, rule.message, rule.condition_script, attr.entity_id,
+        )
 
     # ── Next question ─────────────────────────────────────────────────────────
 

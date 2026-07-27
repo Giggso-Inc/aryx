@@ -1155,9 +1155,47 @@ class BmlEvaluator:
             "hide": self._evaluate_llm_hide,
             "cond": self._evaluate_llm_condition,
             "values": self._evaluate_llm,
+            "ask_worthy": self._evaluate_llm_ask_worthy,
         }[kind](script, dict(variables))
         self._durable_put(durable_key, kind, result)
         return result
+
+    def classify_ask_worthy(
+        self, attr_label: str, rule_message: str, rule_script: str, attr_key: int,
+    ) -> bool:
+        """Generic (not catalog-specific) Tier-2 judgment for a no-option,
+        no-decision-keyword free-text attr that IS targeted by a
+        ValidationRule: is this a value a sales rep configuring a quote
+        would actively decide and enter, or an internal/advanced/system
+        field the native UI doesn't normally prompt for?
+
+        docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md Amendment 22 — every
+        deterministic signal available (required flag, default_value,
+        script shape, hiding-rule visibility) was confirmed identical
+        between a genuine case (agencyDomainName_ID_swSoln,
+        OfVideoStreamingDevices_3_swSoln) and a false-positive case
+        (APX Next's systemID_astro / "Owner System ID", Amendment 20).
+        Falls back to the LLM only because no cheaper signal exists —
+        same escalation discipline as every other Tier-2 use in this file.
+        Cached durably via the same `_call_tier2`/`aryx_bml_tier2_cache`
+        machinery already used for script evaluation (kind="ask_worthy"),
+        keyed by attr_key so it's a one-time cost per attribute, not per
+        turn. Defaults to False (never guess toward asking) on any LLM
+        failure or "unknown" — preserves the current safe/dormant
+        behavior when the classifier can't decide.
+        """
+        script = rule_script or ""
+        # A gating condition (e.g. "only relevant when advancedFlag ==
+        # YES") tends to sit in the script's FINAL return statement, not
+        # its opening comments/setup — a head-only truncation can silently
+        # cut it off on a long script (confirmed live: a 4407-char script
+        # had its one gating clause at position 4315). Send both ends
+        # rather than assume the interesting part is near the top.
+        if len(script) > 4000:
+            script = script[:2000] + "\n...\n" + script[-2000:]
+        context = f"{attr_label}\n{rule_message or ''}\n{script}"
+        result = self._call_tier2("ask_worthy", context, {}, cache_id=attr_key)
+        return bool(result) if isinstance(result, bool) else False
 
     def prefetch_tier2(
         self, requests: list[tuple[str, str, dict[str, str], int | None]],
@@ -1417,4 +1455,57 @@ class BmlEvaluator:
                 return val
         except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
             logger.debug("bml: tier-2 LLM condition-evaluation failed", exc_info=True)
+        return None
+
+    def _evaluate_llm_ask_worthy(
+        self, context: str, variables: dict[str, str],
+    ) -> bool | None:
+        """Tier 2: ask the reason model whether a no-option, validation-rule
+        -governed free-text attribute is worth proactively asking a sales
+        rep about (see classify_ask_worthy above). `variables` is unused —
+        this is a static per-attribute judgment, not a per-turn one; kept
+        only to match _call_tier2's shared dispatch signature.
+        """
+        try:
+            from aryx import llm_runtime
+            sys_p = (
+                "You classify BigMachines CPQ configuration attributes. "
+                "Given an attribute's display label and its validation "
+                "rule's message/script, decide whether a sales rep "
+                "configuring a customer quote would need to actively "
+                "decide and enter this value (a genuine quote-relevant "
+                "decision, e.g. a quantity, domain name, or setting the "
+                "customer cares about), versus an internal, advanced, or "
+                "system-integration field the native UI would not "
+                "normally prompt a rep for.\n\n"
+                "Read the FULL script, not just the label — it often "
+                "contains the real signal. If the script's condition only "
+                "matters when ANOTHER attribute (not this one) is set to "
+                "an enabling/advanced value (e.g. an '...advanced...', "
+                "'...key...', or similar toggle-style attribute name "
+                "equals YES/enabled), that is a strong sign this is a "
+                "conditional, advanced, or hardware-integration field a "
+                "rep would not be asked about by default — answer false "
+                "unless the label itself is unambiguously a core, always-"
+                "relevant business fact (e.g. a domain name, a device "
+                "count, a service duration)."
+            )
+            user_p = (
+                f"Attribute label and validation rule context:\n{context[:4600]}\n\n"
+                'Reply ONLY as JSON: {"ask_worthy": true} or '
+                '{"ask_worthy": false} or {"unknown": true} if it cannot '
+                "be determined."
+            )
+            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            s, e = txt.find("{"), txt.rfind("}")
+            if s == -1 or e <= s:
+                return None
+            d = json.loads(txt[s:e + 1])
+            if d.get("unknown"):
+                return None
+            val = d.get("ask_worthy")
+            if isinstance(val, bool):
+                return val
+        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            logger.debug("bml: tier-2 LLM ask-worthy classification failed", exc_info=True)
         return None

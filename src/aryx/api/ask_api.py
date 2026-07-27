@@ -430,6 +430,22 @@ def _handle_cpq_qa(
         if _attr_q else []
     )
     if _presentable:
+        # Constrain to values compatible with what's already selected
+        # (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 2 —
+        # confirmed live: this Q&A fast path, exercised once the config is
+        # already awaiting_approval, listed all 325 raw Product codes
+        # instead of the ~2 an active constraint rule actually allows; the
+        # first fix attempt only patched _run_cpq_turn's OWN separate
+        # options-query block, which isn't the one reached here).
+        _qa_catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+        _, _qa_con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
+            req.workspace_id, _qa_catalog_prefix)
+        _qa_bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, _qa_catalog_prefix)
+        _qa_constrained = _cpq_engine.apply_constraint_rules(
+            attrs, _qa_con_rules, session.filled, _qa_bml_eval)
+        _qa_allowed = _qa_constrained.get(_attr_q.entity_id)
+        if _qa_allowed is not None:
+            _presentable = [o for o in _presentable if o.item_value in _qa_allowed]
         _numbered = "\n".join(
             f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
         )
@@ -635,12 +651,14 @@ def _handle_cascade(
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+        validation_rules=validation_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -894,12 +912,14 @@ def _handle_multi_select_removal(
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+        validation_rules=validation_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -1038,12 +1058,14 @@ def _handle_attr_activation(
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+        validation_rules=validation_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -1198,12 +1220,14 @@ def _handle_attr_clear(
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+        validation_rules=validation_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -1342,12 +1366,14 @@ def _handle_bulk_quantity_change(
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+        validation_rules=validation_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -1569,12 +1595,14 @@ def _handle_cascade_multi(
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     _, _, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+        validation_rules=validation_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -3220,6 +3248,25 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         req.workspace_id, catalog_prefix)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+
+    # Resolve a pending "which value?" clarifying question from a previous
+    # turn's valueless change request (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md
+    # Related finding 1) — the reply IS the new value directly, not a fresh
+    # hint, so it must be captured here before any other detection runs,
+    # regardless of session.status (checked first for the same reason
+    # pending_change_collision_vns/pending_label_collision_vns are each
+    # checked before their surrounding STEP logic).
+    if session.pending_change_no_value_vn:
+        _pcnv_attr = next(
+            (a for a in attrs if a.variable_name == session.pending_change_no_value_vn), None,
+        )
+        session.pending_change_no_value_vn = ""
+        if _pcnv_attr:
+            return _handle_cascade(
+                req, session, attrs, _pcnv_attr, req.question,
+                hiding_rules, rec_rules, con_rules,
+            )
+
     # Rule-consistency auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
     # §4.1): a filled attr an active hiding rule currently matches was never
     # a real customer decision — drop it from every build_payload call this
@@ -3637,6 +3684,44 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         hiding_rules, rec_rules, con_rules,
                     )
 
+        # Recognized change-verb naming an already-filled attr, but no
+        # resolvable new value ("change hardware version", "change product")
+        # — ask which value instead of falling through to the generic
+        # nudge below (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related
+        # finding 1 — confirmed live this is the actual STEP 6 block
+        # exercised once status is awaiting_approval/post_approval; a
+        # first fix attempt only wired this into the SEPARATE mid-config
+        # block below STEP 7, which this message never reaches).
+        _no_value_attr = _cpq_engine.detect_change_target_without_value(
+            req.question, attrs, session.filled,
+        )
+        if _no_value_attr:
+            _nv_constrained = _cpq_engine.apply_constraint_rules(
+                attrs, con_rules, session.filled, bml_eval)
+            _nv_options_block = _cpq_engine.next_question_prompt(
+                _no_value_attr,
+                constrained_item_values=_nv_constrained.get(_no_value_attr.entity_id),
+            )
+            _nv_current_val = session.filled.get(_no_value_attr.variable_name)
+            _nv_current_note = (
+                f"\n\n*Currently set to: **"
+                f"{session.display_filled.get(_no_value_attr.variable_name, _nv_current_val)}***"
+                if _nv_current_val else ""
+            )
+            _nv_answer = (
+                f"Which value would you like for **{_no_value_attr.display_label}**?"
+                f"\n\n{_nv_options_block}{_nv_current_note}"
+            )
+            session.pending_change_no_value_vn = _no_value_attr.variable_name
+            _persist_cpq_history(req.workspace_id, req.question, _nv_answer)
+            return {
+                "answer": _nv_answer, "terms": [_no_value_attr.variable_name],
+                "tools_called": [f"cpq_change_target_no_value({_no_value_attr.variable_name})"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
         # Could not parse as approval, Q&A, change, or JSON request — nudge
         # with the verbose summary, NOT the raw JSON (§6/Phase K: JSON stays
         # on-demand only; misreading input isn't a request for it).
@@ -3693,7 +3778,18 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # ── Attribute option query: "what values are available for X?" ────────────
     queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)
     if queried_attr:
-        options_block = _cpq_engine.next_question_prompt(queried_attr)
+        # Constrain to values compatible with what's already selected — same
+        # apply_constraint_rules call the pending-question flow already
+        # makes, just missing here (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md
+        # Related finding 2 — confirmed live: querying "Product" after
+        # Hardware Version was set listed all 325 catalog codes instead of
+        # the 2 the active constraint rule actually allows).
+        _queried_constrained = _cpq_engine.apply_constraint_rules(
+            attrs, con_rules, session.filled, bml_eval)
+        options_block = _cpq_engine.next_question_prompt(
+            queried_attr,
+            constrained_item_values=_queried_constrained.get(queried_attr.entity_id),
+        )
         current_val = session.filled.get(queried_attr.variable_name)
         current_note = (
             f"\n\n*Currently set to: **{session.display_filled.get(queried_attr.variable_name, current_val)}***"
@@ -3816,6 +3912,72 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # Unrecognized reply — clear stale state rather than getting
             # stuck forever asking the same disambiguation prompt.
             session.pending_label_collision_vns = []
+
+    # ── Mid-configuration change request (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md) ──
+    # Change-request handling used to be wired ONLY into the awaiting_approval/
+    # post_approval block above — a message like "change Is FedRamp or CCCS
+    # Required to None" sent while OTHER fields were still pending fell
+    # through unrecognized and was silently dropped (confirmed live,
+    # Amendment 22 follow-up). Reuses the exact detectors + _handle_cascade
+    # the awaiting_approval path already trusts; detect_change_request(s)
+    # already require the named attr to be in session.filled, so a message
+    # about the CURRENTLY PENDING (not yet answered) attr can never be
+    # misdetected here — it keeps falling through to STEP 5 unchanged.
+    if not mode_request:
+        _mc_multi_matches = _cpq_engine.detect_change_requests_multi(
+            req.question, attrs, session.filled, filled_multi=session.filled_multi)
+        if len(_mc_multi_matches) >= 2:
+            _mc_multi_result = _handle_cascade_multi(
+                req, session, attrs, _mc_multi_matches,
+                hiding_rules, rec_rules, con_rules,
+            )
+            if _mc_multi_result is not None:
+                return _mc_multi_result
+        else:
+            _mc_change_result = _cpq_engine.detect_change_request(
+                req.question, attrs, session.filled, filled_multi=session.filled_multi)
+            if _mc_change_result:
+                _mc_changed_attr, _mc_new_value_hint = _mc_change_result
+                return _handle_cascade(
+                    req, session, attrs, _mc_changed_attr, _mc_new_value_hint,
+                    hiding_rules, rec_rules, con_rules,
+                )
+            # Recognized change-verb naming an already-filled attr, but no
+            # resolvable new value ("change hardware version") — ask which
+            # value instead of falling through to the generic "I didn't
+            # quite catch that" nudge (Related finding 1 in the plan doc).
+            _mc_attr_no_value = _cpq_engine.detect_change_target_without_value(
+                req.question, attrs, session.filled,
+            )
+            if _mc_attr_no_value:
+                _mc_constrained = _cpq_engine.apply_constraint_rules(
+                    attrs, con_rules, session.filled, bml_eval)
+                _mc_options_block = _cpq_engine.next_question_prompt(
+                    _mc_attr_no_value,
+                    constrained_item_values=_mc_constrained.get(_mc_attr_no_value.entity_id),
+                )
+                _mc_current_val = session.filled.get(_mc_attr_no_value.variable_name)
+                _mc_current_note = (
+                    f"\n\n*Currently set to: **"
+                    f"{session.display_filled.get(_mc_attr_no_value.variable_name, _mc_current_val)}***"
+                    if _mc_current_val else ""
+                )
+                _mc_answer = (
+                    f"Which value would you like for **{_mc_attr_no_value.display_label}**?"
+                    f"\n\n{_mc_options_block}{_mc_current_note}"
+                )
+                _mc_other_pending = [
+                    v for v in session.pending_variables if v != _mc_attr_no_value.variable_name
+                ]
+                session.pending_variables = [_mc_attr_no_value.variable_name] + _mc_other_pending
+                _persist_cpq_history(req.workspace_id, req.question, _mc_answer)
+                return {
+                    "answer": _mc_answer, "terms": [_mc_attr_no_value.variable_name],
+                    "tools_called": [f"cpq_change_target_no_value({_mc_attr_no_value.variable_name})"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
 
     # ── STEP 5: Lock user's answer from previous turn ────────────────────────
     if session.pending_variables and session.turn > 1 and not mode_request:
@@ -4111,6 +4273,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             dropped_multi=dropped_multi, rule_governed_ids=r_ids, country=session.country,
             negated_vns=negated_vns, filled_source=session.filled_source,
             skip_always_ask=skip_always_ask, bml_eval=bml_eval,
+            validation_rules=validation_rules,
             )
         if session.model_leaf_resolved:
             # skip_always_ask only suppresses the always-ask OVERRIDE — it
