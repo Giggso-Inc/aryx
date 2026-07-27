@@ -15,6 +15,7 @@ import re
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as defused_ET
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -605,8 +606,15 @@ def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
 
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
-               broker: Broker, context: str, did: str | None = None) -> dict[str, Any]:
-    """Read everything; return {mentions, tabular, summary} without committing."""
+               broker: Broker, context: str, did: str | None = None,
+               on_progress: Callable[[int, int, list], None] | None = None) -> dict[str, Any]:
+    """Read everything; return {mentions, tabular, summary} without committing.
+
+    on_progress: optional callback forwarded to extract_mentions() for each
+    document — see doc_router.DocumentRouterConnector / ontology.extract for
+    the (completed, total, new_records) signature. Lets the caller persist
+    partial progress on long-running (1000+ page) documents.
+    """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
                 did, len(doc_paths), len(tabular), context)
@@ -616,7 +624,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             paths=doc_paths, system="document", broker=broker,
             chunk_store=ChunkStore(settings.rdb_dsn), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
-            context=context)
+            context=context, on_progress=on_progress)
         mentions = list(connector.extract())
 
     # XML/XLSX files: expand into one CSV per element type / worksheet so

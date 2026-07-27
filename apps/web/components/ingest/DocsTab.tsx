@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { useWorkspace } from "@/lib/workspace";
 import { api } from "@/lib/api";
@@ -8,6 +8,52 @@ import { DocsUploadStep } from "./DocsUploadStep";
 import { DocsSummaryStep } from "./DocsSummaryStep";
 import type { DocPhase } from "./types";
 import type { DiscoverySummary } from "@/lib/types";
+
+const RESUMABLE_PHASES: DocPhase[] = ["reading", "summary", "confirming"];
+
+type PersistedDocsSession = {
+  phase: DocPhase;
+  readJobId: string | null;
+  discoveryId: string | null;
+  summary: DiscoverySummary | null;
+  approved: string[];
+  confirmJobId: string | null;
+};
+
+// A read/confirm job on a large (1000+ page) document can run for hours —
+// far longer than a single browser tab is reliably alive for (reloads,
+// crashes, accidental closes). Without this, phase/discoveryId/job ids were
+// pure in-memory React state: any interruption lost track of an
+// in-progress job that was still running server-side, and the only way
+// back in was to re-upload from scratch. Persisting to localStorage and
+// rehydrating on mount lets a reload pick the same job back up.
+function _storageKey(workspaceId: number): string {
+  return `aryx.docs.session.${workspaceId}`;
+}
+
+function _loadSession(workspaceId: number): PersistedDocsSession | null {
+  try {
+    const raw = localStorage.getItem(_storageKey(workspaceId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedDocsSession;
+    if (!RESUMABLE_PHASES.includes(parsed.phase)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function _saveSession(workspaceId: number, session: PersistedDocsSession): void {
+  try {
+    localStorage.setItem(_storageKey(workspaceId), JSON.stringify(session));
+  } catch { /* storage unavailable/full — resuming is best-effort */ }
+}
+
+function _clearSession(workspaceId: number): void {
+  try {
+    localStorage.removeItem(_storageKey(workspaceId));
+  } catch { /* ignore */ }
+}
 
 export function DocsTab() {
   const { workspaceId } = useWorkspace();
@@ -20,6 +66,31 @@ export function DocsTab() {
   const [summary, setSummary] = useState<DiscoverySummary | null>(null);
   const [approved, setApproved] = useState<Set<string>>(new Set());
   const [confirmJobId, setConfirmJobId] = useState<string | null>(null);
+
+  // Rehydrate any in-progress job for this workspace on mount (page reload,
+  // tab reopen after the poller's timers were suspended, etc).
+  useEffect(() => {
+    const saved = _loadSession(workspaceId);
+    if (!saved) return;
+    setPhase(saved.phase);
+    setReadJobId(saved.readJobId);
+    setDiscoveryId(saved.discoveryId);
+    setSummary(saved.summary);
+    setApproved(new Set(saved.approved));
+    setConfirmJobId(saved.confirmJobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
+
+  const skipNextPersist = useRef(true);
+  useEffect(() => {
+    // Skip the render right after rehydration so it doesn't immediately
+    // overwrite the just-loaded session with the pre-rehydration defaults.
+    if (skipNextPersist.current) { skipNextPersist.current = false; return; }
+    if (phase === "idle" || phase === "done") { _clearSession(workspaceId); return; }
+    _saveSession(workspaceId, {
+      phase, readJobId, discoveryId, summary, approved: [...approved], confirmJobId,
+    });
+  }, [workspaceId, phase, readJobId, discoveryId, summary, approved, confirmJobId]);
 
   const onReadDone = useCallback(async (ok: boolean) => {
     if (!ok || !discoveryId) { setPhase("error"); setError("Read job failed"); return; }

@@ -38,6 +38,33 @@ class Settings(BaseSettings):
         default=2000,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
     )
+    graph_query_timeout: int = Field(
+        default=30_000,
+        description=(
+            "Per-query timeout in milliseconds passed to FalkorDB. "
+            "FalkorDB's built-in default is 5000 ms — too short once a "
+            "properly-linked large workspace (e.g. 345K entities) has "
+            "relationship types whose MATCH traversal takes 4–5 s even "
+            "with REL.name indexed. A real incident: GET /graph returned "
+            "500 on every call to workspace 45 because the "
+            "NOQUOTESMALLBUSINESSREPORT…_HAS_… queries measured 4782 ms, "
+            "randomly crossing the 5000 ms cutoff under load. Set to 0 to "
+            "use FalkorDB's built-in default. "
+            "Override with ARYX_GRAPH_QUERY_TIMEOUT."
+        ),
+    )
+    ontology_export_max_entities: int = Field(
+        default=50_000,
+        description=(
+            "Maximum entity count allowed in a synchronous ontology export "
+            "(GET /ontology/export). Loading and serialising more entities "
+            "than this synchronously risks exhausting memory and exceeding "
+            "the reverse proxy's read timeout (502 Bad Gateway from nginx "
+            "before FastAPI can write the response). Workspaces above the "
+            "cap receive a 413 Request Entity Too Large. Set to 0 to "
+            "disable the cap. Override with ARYX_ONTOLOGY_EXPORT_MAX_ENTITIES."
+        ),
+    )
     graph_isolated_scan_max_entities: int = Field(
         default=100_000,
         description=(
@@ -620,6 +647,35 @@ class Settings(BaseSettings):
     doc_workers: int = Field(
         default=1,
         description="Parallel document extraction workers (1 = sequential).",
+    )
+    extract_mention_workers: int = Field(
+        default=4,
+        description=(
+            "Parallel LLM calls within extract_mentions() for a single "
+            "document's chunks. Extraction used to be one chunk at a time: a "
+            "50-page PDF (~330 chunks) measured at 36 minutes wall-clock; a "
+            "1000+ page document scales roughly linearly to many hours at "
+            "that rate, which per_doc_timeout would abandon partway through "
+            "(and, before incremental persistence, lost every mention "
+            "extracted so far when that happened). Raise for a cloud LLM "
+            "provider (Gemini/OpenAI/Anthropic) that handles concurrent "
+            "requests; keep at 1-2 for a single local Ollama instance, where "
+            "parallel requests just queue with no real throughput gain. "
+            "Override with ARYX_EXTRACT_MENTION_WORKERS."
+        ),
+    )
+    extract_mention_progress_flush_chunks: int = Field(
+        default=20,
+        description=(
+            "How often (in completed chunks) extract_mentions() invokes its "
+            "progress callback, which persists the mentions extracted so far "
+            "and updates the job's live stage/pct. Without this, a "
+            "per_doc_timeout expiry or crash partway through a long document "
+            "lost every mention extracted up to that point, since the full "
+            "record list was previously only returned at the very end of "
+            "extraction. Override with "
+            "ARYX_EXTRACT_MENTION_PROGRESS_FLUSH_CHUNKS."
+        ),
     )
 
     # ── Ontology interchange ──────────────────────────────────────────────────
