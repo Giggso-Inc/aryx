@@ -32,9 +32,13 @@ None as "no constraint derived", never as "everything allowed".
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from aryx.cpq.logging_context import install_run_id_logging
 
@@ -250,6 +254,30 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
                 return None
             branches.append((None, body2))
             break
+        # Amendment 19 follow-up (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
+        # a single if{...} block with NO `else` keyword at all, followed by
+        # exactly one bare `return true;`/`return false;` and nothing else,
+        # is a common real idiom — an implicit else expressed as a
+        # fallthrough rather than an explicit else block (confirmed live:
+        # "Hide Video Streaming Devices for FedRamp" —
+        # `if(x=="Y"){return true;} return false;`). Without this, a false
+        # condition made the whole script report as unparseable instead of
+        # correctly falling through to `false` — forcing an avoidable
+        # Tier-2 call for a script Tier 1 can actually resolve completely.
+        #
+        # Deliberately restricted to a bare BOOLEAN literal, not any
+        # `return <literal>;` — a bare `return "";` (empty string) is a
+        # real, different, already-tested idiom (SVX's "Set defaults for
+        # VX650": `if(cond){return "YES";} return "";`) where empty-string
+        # means "no recommendation" and must stay `None`, not become an
+        # inferred branch — see test_real_script_does_not_force_yes_when_
+        # condition_false. Booleans have no such "empty means nothing"
+        # ambiguity, so this is safe to infer; quoted-string returns are
+        # not, and are intentionally left untouched.
+        if len(branches) == 1 and not _IF_RE.search(rest):
+            m_tail = re.match(r'return\s+(true|false)\s*;\s*$', rest, re.IGNORECASE)
+            if m_tail:
+                branches.append((None, rest))
         break
     return branches or None
 
@@ -798,6 +826,67 @@ def _resolve_literal_expr(expr: str, literals: dict[str, str]) -> str | None:
     return "".join(parts)
 
 
+# Idiom C — "hide unless present in a master delimited list": a shape
+# distinct from the if/else-if/else chain _first_matching_branch parses —
+# one guarded if-block, no branch-vs-branch comparison at all. Found live
+# investigating Amendment 18's 121 hiding-rule targets that fell through to
+# Tier 2 despite depending on nothing but two already-filled variables — the
+# grammar, not missing data, was the blocker. Confirmed identical shape
+# across dozens of real rules in the CommandCentral Aware catalog (e.g.
+# "Hide Third Party Vendor Name if no values available", "Hide QTY Included
+# array if not values are available", "Hide Connector Type Included array if
+# not values are available", ...), differing only in which master/separator
+# variable and which literal name they check for:
+#
+#   if(MASTER<>""){
+#   ARR = SPLIT(MASTER,SEP);
+#   IDX = findinarray(ARR,"LITERAL");
+#      if (IDX ==-1){
+#          return TRUE;
+#      }
+#      }
+#   return FALSE;
+#
+# Semantics: hide the target UNLESS "LITERAL" appears in MASTER's own value
+# once split on SEP's own value (an empty/missing MASTER never hides — the
+# outer guard is false, so it falls straight to `return FALSE`).
+# `re.fullmatch` (not `search`) against the whole comment-stripped script:
+# anything beyond this exact shape bails to None rather than guessing.
+_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+_HIDE_MASTER_LIST_RE = re.compile(
+    r'if\s*\(\s*(?P<master>\w+)\s*<>\s*""\s*\)\s*\{\s*'
+    r'(?P<arr>\w+)\s*=\s*SPLIT\s*\(\s*(?P=master)\s*,\s*(?P<sep>\w+)\s*\)\s*;\s*'
+    r'(?P<idx>\w+)\s*=\s*findinarray\s*\(\s*(?P=arr)\s*,\s*"(?P<literal>[^"]*)"\s*\)\s*;\s*'
+    r'if\s*\(\s*(?P=idx)\s*==\s*-1\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'\}\s*'
+    r'return\s+false\s*;\s*',
+    re.IGNORECASE,
+)
+
+
+def evaluate_hide_master_list(
+    script: str, variables: dict[str, str],
+) -> tuple[bool | None, bool]:
+    """Tier 1.5 (Idiom C): resolve the "hide unless in master list" idiom
+    deterministically. Returns (hide, blocked_by_missing_var) — same
+    contract as evaluate_hide_tier1/_first_matching_branch. (None, False)
+    means the script isn't this idiom at all (try the next tier); (None,
+    True) means it IS this idiom but MASTER or SEP isn't filled yet.
+    """
+    m = _HIDE_MASTER_LIST_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    if not m:
+        return None, False
+    master = variables.get(m.group("master"))
+    sep = variables.get(m.group("sep"))
+    if master is None or sep is None:
+        return None, True
+    if master == "":
+        return False, False
+    return m.group("literal") not in master.split(sep), False
+
+
 def evaluate_tier1(
     script: str, variables: dict[str, str],
 ) -> tuple[list[str] | None, bool]:
@@ -824,7 +913,15 @@ def evaluate_hide_tier1(
     Returns (hide, blocked_by_missing_var) — see _first_matching_branch for
     the exact semantics of each case; True means the target attr should be
     hidden, False means it should stay visible.
+
+    Tries Idiom C (evaluate_hide_master_list) first — a different grammar
+    shape _first_matching_branch's if/else-if/else chain parser was never
+    meant to recognize — and falls through to the chain parser only when
+    Idiom C reports "not this shape" ((None, False)).
     """
+    result, blocked = evaluate_hide_master_list(script, variables)
+    if blocked or result is not None:
+        return result, blocked
     body, blocked = _first_matching_branch(script, variables)
     if blocked:
         return None, True
@@ -860,6 +957,7 @@ class BmlEvaluator:
     def __init__(
         self, scripts: dict[int, str], use_llm: bool = True,
         workspace_id: int = 0, catalog_prefix: str = "",
+        tier2_max_per_turn: int | None = None,
     ) -> None:
         """scripts — {bm_function_id: script_text} from the RDB.
 
@@ -867,15 +965,259 @@ class BmlEvaluator:
         _SHARED_SCRIPT_CACHE) so results never cross-contaminate between
         catalogs or workspaces that happen to reuse the same BM-native
         function id.
+
+        tier2_max_per_turn (Amendment 18): a hard ceiling on distinct
+        Tier-2 attempts across this evaluator's WHOLE lifetime — one
+        instance lives for exactly one CPQ turn (built fresh per turn by
+        CpqEngine.build_bml_evaluator), so this naturally caps "per turn,
+        across every pass of evaluate_rules_loop combined." None defaults
+        to settings.bml_tier2_max_per_turn. A `threading.Lock` guards the
+        check-and-increment since prefetch_tier2 dispatches concurrently
+        from multiple threads.
         """
         self._scripts = scripts
         self._use_llm = use_llm
         self._workspace_id = workspace_id
         self._catalog_prefix = catalog_prefix
-        self.stats = {"tier1": 0, "tier2": 0, "unknown": 0, "missing": 0, "cached": 0}
+        if tier2_max_per_turn is None:
+            from aryx.config import get_settings
+            tier2_max_per_turn = get_settings().bml_tier2_max_per_turn
+        self._tier2_cap = tier2_max_per_turn
+        self._tier2_count = 0
+        self._tier2_lock = threading.Lock()
+        self._cap_warned = False
+        self.stats = {
+            "tier1": 0, "tier2": 0, "unknown": 0, "missing": 0, "cached": 0,
+            "capped": 0, "durable_hit": 0,
+        }
 
     def script_for(self, function_id: int) -> str | None:
         return self._scripts.get(function_id)
+
+    def _prepare(
+        self, kind: str, tier1_fn: Any, script: str, variables: dict[str, str],
+        cache_id: int | None,
+    ) -> tuple[tuple, Any, bool]:
+        """Shared key/cache/Tier-1 step for hide_for_script/condition_holds/
+        allowed_values_for_script (Amendment 18, docs/CPQ_UNIFIED_INTENT_
+        CLASSIFIER_PLAN.md) — factored out so `prefetch_tier2` can run this
+        same cheap, local, no-network step for a whole batch of scripts
+        before deciding which ones genuinely need a Tier-2 call, without
+        duplicating (and risking drift in) the cache-key formula each of
+        those three methods already relied on individually.
+
+        Returns (key, result, needs_tier2). When needs_tier2 is False,
+        `result` is already final — a cache hit, a Tier-1 resolution, an
+        unresolvable-due-to-missing-variable, or LLM disabled — and the
+        caller should write it to the cache and return it directly, exactly
+        as before this refactor. tier1_fn is evaluate_tier1 (allowed-values
+        idiom) or evaluate_hide_tier1 (bool idiom, shared by hide_for_script
+        and condition_holds) — both return (result, blocked_by_missing_var).
+        """
+        key = (kind, self._workspace_id, self._catalog_prefix,
+               cache_id if cache_id is not None else hash(script),
+               frozenset(variables.items()))
+        if key in _SHARED_SCRIPT_CACHE:
+            self.stats["cached"] += 1
+            return key, _SHARED_SCRIPT_CACHE[key], False
+        result, blocked_by_missing_var = tier1_fn(script, variables)
+        if result is not None:
+            self.stats["tier1"] += 1
+            return key, result, False
+        if blocked_by_missing_var:
+            self.stats["unknown"] += 1
+            return key, None, False
+        if not self._use_llm:
+            self.stats["unknown"] += 1
+            return key, None, False
+        if not self._reserve_tier2_slot():
+            self.stats["capped"] += 1
+            self.stats["unknown"] += 1
+            return key, None, False
+        return key, None, True
+
+    def _reserve_tier2_slot(self) -> bool:
+        """Claim one of this turn's Tier-2 attempts, or refuse once the cap
+        (Amendment 18, `bml_tier2_max_per_turn`) is reached.
+
+        Thread-safe (prefetch_tier2 dispatches from multiple threads at
+        once) — a plain unguarded read-then-increment could let concurrent
+        callers overshoot the cap. Logs a single warning the first time this
+        turn hits the ceiling, so a truncated turn is visible in logs rather
+        than silently incomplete.
+        """
+        with self._tier2_lock:
+            if self._tier2_count >= self._tier2_cap:
+                if not self._cap_warned:
+                    self._cap_warned = True
+                    logger.warning(
+                        "bml: Tier-2 cap (%d) reached this turn (workspace=%s "
+                        "catalog=%r) — further script-backed rules fall back "
+                        "to 'unknown' (never guess) for the rest of this turn",
+                        self._tier2_cap, self._workspace_id, self._catalog_prefix,
+                    )
+                return False
+            self._tier2_count += 1
+            return True
+
+    def _store(self, key: tuple, result: Any) -> Any:
+        """Write a final result to the shared cache (same cap-and-clear
+        policy every call site already used) and return it, so both the
+        single-script methods and prefetch_tier2's batch path share one
+        write path."""
+        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
+            _SHARED_SCRIPT_CACHE.clear()
+        _SHARED_SCRIPT_CACHE[key] = result
+        return result
+
+    def _durable_key(
+        self, kind: str, script: str, variables: dict[str, str],
+        cache_id: int | None,
+    ) -> str:
+        """Stable, cross-process cache key for the durable Tier-2 store
+        (Amendment 18 option 4, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md).
+
+        Deliberately NOT Python's built-in hash() — string hashing is
+        randomized per-process by default (PYTHONHASHSEED), so hash(script)
+        (what the in-memory _SHARED_SCRIPT_CACHE key uses when cache_id is
+        None) would compute a DIFFERENT value after every restart, making a
+        durable store keyed on it a permanent, silent miss. sha256 over a
+        canonical (sorted-keys JSON) representation is stable across
+        processes, machines, and Python versions — the actual property this
+        needs. Same identity components as the in-memory key (kind,
+        workspace, catalog, script-or-cache_id, full variable state) — this
+        durable layer changes WHERE a result is cached, never WHAT is
+        treated as "the same state," so it carries no new correctness risk
+        beyond the in-memory cache's own already-established semantics.
+        """
+        ident = cache_id if cache_id is not None else script
+        canonical = json.dumps(
+            {"kind": kind, "ws": self._workspace_id, "cat": self._catalog_prefix,
+             "ident": ident, "vars": dict(sorted(variables.items()))},
+            sort_keys=True, default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _durable_get(self, cache_key: str) -> tuple[Any, bool]:
+        """Look up a Tier-2 result in the durable store. Returns (result,
+        found) — best-effort: any DB error is treated as a miss, never
+        raised, since this is a pure optimization layer over the same
+        network-call fallback that already exists."""
+        try:
+            from aryx.config import get_settings
+            from aryx.queries import load
+            from aryx.store.pool import get_pool
+            with get_pool(get_settings().effective_dsn()).connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(load("select_bml_tier2_cache"), (cache_key,))
+                    row = cur.fetchone()
+            if row is None:
+                return None, False
+            return json.loads(row[0]) if isinstance(row[0], str) else row[0], True
+        except Exception:  # noqa: BLE001 — durable cache is best-effort only
+            logger.debug("bml: durable tier-2 cache read failed", exc_info=True)
+            return None, False
+
+    def _durable_put(self, cache_key: str, kind: str, result: Any) -> None:
+        """Persist a freshly-computed Tier-2 result. Best-effort: a write
+        failure never blocks or fails the turn — the in-memory cache and
+        the network fallback both still work exactly as before this layer
+        existed."""
+        try:
+            from aryx.config import get_settings
+            from aryx.queries import load
+            from aryx.store.pool import get_pool
+            with get_pool(get_settings().effective_dsn()).connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(load("upsert_bml_tier2_cache"), (
+                        cache_key, self._workspace_id, kind, json.dumps(result),
+                    ))
+        except Exception:  # noqa: BLE001 — durable cache is best-effort only
+            logger.debug("bml: durable tier-2 cache write failed", exc_info=True)
+
+    def _call_tier2(
+        self, kind: str, script: str, variables: dict[str, str],
+        cache_id: int | None = None,
+    ) -> Any:
+        """Single entry point for every actual Tier-2 network call — checks
+        the durable cross-process cache first, only calls the LLM on a
+        genuine miss, then persists the fresh result. Replaces calling
+        _evaluate_llm_hide/_evaluate_llm_condition/_evaluate_llm directly so
+        all four Tier-2 call sites (hide_for_script, condition_holds,
+        allowed_values_for_script, prefetch_tier2) get durability for free.
+        """
+        durable_key = self._durable_key(kind, script, variables, cache_id)
+        result, found = self._durable_get(durable_key)
+        if found:
+            self.stats["durable_hit"] += 1
+            return result
+        result = {
+            "hide": self._evaluate_llm_hide,
+            "cond": self._evaluate_llm_condition,
+            "values": self._evaluate_llm,
+        }[kind](script, dict(variables))
+        self._durable_put(durable_key, kind, result)
+        return result
+
+    def prefetch_tier2(
+        self, requests: list[tuple[str, str, dict[str, str], int | None]],
+    ) -> None:
+        """Warm the shared cache for a batch of (kind, script, variables,
+        cache_id) requests CONCURRENTLY, instead of the one-script-at-a-time
+        sequential path every rule-application method otherwise takes.
+
+        Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a single
+        turn on a large catalog can leave 800+ distinct scripts needing
+        Tier-2 — live-confirmed sequential evaluation of that many scripts
+        can take tens of minutes. Every script's evaluation is independent
+        given a fixed variable-state snapshot, so this dispatches all of
+        them at once via a thread pool (Tier-2 calls are blocking network
+        I/O — urllib releases the GIL while waiting, so threads, not
+        asyncio, parallelize this with no change to the existing synchronous
+        call sites) and lets each one's result land in `_SHARED_SCRIPT_CACHE`
+        under the EXACT same key `hide_for_script`/`condition_holds`/
+        `allowed_values_for_script` would compute themselves. Those methods
+        are NOT changed by this — they still run sequentially, in whatever
+        order the existing apply_hiding_rules/apply_recommendation_rules/
+        apply_constraint_rules loops call them — but every one of those
+        calls becomes a cache hit instead of a fresh network round-trip.
+
+        This method never raises and never changes behavior, only latency:
+        a request this caller failed to include (or got a kind/script/
+        variables slightly wrong for) simply doesn't get pre-warmed and
+        falls through to the normal sequential path for that one script,
+        exactly as if prefetch had never run at all.
+
+        Deduplicates by cache key first (multiple rules can share the exact
+        same script text and current variable state) so an identical
+        Tier-2 call is never fired twice concurrently for the same answer.
+        """
+        tier1_fn = {
+            "hide": evaluate_hide_tier1,
+            "cond": evaluate_hide_tier1,
+            "values": evaluate_tier1,
+        }
+        pending: dict[tuple, tuple[str, str, dict[str, str]]] = {}
+        for kind, script, variables, cache_id in requests:
+            fn = tier1_fn.get(kind)
+            if fn is None:
+                continue  # unrecognized kind — skip, never guess a mapping
+            key, result, needs_tier2 = self._prepare(kind, fn, script, variables, cache_id)
+            if needs_tier2:
+                pending.setdefault(key, (kind, script, variables))
+            else:
+                self._store(key, result)
+        if not pending:
+            return
+
+        def _run(item: tuple[tuple, tuple[str, str, dict[str, str]]]) -> None:
+            key, (kind, script, variables) = item
+            result = self._call_tier2(kind, script, variables)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+            self._store(key, result)
+
+        with ThreadPoolExecutor(max_workers=min(16, len(pending))) as pool:
+            list(pool.map(_run, pending.items()))
 
     def allowed_values(
         self, function_id: int, variables: dict[str, str],
@@ -891,46 +1233,30 @@ class BmlEvaluator:
         self, script: str, variables: dict[str, str],
         cache_id: int | None = None,
     ) -> list[str] | None:
-        """Allowed-value list for a raw BML script body, or None if unknown."""
-        # referenced_variables() re-scans the whole script text with a regex —
-        # compute it ONCE per call, not once per (variable, value) pair. With
-        # ~170 filled variables and hundreds of script-backed constraint
-        # rules active, doing this inside the generator below (as written
-        # previously) re-parsed the same script ~170x per call — 71,490
-        # redundant regex scans and ~155s of wasted CPU in one real turn.
-        script_vars = referenced_variables(script)
-        relevant = frozenset(
-            (k, v) for k, v in variables.items()
-            if k in script_vars
-        )
-        key = ("values", self._workspace_id, self._catalog_prefix,
-               cache_id if cache_id is not None else hash(script), relevant)
-        if key in _SHARED_SCRIPT_CACHE:
-            self.stats["cached"] += 1
-            return _SHARED_SCRIPT_CACHE[key]
-        result, blocked_by_missing_var = evaluate_tier1(script, variables)
-        if result is not None:
-            self.stats["tier1"] += 1
-        elif blocked_by_missing_var:
-            # A referenced variable isn't filled yet — Tier 2 has no more
-            # information than we do (it cannot know a value that doesn't
-            # exist), so asking it would be a pure-waste round-trip. This
-            # cache entry naturally becomes a miss again once the variable
-            # gets filled, since `relevant` (and so `key`) changes.
-            self.stats["unknown"] += 1
-            result = None
-        elif self._use_llm:
-            result = self._evaluate_llm(script, dict(relevant))
-            if result is not None:
-                self.stats["tier2"] += 1
-            else:
-                self.stats["unknown"] += 1
-        else:
-            self.stats["unknown"] += 1
-        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
-            _SHARED_SCRIPT_CACHE.clear()
-        _SHARED_SCRIPT_CACHE[key] = result
-        return result
+        """Allowed-value list for a raw BML script body, or None if unknown.
+
+        Cache key uses the FULL variable state, not a regex-filtered subset
+        — live-confirmed bug: referenced_variables() can't see
+        numeric-comparison/function-call variables (e.g. fmod(qty, 25)), so
+        a key scoped to just those alone stayed IDENTICAL across genuinely
+        different quantity values, and a cached True/False from one qty was
+        wrongly reused for another. Key/cache/Tier-1 step factored into
+        `_prepare` (Amendment 18) so `prefetch_tier2` can run the same cheap
+        step for a whole batch before deciding what needs Tier 2 — this
+        method's own behavior/return value is unchanged by that refactor.
+        """
+        key, result, needs_tier2 = self._prepare(
+            "values", evaluate_tier1, script, variables, cache_id)
+        if needs_tier2:
+            # Full `variables`, not a regex-filtered subset — see
+            # condition_holds' identical fix (docs/CPQ_UNIFIED_INTENT_
+            # CLASSIFIER_PLAN.md Amendment 12/13 follow-up) for why:
+            # referenced_variables() can't see numeric-comparison/
+            # function-call variables, so a filtered subset can silently
+            # omit the one variable a script actually depends on.
+            result = self._call_tier2("values", script, variables, cache_id)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        return self._store(key, result)
 
     def _evaluate_llm(
         self, script: str, variables: dict[str, str],
@@ -981,35 +1307,17 @@ class BmlEvaluator:
         """Hide/show decision for a raw hiding-rule BML script body, or None
         if unknown. Mirrors allowed_values_for_script's tiering/caching, but
         for the hide-rule idiom (see evaluate_hide_tier1) rather than the
-        constraint/recommendation allowed-values idiom."""
-        script_vars = referenced_variables(script)
-        relevant = frozenset(
-            (k, v) for k, v in variables.items()
-            if k in script_vars
-        )
-        key = ("hide", self._workspace_id, self._catalog_prefix,
-               cache_id if cache_id is not None else hash(script), relevant)
-        if key in _SHARED_SCRIPT_CACHE:
-            self.stats["cached"] += 1
-            return _SHARED_SCRIPT_CACHE[key]
-        result, blocked_by_missing_var = evaluate_hide_tier1(script, variables)
-        if result is not None:
-            self.stats["tier1"] += 1
-        elif blocked_by_missing_var:
-            self.stats["unknown"] += 1
-            result = None
-        elif self._use_llm:
-            result = self._evaluate_llm_hide(script, dict(relevant))
-            if result is not None:
-                self.stats["tier2"] += 1
-            else:
-                self.stats["unknown"] += 1
-        else:
-            self.stats["unknown"] += 1
-        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
-            _SHARED_SCRIPT_CACHE.clear()
-        _SHARED_SCRIPT_CACHE[key] = result
-        return result
+        constraint/recommendation allowed-values idiom. Key/cache/Tier-1 step
+        factored into `_prepare` (Amendment 18) — see allowed_values_for_
+        script's docstring; this method's own behavior is unchanged."""
+        key, result, needs_tier2 = self._prepare(
+            "hide", evaluate_hide_tier1, script, variables, cache_id)
+        if needs_tier2:
+            # Full `variables`, not a regex-filtered subset — same fix as
+            # allowed_values_for_script/condition_holds.
+            result = self._call_tier2("hide", script, variables, cache_id)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        return self._store(key, result)
 
     def _evaluate_llm_hide(
         self, script: str, variables: dict[str, str],
@@ -1060,35 +1368,22 @@ class BmlEvaluator:
         recommend/restrict action rather than a hide decision. Uses a
         distinct cache-key prefix ("cond") so a script's hide-decision and
         condition-decision can never collide even if reused across both
-        (BM-native ids are only unique within one export, not globally)."""
-        script_vars = referenced_variables(script)
-        relevant = frozenset(
-            (k, v) for k, v in variables.items()
-            if k in script_vars
-        )
-        key = ("cond", self._workspace_id, self._catalog_prefix,
-               cache_id if cache_id is not None else hash(script), relevant)
-        if key in _SHARED_SCRIPT_CACHE:
-            self.stats["cached"] += 1
-            return _SHARED_SCRIPT_CACHE[key]
-        result, blocked_by_missing_var = evaluate_hide_tier1(script, variables)
-        if result is not None:
-            self.stats["tier1"] += 1
-        elif blocked_by_missing_var:
-            self.stats["unknown"] += 1
-            result = None
-        elif self._use_llm:
-            result = self._evaluate_llm_condition(script, dict(relevant))
-            if result is not None:
-                self.stats["tier2"] += 1
-            else:
-                self.stats["unknown"] += 1
-        else:
-            self.stats["unknown"] += 1
-        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
-            _SHARED_SCRIPT_CACHE.clear()
-        _SHARED_SCRIPT_CACHE[key] = result
-        return result
+        (BM-native ids are only unique within one export, not globally).
+        Key/cache/Tier-1 step factored into `_prepare` (Amendment 18) — see
+        allowed_values_for_script's docstring; this method's own behavior
+        is unchanged."""
+        key, result, needs_tier2 = self._prepare(
+            "cond", evaluate_hide_tier1, script, variables, cache_id)
+        if needs_tier2:
+            # Pass the FULL variables dict, not a regex-filtered subset —
+            # live-confirmed: a script checking
+            # `fmod(OfVideoStreamingDevices_3_swSoln, 25) <> 0` had that
+            # exact variable silently excluded from a filtered subset,
+            # leaving it unable to reason about the one variable the
+            # condition actually depends on.
+            result = self._call_tier2("cond", script, variables, cache_id)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        return self._store(key, result)
 
     def _evaluate_llm_condition(
         self, script: str, variables: dict[str, str],

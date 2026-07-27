@@ -32,7 +32,7 @@ from aryx.cpq.rdb import get_cpq_rdb
 from aryx.resolution.classical import string_score
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
-    RecommendationRule,
+    RecommendationRule, ValidationRule,
 )
 from aryx.store.ingest_question_store import IngestQuestionStore
 
@@ -296,9 +296,14 @@ def _variable_words(variable_name: str) -> list[str]:
 # same kind of hardcoding a product-name list is. Product-name literals
 # (formerly apx|mototrbo|sl3500|dpx|xpr here) were removed — is_cpq_question()
 # now also checks the workspace's actually-ingested product names dynamically.
+# Live-confirmed gap (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+# PLAN.md): "\bradio\b" never matches "radios" — the word boundary after
+# "radio" fails when an "s" immediately continues the word. "I want to
+# order APX Next radios..." silently fell through to the generic,
+# non-CPQ LLM pipeline entirely because of this one missing "s?".
 _CPQ_TRIGGER = re.compile(
     r"\b(quote|configure|configuration|build.*quote|create.*quote|"
-    r"radio|"
+    r"radios?|"
     r"5g|lte|carrier|billing|activation|hardware.*version|"
     r"bom|payload)\b",
     re.IGNORECASE,
@@ -351,10 +356,32 @@ _COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
 # The extracted name is matched word-boundary against DB option display names,
 # so no country → item_value mapping is needed here.
+
+# Live-confirmed bug, fixed 2026-07-26 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+# PLAN.md Amendment 11): a bare re.IGNORECASE on the whole pattern makes
+# [A-Z]/[a-z] match EITHER case, defeating the capture group's actual
+# purpose — matching a genuinely Title-Case proper noun. Once that
+# distinction is gone, the repeated group `(?:\s+[A-Z][a-z]+)*` happily
+# keeps consuming every following lowercase word too, since each one still
+# satisfies "[A-Z][a-z]+" under blanket IGNORECASE. Confirmed live: "...for
+# customer Houston City of whose destination country is United States"
+# captured "Customer Houston City Of Whose Destination Country Is United
+# States" as the "country" — the ENTIRE tail of the sentence, not just the
+# real country name. Fixed by scoping case-insensitivity to ONLY the
+# preposition alternation via an inline (?i:...) group — the capture group
+# itself now requires genuine Title Case, as originally intended, so a run
+# of ordinary lowercase words correctly stops the match instead of
+# extending it.
+# Added 2026-07-27: "destination country is X" / "country is X" phrasing
+# — confirmed live it falls through with none of the existing triggers
+# (the word before the country name is "is", not in/for/from). Scoped
+# narrowly to "country is" specifically (not a bare "is", which would
+# false-positive on any unrelated "X is Y" sentence) — safe because the
+# word "country" immediately preceding it is itself already a strong,
+# on-topic signal.
 _COUNTRY_PREP = re.compile(
-    r"\b(?:in|for|from|customer\s+in|located\s+in|based\s+in)\s+"
-    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-    re.IGNORECASE,
+    r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|country\s+is)\s+)"
+    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)"
 )
 
 # Region hints (abbreviations the generic extractor won't catch as country names)
@@ -686,6 +713,19 @@ class CpqEngine:
         source as detect_product_mention). A question naming a product
         with no other CPQ-domain word (e.g. just "MOTOTRBO?") still routes
         to CPQ without needing that product's name hardcoded here.
+
+        Live-confirmed gap (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+        PLAN.md): the dynamic fallback used to check ONLY
+        _ingested_product_names — internal BOM family codes
+        ("aSTRO25_bom", "softwareSolutions_BOM"), never the real,
+        customer-facing product name ("APX Next") a customer actually
+        types. "I want to order APX Next radios..." named a real,
+        ingested product by its real name and STILL fell through
+        entirely to the generic non-CPQ pipeline. Switched to
+        ingested_product_alias_map — the same catalog-tree-derived alias
+        source detect_product_mention already relies on successfully,
+        which carries both the family code AND every real product/line
+        name from each catalog's own bm_catalog tree.
         """
         if _CPQ_TRIGGER.search(question):
             return True
@@ -694,10 +734,15 @@ class CpqEngine:
         q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
         if not q_norm:
             return False
+        alias_map = self.ingested_product_alias_map(reader, workspace_id)
+        candidates = set(alias_map) | set(alias_map.values()) | set(
+            self._ingested_product_names(reader, workspace_id)
+        )
         return any(
-            re.sub(r"[^a-z0-9]", "", name.lower()) in q_norm
-            for name in self._ingested_product_names(reader, workspace_id)
+            len(norm) >= _HINT_MIN_PHRASE_LEN and norm in q_norm
+            for name in candidates
             if name
+            for norm in (re.sub(r"[^a-z0-9]", "", name.lower()),)
         )
 
     def extract_hints(self, question: str) -> dict[str, str]:
@@ -1169,6 +1214,45 @@ class CpqEngine:
         leaves = [nm for native, _p, nm in nodes if native not in parent_ids]
         return leaves[0] if len(leaves) == 1 else ""
 
+    def model_variable_candidates(
+        self, reader: Any, workspace_id: int, catalog_prefix: str,
+    ) -> list[str]:
+        """Companion to single_model_variable_name: the full list of leaf
+        model variable names when the tree has 2+ (the ambiguous case that
+        function deliberately returns "" for, rather than guessing).
+
+        Amendment 10 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a
+        catalog like CommandCentral Aware has several model leaves
+        (commandCentralAware2024_BOM, commandCentralAware2026_BOM,
+        commandCentralDEMS_BOM, ...) under one family — with no single
+        unambiguous leaf, _bm_model_variable_name was never seeded at
+        all, and no question ever asked which one was meant; the turn
+        fell through to unrelated "Product" attrs instead, which don't
+        represent this identity in this catalog's data at all.
+
+        Returns [] when there are 0 or exactly 1 leaves (that case is
+        single_model_variable_name's job), else the distinct, sorted leaf
+        names for the caller to present as a disambiguation choice.
+        """
+        if not catalog_prefix:
+            return []
+        cat_ents = reader.find_entities(
+            ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
+        if not cat_ents:
+            return []
+        pg = self._batch_fetch([e["id"] for e in cat_ents], workspace_id)
+        nodes: list[tuple[str, str, str]] = []
+        for cent in cat_ents:
+            a = pg.get(cent["id"], {})
+            native = str(a.get("id") or "").strip()
+            parent = str(a.get("parent_id") or "").strip()
+            name = str(a.get("name") or cent.get("name") or "").strip()
+            if native and name:
+                nodes.append((native, parent, name))
+        parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
+        leaves = sorted({nm for native, _p, nm in nodes if native not in parent_ids})
+        return leaves if len(leaves) >= 2 else []
+
     def detect_product_mention(
         self, question: str, hints: dict[str, str],
         reader: Any = None, workspace_id: int = 1,
@@ -1472,7 +1556,21 @@ class CpqEngine:
         (rule loaders) must treat that the same as "no catalog filter".
         """
         prefixes = {_catalog_prefix(t) for t in attr_types}
-        prefixes.discard("")
+        if "" in prefixes:
+            # "" means _catalog_prefix found no PascalCase marker — either a
+            # genuinely unprefixed catalog (confirmed live: CommandCentral
+            # Aware, ingested via the generic doc_discovery pipeline, emits
+            # bare 'BmConfigAttr'/'BmPrdFamily' with no distinguishing
+            # prefix at all) or unrecognized noise. Keep "" as a real,
+            # matchable catalog only when it resolves to an actual
+            # BmPrdFamily/BmCatalog entity; otherwise it's noise and must
+            # still be discarded, never treated as a valid scope.
+            has_real_family = bool(
+                reader.find_entities(ontology_type="BmPrdFamily", limit=1)
+                or reader.find_entities(ontology_type="BmCatalog", limit=1)
+            )
+            if not has_real_family:
+                prefixes.discard("")
         if len(prefixes) <= 1:
             return attr_types, (next(iter(prefixes)) if prefixes else "")
 
@@ -1796,7 +1894,22 @@ class CpqEngine:
 
         attr_ents: list[dict] = []
         for attr_type in attr_types:
-            attr_ents.extend(reader.find_entities(ontology_type=attr_type, limit=500))
+            # Paginate past find_entities' capped limit — confirmed live
+            # (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+            # Amendment 13): a single limit=500 call silently truncated
+            # CommandCentral Aware's 906 real BmConfigAttr rows down to
+            # 324 loaded, dropping hundreds of attrs including
+            # hiddenHidingRuleMasterStringForCommandCentral_swSoln — the
+            # exact gotcha find_entities' own docstring already documents
+            # for BmMenuItem (SL3500e's >2000 rows), just never applied
+            # here. Loop until a short page confirms there's nothing left.
+            offset = 0
+            while True:
+                page = reader.find_entities(ontology_type=attr_type, limit=500, offset=offset)
+                attr_ents.extend(page)
+                if len(page) < 500:
+                    break
+                offset += 500
 
         if not attr_ents:
             logger.info("cpq: no bm_config_attr entities found in graph "
@@ -1963,6 +2076,30 @@ class CpqEngine:
                 role_by_attr_id[member_id] = "member"
                 order_by_attr_id[member_id] = order
 
+        # Rule-target ids — computed once here so Step 4's hidden/no-default
+        # drop below can exempt attrs that are dynamically populated by a
+        # rule action rather than a static default (Amendment 13,
+        # docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md). Live-confirmed gap:
+        # hiddenHidingRuleMasterStringForCommandCentral_swSoln (hidden=1,
+        # empty default_value, but the ACTION-target of a
+        # util.getConstraintVals-style recommendation rule) was being
+        # dropped before rule evaluation ever ran, so it could never be
+        # filled — and every downstream script checking it (e.g. "Hide 'of
+        # Video Streaming Devices' if No value available for command and
+        # control") always saw it blank, permanently defeating that
+        # catalog's own visibility mechanism. Rule references use the
+        # BM-native id (pg["id"]/attribute_id/bm_config_rule_id), not the
+        # aryx entity_id — both are checked below since either can appear
+        # as a rule action's target.
+        try:
+            _rule_actions_by_rule = self._load_rule_join_data(
+                workspace_id, resolved_catalog_prefix)[2]
+            rule_target_ids: set[int] = {
+                aid for acts in _rule_actions_by_rule.values() for aid, *_rest in acts
+            }
+        except Exception:
+            rule_target_ids = set()
+
         # Step 4 — build ConfigAttr list
         config_attrs: list[ConfigAttr] = []
         for ent in attr_ents:
@@ -1997,9 +2134,20 @@ class CpqEngine:
             # name-match it against a visible selector's menu options (§5
             # Change B, docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md).
             is_grid_qty_candidate = "quantity" in vn_lo
-            if is_hidden and not default_val and not (is_array_control or is_grid_qty_candidate):
+            _src_id_raw = pg.get("id") or pg.get("attribute_id") or pg.get("bm_config_rule_id")
+            _is_rule_target = eid in rule_target_ids or (
+                _src_id_raw is not None
+                and str(_src_id_raw).strip().isdigit()
+                and int(_src_id_raw) in rule_target_ids
+            )
+            if (is_hidden and not default_val
+                    and not (is_array_control or is_grid_qty_candidate or _is_rule_target)):
                 # Hidden with nothing to contribute — never shown/asked, and
-                # no default to feed BML scripts, so still fully dropped.
+                # no static default to feed BML scripts — dropped, UNLESS
+                # it's a rule action's target (Amendment 13): those attrs
+                # are dynamically populated by a recommendation/constraint
+                # rule at apply time, not a static default, and dropping
+                # them here means they can never be filled at all.
                 continue
 
             hide_in_trans_raw = str(pg.get("hide_in_trans") or "0").strip().lower()
@@ -2101,9 +2249,9 @@ class CpqEngine:
         inputs_by_rule: dict[int, list[tuple[int, str]]] = {}
         for rid, aid, val in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
             inputs_by_rule.setdefault(rid, []).append((aid, val))
-        actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]] = {}
-        for rid, aid, at, val, fn, st in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
-            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st))
+        actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]] = {}
+        for rid, aid, at, val, fn, st, comments in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
+            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st, comments))
         # bm_config_marked_attr: the real target linkage for many declarative
         # hiding rules — verified against real data where BmConfigRuleAction
         # and the rule's own attr_id both carry no target (docs/CPQ_GRAPH_FIX_PLAN.md §6a).
@@ -2120,7 +2268,7 @@ class CpqEngine:
     @staticmethod
     def _resolve_targets(
         rule_key: int,
-        actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]],
+        actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]],
         marked_by_rule: dict[int, list[int]],
         chain_by_rule: dict[int, int],
         max_hops: int = 3,
@@ -2137,7 +2285,7 @@ class CpqEngine:
         """
         acts = actions_by_rule.get(rule_key, [])
         if acts:
-            return [(aid, at) for aid, at, _v, _f, _st in acts]
+            return [(aid, at) for aid, at, _v, _f, _st, _c in acts]
         marked = marked_by_rule.get(rule_key)
         if marked:
             return [(aid, 2) for aid in marked]
@@ -2147,7 +2295,7 @@ class CpqEngine:
         while current is not None and current not in seen and hops < max_hops:
             acts = actions_by_rule.get(current, [])
             if acts:
-                return [(aid, at) for aid, at, _v, _f, _st in acts]
+                return [(aid, at) for aid, at, _v, _f, _st, _c in acts]
             marked = marked_by_rule.get(current)
             if marked:
                 return [(aid, 2) for aid in marked]
@@ -2694,8 +2842,9 @@ class CpqEngine:
 
     def _load_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> tuple[list[RecommendationRule], list[ConstraintRule]]:
-        """Load recommendation + constraint rules together in one pass.
+    ) -> tuple[list[RecommendationRule], list[ConstraintRule], list[ValidationRule]]:
+        """Load recommendation + constraint + validation rules together in
+        one pass.
 
         Historical note: this originally filtered by a hardcoded rule_type
         ("10" for recommendation, "5" for constraint) and action_type ("3"
@@ -2725,6 +2874,7 @@ class CpqEngine:
         """
         rec_rules: list[RecommendationRule] = []
         con_rules: list[ConstraintRule] = []
+        validation_rules: list[ValidationRule] = []
         script_constraints = 0
         script_recommendations_wired = 0
         cond_script_skipped = 0
@@ -2764,7 +2914,7 @@ class CpqEngine:
                 # evaluated at all — see docs/CPQ_RULE_TOOL_FLOW_PLAN.md
                 # item 2/§7-8's confirmed "APX NEXT ENHANCED product +
                 # non-Enhanced hardware" inconsistency this closes).
-                for aid, _at, _val, act_fn, act_set_type in acts:
+                for aid, _at, _val, act_fn, act_set_type, _comments in acts:
                     if act_fn != -1:
                         script = scripts.get(act_fn)
                         if not script:
@@ -2819,6 +2969,32 @@ class CpqEngine:
                         continue
                     cond_attr_id, cond_value = inp_list[-1]
 
+                # Amendment 12 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
+                # a message-only action (function_id=-1, empty value1, but
+                # a real human-authored `comments` string) is neither a
+                # hide, a set, nor a restrict — its only content is a
+                # warning to show when this rule's own condition_script
+                # fires. Every confirmed real case gates on a script
+                # condition (e.g. "Constrain video devices"), so scoped to
+                # that for now — a declarative-condition version would need
+                # separate confirmation before being added here.
+                if condition_script is not None:
+                    for aid, _at, val, act_fn, _set_type, comments in acts:
+                        # "System recommendation" is BigMachines' own
+                        # generic boilerplate default comment (confirmed:
+                        # 365 occurrences across this one catalog alone) —
+                        # not a real, customer-facing message a rule
+                        # author actually wrote. Excluded so a meaningless
+                        # "⚠️ System recommendation" is never shown.
+                        if (act_fn == -1 and not val and comments
+                                and comments.strip().lower() != "system recommendation"):
+                            validation_rules.append(ValidationRule(
+                                rule_name=rule_name or str(eid),
+                                target_attr_id=aid,
+                                condition_script=condition_script,
+                                message=comments,
+                            ))
+
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
                 # into a single value1 field, tilde-delimited (confirmed live:
@@ -2828,7 +3004,7 @@ class CpqEngine:
                 # the target with zero real valid values.
                 restrict_by_target: dict[int, list[str]] = {}
                 recommend_by_target: dict[int, str] = {}
-                for aid, _at, val, act_fn, set_type in acts:
+                for aid, _at, val, act_fn, set_type, _comments in acts:
                     if act_fn != -1 or not val:
                         continue
                     parts = [p.strip() for p in val.split("~") if p.strip()]
@@ -2924,7 +3100,8 @@ class CpqEngine:
             len(rec_rules), len(con_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
             cond_script_skipped, ambiguous_recommendations_skipped)
-        return rec_rules, con_rules
+        logger.info("cpq: loaded %d validation (warning-message) rules", len(validation_rules))
+        return rec_rules, con_rules, validation_rules
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -2935,7 +3112,20 @@ class CpqEngine:
         join-table queries plus a full function-script scan; calling both
         back-to-back (as every CPQ turn does) doubles that DB work for no
         reason. Prefer this method whenever both lists are needed."""
-        return self._load_value_rules(workspace_id, catalog_prefix)
+        rec_rules, con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        return rec_rules, con_rules
+
+    def load_validation_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[ValidationRule]:
+        """Warning-message rules (Amendment 12) for this catalog — see
+        ValidationRule's own docstring and _load_value_rules for how these
+        are distinguished from Hiding/Recommendation/Constraint rules.
+        Shares _load_value_rules' fetch with load_recommendation_and_
+        constraint_rules — call both only when genuinely needed, same
+        double-fetch caveat as load_recommendation_rules."""
+        _rec_rules, _con_rules, validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        return validation_rules
 
     def load_recommendation_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -2945,7 +3135,7 @@ class CpqEngine:
         If you also need constraint rules, call
         load_recommendation_and_constraint_rules() instead to avoid fetching
         the same rule data twice."""
-        rec_rules, _con_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        rec_rules, _con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
         return rec_rules
 
     def apply_recommendation_rules(
@@ -3029,6 +3219,35 @@ class CpqEngine:
             logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
         return new_fills
 
+    def apply_validation_rules(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        rules: list[ValidationRule],
+        bml_eval: BmlEvaluator | None = None,
+    ) -> dict[str, str]:
+        """Evaluate every ValidationRule's condition_script against the
+        current filled state (Amendment 12). Returns {variable_name:
+        message} for every rule whose condition currently, definitely
+        holds — never on False or unknown (D2 "never guess": an
+        unresolvable script never fires a warning it can't actually back).
+
+        bml_eval=None (caller opted out) silently skips all validation
+        rules, same convention as apply_recommendation_rules/
+        apply_constraint_rules.
+        """
+        if not rules or bml_eval is None:
+            return {}
+        by_id = self._attr_index(attrs)
+        warnings: dict[str, str] = {}
+        for rule in rules:
+            target = by_id.get(rule.target_attr_id)
+            if not target:
+                continue
+            if bml_eval.condition_holds(rule.condition_script, filled) is True:
+                warnings[target.variable_name] = rule.message
+        return warnings
+
     # ── Constraint rule loader ────────────────────────────────────────────────
 
     def load_constraint_rules(
@@ -3045,7 +3264,7 @@ class CpqEngine:
         load_recommendation_and_constraint_rules() instead to avoid
         fetching the same rule data twice.
         """
-        _rec_rules, con_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        _rec_rules, con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
         return con_rules
 
     def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
@@ -3290,6 +3509,22 @@ class CpqEngine:
             prev_filled_keys = set(filled.keys())
             prev_visible_ids = {a.entity_id for a in attrs}
 
+            # Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
+            # warm the shared Tier-2 cache CONCURRENTLY for every hiding
+            # rule's script before apply_hiding_rules runs its own
+            # sequential loop below — live-measured on the real
+            # CommandCentral Aware catalog, 823 distinct hiding-rule
+            # scripts needed Tier-2 in a single turn; evaluated one at a
+            # time that took 25+ minutes. apply_hiding_rules itself is
+            # UNCHANGED — it still calls bml_eval.hide_for_script(...) per
+            # rule in order; every one of those calls now just hits the
+            # cache this just populated, instead of making a fresh network
+            # call. A rule this prefetch missed simply falls through to its
+            # normal sequential call, exactly as if this line didn't exist.
+            if bml_eval is not None:
+                bml_eval.prefetch_tier2(
+                    self._bml_prefetch_requests(hiding=hiding_rules, filled=filled))
+
             # Apply hiding rules first so auto_fill only fills visible attrs
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
                 attrs, filled, hiding_rules, bml_eval=bml_eval)
@@ -3314,6 +3549,15 @@ class CpqEngine:
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
                 bml_eval=bml_eval,
             )
+
+            # Same prefetch, now for recommendation/constraint rule scripts
+            # against the POST-auto_fill state (auto_fill can itself have
+            # just resolved values these scripts depend on) — warms the
+            # cache for apply_recommendation_rules/apply_constraint_rules
+            # below, both still unchanged, still sequential, now cache hits.
+            if bml_eval is not None:
+                bml_eval.prefetch_tier2(self._bml_prefetch_requests(
+                    attrs=attrs, rec=rec_rules, con=con_rules, filled=filled))
 
             new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
             if new_fills:
@@ -3346,6 +3590,56 @@ class CpqEngine:
                 break
 
         return attrs, filled, display_filled, constrained_opts
+
+    @staticmethod
+    def _bml_prefetch_requests(
+        filled: dict[str, str],
+        attrs: list[ConfigAttr] | None = None,
+        hiding: list[HidingRule] | None = None,
+        rec: list[RecommendationRule] | None = None,
+        con: list[ConstraintRule] | None = None,
+    ) -> list[tuple[str, str, dict[str, str], int | None]]:
+        """Build BmlEvaluator.prefetch_tier2 requests for every script-backed
+        rule in the given rule sets, against the CURRENT `filled` state.
+
+        Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): mirrors
+        exactly what apply_hiding_rules/apply_recommendation_rules/
+        apply_constraint_rules will each independently ask
+        hide_for_script/condition_holds/allowed_values_for_script for —
+        same rule fields, same `filled` argument, no cache_id (those call
+        sites never pass one either, so both sides key on hash(script)).
+        Coverage gaps here only cost speed, never correctness: an
+        uncovered rule's script just isn't pre-warmed and falls through to
+        its normal sequential call, exactly as if this method didn't run.
+
+        `rec` also mirrors apply_recommendation_rules' own "already filled"
+        skip (needs `attrs` to resolve target_attr_id -> variable_name) so
+        a prefetch doesn't burn concurrent Tier-2 calls on rules that loop
+        will never actually consult this pass. `hiding`/`con` have no such
+        skip in their own apply_* methods (visibility and allowed-value
+        narrowing both apply regardless of current fill state), so none is
+        replicated here either.
+        """
+        reqs: list[tuple[str, str, dict[str, str], int | None]] = []
+        for rule in (hiding or []):
+            if rule.script is not None:
+                reqs.append(("hide", rule.script, filled, None))
+        if rec:
+            by_rule_id = CpqEngine._attr_index(attrs or [])
+            for rule in rec:
+                target = by_rule_id.get(rule.target_attr_id)
+                if not target or filled.get(target.variable_name):
+                    continue
+                if rule.script is not None:
+                    reqs.append(("values", rule.script, filled, None))
+                elif rule.condition_script is not None:
+                    reqs.append(("cond", rule.condition_script, filled, None))
+        for rule in (con or []):
+            if rule.script is not None:
+                reqs.append(("values", rule.script, filled, None))
+            elif rule.condition_script is not None:
+                reqs.append(("cond", rule.condition_script, filled, None))
+        return reqs
 
     # ── Context sentence builder ──────────────────────────────────────────────
 

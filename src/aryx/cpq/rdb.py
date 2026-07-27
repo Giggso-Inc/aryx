@@ -250,7 +250,7 @@ class PostgresCpqRdb:
         ever takes the values 1/2 in real exports and does not distinguish
         these two cases.
         """
-        rows: list[tuple[int, int, int, str, int, int]] = []
+        rows: list[tuple[int, int, int, str, int, int, str]] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigruleaction")
         try:
             with self._connection() as conn:
@@ -263,19 +263,21 @@ class PostgresCpqRdb:
                                attributes->>'action_type',
                                attributes->>'value1',
                                attributes->>'function_id',
-                               attributes->>'set_type'
+                               attributes->>'set_type',
+                               attributes->>'comments'
                         FROM aryx_entity
                         WHERE workspace_id = %s
                           AND replace(lower(ontology_type), '_', '') LIKE %s
                         """,
                         (workspace_id, type_pattern),
                     )
-                    for rid, aid, at, val, fn, st in cur.fetchall():
+                    for rid, aid, at, val, fn, st, comments in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, _as_int(at) or 0,
                                          val or "", _as_int(fn) or -1,
-                                         _as_int(st) if _as_int(st) is not None else 0))
+                                         _as_int(st) if _as_int(st) is not None else 0,
+                                         comments or ""))
         except Exception:
             logger.debug("cpq rdb: rule-action fetch failed", exc_info=True)
         return rows
@@ -636,8 +638,8 @@ class OracleCpqRdb(PostgresCpqRdb):
 
     def fetch_rule_actions(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> list[tuple[int, int, int, str, int, int]]:
-        rows: list[tuple[int, int, int, str, int, int]] = []
+    ) -> list[tuple[int, int, int, str, int, int, str]]:
+        rows: list[tuple[int, int, int, str, int, int, str]] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigruleaction")
         try:
             with self._connection() as conn:
@@ -650,19 +652,21 @@ class OracleCpqRdb(PostgresCpqRdb):
                                JSON_VALUE(attributes, '$.action_type'),
                                JSON_VALUE(attributes, '$.value1'),
                                JSON_VALUE(attributes, '$.function_id'),
-                               JSON_VALUE(attributes, '$.set_type')
+                               JSON_VALUE(attributes, '$.set_type'),
+                               JSON_VALUE(attributes, '$.comments')
                         FROM aryx_entity
                         WHERE workspace_id = :1
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                         """,
                         (workspace_id, type_pattern),
                     )
-                    for rid, aid, at, val, fn, st in cur.fetchall():
+                    for rid, aid, at, val, fn, st, comments in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
                             rows.append((rid_i, aid_i, _as_int(at) or 0,
                                          val or "", _as_int(fn) or -1,
-                                         _as_int(st) if _as_int(st) is not None else 0))
+                                         _as_int(st) if _as_int(st) is not None else 0,
+                                         comments or ""))
         except Exception:
             logger.debug("cpq rdb(oracle): rule-action fetch failed", exc_info=True)
         return rows

@@ -113,6 +113,37 @@ class ConstraintRule:
 
 
 @dataclass
+class ValidationRule:
+    """A warning-message rule with no value action at all (Amendment 12,
+    docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md) — a genuinely distinct
+    fourth rule shape from Hiding/Recommendation/Constraint, never modeled
+    before this. Its BmConfigRuleAction has function_id=-1 (not
+    script-backed) AND an empty value1 — it neither hides, sets, nor
+    restricts anything; its only content is a human-readable `message`
+    attached to `target_attr_id`, to be shown when `condition_script`
+    (a BML boolean) evaluates True.
+
+    Confirmed live: CommandCentral Aware's "Constrain video devices" rule
+    (target OfVideoStreamingDevices_3_swSoln) checks
+    `fmod(value, 25) <> 0` and attaches "Please enter a qty in multiple of
+    25. Eg. 25...50...75..125.." — a real, catalog-authored validation
+    message that existed in the source data but was silently dropped by
+    every existing rule loader (Hiding requires rule_type=11 exclusively;
+    Recommendation/Constraint's declarative-action branch requires a
+    non-empty value1 to bucket by set_type — this rule's action has
+    neither), because none of them model "condition true -> show this
+    message, no value change" at all.
+
+    Same D2 "never guess" discipline as every other script-backed rule
+    here: an unknown/unresolvable condition never fires.
+    """
+    rule_name: str
+    target_attr_id: int
+    condition_script: str
+    message: str
+
+
+@dataclass
 class MenuOption:
     """One selectable value for a configuration attribute."""
 
@@ -341,6 +372,36 @@ class CpqSession:
     # variable_name shown in the prompt fell through to a generic nudge).
     pending_label_collision_vns: list[str] = field(default_factory=list)
     pending_label_collision_question: str = ""
+
+    # Set when a catalog's own bm_catalog tree has 2+ model leaves (so
+    # single_model_variable_name can't auto-seed _bm_model_variable_name
+    # unambiguously — Amendment 10, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+    # PLAN.md) and the customer's own text didn't already name one. The
+    # candidate leaf names shown, so the NEXT turn's reply (exact name or
+    # a looser phrasing an LLM fallback resolves) answers THIS prompt
+    # instead of falling through to the unrelated "Product" attrs, which
+    # were never the right place to resolve this.
+    pending_model_leaf_candidates: list[str] = field(default_factory=list)
+    # True once _bm_model_variable_name was resolved via the model-leaf
+    # disambiguation mechanism above (multi-leaf catalog, proven-ambiguous
+    # tree) — distinct from any other, less certain way that field might
+    # end up filled. Gates skipping the catalog's "Product"-labeled attrs
+    # (Amendment 10 follow-up): once the real identity is known through
+    # the bm_catalog tree, those attrs are proven irrelevant/generic for
+    # THIS catalog (Amendment 5 Finding 3) and asking for them is pure
+    # noise — but only when resolved through THIS specific, verified path.
+    model_leaf_resolved: bool = False
+    # The ORIGINAL message that first anchored session.product_name (e.g.
+    # "I want to configure CommandCentral Aware 2024 for a customer in
+    # the United States") — captured once, on the anchoring turn, so
+    # later turns (which only ever see their own short reply, "United
+    # States"/"NA"/...) can still auto-resolve an ambiguous model-leaf
+    # choice (Amendment 10) from what the customer originally said,
+    # instead of losing that context the moment the country/region
+    # anchor questions consume the conversation. Never cleared —
+    # harmless to keep once the product is set, same convention as
+    # product_name itself.
+    product_anchor_question: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
