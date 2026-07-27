@@ -3715,6 +3715,40 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         }
 
+    # ── Free-text constraint query: "what values are available for X?" asked
+    # about the CURRENTLY PENDING attr when it has no options at all
+    # (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md Amendment 20 follow-up).
+    # detect_attr_query above can't help here (nothing to list) and its own
+    # word-overlap fallback often can't even resolve a natural paraphrase
+    # ("domain id" vs agencyDomainName_ID_swSoln) — but the pending attr is
+    # already known, so no attr-matching is needed. Only answers when a
+    # ValidationRule's script matches a describable idiom; never guesses.
+    if (
+        session.pending_variables and not mode_request
+        and any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
+    ):
+        _pending_attr_for_constraint = next(
+            (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+        )
+        if _pending_attr_for_constraint and not _pending_attr_for_constraint.options:
+            _constraint_desc = _cpq_engine.describe_free_text_constraint(
+                _pending_attr_for_constraint, validation_rules,
+            )
+            if _constraint_desc:
+                answer = (
+                    f"**{_pending_attr_for_constraint.display_label}** doesn't have a "
+                    f"fixed list of values — it's free text, but it must only contain "
+                    f"{_constraint_desc}."
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [_pending_attr_for_constraint.variable_name],
+                    "tools_called": ["cpq_free_text_constraint()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+
     # ── STEP 7: Q&A during active config (strict — only ? or Q&A keywords) ───
     # `and not mode_request`: an explicit JSON/batch request must win here too,
     # same as it does over Step 5 below — otherwise a batch request starting

@@ -870,3 +870,44 @@ and 3 other fields to `pending`, and something in that specific longer
 answer sequence re-derived FedRamp. That trigger path no longer exists now
 that Amendment 20 reverted it. Treated as resolved by the revert; revisit
 only if seen live again post-revert.
+
+## Amendment 21: Q&A answer for a free-text validated attr's "what values are allowed" question (implemented, currently dormant)
+
+Separate live report: asking "what are the values available for the domain
+id" while `agencyDomainName_ID_swSoln` was pending got a generic,
+unhelpful answer instead of describing the field's real constraint
+(letters/digits/`.`/`_`/`-` only, per its own `ValidationRule`).
+
+**Root cause, confirmed by direct code read**: two independent gaps.
+`detect_attr_query`'s word-overlap fallback requires every camelCase-split
+word of the variable name to appear in the question — `agencyDomainName_ID_swSoln`
+needs `{agency, domain, name, id}`; "domain id" only supplies 2 of 4, so it
+never resolves. Even a perfect match wouldn't help: the existing
+options-listing fast path only knows how to enumerate `attr.options`, blank
+for a free-text field, and the attr's own `ValidationRule.message` here is
+just "Invalid selection" — not descriptive either.
+
+**Fix**: added `CpqEngine.describe_free_text_constraint()` +
+`_describe_char_allowlist()` (`src/aryx/cpq/engine.py`) — recognizes the
+recurring `allowedChars = "..."` idiom in a `ValidationRule.condition_script`
+and turns it into a plain description ("letters, digits, and the characters
+- . _"); returns None (never guesses) for any other script shape. Wired into
+`_run_cpq_turn` (`src/aryx/api/ask_api.py`) as a new branch right after the
+existing options-query fast path: when the CURRENTLY PENDING attr has no
+options and the question matches the existing `_OPTIONS_KEYWORDS` set, it
+answers directly from `session.pending_variables[0]` — no attr-name
+matching needed at all, sidestepping `detect_attr_query`'s weakness
+entirely for this case.
+
+**Live-verified, with an important caveat**: forcing
+`agencyDomainName_ID_swSoln` into `pending` confirms the new branch answers
+correctly: *"Agency Domain Name/ID doesn't have a fixed list of values —
+it's free text, but it must only contain letters, digits, and the
+characters - . _."* But run end-to-end against the real flow, this field is
+**never** naturally pending anymore — that's the direct consequence of
+Amendment 20's revert. So this fix is real and will fire for any future/
+other free-text field that legitimately becomes pending with a describable
+`allowedChars` rule, but does not currently resolve the original complaint
+for this specific field. Fixing that fully means re-opening Amendment 20's
+open question (a genuine required/optional signal for this catalog) — not
+attempted here.

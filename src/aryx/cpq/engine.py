@@ -5426,6 +5426,66 @@ class CpqEngine:
                 best_attr = attr
         return best_attr
 
+    # Recognizes the recurring `allowedChars = "..."` character-allowlist
+    # idiom in ValidationRule condition_scripts (confirmed live in both the
+    # CC Aware 2026 and CC Aware "Allow only specific characters on PD
+    # AGDOMAIN" rules) — the only script shape this describes; anything else
+    # returns None rather than guessing at a description.
+    _ALLOWED_CHARS_RE = re.compile(r'allowedChars\s*=\s*"([^"]*)"')
+
+    @classmethod
+    def _describe_char_allowlist(cls, script: str | None) -> str | None:
+        if not script:
+            return None
+        m = cls._ALLOWED_CHARS_RE.search(script)
+        if not m:
+            return None
+        chars = m.group(1)
+        if not chars:
+            return None
+        has_upper = any(c.isupper() for c in chars)
+        has_lower = any(c.islower() for c in chars)
+        has_digit = any(c.isdigit() for c in chars)
+        specials = sorted({c for c in chars if not c.isalnum()})
+        parts: list[str] = []
+        if has_upper and has_lower:
+            parts.append("letters")
+        elif has_upper:
+            parts.append("uppercase letters")
+        elif has_lower:
+            parts.append("lowercase letters")
+        if has_digit:
+            parts.append("digits")
+        if specials:
+            parts.append("the characters " + " ".join(specials))
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+    def describe_free_text_constraint(
+        self, attr: ConfigAttr, validation_rules: list["ValidationRule"] | None,
+    ) -> str | None:
+        """Plain-language description of a no-option attr's real constraint,
+        for a Q&A "what values are allowed" question the attr has no
+        options to answer with (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+        Amendment 20 follow-up — confirmed live: agencyDomainName_ID_swSoln
+        is free text with zero options, so the existing options-listing
+        fast path has nothing to show, and its own ValidationRule's
+        human-authored `message` ("Invalid selection") isn't descriptive
+        either). Only describes the one script idiom confirmed above;
+        returns None (never guesses) for any other rule shape.
+        """
+        target_ids = {attr.entity_id, attr.source_id}
+        for rule in validation_rules or []:
+            if rule.target_attr_id not in target_ids:
+                continue
+            desc = self._describe_char_allowlist(rule.condition_script)
+            if desc:
+                return desc
+        return None
+
     # ── Next question ─────────────────────────────────────────────────────────
 
     def next_question_prompt(
