@@ -177,6 +177,37 @@ class GraphReader:
         )
         return [{**_entity(r[:4]), "relationship": r[4], "direction": r[5]} for r in rows]
 
+    def neighbors_batch(self, entity_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        """Batch one-hop neighbor lookup for multiple entities in one Cypher round-trip.
+
+        Mirrors OracleGraphReader.neighbors_batch — same signature and return
+        shape so CpqEngine.load_product_config can call it without branching on
+        backend. FalkorDB round-trips are cheap (in-process), but a single
+        UNWIND-based query still collapses N calls into 1 for callers scaling
+        with entity count.
+        """
+        if not entity_ids:
+            return {}
+        rows = self._query(
+            "UNWIND $ids AS eid "
+            "MATCH (e:Entity {id: eid})-[r:REL]->(n:Entity) "
+            "RETURN eid AS src, n.id AS id, n.type AS type, n.name AS name, properties(n) AS attrs, "
+            "r.name AS rel, 'out' AS dir "
+            "UNION "
+            "UNWIND $ids AS eid "
+            "MATCH (e:Entity {id: eid})<-[r:REL]-(n:Entity) "
+            "RETURN eid AS src, n.id AS id, n.type AS type, n.name AS name, properties(n) AS attrs, "
+            "r.name AS rel, 'in' AS dir",
+            {"ids": list(entity_ids)},
+        )
+        result: dict[int, list[dict[str, Any]]] = {eid: [] for eid in entity_ids}
+        for r in rows:
+            src, rest = r[0], r[1:]
+            result.setdefault(int(src), []).append(
+                {**_entity(rest[:4]), "relationship": rest[4], "direction": rest[5]}
+            )
+        return result
+
     def all_relationships(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Return relationship edges in the graph, optionally capped."""
         cap = f" LIMIT {max(1, int(limit))}" if limit else ""

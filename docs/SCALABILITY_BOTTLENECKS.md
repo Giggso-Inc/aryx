@@ -25,6 +25,7 @@ unacceptably slow pipeline runs.
 | P10 | 🟡 High | Chunk/embedding store — per-row round-trips | *(fixed)* any multi-chunk document (OCI mode) |
 | P11 | 🟡 High | Chunk embedding — unbatched OCI GenAI calls | *(fixed)* documents producing >~50 chunks (OCI mode) |
 | P12 | 🔴 Critical | Graph projection — 25-row batch cap on Oracle writes | *(fixed)* >~1,000 entities/relationships (OCI mode) |
+| P13 | 🔴 Critical | CPQ product config load — per-attribute `neighbors()` N+1 | *(fixed)* >~50 config attrs on a product (OCI mode) |
 
 ---
 
@@ -729,6 +730,101 @@ cheap, same-host calls).
 
 ---
 
+## P13 — CPQ Product Config Load: Per-Attribute `neighbors()` N+1 *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-27. Found live while verifying the Ask-thread
+Oracle port (see `docs/OCI_POSTGRES_PARITY_AUDIT.md`) — a real CPQ
+configuration turn against OCI/ADB never returned within a 180s client
+timeout, and a background stale-job sweep then logged
+`oracle_pool: connection acquire failed (pool exhausted)`.
+
+**Source files:**
+- `src/aryx/cpq/engine.py` — `CpqEngine.load_product_config()` Step 3, the
+  `for ent in attr_ents: ... reader.neighbors(eid)` loop
+- `src/aryx/graph/oracle_graph_reader.py` — `OracleGraphReader.neighbors()`,
+  called once per config-attribute entity
+- `src/aryx/ports/protocols.py` — `GraphReaderPort` protocol
+
+**What happened:**
+```python
+for ent in attr_ents:              # one iteration per bm_config_attr entity
+    eid = ent["id"]
+    neighbors = reader.neighbors(eid)   # one Oracle round-trip PER ATTRIBUTE
+    ...
+```
+`load_product_config()`'s docstring and an existing code comment already
+claimed the N+1 pattern had been eliminated ("Two-pass approach eliminates
+both the cap and the N+1 pattern") — that was only true for the relational
+attribute/menu-item fetch (already batched via `_batch_fetch`), not for this
+graph-side neighbor lookup, which still ran once per entity.
+
+Measured live for workspace 328's `videoSolutions_BOM` product (235
+`bm_config_attr` entities):
+| Metric | Value |
+|---|---|
+| `neighbors()` round-trip latency | ~746ms/call (measured, 20-call sample) |
+| Config attrs on this product | 235 |
+| Projected total time for Step 3 alone | ~175 seconds |
+| Client-observed behavior | request never completed within a 180s timeout |
+
+Against FalkorDB (in-process, sub-millisecond Cypher calls) this same loop is
+cheap and invisible — the pattern only becomes a real bottleneck once each
+round-trip is a genuine network hop to a remote Oracle ADB instance, the same
+root cause as P8/P10/P12 above, here in the Ask/CPQ query path instead of
+the ingestion pipeline.
+
+### Accuracy Impact
+**None.** Same neighbor data either way — pure wasted round-trips, not a
+correctness issue. (Two overlapping hung requests did trigger real connection
+pool pressure during diagnosis, logged as `pool exhausted`, but that was a
+symptom of the slow loop, not a separate leak — `OraclePool.connection()`'s
+`finally: self._pool.release(raw)` releases correctly on every path.)
+
+### Resource Impact
+The CPQ conversational flow (`/ask` when `is_cpq_question()` triggers, or a
+continuing `session_data.mode == "cpq"` turn) never returns in practical terms
+for any product with enough config attributes to make ~750ms × N exceed a
+caller's timeout — in effect, CPQ mode was non-functional against OCI/ADB for
+any real product catalog, only appearing to work in quick manual code-level
+checks that never exercised a full conversational turn.
+
+### Fix Applied
+Added `neighbors_batch(entity_ids)` to `GraphReaderPort` and both concrete
+readers — one query replaces N:
+- `OracleGraphReader.neighbors_batch()` — single `UNION ALL` query with two
+  `IN (...)` lists (uniquely-numbered named binds throughout, no bind name
+  reused across the two SELECT branches — see the `ask_thread_touch_thread.sql`
+  precedent for why reused positional/named labels are unsafe with oracledb's
+  thin client)
+- `GraphReader.neighbors_batch()` (FalkorDB) — single `UNWIND $ids` Cypher
+  query, added for interface parity even though FalkorDB's per-call cost was
+  never the problem
+- `CpqEngine.load_product_config()` Step 3 — one `reader.neighbors_batch(...)`
+  call instead of a per-entity loop
+
+Verified live:
+- Correctness: `neighbors_batch()` output matched `neighbors()` called
+  per-entity for 15 sampled attrs — 0 mismatches.
+- Speed: 235-entity batch completed in **14.5s**, down from a ~175s projection
+  (~12x faster).
+- End-to-end: a real two-turn CPQ conversation against workspace 328
+  (`videoSolutions_BOM`) completed in 37s and 82s respectively — session
+  state (`session_data`) round-tripped correctly, and rule-driven defaults
+  (102 value rules) were applied correctly to real BigMachines attributes.
+
+### Cost Impact
+- Before: N Oracle round-trips per CPQ turn (N = config attrs on the
+  product) — effectively unusable for products with more than a few dozen
+  attributes
+- After: 1 round-trip for this step regardless of attribute count
+
+### Fix — OCI Path
+N/A — same architectural fix applies to any backend; FalkorDB's cheap
+round-trips just never exposed the pattern as a problem the way Oracle
+ADB's real network latency did.
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
@@ -745,6 +841,7 @@ cheap, same-host calls).
 | P10 | Chunk/embedding N+1 writes | ✅ Fixed | 🟡 Was ~400 round-trips/doc → ~3 | Low — 1 file + 2 SQL | No (already OCI) |
 | P11 | Embed calls unbatched | ✅ Fixed | 🔴 Was potential hard-fail on large docs | Low — 1 file | No (already OCI) |
 | P12 | Graph write 25-row cap | ✅ Fixed | 🔴 Was 21m55s of a 40m6s total run (55%) | Low — 1 constant + tests | No (already OCI) |
+| P13 | CPQ config load N+1 `neighbors()` | ✅ Fixed | 🔴 Was effectively non-functional for real products | Low — 1 method × 2 backends + 1 call site | No (already OCI) |
 
 **P3 is now the most urgent unfixed risk** — silent data loss with no visible
 error. P1 was believed to be the other urgent unfixed risk (OOM at scale) but
@@ -778,6 +875,7 @@ each fix but is not required for the initial scale improvements.
 | P10 — Chunk/embedding N+1 | Already OCI ADB; batching applied | None |
 | P11 — Embed calls unbatched | Already OCI GenAI; batching applied | Model-id provenance still wrong for OCI embeds (unfixed) |
 | P12 — Graph write 25-row cap | Oracle-specific fix, already applied | None — byte cap remains the real ORA-03106 guard |
+| P13 — CPQ config load N+1 | Batched `neighbors_batch()`, already applied | None — same fix works identically on FalkorDB |
 
 ---
 
@@ -804,8 +902,11 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *Generated: 2026-06-18 | aryx project | giggso*
 *Updated: 2026-07-27 — added P8-P12, all found and fixed during a live*
 *OCI-mode ingest investigation, including one full measured end-to-end run*
+*Updated: 2026-07-27 — added P13, found and fixed while live-verifying the*
+*Ask-thread Oracle port's CPQ conversation flow*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
 *src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
 *src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
 *src/aryx/store/chunk_store.py, src/aryx/pipeline/embed.py, src/aryx/broker/__init__.py,*
-*src/aryx/api/data_api.py, src/aryx/api/workspace_api.py, src/aryx/graph/oracle_graph_store.py*
+*src/aryx/api/data_api.py, src/aryx/api/workspace_api.py, src/aryx/graph/oracle_graph_store.py,*
+*src/aryx/cpq/engine.py, src/aryx/graph/oracle_graph_reader.py, src/aryx/ports/protocols.py*

@@ -1747,39 +1747,44 @@ class CpqEngine:
         attr_ids = [e["id"] for e in attr_ents]
         attr_pg = self._batch_fetch(attr_ids, workspace_id)
 
-        # Step 3 — collect ALL menu item IDs from FalkorDB in one graph pass,
-        # then batch-fetch all PostgreSQL data in a single query.
+        # Step 3 — collect ALL menu item IDs from the graph in one batched pass,
+        # then batch-fetch all relational data in a single query.
         # Previously this loop was capped at [:150], causing attrs beyond that
         # position (e.g. hWVersion_astro at position 236) to silently get no
-        # options. Two-pass approach eliminates both the cap and the N+1 pattern.
+        # options. Two-pass approach eliminates the cap; neighbors_batch()
+        # (rather than one reader.neighbors() call per attr) eliminates the
+        # graph-side N+1 — confirmed live at ~750ms/round-trip against Oracle
+        # ADB, so a 235-attr product previously took ~3 minutes on this step
+        # alone (FalkorDB's in-process round-trips hid the same N+1 cost).
         neighbor_map: dict[int, list[int]] = {}  # attr_entity_id → [menu_entity_ids]
         all_menu_ids: list[int] = []
+        try:
+            neighbors_by_attr = reader.neighbors_batch([e["id"] for e in attr_ents])
+        except Exception:
+            logger.debug("cpq: batch neighbor fetch failed", exc_info=True)
+            neighbors_by_attr = {}
         for ent in attr_ents:
             eid = ent["id"]
-            try:
-                neighbors = reader.neighbors(eid)
-                # reader.neighbors() has no catalog awareness — for attrs whose
-                # native id is reused across catalogs (e.g. productSelectionProduct_all,
-                # confirmed live to have separate BmMenuItem sets per catalog under
-                # the same native id) this returns menu items from EVERY catalog in
-                # the workspace, not just the one resolved above. Scope by the same
-                # resolved_catalog_prefix already used for attr_types. Skip the
-                # filter when resolved_catalog_prefix is "" — per _scope_to_catalog,
-                # that means scoping didn't narrow to one catalog, so no filter
-                # should be applied (same convention as the attr-type scoping above).
-                menu_ids = [
-                    n["id"] for n in neighbors
-                    if "menuitem" in (n.get("type") or "").lower().replace("_", "")
-                    and (
-                        not resolved_catalog_prefix
-                        or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix
-                    )
-                ]
-                if menu_ids:
-                    neighbor_map[eid] = menu_ids
-                    all_menu_ids.extend(menu_ids)
-            except Exception:
-                logger.debug("cpq: neighbor fetch failed for attr %d", eid, exc_info=True)
+            # reader.neighbors_batch() has no catalog awareness — for attrs whose
+            # native id is reused across catalogs (e.g. productSelectionProduct_all,
+            # confirmed live to have separate BmMenuItem sets per catalog under
+            # the same native id) this returns menu items from EVERY catalog in
+            # the workspace, not just the one resolved above. Scope by the same
+            # resolved_catalog_prefix already used for attr_types. Skip the
+            # filter when resolved_catalog_prefix is "" — per _scope_to_catalog,
+            # that means scoping didn't narrow to one catalog, so no filter
+            # should be applied (same convention as the attr-type scoping above).
+            menu_ids = [
+                n["id"] for n in neighbors_by_attr.get(eid, [])
+                if "menuitem" in (n.get("type") or "").lower().replace("_", "")
+                and (
+                    not resolved_catalog_prefix
+                    or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix
+                )
+            ]
+            if menu_ids:
+                neighbor_map[eid] = menu_ids
+                all_menu_ids.extend(menu_ids)
 
         # Step 3b — FK fallback for attrs with a real Postgres bm_config_attr
         # row but NO graph edge to their menu items (confirmed live: SVX's
