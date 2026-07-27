@@ -38,33 +38,6 @@ class Settings(BaseSettings):
         default=2000,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
     )
-    graph_query_timeout: int = Field(
-        default=30_000,
-        description=(
-            "Per-query timeout in milliseconds passed to FalkorDB. "
-            "FalkorDB's built-in default is 5000 ms — too short once a "
-            "properly-linked large workspace (e.g. 345K entities) has "
-            "relationship types whose MATCH traversal takes 4–5 s even "
-            "with REL.name indexed. A real incident: GET /graph returned "
-            "500 on every call to workspace 45 because the "
-            "NOQUOTESMALLBUSINESSREPORT…_HAS_… queries measured 4782 ms, "
-            "randomly crossing the 5000 ms cutoff under load. Set to 0 to "
-            "use FalkorDB's built-in default. "
-            "Override with ARYX_GRAPH_QUERY_TIMEOUT."
-        ),
-    )
-    ontology_export_max_entities: int = Field(
-        default=50_000,
-        description=(
-            "Maximum entity count allowed in a synchronous ontology export "
-            "(GET /ontology/export). Loading and serialising more entities "
-            "than this synchronously risks exhausting memory and exceeding "
-            "the reverse proxy's read timeout (502 Bad Gateway from nginx "
-            "before FastAPI can write the response). Workspaces above the "
-            "cap receive a 413 Request Entity Too Large. Set to 0 to "
-            "disable the cap. Override with ARYX_ONTOLOGY_EXPORT_MAX_ENTITIES."
-        ),
-    )
     graph_isolated_scan_max_entities: int = Field(
         default=100_000,
         description=(

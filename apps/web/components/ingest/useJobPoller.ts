@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { isHttpStatusError } from "@/lib/shay-session";
 
 export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void) {
   const [stage, setStage] = useState<string | null>(null);
@@ -22,7 +23,18 @@ export function useJobPoller(jobId: string | null, onDone: (ok: boolean) => void
         setPct(j.pct);
         if (j.status === "complete") { onDoneRef.current(true); return; }
         if (j.status === "failed") { onDoneRef.current(false); return; }
-      } catch { /* ignore transient network errors */ }
+      } catch (err) {
+        // A 404 means the job is permanently gone (never existed, or aged
+        // out of aryx_job's 30-day retention) — retrying forever here would
+        // reintroduce the exact "stuck in Reading forever" bug this poller
+        // exists to fix, just for a dead job instead of a live one. Every
+        // other error (network blip, 5xx) is treated as transient and
+        // retried, same as before.
+        if (isHttpStatusError(err, 404)) {
+          if (!dead) onDoneRef.current(false);
+          return;
+        }
+      }
       if (!dead) timer = setTimeout(tick, 1500);
     };
     // A long-running job (extraction on a large document can run for hours)

@@ -216,6 +216,7 @@ async def ingest_documents_parallel(
     paths: list[Path], system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int = 1000, chunk_overlap: int = 100,
     expected_embed_dim: int = 768, run_pii: bool = True,
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     loop = asyncio.get_running_loop()
     tasks = [
@@ -223,6 +224,7 @@ async def ingest_documents_parallel(
             None, lambda p=path: ingest_document(
                 p, system, broker, chunk_store,
                 chunk_size, chunk_overlap, expected_embed_dim, run_pii,
+                "", on_progress,
             ),
         )
         for path in paths

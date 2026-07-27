@@ -152,6 +152,37 @@ def test_on_progress_receives_only_new_records_since_last_flush(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_one_chunk_erroring_never_blocks_sibling_chunks_running_concurrently(monkeypatch):
+    """Raven review (PR #120): the docstring claims one chunk's exhausted
+    retries never block the others, but that was only exercised serially
+    (test_extract_mentions_retry.py's workers=1 default). This proves it
+    holds when the failing chunk runs CONCURRENTLY alongside succeeding
+    ones — a chunk stuck in retry/backoff must not stall or drop results
+    from chunks finishing in parallel on other worker threads."""
+    monkeypatch.setenv("ARYX_EXTRACT_MENTION_WORKERS", "4")
+    monkeypatch.setenv("ARYX_EXTRACT_MENTION_RETRIES", "2")
+    monkeypatch.setenv("ARYX_EXTRACT_MENTION_RETRY_DELAY", "0.01")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    def per_chunk(broker, tier, system, user, schema):
+        import json as _json
+        payload = _json.loads(user)
+        if payload["chunk_index"] == 2:
+            raise RuntimeError("provider error — this chunk always fails")
+        return _mentions_result([f"Entity{payload['chunk_index']}"])
+
+    chunks = [_chunk(i) for i in range(6)]
+    with patch("aryx.ontology.extract.complete_json", side_effect=per_chunk):
+        records = extract_mentions(chunks, broker=MagicMock())
+
+    names = {r.payload["name"] for r in records}
+    assert names == {"Entity0", "Entity1", "Entity3", "Entity4", "Entity5"}, (
+        "every chunk except the permanently-failing one must still contribute"
+    )
+    get_settings.cache_clear()
+
+
 def test_no_on_progress_callback_is_optional(monkeypatch):
     """extract_mentions() must work fine with on_progress omitted entirely —
     existing callers that don't pass it must be unaffected."""

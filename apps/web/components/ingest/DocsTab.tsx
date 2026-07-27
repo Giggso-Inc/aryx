@@ -86,7 +86,15 @@ export function DocsTab() {
     // Skip the render right after rehydration so it doesn't immediately
     // overwrite the just-loaded session with the pre-rehydration defaults.
     if (skipNextPersist.current) { skipNextPersist.current = false; return; }
-    if (phase === "idle" || phase === "done") { _clearSession(workspaceId); return; }
+    // "error" (including a job that turned out to be permanently gone —
+    // see useJobPoller's 404 handling) must also clear the session, not
+    // just idle/done — otherwise a dead job's stale entry lingers in
+    // localStorage indefinitely instead of being cleaned up as soon as its
+    // terminal state is known.
+    if (phase === "idle" || phase === "done" || phase === "error") {
+      _clearSession(workspaceId);
+      return;
+    }
     _saveSession(workspaceId, {
       phase, readJobId, discoveryId, summary, approved: [...approved], confirmJobId,
     });
