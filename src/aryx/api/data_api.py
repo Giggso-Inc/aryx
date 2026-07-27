@@ -23,11 +23,6 @@ from aryx.source_catalog import (
     build_source_detail_from_counts,
     find_legacy_xml_row,
     legacy_xml_row,
-    mark_xlsx_asset_deleted,
-    mark_xlsx_source_deleted,
-    mark_xml_asset_deleted,
-    mark_xml_source_deleted,
-    upsert_generic_source_entry,
     upsert_legacy_xml_catalog_entry,
     xlsx_download_payload,
     xml_download_payload,
@@ -42,6 +37,7 @@ from aryx.store.entity_store import EntityStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
 from aryx.store.source_metrics_store import SourceMetricsStore
+from aryx.ports.container import ports
 
 logger = logging.getLogger(__name__)
 _DATETIME_TYPE = datetime
@@ -277,28 +273,8 @@ def data_router() -> APIRouter:
 
     @router.delete("/sources/{source_key}")
     def delete_source(source_key: str, workspace_id: int = 1) -> dict:
-        """Soft-delete an XML or Excel workbook source from the catalog view."""
-        store = _datasource_store()
-        if _is_generic_source_key(source_key):
-            source_system, source_dataset = _parse_generic_source_key(source_key)
-            upsert_generic_source_entry(
-                store,
-                workspace_id=workspace_id,
-                source_system=source_system,
-                source_dataset=source_dataset,
-            )
-            return {"status": "deleted", "source_key": source_key}
-        datasource = _resolve_mutable_xml_row(source_key, workspace_id, store)
-        mark_deleted_fn = mark_xlsx_source_deleted if source_key.startswith("xlsx:") else mark_xml_source_deleted
-        config = mark_deleted_fn(datasource)
-        store.update(
-            int(datasource["id"]),
-            name=datasource["name"],
-            kind=datasource["kind"],
-            config=config,
-            secret=None,
-        )
-        return {"status": "deleted", "source_key": source_key}
+        """Physically delete one source and its workspace data."""
+        return _purge_source_from_workspace(source_key, workspace_id)
 
     @router.get("/sources/{source_key:path}/assets/{asset_key}/download")
     def download_asset(source_key: str, asset_key: str, workspace_id: int = 1) -> Response:
@@ -333,19 +309,8 @@ def data_router() -> APIRouter:
 
     @router.delete("/sources/{source_key:path}/assets/{asset_key}")
     def delete_asset(source_key: str, asset_key: str, workspace_id: int = 1) -> dict:
-        """Soft-delete one generated asset from the XML or Excel workbook catalog view."""
-        store = _datasource_store()
-        datasource = _resolve_mutable_xml_row(source_key, workspace_id, store)
-        mark_asset_deleted_fn = mark_xlsx_asset_deleted if source_key.startswith("xlsx:") else mark_xml_asset_deleted
-        config = mark_asset_deleted_fn(datasource, asset_key)
-        store.update(
-            int(datasource["id"]),
-            name=datasource["name"],
-            kind=datasource["kind"],
-            config=config,
-            secret=None,
-        )
-        return {"status": "deleted", "source_key": source_key, "asset_key": asset_key}
+        """Physically delete one generated XML/XLSX asset dataset."""
+        return _purge_asset_from_workspace(source_key, asset_key, workspace_id)
 
     @router.get("/sources/{source_key:path}/download", include_in_schema=False)
     def download_source_with_path(source_key: str, workspace_id: int = 1) -> Response:
@@ -765,6 +730,148 @@ def _resolve_mutable_xml_row(
             prefix=prefix,
             datasets=datasets,
         )
+    finally:
+        entity_store.close()
+
+
+def _purge_graph_projection(
+    workspace_id: int,
+    refs: list[tuple[str, str]],
+    entity_ids: list[int],
+) -> None:
+    try:
+        graph = ports().graph_store(workspace_id)
+        for system, dataset in refs:
+            graph.remove_source(system, dataset)
+        for entity_id in entity_ids:
+            graph.remove_entity(entity_id)
+    except Exception as exc:  # noqa: BLE001 — RDB is source of truth
+        logger.debug("source graph cleanup skipped ws=%s: %s", workspace_id, exc)
+
+
+def _delete_generic_catalog_rows(
+    datasource_store: DatasourceStore,
+    workspace_id: int,
+    refs: list[tuple[str, str]],
+) -> int:
+    ref_set = {(str(system), str(dataset)) for system, dataset in refs}
+    removed = 0
+    for row in datasource_store.list(workspace_id):
+        meta = (row.get("config") or {}).get("source_catalog", {}).get("generic")
+        if not isinstance(meta, dict):
+            continue
+        key = (
+            str(meta.get("source_system") or ""),
+            str(meta.get("source_dataset") or ""),
+        )
+        if key not in ref_set:
+            continue
+        datasource_store.delete(int(row["id"]))
+        removed += 1
+    return removed
+
+
+def _purge_source_from_workspace(source_key: str, workspace_id: int) -> dict:
+    datasource_store = _datasource_store()
+    entity_store = _store(workspace_id)
+    datasource_to_delete: dict | None = None
+    try:
+        datasources = datasource_store.list(workspace_id)
+        counts = Counter(_metric_reader(entity_store, workspace_id).source_record_counts())
+        refs = source_references(source_key, datasources, counts)
+
+        if source_key.startswith(("xml:", "xlsx:")):
+            datasource_to_delete = (
+                _find_xlsx_datasource(source_key, workspace_id)
+                if source_key.startswith("xlsx:")
+                else _find_xml_datasource(source_key, workspace_id)
+            )
+        elif source_key.startswith("legacy-xml:"):
+            prefix = source_key.split(":", 1)[1]
+            datasource_to_delete = find_legacy_xml_row(datasources, prefix)
+        elif _is_generic_source_key(source_key):
+            if not refs:
+                refs = [_parse_generic_source_key(source_key)]
+        else:
+            raise HTTPException(404, "source not found")
+
+        stats = entity_store.purge_source_references(refs)
+        _purge_graph_projection(
+            workspace_id,
+            refs,
+            [int(entity_id) for entity_id in stats.get("entity_ids_deleted", [])],
+        )
+
+        catalog_rows_deleted = 0
+        if datasource_to_delete is not None:
+            datasource_store.delete(int(datasource_to_delete["id"]))
+            catalog_rows_deleted = 1
+        elif refs:
+            catalog_rows_deleted = _delete_generic_catalog_rows(
+                datasource_store, workspace_id, refs,
+            )
+
+        return {
+            "status": "deleted",
+            "source_key": source_key,
+            "catalog_rows_deleted": catalog_rows_deleted,
+            **{key: value for key, value in stats.items() if key != "entity_ids_deleted"},
+        }
+    finally:
+        entity_store.close()
+
+
+def _asset_matches(asset: dict, asset_key: str) -> bool:
+    return (asset.get("asset_key") or asset.get("filename")) == asset_key
+
+
+def _purge_asset_from_workspace(source_key: str, asset_key: str, workspace_id: int) -> dict:
+    datasource_store = _datasource_store()
+    entity_store = _store(workspace_id)
+    try:
+        datasource = _resolve_mutable_xml_row(source_key, workspace_id, datasource_store)
+        catalog = dict((datasource.get("config") or {}).get("source_catalog") or {})
+        meta_key = "xlsx" if source_key.startswith("xlsx:") else "xml"
+        meta = dict(catalog.get(meta_key) or {})
+        assets = [asset for asset in (meta.get("generated_assets") or []) if isinstance(asset, dict)]
+        target = next((asset for asset in assets if _asset_matches(asset, asset_key)), None)
+        if target is None or not target.get("dataset"):
+            raise HTTPException(404, "asset not found")
+
+        refs = [("csv", str(target["dataset"]))]
+        stats = entity_store.purge_source_references(refs)
+        _purge_graph_projection(
+            workspace_id,
+            refs,
+            [int(entity_id) for entity_id in stats.get("entity_ids_deleted", [])],
+        )
+
+        remaining_assets = [asset for asset in assets if not _asset_matches(asset, asset_key)]
+        if remaining_assets:
+            config = dict(datasource.get("config") or {})
+            next_catalog = dict(config.get("source_catalog") or {})
+            meta["generated_assets"] = remaining_assets
+            next_catalog[meta_key] = meta
+            config["source_catalog"] = next_catalog
+            datasource_store.update(
+                int(datasource["id"]),
+                name=datasource["name"],
+                kind=datasource["kind"],
+                config=config,
+                secret=None,
+            )
+            catalog_rows_deleted = 0
+        else:
+            datasource_store.delete(int(datasource["id"]))
+            catalog_rows_deleted = 1
+
+        return {
+            "status": "deleted",
+            "source_key": source_key,
+            "asset_key": asset_key,
+            "catalog_rows_deleted": catalog_rows_deleted,
+            **{key: value for key, value in stats.items() if key != "entity_ids_deleted"},
+        }
     finally:
         entity_store.close()
 

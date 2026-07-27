@@ -50,6 +50,9 @@ class _FakeDatasourceStore:
         row["config"] = config
         return row
 
+    def delete(self, datasource_id: int) -> None:
+        self.rows[:] = [row for row in self.rows if row["id"] != datasource_id]
+
 
 class _FakeEntityStore:
     def __init__(
@@ -59,6 +62,7 @@ class _FakeEntityStore:
     ) -> None:
         self._provenance = provenance
         self._source_activity = source_activity or {}
+        self.purged_refs: list[tuple[str, str]] = []
 
     def list_members_provenance(self):
         return list(self._provenance)
@@ -86,6 +90,20 @@ class _FakeEntityStore:
 
     def list_source_activity(self) -> dict[tuple[str, str], object]:
         return dict(self._source_activity)
+
+    def purge_source_references(
+        self,
+        refs: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    ) -> dict:
+        self.purged_refs.extend(list(refs))
+        return {
+            "sources_purged": len(refs),
+            "landed_records_deleted": 2,
+            "members_deleted": 2,
+            "entities_impacted": 2,
+            "entities_deleted": 2,
+            "entity_ids_deleted": [101, 102],
+        }
 
     def close(self) -> None:
         return None
@@ -196,11 +214,12 @@ def test_source_preview_returns_all_rows_without_truncation(client: TestClient) 
     assert len(payload["rows"]) == 30
 
 
-def test_delete_generated_asset_marks_asset_deleted(client: TestClient) -> None:
+def test_delete_generated_asset_purges_asset_dataset(client: TestClient) -> None:
     store = _FakeDatasourceStore([_xml_row()])
+    entity_store = _FakeEntityStore([])
     with (
         patch("aryx.api.data_api.DatasourceStore", return_value=store),
-        patch("aryx.api.data_api._store", return_value=_FakeEntityStore([])),
+        patch("aryx.api.data_api._store", return_value=entity_store),
         patch("aryx.api.data_api.get_settings") as mock_settings,
     ):
         mock_settings.return_value.rdb_dsn = "postgresql://test"
@@ -209,8 +228,8 @@ def test_delete_generated_asset_marks_asset_deleted(client: TestClient) -> None:
         )
 
     assert response.status_code == 200
-    assets = store.rows[0]["config"]["source_catalog"]["xml"]["generated_assets"]
-    assert assets[0]["deleted"] is True
+    assert entity_store.purged_refs == [("csv", "Corporate_Data_Employees")]
+    assert store.rows == []
 
 
 def test_download_legacy_asset_builds_csv_from_landed_rows(client: TestClient) -> None:
@@ -248,20 +267,22 @@ def test_download_generic_csv_source_builds_csv_from_landed_rows(client: TestCli
     assert response.headers["content-type"].startswith("text/csv")
 
 
-def test_delete_generic_csv_source_persists_hidden_catalog_row(client: TestClient) -> None:
+def test_delete_generic_csv_source_purges_source_records(client: TestClient) -> None:
     store = _FakeDatasourceStore([])
+    entity_store = _FakeEntityStore([
+        (1, "csv", "orders", "1"),
+    ])
     with (
         patch("aryx.api.data_api.DatasourceStore", return_value=store),
-        patch("aryx.api.data_api._store", return_value=_FakeEntityStore([
-            (1, "csv", "orders", "1"),
-        ])),
+        patch("aryx.api.data_api._store", return_value=entity_store),
         patch("aryx.api.data_api.get_settings") as mock_settings,
     ):
         mock_settings.return_value.rdb_dsn = "postgresql://test"
         response = client.delete("/data/sources/csv:orders?workspace_id=1")
 
     assert response.status_code == 200
-    assert store.rows[0]["config"]["source_catalog"]["generic"]["is_active"] is False
+    assert entity_store.purged_refs == [("csv", "orders")]
+    assert response.json()["landed_records_deleted"] == 2
 
 
 def test_list_sources_revives_recently_reingested_generic_source(client: TestClient) -> None:

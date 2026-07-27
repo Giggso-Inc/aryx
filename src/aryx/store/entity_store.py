@@ -354,6 +354,74 @@ class EntityStore:
                     for row in cur.fetchall()
                 }
 
+    def purge_source_references(
+        self,
+        refs: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    ) -> dict[str, Any]:
+        """Physically delete landed data and orphaned entities for source refs.
+
+        XML and XLSX uploads are represented as one parent datasource plus many
+        generated CSV datasets. Callers pass those physical `(system, dataset)`
+        refs, and this method removes the landed rows, provenance members, and
+        any entities that no longer have remaining source members.
+        """
+        unique_refs = sorted({(str(system), str(dataset)) for system, dataset in refs})
+        if not unique_refs:
+            return {
+                "sources_purged": 0,
+                "landed_records_deleted": 0,
+                "members_deleted": 0,
+                "entities_impacted": 0,
+                "entities_deleted": 0,
+                "entity_ids_deleted": [],
+            }
+
+        impacted_ids: set[int] = set()
+        landed_deleted = 0
+        members_deleted = 0
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                for source_system, source_dataset in unique_refs:
+                    params = {
+                        "workspace_id": self._ws,
+                        "source_system": source_system,
+                        "source_dataset": source_dataset,
+                    }
+                    cur.execute(load("select_source_impacted_entity_ids"), params)
+                    impacted_ids.update(int(row[0]) for row in cur.fetchall())
+
+                    cur.execute(load("delete_source_entity_members"), params)
+                    members_deleted += max(cur.rowcount, 0)
+
+                    cur.execute(load("delete_source_landed_records"), params)
+                    landed_deleted += max(cur.rowcount, 0)
+
+                cur.execute(load("select_orphan_entity_ids"), {"workspace_id": self._ws})
+                orphan_ids = [int(row[0]) for row in cur.fetchall()]
+
+                for query_name in (
+                    "delete_orphan_entity_relationships",
+                    "delete_orphan_projected_entities",
+                    "delete_orphan_attribute_conflicts",
+                    "delete_orphan_axiom_violations",
+                    "delete_orphan_entities",
+                ):
+                    cur.execute(load(query_name), {"workspace_id": self._ws})
+
+        deleted_ids = sorted(set(orphan_ids))
+        logger.info(
+            "source refs purged ws=%s refs=%d landed=%d members=%d entities=%d",
+            self._ws, len(unique_refs), landed_deleted, members_deleted, len(deleted_ids),
+        )
+        return {
+            "sources_purged": len(unique_refs),
+            "landed_records_deleted": landed_deleted,
+            "members_deleted": members_deleted,
+            "entities_impacted": len(impacted_ids),
+            "entities_deleted": len(deleted_ids),
+            "entity_ids_deleted": deleted_ids,
+        }
+
     def list_isolated_entities(self) -> list[tuple[int, str, dict]]:
         """Return entities that have no relationship edges (source or target).
 

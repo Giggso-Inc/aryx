@@ -1,15 +1,17 @@
--- Purge all data for one workspace. Caller passes %(wid)s.
--- Order: children before parents to respect FK constraints.
+-- Purge all data for one Oracle-backed workspace. Caller passes %(wid)s.
+-- Order: graph/projection children before ontology and run-scoped data.
+DELETE FROM aryx_graph_provenance WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_graph_edge WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_graph_source WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_graph_vertex WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_action_execution WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_action WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_adjudication WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_attribute_conflict WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ask_history WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_axiom_violation WHERE workspace_id = %(wid)s;
-DELETE FROM aryx_bml_tier2_cache WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_datasource WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ingest_question WHERE workspace_id = %(wid)s;
-DELETE FROM aryx_llm_call WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_projected_entity WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_projection_state WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_relationship_type WHERE workspace_id = %(wid)s;
