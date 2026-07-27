@@ -857,3 +857,16 @@ session's Amendment 19 follow-up. A correct fix would need a genuine
 required/optional signal (e.g. an explicit catalog-side flag, or resolving
 the gating condition of each ValidationRule) — not attempted here, since
 guessing at another heuristic risks the same class of false positive again.
+
+**Side note — FedRamp silent-reversion, traced and closed**: a separate live
+report claimed `isFedRampOrCCCSRequired_swSoln` silently reverted from a
+user's explicit "None" back to "FEDRAMP" later in the same conversation.
+Traced live: `filled_source=="user"` correctly survives an ordinary
+change-request cascade (confirmed via two repros — a follow-up unrelated
+change-request turn left FedRamp at "NONE"/"user"). The revert only ever
+showed up in the original transcript because Amendment 19's now-reverted
+`validation_target_ids` fix (above) force-added `agencyDomainName_ID_swSoln`
+and 3 other fields to `pending`, and something in that specific longer
+answer sequence re-derived FedRamp. That trigger path no longer exists now
+that Amendment 20 reverted it. Treated as resolved by the revert; revisit
+only if seen live again post-revert.
