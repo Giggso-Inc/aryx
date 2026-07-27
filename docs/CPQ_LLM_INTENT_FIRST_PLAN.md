@@ -1,6 +1,32 @@
 # CPQ LLM-Intent-First Plan
 
-Status: scoped, not implemented — awaiting approval to build.
+Status: implemented and live-verified. 257/257 tests pass (255 baseline +
+2 new regression tests in `tests/test_cpq_intent_first_gate.py`).
+
+## Implementation note: the gate had to run BEFORE detect_product_mention, not just in its failure branch
+
+The first implementation attempt gated the intent check on `not detected`
+(i.e. only fires when `detect_product_mention` found nothing) — this
+still failed live. Root cause: `detect_product_mention` itself matched
+"Svx Video Remote Speaker Microphone" (quoted back from the assistant's
+own prior answer) inside "You said something about Svx Video RSM, how is
+it connected to astra?" and confidently resolved it to `videoSolutions_BOM`
+— a fuzzy, incidental mention inside a genuine question, not the user's
+real intent. Fixed by moving the Q&A check to run unconditionally before
+`detect_product_mention` is even called (still gated on `session.
+pending_anchor == "product"`), not merely in its `None` branch.
+
+**Live-verified, both fixes**:
+- "You said something about Svx Video Remote Speaker Microphone, how is it
+  connected to astra?" → now answers from real graph facts about the SVX
+  RSM's relationship to ASTRO 25 (`cpq-qa`, real tokens spent), instead of
+  being swallowed into "what's the destination country?" (`cpq-engine`, 0
+  tokens).
+- "what does astra mean in an astrological sense?" → *"I don't have any
+  information in my data about what 'astra' means in astrology. My
+  knowledge is strictly limited to the specific product, configuration,
+  and enterprise data provided to me."* — honest, no fabricated SVX/
+  currency details.
 
 ## Context
 

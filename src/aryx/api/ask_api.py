@@ -198,14 +198,46 @@ def _synthesise(question: str, context: str, overview: str = "",
     facts = context if has_context else "(none — no specific entity matched)"
     conv = _recent(history or [], limit=6)
     conv_block = f"\nCONVERSATION SO FAR:\n{conv}\n" if conv else ""
+
+    # Grounded scope check (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 2):
+    # only spent when there's nothing in GRAPH FACTS to answer from — the
+    # common "facts found" case is unaffected, zero extra calls. Confirmed
+    # live this codepath previously fabricated plausible-sounding catalog
+    # details (SVX Video RSM, currency options) for a genuinely unrelated
+    # astrology question, because its own instruction forbade ever saying
+    # "not stored" with no carve-out for "not CPQ-relevant at all."
+    is_cpq_relevant = True
+    if not has_context:
+        is_cpq_relevant = _llm_classify_is_cpq_question(question, workspace_id)
+        logger.info(
+            "cpq_qa_scope: empty graph context for %r -> is_cpq_relevant=%s",
+            question, is_cpq_relevant,
+        )
+
+    if has_context:
+        empty_rule = (
+            "- GRAPH FACTS present → answer specifically, naming the entities, "
+            "values, and relationships shown, in plain language.\n"
+        )
+    elif is_cpq_relevant:
+        empty_rule = (
+            "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
+            "and suggest a concrete follow-up question. "
+            "Do NOT say 'no matching entities' or 'not stored'.\n"
+        )
+    else:
+        empty_rule = (
+            "- GRAPH FACTS empty AND the question is not about product "
+            "configuration, quoting, or enterprise data at all → say plainly "
+            "that this is outside what you track (product configuration and "
+            "quoting), in one short sentence. Do NOT invent or connect "
+            "unrelated catalog details to answer it anyway.\n"
+        )
+
     user = (
         "Answer the QUESTION using the evidence below.\n\n"
         "Rules:\n"
-        "- GRAPH FACTS present → answer specifically, naming the entities, "
-        "values, and relationships shown, in plain language.\n"
-        "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
-        "and suggest a concrete follow-up question. "
-        "Do NOT say 'no matching entities' or 'not stored'.\n"
+        f"{empty_rule}"
         "- Do NOT invent facts not shown in GRAPH FACTS.\n"
         "- Use CONVERSATION SO FAR to resolve pronouns and give continuity.\n"
         f"- Format: maximum {_MAX_ANSWER_LINES} lines. Lead with a direct "
@@ -2778,6 +2810,31 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # on the very message that anchored it.
     product_was_anchored = bool(session.product_name)
     if not session.product_name:
+        # Intent-first gate (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 1): check
+        # whether this message reads as a genuine question BEFORE trusting
+        # any anchor-detection result at all — not just in the blind-accept
+        # fallback below. Confirmed live this needed to run first, not
+        # second: detect_product_mention itself matched "Svx Video Remote
+        # Speaker Microphone" (quoted back from the assistant's own PRIOR
+        # answer) inside "You said something about Svx Video RSM, how is it
+        # connected to astra?" and confidently resolved it to
+        # videoSolutions_BOM — a fuzzy incidental mention inside a question,
+        # not the user's actual intent — so gating only on "detection
+        # failed" was never going to catch this case. Routes to the same
+        # graph-grounded Q&A path (_handle_cpq_qa) used everywhere else in
+        # this file — attrs=[] is safe here since no product/catalog is
+        # chosen yet, and _handle_cpq_qa's generic graph search doesn't
+        # require it.
+        if (
+            session.pending_anchor == "product"
+            and _cpq_engine.detect_qa_question(req.question, None, strict=True)
+        ):
+            logger.info(
+                "cpq_intent_gate: question-shaped message %r intercepted "
+                "before product-anchor detection (turn=%s) -> routing to Q&A",
+                req.question, session.turn,
+            )
+            return _handle_cpq_qa(req, session, [], reader, resume_review=False)
         detected = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
         if not detected and session.pending_anchor == "product":
             detected = req.question.strip()
