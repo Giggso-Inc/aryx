@@ -24,6 +24,32 @@ from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
+# Real Settings object — no mocking. Guards against the exact class of bug
+# where every other test here patches get_settings() with a bare MagicMock,
+# which fabricates any attribute access rather than raising AttributeError —
+# so a field referenced by call sites but never actually added to Settings
+# passed every mocked test while crashing in real production.
+# ---------------------------------------------------------------------------
+
+class TestRealSettingsHaveTheseFields:
+    def test_graph_query_timeout_exists_on_real_settings(self):
+        from aryx.config import get_settings
+        get_settings.cache_clear()
+        settings = get_settings()
+        assert isinstance(settings.graph_query_timeout, int)
+        assert settings.graph_query_timeout == 30_000
+        get_settings.cache_clear()
+
+    def test_ontology_export_max_entities_exists_on_real_settings(self):
+        from aryx.config import get_settings
+        get_settings.cache_clear()
+        settings = get_settings()
+        assert isinstance(settings.ontology_export_max_entities, int)
+        assert settings.ontology_export_max_entities == 50_000
+        get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
 # GraphReader._query() timeout
 # ---------------------------------------------------------------------------
 
