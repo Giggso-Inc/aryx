@@ -267,6 +267,26 @@ class Settings(BaseSettings):
             "reliable enough not to risk stalling a live request."
         ),
     )
+    bml_tier2_max_per_turn: int = Field(
+        default=50,
+        description=(
+            "Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): hard "
+            "ceiling on how many distinct scripts one CPQ turn's BmlEvaluator "
+            "will attempt via Tier-2 LLM, across every pass of that turn's "
+            "evaluate_rules_loop combined. Live-measured need: a single large "
+            "catalog (900+ attrs) surfaced 823 distinct scripts needing "
+            "Tier-2 in one turn before parallelization/Tier-1 idiom work — "
+            "concurrency (BmlEvaluator.prefetch_tier2) and a smarter Tier-1 "
+            "(evaluate_hide_master_list) both cut that dramatically, but "
+            "this cap is the backstop for whatever's still left, or a "
+            "different large catalog this session hasn't seen. Once "
+            "reached, every FURTHER script this turn treats Tier-2 as "
+            "unavailable and falls back to today's existing safe default "
+            "(no constraint/hide decision derived — never a guess), exactly "
+            "as if ARYX_BML_USE_LLM were off for just those extra scripts. "
+            "Override with ARYX_BML_TIER2_MAX_PER_TURN."
+        ),
+    )
 
     # ── Document processing ───────────────────────────────────────────────────
     per_doc_timeout: float = Field(
