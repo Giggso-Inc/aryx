@@ -31,33 +31,46 @@ class ChunkStore:
         return doc_db_id
 
     def save_chunks(self, doc_db_id: int, chunks: list[DocumentChunk]) -> list[int]:
-        """Persist text chunks and return their ids."""
-        ids: list[int] = []
+        """Persist text chunks and return their ids, in bulk (2 round-trips).
+
+        Previously looped one execute()+fetchone() per chunk -- N round-trips
+        to the DB for an N-chunk document. Now: one executemany() insert, then
+        one bulk select keyed by chunk_index to recover the generated ids in
+        the original chunk order. ON CONFLICT DO NOTHING still applies so
+        re-ingesting an already-chunked document is a no-op, not a crash.
+        """
+        if not chunks:
+            return []
+        rows = [
+            (doc_db_id, chunk.chunk_index, chunk.page_slide,
+             chunk.char_start, chunk.char_end, chunk.text)
+            for chunk in chunks
+        ]
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for chunk in chunks:
-                    cur.execute(
-                        load("insert_chunk"),
-                        (doc_db_id, chunk.chunk_index, chunk.page_slide,
-                         chunk.char_start, chunk.char_end, chunk.text),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        ids.append(int(row[0]))
+                cur.executemany(load("insert_chunk"), rows)
+                cur.execute(
+                    load("select_chunk_ids_by_doc"),
+                    (doc_db_id, [chunk.chunk_index for chunk in chunks]),
+                )
+                id_by_index = {row[1]: int(row[0]) for row in cur.fetchall()}
+        ids = [id_by_index[chunk.chunk_index] for chunk in chunks]
         logger.info("saved chunks doc_id=%d count=%d", doc_db_id, len(ids))
         return ids
 
     def save_embeddings(self, chunk_db_ids: list[int],
                         embeddings: list[ChunkEmbedding]) -> None:
-        """Persist dense embedding vectors for each chunk."""
+        """Persist dense embedding vectors for each chunk in one round-trip."""
+        if not chunk_db_ids:
+            return
+        rows = [
+            (chunk_db_id, emb.model_id, emb.dim,
+             "[" + ",".join(str(v) for v in emb.vector) + "]")
+            for chunk_db_id, emb in zip(chunk_db_ids, embeddings)
+        ]
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for chunk_db_id, emb in zip(chunk_db_ids, embeddings):
-                    vec_str = "[" + ",".join(str(v) for v in emb.vector) + "]"
-                    cur.execute(
-                        load("insert_chunk_embedding"),
-                        (chunk_db_id, emb.model_id, emb.dim, vec_str),
-                    )
+                cur.executemany(load("insert_chunk_embedding"), rows)
         logger.info("saved embeddings count=%d model=%s", len(embeddings),
                     embeddings[0].model_id if embeddings else "—")
 

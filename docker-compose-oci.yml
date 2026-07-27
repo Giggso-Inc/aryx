@@ -113,8 +113,8 @@ services:
       - ARYX_TRANSITIVE_MAX_DEPTH=${ARYX_TRANSITIVE_MAX_DEPTH:-4}
       - ARYX_RULES_DB_WARN_THRESHOLD=${ARYX_RULES_DB_WARN_THRESHOLD:-20}
       # Entity resolution thresholds
-      - ARYX_ER_AUTO_MERGE=${ARYX_ER_AUTO_MERGE:-0.92}
-      - ARYX_ER_ADJUDICATE=${ARYX_ER_ADJUDICATE:-0.90}
+      - ARYX_ER_AUTO_MERGE=${ARYX_ER_AUTO_MERGE:-0.95}
+      - ARYX_ER_ADJUDICATE=${ARYX_ER_ADJUDICATE:-0.95}
       - ARYX_ER_REVIEW=${ARYX_ER_REVIEW:-0.75}
       - ARYX_EMBED_BATCH_SIZE=${ARYX_EMBED_BATCH_SIZE:-50}
       - ARYX_EMBED_DIM=${ARYX_EMBED_DIM:-1024}
@@ -136,7 +136,7 @@ services:
       # requests through without an API key. The api port is VCN-restricted
       # (not public internet). require_api_key on /admin/shay/* is a hard
       # guard that ignores this flag — bridge auth stays enforced.
-      - ARYX_API_AUTH=${ARYX_API_AUTH:-optional}
+      - ARYX_API_AUTH=${ARYX_API_AUTH:-false}
     ports:
       - "8088:8000"
     networks:

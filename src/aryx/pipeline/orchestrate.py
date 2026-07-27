@@ -127,6 +127,12 @@ def run_pipeline(
             _emit(on_progress, "Relate", 70, "Inferring relationships between entities")
             with runner.stage("relate"):
                 relationships = _relate(estore, broker, _max_pairs)
+        # Entities for FK linking are fetched ONCE and shared across both loops
+        # below (schema_fk + fk_link) -- link_by_attribute used to re-fetch the
+        # whole workspace per spec, which dominated the Link stage's runtime
+        # (see docs/SCALABILITY_BOTTLENECKS.md P8). Neither loop creates new
+        # entities, only relationships, so one snapshot is valid for both.
+        link_entities: list[tuple[int, str, dict]] | None = None
         if relate and not runner.skip("schema_fk"):
             # Schema-level LLM FK inference: ONE call across ALL type schemas.
             # Finds shared-value joins that have no _id/_name suffix pattern
@@ -135,6 +141,8 @@ def run_pipeline(
             _emit(on_progress, "Link", 78, "Discovering schema-level FK links")
             with runner.stage("schema_fk"):
                 schema_links = _infer_schema_fk_links(estore, broker)
+                if schema_links and link_entities is None:
+                    link_entities = list(estore.list_entities())
                 for spec in schema_links:
                     if not _FK_REQUIRED.issubset(spec):
                         logger.warning("schema_fk: skipping incomplete FK spec: %s", spec)
@@ -144,13 +152,15 @@ def run_pipeline(
                         f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
                     )
                     relationships += link_by_attribute(
-                        estore, spec["source_type"], spec["source_attr"],
+                        estore, link_entities, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
             _emit(on_progress, "Relate", 78, f"{relationships} relationships inferred")
         if fk_links and not runner.skip("fk_link"):
             _emit(on_progress, "Link", 80, f"Linking entities via {len(fk_links)} FK spec(s)")
             with runner.stage("fk_link"):
+                if link_entities is None:
+                    link_entities = list(estore.list_entities())
                 for spec in fk_links:
                     if not _FK_REQUIRED.issubset(spec):
                         logger.warning("fk_link: skipping incomplete FK spec: %s", spec)
@@ -160,7 +170,7 @@ def run_pipeline(
                         f"{spec['source_type'].upper()}_LINKS_{spec['target_type'].upper()}",
                     )
                     relationships += link_by_attribute(
-                        estore, spec["source_type"], spec["source_attr"],
+                        estore, link_entities, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
         if not runner.skip("relate_isolated"):

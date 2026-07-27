@@ -13,6 +13,7 @@ A later human approval unions the entities via apply_decision (G10).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from aryx.broker import Broker
 from aryx.config import get_settings
@@ -27,6 +28,12 @@ from aryx.resolution.review_queue import ReviewSink
 from aryx.resolution.survivorship import SurvivorshipPolicy
 
 logger = logging.getLogger(__name__)
+
+# How often (in blocks) to report progress back through on_block_progress.
+# Blocks are cheap to iterate but each non-trivial one can cost real wall-clock
+# (embedding + adjudication calls), so this needs to be frequent enough that
+# a long-running resolve doesn't look stuck to the job-status UI.
+_PROGRESS_EVERY = 25
 
 
 def _block_embeddings(
@@ -199,6 +206,7 @@ def resolve(
     review: ReviewSink | None = None,
     run_id: int | None = None,
     exact_ids: bool = False,
+    on_block_progress: Callable[[int, int], None] | None = None,
 ) -> list[tuple[ResolvedEntity, list[EntityMember]]]:
     """Resolve records into canonical entities via the funnel.
 
@@ -211,6 +219,9 @@ def resolve(
         run_id: Discovery run being resolved, for log correlation.
         exact_ids: Merge on exact match-text equality only — for sources
             whose match keys are opaque identifiers (see _resolve_exact).
+        on_block_progress: Optional callback(blocks_done, total_blocks), fired
+            every _PROGRESS_EVERY blocks so long-running runs (LLM adjudication
+            per pair) surface progress instead of looking stuck.
 
     Returns:
         (entity, members) pairs, one per cluster.
@@ -283,6 +294,10 @@ def resolve(
             run_id, block_idx + 1, total_blocks, len(group),
             pairs_evaluated, block_merges, total_merged,
         )
+        if on_block_progress is not None and (
+            (block_idx + 1) % _PROGRESS_EVERY == 0 or block_idx + 1 == total_blocks
+        ):
+            on_block_progress(block_idx + 1, total_blocks)
 
     results = [
         (_materialize(member_ids, by_id, pair_scores, ontology_type, policy),

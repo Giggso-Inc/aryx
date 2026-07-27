@@ -194,10 +194,13 @@ def workspace_router() -> APIRouter:
 
             total = 0
             applied = []
+            # Fetch once, reuse for every spec (was refetching the whole
+            # workspace per spec -- see docs/SCALABILITY_BOTTLENECKS.md P8).
+            link_entities = list(estore.list_entities())
             for spec in raw_links:
                 try:
                     count = link_by_attribute(
-                        estore,
+                        estore, link_entities,
                         spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"],
                         spec["name"],

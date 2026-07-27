@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Any
@@ -29,6 +30,25 @@ def _as_int(value: Any, fallback: int) -> int:
         return fallback
 
 
+def _as_json(value: Any) -> Any:
+    """Parse a JSON column value that may arrive as a string or already-parsed.
+
+    Postgres JSONB columns come back as dict/list (psycopg auto-decodes).
+    Shay's gg_* tables store the same data as CLOB on Oracle (no native JSON
+    type there), so oracledb returns plain text -- this normalizes both to
+    the same Python shape the caller expects.
+    """
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
 def normalize_grounding_citations(grounding: Any) -> list[dict[str, Any]]:
     """Return frontend citation objects from the grounding contract."""
     if not isinstance(grounding, dict):
@@ -53,6 +73,99 @@ def normalize_grounding_citations(grounding: Any) -> list[dict[str, Any]]:
             "type": citation.get("type") or citation.get("entity_type"),
         })
     return citations
+
+
+def _is_oracle_backend() -> bool:
+    return get_settings().effective_db_backend() == "oci"
+
+
+def _insert_message_oracle(cur: Any, params: tuple[Any, ...]) -> tuple[str, int, bool, str] | None:
+    """Oracle-native equivalent of ask_thread_insert_message.sql's retry-safe upsert.
+
+    Postgres does this in one statement (INSERT ... ON CONFLICT ... DO UPDATE
+    ... WHERE <retry-safety CASE logic> ... RETURNING id, sequence_number,
+    (xmax = 0) AS inserted, content), using `xmax = 0` to tell the caller
+    whether it inserted or updated. Oracle has no `xmax` equivalent -- this
+    expresses the same decision as explicit Python branches instead: lock the
+    thread row (serializes sequence_number assignment), check for an existing
+    row under that lock, then either insert fresh or apply the same
+    conditional-overwrite rules as a plain UPDATE.
+
+    Returns a 4-tuple matching the Postgres RETURNING shape -- (id,
+    sequence_number, inserted, content) -- if inserted or safely updated
+    (`inserted` is always False here since callers never read it; kept only
+    for shape parity with ask_thread_select_request_message.sql's fallback
+    row, which callers *do* index positionally). Returns None if an existing
+    row must not be overwritten (caller then loads the existing row via
+    ask_thread_select_request_message, exactly like the Postgres path).
+    """
+    (thread_id, message_id, content, message_type, _thread_id_again, request_id,
+     is_ai_processed, ai_provider, ai_model, ai_processing_time,
+     metadata, citations, usage) = params
+    # gg_messages.is_ai_processed is NUMBER(0/1) (SQLAlchemy's Oracle Boolean),
+    # but oracle_pool.py's _unwrap_params() converts every Python bool to
+    # 'Y'/'N' for aryx_*'s own CHAR(1) convention -- wrong for this column,
+    # so convert explicitly here instead of letting that happen.
+    is_ai_processed = 1 if is_ai_processed else 0
+
+    cur.execute(load("ask_thread_lock_thread"), (thread_id,))
+    cur.fetchone()
+
+    cur.execute(
+        load("ask_thread_select_existing_message"),
+        (thread_id, request_id, message_type),
+    )
+    existing = cur.fetchone()
+
+    if existing is None:
+        cur.execute(load("ask_thread_next_sequence"), (thread_id,))
+        next_seq = int(cur.fetchone()[0])
+        cur.execute(
+            load("ask_thread_insert_message_oracle"),
+            (message_id, content, message_type, thread_id, request_id,
+             is_ai_processed, ai_provider, ai_model, ai_processing_time,
+             next_seq, metadata, citations, usage),
+        )
+        return (message_id, next_seq, False, content)
+
+    existing_id, existing_seq, existing_content, existing_metadata_raw, existing_updated_at = existing
+
+    if message_type != "user":
+        # Assistant/system messages always overwrite -- no retry-safety gate.
+        cur.execute(
+            load("ask_thread_update_message_oracle"),
+            (content, is_ai_processed, ai_provider, ai_model, ai_processing_time,
+             metadata, citations, usage, existing_id),
+        )
+        return (str(existing_id), int(existing_seq), False, content)
+
+    # User-message retry safety: only overwrite if it's the exact same
+    # question AND the prior attempt genuinely needs retrying.
+    if existing_content != content:
+        return None
+    existing_metadata = _as_json(existing_metadata_raw) or {}
+    status = existing_metadata.get("request_status")
+    should_overwrite = False
+    if status == "failed":
+        should_overwrite = True
+    elif status is None:
+        cur.execute(load("ask_thread_has_failed_response"), (thread_id, request_id))
+        should_overwrite = cur.fetchone() is not None
+    elif status == "in_progress" and existing_updated_at is not None:
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        updated = existing_updated_at
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        should_overwrite = (now - updated) > timedelta(minutes=20)
+    if not should_overwrite:
+        return None
+    cur.execute(
+        load("ask_thread_update_message_oracle"),
+        (content, is_ai_processed, ai_provider, ai_model, ai_processing_time,
+         metadata, citations, usage, existing_id),
+    )
+    return (str(existing_id), int(existing_seq), False, content)
 
 
 def normalize_thread_title(question: str, max_len: int = 80) -> str:
@@ -107,7 +220,10 @@ class AryxAskThreadStore:
             row = cur.fetchone()
         if row is None:
             return
-        if row[1] == shay_workspace_id and row[2] == ASK_CHANNEL_NAME and row[3] is True:
+        # bool(row[3]) not `is True` -- Postgres returns a real bool, Oracle's
+        # gg_channels.is_* convention is NUMBER(0/1) and 1 is not True by
+        # identity (1 is True == False in Python). bool() is correct for both.
+        if row[1] == shay_workspace_id and row[2] == ASK_CHANNEL_NAME and bool(row[3]):
             return
         raise ValueError("Ask thread id is already used outside this Shay workspace")
 
@@ -132,6 +248,13 @@ class AryxAskThreadStore:
                     Json(settings),
                 ),
             )
+            if _is_oracle_backend():
+                # Oracle MERGE has no reliable RETURNING here -- fetch the id
+                # with a follow-up SELECT instead (see the .sql file's note).
+                cur.execute(
+                    load("ask_thread_select_channel_id"),
+                    (shay_workspace_id, ASK_CHANNEL_NAME),
+                )
             row = cur.fetchone()
         if row is None:
             raise ValueError("Unable to create Aryx Ask channel for Shay workspace")
@@ -154,30 +277,36 @@ class AryxAskThreadStore:
             "workspace_id": int(workspace_id),
             "request_status": REQUEST_STATUS_IN_PROGRESS,
         }
+        oracle = _is_oracle_backend()
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 load("ask_thread_ensure_thread"),
                 (thread_id, title, "Aryx Ask thread", channel_id),
             )
+            if oracle:
+                # Oracle MERGE has no reliable RETURNING here -- see the
+                # .sql file's note; fetch the row with a follow-up SELECT.
+                cur.execute(load("ask_thread_select_thread_row"), (thread_id,))
             thread_row = cur.fetchone()
-            cur.execute(
-                load("ask_thread_insert_message"),
-                message_insert_params(
-                    thread_id=thread_id,
-                    message_id=str(uuid.uuid4()),
-                    content=question,
-                    message_type="user",
-                    request_id=request_id,
-                    is_ai_processed=False,
-                    ai_provider=None,
-                    ai_model=None,
-                    ai_processing_time=None,
-                    metadata=metadata,
-                    citations=[],
-                    usage={},
-                ),
+            insert_params = message_insert_params(
+                thread_id=thread_id,
+                message_id=str(uuid.uuid4()),
+                content=question,
+                message_type="user",
+                request_id=request_id,
+                is_ai_processed=False,
+                ai_provider=None,
+                ai_model=None,
+                ai_processing_time=None,
+                metadata=metadata,
+                citations=[],
+                usage={},
             )
-            message_row = cur.fetchone()
+            if oracle:
+                message_row = _insert_message_oracle(cur, insert_params)
+            else:
+                cur.execute(load("ask_thread_insert_message"), insert_params)
+                message_row = cur.fetchone()
             request_claimed = message_row is not None
             if message_row is None:
                 cur.execute(
@@ -187,7 +316,12 @@ class AryxAskThreadStore:
                 message_row = cur.fetchone()
             if message_row is None:
                 raise ValueError("Unable to claim or load the Ask request")
-            cur.execute(load("ask_thread_touch_thread"), (thread_id, thread_id))
+            # Oracle's override has 2 correlated subqueries + the final WHERE
+            # (3 occurrences); Postgres's UPDATE...FROM only needs 2 -- oracledb
+            # binds positionally by occurrence order, not by :N label (verified
+            # live), so this needs its own count per backend.
+            touch_thread_params = (thread_id,) * 3 if oracle else (thread_id, thread_id)
+            cur.execute(load("ask_thread_touch_thread"), touch_thread_params)
             cur.execute(load("ask_thread_touch_channel"), (channel_id, channel_id, channel_id))
         existing_question = str(message_row[3])
         if not request_claimed and existing_question != question:
@@ -227,25 +361,27 @@ class AryxAskThreadStore:
         }
         grounding = result.get("grounding") or {}
         citations = normalize_grounding_citations(grounding)
+        insert_params = message_insert_params(
+            thread_id=thread_id,
+            message_id=str(uuid.uuid4()),
+            content=answer,
+            message_type="system",
+            request_id=request_id,
+            is_ai_processed=True,
+            ai_provider="aryx",
+            ai_model=usage.get("answer_model"),
+            ai_processing_time=usage.get("latency_ms"),
+            metadata=metadata,
+            citations=citations,
+            usage=usage,
+        )
+        oracle = _is_oracle_backend()
         with self._pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                load("ask_thread_insert_message"),
-                message_insert_params(
-                    thread_id=thread_id,
-                    message_id=str(uuid.uuid4()),
-                    content=answer,
-                    message_type="system",
-                    request_id=request_id,
-                    is_ai_processed=True,
-                    ai_provider="aryx",
-                    ai_model=usage.get("answer_model"),
-                    ai_processing_time=usage.get("latency_ms"),
-                    metadata=metadata,
-                    citations=citations,
-                    usage=usage,
-                ),
-            )
-            row = cur.fetchone()
+            if oracle:
+                row = _insert_message_oracle(cur, insert_params)
+            else:
+                cur.execute(load("ask_thread_insert_message"), insert_params)
+                row = cur.fetchone()
             if row is None:
                 raise ValueError("Unable to persist the Aryx Ask response")
             request_status = (
@@ -255,7 +391,11 @@ class AryxAskThreadStore:
                 load("ask_thread_update_request_status"),
                 (request_status, thread_id, request_id),
             )
-            cur.execute(load("ask_thread_touch_thread"), (thread_id, thread_id))
+            # See ensure_thread_and_user_message's note on why Oracle needs 3
+            # occurrences here (2 correlated subqueries + WHERE) vs 2 for
+            # Postgres's UPDATE...FROM.
+            touch_thread_params = (thread_id,) * 3 if oracle else (thread_id, thread_id)
+            cur.execute(load("ask_thread_touch_thread"), touch_thread_params)
             cur.execute(load("ask_thread_touch_channel"), (channel_id, channel_id, channel_id))
         return {
             "assistant_message_id": str(row[0]),
@@ -293,12 +433,12 @@ class AryxAskThreadStore:
             row = cur.fetchone()
         if row is None:
             return None
-        metadata = row[2] or {}
+        metadata = _as_json(row[2]) or {}
         return {
             "answer": row[1],
             "terms": metadata.get("terms") or [],
             "tools_called": metadata.get("tools_called") or [],
-            "usage": row[4] or {},
+            "usage": _as_json(row[4]) or {},
             "grounding": metadata.get("grounding"),
             "session_data": metadata.get("session_data") or {},
             "cpq_payload": metadata.get("cpq_payload"),
@@ -308,7 +448,7 @@ class AryxAskThreadStore:
             "beautify_button_flag": metadata.get("beautify_button_flag", False),
             "api_share_button_flag": metadata.get("api_share_button_flag", False),
             "error": metadata.get("error"),
-            "citations": row[3] or [],
+            "citations": _as_json(row[3]) or [],
         }
 
     def conversation_history(
@@ -368,8 +508,8 @@ class AryxAskThreadStore:
             rows = cur.fetchall()
         messages = []
         for row in rows:
-            metadata = row[6] or {}
-            usage = row[8] or {}
+            metadata = _as_json(row[6]) or {}
+            usage = _as_json(row[8]) or {}
             messages.append({
                 "id": row[0],
                 "role": "assistant" if row[1] == "system" else "user",
@@ -377,7 +517,7 @@ class AryxAskThreadStore:
                 "sequence_number": row[3],
                 "request_id": row[4],
                 "created_at": row[5],
-                "citations": row[7] or [],
+                "citations": _as_json(row[7]) or [],
                 "usage": usage,
                 "json_response": metadata.get("json_response"),
                 "json_button_flag": metadata.get("json_button_flag", False),
@@ -390,10 +530,11 @@ class AryxAskThreadStore:
 
 
 def get_ask_thread_store() -> AryxAskThreadStore:
-    """Return an Ask thread store bound to the configured Aryx DSN."""
+    """Return an Ask thread store bound to the configured Aryx DSN.
+
+    Works on both backends -- see docs/OCI_POSTGRES_PARITY_AUDIT.md for the
+    Oracle port (MERGE-based upserts + a Python-side retry-safety path in
+    _insert_message_oracle(), since Oracle has no `xmax` equivalent).
+    """
     settings = get_settings()
-    if settings.effective_db_backend() == "oci":
-        raise RuntimeError(
-            "Shay-backed Ask threads are not available with the OCI database backend"
-        )
     return AryxAskThreadStore(settings.effective_dsn())

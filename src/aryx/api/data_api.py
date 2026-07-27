@@ -376,8 +376,11 @@ def data_router() -> APIRouter:
             cleared = store.clear_relationships() if req.replace else 0
             created = 0
             per_link = []
+            # Fetch once, reuse for every link spec (was refetching the whole
+            # workspace per spec -- see docs/SCALABILITY_BOTTLENECKS.md P8).
+            entities = list(store.list_entities()) if req.links else []
             for link in req.links:
-                n = link_by_attribute(store, link.source_type, link.source_attr,
+                n = link_by_attribute(store, entities, link.source_type, link.source_attr,
                                       link.target_type, link.target_attr, link.name)
                 per_link.append({"name": link.name, "created": n})
                 created += n

@@ -13,74 +13,71 @@ unacceptably slow pipeline runs.
 
 | # | Severity | Component | Trigger point |
 |---|---|---|---|
-| P1 | 🔴 Critical | Graph projection — `fetchall()` | >500K entities |
+| P1 | ✅ Fixed | Graph projection — `fetchall()` (confirmed already fixed in code) | >500K entities |
 | P2 | 🔴 Critical | Rule evaluator — Python loop | >100K entities × rules |
 | P3 | 🟡 High | Resolution blocking — silent drop | Blocks >5,000 records |
 | P4 | 🟡 High | Single-threaded pipeline worker | Large file batches |
 | P5 | 🟢 Medium | FalkorDB query hard cap | >500 entity results |
 | P6 | 🟢 Medium | Relationship inference cap | >50 entity pairs |
 | P7 | 🟢 Medium | Transitive closure cap | Hierarchies >4 hops deep |
+| P8 | 🔴 Critical | Schema-FK link stage — per-spec entity refetch | *(fixed)* >~10 candidate FK specs (OCI mode) |
+| P9 | 🟡 High | Resolution adjudication — serial per-pair LLM calls | *(fixed)* pairs in adjudicate band |
+| P10 | 🟡 High | Chunk/embedding store — per-row round-trips | *(fixed)* any multi-chunk document (OCI mode) |
+| P11 | 🟡 High | Chunk embedding — unbatched OCI GenAI calls | *(fixed)* documents producing >~50 chunks (OCI mode) |
+| P12 | 🔴 Critical | Graph projection — 25-row batch cap on Oracle writes | *(fixed)* >~1,000 entities/relationships (OCI mode) |
 
 ---
 
-## P1 — Graph Projection `fetchall()` Memory Spike
+## P1 — Graph Projection `fetchall()` Memory Spike *(Already Fixed in Code)*
 
-**Source files:**
-- `src/aryx/store/entity_store.py:105` — `list_entities()` → `fetchall()`
-- `src/aryx/store/entity_store.py:112` — `list_members_provenance()` → `fetchall()`
-- `src/aryx/store/entity_store.py:119` — `list_relationships()` → `fetchall()`
-- `src/aryx/project.py:52` — calls all three before touching FalkorDB
+**Status:** ✅ Confirmed fixed during the 2026-07-27 bottleneck sweep — this
+section originally proposed the fix below; the codebase already has it. Kept
+here as the historical record and because the `fetchall()` anti-pattern it
+describes still shows up in one smaller spot (see note at the end).
 
-**What happens:**
+**Source files (current state):**
+- `src/aryx/store/entity_store.py:216-228` — `list_entities()` → named cursor
+  (`list_entities_cur_{ws}_{uuid}`) + `fetchmany(batch_size)`, yields as a generator
+- `src/aryx/store/entity_store.py:230-240` — `list_members_provenance()` → same pattern
+- `src/aryx/store/entity_store.py:253-263` — `list_relationships()` → same pattern
+- `src/aryx/project.py` — calls all three; callers that need list semantics
+  materialize explicitly (`list(store.list_entities())`), streaming is the default
+
+**What happens now:**
 ```python
-entities = store.list_entities()       # entire aryx_entity table → Python list
-provenance = store.list_members_provenance()   # entire provenance → Python list
-relationships = store.list_relationships()     # entire relationships → Python list
+def list_entities(self) -> Iterator[tuple[int, str, dict]]:
+    batch_size = get_settings().batch_size   # ARYX_BATCH_SIZE, default 500
+    with self._pool.connection() as conn:
+        with conn.cursor(f"list_entities_cur_{self._ws}_{uuid.uuid4().hex[:8]}") as cur:
+            cur.execute(load("select_entities"), (self._ws,))
+            while batch := cur.fetchmany(batch_size):
+                yield from ((r[0], r[1], r[2]) for r in batch)
 ```
-All three tables are loaded into Python memory simultaneously before a single
-node is written to FalkorDB.
+All three are generators — only one `batch_size`-sized page is held in Python
+memory at a time, exactly the fix originally proposed below.
 
 ### Accuracy Impact
-**None.** Streaming reads identical rows in identical order.
-Result set is byte-for-byte the same — only memory footprint changes.
+**None.** Same rows, same order — this was always true of the fix.
 
-### Resource Impact
-| Dataset size | RAM spike (Python) | Projection time |
+### Resource Impact (historical — the problem this fix solved)
+| Dataset size | RAM spike (Python), before fix | After fix |
 |---|---|---|
-| 100K entities | ~50 MB | ~2 min |
-| 500K entities | ~250 MB | ~10 min |
-| 1M entities | ~500 MB | ~20 min |
-| 5M entities | ~2.5 GB | OOM crash |
+| 100K entities | ~50 MB | ~5 MB constant |
+| 500K entities | ~250 MB | ~5 MB constant |
+| 1M entities | ~500 MB | ~5 MB constant |
+| 5M entities | ~2.5 GB (OOM crash) | ~5 MB constant |
 
-On the recommended 16 GB VM, OOM occurs at approximately 3M entities
-depending on attribute payload size.
-
-### Cost Impact
-- On 16 GB VM: free until OOM, then pipeline crash = re-run cost
-- Re-run of a 1M entity projection: ~20 min compute × worker cost
-- OCI A1.Flex 4 OCPU: ~$0.01/hr → negligible per run, significant at scale with retries
-
-### Fix — Today (no OCI required)
-Replace `fetchall()` with a named server-side streaming cursor:
-
-```python
-def iter_entities(self, batch_size: int = 1000):
-    with self._pool.connection() as conn:
-        with conn.cursor("entity_cursor") as cur:  # named = server-side
-            cur.execute(load("select_entities"), (self._ws,))
-            while True:
-                rows = cur.fetchmany(batch_size)
-                if not rows:
-                    break
-                yield from ((r[0], r[1], r[2]) for r in rows)
-```
-
-RAM drops from 500 MB spike → 5 MB constant regardless of dataset size.
+### Remaining note (not urgent)
+`src/aryx/graph/oracle_graph_store.py:235` — `add_provenance_batch()`'s
+source-id lookup still does a plain `cur.fetchall()` over
+`select_graph_sources_by_workspace`. Same anti-pattern, different file, much
+smaller blast radius (one row per unique source record, not per entity) —
+noted during the 2026-07-27 sweep, not fixed.
 
 ### Fix — OCI Path
-Oracle Autonomous Database (RelationalPort adapter) supports the identical
-named cursor pattern. Zero code change at the call-site — only the adapter
-class changes via env var.
+Oracle ADB via `oracle_pool.py`'s `OracleCursorWrapper` already supports the
+identical named-cursor / `fetchmany()` pattern — no adapter changes needed,
+this was true for both backends from the start.
 
 ---
 
@@ -418,20 +415,347 @@ any hierarchy depth.
 
 ---
 
+## P8 — Schema-FK Link Stage: Redundant Per-Spec Entity Refetch *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-27. Identified live on a real OCI-mode ingest, fix
+implemented, verified via new unit tests (`tests/test_fk_edges.py`, 4/4 passed),
+deployed to the running `api` container.
+
+**Source files:**
+- `src/aryx/pipeline/fk_edges.py:43` — `link_by_attribute()` calls `list(estore.list_entities())`
+- `src/aryx/pipeline/orchestrate.py:130-137` — schema-FK loop (`_infer_schema_fk_links` results), one call per spec
+- `src/aryx/pipeline/orchestrate.py:148-158` — deterministic `fk_links` loop, same pattern
+
+**What happens:**
+```python
+def link_by_attribute(estore, source_type, source_attr, target_type, target_attr, name):
+    entities = list(estore.list_entities())   # full workspace refetch, EVERY call
+    ...
+```
+`_infer_schema_fk_links()` proposes one FK spec per plausible cross-type attribute
+match (batched 8 entity-types per LLM call). Each spec is applied via
+`link_by_attribute()`, which re-fetches and JSON/CLOB-decodes **every entity in
+the workspace from scratch**, on every single spec — an O(N_specs × N_entities)
+refetch where a single O(N_entities) fetch would do.
+
+### Accuracy Impact
+**None.** Same relationships are produced either way — this is pure wasted work,
+not a correctness issue.
+
+### Resource Impact — measured live, not estimated
+Observed on a 30-file CPQ ingest (workspace 321, job `dab8873c...`, 2026-07-27):
+
+| Metric | Value |
+|---|---|
+| Entity types in workspace | 30 |
+| `link_by_attribute` calls observed | 31 (job still running) |
+| Per-call duration | min 31.4s / avg 45.9s / max 62.2s |
+| Correlation with match count | **None** — a call saving 8,354 relationships took ~38s; calls saving 0 took 31-62s |
+| Link stage duration so far | 26m29s (still running) |
+| Estimated total specs (30 types, batched 8/call) | ~35-50 |
+| Estimated total Link-stage duration | 25-40 minutes |
+
+The lack of correlation between duration and match count confirms the refetch
+(network round-trip + JSON/CLOB decode of the full entity table), not the
+in-memory join, is the dominant cost.
+
+### Cost Impact
+- Each refetch is a real network round-trip to Oracle ADB 23ai (`us-chicago-1`)
+  plus per-row LOB/JSON decode — no dollar cost (no LLM call), but this is the
+  single largest time cost in the pipeline once resolution/relate are fixed (P9).
+- On a 30-type workspace this stage alone was projected to take 25-40 minutes —
+  longer than the rest of the pipeline (Discover+Resolve+Seed+Project for all
+  30 files together took 7m18s; Relate took 4m54s).
+
+### Fix Applied
+`link_by_attribute()` now takes an `entities` parameter instead of calling
+`estore.list_entities()` internally. Fetch happens once, result is reused
+across every spec:
+```python
+entities = list(estore.list_entities())   # once
+for spec in schema_links:
+    link_by_attribute(estore, entities, spec["source_type"], ...)   # no refetch
+```
+Fixed at **all four call sites** that loop over FK specs, not just the
+pipeline orchestrator — the same N+1 pattern existed in two API endpoints too:
+- `src/aryx/pipeline/orchestrate.py` — `schema_fk` and `fk_link` loops (share
+  one fetch across both, since neither creates new entities)
+- `src/aryx/api/data_api.py` — `/relate` endpoint
+- `src/aryx/api/workspace_api.py` — `/auto-link` endpoint
+
+Verified via `tests/test_fk_edges.py` (4/4 passed), including a regression
+guard that fails if `link_by_attribute()` ever calls `list_entities()` again.
+
+**Projected improvement** (from the measured data that identified this): 1 fetch
+(~46s) instead of N, each subsequent spec becomes a low-cost in-memory dict lookup.
+
+| Specs (N) | Before (N × ~46s) | After (~46s + N × ~2s) | Reduction |
+|---|---|---|---|
+| 31 (observed) | ~23.8 min | ~2.3 min | ~90% |
+| 40 (est.) | ~30.7 min | ~2.8 min | ~91% |
+| 50 (est.) | ~38.3 min | ~3.3 min | ~91% |
+
+Secondary gap noted in the same investigation, not yet fixed: no
+`update_stage()` call happens between the start and end of the Link stage
+(same missing-progress pattern P9 had for Resolve before its fix) — the job
+status/UI shows the stage frozen at one static message for the entire
+duration, even though real work is happening underneath.
+
+### Fix — OCI Path
+This is a Python-side architecture issue, not a backend limitation — the fix
+applies identically regardless of DB backend. Oracle Graph Server (PGX) could
+in principle compute these joins server-side via property-graph matching,
+eliminating the Python double-loop entirely, but the immediate 90%+ win comes
+from removing the redundant fetch, not from a backend change.
+
+---
+
+## P9 — Resolution Adjudication: Serial Per-Pair LLM Calls *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-27 via `.env` threshold consolidation.
+
+**Source files:**
+- `src/aryx/resolution/run.py` — `_route_pair()` → `adjudicate()`, called inside
+  the nested block/pair loop in `resolve()`
+- `src/aryx/resolution/adjudicate.py:52` — one `complete_json(broker, "frontier", ...)`
+  HTTP call to OCI GenAI per pair scoring in `[ARYX_ER_ADJUDICATE, ARYX_ER_AUTO_MERGE)`
+
+**What happened:**
+Every candidate pair whose similarity score landed in the adjudicate band
+(default `[0.90, 0.92)`) triggered a synchronous, unbatched network call to
+OCI GenAI Command R+ — one HTTP round-trip per pair, fully serial, inside a
+loop capped at `ARYX_MAX_PAIRS_PER_BLOCK` (2000) pairs per block across
+potentially thousands of blocks. Live logs showed multi-minute gaps between
+block completions on a 8,354-record resolve run, entirely explained by this
+per-pair LLM latency.
+
+### Fix Applied
+`ARYX_ER_AUTO_MERGE=0.95` and `ARYX_ER_ADJUDICATE=0.95` in `.env` — setting
+the two thresholds equal collapses the adjudicate band to zero width. Pairs
+scoring ≥0.95 auto-merge with no LLM call; everything else falls straight to
+the review/reject path. This eliminates the per-pair OCI GenAI calls entirely
+for this workspace's matching profile.
+
+**Secondary fix (same investigation):** `resolve()` in `run.py` previously
+reported progress to `job_events` only once at the start of the entire resolve
+stage (`_emit("Resolve", 38, "N records loaded...")`), then not again until
+the stage fully completed — even though it internally processes thousands of
+blocks over many minutes. Added `on_block_progress` callback, fired every 25
+blocks, threaded through `resolve_entities.py`'s `resolve_run()` into
+`jobs.update_stage()`, so the UI now shows real incremental movement instead
+of looking frozen. Verified via `tests/test_resolution_funnel.py` (8/8 passed).
+
+### Cost Impact
+- Before: N pairs in the adjudicate band × 1 LLM call each, fully serial
+- After: 0 LLM calls for this workspace's threshold profile — pure string/embedding
+  scoring decides every pair
+- Trade-off: pairs that would have gone to LLM adjudication (nuanced,
+  borderline-similarity matches) now either auto-merge (≥0.95) or fall to the
+  review queue / auto-reject — a precision/recall trade for speed, not free
+
+---
+
+## P10 — Chunk/Embedding Store: Per-Row Round-Trips *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-27, verified via new unit tests, deployed to running `api` container.
+
+**Source files:**
+- `src/aryx/store/chunk_store.py` — `save_chunks()`, `save_embeddings()`
+- `src/aryx/queries/insert_chunk.sql`, `src/aryx/queries/select_chunk_ids_by_doc.sql`
+  (+ `src/aryx/queries/oracle/select_chunk_ids_by_doc.sql`)
+
+**What happened:**
+```python
+for chunk in chunks:
+    cur.execute(load("insert_chunk"), (...))   # one round-trip PER CHUNK
+    row = cur.fetchone()
+```
+Both methods looped with an individual `cur.execute()` per row — for a
+document split into ~200 chunks, ~200 sequential round-trips to Oracle ADB in
+`us-chicago-1` for chunk text, plus ~200 more for embeddings. Every round-trip
+is a real internet hop (TCPS, port 1522), not a local call. `entity_store.py`
+already solved this exact problem for entity saves (`executemany_returning`,
+3 round-trips regardless of batch size) — `chunk_store.py` had never been
+upgraded to match.
+
+### Fix Applied
+`save_chunks()`: one `executemany()` insert (with `ON CONFLICT DO NOTHING`
+preserved for re-ingest idempotency) + one bulk `SELECT ... WHERE chunk_index
+= ANY(%s)` (Oracle: `JSON_TABLE` override, same pattern as
+`select_landed_by_ids`) to recover generated ids in the original chunk order —
+**2 round-trips total regardless of document size**, down from ~N.
+`save_embeddings()`: one `executemany()` call — **1 round-trip**, down from N.
+
+Verified via new `tests/test_chunk_store.py` (7/7 passed): single-executemany
+assertion, id-mapping-by-chunk_index (not fetch order) assertion, empty-input
+no-op assertion.
+
+### Cost Impact
+- Before: ~400 round-trips per ~200-chunk document (chunks + embeddings)
+- After: ~3 round-trips per document
+- Applies to every document ingested in OCI mode — compounding benefit across
+  the whole document-parsing pipeline, independent of the P8/P9 fixes above
+
+---
+
+## P11 — Chunk Embedding: Unbatched OCI GenAI Calls *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-27, verified via new unit tests, deployed to running `api` container.
+
+**Source files:**
+- `src/aryx/broker/__init__.py:150-158` — `_oci_embed()` sends `inputs=texts`
+  to `EmbedTextDetails` in one call, whatever size `texts` is
+- `src/aryx/pipeline/embed.py:41-42` — `embed_chunks()` called `broker.embed(texts)`
+  with the *entire* document's chunk list in one request
+
+**What happened:**
+```python
+texts = [c.text for c in chunks]     # could be 100+ for a modest document
+vectors = broker.embed(texts)        # one OCI GenAI / Cohere Embed call, no cap
+```
+`ARYX_CHUNK_SIZE` defaults to 1000 characters, so any document over roughly
+100K characters (a modest 50-100 page PDF) produces 100+ chunks sent in a
+single embed request. Cohere Embed v3 (native or via OCI GenAI) has a
+per-request input cap well under that. The resolution path already knew to
+sub-batch (`resolution/run.py:44`, `embed_batch_size` default 50) —
+`embed_chunks()` had never been given the same treatment.
+
+### Accuracy Impact
+**None if it succeeds.** The real risk is worse than a slowdown: this could
+**hard-fail** the parse/embed stage outright on an API validation error for
+any sufficiently large document, rather than merely taking longer.
+
+### Resource Impact
+Not measured live (no large document was ingested this session to trigger it)
+— identified by code inspection and cross-reference with the resolution
+path's existing, deliberate batching at the same config knob
+(`ARYX_EMBED_BATCH_SIZE`).
+
+### Cost Impact
+No dollar cost difference — same total texts embedded either way. The cost is
+reliability: an oversized single request either errors immediately or, if
+accepted, offers no opportunity to retry a failed sub-range without redoing
+the whole document.
+
+### Fix Applied
+`embed_chunks()` now batches at `ARYX_EMBED_BATCH_SIZE` (default 50), calling
+`broker.embed()` once per batch and concatenating results in original order:
+```python
+for start in range(0, len(chunks), batch_size):
+    batch_vectors = broker.embed([c.text for c in chunks[start:start + batch_size]])
+    vectors.extend(batch_vectors)
+```
+Verified via `tests/test_embed_chunks.py` (5/5 passed): batch-splitting count,
+single-batch-under-limit, order-preservation, empty-input, missing-model-config.
+
+**Known issue noted in passing, not fixed:** `broker.embed_model_id` reads a
+static value (`"nomic-embed-text"`) from `catalog.json`'s local-Ollama config
+regardless of which backend actually served the request. In OCI mode, the
+`ChunkEmbedding.model_id` field is written as `"nomic-embed-text"` even though
+`cohere.embed-multilingual-v3.0` was the model actually called — a provenance/
+metadata correctness issue, not a performance one. Not addressed this session.
+
+### Fix — OCI Path
+N/A — same fix applies regardless of backend; the local Ollama path was never
+at risk (Ollama has no comparable per-request input cap) but gains the same
+consistency from batching.
+
+---
+
+## P12 — Graph Projection: 25-Row Batch Cap on Oracle Writes *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-27, verified via updated unit tests, deployed to running `api` container.
+
+**Source file:**
+- `src/aryx/graph/oracle_graph_store.py` — `_CHUNK_MAX_ROWS = 25`, used by
+  `add_entities_batch()`, `add_provenance_batch()`, `add_relationships_batch()`
+  via the shared `_iter_chunks()` helper
+
+**What happened — measured live on a full end-to-end ingest (2026-07-27):**
+After P8-P11 were all deployed, a full re-run of the same 30-file CPQ workspace
+completed in **40m6s** — but **21m55s of that (55%)** was the final graph
+projection step alone: 12,244 entity vertices + 60,144 relationship edges,
+both written to Oracle ADB in batches of **25 rows per round-trip**.
+
+| Phase | Volume | Round-trips (25/batch) | Duration |
+|---|---|---|---|
+| Vertices | 12,244 | 490 | 2m9s |
+| Edges | 60,144 | 2,406 | ~19m46s (measured rate ~0.26s/round-trip) |
+
+`_CHUNK_MAX_ROWS = 25` was sized as a rough proxy ("num_rows × num_bind_params")
+to avoid ORA-03106 (oversized packet) on entity writes carrying large CPQ
+attribute JSON blobs — but `_CHUNK_MAX_BYTES = 50_000` already exists as the
+real, byte-based guard against exactly that. At 25 rows of typical attrs
+(a few hundred bytes), the row cap was the binding constraint almost every
+time, not the byte cap — turning every graph write into far more round-trips
+to Oracle Cloud than the byte budget actually required.
+
+### Accuracy Impact
+**None.** Same vertices/edges written either way, in larger round-trips.
+
+### Resource Impact
+This was, by a wide margin, the single largest contributor to total ingest
+time in this session's testing — bigger than the original Link-stage bug
+(P8) ever was, and bigger than Relate + Resolve + Discover combined.
+
+### Cost Impact
+Same total data transferred; the cost was purely round-trip *count*, each one
+a real network hop to `adb.us-chicago-1.oraclecloud.com`.
+
+### Fix Applied
+Raised `_CHUNK_MAX_ROWS` from 25 to 500. `_CHUNK_MAX_BYTES` (50,000) is
+**unchanged** and remains the actual safety net against ORA-03106 — it caps
+accumulated bind-value bytes per call regardless of row count, so oversized
+CPQ attribute blobs still force an earlier split exactly as before. The row
+cap simply no longer triggers before the byte cap would, for typical data.
+
+Also fixed 3 pre-existing stale tests in `tests/test_oracle_pool.py`
+(`TestGraphStoreBatchChunking`) that were still asserting a chunk size of
+100 from before the constant had already been lowered to 25 — now correctly
+assert 500 with volumes that exercise the real boundary (1,250 / 1,050 rows).
+
+**Verified:** `tests/test_oracle_pool.py` — 84/84 passed (previously 3 failing).
+Full session suite — **108/108 passed**, first fully green run this session.
+
+**Projected improvement:** at the same measured ~0.26s/round-trip, 500-row
+batching turns 2,896 total round-trips (490 + 2,406) into ~26 + ~121 = ~147 —
+a ~95% cut, projecting the 21m55s graph-projection stage down to roughly
+30-60 seconds.
+
+### Fix — OCI Path
+N/A — Oracle-specific implementation detail; the fix is entirely within the
+Oracle adapter and has no local-mode equivalent (FalkorDB writes are already
+cheap, same-host calls).
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
 |---|---|---|---|---|---|
-| P1 | fetchall RAM spike | None | 🔴 OOM at 3M+ | Low — 1 file | No |
+| P1 | fetchall RAM spike | None | ✅ Fixed | Already done | No |
 | P2 | Rule evaluator loop | Minor improvement | 🔴 API blocks | Low — 1 file + 1 SQL | No |
 | P3 | Block silent drop | 🔴 Direct data loss | Low | Medium | No |
 | P4 | Single worker | None | 🟡 Throughput cap | Medium | No |
 | P5 | Query cap 500 | 🟡 Incomplete Ask | Low | Low — add pagination | No |
 | P6 | Relate cap 50 | 🟡 Sparse relations | Intentional (cost) | Low | No (OCI lowers cost) |
 | P7 | Transitive cap 4 | 🟡 Deep hierarchy miss | Low | Low — raise constant | No |
+| P8 | Schema-FK per-spec refetch | ✅ Fixed | 🔴 Was 25-40 min stage → ~90% reduction | Low — 4 call sites | No |
+| P9 | Adjudication serial LLM calls | ✅ Fixed | 🟡 Was multi-minute serial calls | Low — env config | No (already OCI) |
+| P10 | Chunk/embedding N+1 writes | ✅ Fixed | 🟡 Was ~400 round-trips/doc → ~3 | Low — 1 file + 2 SQL | No (already OCI) |
+| P11 | Embed calls unbatched | ✅ Fixed | 🔴 Was potential hard-fail on large docs | Low — 1 file | No (already OCI) |
+| P12 | Graph write 25-row cap | ✅ Fixed | 🔴 Was 21m55s of a 40m6s total run (55%) | Low — 1 constant + tests | No (already OCI) |
 
-**P1 and P3 are the most urgent.** P1 causes OOM crashes at scale.
-P3 silently loses data with no visible error.
+**P3 is now the most urgent unfixed risk** — silent data loss with no visible
+error. P1 was believed to be the other urgent unfixed risk (OOM at scale) but
+was confirmed already fixed in code during the 2026-07-27 sweep.
+
+**P8-P12 were all found and fixed during a live OCI-mode ingest investigation
+(2026-07-27)**, culminating in a full measured end-to-end run: 40m6s total,
+with **P12 (graph projection) the single largest cost at 55% of total time**
+— larger than P8 (Link stage) ever was, larger than Resolve+Relate+Discover
+combined. P11 was a latent reliability risk (potential hard failure on large
+documents) rather than a measured slowdown.
 
 All fixes except P6 can be implemented today without OCI. OCI improves
 each fix but is not required for the initial scale improvements.
@@ -449,9 +773,39 @@ each fix but is not required for the initial scale improvements.
 | P5 — Query cap | No cap (Oracle Spatial & Graph PGQL) | None |
 | P6 — Relate cap | Structural relations via PGX axioms (free) | LLM semantic pairs still capped |
 | P7 — Transitive cap | Unbounded (owl:TransitiveProperty via PGX) | None |
+| P8 — Schema-FK refetch | N/A — Python-side fix, backend-independent | None once fixed |
+| P9 — Adjudication LLM calls | Already OCI GenAI; threshold tuning applied | Fewer LLM-adjudicated matches (precision/recall trade) |
+| P10 — Chunk/embedding N+1 | Already OCI ADB; batching applied | None |
+| P11 — Embed calls unbatched | Already OCI GenAI; batching applied | Model-id provenance still wrong for OCI embeds (unfixed) |
+| P12 — Graph write 25-row cap | Oracle-specific fix, already applied | None — byte cap remains the real ORA-03106 guard |
+
+---
+
+## Measured End-to-End Result (2026-07-27)
+
+Full re-run of the same 30-file CPQ workspace (12,244 entities, 60,144
+relationships) after P8-P11 were deployed, P12 not yet applied at run time:
+
+| Stage | Duration | % of total |
+|---|---|---|
+| Discover→Resolve→Seed→Project (30 files) | 8m28s | 21% |
+| Relate (100 pairs) | 3m46s | 9% |
+| Link — schema_fk (48 specs) | 5m10s | 13% |
+| Link — fk_link (48 specs, cached entities) | 48s | 2% |
+| Graph projection (vertices+edges, pre-P12) | 21m55s | 55% |
+| **Total** | **40m6s** | |
+
+With P12 applied (projected, ~95% cut to the graph-projection stage): total
+should land around **~19-20 minutes** for this same workload — down from a
+run that, before this session's fixes, never completed (2h43m timeout).
 
 ---
 
 *Generated: 2026-06-18 | aryx project | giggso*
+*Updated: 2026-07-27 — added P8-P12, all found and fixed during a live*
+*OCI-mode ingest investigation, including one full measured end-to-end run*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
-*src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py*
+*src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
+*src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
+*src/aryx/store/chunk_store.py, src/aryx/pipeline/embed.py, src/aryx/broker/__init__.py,*
+*src/aryx/api/data_api.py, src/aryx/api/workspace_api.py, src/aryx/graph/oracle_graph_store.py*

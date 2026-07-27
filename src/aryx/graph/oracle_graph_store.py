@@ -13,10 +13,20 @@ _NAME_KEYS = ("name", "full_name", "title", "label", "ticket_ref", "ref",
               "sku", "code", "email", "username", "_text")
 
 # Oracle ADB thin-client ORA-03106 guard values.
-# Trigger is num_rows × num_bind_params, not just total bytes.
-# merge_graph_vertex has 6 bind vars → 25 rows = 150 bind slots per call.
-# Keep attrs small so even 25 rows stay well under the SDU budget.
-_CHUNK_MAX_ROWS = 25
+#
+# _CHUNK_MAX_BYTES is the real safety net against ORA-03106 (oversized
+# payload, e.g. CPQ function bodies in attrs) -- it already caps accumulated
+# bind-value bytes per executemany() call regardless of row count.
+#
+# _CHUNK_MAX_ROWS was previously 25, sized to keep bind-slot count low as a
+# rough proxy for packet size. In practice that made the ROW cap the binding
+# constraint almost always (25 rows of typical attrs is nowhere near 50KB),
+# turning every write into far more round-trips to Oracle Cloud than the byte
+# budget actually required -- measured live on a 60,144-relationship batch:
+# 2,406 round-trips at ~0.26s each = ~10.5 min, for a stage that should take
+# well under a minute (see docs/SCALABILITY_BOTTLENECKS.md). Raised so the
+# byte cap -- not the row cap -- is what decides when to split a batch.
+_CHUNK_MAX_ROWS = 500
 _CHUNK_MAX_BYTES = 50_000
 
 # Graph projection attrs — display + traversal only, not source of truth.

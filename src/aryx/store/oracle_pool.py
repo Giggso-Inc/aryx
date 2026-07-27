@@ -220,6 +220,20 @@ def _read_lob(v: Any) -> Any:
     return v
 
 
+def _restore_empty_string(v: Any) -> Any:
+    """Undo the write-side '' -> ' ' substitution on fetch.
+
+    Oracle treats '' as NULL, so _unwrap_params() writes a single space for
+    any empty string param to satisfy NOT NULL columns. Without this inverse
+    step on read, every originally-empty text/CLOB value comes back as a
+    literal ' ' -- visible as stray whitespace, or as a truthy-but-blank
+    value to any caller checking `if value:`. A genuine single-space value is
+    not a realistic case (same assumption the write-side comment already
+    makes), so this reversal is safe.
+    """
+    return "" if v == " " else v
+
+
 # ── CLOB size guard ──────────────────────────────────────────────────────────
 
 # Oracle thin client binds Python str as VARCHAR2 by default (max 32767 bytes).
@@ -539,16 +553,16 @@ class OracleCursorWrapper:
             self._out_vars = []
             return vals if any(v is not None for v in vals) else None
         row = self._cur.fetchone()
-        return tuple(_read_lob(v) for v in row) if row else None
+        return tuple(_restore_empty_string(_read_lob(v)) for v in row) if row else None
 
     def fetchall(self) -> list[tuple]:
-        """Return all remaining rows, reading any LOB columns to strings."""
-        return [tuple(_read_lob(v) for v in row) for row in self._cur.fetchall()]
+        """Return all remaining rows, reading LOB columns and restoring empty strings."""
+        return [tuple(_restore_empty_string(_read_lob(v)) for v in row) for row in self._cur.fetchall()]
 
     def fetchmany(self, size: int | None = None) -> list[tuple]:
-        """Return up to size rows, reading any LOB columns to strings."""
+        """Return up to size rows, reading LOB columns and restoring empty strings."""
         rows = self._cur.fetchmany() if size is None else self._cur.fetchmany(size)
-        return [tuple(_read_lob(v) for v in row) for row in rows]
+        return [tuple(_restore_empty_string(_read_lob(v)) for v in row) for row in rows]
 
     @property
     def rowcount(self) -> int:
@@ -563,7 +577,8 @@ class OracleCursorWrapper:
         self._cur.arraysize = value
 
     def __iter__(self) -> Iterator[tuple]:
-        return iter(self._cur)
+        """Iterate rows, reading LOB columns and restoring empty strings (matches fetch*)."""
+        return (tuple(_restore_empty_string(_read_lob(v)) for v in row) for row in self._cur)
 
     def __enter__(self) -> "OracleCursorWrapper":
         return self

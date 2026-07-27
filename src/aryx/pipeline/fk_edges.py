@@ -24,13 +24,20 @@ def _attr(payload: object, key: str) -> str | None:
 
 
 def link_by_attribute(
-    estore: EntityStore, source_type: str, source_attr: str,
+    estore: EntityStore, entities: list[tuple[int, str, dict]],
+    source_type: str, source_attr: str,
     target_type: str, target_attr: str, name: str,
 ) -> int:
     """Create edges where source_type.source_attr == target_type.target_attr.
 
     Args:
-        estore: Open EntityStore.
+        estore: Open EntityStore (used only to persist the resulting edges).
+        entities: Already-materialized (id, ontology_type, attributes) rows for
+            the whole workspace. Callers applying multiple FK specs in a loop
+            must fetch this ONCE and pass the same list to every call --
+            fetching per spec was the dominant cost of the schema-FK link
+            stage (see docs/SCALABILITY_BOTTLENECKS.md P8: ~45s/spec, almost
+            entirely the redundant refetch, regardless of match count).
         source_type: Ontology type of the row-side entities (e.g. SupportTicket).
         source_attr: Attribute on the source carrying the lookup value.
         target_type: Ontology type of the referent (e.g. Customer).
@@ -40,7 +47,6 @@ def link_by_attribute(
     Returns:
         Number of relationships saved (existing edges are not deduped here).
     """
-    entities = list(estore.list_entities())
     target_ids: set[int] = set()
     targets: dict[str, list[int]] = {}
     for tid, ttype, payload in entities:

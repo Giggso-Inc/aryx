@@ -135,6 +135,7 @@ _stub_oracledb()
 from aryx.store.oracle_pool import (  # noqa: E402
     OracleCursorWrapper,
     _read_lob,
+    _restore_empty_string,
     _translate_sql,
     _unwrap_params,
 )
@@ -463,6 +464,65 @@ class TestReadLob(unittest.TestCase):
             read = "not callable"
         obj = _FakeHasRead()
         self.assertIs(_read_lob(obj), obj)
+
+
+# ── _restore_empty_string tests ───────────────────────────────────────────────
+
+class TestRestoreEmptyString(unittest.TestCase):
+    """Undoes the write-side '' -> ' ' NOT NULL workaround on fetch."""
+
+    def test_single_space_becomes_empty_string(self) -> None:
+        self.assertEqual(_restore_empty_string(" "), "")
+
+    def test_two_spaces_passthrough(self) -> None:
+        # Only the exact single-space marker is restored -- a real multi-char
+        # whitespace value is left alone.
+        self.assertEqual(_restore_empty_string("  "), "  ")
+
+    def test_non_space_string_passthrough(self) -> None:
+        self.assertEqual(_restore_empty_string("hello"), "hello")
+
+    def test_none_passthrough(self) -> None:
+        self.assertIsNone(_restore_empty_string(None))
+
+    def test_int_passthrough(self) -> None:
+        self.assertEqual(_restore_empty_string(42), 42)
+
+
+class TestFetchRestoresEmptyStrings(unittest.TestCase):
+    """fetchone/fetchall/fetchmany/__iter__ all restore '' from the ' ' marker."""
+
+    def _cursor_with_rows(self, rows: list[tuple]) -> OracleCursorWrapper:
+        import oracledb
+        raw = oracledb._Cursor()
+        raw._rows = rows
+        return OracleCursorWrapper(raw)
+
+    def test_fetchone_restores_empty_string(self) -> None:
+        cur = self._cursor_with_rows([(1, " ", "real value")])
+        row = cur.fetchone()
+        self.assertEqual(row, (1, "", "real value"))
+
+    def test_fetchall_restores_empty_string(self) -> None:
+        cur = self._cursor_with_rows([(1, " "), (2, "kept")])
+        rows = cur.fetchall()
+        self.assertEqual(rows, [(1, ""), (2, "kept")])
+
+    def test_fetchmany_restores_empty_string(self) -> None:
+        cur = self._cursor_with_rows([(1, " ")])
+        rows = cur.fetchmany(10)
+        self.assertEqual(rows, [(1, "")])
+
+    def test_iter_restores_empty_string(self) -> None:
+        cur = self._cursor_with_rows([(1, " "), (2, "x")])
+        self.assertEqual(list(cur), [(1, ""), (2, "x")])
+
+    def test_fetchall_restores_after_lob_read(self) -> None:
+        """A LOB whose .read() returns ' ' is also restored to ''."""
+        lob = MagicMock()
+        lob.read.return_value = " "
+        cur = self._cursor_with_rows([(1, lob)])
+        self.assertEqual(cur.fetchall(), [(1, "")])
 
 
 # ── Additional _translate_sql tests ──────────────────────────────────────────
@@ -813,11 +873,15 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         store._pool = _FakePool()
         return store, executemany_calls
 
-    def test_add_entities_batch_chunks_at_100(self) -> None:
+    def test_add_entities_batch_chunks_at_500(self) -> None:
+        """_CHUNK_MAX_ROWS=500 (raised from 25 -- see P8/graph-projection fix
+        in docs/SCALABILITY_BOTTLENECKS.md: the row cap, not the byte cap,
+        was the binding constraint and caused far more round-trips to Oracle
+        Cloud than the byte budget actually required)."""
         store, calls = self._make_store()
-        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(250)]
+        rows = [(i, "T", {"name": str(i)}, None, None) for i in range(1250)]
         store.add_entities_batch(rows)
-        self.assertEqual(calls, [100, 100, 50])
+        self.assertEqual(calls, [500, 500, 250])
 
     def test_add_entities_batch_small_batch_single_chunk(self) -> None:
         store, calls = self._make_store()
@@ -825,11 +889,11 @@ class TestGraphStoreBatchChunking(unittest.TestCase):
         store.add_entities_batch(rows)
         self.assertEqual(calls, [30])
 
-    def test_add_relationships_batch_chunks_at_100(self) -> None:
+    def test_add_relationships_batch_chunks_at_500(self) -> None:
         store, calls = self._make_store()
-        rows = [(i, i + 1, "rel") for i in range(210)]
+        rows = [(i, i + 1, "rel") for i in range(1050)]
         store.add_relationships_batch(rows)
-        self.assertEqual(calls, [100, 100, 10])
+        self.assertEqual(calls, [500, 500, 50])
 
     def test_add_entities_batch_empty_is_noop(self) -> None:
         store, calls = self._make_store()

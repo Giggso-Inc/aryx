@@ -116,10 +116,10 @@ class OracleGraphReader:
         Returns:
             A list of {id, type, name, attributes} dicts.
         """
-        clauses: list[str] = []
-        params: dict[str, Any] = {}
+        clauses: list[str] = ["workspace_id = :ws"]
+        params: dict[str, Any] = {"ws": self._workspace_id}
         if ontology_type:
-            clauses.append("e.type = $type")
+            clauses.append("type = :typ")
             params["typ"] = ontology_type
         if name:
             clauses.append("LOWER(name) LIKE '%' || LOWER(:name) || '%'")

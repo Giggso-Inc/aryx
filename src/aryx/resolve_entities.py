@@ -87,8 +87,14 @@ def resolve_run(
     _emit("Resolve", 32, f"Loading landed records for run {run_id}")
     records = store.landed_records(run_id, key_attrs)
     _emit("Resolve", 38, f"{len(records)} records loaded — blocking and scoring pairs")
+
+    def _on_block_progress(blocks_done: int, total_blocks: int) -> None:
+        pct = 38 + int(20 * blocks_done / total_blocks)
+        _emit("Resolve", pct, f"scored block {blocks_done}/{total_blocks}")
+
     results = resolve(records, broker, ontology_type, policy=policy, review=review,
-                      run_id=run_id, exact_ids=exact_ids)
+                      run_id=run_id, exact_ids=exact_ids,
+                      on_block_progress=_on_block_progress)
     _emit("Resolve", 58, f"{len(results)} clusters found — saving entities")
     created = store.save(results)
     logger.info("resolve_run complete run_id=%s entities=%d", run_id, created)
