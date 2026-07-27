@@ -45,7 +45,8 @@ class GraphReader:
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
         """Execute a Cypher query and log the input and output at INFO level."""
         start = time.monotonic()
-        result = self._graph.query(cypher, params or {}).result_set
+        timeout_ms = get_settings().graph_query_timeout or None
+        result = self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
         elapsed_ms = int((time.monotonic() - start) * 1000)
         # Cap result preview to first 5 rows to keep logs readable.
         preview = result[:5]

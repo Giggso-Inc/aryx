@@ -55,6 +55,21 @@ class Settings(BaseSettings):
             "Override with ARYX_GRAPH_ISOLATED_SCAN_MAX_ENTITIES."
         ),
     )
+    graph_query_timeout: int = Field(
+        default=30_000,
+        description=(
+            "Per-query timeout in milliseconds passed to every FalkorDB "
+            "query via GraphReader._query(). FalkorDB's own built-in default "
+            "is 5000ms — a real incident: GET /graph on workspace 44/45 "
+            "intermittently returned 500 (redis.exceptions.ResponseError: "
+            "Query timed out) because some relationship-traversal queries on "
+            "large, heavily-linked workspaces legitimately take longer than "
+            "5s even with REL.name indexed. Set to 0 to disable the override "
+            "and fall back to FalkorDB's own default (passed as None, not a "
+            "literal 0ms, which would fail every query instantly). "
+            "Override with ARYX_GRAPH_QUERY_TIMEOUT."
+        ),
+    )
     graph_lift_mode: str = Field(
         default="all_scalars",
         description=(
@@ -683,6 +698,18 @@ class Settings(BaseSettings):
     ontology_base_uri: str = Field(
         default="https://aryx.local/",
         description="Base URI for ontology namespace and export.",
+    )
+    ontology_export_max_entities: int = Field(
+        default=50_000,
+        description=(
+            "Max entity count in a workspace above which GET /ontology/export "
+            "rejects with 413 instead of running the synchronous export. "
+            "Serialising a very large workspace can run long enough for a "
+            "reverse proxy's read timeout to kill the connection first, "
+            "which the client sees as a bare 502 Bad Gateway with no useful "
+            "detail. Set to 0 to disable the cap. "
+            "Override with ARYX_ONTOLOGY_EXPORT_MAX_ENTITIES."
+        ),
     )
 
     # ── OCI backend toggle ────────────────────────────────────────────────────
