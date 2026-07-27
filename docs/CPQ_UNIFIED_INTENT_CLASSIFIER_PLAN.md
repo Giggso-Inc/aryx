@@ -911,3 +911,46 @@ other free-text field that legitimately becomes pending with a describable
 for this specific field. Fixing that fully means re-opening Amendment 20's
 open question (a genuine required/optional signal for this catalog) — not
 attempted here.
+
+## Amendment 22: Tier-2 LLM "ask-worthy" classifier — reopens Amendment 20's question with a generic (non-catalog-specific) answer
+
+Amendment 20 confirmed no deterministic signal in this catalog data
+(`required`, `default_value`, script shape, hiding-rule visibility)
+distinguishes "must ask" free-text fields (agencyDomainName_ID_swSoln,
+OfVideoStreamingDevices_3_swSoln) from "optional/advanced" ones (APX
+Next's systemID_astro / "Owner System ID"). Per the user's explicit
+requirement — generic, not catalog-specific, without regressing the
+existing flow — the only remaining option was a Tier-2 LLM judgment,
+matching the exact escalation discipline every other ambiguous case in
+this file already uses.
+
+**Implementation**: `BmlEvaluator.classify_ask_worthy()` /
+`_evaluate_llm_ask_worthy()` (`src/aryx/cpq/bml.py`) — a new `"ask_worthy"`
+kind added to the existing `_call_tier2` dispatch, so it's cached durably
+via the same `aryx_bml_tier2_cache` table as every other Tier-2 call,
+keyed by attr id (a one-time cost per attribute, not per turn).
+`CpqEngine.should_ask_free_text_attr()` (`src/aryx/cpq/engine.py`) finds
+the attr's governing `ValidationRule` and asks the classifier; returns
+`False` (never asks) if there's no such rule or `bml_eval` wasn't
+supplied — same opt-out convention as every other rule-application method.
+Wired back into `auto_fill`'s pending-eligibility check (the exact branch
+Amendment 20 removed), with `validation_rules` re-threaded through all 7
+call sites in `ask_api.py`.
+
+**Two false starts, both fixed before landing**: (1) the LLM initially
+said "ask" for `systemID_astro` too — its script is 4407 characters and
+the one gating clause (`advancedSystemKeyHardwareKey_astro == "YES"`) sat
+at position 4315, past a `[:2000]` truncation, so the model never saw it;
+fixed by sending both the head and tail of long scripts. (2) even seeing
+the full script, the model still said "ask" — the prompt didn't tell it
+that "gated behind another attribute's toggle" is itself the generic
+signal for "advanced/optional"; fixed by adding that instruction
+explicitly (still generic — no catalog or attribute names, just the
+structural pattern).
+
+**Live-verified**: `should_ask_free_text_attr` correctly returns `True` for
+`OfVideoStreamingDevices_3_swSoln`/`agencyDomainName_ID_swSoln` and `False`
+for `systemID_astro`, consistently across repeated fresh-cache runs.
+End-to-end: APX Next ("City of Houston" radio order) completes cleanly
+with no Owner System ID prompt; CommandCentral Aware asks for the domain
+name and video-devices count as intended. 255/255 tests pass.
