@@ -775,6 +775,30 @@ def _handle_cascade(
         if any(a.variable_name == k for a in visible_attrs)
     }
 
+    # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4):
+    # re-queue the second target stashed when a label collision was raised
+    # alongside it (session.pending_multi_intent_vn). _handle_cascade is
+    # the single common function every change-request entry point (STEP 6's
+    # plain detect_change_request match, the collision-resolution branches,
+    # the pending_change_no_value_vn branch, the LLM change-intent fallback)
+    # eventually calls — live-verified this is the actual convergence point
+    # missed by patching only individual outer call sites: a plain reply
+    # naming just a NEW VALUE (e.g. "Extended Warranty") for the already-
+    # pending attr matches STEP 6's own detect_change_request directly and
+    # calls this function without ever passing through the collision/no-
+    # value branches those outer patches lived in, so the promised second
+    # target was silently dropped every time. Centralizing here covers
+    # every caller at once; not excluded for already being in
+    # session.filled — the whole point is a CHANGE request to an
+    # already-filled attr.
+    if session.pending_multi_intent_vn:
+        _mi_vn = session.pending_multi_intent_vn
+        session.pending_multi_intent_vn = ""
+        _mi_attr = next((a for a in visible_attrs if a.variable_name == _mi_vn), None)
+        if _mi_attr is not None and not any(a.variable_name == _mi_vn for a in pending):
+            pending = [_mi_attr] + pending
+            session.pending_variables = [a.variable_name for a in pending]
+
     # D1, docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md: the value the customer
     # just explicitly chose is authoritative input for the REST of this
     # turn's evaluation — if the rule pass above silently reassigned it
@@ -3402,42 +3426,15 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         session.pending_change_no_value_vn = ""
         if _pcnv_attr:
-            _pcnv_result = _handle_cascade(
+            # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
+            # Fix 4) is now handled INSIDE _handle_cascade itself — it's the
+            # single common convergence point every change-request entry
+            # point reaches, so re-queuing pending_multi_intent_vn there
+            # covers this caller too without needing its own copy here.
+            return _handle_cascade(
                 req, session, attrs, _pcnv_attr, req.question,
                 hiding_rules, rec_rules, con_rules,
             )
-            # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4),
-            # same continuation the value-bearing collision-resolution branch
-            # already does below — this is the OTHER path that can leave a
-            # stashed second target (pending_multi_intent_vn) behind: a
-            # collision resolved to an attr that ALSO had no parseable value
-            # (e.g. "change solution type and primary service type"), so the
-            # first attr's own answer arrives here, as a plain pending-value
-            # reply, not through the collision-resolution branch at all.
-            # Previously this second target was only ever acknowledged
-            # ("I'll still ask about X right after this") and then silently
-            # dropped — live-confirmed gap, never actually re-asked.
-            _second_vn = session.pending_multi_intent_vn
-            session.pending_multi_intent_vn = ""
-            _second_attr = next(
-                (a for a in attrs if a.variable_name == _second_vn), None,
-            ) if _second_vn else None
-            if _second_attr is not None:
-                session.pending_change_no_value_vn = _second_attr.variable_name
-                _second_constrained = _cpq_engine.apply_constraint_rules(
-                    attrs, con_rules, session.filled, bml_eval)
-                _second_block = _cpq_engine.next_question_prompt(
-                    _second_attr,
-                    constrained_item_values=_second_constrained.get(_second_attr.entity_id),
-                    validation_rules=validation_rules,
-                )
-                _pcnv_result["answer"] += (
-                    f"\n\n---\n\nAs mentioned — which value would "
-                    f"you like for **{_second_attr.display_label}**?"
-                    f"\n\n{_second_block}"
-                )
-                _pcnv_result["session_data"] = session.to_dict()
-            return _pcnv_result
 
     # Rule-consistency auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
     # §4.1): a filled attr an active hiding rule currently matches was never
@@ -3674,36 +3671,15 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         filled_multi=session.filled_multi)
                     if _resolved_change:
                         _, _resolved_value = _resolved_change
-                        _cascade_result = _handle_cascade(
+                        # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_
+                        # PLAN.md Fix 4) is handled INSIDE _handle_cascade —
+                        # it re-queues pending_multi_intent_vn itself, the
+                        # single common convergence point every caller
+                        # (including this one) reaches.
+                        return _handle_cascade(
                             req, session, attrs, _resolved_attr, _resolved_value,
                             hiding_rules, rec_rules, con_rules,
                         )
-                        # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_
-                        # PLAN.md Fix 4): the collision is resolved -- now
-                        # continue to the second target stashed when this
-                        # collision was first raised, instead of letting it
-                        # stay silently dropped forever.
-                        _second_vn = session.pending_multi_intent_vn
-                        session.pending_multi_intent_vn = ""
-                        _second_attr = next(
-                            (a for a in attrs if a.variable_name == _second_vn), None,
-                        ) if _second_vn else None
-                        if _second_attr is not None:
-                            session.pending_change_no_value_vn = _second_attr.variable_name
-                            _second_constrained = _cpq_engine.apply_constraint_rules(
-                                attrs, con_rules, session.filled, bml_eval)
-                            _second_block = _cpq_engine.next_question_prompt(
-                                _second_attr,
-                                constrained_item_values=_second_constrained.get(_second_attr.entity_id),
-                                validation_rules=validation_rules,
-                            )
-                            _cascade_result["answer"] += (
-                                f"\n\n---\n\nAs mentioned — which value would "
-                                f"you like for **{_second_attr.display_label}**?"
-                                f"\n\n{_second_block}"
-                            )
-                            _cascade_result["session_data"] = session.to_dict()
-                        return _cascade_result
                     # No parseable value for the resolved attr (e.g. the
                     # original message's target was really a per-row
                     # quantity, not this attr's own value) — re-ask it as a
