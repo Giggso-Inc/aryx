@@ -26,7 +26,19 @@ def test_suite_parses_50_50() -> None:
 
 
 def test_suite_offline_gate_passes() -> None:
-    assert run_regression.run_offline(run_regression.parse_suite()) == []
+    errs, code = run_regression.run_offline(run_regression.parse_suite())
+    assert errs == [], errs
+    assert code == 0
+
+
+def test_dialogues_parsed_and_pass() -> None:
+    dialogues = run_regression.parse_dialogues()
+    assert len(dialogues) >= 6
+    ids = {d["id"] for d in dialogues}
+    assert {"D01", "D02", "D03", "D04", "D05", "D06"} <= ids
+    errs, code = run_regression.run_dialogues_offline(dialogues)
+    assert errs == [], errs
+    assert code == 0
 
 
 def test_mirrors_match_gateway_regexes() -> None:

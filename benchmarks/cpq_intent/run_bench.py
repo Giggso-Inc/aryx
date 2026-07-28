@@ -63,8 +63,9 @@ def _check_schema_coverage(cases: list[dict]) -> list[str]:
 
 
 def _check_undo_detector(cases: list[dict]) -> list[str]:
-    # session_guard imports state — load state first
+    # session_guard imports state + intent_queue — load those first
     _load_mod("aryx.cpq.state", "aryx/cpq/state.py")
+    _load_mod("aryx.cpq.intent_queue", "aryx/cpq/intent_queue.py")
     guard = _load_mod("aryx.cpq.session_guard", "aryx/cpq/session_guard.py")
     errors: list[str] = []
     for case in cases:
@@ -109,6 +110,8 @@ def _check_session_guard_snapshot() -> list[str]:
     state = sys.modules.get("aryx.cpq.state") or _load_mod(
         "aryx.cpq.state", "aryx/cpq/state.py",
     )
+    if "aryx.cpq.intent_queue" not in sys.modules:
+        _load_mod("aryx.cpq.intent_queue", "aryx/cpq/intent_queue.py")
     guard = sys.modules.get("aryx.cpq.session_guard") or _load_mod(
         "aryx.cpq.session_guard", "aryx/cpq/session_guard.py",
     )

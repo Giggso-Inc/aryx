@@ -524,6 +524,13 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Product-line selectors that list the full multi-family portfolio (~325
+# models). Must wait until Hardware Version is filled on hardware-based
+# catalogs — otherwise next_question_prompt dumps the unconstrained list.
+_PRODUCT_LINE_SELECTOR_EXACT: frozenset[str] = frozenset({
+    "productSelectionProduct_all",
+})
+
 # Attrs confirmed live (docs/CPQ_SCRIPT_GOVERNED_GUESS_ISSUE.md) to be
 # governed EXCLUSIVELY by a script-based recommendation rule that can
 # legitimately resolve to "no recommendation" (not just "unknown") — for
@@ -4375,6 +4382,10 @@ class CpqEngine:
             # ask regardless of governance.
             is_decision_attr = (
                 any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+                # Hardware Version is MANDATORY on hardware-based catalogs
+                # (APX/aSTRO25) — never blind first-by-order; must be asked
+                # (or matched from NL) before Product is even eligible.
+                or self._is_hardware_version_attr(attr)
                 # productSelectionProduct_all is a shared, catalog-wide
                 # option list (e.g. 325 product-line codes across every
                 # product family) with no rule reliably narrowing it to the
@@ -4386,6 +4397,8 @@ class CpqEngine:
                 # skip_always_ask overrides this ONLY when the caller
                 # already confirmed the real native UI never shows it (see
                 # docstring) — every other catalog keeps this unconditional.
+                # ALSO deferred from pending until hardware is filled — see
+                # _order_pending_hardware_before_product at end of auto_fill.
                 or (
                     vn == "productSelectionProduct_all"
                     and vn not in (skip_always_ask or ())
@@ -4712,24 +4725,96 @@ class CpqEngine:
                 still_pending.append(attr)
         pending = still_pending
 
-        # Sort pending: hwversion first (Level 1 anchor per spec Step 2),
-        # then other decision-required attrs (country, region), then the rest.
-        _LEVEL1_KEY = "hwversion"
-        hw_pending = [
-            a for a in pending
-            if _LEVEL1_KEY in a.variable_name.lower().replace("_", "")
-        ]
-        decision_pending = [
-            a for a in pending
-            if a not in hw_pending
-            and any(dk in a.variable_name.lower().replace("_", "") for dk in _DECISION_REQUIRED_KEYS)
-        ]
-        other_pending = [
-            a for a in pending if a not in hw_pending and a not in decision_pending
-        ]
-        pending = hw_pending + decision_pending + other_pending
+        # Hardware-based catalogs: country/region → Hardware (mandatory) →
+        # other attrs → Product last; Product deferred until Hardware filled.
+        pending = self._order_pending_hardware_before_product(
+            pending, filled, attrs,
+        )
 
         return filled, display_filled, pending
+
+    @staticmethod
+    def _is_hardware_version_attr(attr: "ConfigAttr") -> bool:
+        """True for Hardware Version attrs (hWVersion_*, Hardware Version label).
+
+        Hardware is mandatory on hardware-based product catalogs — used both
+        to force always-ask and to order pending ahead of Product.
+        """
+        vn_flat = (attr.variable_name or "").lower().replace("_", "")
+        label = (attr.display_label or "").lower()
+        if "hwversion" in vn_flat or "hardwareversion" in vn_flat:
+            return True
+        if "hardware" in label and "version" in label:
+            return True
+        return False
+
+    @staticmethod
+    def _is_product_line_selector(attr: "ConfigAttr") -> bool:
+        """True for the shared multi-family Product dropdown (~325 options)."""
+        vn = attr.variable_name or ""
+        if vn in _PRODUCT_LINE_SELECTOR_EXACT:
+            return True
+        vn_flat = vn.lower().replace("_", "")
+        if "productselectionproduct" in vn_flat:
+            return True
+        label = (attr.display_label or "").strip().lower()
+        if label == "product" and len(attr.options) > _MAX_ENUMERATED_OPTIONS:
+            return True
+        return False
+
+    def _order_pending_hardware_before_product(
+        self,
+        pending: list["ConfigAttr"],
+        filled: dict[str, str],
+        attrs: list["ConfigAttr"],
+    ) -> list["ConfigAttr"]:
+        """Defer Product until Hardware is filled; sort pending by dependency.
+
+        Live-confirmed (2026-07-28): after country was set, next prompt was
+        Product with 325 options because productSelectionProduct_all is
+        always-ask and catalog order listed it before Hardware. On
+        hardware-based catalogs Hardware is mandatory and constrains Product
+        — never ask the unconstrained product portfolio first.
+        """
+        if not pending:
+            return pending
+
+        catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
+        if not catalog_has_hw:
+            # Non-hardware catalog (e.g. pure software): keep country first,
+            # then original relative order.
+            countryish = [
+                a for a in pending
+                if any(
+                    dk in a.variable_name.lower().replace("_", "")
+                    for dk in _DECISION_REQUIRED_KEYS
+                )
+            ]
+            rest = [a for a in pending if a not in countryish]
+            return countryish + rest
+
+        hw_vns = {
+            a.variable_name for a in attrs if self._is_hardware_version_attr(a)
+        }
+        hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
+
+        # Drop product-line selectors from pending until hardware is known.
+        if not hw_filled:
+            pending = [
+                a for a in pending if not self._is_product_line_selector(a)
+            ]
+
+        def _rank(a: "ConfigAttr") -> tuple[int, int]:
+            vn_flat = a.variable_name.lower().replace("_", "")
+            if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
+                return (0, a.order)
+            if self._is_hardware_version_attr(a):
+                return (1, a.order)
+            if self._is_product_line_selector(a):
+                return (3, a.order)
+            return (2, a.order)
+
+        return sorted(pending, key=_rank)
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────
 
@@ -5105,6 +5190,81 @@ class CpqEngine:
         """
         return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
 
+    def detect_all_change_targets_without_value(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        *,
+        filled_multi: dict[str, list[str]] | None = None,
+        exclude_vns: set[str] | None = None,
+        cap: int = 10,
+    ) -> list[ConfigAttr]:
+        """All already-filled attrs named in a valueless change utterance.
+
+        Ordered by first appearance of the label/vn in the question so
+        "change hardware version, service type and activation delay"
+        yields a stable FIFO for pending_intent_queue. ``exclude_vns``
+        skips already-handled targets; ``cap`` bounds the scan (default
+        matches INTENT_QUEUE_CAP).
+        """
+        if not self._CHANGE_VERB_RE.search(question or ""):
+            return []
+        exclude = exclude_vns or set()
+        multi = filled_multi or {}
+        q_flat = (question or "").lower().replace("_", " ")
+        matches: list[ConfigAttr] = []
+        for a in attrs:
+            if a.variable_name in exclude:
+                continue
+            if not (filled.get(a.variable_name) or multi.get(a.variable_name)):
+                continue
+            label_l = (a.display_label or "").lower()
+            vn_flat = a.variable_name.lower().replace("_", " ")
+            # Full label, variable_name, or a trailing multi-word slice of
+            # the label (e.g. "service type" matching "Primary Service Type").
+            hit = False
+            if label_l and label_l in q_flat:
+                hit = True
+            elif vn_flat and vn_flat in q_flat:
+                hit = True
+            else:
+                words = [w for w in label_l.split() if len(w) > 1]
+                for n in range(min(len(words), 3), 1, -1):
+                    tail = " ".join(words[-n:])
+                    if tail in q_flat:
+                        hit = True
+                        break
+            if hit:
+                matches.append(a)
+        # Prefer longer labels when one subsumes another (same as singular
+        # detector's max-by-len), but keep appearance order among peers.
+        # First drop subsumed shorter labels that share the same span.
+        def _pos(a: ConfigAttr) -> int:
+            label_l = (a.display_label or "").lower()
+            vn_flat = a.variable_name.lower().replace("_", " ")
+            positions = [i for i in (
+                q_flat.find(label_l) if label_l else -1,
+                q_flat.find(vn_flat) if vn_flat else -1,
+            ) if i >= 0]
+            return min(positions) if positions else 9999
+
+        # Drop attrs whose label is a strict substring of another match's
+        # label at the same region (e.g. "Type" inside "Service Type") —
+        # keep the longest label at each position cluster.
+        matches.sort(key=lambda a: (-len(a.display_label or ""), _pos(a), a.variable_name))
+        kept: list[ConfigAttr] = []
+        kept_labels: list[str] = []
+        for a in matches:
+            lab = (a.display_label or "").lower()
+            if any(lab and lab != k and lab in k for k in kept_labels):
+                continue
+            kept.append(a)
+            kept_labels.append(lab)
+        # Stable user-facing order: appearance in the utterance.
+        kept.sort(key=_pos)
+        return kept[: max(0, cap)]
+
     def detect_change_target_without_value(
         self, question: str, attrs: list[ConfigAttr], filled: dict[str, str],
     ) -> ConfigAttr | None:
@@ -5120,19 +5280,15 @@ class CpqEngine:
         does. Only ever called AFTER detect_change_request/
         detect_change_requests_multi have already returned nothing, so a
         message with a resolvable value never reaches here.
+
+        Returns the first of ``detect_all_change_targets_without_value``
+        (appearance order) so multi-target callers can still use the
+        singular form for "active" while enqueuing the rest.
         """
-        if not self._CHANGE_VERB_RE.search(question):
-            return None
-        q_flat = question.lower().replace("_", " ")
-        matches = [
-            a for a in attrs
-            if filled.get(a.variable_name)
-            and (a.display_label.lower() in q_flat
-                 or a.variable_name.lower().replace("_", " ") in q_flat)
-        ]
-        if not matches:
-            return None
-        return max(matches, key=lambda a: len(a.display_label))
+        all_targets = self.detect_all_change_targets_without_value(
+            question, attrs, filled,
+        )
+        return all_targets[0] if all_targets else None
 
     # Cap on detect_change_requests_multi's result — a message naming more
     # than this is unusual enough that blindly trusting every match risks

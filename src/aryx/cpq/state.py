@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+# Max variable_names held in CpqSession.pending_intent_queue. Overflow is
+# reported to the user (never silently dropped).
+INTENT_QUEUE_CAP = 10
+
 
 @dataclass
 class HidingRule:
@@ -373,6 +377,28 @@ class CpqSession:
     pending_label_collision_vns: list[str] = field(default_factory=list)
     pending_label_collision_question: str = ""
 
+    # Gateway clarify memory (live-verified gap, 2026-07-28): "change
+    # hardware" is too vague to pin one attr → gateway action=clarify asks
+    # "Hardware Version or System Key?" but historically saved NO pending
+    # state. The bare reply "Hardware Version" then arrived with no memory
+    # of the question, classified blind as ATTR_QUERY/QA, fell through
+    # partial dispatch, and hit the generic "I didn't quite catch that"
+    # nudge.
+    #
+    # Conceptual shape (serialized flat, same pattern as
+    # pending_change_collision_vns):
+    #   { candidate_vns, original_question, clarifying_question, asked_turn }
+    pending_clarify_vns: list[str] = field(default_factory=list)  # candidate_vns
+    pending_clarify_question: str = ""  # original_question (vague utterance)
+    # Grounded clarifying_question we showed (catalog labels only — never
+    # free-form LLM prose that may invent non-catalog examples).
+    pending_clarify_prompt: str = ""
+    # session.turn when the clarify was issued (for audit / loop detection).
+    pending_clarify_asked_turn: int = 0
+    # Consecutive unresolved replies to this clarify. After 2 misses,
+    # force a numbered pick list (loop-exit guard).
+    pending_clarify_misses: int = 0
+
     # Set when detect_change_target_without_value recognized a change-verb
     # naming an already-filled attr but no resolvable new value ("change
     # hardware version") and asked which value instead of guessing
@@ -385,18 +411,19 @@ class CpqSession:
     # when no such prompt is pending.
     pending_change_no_value_vn: str = ""
 
-    # Set when a message named a label-collision target ("change service
-    # type...") AND a second, distinct, already-filled attr with no given
-    # value in the same message ("...and solution type") -- confirmed live
-    # (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4): a message naming 2+
-    # distinct intents only ever got the FIRST one addressed, the rest
-    # silently dropped once the collision detector's own caller returned.
-    # The collision must be resolved first (its own reply format is a
-    # number/variable_name, not a value), so this stashes the second
-    # target's variable_name to continue to automatically once the
-    # collision resolves, rather than losing it. Empty string when none
-    # is pending.
-    pending_multi_intent_vn: str = ""
+    # Ordered queue of variable_names still to ask after a multi-target
+    # change utterance ("change hardware version, service type and
+    # activation delay"). Replaces the single-string
+    # pending_multi_intent_vn slot (which only ever held one secondary
+    # target and was filled in only two branches). Deduped, FIFO, cap 10
+    # (INTENT_QUEUE_CAP). Old session_data payloads with
+    # pending_multi_intent_vn still migrate via from_dict / the
+    # pending_multi_intent_vn property.
+    pending_intent_queue: list[str] = field(default_factory=list)
+
+    # Overflow variable_names from a queue that hit the cap — surfaced
+    # once in the reply so the customer can re-ask; never silently dropped.
+    pending_intent_overflow: list[str] = field(default_factory=list)
 
     # Set when a catalog's own bm_catalog tree has 2+ model leaves (so
     # single_model_variable_name can't auto-seed _bm_model_variable_name
@@ -452,10 +479,47 @@ class CpqSession:
     # "trace to a user utterance" without re-scanning ask history store.
     recent_utterances: list[str] = field(default_factory=list)
 
+    @property
+    def pending_multi_intent_vn(self) -> str:
+        """Compat for pre-queue session_data / callers.
+
+        Returns the head of pending_intent_queue, or "" when empty.
+        """
+        return self.pending_intent_queue[0] if self.pending_intent_queue else ""
+
+    @pending_multi_intent_vn.setter
+    def pending_multi_intent_vn(self, value: str) -> None:
+        """Compat setter: assign/clear maps onto the queue head.
+
+        - Empty / None → pop head (legacy clear pattern).
+        - Non-empty → ensure vn is at the front of the queue (deduped).
+        """
+        vn = (value or "").strip()
+        if not vn:
+            if self.pending_intent_queue:
+                self.pending_intent_queue.pop(0)
+            return
+        q = [v for v in self.pending_intent_queue if v != vn]
+        self.pending_intent_queue = [vn] + q
+        while len(self.pending_intent_queue) > INTENT_QUEUE_CAP:
+            self.pending_intent_queue.pop()
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "CpqSession":
-        known = {k for k in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in d.items() if k in known})
+        raw = dict(d or {})
+        # Migrate legacy single-string multi-intent into the queue.
+        legacy = raw.pop("pending_multi_intent_vn", None)
+        init_fields = {
+            k for k, f in cls.__dataclass_fields__.items()
+            if f.init
+        }
+        obj = cls(**{k: v for k, v in raw.items() if k in init_fields})
+        if legacy and isinstance(legacy, str) and legacy.strip():
+            if legacy not in obj.pending_intent_queue:
+                obj.pending_intent_queue = [legacy] + list(obj.pending_intent_queue)
+                while len(obj.pending_intent_queue) > INTENT_QUEUE_CAP:
+                    obj.pending_intent_queue.pop()
+        return obj
