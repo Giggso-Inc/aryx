@@ -475,6 +475,17 @@ def _cpq_summary_text(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
     if not groups:
         return ""
+    # The narrator and its bullet fallback are only ever asked to cover
+    # THESE curated (label, value) facts — never the raw display_filled
+    # dict, which includes hundreds of internal/technical BM fields
+    # (Record Separator, BoolContinue1-4, HTML Update1-3, etc.) neither
+    # synthesis path is designed to mention. Validating against raw
+    # display_filled instead of this set made the check structurally
+    # unsatisfiable for any product with many such fields — a correct
+    # summary that (rightly) omits them got discarded every time,
+    # falling all the way to raw_state_table(). Live-confirmed against
+    # aSTRO25_bom / APX NEXT Single Band (~173 auto-filled fields).
+    curated_fields = {label: value for _cat, pairs in groups for label, value in pairs}
     sys = (
         "You summarise product configurations for sales reps in plain, "
         "everyday English — never technical or internal terminology."
@@ -538,11 +549,12 @@ def _cpq_summary_text(
                 # single bullet, so the full segment is kept verbatim.
                 lines.append(f"\n**{category}:**\n{segment}")
             draft = "\n".join(lines)
-            # summary_guard: every display value must appear in the narration
+            # summary_guard: every CURATED value (curated_fields, not the
+            # raw display_filled dict) must appear in the narration
             from aryx.cpq.summary_guard import (
                 fields_missing_from_summary, raw_state_table,
             )
-            missing = fields_missing_from_summary(draft, display_filled, attrs)
+            missing = fields_missing_from_summary(draft, curated_fields)
             if not missing:
                 return draft
             logger.info(
@@ -553,8 +565,13 @@ def _cpq_summary_text(
                 display_filled, attrs, rule_governed_ids=rule_governed_ids,
                 sources=sources,
             )
-            if not fields_missing_from_summary(second, display_filled, attrs):
+            missing2 = fields_missing_from_summary(second, curated_fields)
+            if not missing2:
                 return second
+            logger.warning(
+                "summary_guard: deterministic bullet fallback ALSO missing "
+                "%s — falling back to raw_state_table", missing2[:5],
+            )
             stub = CpqSession()
             stub.display_filled = dict(display_filled)
             stub.filled_source = dict(sources or {})
@@ -5620,6 +5637,12 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 return _mc_nv_result
 
     # ── STEP 5: Lock user's answer from previous turn ────────────────────────
+    # pending_var must be bound regardless of whether this branch runs — the
+    # STEP 5 convergence block later in this turn (clear_queue_vn) references
+    # it unconditionally. None on a fresh/first-turn message (nothing was
+    # pending yet) is the correct, intended value — clear_queue_vn already
+    # no-ops on None.
+    pending_var: str | None = None
     if session.pending_variables and session.turn > 1 and not mode_request:
         pending_var = session.pending_variables[0]
         pending_attr = next(
