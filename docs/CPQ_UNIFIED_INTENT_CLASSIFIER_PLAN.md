@@ -857,3 +857,130 @@ session's Amendment 19 follow-up. A correct fix would need a genuine
 required/optional signal (e.g. an explicit catalog-side flag, or resolving
 the gating condition of each ValidationRule) — not attempted here, since
 guessing at another heuristic risks the same class of false positive again.
+
+**Side note — FedRamp silent-reversion, traced and closed**: a separate live
+report claimed `isFedRampOrCCCSRequired_swSoln` silently reverted from a
+user's explicit "None" back to "FEDRAMP" later in the same conversation.
+Traced live: `filled_source=="user"` correctly survives an ordinary
+change-request cascade (confirmed via two repros — a follow-up unrelated
+change-request turn left FedRamp at "NONE"/"user"). The revert only ever
+showed up in the original transcript because Amendment 19's now-reverted
+`validation_target_ids` fix (above) force-added `agencyDomainName_ID_swSoln`
+and 3 other fields to `pending`, and something in that specific longer
+answer sequence re-derived FedRamp. That trigger path no longer exists now
+that Amendment 20 reverted it. Treated as resolved by the revert; revisit
+only if seen live again post-revert.
+
+## Amendment 21: Q&A answer for a free-text validated attr's "what values are allowed" question (implemented, currently dormant)
+
+Separate live report: asking "what are the values available for the domain
+id" while `agencyDomainName_ID_swSoln` was pending got a generic,
+unhelpful answer instead of describing the field's real constraint
+(letters/digits/`.`/`_`/`-` only, per its own `ValidationRule`).
+
+**Root cause, confirmed by direct code read**: two independent gaps.
+`detect_attr_query`'s word-overlap fallback requires every camelCase-split
+word of the variable name to appear in the question — `agencyDomainName_ID_swSoln`
+needs `{agency, domain, name, id}`; "domain id" only supplies 2 of 4, so it
+never resolves. Even a perfect match wouldn't help: the existing
+options-listing fast path only knows how to enumerate `attr.options`, blank
+for a free-text field, and the attr's own `ValidationRule.message` here is
+just "Invalid selection" — not descriptive either.
+
+**Fix**: added `CpqEngine.describe_free_text_constraint()` +
+`_describe_char_allowlist()` (`src/aryx/cpq/engine.py`) — recognizes the
+recurring `allowedChars = "..."` idiom in a `ValidationRule.condition_script`
+and turns it into a plain description ("letters, digits, and the characters
+- . _"); returns None (never guesses) for any other script shape. Wired into
+`_run_cpq_turn` (`src/aryx/api/ask_api.py`) as a new branch right after the
+existing options-query fast path: when the CURRENTLY PENDING attr has no
+options and the question matches the existing `_OPTIONS_KEYWORDS` set, it
+answers directly from `session.pending_variables[0]` — no attr-name
+matching needed at all, sidestepping `detect_attr_query`'s weakness
+entirely for this case.
+
+**Live-verified, with an important caveat**: forcing
+`agencyDomainName_ID_swSoln` into `pending` confirms the new branch answers
+correctly: *"Agency Domain Name/ID doesn't have a fixed list of values —
+it's free text, but it must only contain letters, digits, and the
+characters - . _."* But run end-to-end against the real flow, this field is
+**never** naturally pending anymore — that's the direct consequence of
+Amendment 20's revert. So this fix is real and will fire for any future/
+other free-text field that legitimately becomes pending with a describable
+`allowedChars` rule, but does not currently resolve the original complaint
+for this specific field. Fixing that fully means re-opening Amendment 20's
+open question (a genuine required/optional signal for this catalog) — not
+attempted here.
+
+## Amendment 22: Tier-2 LLM "ask-worthy" classifier — reopens Amendment 20's question with a generic (non-catalog-specific) answer
+
+Amendment 20 confirmed no deterministic signal in this catalog data
+(`required`, `default_value`, script shape, hiding-rule visibility)
+distinguishes "must ask" free-text fields (agencyDomainName_ID_swSoln,
+OfVideoStreamingDevices_3_swSoln) from "optional/advanced" ones (APX
+Next's systemID_astro / "Owner System ID"). Per the user's explicit
+requirement — generic, not catalog-specific, without regressing the
+existing flow — the only remaining option was a Tier-2 LLM judgment,
+matching the exact escalation discipline every other ambiguous case in
+this file already uses.
+
+**Implementation**: `BmlEvaluator.classify_ask_worthy()` /
+`_evaluate_llm_ask_worthy()` (`src/aryx/cpq/bml.py`) — a new `"ask_worthy"`
+kind added to the existing `_call_tier2` dispatch, so it's cached durably
+via the same `aryx_bml_tier2_cache` table as every other Tier-2 call,
+keyed by attr id (a one-time cost per attribute, not per turn).
+`CpqEngine.should_ask_free_text_attr()` (`src/aryx/cpq/engine.py`) finds
+the attr's governing `ValidationRule` and asks the classifier; returns
+`False` (never asks) if there's no such rule or `bml_eval` wasn't
+supplied — same opt-out convention as every other rule-application method.
+Wired back into `auto_fill`'s pending-eligibility check (the exact branch
+Amendment 20 removed), with `validation_rules` re-threaded through all 7
+call sites in `ask_api.py`.
+
+**Two false starts, both fixed before landing**: (1) the LLM initially
+said "ask" for `systemID_astro` too — its script is 4407 characters and
+the one gating clause (`advancedSystemKeyHardwareKey_astro == "YES"`) sat
+at position 4315, past a `[:2000]` truncation, so the model never saw it;
+fixed by sending both the head and tail of long scripts. (2) even seeing
+the full script, the model still said "ask" — the prompt didn't tell it
+that "gated behind another attribute's toggle" is itself the generic
+signal for "advanced/optional"; fixed by adding that instruction
+explicitly (still generic — no catalog or attribute names, just the
+structural pattern).
+
+**Live-verified**: `should_ask_free_text_attr` correctly returns `True` for
+`OfVideoStreamingDevices_3_swSoln`/`agencyDomainName_ID_swSoln` and `False`
+for `systemID_astro`, consistently across repeated fresh-cache runs.
+End-to-end: APX Next ("City of Houston" radio order) completes cleanly
+with no Owner System ID prompt; CommandCentral Aware asks for the domain
+name and video-devices count as intended. 255/255 tests pass.
+
+## Amendment 23: proactively show a free-text attr's format constraint when first asking, not just reactively
+
+Found live (SVX quote): a rep asked "Agency Domain Name/ID — Please
+provide a value." with zero indication of the expected format. Amendment
+21 already built `describe_free_text_constraint`/`_describe_char_allowlist`
+to answer this — but only reactively, when the rep separately asked "what
+values are available." Cross-verified against the raw ingested source
+data (`aryx_entity_ws21`, the flattened BM export): BigMachines' own
+catalog has **no help-text field at all** for these attrs — the character-
+allowlist validation rule's message is the only descriptive content that
+exists anywhere for them. So the rep has no way to know the expected
+format unless the system tells them up front.
+
+**Fix**: `CpqEngine.next_question_prompt()` gained an optional
+`validation_rules` param — when the attr has no options (the same
+free-text case Amendment 21 already handles) and a describable
+`allowedChars` rule exists, the constraint is appended directly to the
+question: *"Please provide a value.\n\n*Must only contain letters,
+digits, and the characters - . _.*"* Wired into the 3 call sites in
+`_run_cpq_turn` that build the primary "next question" prompt (FORMAT A,
+batch mode, and the turn-cap fallback) — all three already had
+`validation_rules` loaded in scope. `None` by default (opt-out, same
+convention as `bml_eval=None` elsewhere) — never guesses a constraint that
+can't be described.
+
+**Live-verified**: "Quote SVX Video Remote Speaker Microphone for a US
+customer" → mounting type (skip) → *"**Agency Domain Name/ID**\n\nPlease
+provide a value.\n\n*Must only contain letters, digits, and the characters
+- . _.*"* 257/257 tests pass.

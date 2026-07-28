@@ -3797,6 +3797,7 @@ class CpqEngine:
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
         bml_eval: BmlEvaluator | None = None,
+        validation_rules: list["ValidationRule"] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
 
@@ -4461,7 +4462,8 @@ class CpqEngine:
                     display_filled[vn] = fallback.display_name
                     sources.setdefault(vn, "default")
             elif (
-                (attr.options or is_decision_attr)
+                (attr.options or is_decision_attr
+                 or self.should_ask_free_text_attr(attr, validation_rules, bml_eval))
                 and not self._is_noise_var(vn)
                 # skip_always_ask means the native UI never shows a question
                 # for this attr in this catalog — it must be excluded from
@@ -4956,6 +4958,35 @@ class CpqEngine:
         """
         return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
 
+    def detect_change_target_without_value(
+        self, question: str, attrs: list[ConfigAttr], filled: dict[str, str],
+    ) -> ConfigAttr | None:
+        """A change-verb naming an already-filled attr, but with no
+        resolvable new value ("change hardware version", "change product")
+        — distinct from detect_change_request, which requires BOTH a verb
+        AND a value and returns None otherwise. Confirmed live
+        (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 1): a
+        valueless change message fell through every detector, regex and
+        LLM, straight to the generic "I didn't quite catch that" nudge —
+        this lets the caller instead ask which value, the same way
+        detect_attr_query's "what values are available" answer already
+        does. Only ever called AFTER detect_change_request/
+        detect_change_requests_multi have already returned nothing, so a
+        message with a resolvable value never reaches here.
+        """
+        if not self._CHANGE_VERB_RE.search(question):
+            return None
+        q_flat = question.lower().replace("_", " ")
+        matches = [
+            a for a in attrs
+            if filled.get(a.variable_name)
+            and (a.display_label.lower() in q_flat
+                 or a.variable_name.lower().replace("_", " ") in q_flat)
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda a: len(a.display_label))
+
     # Cap on detect_change_requests_multi's result — a message naming more
     # than this is unusual enough that blindly trusting every match risks
     # silently misapplying something the user didn't actually intend
@@ -5353,6 +5384,74 @@ class CpqEngine:
             return group
         return None
 
+    def count_turn_intents(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> list[str]:
+        """Read-only diagnostic (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4,
+        incremental step): runs every existing intent detector against one
+        message and returns a plain-string label for each one that fired,
+        WITHOUT changing what the turn actually does with the result —
+        purely observational, logged by the caller.
+
+        Confirmed live this session: "change solution type and primary
+        service type" only ever got ONE of its two targets addressed,
+        because `detect_change_request_collision` (and every other
+        detector in the real turn-processing flow) stops at its own first
+        match and the caller returns immediately. This counts how many
+        DISTINCT intents a single message actually contains, so that gap
+        can be measured against real traffic before any routing behavior
+        changes — reuses every detector as-is, adds no new detection
+        logic, and never influences the response.
+        """
+        hits: list[str] = []
+        try:
+            if self.detect_qa_question(question, None, strict=True):
+                hits.append("qa_question")
+        except Exception:  # noqa: BLE001 — diagnostic only, must never break the turn
+            logger.debug("count_turn_intents: detect_qa_question failed", exc_info=True)
+        try:
+            mode = self.detect_response_mode_request(question)
+            if mode:
+                hits.append(f"mode_request:{mode}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_response_mode_request failed", exc_info=True)
+        try:
+            collision = self.detect_change_request_collision(question, attrs, filled, filled_multi)
+            if collision:
+                hits.append(f"change_collision:{collision[0].display_label}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_change_request_collision failed", exc_info=True)
+        try:
+            multi = self.detect_change_requests_multi(question, attrs, filled, filled_multi)
+            for attr, _hint in multi:
+                hits.append(f"change:{attr.variable_name}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_change_requests_multi failed", exc_info=True)
+        if not any(h.startswith("change:") for h in hits):
+            try:
+                single = self.detect_change_request(question, attrs, filled, filled_multi)
+                if single:
+                    hits.append(f"change:{single[0].variable_name}")
+            except Exception:  # noqa: BLE001
+                logger.debug("count_turn_intents: detect_change_request failed", exc_info=True)
+        try:
+            no_value = self.detect_change_target_without_value(question, attrs, filled)
+            if no_value:
+                hits.append(f"change_no_value:{no_value.variable_name}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_change_target_without_value failed", exc_info=True)
+        try:
+            attr_q = self.detect_attr_query(question, attrs)
+            if attr_q:
+                hits.append(f"attr_query:{attr_q.variable_name}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_attr_query failed", exc_info=True)
+        return hits
+
     def detect_attr_query(
         self, question: str, attrs: list[ConfigAttr],
     ) -> ConfigAttr | None:
@@ -5426,6 +5525,171 @@ class CpqEngine:
                 best_attr = attr
         return best_attr
 
+    # Recognizes the recurring `allowedChars = "..."` character-allowlist
+    # idiom in ValidationRule condition_scripts (confirmed live in both the
+    # CC Aware 2026 and CC Aware "Allow only specific characters on PD
+    # AGDOMAIN" rules) — the only script shape this describes; anything else
+    # returns None rather than guessing at a description.
+    _ALLOWED_CHARS_RE = re.compile(r'allowedChars\s*=\s*"([^"]*)"')
+
+    @classmethod
+    def _describe_char_allowlist(cls, script: str | None) -> str | None:
+        # Raven review, 2026-07-28: this previously did a blind first-match
+        # search with no guard against conditional branching or
+        # reassignment — the established sibling pattern for exactly this
+        # ambiguity class is bml.py's evaluate_constant_return, which bails
+        # to None on any `if (` in the script and walks multiple
+        # assignments in source order so the LAST one wins (never describes
+        # a stale/conditionally-overridden value as if it were the real
+        # constraint). Matched here for the same reason.
+        if not script:
+            return None
+        if re.search(r'\bif\s*\(', script, re.IGNORECASE):
+            return None
+        matches = list(cls._ALLOWED_CHARS_RE.finditer(script))
+        if not matches:
+            return None
+        chars = matches[-1].group(1)
+        if not chars:
+            return None
+        has_upper = any(c.isupper() for c in chars)
+        has_lower = any(c.islower() for c in chars)
+        has_digit = any(c.isdigit() for c in chars)
+        specials = sorted({c for c in chars if not c.isalnum()})
+        parts: list[str] = []
+        if has_upper and has_lower:
+            parts.append("letters")
+        elif has_upper:
+            parts.append("uppercase letters")
+        elif has_lower:
+            parts.append("lowercase letters")
+        if has_digit:
+            parts.append("digits")
+        if specials:
+            parts.append("the characters " + " ".join(specials))
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+    def describe_free_text_constraint(
+        self, attr: ConfigAttr, validation_rules: list["ValidationRule"] | None,
+    ) -> str | None:
+        """Plain-language description of a no-option attr's real constraint,
+        for a Q&A "what values are allowed" question the attr has no
+        options to answer with (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+        Amendment 20 follow-up — confirmed live: agencyDomainName_ID_swSoln
+        is free text with zero options, so the existing options-listing
+        fast path has nothing to show, and its own ValidationRule's
+        human-authored `message` ("Invalid selection") isn't descriptive
+        either). Only describes the one script idiom confirmed above;
+        returns None (never guesses) for any other rule shape.
+        """
+        target_ids = {attr.entity_id, attr.source_id}
+        for rule in validation_rules or []:
+            if rule.target_attr_id not in target_ids:
+                continue
+            desc = self._describe_char_allowlist(rule.condition_script)
+            if desc:
+                return desc
+        return None
+
+    def should_ask_free_text_attr(
+        self,
+        attr: ConfigAttr,
+        validation_rules: list["ValidationRule"] | None,
+        bml_eval: "BmlEvaluator | None",
+    ) -> bool:
+        """Generic (not catalog-specific) replacement for Amendment 19's
+        reverted blanket "has a ValidationRule -> ask" heuristic (Amendment
+        20, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md). Every deterministic
+        signal available in this data (required flag, default_value, script
+        shape, hiding-rule visibility) was confirmed identical between a
+        genuine case and Amendment 20's false-positive case — so this
+        escalates to a Tier-2 LLM judgment (Amendment 22), same discipline
+        as every other "no cheaper signal exists" case in this codebase.
+        Returns False (never asks) when there's no governing ValidationRule
+        at all, or when bml_eval wasn't supplied — same opt-out convention
+        every other bml_eval=None caller already gets elsewhere.
+        """
+        if bml_eval is None:
+            return False
+        target_ids = {attr.entity_id, attr.source_id}
+        rule = next(
+            (r for r in (validation_rules or []) if r.target_attr_id in target_ids),
+            None,
+        )
+        if rule is None:
+            return False
+        return bml_eval.classify_ask_worthy(
+            attr.display_label, rule.message, rule.condition_script, attr.entity_id,
+        )
+
+    # ── Announcement label disambiguation ──────────────────────────────────────
+
+    @staticmethod
+    def disambiguated_label(attr: ConfigAttr, attrs: list[ConfigAttr]) -> str:
+        """`attr.display_label`, suffixed to stay unique when 2+ attrs in
+        `attrs` share the same raw catalog label.
+
+        Live-confirmed gap (2026-07-28): `serviceType_astro`,
+        `serviceTypeRSM_astro`, and `serviceTypeAdditionalDMSCoverage_astro`
+        all carry the literal display_label "Service Type" — when a cascade
+        turn changes more than one of them (the user's own change plus an
+        independently-firing recommendation rule), the customer sees
+        multiple identical "Updated **Service Type** → ..." lines that read
+        as duplicates/contradictions instead of distinct facts. This is the
+        same root cause `_label_collision_for` already disambiguates at
+        QUESTION time — this is the ANNOUNCEMENT-time equivalent.
+
+        No catalog field carries a friendly, human grouping name for an
+        attr (checked live: the raw ingested JSON has only structural/UI
+        codes — "category": "2", not a label) — so the fallback is the
+        attr's own variable_name, camelCase/acronym-split into words, with
+        the words already present in the shared label removed. E.g.
+        "serviceTypeRSM_astro" vs. shared label "Service Type" -> "RSM";
+        "serviceTypeAdditionalDMSCoverage_astro" -> "Additional DMS
+        Coverage". The catalog suffix (e.g. "_astro") is stripped first —
+        it's shared by every attr, never a distinguishing fact. Returns the
+        bare label unchanged when a sibling's variable_name has no fragment
+        left to distinguish it (e.g. the "plainest" one, whose variable_name
+        collapses to the label itself) rather than surface a raw,
+        customer-meaningless variable_name.
+        """
+        label = attr.display_label
+        siblings = [a for a in attrs if a.display_label == label]
+        if len(siblings) < 2:
+            return label
+        label_words = {w.lower() for w in re.split(r"[^A-Za-z0-9]+", label) if w}
+        # `attr.catalog_prefix` is a different, BM-type-level field (e.g.
+        # "ApxNextConfig") — NOT the "_astro"-style suffix variable_names
+        # actually carry, so it can't be used to strip that suffix (live-
+        # verified: checking it left "astro" un-stripped, leaking as a
+        # meaningless "Service Type (astro)"). Instead, derive it: any
+        # underscore-part shared by EVERY sibling's variable_name is by
+        # definition not a distinguishing fact for one of them — exclude
+        # those words the same way label_words are excluded.
+        _sibling_parts = [
+            {p.lower() for p in s.variable_name.split("_") if p} for s in siblings
+        ]
+        _shared_parts = set.intersection(*_sibling_parts) if _sibling_parts else set()
+        _excluded = label_words | _shared_parts
+        for part in attr.variable_name.split("_"):
+            if not part or part.lower() in _shared_parts:
+                continue
+            spaced = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", part)
+            spaced = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", spaced)
+            words = [w for w in spaced.split() if w.lower() not in _excluded]
+            if words:
+                return f"{label} ({' '.join(words)})"
+        # No distinguishing fragment left after stripping shared label
+        # words and the catalog suffix (this attr's variable_name IS the
+        # label, e.g. the plainest sibling among several sharing it) —
+        # better to leave it as the bare label than surface a raw,
+        # customer-meaningless variable_name fragment.
+        return label
+
     # ── Next question ─────────────────────────────────────────────────────────
 
     def next_question_prompt(
@@ -5433,6 +5697,7 @@ class CpqEngine:
         attr: ConfigAttr,
         context_sentence: str = "",
         constrained_item_values: list[str] | None = None,
+        validation_rules: list["ValidationRule"] | None = None,
     ) -> str:
         """Build the hybrid question shown to the sales rep for one pending attr.
 
@@ -5440,6 +5705,16 @@ class CpqEngine:
           (e.g. "Since 5G was selected, we now need a compatible antenna.").
         constrained_item_values — when active constraint rules apply, only these
           item_values are presented in the numbered list.
+        validation_rules — when given, a free-text attr (no options) proactively
+          shows its format constraint up front (e.g. "must only contain letters,
+          digits, and the characters - . _") instead of a bare "Please provide a
+          value." — confirmed live a rep has no way to know the expected format
+          otherwise, since BigMachines' own source data has no help-text field
+          for these attrs at all (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+          Amendment 21's describe_free_text_constraint, previously only reachable
+          reactively via a Q&A question — now shown proactively too). None when
+          not supplied (default), same opt-out convention as bml_eval=None
+          elsewhere — never guesses a constraint that can't be described.
         """
         # Use _presentable (not _valid) so codes like "NA" (North America) appear
         # in the numbered list even though _valid("NA")=False prevents auto-fill.
@@ -5492,7 +5767,11 @@ class CpqEngine:
                 if attr.select_type == "multi" and not attr.required else ""
             )
             return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}{skip_hint}"
-        return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value."
+        constraint_desc = self.describe_free_text_constraint(attr, validation_rules)
+        constraint_hint = (
+            f"\n\n*Must only contain {constraint_desc}.*" if constraint_desc else ""
+        )
+        return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value.{constraint_hint}"
 
     def apply_answer(
         self,

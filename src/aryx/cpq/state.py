@@ -373,6 +373,31 @@ class CpqSession:
     pending_label_collision_vns: list[str] = field(default_factory=list)
     pending_label_collision_question: str = ""
 
+    # Set when detect_change_target_without_value recognized a change-verb
+    # naming an already-filled attr but no resolvable new value ("change
+    # hardware version") and asked which value instead of guessing
+    # (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 1). The
+    # NEXT turn's reply IS the new value directly (not a fresh CPQ hint),
+    # so it must be captured and applied via _handle_cascade before falling
+    # through to ordinary detection again — same "remember what prompt is
+    # pending" convention as pending_change_collision_vns above, just for a
+    # single target attr rather than a disambiguation list. Empty string
+    # when no such prompt is pending.
+    pending_change_no_value_vn: str = ""
+
+    # Set when a message named a label-collision target ("change service
+    # type...") AND a second, distinct, already-filled attr with no given
+    # value in the same message ("...and solution type") -- confirmed live
+    # (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4): a message naming 2+
+    # distinct intents only ever got the FIRST one addressed, the rest
+    # silently dropped once the collision detector's own caller returned.
+    # The collision must be resolved first (its own reply format is a
+    # number/variable_name, not a value), so this stashes the second
+    # target's variable_name to continue to automatically once the
+    # collision resolves, rather than losing it. Empty string when none
+    # is pending.
+    pending_multi_intent_vn: str = ""
+
     # Set when a catalog's own bm_catalog tree has 2+ model leaves (so
     # single_model_variable_name can't auto-seed _bm_model_variable_name
     # unambiguously — Amendment 10, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
