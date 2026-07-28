@@ -428,6 +428,30 @@ class CpqSession:
     # product_name itself.
     product_anchor_question: str = ""
 
+    # Post-failure prevention (session_guard): deep-copied CpqSession
+    # dicts taken BEFORE each mutating intent. Cap 10 (evict oldest).
+    # Nested history is stripped on push so snapshots stay bounded.
+    # Restored by the first-class "undo" intent.
+    history: list[dict[str, Any]] = field(default_factory=list)
+
+    # Consecutive clarification prompts for the same variable_name.
+    # After 2, the orchestrator presents numbered options instead of
+    # another free-form clarify (loop-exit guard).
+    clarify_streak_by_vn: dict[str, int] = field(default_factory=dict)
+
+    # Turns that ended unresolved (clarify / unparseable / no progress).
+    # After 5, offer deterministic guided mode.
+    unresolved_turns: int = 0
+
+    # When True, skip LLM-first gateway and force the deterministic
+    # detector waterfall (user accepted guided mode, or loop-exit
+    # automatic offer was taken).
+    guided_mode: bool = False
+
+    # Recent user utterance snippets (capped) for BOM provenance —
+    # "trace to a user utterance" without re-scanning ask history store.
+    recent_utterances: list[str] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

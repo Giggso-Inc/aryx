@@ -681,6 +681,35 @@ class Settings(BaseSettings):
             "CI run) or before considering this validated for production."
         ),
     )
+    cpq_intent_gemini_model: str = Field(
+        default="gemini-2.5-pro",
+        description=(
+            "Pinned model id for the CPQ intent gateway (cpq/intent_gateway.py). "
+            "One structured call per turn; logged with session run_id. "
+            "Override with ARYX_CPQ_INTENT_GEMINI_MODEL."
+        ),
+    )
+    cpq_intent_mode: str = Field(
+        default="shadow",
+        description=(
+            "Top-level /ask intent router mode (Prompt 3). "
+            "'llm_first' — gateway classifies every cold-start turn; "
+            "handlers only execute. "
+            "'deterministic_first' — legacy is_cpq_question regex/alias gate "
+            "(no gateway). "
+            "'shadow' (default) — deterministic path decides; gateway "
+            "classifies in parallel for agreement logs only (grep by run_id). "
+            "Rollback = set ARYX_CPQ_INTENT_MODE=deterministic_first."
+        ),
+    )
+    cpq_intent_timeout_s: float = Field(
+        default=10.0,
+        description=(
+            "Hard timeout (seconds) for the top-level intent gateway call. "
+            "On timeout/error, escape hatch falls back to the deterministic "
+            "is_cpq_question path. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
+        ),
+    )
     bml_tier2_max_per_turn: int = Field(
         default=50,
         description=(

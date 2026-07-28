@@ -21,10 +21,40 @@ from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
+from aryx.cpq.bom_gate import validate_before_payload
+from aryx.cpq.intent_gateway import (
+    AskRouteDecision,
+    classify_ask_route,
+    classify_intent as gateway_classify_intent,
+    hard_off_topic,
+    mark_top_level_route_used,
+    soft_quote_heuristic,
+    top_level_route_used,
+)
 from aryx.cpq.intent_schema import (
-    Confidence, INTENT_RESULT_JSON_SCHEMA, IntentCategory, IntentResult, parse_intent_result,
+    ChangeTarget,
+    Confidence,
+    INTENT_RESULT_JSON_SCHEMA,
+    IntentCategory,
+    IntentResult,
+    parse_intent_result,
 )
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
+from aryx.cpq.session_guard import (
+    clear_clarify,
+    detect_guided_mode_accept,
+    detect_undo,
+    guided_mode_offer_message,
+    note_clarify,
+    numbered_options_prompt,
+    push_snapshot,
+    record_utterance,
+    restore_last_snapshot,
+    should_force_numbered_options,
+    should_offer_guided_mode,
+    undo_empty_message,
+    undo_success_message,
+)
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
@@ -42,7 +72,7 @@ def _validate_workspace(workspace_id: int) -> None:
     """Raise 422 if workspace_id does not exist — prevents cross-workspace log pollution."""
     with get_pool(get_settings().rdb_dsn).connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM aryx_workspace WHERE id = %s", (workspace_id,))
+            cur.execute(load("select_workspace_by_id"), (workspace_id,))
             if cur.fetchone() is None:
                 raise HTTPException(
                     status_code=422,
@@ -335,6 +365,10 @@ def _cpq_summary_text(
 ) -> str:
     """Structured, headed/bulleted summary of the filtered configuration.
 
+    Post-generation, summary_guard diffs field-by-field against session
+    display state; mismatch regenerates once, then falls back to the raw
+    state table (never a hallucinated summary).
+
     The engine's `categorized_summary_groups` owns ALL filtering (booleans,
     secondary/warranty/product attrs, year durations, rule-governed set,
     "(none)" placeholders) AND the same category grouping (Product Name /
@@ -425,7 +459,28 @@ def _cpq_summary_text(
                 # capping to "first sentence" here would truncate to a
                 # single bullet, so the full segment is kept verbatim.
                 lines.append(f"\n**{category}:**\n{segment}")
-            return "\n".join(lines)
+            draft = "\n".join(lines)
+            # summary_guard: every display value must appear in the narration
+            from aryx.cpq.summary_guard import (
+                fields_missing_from_summary, raw_state_table,
+            )
+            missing = fields_missing_from_summary(draft, display_filled, attrs)
+            if not missing:
+                return draft
+            logger.info(
+                "summary_guard: LLM summary missing %s — regenerating via "
+                "deterministic bullets", missing[:5],
+            )
+            second = _cpq_engine.render_filled_summary(
+                display_filled, attrs, rule_governed_ids=rule_governed_ids,
+                sources=sources,
+            )
+            if not fields_missing_from_summary(second, display_filled, attrs):
+                return second
+            stub = CpqSession()
+            stub.display_filled = dict(display_filled)
+            stub.filled_source = dict(sources or {})
+            return raw_state_table(stub, attrs)
         logger.debug(
             "cpq: summary narration returned %d segments (expected %d) — "
             "using bullet fallback", len(segments), expected_segments)
@@ -737,6 +792,8 @@ def _handle_cascade(
     con_rules: list,
 ) -> dict[str, Any]:
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
+    push_snapshot(session, reason="cascade")
+    clear_clarify(session, getattr(changed_attr, "variable_name", None))
     by_eid = {a.entity_id: a for a in attrs}
     hints = _cpq_engine.extract_hints(req.question)
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
@@ -1719,6 +1776,7 @@ def _handle_cascade_multi(
     that" nudge) only when NONE of the named changes could be applied —
     mirrors `detect_change_request` returning None today.
     """
+    push_snapshot(session, reason="cascade_multi")
     by_eid = {a.entity_id: a for a in attrs}
     hints = _cpq_engine.extract_hints(req.question)
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
@@ -2881,6 +2939,51 @@ def _shadow_classify_cpq_turn(
         logger.debug("cpq_shadow_intent: diagnostic failed", exc_info=True)
 
 
+def _gateway_to_intent_result(
+    gw: Any,
+    attrs: list,
+    value_display: str | None,
+) -> IntentResult | None:
+    """Map a quarantined GatewayIntentResult onto IntentResult for dispatch.
+
+    Uses candidate-resolved variable_name → display_label and value_ref →
+    display_name (passed in as value_display). Never trusts free-text
+    item_value from the model. Returns None for categories the existing
+    _dispatch_intent_result does not yet handle (fall through).
+    """
+    from aryx.cpq.intent_schema import GatewayIntentResult as _GIR
+    if not isinstance(gw, _GIR):
+        return None
+    by_vn = {a.variable_name: a for a in attrs}
+    target = None
+    if gw.variable_name and gw.variable_name in by_vn:
+        attr = by_vn[gw.variable_name]
+        target = ChangeTarget(
+            target_description=attr.display_label,
+            new_value_description=value_display,
+        )
+    # Prefer gateway-selected display_label so _resolve_target_description
+    # can exact-match; if no target and category needs one, refuse map.
+    needs_target = gw.intent_category in {
+        IntentCategory.CHANGE_REQUEST,
+        IntentCategory.CHANGE_TARGET_WITHOUT_VALUE,
+        IntentCategory.CHANGE_REQUESTS_MULTI,
+    }
+    if needs_target and target is None:
+        return None
+    return IntentResult(
+        category=gw.intent_category,
+        confidence=gw.confidence,
+        target=target,
+        targets=[target] if (
+            gw.intent_category == IntentCategory.CHANGE_REQUESTS_MULTI
+            and target is not None
+        ) else [],
+        clarifying_question=gw.clarifying_question,
+        rationale=gw.rationale,
+    )
+
+
 def _with_classify_usage(
     result_dict: "dict[str, Any] | None", prompt_tokens: int, completion_tokens: int,
 ) -> "dict[str, Any] | None":
@@ -3131,6 +3234,37 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         session.run_id = uuid.uuid4().hex
     set_run_id(session.run_id)
     session.turn += 1
+    record_utterance(session, req.question)
+
+    # First-class UNDO — restore last session snapshot before any other routing.
+    if detect_undo(req.question):
+        if restore_last_snapshot(session):
+            answer = undo_success_message(session)
+        else:
+            answer = undo_empty_message()
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_undo()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    # Accept deterministic guided mode (loop-exit offer).
+    if detect_guided_mode_accept(req.question) and not session.guided_mode:
+        session.guided_mode = True
+        session.unresolved_turns = 0
+        answer = (
+            "Guided mode is on — I'll ask one clear question at a time "
+            "using the deterministic catalog flow (no free-form intent jumps)."
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_guided_mode()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
 
     # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
     hints = _cpq_engine.extract_hints(req.question)
@@ -4151,6 +4285,32 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # just re-shows the CURRENT (possibly edited) JSON, nothing new
         # to run (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md §4.1).
         if _cpq_engine.detect_approval(req.question):
+            # Final BOM gate — constraint re-run + provenance hard-fail.
+            # Never emit a payload that fails verification.
+            catalog_prefix_gate = attrs[0].catalog_prefix if attrs else ""
+            bml_gate = _cpq_engine.build_bml_evaluator(
+                req.workspace_id, catalog_prefix_gate,
+            )
+            gate = validate_before_payload(
+                _cpq_engine, attrs, session, con_rules, bml_gate,
+            )
+            if not gate.ok:
+                session.complete = False
+                session.status = "awaiting_approval"
+                _persist_cpq_history(
+                    req.workspace_id, req.question, gate.catch_message,
+                )
+                return {
+                    "answer": gate.catch_message, "terms": [],
+                    "tools_called": ["cpq_bom_gate_blocked()"],
+                    "usage": {
+                        "prompt_tokens": 0, "completion_tokens": 0,
+                        "latency_ms": 0, "menial_model": "cpq-engine",
+                        "answer_model": "cpq-engine",
+                    },
+                    "grounding": None, "session_data": session.to_dict(),
+                    "cpq_payload": None,
+                }
             session.status = "post_approval"
             session.complete = True
             payload = _cpq_engine.build_payload(
@@ -4341,57 +4501,79 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             session.pending_change_collision_vns = []
             session.pending_change_collision_question = ""
 
-        # Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md —
-        # attempt LLM-first dispatch before the deterministic STEP 6
-        # waterfall below. Gated on cpq_llm_first_enabled (config.py
-        # default True as of 2026-07-28 for local/dev testing; this path
-        # still has NOT been validated against real Phase 1 shadow-mode
-        # disagreement data, which the plan doc's own Phase 2 criteria
-        # calls for before considering it production-ready). "cpq_llm_
-        # first: ..." log lines below (2026-07-28) make every outcome
-        # visible without needing an ad hoc debug script: classification
-        # failure/unparseable, a successful classification with its
-        # category/target/confidence/tokens, and — the case live-verified
-        # here to be a correct, intentional fallback rather than a bug —
-        # a successful classification whose DISPATCH still returns None
-        # (e.g. "change product" resolving to 4 tied candidates sharing
-        # generic "product" vocabulary, correctly deferred rather than
-        # guessed). _dispatch_intent_result returning None is the ONLY
-        # signal this block treats as "fall through" — the existing
-        # STEP 6+ detectors below run completely unchanged whenever it
-        # does, exactly like every existing early-return check above.
-        if get_settings().cpq_llm_first_enabled:
-            _llm_first_result, _llm_first_it, _llm_first_ot = _llm_classify_intent_universal(
-                req.question, attrs, session, req.workspace_id)
-            if _llm_first_result is None:
-                logger.info(
-                    "cpq_llm_first: message %r -> classification failed/unparseable, "
-                    "falling through to deterministic path",
-                    req.question,
-                )
-            else:
-                logger.info(
-                    "cpq_llm_first: message %r -> category=%s confidence=%s "
-                    "target=%r targets=%r tokens=(%d, %d)",
-                    req.question, _llm_first_result.category.value,
-                    _llm_first_result.confidence.value,
-                    _llm_first_result.target, _llm_first_result.targets,
-                    _llm_first_it, _llm_first_ot,
-                )
-                _dispatched = _dispatch_intent_result(
-                    req, session, attrs, _llm_first_result,
-                    hiding_rules, rec_rules, con_rules, bml_eval,
-                    _llm_first_it, _llm_first_ot,
-                )
-                if _dispatched is None:
-                    logger.info(
-                        "cpq_llm_first: message %r classified as %s but dispatch "
-                        "returned None (unresolved target, low confidence, or "
-                        "uncovered category) -- falling through to deterministic path",
-                        req.question, _llm_first_result.category.value,
+        # LLM-first mid-session gateway. N4: skip when top-level
+        # classify_ask_route already ran this turn (one classification LLM
+        # call per turn). Live sessions never mark top-level, so they still
+        # get STEP-6 gateway. Guided mode stays deterministic-only.
+        if (
+            get_settings().cpq_llm_first_enabled
+            and not session.guided_mode
+            and not top_level_route_used()
+        ):
+            _gw = gateway_classify_intent(
+                req.question, attrs, session, _cpq_engine, req.workspace_id,
+            )
+            logger.info(
+                "cpq_intent_gateway_turn: action=%s reason=%r category=%s "
+                "vn=%r value_ref=%r cache_hit=%s tokens=(%d,%d) model=%s",
+                _gw.action, _gw.reason,
+                _gw.result.intent_category.value if _gw.result else None,
+                _gw.result.variable_name if _gw.result else None,
+                _gw.result.value_ref if _gw.result else None,
+                _gw.cache_hit, _gw.prompt_tokens, _gw.completion_tokens,
+                _gw.model_id,
+            )
+            if _gw.action == "clarify" and _gw.result:
+                _vn = _gw.result.variable_name
+                _streak = note_clarify(session, _vn)
+                if should_force_numbered_options(session, _vn) and _vn:
+                    _attr_opt = next(
+                        (a for a in attrs if a.variable_name == _vn), None,
                     )
+                    if _attr_opt is not None:
+                        _cq = numbered_options_prompt(_attr_opt)
+                    else:
+                        _cq = (
+                            _gw.result.clarifying_question
+                            or "Which field and value should I use?"
+                        )
                 else:
-                    return _dispatched
+                    _cq = (
+                        _gw.result.clarifying_question
+                        or "Which field and value should I use?"
+                    )
+                if should_offer_guided_mode(session):
+                    _cq = f"{_cq}\n\n{guided_mode_offer_message()}"
+                _persist_cpq_history(req.workspace_id, req.question, _cq)
+                return _with_classify_usage({
+                    "answer": _cq, "terms": [],
+                    "tools_called": ["cpq_intent_gateway_clarify()"],
+                    "usage": {
+                        "prompt_tokens": 0, "completion_tokens": 0,
+                        "latency_ms": 0, "menial_model": "cpq-engine",
+                        "answer_model": "cpq-engine",
+                    },
+                    "grounding": None, "session_data": session.to_dict(),
+                    "cpq_payload": None,
+                }, _gw.prompt_tokens, _gw.completion_tokens)
+            if _gw.action == "dispatch" and _gw.result:
+                clear_clarify(session, _gw.result.variable_name)
+                _mapped = _gateway_to_intent_result(
+                    _gw.result, attrs, _gw.value_display,
+                )
+                if _mapped is not None:
+                    _dispatched = _dispatch_intent_result(
+                        req, session, attrs, _mapped,
+                        hiding_rules, rec_rules, con_rules, bml_eval,
+                        _gw.prompt_tokens, _gw.completion_tokens,
+                    )
+                    if _dispatched is not None:
+                        return _dispatched
+                    logger.info(
+                        "cpq_intent_gateway_turn: dispatch mapped but handler "
+                        "returned None — falling through to deterministic path",
+                    )
+            # action=fallback (or dispatch that couldn't map) → STEP 6+
 
         # STEP 6: change request → cascade
         # Bulk quantity check first — "change both the mounting types
@@ -5508,53 +5690,8 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     result["api_share_button_flag"] = session.status != "configuring"
 
 
-def run_ask(req: AskRequest) -> dict[str, Any]:
-    """Execute the Aryx Ask pipeline for a request payload.
-
-    CPQ mode: when the question is a configuration/quote request (or the
-    session_data carries a live CPQ session), routes to _run_cpq_turn()
-    which drives the guided attribute-by-attribute conversation.
-
-    Standard mode: term extraction → graph retrieval → Grok synthesis.
-    """
-    reader = _reader(req.workspace_id)
-
-    # ── CPQ routing ───────────────────────────────────────────────────────────
-    # Amendment 16 Layer 1 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): the
-    # Tier-2 intent gate only runs when Tier-1 (is_cpq_question's regex
-    # trigger + ingested-alias check) already returned False — `or`
-    # short-circuits, so a Tier-1 "yes" never pays for the extra LLM call.
-    is_cpq = (
-        req.session_data.get("mode") == "cpq"  # continuing a CPQ session
-        or _cpq_engine.is_cpq_question(req.question, reader, req.workspace_id)
-        or _llm_classify_is_cpq_question(req.question, req.workspace_id)
-    )
-    if is_cpq:
-        result = _run_cpq_turn(req, reader)
-        if result:  # non-empty → CPQ engine handled it
-            # Phase 1 shadow-mode (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
-            # PLAN.md) — logs the REAL deterministic outcome for this
-            # turn, tagged with the same run_id `_shadow_classify_cpq_
-            # turn` already logged its classification under. Comparing
-            # the two log lines (grep by run_id) is the "log agreement/
-            # disagreement" Phase 1 calls for. Read-only; never affects
-            # `result` itself.
-            try:
-                # set_run_id was already called inside _run_cpq_turn, so
-                # the run_id logging filter (aryx.cpq.logging_context)
-                # tags this line automatically — no need to include it
-                # in the message itself.
-                logger.info(
-                    "cpq_shadow_intent_actual: tools_called=%s status=%s",
-                    result.get("tools_called"),
-                    (result.get("session_data") or {}).get("status"),
-                )
-            except Exception:  # noqa: BLE001 — shadow logging must never break the turn
-                logger.debug("cpq_shadow_intent_actual: logging failed", exc_info=True)
-            _attach_share_flags(result, req, reader)
-            return result
-        # empty → no CPQ data in graph yet, fall through to standard Ask
-
+def _standard_ask_pipeline(req: AskRequest, reader: Any) -> dict[str, Any]:
+    """Non-CPQ Ask: term extraction → graph retrieval → synthesis."""
     types = all_types(reader)
     overview = build_overview(reader, req.workspace_id)
     try:
@@ -5591,6 +5728,251 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     return {"answer": answer or "No answer produced.", "terms": terms,
             "tools_called": calls, "usage": usage,
             "grounding": grounding.to_dict()}
+
+
+def _finish_cpq_result(
+    result: dict[str, Any] | None,
+    req: AskRequest,
+    reader: Any,
+    *,
+    route_meta: AskRouteDecision | None = None,
+) -> dict[str, Any] | None:
+    """Attach share flags + bidirectional shadow logs; return result or None."""
+    if not result:
+        return None
+    try:
+        logger.info(
+            "cpq_shadow_intent_actual: tools_called=%s status=%s",
+            result.get("tools_called"),
+            (result.get("session_data") or {}).get("status"),
+        )
+        if route_meta is not None:
+            logger.info(
+                "cpq_router: model_id=%s llm_route=%s det_is_cpq=%s agreement=%s "
+                "confidence=%s timed_out=%s error=%r tokens=(%d,%d)",
+                route_meta.model_id, route_meta.route, route_meta.det_is_cpq,
+                route_meta.agreement, route_meta.confidence,
+                route_meta.timed_out, route_meta.error,
+                route_meta.prompt_tokens, route_meta.completion_tokens,
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("cpq_shadow_intent_actual: logging failed", exc_info=True)
+    _attach_share_flags(result, req, reader)
+    return result
+
+
+def _deterministic_cpq_gate(req: AskRequest, reader: Any) -> bool:
+    """Legacy auditor: regex/alias only — NO second LLM classification call.
+
+    Demoted from primary router to post-check / escape-hatch path so the
+    turn pays at most one gateway LLM call (Prompt 3 acceptance).
+    """
+    if req.session_data.get("mode") == "cpq":
+        return True
+    return bool(
+        _cpq_engine.is_cpq_question(req.question, reader, req.workspace_id)
+    )
+
+
+def _route_quote(
+    req: AskRequest, reader: Any, meta: AskRouteDecision | None = None,
+) -> dict[str, Any]:
+    result = _run_cpq_turn(req, reader)
+    finished = _finish_cpq_result(result, req, reader, route_meta=meta)
+    if finished:
+        return finished
+    # No CPQ graph data — fall through to standard Ask rather than empty.
+    return _standard_ask_pipeline(req, reader)
+
+
+def _route_qa(
+    req: AskRequest, reader: Any, meta: AskRouteDecision | None = None,
+) -> dict[str, Any]:
+    """QA path — handlers execute only; no re-classification.
+
+    N2 harden: cold-start QA loads catalog attrs via a *read-only* product
+    mention resolve for option lists — never writes session.product_name
+    or triggers a family switch (few-shot: 'options for product' must not
+    hop to softwareSolutions_BOM).
+    """
+    session = (
+        CpqSession.from_dict(req.session_data)
+        if req.session_data.get("mode") == "cpq"
+        else CpqSession()
+    )
+    if not session.run_id:
+        session.run_id = uuid.uuid4().hex
+    set_run_id(session.run_id)
+    attrs: list = []
+    product_for_attrs = session.product_name
+    if not product_for_attrs:
+        # Read-only resolve — do NOT assign session.product_name (N2/N3).
+        try:
+            _hints = _cpq_engine.extract_hints(req.question)
+            mentioned = _cpq_engine.detect_product_mention(
+                req.question, _hints, reader, req.workspace_id,
+            )
+            if mentioned:
+                product_for_attrs = mentioned
+                logger.info(
+                    "route_qa: read_only product context=%r (session.product_name unchanged)",
+                    mentioned,
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug("route_qa: detect_product_mention failed", exc_info=True)
+    if product_for_attrs:
+        try:
+            attrs, _ = _cpq_engine.load_product_config(
+                reader, req.workspace_id, product_for_attrs,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("route_qa: load_product_config failed", exc_info=True)
+            attrs = []
+    result = _handle_cpq_qa(req, session, attrs, reader, resume_review=False)
+    # Belt-and-suspenders: never let QA path mutate product without switch.
+    if result and isinstance(result.get("session_data"), dict):
+        if req.session_data.get("mode") != "cpq":
+            # Cold QA shell — strip product commits if any leaked.
+            sd = dict(result["session_data"])
+            if not req.session_data.get("product_name"):
+                if sd.get("product_name") and sd.get("status") not in (
+                    "awaiting_approval", "post_approval", "configuring",
+                ):
+                    pass  # allow only if engine already entered real CPQ
+            result["session_data"] = sd
+    finished = _finish_cpq_result(result, req, reader, route_meta=meta)
+    return finished or _standard_ask_pipeline(req, reader)
+
+
+def _route_ambiguous(meta: AskRouteDecision, req: AskRequest) -> dict[str, Any]:
+    cq = meta.clarifying_question or (
+        "Are you looking to configure or quote a product, or ask a "
+        "general product question?"
+    )
+    return {
+        "answer": cq,
+        "terms": [],
+        "tools_called": ["cpq_ask_route_ambiguous()"],
+        "usage": {
+            "prompt_tokens": meta.prompt_tokens,
+            "completion_tokens": meta.completion_tokens,
+            "latency_ms": 0,
+            "menial_model": meta.model_id or "cpq-intent-gateway",
+            "answer_model": meta.model_id or "cpq-intent-gateway",
+        },
+        "grounding": None,
+        "session_data": req.session_data or {},
+        "cpq_payload": None,
+    }
+
+
+def run_ask(req: AskRequest) -> dict[str, Any]:
+    """Execute the Aryx Ask pipeline for a request payload.
+
+    Prompt 3 — inverted router (config-reversible):
+      ARYX_CPQ_INTENT_MODE=
+        llm_first          — gateway routes every cold-start turn
+        deterministic_first — legacy is_cpq_question gate only
+        shadow (default)   — deterministic decides; gateway logs agreement
+
+    Live CPQ sessions always enter _run_cpq_turn (session owns state).
+    BOM payloads still only come from auto_fill → rule loop → build_payload.
+    """
+    reader = _reader(req.workspace_id)
+    settings = get_settings()
+    mode = (settings.cpq_intent_mode or "shadow").strip().lower()
+    live_session = req.session_data.get("mode") == "cpq"
+
+    # ── Live session: always CPQ turn (engine owns switch/undo/cascade) ─────
+    # N3: switch confirmation stays inside _run_cpq_turn — log explicit hint.
+    if live_session:
+        logger.info(
+            "cpq_router: live_session product=%r status=%r — skip top-level route",
+            req.session_data.get("product_name"),
+            req.session_data.get("status"),
+        )
+        return _route_quote(req, reader)
+
+    # N10: hard off-topic before any mode work (no LLM, no CPQ).
+    if hard_off_topic(req.question):
+        logger.info("cpq_router: hard_off_topic → standard Ask")
+        return _standard_ask_pipeline(req, reader)
+
+    det_is_cpq = _deterministic_cpq_gate(req, reader)
+    soft_quote = soft_quote_heuristic(req.question)
+
+    # ── deterministic_first: legacy short-circuit (no gateway LLM) ──────────
+    if mode == "deterministic_first":
+        is_cpq = (
+            det_is_cpq
+            or soft_quote
+            or _llm_classify_is_cpq_question(req.question, req.workspace_id)
+        )
+        if is_cpq:
+            return _route_quote(req, reader)
+        return _standard_ask_pipeline(req, reader)
+
+    # ── llm_first / shadow: one top-level gateway call ──────────────────────
+    route_meta = classify_ask_route(
+        req.question,
+        workspace_id=req.workspace_id,
+        session_hint="none (cold start)",
+        det_is_cpq=det_is_cpq,
+        timeout_s=float(settings.cpq_intent_timeout_s or 10.0),
+    )
+    # N4: mid-session gateway in _run_cpq_turn will no-op this turn.
+    mark_top_level_route_used()
+
+    # Escape hatch: timeout / double validation / transport error → det path
+    # N6: soft_quote catches "order APX…" paraphrases det regex misses.
+    if route_meta.error or route_meta.timed_out:
+        logger.warning(
+            "cpq_router: escape_hatch mode=%s error=%r timed_out=%s "
+            "det=%s soft_quote=%s → fallback",
+            mode, route_meta.error, route_meta.timed_out, det_is_cpq, soft_quote,
+        )
+        if det_is_cpq or soft_quote:
+            return _route_quote(req, reader, route_meta)
+        return _standard_ask_pipeline(req, reader)
+
+    # Bidirectional shadow log (LLM route + det auditor)
+    log_fn = logger.warning if (
+        mode == "shadow" and route_meta.agreement is False
+    ) else logger.info
+    # N5: shadow disagreements are WARNING-level so they show in ops filters.
+    log_fn(
+        "cpq_router_shadow: mode=%s llm_route=%s det_is_cpq=%s agreement=%s "
+        "soft_quote=%s model_id=%s rationale=%r",
+        mode, route_meta.route, det_is_cpq, route_meta.agreement,
+        soft_quote, route_meta.model_id, route_meta.rationale,
+    )
+
+    if mode == "shadow":
+        # Deterministic path still decides; gateway is observe-only.
+        # N6: soft_quote widens det path so shadow traffic mirrors escape hatch.
+        if det_is_cpq or soft_quote:
+            return _route_quote(req, reader, route_meta)
+        return _standard_ask_pipeline(req, reader)
+
+    # ── llm_first: handlers execute the gateway decision ────────────────────
+    if route_meta.route == "off_topic":
+        return _standard_ask_pipeline(req, reader)
+
+    if route_meta.route == "quote":
+        if det_is_cpq is False:
+            logger.info(
+                "cpq_router: llm_first quote with det_is_cpq=False "
+                "(auditor disagreement — proceeding with LLM)",
+            )
+        return _route_quote(req, reader, route_meta)
+
+    if route_meta.route == "qa":
+        return _route_qa(req, reader, route_meta)
+
+    if route_meta.route == "ambiguous":
+        return _route_ambiguous(route_meta, req)
+
+    return _standard_ask_pipeline(req, reader)
 
 
 def ask_router() -> APIRouter:
