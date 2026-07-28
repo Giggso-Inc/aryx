@@ -134,7 +134,7 @@ When a tool is NOT in registry.json and NOT in a domain pack:
   Tools/APIs: {count} ({list top 3})
   → Say "approve" to load, "reject" to skip, "info" for details.
 
-7. If approved → add to manifest via raven-approve → available in future sessions
+7. If approved → record in the local tool manifest → available in future sessions
 8. If rejected → log rejection reason for future queries
 ```
 
@@ -155,9 +155,9 @@ Present with tradeoffs. Let user pick. Approved tools enter manifest.
 ### Rules
 - NEVER auto-load discovered tools. HITL gate is mandatory.
 - LOW trust tools get extra warning: "⚠️ Unverified — review source before approving"
-- Discovery results are cached in `.raven/.cache/discovery/` for 30 days
+- Discovery results are cached in `.andie/.cache/discovery/` for 30 days
 - If discovery fails (network, no results), say so and suggest manual research
 
 ---
 
-*Part of Raven v4 — tools-landscape with open-world discovery*
+*Andie tools-landscape — open-world discovery*

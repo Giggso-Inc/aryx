@@ -33,8 +33,8 @@ REDIRECT: Anything architectural, strategic, or non-bug goes to Andie for planni
 RULE: Silently check available memory before triage.
 
 LOOK FOR:
-- `~/RavenVault/sessions/YYYY-MM-DD-{project}.md`
-- `~/RavenVault/projects/{project}.md`
+- `~/AndieVault/sessions/YYYY-MM-DD-{project}.md`
+- `~/AndieVault/projects/{project}.md`
 
 OUTPUT: If useful context exists, include one line: `Prior: [summary]`. If not, say nothing.
 
@@ -96,7 +96,7 @@ After verdict, append or propose this audit shape:
 
 `[HH:MM] FIX | {project} | {component} | Root: {root cause} | Fix: {fix}`
 
-RULE: If the environment allows file edits and this skill is being used operationally, write to `.raven/audit/YYYY-MM-DD.log`. If not, include the audit line for handoff.
+RULE: If the environment allows file edits and this skill is being used operationally, write to `.andie/audit/YYYY-MM-DD.log`. If not, include the audit line for handoff.
 
 ## Commit Suggestion
 
@@ -136,7 +136,7 @@ At end, append or propose this memory shape:
 - Education note: {key insight}
 ```
 
-Target: `~/RavenVault/sessions/YYYY-MM-DD-{project}.md`.
+Target: `~/AndieVault/sessions/YYYY-MM-DD-{project}.md`.
 
 ## Final Validation
 
