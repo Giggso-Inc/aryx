@@ -159,6 +159,7 @@ def session_state_hash(session: CpqSession) -> str:
         "pending": list(session.pending_variables[:20]),
         "pending_change_no_value": session.pending_change_no_value_vn,
         "pending_change_collision": list(session.pending_change_collision_vns),
+        "pending_clarify": list(session.pending_clarify_vns),
         "status": session.status,
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
@@ -196,6 +197,8 @@ def build_candidate_bundles(
         if a.variable_name in session.pending_change_collision_vns:
             score += 7.0
         if a.variable_name == session.pending_change_no_value_vn:
+            score += 7.0
+        if a.variable_name in session.pending_clarify_vns:
             score += 7.0
         vocab = set(_WORD_RE.findall(a.display_label.lower()))
         vocab |= set(_WORD_RE.findall(a.variable_name.lower().replace("_", " ")))
@@ -323,6 +326,15 @@ def _llm_classify_once(
     if session.pending_change_no_value_vn:
         pending_bits.append(
             f"awaiting_value_for={session.pending_change_no_value_vn}"
+        )
+    if session.pending_clarify_vns:
+        pending_bits.append(
+            "awaiting_clarify_pick="
+            + "|".join(session.pending_clarify_vns[:8])
+            + (
+                f" (original={session.pending_clarify_question!r})"
+                if session.pending_clarify_question else ""
+            )
         )
     pending_line = (
         "SESSION PENDING: " + ", ".join(pending_bits) + "\n"

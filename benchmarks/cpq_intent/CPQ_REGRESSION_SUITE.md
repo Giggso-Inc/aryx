@@ -155,6 +155,60 @@ is covered by `tests/test_cpq_history_country_mine.py`.
 
 ---
 
+## ✅ Gateway clarify memory (append-only)
+
+Live transcript: `"change hardware"` → clarify which attr → `"Hardware Version"`
+historically hit the generic review nudge because `action=clarify` saved no
+pending state. Fix: `CpqSession.pending_clarify_*` + grounded catalog
+labels + resolve-before-reclassify + conversational invariant.
+
+| id | question | expected_intent | expected_vn | check |
+|----|----------|-----------------|-------------|-------|
+| P54 | change hardware | ambiguous | - | none |
+| P55 | Hardware Version | change_target_without_value | hWVersion_astro | none |
+| N52 | after clarify for hardware, reply with unrelated weather / joke text must not bind a candidate attribute | ambiguous | - | none |
+
+---
+
+## Dialogues
+
+Multi-turn scripts replayed offline by `run_regression.py` (`run_dialogues_offline`).
+Each turn's **expect** is a `;`-separated token list:
+
+| token | meaning |
+|-------|---------|
+| `pending_clarify` | `pending_clarify_vns` non-empty |
+| `not_pending_clarify` | clarify pending cleared |
+| `pending_no_value` | `pending_change_no_value_vn` set |
+| `pending_switch` | switch confirmation pending |
+| `question` | answer contains `?` |
+| `not_nudge` | answer is not the generic review nudge |
+| `not_misbind` | unrelated reply did not resolve a candidate |
+| `vn=hWVersion_astro` | resolved / no-value target is hardware version |
+| `invariant` | conversational invariant holds for this turn |
+
+### D01 — clarify memory resolves
+Exact live transcript: vague change → grounded clarify → bare label → value options.
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | change hardware | pending_clarify;question;not_nudge;invariant |
+| 2 | Hardware Version | not_pending_clarify;pending_no_value;vn=hWVersion_astro;question;not_nudge;invariant |
+
+### D02 — unrelated reply after clarify does not mis-bind
+| turn | user | expect |
+|------|------|--------|
+| 1 | change hardware | pending_clarify;question;not_nudge;invariant |
+| 2 | what's the weather in Houston today | not_misbind;pending_clarify;question;not_nudge;invariant |
+
+### D03 — N3 catalog-switch confirm is consumable (no loop)
+| turn | user | expect |
+|------|------|--------|
+| 1 | continue with software solutions | pending_switch;question;not_nudge;invariant |
+| 2 | yes continue | not_nudge;invariant |
+
+---
+
 ## Live-mode scoring (`--live`)
 
 `run_regression.py --live` replays every case through
