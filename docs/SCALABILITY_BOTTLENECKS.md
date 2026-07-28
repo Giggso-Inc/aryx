@@ -31,6 +31,7 @@ unacceptably slow pipeline runs.
 | P16 | 🟡 High | Oracle `RETURNING...INTO` ~16KB limit on JSON columns | *(fixed)* any datasource config json >~16KB (OCI mode) |
 | P17 | 🟢 Medium | Schema-FK LLM inference — sequential batches, not parallelized | *(identified, not fixed)* workspaces with many entity types |
 | P18 | 🔴 Critical | Adjudication decide — missing `workspace_id` scoping | *(fixed)* cross-tenant entity-merge approval, any workspace |
+| P19 | 🔴 Critical | Source edge counts — unindexable `OR`-join across relationship endpoints | *(fixed)* `ORA-01652` temp exhaustion, any workspace with real relationship volume (OCI mode) |
 
 ---
 
@@ -1194,6 +1195,98 @@ Oracle-specific.
 
 ---
 
+## P19 — Source Edge Counts: Unindexable `OR`-Join Across Relationship Endpoints *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found while checking API logs for issues
+around a real user's Ask query — the Ask query itself succeeded cleanly, but
+the same time window showed a separate `500` on `GET /data/sources/page`.
+Not something P14-P18 broke; a pre-existing query only now hitting real data
+volume because those fixes made the SVX confirm/ingest pipeline complete for
+the first time (12,244 entities, 56,416 relationships in workspace 342).
+
+**Source files:**
+- `src/aryx/store/source_metrics_store.py` — `source_edge_counts()`
+- `select_source_edge_counts.sql` (generic + `oracle/` override)
+- `src/aryx/api/data_api.py` — `sources_page()` / `sources()` / `source_detail()`
+
+**What happened:**
+`source_edge_counts()` counts, per logical source file, how many
+relationship edges touch any entity that file contributed. The query joined
+`aryx_relationship` to the candidate entity set with an `OR` condition:
+```sql
+JOIN aryx_relationship relationship
+  ON relationship.workspace_id = %(workspace_id)s
+ AND (
+     relationship.source_entity_id = entity_links.id
+     OR relationship.target_entity_id = entity_links.id
+ )
+```
+Two single-column indexes exist — `idx_rel_ws_source (workspace_id,
+source_entity_id)` and `idx_rel_ws_target (workspace_id, target_entity_id)`
+— but Oracle can't use either one through an `OR` across two different
+columns; it falls back to a full hash join plus `DISTINCT` sort/dedup at
+every CTE stage, spilling to `TEMP`. In production this produced:
+```
+ORA-01652: unable to grow temp segment in tablespace TEMP by 1MB
+temp space used by session : 6143 (MB)
+```
+on `GET /data/sources/page`, the Data tab's source catalog listing.
+
+### Accuracy Impact
+None — the endpoint either returns correct counts or fails outright with a
+500; there's no partial/wrong-answer failure mode here.
+
+### Resource Impact
+🔴 Was a hard failure (`ORA-01652`, ~6.1 GB of TEMP consumed) on the real
+SVX workspace's actual data volume — the Data tab's source catalog page was
+completely non-functional for this workspace.
+
+### Cost Impact
+Not dollar-denominated directly, but a `500` on a core Data tab page is a
+customer-visible outage of that page for any workspace with enough
+relationship volume to trigger it.
+
+### Fix Applied
+Rewrote the `OR`-join as a `UNION` of two separately-indexed joins — one
+matching `source_entity_id`, one matching `target_entity_id` — applied to
+both `select_source_edge_counts.sql` and its `oracle/` override:
+```sql
+), relationship_links AS (
+    SELECT entity_links.source_key, relationship.source_entity_id,
+           relationship.target_entity_id, relationship.name
+    FROM entity_links
+    JOIN aryx_relationship relationship
+      ON relationship.workspace_id = %(workspace_id)s
+     AND relationship.source_entity_id = entity_links.id
+    UNION
+    SELECT entity_links.source_key, relationship.source_entity_id,
+           relationship.target_entity_id, relationship.name
+    FROM entity_links
+    JOIN aryx_relationship relationship
+      ON relationship.workspace_id = %(workspace_id)s
+     AND relationship.target_entity_id = entity_links.id
+)
+```
+`UNION` (not `UNION ALL`) already deduplicates the combined result set, so
+this is exactly equivalent to the original `SELECT DISTINCT ... WHERE (A OR
+B)` while letting each branch use its own single-column index.
+
+**Verified live against real ADB (workspace 342, 56,416 relationships, all
+30 real SVX source files)**: the original `OR`-join query reproduced the
+exact production failure (`ORA-01652`, 6143 MB temp) on the full 30-source
+payload — and still failed the same way on a 3-source subset, confirming
+the `OR` condition itself (not payload size) was the trigger. The rewritten
+`UNION` query, run against the identical full 30-source payload, returned in
+**1.71 seconds** with 30 sources and 96,100 total edge-touches, no temp
+pressure.
+
+### Fix — OCI Path
+N/A — same rewrite applies identically to Postgres; the generic
+`select_source_edge_counts.sql` was fixed the same way for consistency, even
+though Postgres wasn't confirmed to hit the same failure mode.
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
@@ -1216,6 +1309,7 @@ Oracle-specific.
 | P16 | Oracle `RETURNING` 16KB JSON limit | ✅ Fixed | 🔴 Was a hard failure on any large datasource config | Low — 2 SQL files + 2 methods | No — Oracle-only bug |
 | P17 | Schema-FK LLM sequential batches | Not fixed | 🟡 ~8 of ~41 min in one confirm job; one batch alone 4m6s | Medium — concurrency + thread-safety review | No |
 | P18 | Missing `workspace_id` on adjudication decide | ✅ Fixed | 🔴 Was a real cross-tenant entity-merge approval gap | Low — 1 SQL file + 1 method | No |
+| P19 | Source edge counts unindexable `OR`-join | ✅ Fixed | 🔴 Was a hard `ORA-01652` failure (~6.1 GB temp) → 1.71s | Low — 2 SQL files | No — Postgres unconfirmed affected |
 
 **P3 is now the most urgent unfixed risk** — silent data loss with no visible
 error. P1 was believed to be the other urgent unfixed risk (OOM at scale) but
@@ -1241,6 +1335,12 @@ self-review (2026-07-28)** asked for explicitly after P14-P16 shipped —
 P18 is the same cross-tenant scoping bug class as P14, found by sweeping
 every store class carrying `self._ws` for methods that don't actually use
 it, rather than assuming the P14 audit's three instances were exhaustive.
+
+**P19 was found while checking logs for a real user's Ask query (2026-07-28)**
+— the Ask query itself was fine, but the same log window surfaced a separate
+`ORA-01652` on the Data tab's source catalog page, only now reachable
+because P14-P18 let the SVX workspace's confirm/ingest pipeline finish for
+the first time and produce real relationship volume.
 
 All fixes except P6 can be implemented today without OCI. OCI improves
 each fix but is not required for the initial scale improvements.
@@ -1269,6 +1369,7 @@ each fix but is not required for the initial scale improvements.
 | P16 — Oracle RETURNING 16KB JSON limit | Oracle-specific fix, already applied | None — Postgres was never affected |
 | P17 — Schema-FK LLM sequential batches | N/A — same fix applies regardless of backend | Not yet fixed |
 | P18 — Missing workspace_id on adjudication decide | N/A — Python/SQL-side fix, backend-independent | None once fixed |
+| P19 — Source edge counts unindexable `OR`-join | Query-shape fix, already applied to both dialects | None once fixed — Postgres was never confirmed affected |
 
 ---
 
@@ -1303,8 +1404,10 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *Updated: 2026-07-28 — added P17, identified by timing that same real*
 *confirm job's full 40m56s end-to-end run; not yet fixed*
 *Updated: 2026-07-28 — added P18, found and fixed during a post-*
-*implementation self-review of P14-P17 requested explicitly; same*
-*cross-tenant scoping bug class as P14, in AdjudicationStore.decide()*
+*implementation self-review sweep for cross-tenant scoping gaps*
+*Updated: 2026-07-28 — added P19, found and fixed while checking API logs*
+*around a real user's Ask query; verified live against the real SVX*
+*workspace's full 30-source payload (ORA-01652 → 1.71s)*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
 *src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
 *src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
@@ -1315,4 +1418,5 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *src/aryx/store/relationship_type_store.py, src/aryx/store/discovery_store.py,*
 *src/aryx/discoveries.py, src/aryx/api/doc_discover_api.py,*
 *src/aryx/pipeline/enrich.py, src/aryx/relationships.py,*
-*src/aryx/store/adjudication_store.py, src/aryx/api/adjudication_api.py*
+*src/aryx/store/adjudication_store.py, src/aryx/api/adjudication_api.py,*
+*src/aryx/store/source_metrics_store.py*
