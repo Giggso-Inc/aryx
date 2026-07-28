@@ -49,6 +49,11 @@ class GraphReader:
         FalkorDB will run any single query before aborting it — without this,
         a pathological query on a large workspace can hang the whole request
         indefinitely instead of failing fast.
+
+        No per-query INFO-level logging here (2026-07-28): it flooded
+        container logs on every graph read, drowning out other INFO-level
+        diagnostics — see the earlier removal commit for the live-verified
+        rationale.
         """
         timeout_ms = get_settings().graph_query_timeout or None
         return self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set

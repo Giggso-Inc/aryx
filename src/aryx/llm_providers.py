@@ -76,6 +76,48 @@ def anthropic_json(
     return json.loads(text), resp.usage.input_tokens, resp.usage.output_tokens
 
 
+def _parse_llm_json(content: str, log_prefix: str) -> dict[str, Any]:
+    """Robustly extract a JSON object/array from a chat model's text content.
+
+    Thinking-tier models (Ollama's qwen3.5, Gemini's *-pro-latest, etc.) do
+    not reliably emit ONLY the JSON payload even when JSON mode is requested:
+    they may wrap it in markdown fences, prepend/append a reasoning trace, or
+    emit a JSON object followed by trailing commentary — the last of which
+    fails plain json.loads() with "Extra data" (a real incident: gemini-pro-latest
+    calls in _relate_isolated() failed this way on nearly every call, silently
+    leaving hundreds of thousands of entities isolated in the graph).
+    """
+    if "<think>" in content:
+        end = content.rfind("</think>")
+        content = content[end + 8:].strip() if end != -1 else content
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1]
+        content = content.rsplit("```", 1)[0].strip()
+    try:
+        # strict=False allows literal control chars (e.g. unescaped \n) inside
+        # string values — some models occasionally emit these in span fields.
+        return json.loads(content, strict=False)
+    except json.JSONDecodeError:
+        pass
+    # Fallback 1: parse only the leading JSON value, ignoring anything the
+    # model appended after it (the "Extra data" case).
+    try:
+        return json.JSONDecoder(strict=False).raw_decode(content)[0]
+    except json.JSONDecodeError:
+        pass
+    # Fallback 2: extract the first {...} or [...] block via regex. Handles
+    # cases where the model prepends prose before the JSON payload too.
+    m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", content)
+    if not m:
+        logger.warning("%s: no JSON block found; content=%r", log_prefix, content[:200])
+        raise json.JSONDecodeError("no JSON block found", content, 0)
+    try:
+        return json.loads(m.group(1), strict=False)
+    except json.JSONDecodeError:
+        logger.warning("%s: regex fallback also failed; content=%r", log_prefix, content[:200])
+        raise
+
+
 def ollama_json(spec: ModelSpec, system: str,
                 user: str,
                 schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], int, int]:
@@ -96,32 +138,8 @@ def ollama_json(spec: ModelSpec, system: str,
     )
     content = out["message"]["content"]
     # Thinking models (e.g. qwen3.5) may emit <think>…</think> CoT blocks —
-    # strip so json.loads only sees the JSON payload.
-    if "<think>" in content:
-        end = content.rfind("</think>")
-        content = content[end + 8:].strip() if end != -1 else content
-    # qwen3.5 wraps JSON in markdown fences (```json…```) even in json mode —
-    # strip them before parsing.
-    if content.startswith("```"):
-        content = content.split("\n", 1)[-1]
-        content = content.rsplit("```", 1)[0].strip()
-    try:
-        # strict=False allows literal control chars (e.g. unescaped \n) inside
-        # string values — qwen3.5 occasionally emits these in span fields.
-        data = json.loads(content, strict=False)
-    except json.JSONDecodeError:
-        # Fallback: extract the first {...} or [...] block via regex.
-        # Handles cases where the model prepends/appends prose or has
-        # structural issues the fence-strip didn't fully resolve.
-        m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", content)
-        if not m:
-            logger.warning("ollama_json: no JSON block found; content=%r", content[:200])
-            raise
-        try:
-            data = json.loads(m.group(1), strict=False)
-        except json.JSONDecodeError:
-            logger.warning("ollama_json: regex fallback also failed; content=%r", content[:200])
-            raise
+    # _parse_llm_json strips those before parsing.
+    data = _parse_llm_json(content, "ollama_json")
     return data, int(out.get("prompt_eval_count", 0)), int(out.get("eval_count", 0))
 
 
@@ -137,7 +155,7 @@ def openai_json(
                       {"role": "user", "content": user}]},
         headers,
     )
-    data = json.loads(out["choices"][0]["message"]["content"])
+    data = _parse_llm_json(out["choices"][0]["message"]["content"], "openai_json")
     usage = out.get("usage", {})
     return data, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
 

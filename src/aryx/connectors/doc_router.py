@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from pathlib import Path
 
@@ -71,16 +72,44 @@ _PER_DOC_TIMEOUT = get_settings().per_doc_timeout
 _DOC_WORKERS = get_settings().doc_workers
 
 
+def _log_timed_out(path: Path, elapsed: float) -> None:
+    """Log a FuturesTimeout with the real elapsed time, not the configured budget.
+
+    future.result(timeout=_PER_DOC_TIMEOUT) raises the same TimeoutError whether
+    the outer per-document budget genuinely expired, or an inner call (e.g. the
+    embedding HTTP request) already failed with its own, shorter timeout — since
+    Python unifies socket.timeout/TimeoutError/concurrent.futures.TimeoutError
+    into one class. Elapsed time distinguishes the two: it will sit near
+    _PER_DOC_TIMEOUT for a genuine outer expiry, and well under it when an inner
+    call is what actually failed.
+    """
+    if elapsed >= _PER_DOC_TIMEOUT * 0.95:
+        logger.error(
+            "ingest TIMED OUT path=%s after %.1fs — exceeded the per-document "
+            "budget (ARYX_PER_DOC_TIMEOUT=%ss); skipping; batch continues",
+            path.name, elapsed, _PER_DOC_TIMEOUT,
+        )
+    else:
+        logger.error(
+            "ingest TIMED OUT path=%s after %.1fs — an inner call timed out well "
+            "before the %ss per-document budget (ARYX_PER_DOC_TIMEOUT); "
+            "skipping; batch continues",
+            path.name, elapsed, _PER_DOC_TIMEOUT,
+        )
+
+
 def _ingest_with_timeout(
     path: Path, system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int, chunk_overlap: int, expected_embed_dim: int,
     run_pii: bool, context: str,
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     """ingest_document under a hard timeout; raises FuturesTimeout on hang."""
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             ingest_document, path, system, broker, chunk_store,
             chunk_size, chunk_overlap, expected_embed_dim, run_pii, context,
+            on_progress,
         )
         return future.result(timeout=_PER_DOC_TIMEOUT)
 
@@ -89,6 +118,7 @@ def ingest_document(
     path: Path, system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int, chunk_overlap: int, expected_embed_dim: int,
     run_pii: bool = True, context: str = "",
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     doc_id = _content_hash(path)
     source = SourceRef(system=system, dataset=path.stem, record_id=doc_id)
@@ -113,7 +143,7 @@ def ingest_document(
     logger.info("[step 7/8] embeddings=%d  saving to db", len(embeddings))
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
     logger.info("[step 8/8] extracting mentions  chunks=%d", len(chunks))
-    records = extract_mentions(chunks, broker, context=context)
+    records = extract_mentions(chunks, broker, context=context, on_progress=on_progress)
     logger.info("[ingest done] path=%s  chunks=%d  mentions=%d  doc_id=%s",
                 path.name, len(chunks), len(records), doc_id[:8])
     return records
@@ -127,6 +157,7 @@ class DocumentRouterConnector(Connector):
         chunk_store: ChunkStore, chunk_size: int = 1000,
         chunk_overlap: int = 100, expected_embed_dim: int = 768,
         run_pii: bool = True, context: str = "",
+        on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
     ) -> None:
         self._paths = paths
         self._system = system
@@ -137,19 +168,21 @@ class DocumentRouterConnector(Connector):
         self._expected_embed_dim = expected_embed_dim
         self._run_pii = run_pii
         self._context = context
+        self._on_progress = on_progress
 
     def extract(self) -> Iterator[RawRecord]:
         if _DOC_WORKERS <= 1 or len(self._paths) <= 1:
             for path in self._paths:
+                start = time.monotonic()
                 try:
                     yield from _ingest_with_timeout(
                         path, self._system, self._broker, self._chunk_store,
                         self._chunk_size, self._chunk_overlap,
                         self._expected_embed_dim, self._run_pii, self._context,
+                        self._on_progress,
                     )
                 except FuturesTimeout:
-                    logger.error("ingest TIMED OUT path=%s after %ss — skipping; "
-                                 "batch continues", path.name, _PER_DOC_TIMEOUT)
+                    _log_timed_out(path, time.monotonic() - start)
                 except Exception as exc:
                     logger.error("ingest failed path=%s error=%s", path.name, exc)
         else:
@@ -158,12 +191,14 @@ class DocumentRouterConnector(Connector):
             logger.info("parallel doc ingest workers=%d docs=%d",
                         _DOC_WORKERS, len(self._paths))
             with ThreadPoolExecutor(max_workers=_DOC_WORKERS) as pool:
+                batch_start = time.monotonic()
                 futures = {
                     pool.submit(
                         _ingest_with_timeout,
                         path, self._system, self._broker, self._chunk_store,
                         self._chunk_size, self._chunk_overlap,
                         self._expected_embed_dim, self._run_pii, self._context,
+                        self._on_progress,
                     ): path
                     for path in self._paths
                 }
@@ -172,8 +207,7 @@ class DocumentRouterConnector(Connector):
                     try:
                         yield from future.result()
                     except FuturesTimeout:
-                        logger.error("ingest TIMED OUT path=%s after %ss — skipping",
-                                     path.name, _PER_DOC_TIMEOUT)
+                        _log_timed_out(path, time.monotonic() - batch_start)
                     except Exception as exc:
                         logger.error("ingest failed path=%s error=%s", path.name, exc)
 
@@ -182,6 +216,7 @@ async def ingest_documents_parallel(
     paths: list[Path], system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int = 1000, chunk_overlap: int = 100,
     expected_embed_dim: int = 768, run_pii: bool = True,
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     loop = asyncio.get_running_loop()
     tasks = [
@@ -189,6 +224,7 @@ async def ingest_documents_parallel(
             None, lambda p=path: ingest_document(
                 p, system, broker, chunk_store,
                 chunk_size, chunk_overlap, expected_embed_dim, run_pii,
+                "", on_progress,
             ),
         )
         for path in paths

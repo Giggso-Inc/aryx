@@ -109,9 +109,9 @@ class EntityStore:
             return 0
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                if hasattr(cur, "executemany_returning"):
+                if get_settings().effective_db_backend() == "oci":
                     return self._save_batch(cur, results)
-                return self._save_loop(cur, results)
+                return self._save_batch_postgres(cur, results)
 
     def _save_batch(self, cur: Any, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
         """Oracle path: 3 round-trips for any batch size.
@@ -161,36 +161,71 @@ class EntityStore:
                     total, len(member_rows), len(conflict_rows))
         return total
 
-    def _save_loop(self, cur: Any, results: list[tuple[ResolvedEntity, list[EntityMember]]]) -> int:
-        """PostgreSQL path: per-entity execute + fetchone to capture RETURNING id."""
-        count = 0
+    def _save_batch_postgres(
+        self, cur: Any, results: list[tuple[ResolvedEntity, list[EntityMember]]],
+    ) -> int:
+        """PostgreSQL path: 2 round-trips for any batch size (mirrors _save_batch).
+
+        Previously this ran one execute() + fetchone() per entity, plus one
+        more execute() per member/conflict — for a large batch (e.g. 300K+
+        entities from a single tabular sheet) that's hundreds of thousands
+        of individual round-trips, easily hours. Fetching N ids from the
+        BIGSERIAL sequence in one round-trip, then bulk-inserting entities
+        and members via executemany, removes that scaling wall entirely —
+        cost no longer grows with row count beyond the executemany payload
+        itself.
+
+        1. Fetch N ids from aryx_entity's id sequence in one round-trip
+           (pg_get_serial_sequence resolves the sequence name inline — no
+           separate lookup+cache needed, unlike the Oracle path).
+        2. Bulk-insert all entities with explicit ids via executemany.
+        3. Bulk-insert all members via executemany.
+        Conflicts add 1 more round-trip only when present.
+        """
         total = len(results)
-        for entity, members in results:
-            cur.execute(
-                load("insert_entity"),
-                (self._ws, entity.ontology_type,
-                 Json(entity.attributes, dumps=_dumps), entity.confidence),
-            )
-            row = cur.fetchone()
-            entity_id = int(row[0]) if row else 0
-            for member in members:
-                cur.execute(
-                    load("insert_entity_member"),
-                    (self._ws, entity_id, member.landed_record_id, member.confidence),
-                )
-            for conflict in entity.conflicts or []:
-                cur.execute(
-                    load("insert_attribute_conflict"),
-                    (self._ws, entity_id, conflict["attribute"],
-                     Json(conflict["winning_value"], dumps=_dumps),
-                     Json(conflict["losing_values"], dumps=_dumps),
-                     conflict["strategy"]),
-                )
-            count += 1
-            if count % 50 == 0:
-                logger.info("entities saving %d/%d", count, total)
-        logger.info("entities saved count=%d", count)
-        return count
+        logger.info("entities save batch start count=%d", total)
+
+        cur.execute(
+            "SELECT nextval(pg_get_serial_sequence('aryx_entity', 'id'))"
+            " FROM generate_series(1, %s)",
+            (total,),
+        )
+        entity_ids = [row[0] for row in cur.fetchall()]
+        logger.info("entities ids fetched count=%d", total)
+
+        entity_rows = [
+            (eid, self._ws, entity.ontology_type,
+             Json(entity.attributes, dumps=_dumps), entity.confidence)
+            for eid, (entity, _) in zip(entity_ids, results)
+        ]
+        if entity_rows:
+            cur.executemany(load("insert_entity_with_id"), entity_rows)
+        logger.info("entities inserted %d (bulk)", total)
+
+        member_rows = [
+            (self._ws, eid, m.landed_record_id, m.confidence)
+            for eid, (_, members) in zip(entity_ids, results)
+            for m in members
+        ]
+        if member_rows:
+            cur.executemany(load("insert_entity_member"), member_rows)
+            logger.info("members inserted %d", len(member_rows))
+
+        conflict_rows = [
+            (self._ws, eid, c["attribute"],
+             Json(c["winning_value"], dumps=_dumps),
+             Json(c["losing_values"], dumps=_dumps),
+             c["strategy"])
+            for eid, (entity, _) in zip(entity_ids, results)
+            for c in (entity.conflicts or [])
+        ]
+        if conflict_rows:
+            cur.executemany(load("insert_attribute_conflict"), conflict_rows)
+            logger.info("conflicts inserted %d", len(conflict_rows))
+
+        logger.info("entities save batch complete count=%d members=%d conflicts=%d",
+                    total, len(member_rows), len(conflict_rows))
+        return total
 
     def save_relationships(self, relationships: list[Relationship]) -> None:
         """Persist inferred relationships between entities (stage 8)."""
@@ -257,6 +292,16 @@ class EntityStore:
                 relationships = [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
         return entities, relationships, brief
+
+    def count_entities(self) -> int:
+        """Return the total number of entities in this workspace."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM aryx_entity WHERE workspace_id = %s",
+                    (self._ws,),
+                )
+                return int(cur.fetchone()[0])
 
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
