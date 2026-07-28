@@ -230,28 +230,94 @@ wins," which is what actually addresses "a question we haven't seen":
    `_run_cpq_turn` yet, purely additive). Every field is a plain-language
    description, never a raw `variable_name`/`item_value` — see the
    module's own docstring for the full rationale.
-2. **Phase 1 — shadow mode**: run the LLM classifier + deterministic
-   resolution in parallel with today's regex-first path on every turn,
-   log agreement/disagreement AND every case where the LLM named
-   something the deterministic layer couldn't resolve — that second
-   metric is the real signal for how well step 2 above will hold up.
-   Change NOTHING about what actually executes yet.
-3. **Phase 2 — cutover once resolution-failure rate is acceptably low**:
-   flip to LLM-first-for-intent for all categories together (not
-   per-category, since the point is generalizing to novel phrasing
-   across all of them) once shadow mode shows the deterministic
-   resolution step reliably resolves what the LLM names. Regex detectors
-   remain live as the fallback path when the LLM call itself fails
-   (timeout, malformed JSON, low confidence) — same "fail closed"
-   discipline every `_llm_*` function already follows.
-4. **Phase 3 — ambiguity-first Q&A** (buildable independent of 1–3, and a
-   direct instance of item 3 above for the generic Q&A path
-   specifically): add the missing "ask a clarifying question" path to
-   graph Q&A synthesis, satisfying "even a single ambiguous word" there
-   too.
-5. **Never remove the regex detectors** — they become the deterministic
-   resolution layer (step 2) permanently, not a temporary bridge —
-   this design needs them forever, just repurposed.
+2. **Phase 1 — shadow mode — ✅ DONE (2026-07-28)**: `_llm_classify_
+   intent_universal` + `_resolve_target_description` (ask_api.py) — one
+   classification call per turn using the Phase 0 schema, resolved via
+   the SAME `_relevant_intent_candidates` word-overlap matching every
+   other `_llm_*` fallback already uses (never a new heuristic). Wired
+   read-only via `_shadow_classify_cpq_turn`, called right after `attrs`
+   loads in `_run_cpq_turn`; the real turn's outcome is logged separately
+   in `run_ask` right after `_run_cpq_turn` returns — both lines carry the
+   same `run_id` (existing contextvar logging), so "agreement/
+   disagreement" is a grep-by-run_id analysis, not an in-process diff
+   against a function with dozens of early-return call sites. Gated on
+   new setting `cpq_shadow_intent_enabled` (default **off**) — live-
+   confirmed the unconditional version added a real LLM call to every
+   test invoking `_run_cpq_turn`, taking the CPQ/BML suite from ~10s to
+   ~128s with zero behavioral change; this is a genuine test-speed/CI-cost
+   concern, distinct from the "not a concern in production" decision, and
+   is guarded the same way `bml_use_llm` already guards an analogous
+   always-on-cost risk. Direct functional check (bypassing the flag):
+   fed the exact "change solution type and primary service type"
+   scenario that took 3 rounds of deterministic patching earlier this
+   session — the shadow classifier correctly returned `category=
+   ambiguous` with a genuinely useful clarifying question on the FIRST
+   call, no iteration needed. Full CPQ/BML suite: 268/268 passing with
+   the flag off (default).
+3. **Phase 2 — cutover — ⚠️ PARTIAL (2026-07-28), NOT recommended for
+   production yet**: `_dispatch_intent_result` + `_resolve_target_
+   description` (ask_api.py), wired at the top of STEP 6 behind new
+   setting `cpq_llm_first_enabled` (default **off**). Covers
+   `CHANGE_REQUEST`, `CHANGE_REQUESTS_MULTI`, `AMBIGUOUS`, `OUT_OF_SCOPE`
+   only — every other category (`MULTI_SELECT_REMOVAL`, `ATTR_ACTIVATION`,
+   `ATTR_CLEAR`, `BULK_QUANTITY_CHANGE`, `RESPONSE_MODE_REQUEST`,
+   `APPROVAL`, `ATTR_QUERY`, `QA_QUESTION`, `CHANGE_TARGET_WITHOUT_VALUE`,
+   `PRODUCT_MENTION`) still returns `None` from the dispatcher and falls
+   through to the unchanged deterministic path — deliberately deferred,
+   not rushed. **This landing is the CAPABILITY, not evidence the cutover
+   is safe** — the plan's own Phase 2 criterion ("once shadow mode shows
+   the deterministic resolution step reliably resolves what the LLM
+   names") has not actually been measured against real traffic yet, since
+   Phase 1 was only just wired. Enabling `cpq_llm_first_enabled` in
+   production ahead of that data is skipping the evidence-gathering step
+   the phased design exists for.
+
+   A real bug was caught building this: `_resolve_target_description`
+   originally reused `_relevant_intent_candidates` (Phase 1's own
+   resolver), but live-verified that function returns its top-K (K=10)
+   candidates by score, not just tied-best ones — its actual job is
+   narrowing an LLM prompt's candidate list, not declaring a single
+   winner — so reusing it made resolution look "ambiguous" for almost
+   every target, even a genuinely uniquely-labeled attr. Replaced with
+   direct single-winner scoring (resolves only when there's a strictly-
+   highest, nonzero-overlap match; a tie or zero overlap both mean
+   unresolved). Live-confirmed against `quickStartGuide_astro` (a
+   uniquely-labeled attr): `_dispatch_intent_result` correctly resolved
+   the plain-language description, called `_handle_cascade`, and the
+   value applied exactly as it would through the regex path
+   (`tools_called: ["cpq_cascade()"]`).
+
+   Regex detectors remain the fallback for every un-dispatched case —
+   never removed, same "fail closed" discipline every `_llm_*` function
+   already follows.
+4. **Phase 3 — ambiguity-first Q&A — ✅ DONE (2026-07-28)**: wired into
+   `_handle_cpq_qa`'s generic fallback, right before the `_synthesise`
+   call, behind new setting `cpq_qa_ambiguity_check_enabled` (default
+   off). Reuses the SAME universal classifier as Phase 1/2 — this is its
+   first REAL (non-shadow) consumer: when the classifier returns
+   `AMBIGUOUS` with non-low confidence and a `clarifying_question`, that
+   question is returned directly instead of calling `_synthesise` on
+   whatever `gather()` found. Lower risk than Phase 2's cutover because
+   Q&A answers are informational, never config-mutating — a wrong call
+   here costs one extra clarifying question, not a misapplied change.
+   Directly satisfies the original "ask before guessing, even a single
+   word" request for the generic graph Q&A path specifically (config-turn
+   ambiguity was already handled by existing label-collision detectors).
+5. **Never remove the regex detectors** — they remain the deterministic
+   resolution layer (Phase 2's `_resolve_target_description`) AND the
+   fallback path for every category Phase 2 doesn't cover — this design
+   needs them forever, just repurposed/supplemented, never replaced.
+
+**Test/verification summary across all four phases**: full CPQ/BML suite
+268/268 passing throughout, ~13-14s (all new settings default off — zero
+test-speed impact). Each phase's new code path was also directly,
+functionally exercised (bypassing its settings flag) against the live
+ASTRO catalog: Phase 1's shadow classifier against the exact multi-intent
+scenario that needed 3 rounds of deterministic patching earlier this
+session (correctly flagged ambiguous, first try); Phase 2's dispatcher
+against a uniquely-labeled attr (correctly resolved and applied); Phase 3
+reuses Phase 1's already-verified classifier output with a straightforward
+conditional, not independently re-verified end-to-end via a live turn.
 
 ---
 

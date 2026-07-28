@@ -21,6 +21,9 @@ from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
+from aryx.cpq.intent_schema import (
+    Confidence, INTENT_RESULT_JSON_SCHEMA, IntentCategory, IntentResult, parse_intent_result,
+)
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 from aryx.graph.retrieve import all_types, gather, render_context
@@ -562,10 +565,43 @@ def _handle_cpq_qa(
                         f"({_matched_attr.variable_name}): {_val}"
                     )
             session_values = "\n".join(_session_value_lines)
-            qa_answer, s_in, s_out, s_ms = _synthesise(
-                req.question, context, history=req.history, workspace_id=req.workspace_id,
-                session_values=session_values,
-            )
+            # Phase 3, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md — ask a
+            # clarifying question instead of committing to one
+            # interpretation, BEFORE synthesising an answer from whatever
+            # graph_search returned. Gated on cpq_qa_ambiguity_check_enabled
+            # (default off, same test-speed/CI-cost reasoning as the other
+            # Phase 1/2 flags). Reuses the SAME universal classifier as
+            # Phase 1/2 — its AMBIGUOUS category + clarifying_question is
+            # exactly the "ask before guessing, even a single word" output
+            # this was designed to produce; this is simply its first REAL
+            # (non-shadow) consumer, scoped to informational Q&A only
+            # (never config-mutating, so a wrong call here just means one
+            # extra clarifying question, not a misapplied change).
+            _qa_ambiguity_answer = None
+            if get_settings().cpq_qa_ambiguity_check_enabled:
+                try:
+                    _qa_intent = _llm_classify_intent_universal(
+                        req.question, attrs, session, req.workspace_id)
+                    if (
+                        _qa_intent is not None
+                        and _qa_intent.category == IntentCategory.AMBIGUOUS
+                        and _qa_intent.confidence != Confidence.LOW
+                        and _qa_intent.clarifying_question
+                    ):
+                        _qa_ambiguity_answer = _qa_intent.clarifying_question
+                except Exception:  # noqa: BLE001 — must never break the Q&A turn
+                    logger.debug("cpq_qa_ambiguity: check failed", exc_info=True)
+            if _qa_ambiguity_answer is not None:
+                qa_answer = _qa_ambiguity_answer
+                # p_in/p_out/p_ms already reflect the real _extract_terms
+                # call above -- only s_in/s_out/s_ms (the _synthesise call
+                # this branch skips) are zero here.
+                s_in = s_out = s_ms = 0
+            else:
+                qa_answer, s_in, s_out, s_ms = _synthesise(
+                    req.question, context, history=req.history, workspace_id=req.workspace_id,
+                    session_values=session_values,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("cpq_qa synthesis failed: %s", exc)
             qa_answer = f"Couldn't reach the graph: {exc}"
@@ -2454,6 +2490,269 @@ def _llm_classify_change_intent(
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
+# ── Phase 1, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md — shadow-mode ──────
+# universal intent classifier. NOT wired into any actual dispatch decision:
+# called read-only, its result only ever reaches a log line, exactly like
+# the Fix 4 `count_turn_intents` diagnostic this mirrors. See
+# _shadow_classify_cpq_turn's docstring for the call site and guarantee.
+
+_INTENT_CATEGORY_LIST = ", ".join(c.value for c in IntentCategory)
+
+
+def _llm_classify_intent_universal(
+    question: str, attrs: list, session: Any, workspace_id: int,
+) -> IntentResult | None:
+    """One structured classification call per the Phase 0 schema
+    (`aryx.cpq.intent_schema`) — shadow-mode only, see module note above.
+
+    Reuses `_relevant_intent_candidates` (the existing pre-filter every
+    other `_llm_*` fallback in this file already relies on) to keep the
+    candidate list on-topic and bounded even against an 800+-attr catalog
+    (plan doc mitigation #6) — never the full attrs list unfiltered.
+
+    The LLM is never asked for a `variable_name`/`item_value` — only a
+    plain-language `target_description`/`new_value_description` per the
+    schema's own two-layer design; resolving that description to a real
+    catalog attr is `_resolve_target_description`'s job, not this
+    function's. Fails closed (returns None) on any LLM/parse error, same
+    discipline as every other Tier-2 fallback here.
+    """
+    candidates = _relevant_intent_candidates(question, attrs)
+    catalog_lines = []
+    for a in candidates:
+        current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
+        opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
+        catalog_lines.append(
+            f"- \"{a.display_label}\" [{a.select_type}]: current={current!r}; options=[{opts}]"
+        )
+    pending_line = (
+        f"Currently waiting on an answer for: {session.pending_variables[0]!r}\n"
+        if session.pending_variables else ""
+    )
+    sys = (
+        "You classify a user's message in an in-progress product configuration "
+        "chatbot. Reply ONLY as JSON matching this exact schema (no other text):\n"
+        + json.dumps(INTENT_RESULT_JSON_SCHEMA, indent=1) + "\n\n"
+        f"Valid category values: {_INTENT_CATEGORY_LIST}.\n"
+        "NEVER invent or guess a catalog identifier — target_description and "
+        "new_value_description are PLAIN LANGUAGE descriptions of what the user "
+        "means, never a raw field code. If you cannot confidently name a single "
+        "clear target, or the message could plausibly mean 2+ different fields "
+        "in the list below, use category=\"ambiguous\" and give a specific "
+        "clarifying_question — never guess between plausible options."
+    )
+    user = (
+        f"{pending_line}"
+        "ATTRIBUTES CURRENTLY RELEVANT (label [type]: current=...; options=[...]):\n"
+        + "\n".join(catalog_lines) +
+        f"\n\nUSER MESSAGE: {question}"
+    )
+    try:
+        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        s, e = text.find("{"), text.rfind("}")
+        parsed = json.loads(text[s:e + 1])
+    except Exception as exc:  # noqa: BLE001 — shadow call must never crash the turn
+        logger.debug("cpq_shadow_intent: llm call or parse failed: %r", exc)
+        return None
+    return parse_intent_result(parsed)
+
+
+def _resolve_target_description(
+    description: str, attrs: list,
+) -> "tuple[ConfigAttr | None, list[ConfigAttr]]":
+    """Resolve a plain-language target_description to a real catalog attr —
+    the deterministic "exactness" layer the LLM-first design (plan doc §5)
+    relies on.
+
+    NOT built on `_relevant_intent_candidates` — live-confirmed bug during
+    Phase 2 validation: that function returns the top-K (K=10) candidates
+    by score, not just the tied-best ones, so it almost always returns
+    2+ candidates whenever ANY word overlaps at all (its actual job —
+    narrowing an LLM prompt's candidate list — never needed a single
+    winner). Reusing it here made every resolution attempt look
+    "ambiguous" even for an attr with a genuinely unique label. This
+    scores every attr directly (same word-overlap signal, same `_WORD_RE`
+    tokenizer, against display_label + option display names) and only
+    resolves when there is a single STRICTLY-highest-scoring attr with a
+    nonzero score — a tie at the top, or zero overlap, both mean
+    "unresolved."
+
+    Returns (resolved_attr, all_candidates_with_nonzero_overlap).
+    `resolved_attr` is None whenever resolution didn't narrow to exactly
+    one clear winner — logged/handled as unresolved by the caller, never
+    silently guessed at (plan doc mitigation #1/#4: this is precisely
+    where a hallucinated-but-plausible target must be caught, not passed
+    through).
+    """
+    d_words = set(_WORD_RE.findall(description.lower()))
+    if not d_words:
+        return None, []
+    scored = []
+    for a in attrs:
+        vocab = set(_WORD_RE.findall(a.display_label.lower()))
+        for o in a.options:
+            vocab |= set(_WORD_RE.findall(o.display_name.lower()))
+        overlap = len(d_words & vocab)
+        if overlap:
+            scored.append((overlap, a))
+    if not scored:
+        return None, []
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    candidates = [a for _score, a in scored]
+    if len(scored) == 1 or scored[0][0] > scored[1][0]:
+        return scored[0][1], candidates
+    return None, candidates
+
+
+def _shadow_classify_cpq_turn(
+    req: "AskRequest", session: Any, attrs: list,
+) -> None:
+    """Phase 1 shadow-mode hook — docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md.
+
+    Called once per turn, read-only: classifies + resolves via the new
+    universal-intent path and logs the outcome, but NEVER returns anything
+    to the caller, NEVER mutates `session`, and is wrapped in a bare
+    try/except so any failure here is invisible to the actual turn — same
+    guarantee `count_turn_intents` (Fix 4) already established for its own
+    diagnostic. The REAL dispatch decision continues to come entirely from
+    the existing deterministic detectors, unchanged.
+
+    Correlated with the real turn's outcome by run_id: `run_ask` logs the
+    actual `tools_called`/category right after `_run_cpq_turn` returns,
+    tagged with the same `session.run_id` this logs — comparing the two
+    log lines (grep by run_id) is the "log agreement/disagreement" Phase 1
+    calls for, without needing an in-process diff against a function with
+    dozens of early-return call sites.
+    """
+    try:
+        result = _llm_classify_intent_universal(
+            req.question, attrs, session, req.workspace_id)
+        if result is None:
+            logger.info(
+                "cpq_shadow_intent: message %r -> classification failed/unparseable",
+                req.question,
+            )
+            return
+        resolved_summary = []
+        for t in ([result.target] if result.target else result.targets):
+            attr, candidates = _resolve_target_description(t.target_description, attrs)
+            resolved_summary.append({
+                "target_description": t.target_description,
+                "resolved_vn": attr.variable_name if attr else None,
+                "candidate_count": len(candidates),
+            })
+        logger.info(
+            "cpq_shadow_intent: message %r -> category=%s confidence=%s "
+            "resolved=%s clarifying_question=%r rationale=%r",
+            req.question, result.category.value, result.confidence.value,
+            resolved_summary, result.clarifying_question, result.rationale,
+        )
+    except Exception:  # noqa: BLE001 — shadow diagnostic must never affect the turn
+        logger.debug("cpq_shadow_intent: diagnostic failed", exc_info=True)
+
+
+def _dispatch_intent_result(
+    req: "AskRequest", session: Any, attrs: list, result: IntentResult,
+    hiding_rules: list, rec_rules: list, con_rules: list,
+) -> "dict[str, Any] | None":
+    """Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md.
+
+    Attempts to dispatch an LLM classification directly to the existing
+    handler functions, bypassing the regex waterfall — returns None
+    whenever it can't confidently do so, which the caller MUST treat as
+    "fall through to the unchanged deterministic path," never as a
+    terminal failure. This is the only contract this function has to
+    honor: never mutate `session` or return a real response unless it is
+    actually confident and resolved.
+
+    Scope of this initial landing — intentionally partial, not every
+    category from the Phase 0 schema:
+      - CHANGE_REQUEST, CHANGE_REQUESTS_MULTI: dispatched to the SAME
+        _handle_cascade/_handle_cascade_multi the regex path already
+        uses. The plain-language `new_value_description` is passed
+        through UNRESOLVED as the `new_value_hint` — those handlers
+        already call `apply_answer`/`apply_multi_answer` internally to
+        turn a hint into a real item_value and already have their own
+        "couldn't match that" fallback, so there is no separate
+        resolution step to duplicate here.
+      - AMBIGUOUS: answered directly with the LLM's own
+        clarifying_question — no session mutation, no config-mutating
+        risk.
+      - OUT_OF_SCOPE: the same plain refusal wording `_llm_classify_
+        is_cpq_question`'s negative case already uses.
+      - Every other category (MULTI_SELECT_REMOVAL, ATTR_ACTIVATION,
+        ATTR_CLEAR, BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST,
+        APPROVAL, ATTR_QUERY, QA_QUESTION, CHANGE_TARGET_WITHOUT_VALUE,
+        PRODUCT_MENTION) returns None — deliberately deferred rather than
+        rushed, so the deterministic path keeps owning them until a
+        follow-up lands each one with the same care as the two above.
+
+    Confidence gating: LOW always returns None (fall through) regardless
+    of category — mirrors the shadow-mode logging convention and plan doc
+    mitigation #9 (ambiguity threshold must default conservative).
+
+    Target resolution (for CHANGE_REQUEST's own target ATTR, not its
+    value) uses `_resolve_target_description` — 0 or 2+ candidates both
+    mean "unresolved," returned as None here, never guessed (mitigation
+    #1/#4).
+    """
+    if result.confidence == Confidence.LOW:
+        return None
+
+    if result.category == IntentCategory.AMBIGUOUS:
+        if not result.clarifying_question:
+            return None
+        answer = result.clarifying_question
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_llm_first_ambiguous()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    if result.category == IntentCategory.OUT_OF_SCOPE:
+        answer = (
+            "That's outside what I track here — product configuration and "
+            "quoting. Happy to help with anything about your current quote."
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_llm_first_out_of_scope()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    if result.category == IntentCategory.CHANGE_REQUEST and result.target:
+        if not result.target.new_value_description:
+            return None
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None:
+            return None
+        return _handle_cascade(
+            req, session, attrs, attr, result.target.new_value_description,
+            hiding_rules, rec_rules, con_rules,
+        )
+
+    if result.category == IntentCategory.CHANGE_REQUESTS_MULTI and result.targets:
+        matches = []
+        for t in result.targets:
+            if not t.new_value_description:
+                continue
+            attr, _candidates = _resolve_target_description(t.target_description, attrs)
+            if attr is not None:
+                matches.append((attr, t.new_value_description))
+        if len(matches) >= 2:
+            return _handle_cascade_multi(
+                req, session, attrs, matches, hiding_rules, rec_rules, con_rules,
+            )
+        return None
+
+    return None
+
+
 def _llm_resolve_label_collision(
     reply: str, candidates: list, session: Any, workspace_id: int,
 ) -> str | None:
@@ -3008,6 +3307,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             logger.debug("cpq_intent_count: message %r matched: %s", req.question, _intent_hits)
     except Exception:  # noqa: BLE001 — diagnostic only, must never break the turn
         logger.debug("cpq_intent_count: diagnostic failed", exc_info=True)
+
+    # Phase 1 shadow-mode universal-intent diagnostic (docs/
+    # CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md) — same read-only, never-
+    # affects-the-turn guarantee as count_turn_intents just above. Logs
+    # its own classification for later comparison against the real
+    # deterministic outcome (logged by run_ask after this function
+    # returns) via matching run_id — never touches routing here.
+    # Gated on cpq_shadow_intent_enabled (default off): live-confirmed
+    # this unconditional LLM call took the CPQ/BML test suite from ~10s
+    # to ~128s with zero behavioral change — a real test-speed/CI-cost
+    # regression, separate from the "not a concern in production" stance.
+    if get_settings().cpq_shadow_intent_enabled:
+        _shadow_classify_cpq_turn(req, session, attrs)
 
     # A product-switch (or the initial turn's own NL detection) already
     # PROVED session.product_name against this catalog — asking the
@@ -3736,6 +4048,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # through to normal routing rather than getting stuck forever.
             session.pending_change_collision_vns = []
             session.pending_change_collision_question = ""
+
+        # Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md —
+        # attempt LLM-first dispatch before the deterministic STEP 6
+        # waterfall below. Gated on cpq_llm_first_enabled (default OFF —
+        # same test-speed/CI-cost reasoning as cpq_shadow_intent_enabled,
+        # and this path has NOT yet been validated against real Phase 1
+        # shadow-mode disagreement data, which the plan doc's own Phase 2
+        # criteria calls for before a real cutover). _dispatch_intent_
+        # result returns None whenever it can't confidently and
+        # completely handle the turn — that is the ONLY signal this
+        # block treats as "fall through," so the existing STEP 6+
+        # detectors below run completely unchanged whenever this returns
+        # nothing, exactly like every existing early-return check above.
+        if get_settings().cpq_llm_first_enabled:
+            _llm_first_result = _llm_classify_intent_universal(
+                req.question, attrs, session, req.workspace_id)
+            if _llm_first_result is not None:
+                _dispatched = _dispatch_intent_result(
+                    req, session, attrs, _llm_first_result,
+                    hiding_rules, rec_rules, con_rules,
+                )
+                if _dispatched is not None:
+                    return _dispatched
 
         # STEP 6: change request → cascade
         # Bulk quantity check first — "change both the mounting types
@@ -4822,6 +5157,25 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     if is_cpq:
         result = _run_cpq_turn(req, reader)
         if result:  # non-empty → CPQ engine handled it
+            # Phase 1 shadow-mode (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
+            # PLAN.md) — logs the REAL deterministic outcome for this
+            # turn, tagged with the same run_id `_shadow_classify_cpq_
+            # turn` already logged its classification under. Comparing
+            # the two log lines (grep by run_id) is the "log agreement/
+            # disagreement" Phase 1 calls for. Read-only; never affects
+            # `result` itself.
+            try:
+                # set_run_id was already called inside _run_cpq_turn, so
+                # the run_id logging filter (aryx.cpq.logging_context)
+                # tags this line automatically — no need to include it
+                # in the message itself.
+                logger.info(
+                    "cpq_shadow_intent_actual: tools_called=%s status=%s",
+                    result.get("tools_called"),
+                    (result.get("session_data") or {}).get("status"),
+                )
+            except Exception:  # noqa: BLE001 — shadow logging must never break the turn
+                logger.debug("cpq_shadow_intent_actual: logging failed", exc_info=True)
             _attach_share_flags(result, req, reader)
             return result
         # empty → no CPQ data in graph yet, fall through to standard Ask

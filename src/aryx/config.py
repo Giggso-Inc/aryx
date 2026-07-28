@@ -267,6 +267,60 @@ class Settings(BaseSettings):
             "reliable enough not to risk stalling a live request."
         ),
     )
+    cpq_shadow_intent_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 1, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: run the "
+            "shadow-mode universal intent classifier (_shadow_classify_cpq_"
+            "turn in ask_api.py) alongside the real deterministic dispatch "
+            "on every CPQ turn, logging its classification for later "
+            "comparison. Off by default: live-confirmed this added an extra "
+            "unconditional LLM call to every single test invoking "
+            "_run_cpq_turn, taking the CPQ/BML suite from ~10s to ~128s with "
+            "zero behavioral change (the shadow call is try/except-wrapped "
+            "and never affects a turn's real answer) -- purely a test-speed "
+            "and CI-cost concern, same class of always-on-cost issue "
+            "bml_use_llm above already guards against. Override with "
+            "ARYX_CPQ_SHADOW_INTENT_ENABLED=true to collect real shadow-mode "
+            "data against live traffic."
+        ),
+    )
+    cpq_qa_ambiguity_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 3, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: before "
+            "answering a generic graph Q&A question, classify whether the "
+            "question is itself ambiguous (2+ plausible distinct meanings) "
+            "and ask a clarifying question instead of committing to one "
+            "interpretation. Off by default for the same test-speed/CI-cost "
+            "reason as cpq_shadow_intent_enabled -- an unconditional extra "
+            "LLM call on every Q&A turn. Override with "
+            "ARYX_CPQ_QA_AMBIGUITY_CHECK_ENABLED=true."
+        ),
+    )
+    cpq_llm_first_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: "
+            "let the universal intent classifier dispatch directly to "
+            "_handle_cascade/_handle_cascade_multi (bypassing the regex "
+            "detectors) for CHANGE_REQUEST/CHANGE_REQUESTS_MULTI/AMBIGUOUS/"
+            "OUT_OF_SCOPE only -- every other category still falls through "
+            "to the unchanged deterministic path (see "
+            "_dispatch_intent_result's docstring for the full category "
+            "list this initial landing does not yet cover). Off by default "
+            "for TWO reasons, not just test speed: (1) the same extra-LLM-"
+            "call cost as cpq_shadow_intent_enabled, and (2) more "
+            "importantly, this has not yet been validated against real "
+            "Phase 1 shadow-mode disagreement/resolution-failure data -- "
+            "the plan doc's own Phase 2 criteria ('once shadow mode shows "
+            "the deterministic resolution step reliably resolves what the "
+            "LLM names') has not actually been met yet, this flag only "
+            "makes the CAPABILITY available for that validation, it is not "
+            "itself evidence the cutover is safe to enable in production. "
+            "Override with ARYX_CPQ_LLM_FIRST_ENABLED=true."
+        ),
+    )
     bml_tier2_max_per_turn: int = Field(
         default=50,
         description=(
