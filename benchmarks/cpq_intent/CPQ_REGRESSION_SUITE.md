@@ -207,6 +207,31 @@ Exact live transcript: vague change → grounded clarify → bare label → valu
 | 1 | continue with software solutions | pending_switch;question;not_nudge;invariant |
 | 2 | yes continue | not_nudge;invariant |
 
+### D04 — multi-target change A, B and C (sequential asks)
+N named valueless targets → N sequential value asks; queue empty at end.
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | change hardware version, service type and activation delay | pending_no_value;pending_queue;queue_len=2;active=hWVersion_astro;ask_next;question;not_nudge;invariant |
+| 2 | APX NEXT (4G LTE+5G) | pending_no_value;pending_queue;queue_len=1;active=serviceType_astro;question;not_nudge;invariant |
+| 3 | Advantage | pending_no_value;queue_empty;active=activationDelay_astro;question;not_nudge;invariant |
+| 4 | 30 Days | queue_empty;not_nudge |
+
+### D05 — mixed set A to X and change B
+A applied immediately; B asked next from the queue.
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | set hardware version to APX NEXT (4G LTE+5G) and change service type | handled=hWVersion_astro;pending_no_value;pending_queue;active=serviceType_astro;ask_next;question;not_nudge;invariant |
+| 2 | Advantage | queue_empty;handled=serviceType_astro;not_nudge |
+
+### D06 — queue cap overflow is explicit (never silent)
+11+ targets → cap 10 on queue + overflow notice in the reply.
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | change hardware version and extraAttr1 extraAttr2 extraAttr3 extraAttr4 extraAttr5 extraAttr6 extraAttr7 extraAttr8 extraAttr9 extraAttr10 extraAttr11 | pending_no_value;pending_queue;queue_len=10;overflow;question;not_nudge;invariant |
+
 ---
 
 ## Live-mode scoring (`--live`)
