@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 import aryx.api.ask_api as api
 from aryx.api.ask_api import (
     AskRequest,
@@ -80,6 +82,38 @@ def test_stuck_pending_attr_does_not_block_a_new_change_request(monkeypatch):
     assert "productSelectionProduct_all" not in resp["answer"], (
         "must not report a failed match against the stuck Product attr"
     )
+    # Not just "didn't error" — the actual new request must have been
+    # applied, not silently dropped.
+    assert resp["session_data"]["filled"].get("solutionType") == "CloudRC"
+    assert resp["session_data"]["pending_variables"] == [
+        "productSelectionProduct_all"
+    ], "the stuck attr itself must remain pending — only skipped as the LOCK target this turn"
+
+
+def test_stuck_pending_attr_still_locks_a_genuine_bare_reply(monkeypatch):
+    """Sibling case, opposite outcome: when the message is NOT a new
+    change request (no change verb, no other real attr named), STEP 5's
+    original lock-the-pending-answer behavior must still fire —
+    _looks_like_new_request must not become "never lock anything"."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], []))
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD", "EXTENDED"))
+    attrs = [battery]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        pending_variables=["batteryType_astro"], status="configuring", turn=2,
+    )
+    req = AskRequest(question="EXTENDED", workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp["session_data"]["filled"].get("batteryType_astro") == "EXTENDED"
+    assert resp["session_data"]["pending_variables"] == []
 
 
 # ── A2. Rarity-weighted _resolve_target_description (fa65b0d) ──────────
@@ -491,3 +525,202 @@ def test_confirm_is_idempotent_when_already_post_approval(monkeypatch):
     resp = _run_cpq_turn(req, object())
     assert resp["cpq_payload"] is not None
     assert resp["session_data"]["status"] == "post_approval"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Section C — deeper LLM-first intent coverage: multi-target dispatch,
+# confidence gating, and the STEP 6 gate itself wired end-to-end through
+# _run_cpq_turn (not just unit calls to _dispatch_intent_result).
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_llm_first_change_requests_multi_applies_every_resolvable_target():
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    battery = _attr(2, "batteryType_astro", "Battery Type",
+                     options=_opt("STANDARD", "EXTENDED"))
+    attrs = [solution, battery]
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom",
+        filled={"solutionTypeDevices_astro": "RadioCentral", "batteryType_astro": "STANDARD"},
+        status="awaiting_approval",
+    )
+    req = AskRequest(question="change solution type to CloudRC and battery to extended",
+                      workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.CHANGE_REQUESTS_MULTI, confidence=Confidence.HIGH,
+        targets=[
+            ChangeTarget(target_description="Solution Type", new_value_description="CloudRC"),
+            ChangeTarget(target_description="Battery Type", new_value_description="EXTENDED"),
+        ],
+        rationale="two attrs named with values in one message",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, attrs, result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=300, classify_completion_tokens=25,
+        )
+    assert resp is not None
+    assert session.filled["solutionTypeDevices_astro"] == "CloudRC"
+    assert session.filled["batteryType_astro"] == "EXTENDED"
+    assert resp["usage"]["prompt_tokens"] == 300
+
+
+def test_llm_first_change_requests_multi_falls_through_when_any_target_unresolved():
+    """One resolvable target plus one that ties/fails to resolve must
+    defer the WHOLE message to the deterministic path — never apply half
+    a multi-attribute request while silently dropping the rest."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    decoy_a = _attr(2, "productInformationText_astro", "Product Information Text")
+    decoy_b = _attr(3, "productSelectionProduct_all", "Product")
+    attrs = [solution, decoy_a, decoy_b]
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom",
+        filled={"solutionTypeDevices_astro": "RadioCentral"},
+        status="awaiting_approval",
+    )
+    req = AskRequest(question="change solution type to CloudRC and change product too",
+                      workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.CHANGE_REQUESTS_MULTI, confidence=Confidence.HIGH,
+        targets=[
+            ChangeTarget(target_description="Solution Type", new_value_description="CloudRC"),
+            ChangeTarget(target_description="Product", new_value_description="something"),
+        ],
+        rationale="two attrs named",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+    assert session.filled["solutionTypeDevices_astro"] == "RadioCentral", (
+        "must not half-apply the multi-target request"
+    )
+
+
+@pytest.mark.parametrize("category", [
+    IntentCategory.CHANGE_REQUEST,
+    IntentCategory.CHANGE_TARGET_WITHOUT_VALUE,
+    IntentCategory.AMBIGUOUS,
+])
+def test_llm_first_low_confidence_always_falls_through_regardless_of_category(category):
+    """Confidence gating is checked BEFORE category dispatch — a LOW-
+    confidence classification must never drive a response, even one
+    that would otherwise resolve cleanly (plan doc mitigation #9)."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         status="awaiting_approval")
+    req = AskRequest(question="change solution type", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=category, confidence=Confidence.LOW,
+        target=ChangeTarget(target_description="Solution Type", new_value_description="CloudRC"),
+        clarifying_question="which one?" if category == IntentCategory.AMBIGUOUS else None,
+        rationale="low confidence",
+    )
+    resp = _dispatch_intent_result(req, session, [solution], result, [], [], [], None)
+    assert resp is None
+
+
+@pytest.mark.parametrize("category", [
+    IntentCategory.QA_QUESTION,
+    IntentCategory.APPROVAL,
+    IntentCategory.ATTR_QUERY,
+    IntentCategory.PRODUCT_MENTION,
+    IntentCategory.RESPONSE_MODE_REQUEST,
+])
+def test_llm_first_uncovered_categories_defer_to_deterministic_path(category):
+    """Phase 2 is explicitly PARTIAL — every category _dispatch_intent_
+    result doesn't yet own must return None, not raise or guess."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="some message", workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(category=category, confidence=Confidence.HIGH, rationale="n/a")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+# ── C1. The STEP 6 gate itself, wired through the real turn — confirms
+# get_settings().cpq_llm_first_enabled actually controls whether the LLM
+# call happens at all, not just how _dispatch_intent_result behaves once
+# a result exists. ────────────────────────────────────────────────────
+
+def _llm_first_gate_setup(monkeypatch, *, enabled: bool):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], []))
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+    real_settings = api.get_settings()
+    patched_settings = real_settings.model_copy(update={"cpq_llm_first_enabled": enabled})
+    monkeypatch.setattr(api, "get_settings", lambda: patched_settings)
+
+
+def test_llm_first_gate_calls_the_llm_and_dispatches_when_enabled(monkeypatch):
+    _llm_first_gate_setup(monkeypatch, enabled=True)
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    attrs = [solution]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         display_filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         status="awaiting_approval", turn=3)
+    req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
+                      session_data=session.to_dict())
+    fake_reply = (
+        '{"category": "change_request", "confidence": "high", '
+        '"target": {"target_description": "Solution Type", '
+        '"new_value_description": "CloudRC"}, "rationale": "named attr + value"}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 700, 30)) as mock_chat:
+        resp = _run_cpq_turn(req, object())
+    mock_chat.assert_called_once()
+    assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
+    assert resp["usage"]["prompt_tokens"] == 700
+    assert resp["usage"]["menial_model"] == "cpq-llm-first"
+
+
+def test_llm_first_gate_never_calls_the_llm_when_disabled(monkeypatch):
+    _llm_first_gate_setup(monkeypatch, enabled=False)
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    attrs = [solution]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         display_filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         status="awaiting_approval", turn=3)
+    req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
+                      session_data=session.to_dict())
+    with patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
+        resp = _run_cpq_turn(req, object())
+    mock_chat.assert_not_called()
+    # The deterministic regex path alone must still resolve this —
+    # disabling LLM-first is a routing change, not a capability loss.
+    assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
+    assert resp["usage"]["menial_model"] == "cpq-engine"
+
+
+def test_llm_first_gate_falls_through_to_deterministic_on_unparseable_reply(monkeypatch):
+    """A malformed/unparseable classification must not crash the turn —
+    it logs and falls through, and the deterministic detectors still
+    resolve the same message correctly."""
+    _llm_first_gate_setup(monkeypatch, enabled=True)
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    attrs = [solution]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         display_filled={"solutionTypeDevices_astro": "RadioCentral"},
+                         status="awaiting_approval", turn=3)
+    req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
+                      session_data=session.to_dict())
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json at all", 5, 0)):
+        resp = _run_cpq_turn(req, object())
+    assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
