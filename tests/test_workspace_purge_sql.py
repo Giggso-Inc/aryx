@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from aryx.queries import split_statements
+
 
 ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_PURGE = ROOT / "src" / "aryx" / "queries" / "purge_workspace_data.sql"
@@ -17,6 +19,7 @@ REQUIRED_WORKSPACE_TABLES = {
     "aryx_axiom_violation",
     "aryx_bml_tier2_cache",
     "aryx_datasource",
+    "aryx_discovery",
     "aryx_ingest_question",
     "aryx_llm_call",
     "aryx_projected_entity",
@@ -30,6 +33,7 @@ REQUIRED_WORKSPACE_TABLES = {
     "aryx_field_profile",
     "aryx_field_tag",
     "aryx_run_stage",
+    "aryx_schema_mapping",
     "aryx_match_edge",
     "aryx_block_done",
     "aryx_block_member",
@@ -41,6 +45,7 @@ REQUIRED_WORKSPACE_TABLES = {
 ORACLE_WORKSPACE_TABLES = REQUIRED_WORKSPACE_TABLES - {
     # These tables/columns are present in the Postgres migrations only today.
     "aryx_bml_tier2_cache",
+    "aryx_discovery",
     "aryx_llm_call",
 }
 
@@ -91,3 +96,17 @@ def test_oracle_graph_children_delete_before_graph_vertices() -> None:
 
     assert sql.index("aryx_graph_provenance") < sql.index("aryx_graph_vertex")
     assert sql.index("aryx_graph_edge") < sql.index("aryx_graph_vertex")
+
+
+def test_split_statements_keeps_first_statement_after_header_comments() -> None:
+    sql = """
+    -- Descriptive header.
+    -- A second comment line.
+    DELETE FROM first_table WHERE workspace_id = %(wid)s;
+    DELETE FROM second_table WHERE workspace_id = %(wid)s;
+    """
+
+    assert split_statements(sql) == [
+        "DELETE FROM first_table WHERE workspace_id = %(wid)s",
+        "DELETE FROM second_table WHERE workspace_id = %(wid)s",
+    ]

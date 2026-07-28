@@ -141,18 +141,6 @@ class OracleGraphStore:
             conn.execute(load("delete_graph_vertex_by_entity"),
                          (self._workspace_id, entity_id))
 
-    def remove_source(self, system: str, dataset: str) -> None:
-        """Delete graph provenance/source rows for one physical source dataset."""
-        with self._pool.connection() as conn:
-            conn.execute(
-                load("delete_graph_provenance_by_source_dataset"),
-                (self._workspace_id, system, dataset),
-            )
-            conn.execute(
-                load("delete_graph_source_by_dataset"),
-                (self._workspace_id, system, dataset),
-            )
-
     def add_relationship(self, source_id: int, target_id: int, name: str) -> None:
         """Add a directed relationship edge between two entities."""
         with self._pool.connection() as conn:

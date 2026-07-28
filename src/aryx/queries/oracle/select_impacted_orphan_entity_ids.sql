@@ -1,5 +1,13 @@
-DELETE FROM aryx_entity e
+SELECT e.id
+FROM aryx_entity e
 WHERE e.workspace_id = %(workspace_id)s
+  AND e.id IN (
+    SELECT ids.id
+    FROM JSON_TABLE(
+      %(entity_ids)s,
+      '$[*]' COLUMNS (id NUMBER PATH '$')
+    ) ids
+  )
   AND NOT EXISTS (
     SELECT 1
     FROM aryx_entity_member m

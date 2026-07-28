@@ -17,6 +17,15 @@ def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
+@pytest.fixture(autouse=True)
+def no_active_ingestion_jobs():
+    with patch(
+        "aryx.api.data_api.JobStore",
+        return_value=_FakeJobStore([]),
+    ):
+        yield
+
+
 class _FakeDatasourceStore:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = rows
@@ -91,6 +100,12 @@ class _FakeEntityStore:
     def list_source_activity(self) -> dict[tuple[str, str], object]:
         return dict(self._source_activity)
 
+    def list_entities(self):
+        return []
+
+    def list_relationships(self):
+        return []
+
     def purge_source_references(
         self,
         refs: list[tuple[str, str]] | tuple[tuple[str, str], ...],
@@ -117,6 +132,25 @@ class _FakeJobStore:
         return list(self.rows)
 
     def close(self) -> None:
+        return None
+
+
+class _FailingGraphStore:
+    def clear(self) -> None:
+        raise RuntimeError("graph unavailable")
+
+
+class _WorkingGraphStore:
+    def clear(self) -> None:
+        return None
+
+    def add_entity(self, *_args, **_kwargs) -> None:
+        return None
+
+    def add_provenance(self, *_args, **_kwargs) -> None:
+        return None
+
+    def add_relationship(self, *_args, **_kwargs) -> None:
         return None
 
 
@@ -230,6 +264,7 @@ def test_delete_generated_asset_purges_asset_dataset(client: TestClient) -> None
     assert response.status_code == 200
     assert entity_store.purged_refs == [("csv", "Corporate_Data_Employees")]
     assert store.rows == []
+    assert response.json()["catalog_rows_deleted"] == 1
 
 
 def test_download_legacy_asset_builds_csv_from_landed_rows(client: TestClient) -> None:
@@ -283,6 +318,63 @@ def test_delete_generic_csv_source_purges_source_records(client: TestClient) -> 
     assert response.status_code == 200
     assert entity_store.purged_refs == [("csv", "orders")]
     assert response.json()["landed_records_deleted"] == 2
+
+
+def test_delete_source_is_blocked_while_ingestion_is_active(
+    client: TestClient,
+) -> None:
+    entity_store = _FakeEntityStore([(1, "csv", "orders", "1")])
+    with (
+        patch("aryx.api.data_api.DatasourceStore", return_value=_FakeDatasourceStore([])),
+        patch("aryx.api.data_api.JobStore", return_value=_FakeJobStore([
+            {"job_id": "job-1", "status": "running"},
+        ])),
+        patch("aryx.api.data_api._store", return_value=entity_store),
+        patch("aryx.api.data_api.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.rdb_dsn = "postgresql://test"
+        response = client.delete("/data/sources/csv:orders?workspace_id=1")
+
+    assert response.status_code == 409
+    assert entity_store.purged_refs == []
+    assert "ingestion" in response.json()["detail"].lower()
+
+
+def test_delete_reports_graph_repair_requirement(
+    client: TestClient,
+) -> None:
+    entity_store = _FakeEntityStore([(1, "csv", "orders", "1")])
+    with (
+        patch("aryx.api.data_api.DatasourceStore", return_value=_FakeDatasourceStore([])),
+        patch("aryx.api.data_api.JobStore", return_value=_FakeJobStore([])),
+        patch("aryx.api.data_api._store", return_value=entity_store),
+        patch("aryx.api.data_api.ports") as mock_ports,
+        patch("aryx.api.data_api.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.rdb_dsn = "postgresql://test"
+        mock_ports.return_value.graph_store.return_value = _FailingGraphStore()
+        response = client.delete("/data/sources/csv:orders?workspace_id=1")
+
+    assert response.status_code == 200
+    assert response.json()["graph_sync"] == "repair_required"
+
+
+def test_delete_supports_graph_adapter_without_remove_source(
+    client: TestClient,
+) -> None:
+    entity_store = _FakeEntityStore([(1, "csv", "orders", "1")])
+    with (
+        patch("aryx.api.data_api.DatasourceStore", return_value=_FakeDatasourceStore([])),
+        patch("aryx.api.data_api._store", return_value=entity_store),
+        patch("aryx.api.data_api.ports") as mock_ports,
+        patch("aryx.api.data_api.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.rdb_dsn = "postgresql://test"
+        mock_ports.return_value.graph_store.return_value = _WorkingGraphStore()
+        response = client.delete("/data/sources/csv:orders?workspace_id=1")
+
+    assert response.status_code == 200
+    assert response.json()["graph_sync"] == "complete"
 
 
 def test_list_sources_revives_recently_reingested_generic_source(client: TestClient) -> None:

@@ -34,6 +34,9 @@ class JobStore:
         """Open a queued job row in a workspace."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(load("lock_workspace_for_mutation"), (workspace_id,))
+                if cur.fetchone() is None:
+                    raise ValueError(f"workspace {workspace_id} not found")
                 cur.execute(load("insert_job"), (workspace_id, job_id, system, dataset))
 
     def update_stage(self, job_id: str, stage: str, pct: int, detail: str) -> None:

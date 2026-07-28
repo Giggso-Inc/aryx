@@ -362,14 +362,6 @@ class FalkorStore:
             "MATCH (e:Entity {id: $id}) DETACH DELETE e", {"id": entity_id},
         )
 
-    def remove_source(self, system: str, dataset: str) -> None:
-        """Delete source-record nodes for one physical source dataset."""
-        self._graph.query(
-            "MATCH (s:Source {system: $system, dataset: $dataset}) "
-            "DETACH DELETE s",
-            {"system": system, "dataset": dataset},
-        )
-
     def remove_entities_by_type(self, ontology_type: str) -> None:
         """Delete all entity nodes of a given type and their edges."""
         self._graph.query(

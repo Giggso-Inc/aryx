@@ -1,0 +1,3 @@
+SELECT {sequence}.NEXTVAL
+FROM dual
+CONNECT BY LEVEL <= %s

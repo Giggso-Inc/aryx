@@ -36,6 +36,11 @@ from aryx.source_metrics import (
 from aryx.store.entity_store import EntityStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
+from aryx.store.source_purge_store import (
+    CatalogUpdate,
+    SourcePurgeBusy,
+    SourcePurgeStore,
+)
 from aryx.store.source_metrics_store import SourceMetricsStore
 from aryx.ports.container import ports
 
@@ -71,6 +76,10 @@ def _datasource_store() -> DatasourceStore:
 
 def _job_store() -> JobStore:
     return JobStore(get_settings().rdb_dsn)
+
+
+def _source_purge_store(workspace_id: int) -> SourcePurgeStore:
+    return SourcePurgeStore(get_settings().rdb_dsn, workspace_id)
 
 
 def _metrics_store(workspace_id: int) -> SourceMetricsStore:
@@ -734,29 +743,48 @@ def _resolve_mutable_xml_row(
         entity_store.close()
 
 
-def _purge_graph_projection(
+def _rebuild_graph_projection(
     workspace_id: int,
-    refs: list[tuple[str, str]],
-    entity_ids: list[int],
-) -> None:
+    store: EntityStore,
+) -> str:
     try:
+        from aryx.project import project_auto, project_graph
+        from aryx.store.projection_store import ProjectionStore
+
         graph = ports().graph_store(workspace_id)
-        for system, dataset in refs:
-            graph.remove_source(system, dataset)
-        for entity_id in entity_ids:
-            graph.remove_entity(entity_id)
+        if isinstance(store, EntityStore):
+            projection_store = ProjectionStore(
+                get_settings().rdb_dsn,
+                workspace_id,
+            )
+            project_auto(
+                store,
+                projection_store,
+                graph,
+                workspace_id=workspace_id,
+            )
+        else:
+            project_graph(store, graph, workspace_id=workspace_id)
     except Exception as exc:  # noqa: BLE001 — RDB is source of truth
-        logger.debug("source graph cleanup skipped ws=%s: %s", workspace_id, exc)
+        logger.warning(
+            "source graph rebuild requires repair ws=%s: %s",
+            workspace_id,
+            exc,
+        )
+        return "repair_required"
+    return "complete"
 
 
-def _delete_generic_catalog_rows(
-    datasource_store: DatasourceStore,
+def _generic_catalog_delete_ids(
+    datasources: list[dict],
     workspace_id: int,
     refs: list[tuple[str, str]],
-) -> int:
+) -> list[int]:
     ref_set = {(str(system), str(dataset)) for system, dataset in refs}
-    removed = 0
-    for row in datasource_store.list(workspace_id):
+    delete_ids: list[int] = []
+    for row in datasources:
+        if int(row.get("workspace_id", 0)) != int(workspace_id):
+            continue
         meta = (row.get("config") or {}).get("source_catalog", {}).get("generic")
         if not isinstance(meta, dict):
             continue
@@ -766,9 +794,67 @@ def _delete_generic_catalog_rows(
         )
         if key not in ref_set:
             continue
-        datasource_store.delete(int(row["id"]))
-        removed += 1
-    return removed
+        delete_ids.append(int(row["id"]))
+    return delete_ids
+
+
+def _ensure_workspace_idle(workspace_id: int) -> None:
+    jobs = _job_store()
+    try:
+        active = next(
+            (
+                row
+                for row in jobs.list_recent(workspace_id)
+                if str(row.get("status") or "").lower() in {"queued", "running"}
+            ),
+            None,
+        )
+    finally:
+        jobs.close()
+    if active is not None:
+        raise HTTPException(
+            409,
+            "Source deletion is unavailable while ingestion is active.",
+        )
+
+
+def _purge_relational_source(
+    entity_store: EntityStore,
+    datasource_store: DatasourceStore,
+    workspace_id: int,
+    refs: list[tuple[str, str]],
+    *,
+    catalog_delete_ids: list[int],
+    catalog_update: CatalogUpdate | None = None,
+) -> dict:
+    if isinstance(entity_store, EntityStore):
+        try:
+            return _source_purge_store(workspace_id).purge(
+                refs,
+                catalog_delete_ids=catalog_delete_ids,
+                catalog_update=catalog_update,
+            )
+        except SourcePurgeBusy as exc:
+            raise HTTPException(
+                409,
+                "Source deletion is unavailable while ingestion is active.",
+            ) from exc
+
+    stats = entity_store.purge_source_references(refs)
+    for datasource_id in catalog_delete_ids:
+        datasource_store.delete(datasource_id)
+    if catalog_update is not None:
+        datasource_store.update(
+            catalog_update.datasource_id,
+            name=catalog_update.name,
+            kind=catalog_update.kind,
+            config=catalog_update.config,
+            secret=None,
+        )
+    return {
+        **stats,
+        "catalog_rows_deleted": len(catalog_delete_ids),
+    }
 
 
 def _purge_source_from_workspace(source_key: str, workspace_id: int) -> dict:
@@ -795,26 +881,29 @@ def _purge_source_from_workspace(source_key: str, workspace_id: int) -> dict:
         else:
             raise HTTPException(404, "source not found")
 
-        stats = entity_store.purge_source_references(refs)
-        _purge_graph_projection(
-            workspace_id,
-            refs,
-            [int(entity_id) for entity_id in stats.get("entity_ids_deleted", [])],
-        )
-
-        catalog_rows_deleted = 0
+        catalog_delete_ids: list[int] = []
         if datasource_to_delete is not None:
-            datasource_store.delete(int(datasource_to_delete["id"]))
-            catalog_rows_deleted = 1
+            catalog_delete_ids = [int(datasource_to_delete["id"])]
         elif refs:
-            catalog_rows_deleted = _delete_generic_catalog_rows(
-                datasource_store, workspace_id, refs,
+            catalog_delete_ids = _generic_catalog_delete_ids(
+                datasources,
+                workspace_id,
+                refs,
             )
 
+        _ensure_workspace_idle(workspace_id)
+        stats = _purge_relational_source(
+            entity_store,
+            datasource_store,
+            workspace_id,
+            refs,
+            catalog_delete_ids=catalog_delete_ids,
+        )
+        graph_sync = _rebuild_graph_projection(workspace_id, entity_store)
         return {
             "status": "deleted",
             "source_key": source_key,
-            "catalog_rows_deleted": catalog_rows_deleted,
+            "graph_sync": graph_sync,
             **{key: value for key, value in stats.items() if key != "entity_ids_deleted"},
         }
     finally:
@@ -839,37 +928,39 @@ def _purge_asset_from_workspace(source_key: str, asset_key: str, workspace_id: i
             raise HTTPException(404, "asset not found")
 
         refs = [("csv", str(target["dataset"]))]
-        stats = entity_store.purge_source_references(refs)
-        _purge_graph_projection(
-            workspace_id,
-            refs,
-            [int(entity_id) for entity_id in stats.get("entity_ids_deleted", [])],
-        )
-
         remaining_assets = [asset for asset in assets if not _asset_matches(asset, asset_key)]
+        catalog_delete_ids: list[int] = []
+        catalog_update: CatalogUpdate | None = None
         if remaining_assets:
             config = dict(datasource.get("config") or {})
             next_catalog = dict(config.get("source_catalog") or {})
             meta["generated_assets"] = remaining_assets
             next_catalog[meta_key] = meta
             config["source_catalog"] = next_catalog
-            datasource_store.update(
-                int(datasource["id"]),
+            catalog_update = CatalogUpdate(
+                datasource_id=int(datasource["id"]),
                 name=datasource["name"],
                 kind=datasource["kind"],
                 config=config,
-                secret=None,
             )
-            catalog_rows_deleted = 0
         else:
-            datasource_store.delete(int(datasource["id"]))
-            catalog_rows_deleted = 1
+            catalog_delete_ids = [int(datasource["id"])]
 
+        _ensure_workspace_idle(workspace_id)
+        stats = _purge_relational_source(
+            entity_store,
+            datasource_store,
+            workspace_id,
+            refs,
+            catalog_delete_ids=catalog_delete_ids,
+            catalog_update=catalog_update,
+        )
+        graph_sync = _rebuild_graph_projection(workspace_id, entity_store)
         return {
             "status": "deleted",
             "source_key": source_key,
             "asset_key": asset_key,
-            "catalog_rows_deleted": catalog_rows_deleted,
+            "graph_sync": graph_sync,
             **{key: value for key, value in stats.items() if key != "entity_ids_deleted"},
         }
     finally:

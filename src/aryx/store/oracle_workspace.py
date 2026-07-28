@@ -5,21 +5,10 @@ import json
 import logging
 from typing import Any
 
-from aryx.queries import load
+from aryx.queries import load, split_statements
 from aryx.store.oracle_pool import OracleConnectionWrapper, get_oracle_pool
 
 logger = logging.getLogger(__name__)
-
-# Tables that used Postgres partitioning; on Oracle we use plain tables with
-# workspace_id as an indexed column — no partition DDL needed.
-_PARTITIONED = ["aryx_landed_record", "aryx_entity", "aryx_entity_member", "aryx_relationship"]
-
-# Pre-built at module load time from the constant above.
-# Oracle identifiers (table names) cannot be passed as bind variables, so
-# interpolation is unavoidable — building here keeps f-strings away from execute().
-_DELETE_PARTITION_SQLS = {t: f"DELETE FROM {t} WHERE workspace_id = :1" for t in _PARTITIONED}
-_TRUNCATE_SQLS = {t: f"DELETE FROM {t}" for t in _PARTITIONED}
-
 
 class OracleWorkspaceStore:
     """WorkspaceStore backed by Oracle ADB 23ai via oracledb.
@@ -45,9 +34,15 @@ class OracleWorkspaceStore:
     def _drop_partitions(self, wid: int) -> None:
         """Delete all rows for workspace wid from the four core tables."""
         with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                for table in _PARTITIONED:
-                    cur.execute(_DELETE_PARTITION_SQLS[table], (wid,))
+            self._drop_partitions_with_conn(conn, wid)
+
+    @staticmethod
+    def _drop_partitions_with_conn(conn: Any, wid: int) -> None:
+        with conn.cursor() as cur:
+            for statement in split_statements(
+                load("delete_workspace_partition_data")
+            ):
+                cur.execute(statement, {"wid": int(wid)})
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
     def create(self, name: str, description: str = "", context: str = "",
@@ -125,14 +120,11 @@ class OracleWorkspaceStore:
     def purge_data(self, wid: int) -> dict[str, Any]:
         """Delete all data rows for workspace wid (equivalent to truncating partitions)."""
         wid = int(wid)
-        self._drop_partitions(wid)
-        stmts = load("purge_workspace_data")
         with self._pool.connection() as conn:
+            self._drop_partitions_with_conn(conn, wid)
             with conn.cursor() as cur:
-                for stmt in stmts.split(";"):
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith("--"):
-                        cur.execute(stmt, {"wid": wid})
+                for statement in split_statements(load("purge_workspace_data")):
+                    cur.execute(statement, {"wid": wid})
                 cur.execute(load("delete_profiles_by_workspace"), (wid,))
                 cur.execute(load("delete_tags_by_workspace"), (wid,))
                 cur.execute(load("reset_workspace_context"), {"wid": wid})
@@ -144,12 +136,14 @@ class OracleWorkspaceStore:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("nuke_system"))
-                for table in _PARTITIONED:
-                    cur.execute(_TRUNCATE_SQLS[table])
+                for statement in split_statements(
+                    load("nuke_workspace_partition_data")
+                ):
+                    cur.execute(statement)
                 cur.execute(load("select_non_default_workspace_ids"))
                 non_default = cur.fetchall()
                 for (wid,) in non_default:
-                    self._drop_partitions(int(wid))
+                    self._drop_partitions_with_conn(conn, int(wid))
                 cur.execute(load("delete_non_default_workspaces"))
                 cur.execute(load("reset_workspace_context"), {"wid": 1})
         logger.info("system nuked — factory reset complete")
@@ -159,8 +153,8 @@ class OracleWorkspaceStore:
         """Delete workspace wid and all its data."""
         if int(wid) == 1:
             raise ValueError("the Default workspace cannot be deleted")
-        self._drop_partitions(int(wid))
         with self._pool.connection() as conn:
+            self._drop_partitions_with_conn(conn, int(wid))
             with conn.cursor() as cur:
                 cur.execute(load("delete_profiles_by_workspace"), (wid,))
                 cur.execute(load("delete_tags_by_workspace"), (wid,))

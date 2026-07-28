@@ -8,6 +8,7 @@ DELETE FROM aryx_ask_history WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_axiom_violation WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_bml_tier2_cache WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_datasource WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_discovery WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_ingest_question WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_llm_call WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_projected_entity WHERE workspace_id = %(wid)s;
@@ -24,6 +25,7 @@ DELETE FROM aryx_run_stage WHERE run_id IN (SELECT run_id FROM aryx_run WHERE wo
 DELETE FROM aryx_match_edge WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
 DELETE FROM aryx_block_done WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
 DELETE FROM aryx_block_member WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_schema_mapping WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
 DELETE FROM aryx_run WHERE workspace_id = %(wid)s;
 DELETE FROM aryx_job_event WHERE job_id IN (SELECT job_id FROM aryx_job WHERE workspace_id = %(wid)s);
 DELETE FROM aryx_job WHERE workspace_id = %(wid)s;

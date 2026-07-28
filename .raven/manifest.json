@@ -5,7 +5,7 @@
   "user_email": "m.munir@giggso.com",
   "hub_url": "https://ravenhub.giggso.com",
   "version": "1.0.5",
-  "raven_version": "3.3.0",
+  "raven_version": "3.4.0",
   "work_type": "full-stack-data-platform",
   "stack": {
     "language": ["python", "typescript"],
@@ -46,7 +46,8 @@
       "streamlit-agraph",
       "striprtf",
       "uvicorn",
-      "fdk"
+      "fdk",
+      "raven-logger"
     ],
     "js_libraries": [
       "@xyflow/react",
