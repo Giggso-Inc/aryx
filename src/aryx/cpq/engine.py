@@ -5534,12 +5534,22 @@ class CpqEngine:
 
     @classmethod
     def _describe_char_allowlist(cls, script: str | None) -> str | None:
+        # Raven review, 2026-07-28: this previously did a blind first-match
+        # search with no guard against conditional branching or
+        # reassignment — the established sibling pattern for exactly this
+        # ambiguity class is bml.py's evaluate_constant_return, which bails
+        # to None on any `if (` in the script and walks multiple
+        # assignments in source order so the LAST one wins (never describes
+        # a stale/conditionally-overridden value as if it were the real
+        # constraint). Matched here for the same reason.
         if not script:
             return None
-        m = cls._ALLOWED_CHARS_RE.search(script)
-        if not m:
+        if re.search(r'\bif\s*\(', script, re.IGNORECASE):
             return None
-        chars = m.group(1)
+        matches = list(cls._ALLOWED_CHARS_RE.finditer(script))
+        if not matches:
+            return None
+        chars = matches[-1].group(1)
         if not chars:
             return None
         has_upper = any(c.isupper() for c in chars)

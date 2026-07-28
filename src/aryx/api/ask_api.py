@@ -508,7 +508,8 @@ def _handle_cpq_qa(
             f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
         )
         qa_answer = (
-            f"The available options for **{_attr_q.display_label}** are:\n\n{_numbered}"
+            f"The available options for **{_cpq_engine.disambiguated_label(_attr_q, attrs)}** "
+            f"are:\n\n{_numbered}"
         )
         p_in = p_out = p_ms = s_in = s_out = s_ms = 0
     else:
@@ -692,7 +693,8 @@ def _handle_cascade(
         # Could not parse new value — ask for clarification
         opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
         answer = (
-            f"I couldn't match that to a valid option for **{changed_attr.display_label}**. "
+            f"I couldn't match that to a valid option for "
+            f"**{_cpq_engine.disambiguated_label(changed_attr, attrs)}**. "
             f"Please choose one:\n\n{opts_prompt}"
         )
         session.pending_variables = [changed_attr.variable_name] + [
@@ -970,14 +972,17 @@ def _handle_multi_select_removal(
         qty_vn = qty_map.get(removed_iv.strip().lower())
         if qty_vn and qty_vn in session.filled:
             qty_attr = next((a for a in attrs if a.variable_name == qty_vn), None)
-            dropped_qty_labels.append(qty_attr.display_label if qty_attr else qty_vn)
+            dropped_qty_labels.append(
+                _cpq_engine.disambiguated_label(qty_attr, attrs) if qty_attr else qty_vn
+            )
             session.filled.pop(qty_vn, None)
             session.display_filled.pop(qty_vn, None)
             session.filled_source.pop(qty_vn, None)
             session.pending_variables = [v for v in session.pending_variables if v != qty_vn]
 
     cascade_note = (
-        f"Removed **{', '.join(removed_display)}** from **{changed_attr.display_label}** "
+        f"Removed **{', '.join(removed_display)}** from "
+        f"**{_cpq_engine.disambiguated_label(changed_attr, attrs)}** "
         f"— now: **{session.display_filled[changed_attr.variable_name]}**."
     )
     if dropped_qty_labels:
@@ -1208,14 +1213,15 @@ def _handle_attr_activation(
     # (e.g. a source="default"/"rule" fill this same pass) gets stated
     # directly rather than a misleading "what value would you like?"
     # when nothing further is actually being asked.
+    _activated_label = _cpq_engine.disambiguated_label(activated_attr, attrs)
     if activated_vn in filled:
         _act_display = display_filled.get(activated_vn, filled[activated_vn])
         cascade_note = (
-            f"Added **{activated_attr.display_label}** → **{_act_display}**."
+            f"Added **{_activated_label}** → **{_act_display}**."
         )
     else:
         cascade_note = (
-            f"Added **{activated_attr.display_label}** to your quote — "
+            f"Added **{_activated_label}** to your quote — "
             f"what value would you like?"
         )
 
@@ -1295,7 +1301,10 @@ def _handle_attr_clear(
     session.filled[vn] = ""
     session.display_filled[vn] = "(none)"
     session.filled_source[vn] = "user"
-    cascade_note = f"Cleared **{cleared_attr.display_label}** (was **{prev_display}**)."
+    cascade_note = (
+        f"Cleared **{_cpq_engine.disambiguated_label(cleared_attr, attrs)}** "
+        f"(was **{prev_display}**)."
+    )
 
     hints = _cpq_engine.extract_hints(req.question)
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
@@ -3698,12 +3707,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         None,
                     ) if session.pending_multi_intent_vn else None
                     answer = (
-                        f"Couldn't find a value for **{_resolved_attr.display_label}** in "
+                        f"Couldn't find a value for "
+                        f"**{_cpq_engine.disambiguated_label(_resolved_attr, attrs)}** in "
                         f"\"{_orig_question}\". Please say what to change it to."
                         + (f"\n\n{opts_prompt}" if opts_prompt else "")
                         + (
                             f"\n\n*(I'll still ask about "
-                            f"**{_still_pending_second.display_label}** right after this.)*"
+                            f"**{_cpq_engine.disambiguated_label(_still_pending_second, attrs)}** "
+                            f"right after this.)*"
                             if _still_pending_second else ""
                         )
                     )
@@ -3823,7 +3834,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 session.pending_multi_intent_vn = _second_target.variable_name
                 answer += (
                     f"\n\n*(Noted — I'll also ask about "
-                    f"**{_second_target.display_label}** once this is resolved.)*"
+                    f"**{_cpq_engine.disambiguated_label(_second_target, attrs)}** "
+                    f"once this is resolved.)*"
                 )
             session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
             session.pending_change_collision_question = req.question
@@ -3912,7 +3924,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 if _nv_current_val else ""
             )
             _nv_answer = (
-                f"Which value would you like for **{_no_value_attr.display_label}**?"
+                f"Which value would you like for "
+                f"**{_cpq_engine.disambiguated_label(_no_value_attr, attrs)}**?"
                 f"\n\n{_nv_options_block}{_nv_current_note}"
             )
             session.pending_change_no_value_vn = _no_value_attr.variable_name
@@ -3999,7 +4012,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             if current_val else ""
         )
         answer = (
-            f"Here are the available values for **{queried_attr.display_label}**:"
+            f"Here are the available values for "
+            f"**{_cpq_engine.disambiguated_label(queried_attr, attrs)}**:"
             f"\n\n{options_block}{current_note}"
             f"\n\nReply with your choice and I'll update the configuration."
         )
@@ -4035,9 +4049,9 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             )
             if _constraint_desc:
                 answer = (
-                    f"**{_pending_attr_for_constraint.display_label}** doesn't have a "
-                    f"fixed list of values — it's free text, but it must only contain "
-                    f"{_constraint_desc}."
+                    f"**{_cpq_engine.disambiguated_label(_pending_attr_for_constraint, attrs)}** "
+                    f"doesn't have a fixed list of values — it's free text, but it must "
+                    f"only contain {_constraint_desc}."
                 )
                 _persist_cpq_history(req.workspace_id, req.question, answer)
                 return {
@@ -4166,7 +4180,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     if _mc_current_val else ""
                 )
                 _mc_answer = (
-                    f"Which value would you like for **{_mc_attr_no_value.display_label}**?"
+                    f"Which value would you like for "
+                    f"**{_cpq_engine.disambiguated_label(_mc_attr_no_value, attrs)}**?"
                     f"\n\n{_mc_options_block}{_mc_current_note}"
                 )
                 _mc_other_pending = [
@@ -4334,13 +4349,14 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # a judgment call between real options, not hallucination,
                 # so it must not silently commit (same "never guess a real
                 # decision" discipline as an ambiguous label collision).
+                _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
                 _lines = "\n".join(f"- {c}" for c in _llm_low_confidence_candidates)
                 _static_answer = (
                     f"I'm not certain which option you meant for "
-                    f"**{pending_attr.display_label}** — could you confirm which one?\n\n{_lines}"
+                    f"**{_pending_label}** — could you confirm which one?\n\n{_lines}"
                 )
                 answer = _compose_disambiguation_question(
-                    req.question, f"which value they meant for {pending_attr.display_label}",
+                    req.question, f"which value they meant for {_pending_label}",
                     _llm_low_confidence_candidates,
                     {"Country": session.country, "Product": session.product_name},
                     _static_answer, req.workspace_id,
@@ -4364,15 +4380,16 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # the customer did something wrong).
                 opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
                 _is_long_sentence = pending_attr.select_type != "multi" and len(req.question.split()) > 6
+                _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
                 if _is_long_sentence:
                     answer = (
-                        f"I couldn't match that to one of **{pending_attr.display_label}**'s "
+                        f"I couldn't match that to one of **{_pending_label}**'s "
                         f"options — could you just give me the name on its own?\n\n{opts_prompt}"
                     )
                 else:
                     answer = (
                         f"I didn't recognise **\"{req.question.strip()}\"** as a valid choice "
-                        f"for **{pending_attr.display_label}**. Please pick one:\n\n{opts_prompt}"
+                        f"for **{_pending_label}**. Please pick one:\n\n{opts_prompt}"
                     )
                 _persist_cpq_history(req.workspace_id, req.question, answer)
                 return {

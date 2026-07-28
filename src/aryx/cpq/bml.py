@@ -1183,6 +1183,18 @@ class BmlEvaluator:
         turn. Defaults to False (never guess toward asking) on any LLM
         failure or "unknown" — preserves the current safe/dormant
         behavior when the classifier can't decide.
+
+        Routed through `_prepare` (Raven review, 2026-07-28) — previously
+        called `_call_tier2` directly, which skipped BOTH the in-memory
+        `_SHARED_SCRIPT_CACHE` check every other Tier-2 kind gets AND
+        `bml_tier2_max_per_turn` (Amendment 18/PR #122) entirely, since only
+        `_prepare` enforces that cap via `_reserve_tier2_slot()`. On an
+        800+-attribute catalog with a cold durable cache, this reintroduced
+        the exact unbounded-sequential-LLM-calls problem PR #122's cap
+        exists to prevent. There's no Tier-1 idiom for "is this ask-worthy"
+        (Amendment 22's whole premise is that no cheaper signal exists), so
+        a tier1_fn that always defers to Tier-2 reuses `_prepare`'s cache/
+        cap machinery without pretending a Tier-1 shortcut exists.
         """
         script = rule_script or ""
         # A gating condition (e.g. "only relevant when advancedFlag ==
@@ -1194,7 +1206,12 @@ class BmlEvaluator:
         if len(script) > 4000:
             script = script[:2000] + "\n...\n" + script[-2000:]
         context = f"{attr_label}\n{rule_message or ''}\n{script}"
-        result = self._call_tier2("ask_worthy", context, {}, cache_id=attr_key)
+        key, result, needs_tier2 = self._prepare(
+            "ask_worthy", lambda _s, _v: (None, False), context, {}, cache_id=attr_key)
+        if needs_tier2:
+            result = self._call_tier2("ask_worthy", context, {}, cache_id=attr_key)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        result = self._store(key, result)
         return bool(result) if isinstance(result, bool) else False
 
     def prefetch_tier2(
