@@ -19,6 +19,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import (
     AskRequest,
     _dispatch_intent_result,
+    _handle_cpq_qa,
     _resolve_target_description,
     _run_cpq_turn,
     _with_classify_usage,
@@ -724,3 +725,110 @@ def test_llm_first_gate_falls_through_to_deterministic_on_unparseable_reply(monk
     with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json at all", 5, 0)):
         resp = _run_cpq_turn(req, object())
     assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Section D — Phase 3 QA ambiguity check (cpq_qa_ambiguity_check_enabled),
+# flagged by Raven review on PR #125 as correctly implemented but
+# untested. Exercises _handle_cpq_qa's graph-search branch directly, with
+# every I/O boundary (graph search, term extraction, synthesis) mocked so
+# only the ambiguity-check gate itself is under test.
+# ═══════════════════════════════════════════════════════════════════════
+
+def _qa_common_mocks(monkeypatch, *, ambiguity_enabled: bool):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "detect_label_collision", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "detect_attr_query", lambda *a, **k: None)
+    monkeypatch.setattr(api, "all_types", lambda *a, **k: [])
+    monkeypatch.setattr(api, "_extract_terms", lambda *a, **k: ([], 10, 5, 0))
+    monkeypatch.setattr(api, "gather", lambda *a, **k: ([], []))
+    monkeypatch.setattr(api, "_enrich_with_attributes", lambda entities, *a, **k: entities)
+    monkeypatch.setattr(api, "render_context", lambda *a, **k: "")
+    real_settings = api.get_settings()
+    patched_settings = real_settings.model_copy(
+        update={"cpq_qa_ambiguity_check_enabled": ambiguity_enabled})
+    monkeypatch.setattr(api, "get_settings", lambda: patched_settings)
+
+
+def _qa_session() -> CpqSession:
+    return CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+
+
+def test_qa_ambiguity_check_asks_clarifying_question_instead_of_answering(monkeypatch):
+    """A reply that reads like Q&A but the classifier flags as genuinely
+    ambiguous (medium/high confidence AMBIGUOUS + a clarifying_question)
+    must ask that question instead of committing to a graph-search
+    answer -- and must never call _synthesise, since the ambiguity
+    branch owns the response in that case."""
+    _qa_common_mocks(monkeypatch, ambiguity_enabled=True)
+    session = _qa_session()
+    req = AskRequest(question="what about the hardware", workspace_id=1,
+                      session_data=session.to_dict(), history=[])
+    result = IntentResult(
+        category=IntentCategory.AMBIGUOUS, confidence=Confidence.MEDIUM,
+        clarifying_question="Did you mean Hardware Version or Housing?",
+        rationale="both plausible",
+    )
+    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+               return_value=(result, 40, 8)), \
+         patch("aryx.api.ask_api._synthesise") as mock_synth:
+        resp = _handle_cpq_qa(req, session, [], object())
+    mock_synth.assert_not_called()
+    assert resp["answer"] == "Did you mean Hardware Version or Housing?"
+    # usage sums the term-extraction call's tokens (10, 5 from the mock
+    # above) with the classification call's real tokens (40, 8) -- the
+    # ambiguity check runs AFTER term extraction, not instead of it.
+    assert resp["usage"]["prompt_tokens"] == 50
+    assert resp["usage"]["completion_tokens"] == 13
+
+
+def test_qa_ambiguity_check_falls_back_to_synthesis_when_not_ambiguous(monkeypatch):
+    """A genuinely non-ambiguous classification (or LOW confidence) must
+    let the normal Q&A synthesis path answer, not force a clarifying
+    question the classifier itself didn't actually call for."""
+    _qa_common_mocks(monkeypatch, ambiguity_enabled=True)
+    session = _qa_session()
+    req = AskRequest(question="what does advantage service include", workspace_id=1,
+                      session_data=session.to_dict(), history=[])
+    result = IntentResult(category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
+                           rationale="clear Q&A")
+    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+               return_value=(result, 40, 8)), \
+         patch("aryx.api.ask_api._synthesise",
+               return_value=("Advantage includes 24/7 support.", 20, 15, 0)) as mock_synth:
+        resp = _handle_cpq_qa(req, session, [], object())
+    mock_synth.assert_called_once()
+    assert resp["answer"] == "Advantage includes 24/7 support."
+
+
+def test_qa_ambiguity_check_never_calls_the_llm_when_disabled(monkeypatch):
+    """Default-off gate: with cpq_qa_ambiguity_check_enabled=False, the
+    classifier must never be invoked at all -- synthesis runs unconditionally."""
+    _qa_common_mocks(monkeypatch, ambiguity_enabled=False)
+    session = _qa_session()
+    req = AskRequest(question="what about the hardware", workspace_id=1,
+                      session_data=session.to_dict(), history=[])
+    with patch("aryx.api.ask_api._llm_classify_intent_universal") as mock_classify, \
+         patch("aryx.api.ask_api._synthesise",
+               return_value=("Here's what the graph shows.", 20, 15, 0)) as mock_synth:
+        resp = _handle_cpq_qa(req, session, [], object())
+    mock_classify.assert_not_called()
+    mock_synth.assert_called_once()
+    assert resp["answer"] == "Here's what the graph shows."
+
+
+def test_qa_ambiguity_check_failure_falls_back_to_synthesis_safely(monkeypatch):
+    """The classifier call is wrapped in a bare except -- any failure
+    (LLM error, malformed reply) must never break the Q&A turn; it must
+    fall through to the normal synthesis answer."""
+    _qa_common_mocks(monkeypatch, ambiguity_enabled=True)
+    session = _qa_session()
+    req = AskRequest(question="what about the hardware", workspace_id=1,
+                      session_data=session.to_dict(), history=[])
+    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+               side_effect=RuntimeError("llm unavailable")), \
+         patch("aryx.api.ask_api._synthesise",
+               return_value=("Fallback answer.", 20, 15, 0)) as mock_synth:
+        resp = _handle_cpq_qa(req, session, [], object())
+    mock_synth.assert_called_once()
+    assert resp["answer"] == "Fallback answer."
