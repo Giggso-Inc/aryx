@@ -30,6 +30,7 @@ unacceptably slow pipeline runs.
 | P15 | 🔴 Critical | Discovery summary/confirm — full 257MB payload deserialized for a small read | *(fixed)* any multi-file discovery (OCI mode) |
 | P16 | 🟡 High | Oracle `RETURNING...INTO` ~16KB limit on JSON columns | *(fixed)* any datasource config json >~16KB (OCI mode) |
 | P17 | 🟢 Medium | Schema-FK LLM inference — sequential batches, not parallelized | *(identified, not fixed)* workspaces with many entity types |
+| P18 | 🔴 Critical | Adjudication decide — missing `workspace_id` scoping | *(fixed)* cross-tenant entity-merge approval, any workspace |
 
 ---
 
@@ -1126,6 +1127,73 @@ orchestration around the LLM call, not anything Oracle- or Postgres-specific.
 
 ---
 
+## P18 — Cross-Tenant Adjudication Decide: Missing `workspace_id` Scoping *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found via a self-review sweep after P14,
+specifically checking every store class that carries `self._ws` for methods
+that don't actually use it — the same shape of audit that found P14, applied
+more broadly this time.
+
+**Source files:**
+- `src/aryx/api/adjudication_api.py` — `POST /adjudication/{id}/decide`
+- `src/aryx/store/adjudication_store.py` — `decide()`
+- `decide_adjudication.sql`
+
+**What happened:**
+`AdjudicationStore` carries `self._ws` and uses it correctly in `enqueue()`,
+`page()`, `stats()`, and `merge_entities_of()` — but `decide()` never
+referenced it, the exact same inconsistency P14 found in `ActionStore`.
+```sql
+-- before:
+UPDATE aryx_adjudication SET status = %s, ... WHERE id = %s AND status = 'pending'
+```
+`aryx_adjudication.id` is `NUMBER GENERATED ALWAYS AS IDENTITY` — sequential
+and enumerable across workspaces, same exploit shape as P14. The API route
+(`adjudication_api.py`) already builds a workspace-scoped store, so a caller
+supplying their own `workspace_id` alongside a *different* workspace's
+sequential `adjudication_id` could approve or reject another workspace's
+pending entity-merge decision — and approval triggers `merge_entities_of()`,
+so this could actually merge entities in a workspace the caller doesn't own.
+
+### Accuracy Impact
+None for legitimate same-workspace use. Real cross-tenant integrity gap for
+the dishonest path, same as P14.
+
+### Resource Impact
+N/A — security/isolation gap, not a performance issue.
+
+### Cost Impact
+Not dollar-denominated — risk is unauthorized cross-workspace entity merges
+or adjudication decisions.
+
+### Fix Applied
+Added `workspace_id` to `decide_adjudication.sql`'s `WHERE` clause and
+threaded `self._ws` through `AdjudicationStore.decide()` — no route or
+signature changes needed, since `adjudication_api.py` already built a
+workspace-scoped store instance.
+
+**Verified live against real ADB**: enqueued a synthetic adjudication row in
+workspace 342, confirmed a decide attempt from workspace 274 fails with
+`ValueError: adjudication {id} not pending` (the `UPDATE` matched zero rows
+due to the workspace mismatch), then confirmed the real owner's decide call
+succeeded normally. Existing `tests/test_adjudication.py` (8/10 — 2
+pre-existing unrelated failures in `resolution/run.py` return-value naming,
+confirmed unrelated: no reference to `decide()` or `workspace_id` in either
+failing test) still passes at the same rate.
+
+**Also checked and ruled out during the same sweep:** every other store
+class carrying `self._ws` (`EntityStore`, `ChunkBackend`, `PostgresStore`,
+`ProjectionStore`, `SourceMetricsStore`) — spot-checked the highest-risk
+methods (get/update/delete-by-id) and confirmed they all correctly pass
+`self._ws`. `AdjudicationStore.decide()` was the only other instance found
+beyond the three P14 already fixed.
+
+### Fix — OCI Path
+N/A — same fix applies identically to Postgres, nothing here is
+Oracle-specific.
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
@@ -1146,6 +1214,8 @@ orchestration around the LLM call, not anything Oracle- or Postgres-specific.
 | P14 | Missing `workspace_id` on writes/deletes | ✅ Fixed | 🔴 Was a real cross-tenant delete/write gap, 3 endpoints | Low — SQL + store + route changes | No |
 | P15 | Discovery summary full-payload deserialize | ✅ Fixed | 🔴 Was non-functional (246s) for large discoveries → 2.7s | Low — 1 SQL + 2 methods + 1 call site | No |
 | P16 | Oracle `RETURNING` 16KB JSON limit | ✅ Fixed | 🔴 Was a hard failure on any large datasource config | Low — 2 SQL files + 2 methods | No — Oracle-only bug |
+| P17 | Schema-FK LLM sequential batches | Not fixed | 🟡 ~8 of ~41 min in one confirm job; one batch alone 4m6s | Medium — concurrency + thread-safety review | No |
+| P18 | Missing `workspace_id` on adjudication decide | ✅ Fixed | 🔴 Was a real cross-tenant entity-merge approval gap | Low — 1 SQL file + 1 method | No |
 
 **P3 is now the most urgent unfixed risk** — silent data loss with no visible
 error. P1 was believed to be the other urgent unfixed risk (OOM at scale) but
@@ -1165,6 +1235,12 @@ audit prompted by P13's discovery of a similar (read-only) gap; P15 and P16
 were each found live, one immediately after the other, by actually retrying
 the same real customer discovery through to completion rather than stopping
 once the first fix appeared to work.
+
+**P17 was identified, and P18 found and fixed, during a post-implementation
+self-review (2026-07-28)** asked for explicitly after P14-P16 shipped —
+P18 is the same cross-tenant scoping bug class as P14, found by sweeping
+every store class carrying `self._ws` for methods that don't actually use
+it, rather than assuming the P14 audit's three instances were exhaustive.
 
 All fixes except P6 can be implemented today without OCI. OCI improves
 each fix but is not required for the initial scale improvements.
@@ -1191,6 +1267,8 @@ each fix but is not required for the initial scale improvements.
 | P14 — Missing workspace_id scoping | N/A — Python/SQL-side fix, backend-independent | None once fixed |
 | P15 — Discovery summary full deserialize | N/A — query-shape fix, backend-independent | Confirm job's own initial full-fetch still costs ~4 min for very large discoveries (unfixed) |
 | P16 — Oracle RETURNING 16KB JSON limit | Oracle-specific fix, already applied | None — Postgres was never affected |
+| P17 — Schema-FK LLM sequential batches | N/A — same fix applies regardless of backend | Not yet fixed |
+| P18 — Missing workspace_id on adjudication decide | N/A — Python/SQL-side fix, backend-independent | None once fixed |
 
 ---
 
@@ -1224,6 +1302,9 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *report, verified end to end against a real 30-file customer discovery*
 *Updated: 2026-07-28 — added P17, identified by timing that same real*
 *confirm job's full 40m56s end-to-end run; not yet fixed*
+*Updated: 2026-07-28 — added P18, found and fixed during a post-*
+*implementation self-review of P14-P17 requested explicitly; same*
+*cross-tenant scoping bug class as P14, in AdjudicationStore.decide()*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
 *src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
 *src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
@@ -1233,4 +1314,5 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *src/aryx/store/datasource_store.py, src/aryx/store/action_store.py,*
 *src/aryx/store/relationship_type_store.py, src/aryx/store/discovery_store.py,*
 *src/aryx/discoveries.py, src/aryx/api/doc_discover_api.py,*
-*src/aryx/pipeline/enrich.py, src/aryx/relationships.py*
+*src/aryx/pipeline/enrich.py, src/aryx/relationships.py,*
+*src/aryx/store/adjudication_store.py, src/aryx/api/adjudication_api.py*

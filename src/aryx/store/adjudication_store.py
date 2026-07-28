@@ -51,16 +51,16 @@ class AdjudicationStore:
 
     def decide(self, adjudication_id: int, approve: bool,
                decided_by: str) -> dict[str, Any]:
-        """Flip a pending row to approved/rejected; returns the updated row.
+        """Flip a pending row to approved/rejected in this workspace; returns the updated row.
 
         Raises:
-            ValueError: When the row is missing or already decided.
+            ValueError: When the row is missing, not in this workspace, or already decided.
         """
         status = "approved" if approve else "rejected"
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("decide_adjudication"),
-                            (status, decided_by, adjudication_id))
+                            (status, decided_by, adjudication_id, self._ws))
                 row = cur.fetchone()
         if row is None:
             raise ValueError(f"adjudication {adjudication_id} not pending")
