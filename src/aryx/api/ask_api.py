@@ -578,9 +578,10 @@ def _handle_cpq_qa(
             # (never config-mutating, so a wrong call here just means one
             # extra clarifying question, not a misapplied change).
             _qa_ambiguity_answer = None
+            _qa_it = _qa_ot = 0
             if get_settings().cpq_qa_ambiguity_check_enabled:
                 try:
-                    _qa_intent = _llm_classify_intent_universal(
+                    _qa_intent, _qa_it, _qa_ot = _llm_classify_intent_universal(
                         req.question, attrs, session, req.workspace_id)
                     if (
                         _qa_intent is not None
@@ -594,9 +595,11 @@ def _handle_cpq_qa(
             if _qa_ambiguity_answer is not None:
                 qa_answer = _qa_ambiguity_answer
                 # p_in/p_out/p_ms already reflect the real _extract_terms
-                # call above -- only s_in/s_out/s_ms (the _synthesise call
-                # this branch skips) are zero here.
-                s_in = s_out = s_ms = 0
+                # call above -- s_in/s_out here report the classification
+                # call's own real usage (2026-07-28), not zero, since a
+                # real LLM call drove this answer (the _synthesise call
+                # this branch skips is what would have otherwise reported).
+                s_in, s_out, s_ms = _qa_it, _qa_ot, 0
             else:
                 qa_answer, s_in, s_out, s_ms = _synthesise(
                     req.question, context, history=req.history, workspace_id=req.workspace_id,
@@ -668,6 +671,58 @@ def _append_unmatched_targets_note(
             f"\n\n*(I didn't recognize {phrases} as anything in this "
             f"configuration — did you mean something else?)*"
         )
+    return result
+
+
+def _build_no_value_response(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    target_attr: Any,
+    con_rules: list,
+    bml_eval: Any,
+    tool_name: str,
+) -> dict[str, Any]:
+    """"Which value would you like for X?" follow-up for a change-verb
+    naming an already-filled attribute with no resolvable new value.
+
+    Shared by two callers (2026-07-28 refactor): the regex-based
+    `detect_change_target_without_value` and the LLM change-intent
+    fallback's own empty-value case ("change the hardware type" correctly
+    identifies hWVersion_astro but states no new value) — previously the
+    LLM path had no equivalent and silently discarded a correctly-
+    identified target instead of asking, the same class of gap
+    `detect_change_target_without_value` already closed for its own regex
+    matches.
+    """
+    constrained = _cpq_engine.apply_constraint_rules(
+        attrs, con_rules, session.filled, bml_eval)
+    options_block = _cpq_engine.next_question_prompt(
+        target_attr, constrained_item_values=constrained.get(target_attr.entity_id),
+    )
+    current_val = session.filled.get(target_attr.variable_name)
+    current_note = (
+        f"\n\n*Currently set to: **"
+        f"{session.display_filled.get(target_attr.variable_name, current_val)}***"
+        if current_val else ""
+    )
+    answer = (
+        f"Which value would you like for "
+        f"**{_cpq_engine.disambiguated_label(target_attr, attrs)}**?"
+        f"\n\n{options_block}{current_note}"
+    )
+    session.pending_change_no_value_vn = target_attr.variable_name
+    result = _append_unmatched_targets_note(
+        {
+            "answer": answer, "terms": [target_attr.variable_name],
+            "tools_called": [f"{tool_name}({target_attr.variable_name})"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        },
+        req.question, attrs, {target_attr.variable_name},
+    )
+    _persist_cpq_history(req.workspace_id, req.question, result["answer"])
     return result
 
 
@@ -1957,18 +2012,39 @@ def _relevant_intent_candidates(
     all — not just narrowing an already-decided candidate list — needs
     "nothing genuinely overlaps" to mean an empty result, not the full
     list; the default behavior would make that gate fire on every turn.
+
+    Scored by rarity-weighted overlap, not a raw overlap COUNT
+    (2026-07-28 fix) — live-verified gap: "change the hardware type"
+    against a real 153-filled-attr session scored Hardware Version
+    (unique word "hardware") EQUAL to a dozen other "...Type"-suffixed
+    attrs (Order Type, Band Class Type, Service Type, etc., all sharing
+    the generic word "type") — with 10+ ties and a hard cap of 10, the
+    actual match got crowded out before the LLM ever saw it. Each
+    matched word now contributes 1/(how many candidates' own vocab
+    contains that word) instead of a flat 1 — a word only ONE attr owns
+    (like "hardware") scores far higher than one a dozen attrs share
+    (like "type"), so a genuinely distinctive match wins over generic
+    vocabulary noise regardless of how many attrs happen to share it.
     """
     q_words = set(_WORD_RE.findall(question.lower()))
     if not q_words:
         return candidates[:_LLM_INTENT_RELEVANT_CAP] if fallback_to_full else []
-    scored = []
+    vocabs = []
     for a in candidates:
         vocab = set(_WORD_RE.findall(a.display_label.lower()))
         for o in a.options:
             vocab |= set(_WORD_RE.findall(o.display_name.lower()))
-        overlap = len(q_words & vocab)
-        if overlap:
-            scored.append((overlap, a))
+        vocabs.append(vocab)
+    doc_freq: dict[str, int] = {}
+    for vocab in vocabs:
+        for w in vocab:
+            doc_freq[w] = doc_freq.get(w, 0) + 1
+    scored = []
+    for a, vocab in zip(candidates, vocabs):
+        overlap_words = q_words & vocab
+        if overlap_words:
+            score = sum(1.0 / doc_freq[w] for w in overlap_words)
+            scored.append((score, a))
     if not scored:
         return candidates[:_LLM_INTENT_RELEVANT_CAP] if fallback_to_full else []
     scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -2492,7 +2568,17 @@ def _llm_classify_change_intent(
         intent = parsed.get("intent")
         vn = parsed.get("variable_name") or ""
         value = parsed.get("value") or ""
-        if intent not in ("remove", "change") or not vn or not value:
+        if intent not in ("remove", "change") or not vn:
+            return None
+        # "remove" genuinely needs a value (which option to remove) — but
+        # "change" with an empty value is a real, distinct outcome (the
+        # attribute WAS identified, just with no new value stated), not a
+        # failed classification — the caller routes it to a "which value
+        # would you like?" follow-up instead of discarding the match
+        # entirely (2026-07-28 fix, live-verified: "change the hardware
+        # type" correctly named hWVersion_astro with value="", previously
+        # thrown away here).
+        if intent == "remove" and not value:
             return None
         attr = by_vn.get(vn)
         if attr is None:
@@ -2502,7 +2588,7 @@ def _llm_classify_change_intent(
         if intent == "remove" and attr.select_type != "multi":
             logger.debug("llm intent fallback: rejected remove on non-multi attr %r", vn)
             return None
-        if attr.options:
+        if value and attr.options:
             valid_values = {o.display_name.lower() for o in attr.options} | {
                 o.item_value.lower() for o in attr.options
             }
@@ -2525,9 +2611,19 @@ _INTENT_CATEGORY_LIST = ", ".join(c.value for c in IntentCategory)
 
 def _llm_classify_intent_universal(
     question: str, attrs: list, session: Any, workspace_id: int,
-) -> IntentResult | None:
+) -> "tuple[IntentResult | None, int, int]":
     """One structured classification call per the Phase 0 schema
-    (`aryx.cpq.intent_schema`) — shadow-mode only, see module note above.
+    (`aryx.cpq.intent_schema`).
+
+    Returns (result, prompt_tokens, completion_tokens) — 2026-07-28: token
+    counts are threaded through so callers that actually DISPATCH on this
+    classification (unlike Phase 1's shadow-mode logging, which only ever
+    reads `result`) can report real usage instead of the hardcoded
+    "cpq-engine, 0 tokens" every deterministic handler's response carries.
+    Live-confirmed UX gap: the LLM-first path was correctly classifying
+    and dispatching, but its response still showed 0 tokens/"cpq-engine",
+    making it indistinguishable from the pure deterministic path even
+    though a real LLM call drove the decision.
 
     Reuses `_relevant_intent_candidates` (the existing pre-filter every
     other `_llm_*` fallback in this file already relies on) to keep the
@@ -2540,6 +2636,25 @@ def _llm_classify_intent_universal(
     catalog attr is `_resolve_target_description`'s job, not this
     function's. Fails closed (returns None) on any LLM/parse error, same
     discipline as every other Tier-2 fallback here.
+
+    Two fixes (2026-07-28) for a live-confirmed hallucination in shadow-
+    mode data: fed the bare reply "serviceType_astro" (answering a PRIOR
+    turn's label-collision question), the classifier invented a plausible-
+    sounding but nonexistent attribute ("Service Category") instead of
+    recognizing the literal reply.
+
+    1. Every pending-state tracker CpqSession carries — not just
+       `pending_variables[0]` — is surfaced to the prompt: a bare reply
+       almost always answers ONE of these, never a fresh, freestanding
+       request, and the model had no way to know that with only one line
+       of context.
+    2. The prompt now explicitly tells the model to check the message
+       against the CANDIDATES' OWN variable_name fields first when it
+       looks like a raw identifier (snake/camelCase, no spaces) rather
+       than natural language, and to prefer `ambiguous`/low confidence
+       over inventing a plausible-sounding label when nothing matches
+       literally — the same "never guess a real decision" discipline the
+       deterministic detectors already follow.
     """
     candidates = _relevant_intent_candidates(question, attrs)
     catalog_lines = []
@@ -2547,11 +2662,45 @@ def _llm_classify_intent_universal(
         current = session.filled_multi.get(a.variable_name) or session.filled.get(a.variable_name)
         opts = ", ".join(o.display_name for o in a.options[:15]) if a.options else "(free text)"
         catalog_lines.append(
-            f"- \"{a.display_label}\" [{a.select_type}]: current={current!r}; options=[{opts}]"
+            f"- \"{a.display_label}\" [{a.select_type}] (variable_name={a.variable_name}): "
+            f"current={current!r}; options=[{opts}]"
         )
-    pending_line = (
-        f"Currently waiting on an answer for: {session.pending_variables[0]!r}\n"
-        if session.pending_variables else ""
+    by_vn = {a.variable_name: a for a in attrs}
+
+    def _pending_desc(vn: str) -> str:
+        a = by_vn.get(vn)
+        return f"{a.display_label} (variable_name={vn})" if a else vn
+
+    pending_lines: list[str] = []
+    if session.pending_variables:
+        pending_lines.append(
+            f"- The system just asked about: {_pending_desc(session.pending_variables[0])}. "
+            "A short/bare reply is almost certainly answering THIS."
+        )
+    if session.pending_change_collision_vns:
+        _opts = ", ".join(_pending_desc(v) for v in session.pending_change_collision_vns)
+        pending_lines.append(
+            f"- The system just asked WHICH of these identically-labeled "
+            f"attributes was meant: {_opts}. A reply naming one of these "
+            "variable_names or an index number is answering THIS, not "
+            "requesting a change to something else."
+        )
+    if session.pending_change_no_value_vn:
+        pending_lines.append(
+            f"- The system just asked what NEW VALUE to set for: "
+            f"{_pending_desc(session.pending_change_no_value_vn)}. A short "
+            "reply is almost certainly that value, not a fresh request."
+        )
+    if session.pending_label_collision_vns:
+        _opts = ", ".join(_pending_desc(v) for v in session.pending_label_collision_vns)
+        pending_lines.append(
+            f"- The system just asked which of these identically-labeled "
+            f"attributes a QUESTION was about: {_opts}."
+        )
+    pending_block = (
+        "PENDING STATE — what the system just asked, before this message:\n"
+        + "\n".join(pending_lines) + "\n\n"
+        if pending_lines else ""
     )
     sys = (
         "You classify a user's message in an in-progress product configuration "
@@ -2563,11 +2712,20 @@ def _llm_classify_intent_universal(
         "means, never a raw field code. If you cannot confidently name a single "
         "clear target, or the message could plausibly mean 2+ different fields "
         "in the list below, use category=\"ambiguous\" and give a specific "
-        "clarifying_question — never guess between plausible options."
+        "clarifying_question — never guess between plausible options.\n\n"
+        "If the message itself looks like a raw identifier — snake_case or "
+        "camelCase, no spaces, not a phrase a person would naturally type — "
+        "check it against the candidates' own variable_name values FIRST "
+        "(shown in parentheses below) before attempting any description. "
+        "Never invent a plausible-sounding attribute name to explain an "
+        "identifier you don't recognize; if it doesn't match any listed "
+        "variable_name and there's no PENDING STATE explaining it, use "
+        "confidence=\"low\" and category=\"ambiguous\" instead."
     )
     user = (
-        f"{pending_line}"
-        "ATTRIBUTES CURRENTLY RELEVANT (label [type]: current=...; options=[...]):\n"
+        f"{pending_block}"
+        "ATTRIBUTES CURRENTLY RELEVANT (label [type] (variable_name=...): "
+        "current=...; options=[...]):\n"
         + "\n".join(catalog_lines) +
         f"\n\nUSER MESSAGE: {question}"
     )
@@ -2577,8 +2735,8 @@ def _llm_classify_intent_universal(
         parsed = json.loads(text[s:e + 1])
     except Exception as exc:  # noqa: BLE001 — shadow call must never crash the turn
         logger.debug("cpq_shadow_intent: llm call or parse failed: %r", exc)
-        return None
-    return parse_intent_result(parsed)
+        return None, 0, 0
+    return parse_intent_result(parsed), _it, _ot
 
 
 def _resolve_target_description(
@@ -2649,7 +2807,7 @@ def _shadow_classify_cpq_turn(
     dozens of early-return call sites.
     """
     try:
-        result = _llm_classify_intent_universal(
+        result, _it, _ot = _llm_classify_intent_universal(
             req.question, attrs, session, req.workspace_id)
         if result is None:
             logger.info(
@@ -2675,11 +2833,44 @@ def _shadow_classify_cpq_turn(
         logger.debug("cpq_shadow_intent: diagnostic failed", exc_info=True)
 
 
+def _with_classify_usage(
+    result_dict: "dict[str, Any] | None", prompt_tokens: int, completion_tokens: int,
+) -> "dict[str, Any] | None":
+    """Adds the LLM-first classification call's real token usage into an
+    already-built response dict, and relabels the model fields so the UI
+    can tell this response was actually driven by an LLM call (2026-07-28)
+    — see `_dispatch_intent_result`'s docstring. A no-op when result_dict
+    is None (a delegated handler can itself return None in principle) or
+    when there's nothing to add (prompt_tokens == completion_tokens == 0,
+    e.g. classification hit the durable/in-memory cache path with no
+    fresh call).
+    """
+    if result_dict is None or (not prompt_tokens and not completion_tokens):
+        return result_dict
+    usage = result_dict.get("usage") or {}
+    usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + prompt_tokens
+    usage["completion_tokens"] = usage.get("completion_tokens", 0) + completion_tokens
+    usage["menial_model"] = "cpq-llm-first"
+    result_dict["usage"] = usage
+    return result_dict
+
+
 def _dispatch_intent_result(
     req: "AskRequest", session: Any, attrs: list, result: IntentResult,
-    hiding_rules: list, rec_rules: list, con_rules: list,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
+    classify_prompt_tokens: int = 0, classify_completion_tokens: int = 0,
 ) -> "dict[str, Any] | None":
     """Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md.
+
+    `classify_prompt_tokens`/`classify_completion_tokens` (2026-07-28): the
+    real token usage from the classification call that produced `result` —
+    added into every returned response's own "usage" dict (see
+    `_with_classify_usage` below) so the UI reflects that an actual LLM
+    call drove this response, instead of every handler's usual hardcoded
+    "cpq-engine, 0 tokens". Live-confirmed UX gap: the LLM-first path was
+    dispatching correctly, but its response was indistinguishable from the
+    pure deterministic path because the classification call's own cost was
+    silently discarded rather than reported.
 
     Attempts to dispatch an LLM classification directly to the existing
     handler functions, bypassing the regex waterfall — returns None
@@ -2699,6 +2890,18 @@ def _dispatch_intent_result(
         turn a hint into a real item_value and already have their own
         "couldn't match that" fallback, so there is no separate
         resolution step to duplicate here.
+      - CHANGE_TARGET_WITHOUT_VALUE (2026-07-28 addition): dispatched to
+        the SAME `_build_no_value_response` helper the regex-based
+        `detect_change_target_without_value` and the LLM change-intent
+        fallback's own empty-value case already share. Live-verified need:
+        "change the hardware type" — where "hardware type" doesn't
+        literally contain "version" so no regex label-match ever fires —
+        is correctly classified by the universal classifier (rarity-
+        weighted candidate scoring, see `_relevant_intent_candidates`)
+        as CHANGE_TARGET_WITHOUT_VALUE naming hWVersion_astro; without
+        this branch that correct classification was silently discarded
+        and the turn fell through to the generic "I didn't quite catch
+        that" nudge.
       - AMBIGUOUS: answered directly with the LLM's own
         clarifying_question — no session mutation, no config-mutating
         risk.
@@ -2706,10 +2909,10 @@ def _dispatch_intent_result(
         is_cpq_question`'s negative case already uses.
       - Every other category (MULTI_SELECT_REMOVAL, ATTR_ACTIVATION,
         ATTR_CLEAR, BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST,
-        APPROVAL, ATTR_QUERY, QA_QUESTION, CHANGE_TARGET_WITHOUT_VALUE,
-        PRODUCT_MENTION) returns None — deliberately deferred rather than
-        rushed, so the deterministic path keeps owning them until a
-        follow-up lands each one with the same care as the two above.
+        APPROVAL, ATTR_QUERY, QA_QUESTION, PRODUCT_MENTION) returns
+        None — deliberately deferred rather than rushed, so the
+        deterministic path keeps owning them until a follow-up lands
+        each one with the same care as the ones above.
 
     Confidence gating: LOW always returns None (fall through) regardless
     of category — mirrors the shadow-mode logging convention and plan doc
@@ -2728,12 +2931,12 @@ def _dispatch_intent_result(
             return None
         answer = result.clarifying_question
         _persist_cpq_history(req.workspace_id, req.question, answer)
-        return {
+        return _with_classify_usage({
             "answer": answer, "terms": [], "tools_called": ["cpq_llm_first_ambiguous()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
                       "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-        }
+        }, classify_prompt_tokens, classify_completion_tokens)
 
     if result.category == IntentCategory.OUT_OF_SCOPE:
         answer = (
@@ -2741,12 +2944,12 @@ def _dispatch_intent_result(
             "quoting. Happy to help with anything about your current quote."
         )
         _persist_cpq_history(req.workspace_id, req.question, answer)
-        return {
+        return _with_classify_usage({
             "answer": answer, "terms": [], "tools_called": ["cpq_llm_first_out_of_scope()"],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
                       "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-        }
+        }, classify_prompt_tokens, classify_completion_tokens)
 
     if result.category == IntentCategory.CHANGE_REQUEST and result.target:
         if not result.target.new_value_description:
@@ -2755,9 +2958,25 @@ def _dispatch_intent_result(
             result.target.target_description, attrs)
         if attr is None:
             return None
-        return _handle_cascade(
-            req, session, attrs, attr, result.target.new_value_description,
-            hiding_rules, rec_rules, con_rules,
+        return _with_classify_usage(
+            _handle_cascade(
+                req, session, attrs, attr, result.target.new_value_description,
+                hiding_rules, rec_rules, con_rules,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
+    if result.category == IntentCategory.CHANGE_TARGET_WITHOUT_VALUE and result.target:
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None:
+            return None
+        return _with_classify_usage(
+            _build_no_value_response(
+                req, session, attrs, attr, con_rules, bml_eval,
+                "cpq_llm_first_change_target_no_value",
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
         )
 
     if result.category == IntentCategory.CHANGE_REQUESTS_MULTI and result.targets:
@@ -2769,8 +2988,11 @@ def _dispatch_intent_result(
             if attr is not None:
                 matches.append((attr, t.new_value_description))
         if len(matches) >= 2:
-            return _handle_cascade_multi(
-                req, session, attrs, matches, hiding_rules, rec_rules, con_rules,
+            return _with_classify_usage(
+                _handle_cascade_multi(
+                    req, session, attrs, matches, hiding_rules, rec_rules, con_rules,
+                ),
+                classify_prompt_tokens, classify_completion_tokens,
             )
         return None
 
@@ -4086,12 +4308,13 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # detectors below run completely unchanged whenever this returns
         # nothing, exactly like every existing early-return check above.
         if get_settings().cpq_llm_first_enabled:
-            _llm_first_result = _llm_classify_intent_universal(
+            _llm_first_result, _llm_first_it, _llm_first_ot = _llm_classify_intent_universal(
                 req.question, attrs, session, req.workspace_id)
             if _llm_first_result is not None:
                 _dispatched = _dispatch_intent_result(
                     req, session, attrs, _llm_first_result,
-                    hiding_rules, rec_rules, con_rules,
+                    hiding_rules, rec_rules, con_rules, bml_eval,
+                    _llm_first_it, _llm_first_ot,
                 )
                 if _dispatched is not None:
                     return _dispatched
@@ -4259,6 +4482,23 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                             hiding_rules, rec_rules, con_rules,
                         )
                 elif _llm_intent["intent"] == "change":
+                    if not _llm_intent["value"]:
+                        # 2026-07-28 fix: the LLM correctly named the
+                        # attribute ("change the hardware type" -> the
+                        # Hardware Version attr — a match the regex label-
+                        # mention check below can't see, since "hardware
+                        # type" doesn't literally contain "version") but
+                        # had nothing to set it to. Previously discarded
+                        # entirely (_validate required a nonempty value
+                        # for every intent) — the correctly-identified
+                        # target attr was silently thrown away instead of
+                        # asking which value, the same live-verified gap
+                        # detect_change_target_without_value already fixes
+                        # for its own regex-matched targets.
+                        return _build_no_value_response(
+                            req, session, attrs, _llm_attr, con_rules, bml_eval,
+                            "cpq_llm_change_target_no_value",
+                        )
                     return _handle_cascade(
                         req, session, attrs, _llm_attr, _llm_intent["value"],
                         hiding_rules, rec_rules, con_rules,
@@ -4276,36 +4516,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             req.question, attrs, session.filled,
         )
         if _no_value_attr:
-            _nv_constrained = _cpq_engine.apply_constraint_rules(
-                attrs, con_rules, session.filled, bml_eval)
-            _nv_options_block = _cpq_engine.next_question_prompt(
-                _no_value_attr,
-                constrained_item_values=_nv_constrained.get(_no_value_attr.entity_id),
+            return _build_no_value_response(
+                req, session, attrs, _no_value_attr, con_rules, bml_eval,
+                "cpq_change_target_no_value",
             )
-            _nv_current_val = session.filled.get(_no_value_attr.variable_name)
-            _nv_current_note = (
-                f"\n\n*Currently set to: **"
-                f"{session.display_filled.get(_no_value_attr.variable_name, _nv_current_val)}***"
-                if _nv_current_val else ""
-            )
-            _nv_answer = (
-                f"Which value would you like for "
-                f"**{_cpq_engine.disambiguated_label(_no_value_attr, attrs)}**?"
-                f"\n\n{_nv_options_block}{_nv_current_note}"
-            )
-            session.pending_change_no_value_vn = _no_value_attr.variable_name
-            _nv_result = _append_unmatched_targets_note(
-                {
-                    "answer": _nv_answer, "terms": [_no_value_attr.variable_name],
-                    "tools_called": [f"cpq_change_target_no_value({_no_value_attr.variable_name})"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                },
-                req.question, attrs, {_no_value_attr.variable_name},
-            )
-            _persist_cpq_history(req.workspace_id, req.question, _nv_result["answer"])
-            return _nv_result
 
         # Could not parse as approval, Q&A, change, or JSON request — nudge
         # with the verbose summary, NOT the raw JSON (§6/Phase K: JSON stays

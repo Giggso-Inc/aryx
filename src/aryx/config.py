@@ -299,26 +299,27 @@ class Settings(BaseSettings):
         ),
     )
     cpq_llm_first_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: "
             "let the universal intent classifier dispatch directly to "
-            "_handle_cascade/_handle_cascade_multi (bypassing the regex "
-            "detectors) for CHANGE_REQUEST/CHANGE_REQUESTS_MULTI/AMBIGUOUS/"
+            "_handle_cascade/_handle_cascade_multi/_build_no_value_response "
+            "(bypassing the regex detectors) for CHANGE_REQUEST/"
+            "CHANGE_REQUESTS_MULTI/CHANGE_TARGET_WITHOUT_VALUE/AMBIGUOUS/"
             "OUT_OF_SCOPE only -- every other category still falls through "
             "to the unchanged deterministic path (see "
             "_dispatch_intent_result's docstring for the full category "
-            "list this initial landing does not yet cover). Off by default "
-            "for TWO reasons, not just test speed: (1) the same extra-LLM-"
-            "call cost as cpq_shadow_intent_enabled, and (2) more "
-            "importantly, this has not yet been validated against real "
-            "Phase 1 shadow-mode disagreement/resolution-failure data -- "
-            "the plan doc's own Phase 2 criteria ('once shadow mode shows "
-            "the deterministic resolution step reliably resolves what the "
-            "LLM names') has not actually been met yet, this flag only "
-            "makes the CAPABILITY available for that validation, it is not "
-            "itself evidence the cutover is safe to enable in production. "
-            "Override with ARYX_CPQ_LLM_FIRST_ENABLED=true."
+            "list this initial landing does not yet cover). On by default "
+            "(2026-07-28) for local/dev testing of the LLM-first flow -- "
+            "note this carries the same extra-LLM-call cost as "
+            "cpq_shadow_intent_enabled on every STEP 6 turn, and has NOT "
+            "been validated against real Phase 1 shadow-mode disagreement/"
+            "resolution-failure data yet -- the plan doc's own Phase 2 "
+            "criteria ('once shadow mode shows the deterministic "
+            "resolution step reliably resolves what the LLM names') has "
+            "not actually been met. Set ARYX_CPQ_LLM_FIRST_ENABLED=false "
+            "to fall back to the pure deterministic path (e.g. for a fast "
+            "CI run) or before considering this validated for production."
         ),
     )
     bml_tier2_max_per_turn: int = Field(
