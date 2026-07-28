@@ -385,6 +385,19 @@ class CpqSession:
     # when no such prompt is pending.
     pending_change_no_value_vn: str = ""
 
+    # Set when a message named a label-collision target ("change service
+    # type...") AND a second, distinct, already-filled attr with no given
+    # value in the same message ("...and solution type") -- confirmed live
+    # (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4): a message naming 2+
+    # distinct intents only ever got the FIRST one addressed, the rest
+    # silently dropped once the collision detector's own caller returned.
+    # The collision must be resolved first (its own reply format is a
+    # number/variable_name, not a value), so this stashes the second
+    # target's variable_name to continue to automatically once the
+    # collision resolves, rather than losing it. Empty string when none
+    # is pending.
+    pending_multi_intent_vn: str = ""
+
     # Set when a catalog's own bm_catalog tree has 2+ model leaves (so
     # single_model_variable_name can't auto-seed _bm_model_variable_name
     # unambiguously — Amendment 10, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_

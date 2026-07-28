@@ -3625,10 +3625,36 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         filled_multi=session.filled_multi)
                     if _resolved_change:
                         _, _resolved_value = _resolved_change
-                        return _handle_cascade(
+                        _cascade_result = _handle_cascade(
                             req, session, attrs, _resolved_attr, _resolved_value,
                             hiding_rules, rec_rules, con_rules,
                         )
+                        # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_
+                        # PLAN.md Fix 4): the collision is resolved -- now
+                        # continue to the second target stashed when this
+                        # collision was first raised, instead of letting it
+                        # stay silently dropped forever.
+                        _second_vn = session.pending_multi_intent_vn
+                        session.pending_multi_intent_vn = ""
+                        _second_attr = next(
+                            (a for a in attrs if a.variable_name == _second_vn), None,
+                        ) if _second_vn else None
+                        if _second_attr is not None:
+                            session.pending_change_no_value_vn = _second_attr.variable_name
+                            _second_constrained = _cpq_engine.apply_constraint_rules(
+                                attrs, con_rules, session.filled, bml_eval)
+                            _second_block = _cpq_engine.next_question_prompt(
+                                _second_attr,
+                                constrained_item_values=_second_constrained.get(_second_attr.entity_id),
+                                validation_rules=validation_rules,
+                            )
+                            _cascade_result["answer"] += (
+                                f"\n\n---\n\nAs mentioned — which value would "
+                                f"you like for **{_second_attr.display_label}**?"
+                                f"\n\n{_second_block}"
+                            )
+                            _cascade_result["session_data"] = session.to_dict()
+                        return _cascade_result
                     # No parseable value for the resolved attr (e.g. the
                     # original message's target was really a per-row
                     # quantity, not this attr's own value) — re-ask it as a
@@ -3642,10 +3668,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         _cpq_engine.next_question_prompt(_resolved_attr)
                         if _resolved_attr.options else ""
                     )
+                    _still_pending_second = next(
+                        (a for a in attrs if a.variable_name == session.pending_multi_intent_vn),
+                        None,
+                    ) if session.pending_multi_intent_vn else None
                     answer = (
                         f"Couldn't find a value for **{_resolved_attr.display_label}** in "
                         f"\"{_orig_question}\". Please say what to change it to."
                         + (f"\n\n{opts_prompt}" if opts_prompt else "")
+                        + (
+                            f"\n\n*(I'll still ask about "
+                            f"**{_still_pending_second.display_label}** right after this.)*"
+                            if _still_pending_second else ""
+                        )
                     )
                     session.status = "configuring"
                     session.pending_variables = [
@@ -3745,6 +3780,26 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 f"**\"{_change_collision[0].display_label}\"** in this catalog — which one "
                 f"did you mean to change? Reply with the number or the variable_name.\n\n{_lines}"
             )
+            # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
+            # Fix 4): confirmed live via count_turn_intents that "change
+            # solution type and primary service type" contains a SECOND,
+            # distinct, unambiguous change target that used to be silently
+            # dropped once this collision prompt returned. Scan the
+            # remaining attrs (excluding the collision's own candidates,
+            # so "Service Type" text can't re-match itself) for one more
+            # named-but-valueless target, and let the user know it's
+            # queued rather than losing it.
+            _collision_vns = {a.variable_name for a in _change_collision}
+            _second_target = _cpq_engine.detect_change_target_without_value(
+                req.question, [a for a in attrs if a.variable_name not in _collision_vns],
+                session.filled,
+            )
+            if _second_target:
+                session.pending_multi_intent_vn = _second_target.variable_name
+                answer += (
+                    f"\n\n*(Noted — I'll also ask about "
+                    f"**{_second_target.display_label}** once this is resolved.)*"
+                )
             session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
             session.pending_change_collision_question = req.question
             _persist_cpq_history(req.workspace_id, req.question, answer)

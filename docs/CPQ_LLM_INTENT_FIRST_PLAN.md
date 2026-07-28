@@ -400,3 +400,38 @@ sequence, changes.
 4. Live: re-run the STEP-1 anchor scenario (Fix 1) to confirm behavior is
    unchanged now that its gate is generalized rather than removed.
 5. Full regression: 257/257 stays green.
+
+### Implemented (partial): collision + second-target follow-up
+
+Went straight from the read-only counting layer to wiring in real routing
+behavior for the exact case found live — a collision plus one distinct,
+already-filled, valueless second target in the same message.
+
+**What's implemented**: `session.pending_multi_intent_vn` stashes the
+second target's variable_name when a collision is raised
+(`detect_change_request_collision` matches attrs excluding the second
+target, so it can't self-match); the collision prompt now says *"(Noted
+— I'll also ask about X once this is resolved.)"*. Once the collision
+resolves to a **value-bearing** change, `_handle_cascade` applies it and
+the SAME response continues: *"As mentioned — which value would you like
+for X?"* with its own options/constraint-aware prompt.
+
+**Live-verified, value-bearing happy path (fully works)**: "change
+service type to Comprehensive and solution type" → collision prompt +
+acknowledgment → "serviceType_astro" → "Updated Service Type →
+Comprehensive" + full summary + "As mentioned — which value would you
+like for Solution Type?" with its numbered options, all in one response.
+
+**Confirmed remaining gap**: when the collision resolves to an attr that
+ALSO has no parseable value (e.g. both targets in "change solution type
+and primary service type" are valueless), that branch re-enters via
+`session.pending_variables` and the ordinary STEP-5 answer-lock path on
+the NEXT turn — which isn't wired to consume `pending_multi_intent_vn` at
+all yet. That branch only got the SAME acknowledgment text added (*"I'll
+still ask about X right after this"*), not real auto-continuation — the
+stashed target will currently just sit in session state until some other
+code path happens to consume it, or leak into an unrelated later turn.
+Fixing this fully means hooking STEP 5's own "attr just got filled, what's
+next" completion point — not attempted here, flagged as follow-up work.
+
+257/257 tests pass throughout.
