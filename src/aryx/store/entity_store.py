@@ -293,6 +293,16 @@ class EntityStore:
 
         return entities, relationships, brief
 
+    def count_entities(self) -> int:
+        """Return the total number of entities in this workspace."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM aryx_entity WHERE workspace_id = %s",
+                    (self._ws,),
+                )
+                return int(cur.fetchone()[0])
+
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
         """Yield (id, ontology_type, attributes) for graph projection.
 

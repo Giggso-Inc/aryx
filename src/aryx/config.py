@@ -55,6 +55,21 @@ class Settings(BaseSettings):
             "Override with ARYX_GRAPH_ISOLATED_SCAN_MAX_ENTITIES."
         ),
     )
+    graph_query_timeout: int = Field(
+        default=30_000,
+        description=(
+            "Per-query timeout in milliseconds passed to every FalkorDB "
+            "query via GraphReader._query(). FalkorDB's own built-in default "
+            "is 5000ms — a real incident: GET /graph on workspace 44/45 "
+            "intermittently returned 500 (redis.exceptions.ResponseError: "
+            "Query timed out) because some relationship-traversal queries on "
+            "large, heavily-linked workspaces legitimately take longer than "
+            "5s even with REL.name indexed. Set to 0 to disable the override "
+            "and fall back to FalkorDB's own default (passed as None, not a "
+            "literal 0ms, which would fail every query instantly). "
+            "Override with ARYX_GRAPH_QUERY_TIMEOUT."
+        ),
+    )
     graph_lift_mode: str = Field(
         default="all_scalars",
         description=(
@@ -611,6 +626,61 @@ class Settings(BaseSettings):
             "reliable enough not to risk stalling a live request."
         ),
     )
+    cpq_shadow_intent_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 1, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: run the "
+            "shadow-mode universal intent classifier (_shadow_classify_cpq_"
+            "turn in ask_api.py) alongside the real deterministic dispatch "
+            "on every CPQ turn, logging its classification for later "
+            "comparison. Off by default: live-confirmed this added an extra "
+            "unconditional LLM call to every single test invoking "
+            "_run_cpq_turn, taking the CPQ/BML suite from ~10s to ~128s with "
+            "zero behavioral change (the shadow call is try/except-wrapped "
+            "and never affects a turn's real answer) -- purely a test-speed "
+            "and CI-cost concern, same class of always-on-cost issue "
+            "bml_use_llm above already guards against. Override with "
+            "ARYX_CPQ_SHADOW_INTENT_ENABLED=true to collect real shadow-mode "
+            "data against live traffic."
+        ),
+    )
+    cpq_qa_ambiguity_check_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 3, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: before "
+            "answering a generic graph Q&A question, classify whether the "
+            "question is itself ambiguous (2+ plausible distinct meanings) "
+            "and ask a clarifying question instead of committing to one "
+            "interpretation. Off by default for the same test-speed/CI-cost "
+            "reason as cpq_shadow_intent_enabled -- an unconditional extra "
+            "LLM call on every Q&A turn. Override with "
+            "ARYX_CPQ_QA_AMBIGUITY_CHECK_ENABLED=true."
+        ),
+    )
+    cpq_llm_first_enabled: bool = Field(
+        default=True,
+        description=(
+            "Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md: "
+            "let the universal intent classifier dispatch directly to "
+            "_handle_cascade/_handle_cascade_multi/_build_no_value_response "
+            "(bypassing the regex detectors) for CHANGE_REQUEST/"
+            "CHANGE_REQUESTS_MULTI/CHANGE_TARGET_WITHOUT_VALUE/AMBIGUOUS/"
+            "OUT_OF_SCOPE only -- every other category still falls through "
+            "to the unchanged deterministic path (see "
+            "_dispatch_intent_result's docstring for the full category "
+            "list this initial landing does not yet cover). On by default "
+            "(2026-07-28) for local/dev testing of the LLM-first flow -- "
+            "note this carries the same extra-LLM-call cost as "
+            "cpq_shadow_intent_enabled on every STEP 6 turn, and has NOT "
+            "been validated against real Phase 1 shadow-mode disagreement/"
+            "resolution-failure data yet -- the plan doc's own Phase 2 "
+            "criteria ('once shadow mode shows the deterministic "
+            "resolution step reliably resolves what the LLM names') has "
+            "not actually been met. Set ARYX_CPQ_LLM_FIRST_ENABLED=false "
+            "to fall back to the pure deterministic path (e.g. for a fast "
+            "CI run) or before considering this validated for production."
+        ),
+    )
     bml_tier2_max_per_turn: int = Field(
         default=50,
         description=(
@@ -641,6 +711,35 @@ class Settings(BaseSettings):
         default=1,
         description="Parallel document extraction workers (1 = sequential).",
     )
+    extract_mention_workers: int = Field(
+        default=4,
+        description=(
+            "Parallel LLM calls within extract_mentions() for a single "
+            "document's chunks. Extraction used to be one chunk at a time: a "
+            "50-page PDF (~330 chunks) measured at 36 minutes wall-clock; a "
+            "1000+ page document scales roughly linearly to many hours at "
+            "that rate, which per_doc_timeout would abandon partway through "
+            "(and, before incremental persistence, lost every mention "
+            "extracted so far when that happened). Raise for a cloud LLM "
+            "provider (Gemini/OpenAI/Anthropic) that handles concurrent "
+            "requests; keep at 1-2 for a single local Ollama instance, where "
+            "parallel requests just queue with no real throughput gain. "
+            "Override with ARYX_EXTRACT_MENTION_WORKERS."
+        ),
+    )
+    extract_mention_progress_flush_chunks: int = Field(
+        default=20,
+        description=(
+            "How often (in completed chunks) extract_mentions() invokes its "
+            "progress callback, which persists the mentions extracted so far "
+            "and updates the job's live stage/pct. Without this, a "
+            "per_doc_timeout expiry or crash partway through a long document "
+            "lost every mention extracted up to that point, since the full "
+            "record list was previously only returned at the very end of "
+            "extraction. Override with "
+            "ARYX_EXTRACT_MENTION_PROGRESS_FLUSH_CHUNKS."
+        ),
+    )
 
     # ── Ontology interchange ──────────────────────────────────────────────────
     ontology_enabled: bool = Field(
@@ -654,6 +753,18 @@ class Settings(BaseSettings):
     ontology_base_uri: str = Field(
         default="https://aryx.local/",
         description="Base URI for ontology namespace and export.",
+    )
+    ontology_export_max_entities: int = Field(
+        default=50_000,
+        description=(
+            "Max entity count in a workspace above which GET /ontology/export "
+            "rejects with 413 instead of running the synchronous export. "
+            "Serialising a very large workspace can run long enough for a "
+            "reverse proxy's read timeout to kill the connection first, "
+            "which the client sees as a bare 502 Bad Gateway with no useful "
+            "detail. Set to 0 to disable the cap. "
+            "Override with ARYX_ONTOLOGY_EXPORT_MAX_ENTITIES."
+        ),
     )
 
     # ── OCI backend toggle ────────────────────────────────────────────────────

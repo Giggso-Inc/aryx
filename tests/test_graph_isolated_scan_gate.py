@@ -39,7 +39,7 @@ def _run_subgraph(total_entities: int, max_scan: int, graph_name: str):
     mock_graph = MagicMock()
     mock_graph.name = graph_name
 
-    def _query_side_effect(cypher, params=None):
+    def _query_side_effect(cypher, params=None, timeout=None):
         if "DISTINCT e.type" in cypher:
             return _mock_result([])  # no entity types -> steps 2-5 no-op
         if "count(e)" in cypher:
@@ -54,6 +54,7 @@ def _run_subgraph(total_entities: int, max_scan: int, graph_name: str):
          patch("aryx.graph.reader.get_settings") as mock_cfg:
         mock_cfg.return_value.graph_query_limit = 2000
         mock_cfg.return_value.graph_isolated_scan_max_entities = max_scan
+        mock_cfg.return_value.graph_query_timeout = 30_000
         MockDB.return_value.select_graph.return_value = mock_graph
         reader = GraphReader("redis://localhost:6379")
         reader.subgraph()

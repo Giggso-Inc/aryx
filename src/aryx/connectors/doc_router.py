@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from pathlib import Path
 
@@ -102,12 +102,14 @@ def _ingest_with_timeout(
     path: Path, system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int, chunk_overlap: int, expected_embed_dim: int,
     run_pii: bool, context: str,
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     """ingest_document under a hard timeout; raises FuturesTimeout on hang."""
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             ingest_document, path, system, broker, chunk_store,
             chunk_size, chunk_overlap, expected_embed_dim, run_pii, context,
+            on_progress,
         )
         return future.result(timeout=_PER_DOC_TIMEOUT)
 
@@ -116,6 +118,7 @@ def ingest_document(
     path: Path, system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int, chunk_overlap: int, expected_embed_dim: int,
     run_pii: bool = True, context: str = "",
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     doc_id = _content_hash(path)
     source = SourceRef(system=system, dataset=path.stem, record_id=doc_id)
@@ -140,7 +143,7 @@ def ingest_document(
     logger.info("[step 7/8] embeddings=%d  saving to db", len(embeddings))
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
     logger.info("[step 8/8] extracting mentions  chunks=%d", len(chunks))
-    records = extract_mentions(chunks, broker, context=context)
+    records = extract_mentions(chunks, broker, context=context, on_progress=on_progress)
     logger.info("[ingest done] path=%s  chunks=%d  mentions=%d  doc_id=%s",
                 path.name, len(chunks), len(records), doc_id[:8])
     return records
@@ -154,6 +157,7 @@ class DocumentRouterConnector(Connector):
         chunk_store: ChunkStore, chunk_size: int = 1000,
         chunk_overlap: int = 100, expected_embed_dim: int = 768,
         run_pii: bool = True, context: str = "",
+        on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
     ) -> None:
         self._paths = paths
         self._system = system
@@ -164,6 +168,7 @@ class DocumentRouterConnector(Connector):
         self._expected_embed_dim = expected_embed_dim
         self._run_pii = run_pii
         self._context = context
+        self._on_progress = on_progress
 
     def extract(self) -> Iterator[RawRecord]:
         if _DOC_WORKERS <= 1 or len(self._paths) <= 1:
@@ -174,6 +179,7 @@ class DocumentRouterConnector(Connector):
                         path, self._system, self._broker, self._chunk_store,
                         self._chunk_size, self._chunk_overlap,
                         self._expected_embed_dim, self._run_pii, self._context,
+                        self._on_progress,
                     )
                 except FuturesTimeout:
                     _log_timed_out(path, time.monotonic() - start)
@@ -192,6 +198,7 @@ class DocumentRouterConnector(Connector):
                         path, self._system, self._broker, self._chunk_store,
                         self._chunk_size, self._chunk_overlap,
                         self._expected_embed_dim, self._run_pii, self._context,
+                        self._on_progress,
                     ): path
                     for path in self._paths
                 }
@@ -209,6 +216,7 @@ async def ingest_documents_parallel(
     paths: list[Path], system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int = 1000, chunk_overlap: int = 100,
     expected_embed_dim: int = 768, run_pii: bool = True,
+    on_progress: Callable[[int, int, list[RawRecord]], None] | None = None,
 ) -> list[RawRecord]:
     loop = asyncio.get_running_loop()
     tasks = [
@@ -216,6 +224,7 @@ async def ingest_documents_parallel(
             None, lambda p=path: ingest_document(
                 p, system, broker, chunk_store,
                 chunk_size, chunk_overlap, expected_embed_dim, run_pii,
+                "", on_progress,
             ),
         )
         for path in paths
