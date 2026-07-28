@@ -2939,6 +2939,26 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     if resolved_name:
         session.product_name = resolved_name
 
+    # Read-only intent-count diagnostic (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
+    # Fix 4, incremental first step) — measures how many distinct intents
+    # this message actually contains against real traffic, WITHOUT
+    # changing any routing behavior below. Never allowed to affect the
+    # turn: wrapped so a failure here can't break anything real.
+    try:
+        _intent_hits = _cpq_engine.count_turn_intents(
+            req.question, attrs, session.filled, session.filled_multi,
+        )
+        if len(_intent_hits) >= 2:
+            logger.info(
+                "cpq_intent_count: message %r matched %d distinct intents: %s "
+                "-- only the first will actually be addressed today",
+                req.question, len(_intent_hits), _intent_hits,
+            )
+        elif _intent_hits:
+            logger.debug("cpq_intent_count: message %r matched: %s", req.question, _intent_hits)
+    except Exception:  # noqa: BLE001 — diagnostic only, must never break the turn
+        logger.debug("cpq_intent_count: diagnostic failed", exc_info=True)
+
     # A product-switch (or the initial turn's own NL detection) already
     # PROVED session.product_name against this catalog — asking the
     # productSelectionProduct_all question again on the very next turn

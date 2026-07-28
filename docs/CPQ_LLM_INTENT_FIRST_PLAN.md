@@ -281,3 +281,122 @@ filtering; this reuses it rather than adding new logic.
    above — implementing session-value injection without also filtering
    `BmConfigRule` neighbors would leave both problems compounding in the
    same answer.
+
+## Fix 4 (scoped, not implemented): make the intent gate universal, not a one-spot patch
+
+**Confirmed live, twice, that today's gate is NOT universal**: Fix 1 only
+runs at STEP 1's anchor-fallback. Everywhere else in the turn — STEP 6's
+change-request detection, `detect_change_request_collision`, mode
+requests, etc. — is still pure deterministic regex/substring matching that
+calls straight into CPQ-engine functions, with **no intent classification
+of any kind** ahead of it. Two bugs found live this session are direct
+symptoms of this:
+
+1. "change solution type and primary service type" → `detect_change_
+   request_collision` matched "Service Type" as a 4-way label collision
+   and returned the disambiguation prompt immediately — "Solution Type"
+   was never looked at, because the function stops at the first
+   collision it finds and the caller returns unconditionally.
+2. The STEP-1 anchor bug (Fix 1) — same root shape: a single-target
+   deterministic detector silently swallowing part or all of a message
+   that actually named more than one thing.
+
+Both are the SAME underlying gap: no stage anywhere asks "how many
+distinct things is the user asking for in this message, and are they all
+being addressed?" before a single-target detector commits to an answer.
+
+### What "universal" should mean here — not "always call an LLM"
+
+Turning every message into a mandatory LLM call first would abandon this
+codebase's core discipline (Tier-1 deterministic before Tier-2 LLM,
+everywhere else) purely for architectural purity, at real latency/cost —
+and the "Service Type" collision case shows the deterministic-only path
+is fast and gets 90% of the answer right (it correctly identified an
+ambiguity); it just never checked for a SECOND target. So "universal"
+should mean: **one shared classification pass runs first for every
+turn, but the classification itself stays deterministic-first, escalating
+to an LLM only when the deterministic layer can't confidently resolve
+it** — same escalation discipline as every other Tier-2 use in this file.
+
+### Design
+
+**One new function**, e.g. `_classify_turn_intent(question, session,
+attrs)`, called at the very top of `_run_cpq_turn` (before STEP 1) and at
+the top of the `awaiting_approval`/`post_approval` block — the two places
+turn processing currently forks with no shared entry point at all.
+
+It does NOT reimplement detection — it **reuses every existing detector
+as-is** (`detect_qa_question`, `detect_change_request`,
+`detect_change_requests_multi`, `detect_change_request_collision`,
+`detect_response_mode_request`, `detect_attr_query`, etc.), calling them
+all up front instead of scattered across STEP blocks that each stop at
+their own first match. Its job is purely to **count how many distinct,
+non-overlapping intents the message contains** and route accordingly:
+
+- **Exactly one intent detected** (the overwhelming common case: a plain
+  answer, a single change request, a single Q&A question) → behaves
+  exactly as today, zero added latency, zero LLM calls. This is the
+  majority path and must stay just as fast.
+- **Zero intents detected AND the message looks like it should have one**
+  (e.g. contains change-verbs but nothing matched, or is question-shaped
+  per the existing `_QA_INTENT_RE`/`"?"` check) → this is exactly Fix 1's
+  existing gate, generalized to run for every turn, not just the
+  anchor-fallback spot.
+- **Two or more distinct intents detected** (the new case, confirmed live
+  today) → do NOT let the first one silently win. Either (a) handle both
+  sequentially in one turn where the existing multi-handlers already
+  support it (`detect_change_requests_multi`/`_handle_cascade_multi`
+  already do this FOR VALUE-BEARING multi-changes — the gap is only for
+  collision + valueless-multi combinations), or (b) when the multiple
+  intents can't be cleanly resolved by existing code, escalate to a
+  single LLM call whose ONLY job is to enumerate the distinct requests
+  in plain terms (e.g. `[{"target": "solution type", "has_collision":
+  false}, {"target": "service type", "has_collision": true}]`) so the
+  response can address ALL of them — collision prompt for one, applied
+  change for the other, or a combined clarifying question — rather than
+  answering one and dropping the rest.
+
+### Why this doesn't need a rewrite
+
+Every existing detector stays exactly as it is — this only adds one
+counting/routing layer above them, called once per turn instead of
+inline at 6+ separate STEP checkpoints. The `_handle_cascade`/
+`_handle_cpq_qa`/label-collision handlers themselves are untouched;
+only WHICH one gets called, and whether more than one needs to run in
+sequence, changes.
+
+### Risks
+
+1. **This is the busiest, most-edited function in the codebase**
+   (`_run_cpq_turn`) — a shared top-of-function gate risks interacting
+   with all 6+ existing STEP blocks in ways that need careful, sequential
+   verification, not a single sweeping change.
+2. **Multi-intent handling for NEW combinations** (e.g. collision + a
+   second valueless change, or Q&A + change in one message) has no
+   existing handler to reuse at all — this piece is genuinely new code,
+   not just reuse, and needs its own test coverage.
+3. **Regression risk is real**: full suite (`pytest tests/ -k "cpq or
+   bml"`, 257 tests) plus live re-verification of every scenario already
+   fixed this session (mid-config change requests, valueless-change
+   prompts, label collisions, Q&A routing) must all stay green — this
+   touches the shared entry point every one of those paths goes through.
+4. **Scope creep risk**: "universal" could balloon into re-litigating
+   every STEP block's ordering. Recommend implementing incrementally —
+   start with JUST the "count intents, detect 2+" counting layer (read-
+   only, logs what it would have done differently) before wiring in any
+   new routing behavior, to validate the classification itself is
+   accurate against real traffic before it starts changing responses.
+
+### Test plan (once implemented)
+
+1. Unit: the exact "change solution type and primary service type"
+   message → classifier detects 2 distinct targets, not 1.
+2. Unit: a plain single-target message (any existing passing test
+   scenario) → classifier detects exactly 1, zero behavior change.
+3. Live: "change solution type and primary service type" → both
+   addressed in the response (collision prompt for one, resolved/applied
+   for the other, or a single combined clarifying question) — neither
+   silently dropped.
+4. Live: re-run the STEP-1 anchor scenario (Fix 1) to confirm behavior is
+   unchanged now that its gate is generalized rather than removed.
+5. Full regression: 257/257 stays green.
