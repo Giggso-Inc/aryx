@@ -130,6 +130,51 @@ def _strip_line_comments(text: str) -> str:
     return "".join(out)
 
 
+def _strip_block_comments(text: str) -> str:
+    """Strip `/* ... */` block comments, but never inside a quoted string
+    literal — same string-awareness as `_strip_line_comments`, which only
+    handles `//` and leaves `/* */` untouched.
+
+    Live-confirmed bug (2026-07-28): a real constraint script
+    ("Restrict APX Next Product Selection based on HW Version selection")
+    wraps a dead scratch block in `/* ... */` referencing `usersessionget`/
+    `util.*` — both `_TIER1_BLOCKERS` triggers. Because this comment was
+    never stripped, its dead reference alone rejected an otherwise
+    trivially Tier-1-parseable if/else script, forcing every evaluation of
+    it into the shared, per-turn-capped Tier-2 LLM path for no reason.
+    """
+    out: list[str] = []
+    in_str = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            if j == -1:
+                break
+            i = j + 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _find_block(text: str, open_idx: int) -> tuple[str, int] | None:
     """Return (block_body, index_after_close) for the {...} starting at open_idx."""
     depth = 0
@@ -198,9 +243,7 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
     condition is the _parse_condition output, or None for the else branch.
     Returns None when the script doesn't fit the Tier-1 idiom.
     """
-    script = _strip_line_comments(script)
-    if _TIER1_BLOCKERS.search(script):
-        return None
+    script = _strip_block_comments(_strip_line_comments(script))
     branches: list[tuple[list | None, str]] = []
     m = _IF_RE.search(script)
     if not m:
@@ -223,7 +266,10 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
                     break
         if cond_end == -1:
             return None
-        cond = _parse_condition(text[paren_start + 1:cond_end])
+        cond_text = text[paren_start + 1:cond_end]
+        if _TIER1_BLOCKERS.search(cond_text):
+            return None
+        cond = _parse_condition(cond_text)
         if cond is None:
             return None
         brace = text.find("{", cond_end)
@@ -235,6 +281,8 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
         body, after = block
         if _IF_RE.search(body):
             return None  # nested if → Tier 2
+        if _TIER1_BLOCKERS.search(body):
+            return None
         branches.append((cond, body))
         # else / else if?
         rest = text[after:].lstrip()
@@ -251,6 +299,8 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
                 return None
             body2, _ = block2
             if _IF_RE.search(body2):
+                return None
+            if _TIER1_BLOCKERS.search(body2):
                 return None
             branches.append((None, body2))
             break
