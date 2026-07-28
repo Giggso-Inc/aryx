@@ -2014,14 +2014,107 @@ class CpqEngine:
                         neighbor_map.setdefault(owner_eid, []).append(mid)
                     all_menu_ids.append(mid)
 
+        # Step 3c (override redirection) — BigMachines' bm_config_att_override
+        # construct lets one catalog replace/extend a SHARED base attribute's
+        # own menu list with a catalog-specific one (same native attribute_id,
+        # different graph entity, different — and often more complete —
+        # bm_menu_item set). Nothing in this pipeline read this construct
+        # before (confirmed live: zero references to it anywhere in the
+        # codebase) — every attr's options came ONLY from its own base
+        # entity's graph neighbors, so an override-only option was silently
+        # invisible everywhere (the answer prompt, apply_answer matching,
+        # every constraint rule's allowed-value intersection).
+        #
+        # Live-confirmed bug (2026-07-28): productSelectionProduct_all's base
+        # entity (native id 39427019) neighbors a stale bm_menu_item set that
+        # repeats "APX NEXT ENHANCED" many times but never carries "APX NEXT
+        # XE 4G LTE PLUS 5G" — while a bm_config_att_override entity for the
+        # SAME native attribute_id neighbors the complete, catalog-correct
+        # list containing both. A real constraint rule (Hardware-Version-
+        # keyed) correctly narrowed to both values, but the numbered prompt
+        # only ever showed the one the base entity's own menu list happened
+        # to carry.
+        #
+        # Purely additive and structural: detected via ontology_type suffix
+        # (no hardcoded catalog/attr names) and merged (never replaces) into
+        # the base entity's own neighbor list — `seen_opts`' (item_value,
+        # display_name) dedup below already absorbs any item repeated in
+        # both sets, so this only ever ADDS options a base-only read would
+        # have missed, never removes one a real customer answer already
+        # relies on.
+        override_types = [
+            t for t in all_type_names
+            if _norm(t).endswith("configattoverride")
+            and (not resolved_catalog_prefix
+                 or _catalog_prefix(t) == resolved_catalog_prefix)
+        ]
+        if override_types:
+            override_ents: list[dict] = []
+            for ot in override_types:
+                offset = 0
+                while True:
+                    page = reader.find_entities(ontology_type=ot, limit=500, offset=offset)
+                    override_ents.extend(page)
+                    if len(page) < 500:
+                        break
+                    offset += 500
+            if override_ents:
+                override_pg = self._batch_fetch(
+                    [e["id"] for e in override_ents], workspace_id)
+                # base attr's own native id -> owning entity_id(s), same
+                # "native id can own 2+ entity_ids" reality the orphan
+                # FK-fallback above already accounts for.
+                base_eids_by_native_id: dict[str, list[int]] = {}
+                for e in attr_ents:
+                    rid = attr_pg.get(e["id"], {}).get("id")
+                    if rid is not None:
+                        base_eids_by_native_id.setdefault(str(rid), []).append(e["id"])
+                for oe in override_ents:
+                    oeid = oe["id"]
+                    target_native_id = str(override_pg.get(oeid, {}).get("attribute_id") or "")
+                    owner_eids = base_eids_by_native_id.get(target_native_id)
+                    if not owner_eids:
+                        continue
+                    try:
+                        override_neighbors = reader.neighbors(oeid)
+                    except Exception:
+                        logger.debug(
+                            "cpq: neighbor fetch failed for override attr %d",
+                            oeid, exc_info=True)
+                        continue
+                    override_menu_ids = [
+                        n["id"] for n in override_neighbors
+                        if "menuitem" in (n.get("type") or "").lower().replace("_", "")
+                        and (not resolved_catalog_prefix
+                             or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix)
+                    ]
+                    if not override_menu_ids:
+                        continue
+                    for owner_eid in owner_eids:
+                        # Prepended, not appended: the override is BM's
+                        # authoritative, catalog-specific replacement for
+                        # this attr's menu — when the same item_value exists
+                        # in both (confirmed live: "APX NEXT ENHANCED" on the
+                        # base list displays as "APX NEXT Enhanced", but the
+                        # override's own copy of that same item_value
+                        # displays as "APX NEXT (4G LTE+5G)"), the override's
+                        # display must win, not silently coexist as a
+                        # second, differently-labeled entry for an identical
+                        # code. Processing override entries first lets the
+                        # item_value-keyed dedup below keep only the first
+                        # (override) occurrence.
+                        neighbor_map[owner_eid] = override_menu_ids + neighbor_map.get(owner_eid, [])
+                    all_menu_ids.extend(override_menu_ids)
+
         # Single batch fetch for all menu items across all attrs
         all_menu_pg = self._batch_fetch(all_menu_ids, workspace_id) if all_menu_ids else {}
 
         menu_by_attr: dict[int, list[MenuOption]] = {}
         for eid, menu_ids in neighbor_map.items():
             opts: list[MenuOption] = []
-            # (item_value, display_name) pairs already added for this attr —
-            # company-level/global BM attrs (e.g. _BM_USER_CURRENCY,
+            # item_values already added for this attr, keyed by item_value
+            # ALONE (2026-07-28: widened from an (item_value, display_name)
+            # pair) — company-level/global BM attrs (e.g. _BM_USER_CURRENCY,
             # _BM_USER_LANGUAGE, _BM_USER_NUMBER_FORMAT) share one native id
             # across every ingested catalog from the same BM tenant, and
             # reader.neighbors() has no catalog-prefix scoping of its own, so
@@ -2031,7 +2124,19 @@ class CpqEngine:
             # Bug 1 — this is the safe, minimal backstop; product-specific
             # attrs never hit this since their menu items are never
             # re-exported verbatim across catalogs.
-            seen_opts: set[tuple[str, str]] = set()
+            #
+            # Widened to item_value-only (2026-07-28, override redirection
+            # above): a bm_config_att_override's menu item can share the SAME
+            # item_value as one already on the base attr's own menu, with a
+            # DIFFERENT display_name — confirmed live: "APX NEXT ENHANCED"
+            # displays as "APX NEXT Enhanced" on the base list but as
+            # "APX NEXT (4G LTE+5G)" on the override's own copy. The old
+            # (item_value, display_name) key let both survive as two
+            # differently-labeled entries for what is really one identical
+            # code — a customer-facing duplicate. Override entries are
+            # placed first in `menu_ids` above specifically so this dedup
+            # keeps the override's (authoritative) display when both exist.
+            seen_item_values: set[str] = set()
             for mid in menu_ids:
                 ma = all_menu_pg.get(mid, {})
                 # Always use item_value (API code), item_text for display
@@ -2045,10 +2150,9 @@ class CpqEngine:
                         continue
                     if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
                         continue
-                    key = (iv_lo, dt_lo)
-                    if key in seen_opts:
+                    if iv_lo in seen_item_values:
                         continue
-                    seen_opts.add(key)
+                    seen_item_values.add(iv_lo)
                     opts.append(MenuOption(item_value=iv, display_name=dt, order=order))
             opts.sort(key=lambda x: x.order)
             menu_by_attr[eid] = opts
@@ -3727,6 +3831,42 @@ class CpqEngine:
         return governed
 
     @staticmethod
+    def product_label_noise_vns(
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+    ) -> set[str]:
+        """Variable names of "Product"-labeled attrs that are genuinely
+        irrelevant noise once `session.model_leaf_resolved` is True — the
+        CommandCentral-style case Amendment 10 was built for, where a
+        generic "Product" attr carries no rule of its own and the real
+        model identity travels entirely through the resolved bm_catalog
+        leaf instead.
+
+        Deliberately NOT every attr labeled "Product" — live-confirmed bug
+        (2026-07-28): APX Next's order text ("Order APX Next Radios...")
+        also matches one of the workspace's catalog leaf candidates in the
+        ambiguous-multi-leaf resolution path, setting model_leaf_resolved
+        True for APX Next as well — but unlike CommandCentral, APX Next's
+        own "Product" attr (productSelectionProduct_all) IS a genuine,
+        rule-governed decision (a real constraint script narrows its
+        options by Hardware Version). The blanket "drop every Product-
+        labeled attr" rule silently dropped it from `pending` AND the
+        payload entirely, with no value ever collected. Scoping to
+        `rule_governed_ids` (a purely structural signal — which rules
+        already target which attrs, independent of current filled state)
+        distinguishes "truly noise, no rule cares about this" from "a real
+        rule narrows this, it must still be asked."
+        """
+        governed = CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        return {
+            a.variable_name for a in attrs
+            if a.display_label.strip().lower() == "product"
+            and a.entity_id not in governed
+        }
+
+    @staticmethod
     def governed_target_ids(
         attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],
@@ -5019,6 +5159,86 @@ class CpqEngine:
                 break
         return out
 
+    # Generic connector/control words a leftover clause commonly contains
+    # that are never themselves part of a real catalog label — excluded so
+    # e.g. "...and confirm" doesn't count "confirm" as catalog-word overlap
+    # just because some unrelated attr's label happens to share it.
+    _GENERIC_CLAUSE_STOPWORDS = frozenset({
+        "to", "the", "a", "an", "then", "please", "also", "and", "or",
+        "change", "set", "update", "make", "it", "that", "this", "for",
+        "with", "of", "in", "on", "confirm", "submit", "thanks", "thank",
+        "yes", "no", "ok", "okay", "done",
+    })
+
+    def detect_unmatched_change_targets(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        matched_vns: "set[str]",
+    ) -> list[str]:
+        """Live-verified gap (2026-07-28): "change solution type and
+        hardware type" — where "hardware type" names nothing real in this
+        catalog (it's "Hardware Version", not "Hardware Type") — silently
+        dropped "hardware type" entirely once "solution type" was
+        successfully matched. The customer explicitly asked for two
+        things and only saw one addressed, with no indication the second
+        wasn't understood — indistinguishable from the system just
+        forgetting it.
+
+        Returns plain-language leftover phrases from the message that
+        (a) weren't accounted for by any attr already in `matched_vns`,
+        (b) don't match ANY real attr's label either (a genuine second
+        VALID target — just one this caller hasn't resolved yet — is not
+        "unmatched", it's simply not this function's problem), and
+        (c) share at least one content word with SOME real catalog
+        label, the signal that this was a plausible-but-failed naming
+        attempt rather than an unrelated trailing clause ("...and
+        confirm") that happens to split on the same connective.
+
+        Deliberately conservative: only runs when the message has an
+        actual change-verb AND a connective ("and"/","/"&") joining
+        multiple clauses — a single-clause message has nothing "left
+        over" to flag by construction.
+        """
+        verb_match = self._CHANGE_VERB_RE.search(question) or self._ARROW_RE.search(question)
+        if not verb_match:
+            return []
+        if not re.search(r"\band\b|,|&", question, re.IGNORECASE):
+            return []
+        catalog_words: set[str] = set()
+        for a in attrs:
+            catalog_words |= set(re.findall(r"[a-z0-9]+", a.display_label.lower()))
+        clauses = re.split(r"\band\b|,|&", question, flags=re.IGNORECASE)
+        unmatched: list[str] = []
+        for clause in clauses:
+            clause = clause.strip()
+            if not clause:
+                continue
+            clause_lower = clause.lower()
+            # Already accounted for by an attr this caller DID match.
+            if any(
+                a.variable_name in matched_vns
+                and _label_mentioned_strict(a.display_label.lower(), clause_lower)
+                for a in attrs
+            ):
+                continue
+            # Names a REAL attr — just not (yet) one in matched_vns. Not
+            # this function's concern; a genuine second valid target is
+            # not the same failure as naming nothing at all.
+            if any(_label_mentioned_strict(a.display_label.lower(), clause_lower) for a in attrs):
+                continue
+            stripped = self._CHANGE_VERB_RE.sub("", clause, count=1).strip()
+            stripped = self._ARROW_RE.sub("", stripped, count=1).strip()
+            if not stripped or len(stripped.split()) > 6:
+                continue
+            clause_words = (
+                set(re.findall(r"[a-z0-9]+", stripped.lower()))
+                - self._GENERIC_CLAUSE_STOPWORDS
+            )
+            if clause_words & catalog_words:
+                unmatched.append(stripped)
+        return unmatched
+
     def _change_request_matches(
         self,
         question: str,
@@ -5098,11 +5318,38 @@ class CpqEngine:
             vn_flat = attr.variable_name.lower().replace("_", "")
             label_lower = attr.display_label.lower()
 
-            # When a change verb is present, require the attr to be mentioned by name/label
+            # Require the attr to be mentioned by name/label REGARDLESS of
+            # change-verb presence (2026-07-28 fix) — the original gate
+            # only skipped an unmentioned attr when has_change_verb was
+            # True, which backwards-guarded exactly the wrong case: a bare
+            # reply with NO change verb (e.g. a plain "77" meant to answer
+            # a totally different pending free-text quantity attr) let
+            # EVERY filled attr through unfiltered, since the whole
+            # condition short-circuits False when has_change_verb is
+            # False. Live-verified: with no verb and no mention, "77" got
+            # tried against ultimateDestinationCountry's own apply_answer,
+            # which treats a bare number as a 1-based option INDEX — and
+            # position 77 in that catalog's 251-country list happens to be
+            # United Kingdom — silently overwriting the country and
+            # cascading a dozen dependent attrs, while the customer's
+            # actual answer (a quantity) was never even attempted here.
+            # Naming still isn't required through the SEPARATE hint-path
+            # fallback further below (extract_hints's own token-to-vn
+            # match is its own, narrower signal) — this only closes the
+            # "nothing at all ties this attr to the message" hole.
+            #
+            # A multi-select attr's own OPTION VALUE mentioned in the text
+            # counts too, not just its label/variable_name — "add the
+            # Jacket Clip Mount too" legitimately names the value being
+            # added, never the generic "Mounting Type" label itself
+            # (pre-existing, tested behavior — test_cpq_grid_decline.py).
+            _multi_option_mentioned = attr.select_type == "multi" and any(
+                o.display_name.lower() in q_lower for o in attr.options
+            )
             if (
-                has_change_verb
-                and vn_flat not in q_lower.replace("_", "")
+                vn_flat not in q_lower.replace("_", "")
                 and not _label_mentioned(label_lower, q_lower)
+                and not _multi_option_mentioned
             ):
                 continue
 
@@ -5340,23 +5587,29 @@ class CpqEngine:
             return None
         q_lower = question.lower()
         multi = filled_multi or {}
-        # _label_mentioned, not a strict substring check — detect_change_
-        # request's own resolution uses this same fuzzy matcher (drops up
-        # to 2 leading words, e.g. the generic "mounting type" prefix), so
-        # a real user phrasing like "change the Shirt Magnetic Mount
-        # Quantity to 99" (the specific attr's actual label is "mounting
-        # type Shirt Magnetic Mount Quantity") must be seen as a candidate
-        # here too — confirmed live: the strict substring check never saw
-        # the specific attr as a candidate at all (its full label never
-        # literally appears when the "mounting type" prefix is dropped),
-        # only the generic "Quantity" attrs, so the supersession check
-        # below never fired and a bogus 3-way "Quantity" collision was
-        # reported even though detect_change_request's own resolver would
-        # have resolved it unambiguously.
+        # _label_mentioned_strict (2026-07-28 fix), NOT the loose
+        # _label_mentioned — live-confirmed bug: "change solution type and
+        # hardware type" (neither phrase contains "service type" anywhere)
+        # still reported a "Service Type" collision, because the loose
+        # matcher's leading-word-drop tier let "Service Type" degrade to
+        # the single generic shared word "Type", which then substring-
+        # matched "type" inside BOTH "solution type" and "hardware type".
+        # _label_mentioned's own docstring says this loose tier is "safe
+        # only as a coarse pre-filter" specifically because its OTHER
+        # caller (detect_change_request) always requires a separate real
+        # value-match before resolving anything — this function has no
+        # such second check; it hands loose matches straight to the user
+        # as a real collision, so it needs the strict variant instead,
+        # which explicitly never degrades to a single generic shared word
+        # (see _label_mentioned_strict's own docstring). Multi-word
+        # dropped-prefix matches (e.g. "mounting type Shirt Magnetic Mount
+        # Quantity" naming just "Shirt Magnetic Mount Quantity") still work
+        # under the strict variant — only the single-generic-word
+        # degradation is excluded.
         candidates = [
             a for a in attrs
             if (a.variable_name in filled or a.variable_name in multi)
-            and _label_mentioned(a.display_label.lower(), q_lower)
+            and _label_mentioned_strict(a.display_label.lower(), q_lower)
         ]
         # Group by the EXACT label text, not just "2+ candidates matched at
         # all" — a substring containment match (e.g. "Quantity" inside

@@ -43,18 +43,20 @@ class GraphReader:
         self._graph = self._db.select_graph(graph)
 
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """Execute a Cypher query and log the input and output at INFO level."""
-        start = time.monotonic()
+        """Execute a Cypher query and return its result rows.
+
+        `timeout_ms` (`ARYX_GRAPH_QUERY_TIMEOUT`, PR #121): caps how long
+        FalkorDB will run any single query before aborting it — without this,
+        a pathological query on a large workspace can hang the whole request
+        indefinitely instead of failing fast.
+
+        No per-query INFO-level logging here (2026-07-28): it flooded
+        container logs on every graph read, drowning out other INFO-level
+        diagnostics — see the earlier removal commit for the live-verified
+        rationale.
+        """
         timeout_ms = get_settings().graph_query_timeout or None
-        result = self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        # Cap result preview to first 5 rows to keep logs readable.
-        preview = result[:5]
-        logger.info(
-            "cypher  query=%r  params=%r  rows=%d  ms=%d  preview=%r",
-            cypher, params or {}, len(result), elapsed_ms, preview,
-        )
-        return result
+        return self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
 
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name/attributes, or None if absent."""

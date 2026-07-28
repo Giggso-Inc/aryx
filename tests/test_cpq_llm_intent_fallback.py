@@ -52,12 +52,13 @@ def test_llm_fallback_detects_removal_phrase_regex_would_miss():
         '"value": "Jacket Magnetic Mount"}'
     )
     with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
-        result = _llm_classify_change_intent(
+        result, prompt_tokens, completion_tokens = _llm_classify_change_intent(
             "can you get that jacket one off the list", attrs, session, workspace_id=1)
     assert result == {
         "intent": "remove", "variable_name": "mountingTypeArray_viSoln",
         "value": "Jacket Magnetic Mount",
     }
+    assert (prompt_tokens, completion_tokens) == (10, 5)
 
 
 def test_llm_fallback_detects_change_phrase():
@@ -68,12 +69,13 @@ def test_llm_fallback_detects_change_phrase():
         '"value": "2 YEAR EXTENDED WARRANTY"}'
     )
     with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
-        result = _llm_classify_change_intent(
+        result, prompt_tokens, completion_tokens = _llm_classify_change_intent(
             "bump up the warranty coverage please", attrs, session, workspace_id=1)
     assert result == {
         "intent": "change", "variable_name": "serviceType_viSoln",
         "value": "2 YEAR EXTENDED WARRANTY",
     }
+    assert (prompt_tokens, completion_tokens) == (10, 5)
 
 
 def test_llm_fallback_rejects_invented_attribute_name():
@@ -83,7 +85,8 @@ def test_llm_fallback_rejects_invented_attribute_name():
         '{"intent": "change", "variable_name": "totallyMadeUp_viSoln", "value": "X"}'
     )
     with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
-        result = _llm_classify_change_intent("do the thing", attrs, session, workspace_id=1)
+        result, _prompt_tokens, _completion_tokens = _llm_classify_change_intent(
+            "do the thing", attrs, session, workspace_id=1)
     assert result is None
 
 
@@ -92,7 +95,8 @@ def test_llm_fallback_none_intent_returns_none():
     session = _session()
     fake_reply = '{"intent": "none", "variable_name": "", "value": ""}'
     with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
-        result = _llm_classify_change_intent("what a nice day", attrs, session, workspace_id=1)
+        result, _prompt_tokens, _completion_tokens = _llm_classify_change_intent(
+            "what a nice day", attrs, session, workspace_id=1)
     assert result is None
 
 
@@ -100,12 +104,14 @@ def test_llm_fallback_handles_malformed_json_gracefully():
     attrs = [_mount_attr(), _service_attr()]
     session = _session()
     with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json at all", 10, 5)):
-        result = _llm_classify_change_intent("garbage in", attrs, session, workspace_id=1)
+        result, _prompt_tokens, _completion_tokens = _llm_classify_change_intent(
+            "garbage in", attrs, session, workspace_id=1)
     assert result is None
 
 
 def test_llm_fallback_none_when_no_candidate_attrs_filled():
     attrs = [_mount_attr(), _service_attr()]
     session = _session(filled={}, filled_multi={})
-    result = _llm_classify_change_intent("remove something", attrs, session, workspace_id=1)
+    result, _prompt_tokens, _completion_tokens = _llm_classify_change_intent(
+        "remove something", attrs, session, workspace_id=1)
     assert result is None

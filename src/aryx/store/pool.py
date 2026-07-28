@@ -33,6 +33,7 @@ def get_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> ConnectionPool:
                 logger.info("pool: creating min=%d max=%d", min_size, max_size)
                 _pools[dsn] = ConnectionPool(
                     conninfo=dsn, min_size=min_size, max_size=max_size, open=True,
+                    check=ConnectionPool.check_connection,
                 )
     return _pools[dsn]
 
