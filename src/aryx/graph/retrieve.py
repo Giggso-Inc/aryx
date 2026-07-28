@@ -115,6 +115,21 @@ def render_context(
     })
     # Values that carry no information.
     _TRIVIAL_VALS = frozenset({"0", "1", "", "null", "none", "unknown"})
+    # Neighbor entity TYPES that are internal BML rule constructs (hiding/
+    # recommendation/constraint/validation rules — BigMachines' own
+    # BmConfigRule, ingested per-catalog with a type prefix e.g.
+    # "ApxNextConfigBmConfigRule") — never customer-facing facts, but
+    # confirmed live to leak straight into an answer verbatim ("Hide Model
+    # selection frequency band attribute", "Associated Recommendation
+    # Rule") because this neighbor listing had no type filter at all, only
+    # _SKIP_ATTR_KEYS for an entity's OWN attributes. Suffix match (not
+    # exact), same catalog-prefix-agnostic convention used elsewhere in
+    # this codebase (e.g. CpqEngine._attr_index).
+    _INTERNAL_NEIGHBOR_TYPE_SUFFIXES = ("bmconfigrule",)
+
+    def _is_internal_rule_neighbor(neighbor_type: str) -> bool:
+        t = (neighbor_type or "").lower()
+        return any(t.endswith(suffix) for suffix in _INTERNAL_NEIGHBOR_TYPE_SUFFIXES)
 
     blocks: list[str] = []
     total = 0
@@ -133,11 +148,14 @@ def render_context(
                 if len(attr_lines) >= 12:
                     break
             lines.extend(attr_lines)
-        for n in ent.neighbors[:max_neighbors]:
+        _visible_neighbors = [
+            n for n in ent.neighbors if not _is_internal_rule_neighbor(n.get("type", ""))
+        ]
+        for n in _visible_neighbors[:max_neighbors]:
             arrow = "->" if n["direction"] == "out" else "<-"
             lines.append(f"  {arrow} {n['relationship']} {n['name']} [{n['type']}]")
-        if len(ent.neighbors) > max_neighbors:
-            lines.append(f"  ... ({len(ent.neighbors) - max_neighbors} more relationships truncated)")
+        if len(_visible_neighbors) > max_neighbors:
+            lines.append(f"  ... ({len(_visible_neighbors) - max_neighbors} more relationships truncated)")
         if ent.sources:
             capped = ent.sources[:max_sources]
             srcs = ", ".join(f"{p['system']}.{p['dataset']}" for p in capped)

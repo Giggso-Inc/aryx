@@ -5555,6 +5555,7 @@ class CpqEngine:
         attr: ConfigAttr,
         context_sentence: str = "",
         constrained_item_values: list[str] | None = None,
+        validation_rules: list["ValidationRule"] | None = None,
     ) -> str:
         """Build the hybrid question shown to the sales rep for one pending attr.
 
@@ -5562,6 +5563,16 @@ class CpqEngine:
           (e.g. "Since 5G was selected, we now need a compatible antenna.").
         constrained_item_values — when active constraint rules apply, only these
           item_values are presented in the numbered list.
+        validation_rules — when given, a free-text attr (no options) proactively
+          shows its format constraint up front (e.g. "must only contain letters,
+          digits, and the characters - . _") instead of a bare "Please provide a
+          value." — confirmed live a rep has no way to know the expected format
+          otherwise, since BigMachines' own source data has no help-text field
+          for these attrs at all (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+          Amendment 21's describe_free_text_constraint, previously only reachable
+          reactively via a Q&A question — now shown proactively too). None when
+          not supplied (default), same opt-out convention as bml_eval=None
+          elsewhere — never guesses a constraint that can't be described.
         """
         # Use _presentable (not _valid) so codes like "NA" (North America) appear
         # in the numbered list even though _valid("NA")=False prevents auto-fill.
@@ -5614,7 +5625,11 @@ class CpqEngine:
                 if attr.select_type == "multi" and not attr.required else ""
             )
             return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}{skip_hint}"
-        return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value."
+        constraint_desc = self.describe_free_text_constraint(attr, validation_rules)
+        constraint_hint = (
+            f"\n\n*Must only contain {constraint_desc}.*" if constraint_desc else ""
+        )
+        return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value.{constraint_hint}"
 
     def apply_answer(
         self,

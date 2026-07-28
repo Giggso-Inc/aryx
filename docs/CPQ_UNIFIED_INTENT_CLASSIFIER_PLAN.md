@@ -954,3 +954,33 @@ for `systemID_astro`, consistently across repeated fresh-cache runs.
 End-to-end: APX Next ("City of Houston" radio order) completes cleanly
 with no Owner System ID prompt; CommandCentral Aware asks for the domain
 name and video-devices count as intended. 255/255 tests pass.
+
+## Amendment 23: proactively show a free-text attr's format constraint when first asking, not just reactively
+
+Found live (SVX quote): a rep asked "Agency Domain Name/ID — Please
+provide a value." with zero indication of the expected format. Amendment
+21 already built `describe_free_text_constraint`/`_describe_char_allowlist`
+to answer this — but only reactively, when the rep separately asked "what
+values are available." Cross-verified against the raw ingested source
+data (`aryx_entity_ws21`, the flattened BM export): BigMachines' own
+catalog has **no help-text field at all** for these attrs — the character-
+allowlist validation rule's message is the only descriptive content that
+exists anywhere for them. So the rep has no way to know the expected
+format unless the system tells them up front.
+
+**Fix**: `CpqEngine.next_question_prompt()` gained an optional
+`validation_rules` param — when the attr has no options (the same
+free-text case Amendment 21 already handles) and a describable
+`allowedChars` rule exists, the constraint is appended directly to the
+question: *"Please provide a value.\n\n*Must only contain letters,
+digits, and the characters - . _.*"* Wired into the 3 call sites in
+`_run_cpq_turn` that build the primary "next question" prompt (FORMAT A,
+batch mode, and the turn-cap fallback) — all three already had
+`validation_rules` loaded in scope. `None` by default (opt-out, same
+convention as `bml_eval=None` elsewhere) — never guesses a constraint that
+can't be described.
+
+**Live-verified**: "Quote SVX Video Remote Speaker Microphone for a US
+customer" → mounting type (skip) → *"**Agency Domain Name/ID**\n\nPlease
+provide a value.\n\n*Must only contain letters, digits, and the characters
+- . _.*"* 257/257 tests pass.

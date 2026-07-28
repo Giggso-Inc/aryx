@@ -183,7 +183,7 @@ def _enforce_plain_answer(
 
 def _synthesise(question: str, context: str, overview: str = "",
                 history: list[Turn] | None = None,
-                workspace_id: int = 1) -> tuple[str, int, int, int]:
+                workspace_id: int = 1, session_values: str = "") -> tuple[str, int, int, int]:
     sys = (
         "You are Aryx, a knowledge-graph assistant. You explain product "
         "configuration, requirements, and enterprise data in plain, everyday "
@@ -234,9 +234,29 @@ def _synthesise(question: str, context: str, overview: str = "",
             "unrelated catalog details to answer it anyway.\n"
         )
 
+    # Session-value rule (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 3): only
+    # added when the caller found a real filled value for an entity the
+    # graph search resolved. Confirmed live this path previously answered
+    # "the data doesn't show a specific frequency value being set" for a
+    # question about an attr that WAS genuinely filled in this exact
+    # session — GRAPH FACTS alone is the static catalog schema, never the
+    # per-turn answered values, so this couldn't be told apart from
+    # genuinely unfilled without this.
+    session_values_block = ""
+    session_value_rule = ""
+    if session_values.strip():
+        session_values_block = f"\nSESSION VALUES:\n{session_values}\n"
+        session_value_rule = (
+            "- If the question asks what something is currently SET TO, "
+            "answer from SESSION VALUES when present — it reflects this "
+            "customer's real selection for THIS quote, which the static "
+            "GRAPH FACTS alone cannot show.\n"
+        )
+
     user = (
         "Answer the QUESTION using the evidence below.\n\n"
         "Rules:\n"
+        f"{session_value_rule}"
         f"{empty_rule}"
         "- Do NOT invent facts not shown in GRAPH FACTS.\n"
         "- Use CONVERSATION SO FAR to resolve pronouns and give continuity.\n"
@@ -245,7 +265,7 @@ def _synthesise(question: str, context: str, overview: str = "",
         "naturally explain it. Use a short list only when multiple distinct "
         "items are being enumerated. Plain, everyday English — no technical "
         "or internal terms.\n\n"
-        f"{overview}{conv_block}\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
+        f"{overview}{conv_block}{session_values_block}\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
     )
     start = time.monotonic()
     text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
@@ -510,8 +530,34 @@ def _handle_cpq_qa(
                     ]
             entities = _enrich_with_attributes(entities, req.workspace_id)
             context = render_context(entities)
+            # Session values (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 3):
+            # entities found here come from the STATIC catalog graph only —
+            # confirmed live this path answered "the data doesn't show a
+            # specific value being set" for an attr that WAS genuinely
+            # filled this session, because session.filled was never
+            # cross-referenced. Only inject values for entities THIS
+            # search already found relevant (never the whole filled dict)
+            # — a ConfigAttr entity's graph id IS its entity_id, same
+            # convention used throughout this file.
+            _attrs_by_entity_id = {a.entity_id: a for a in attrs}
+            _session_value_lines = []
+            for e in entities:
+                if not e.type.lower().endswith("bmconfigattr"):
+                    continue
+                _matched_attr = _attrs_by_entity_id.get(e.id)
+                if not _matched_attr:
+                    continue
+                _val = session.display_filled.get(_matched_attr.variable_name) \
+                    or session.filled.get(_matched_attr.variable_name)
+                if _val:
+                    _session_value_lines.append(
+                        f"- {_matched_attr.display_label} "
+                        f"({_matched_attr.variable_name}): {_val}"
+                    )
+            session_values = "\n".join(_session_value_lines)
             qa_answer, s_in, s_out, s_ms = _synthesise(
                 req.question, context, history=req.history, workspace_id=req.workspace_id,
+                session_values=session_values,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("cpq_qa synthesis failed: %s", exc)
@@ -4467,6 +4513,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         else:
             q_block = _cpq_engine.next_question_prompt(
                 next_attr, "", constrained_opts.get(next_attr.entity_id),
+                validation_rules=validation_rules,
             )
         answer = (
             f"⚠️ The configuration for **{session.product_name}** is "
@@ -4510,7 +4557,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     a, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
                 )
                 blocks.append(_cpq_engine.next_question_prompt(
-                    a, ctx, constrained_opts.get(a.entity_id)))
+                    a, ctx, constrained_opts.get(a.entity_id),
+                    validation_rules=validation_rules))
             answer = (
                 (f"{dropped_note.strip()}\n\n" if dropped_note else "")
                 + f"Here's everything still needed ({len(pending)} item(s)):\n\n"
@@ -4532,6 +4580,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # FORMAT A: pure options prompt — no background state, no counters
                 answer = _cpq_engine.next_question_prompt(
                     next_attr, context_sentence, constrained_vals,
+                    validation_rules=validation_rules,
                 )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)

@@ -183,3 +183,101 @@ stage 3 itself.
    narrowed, constrained list — this is the unification test for STEP 7's
    refactor.
 6. Full regression stays at 255/255.
+
+## Related finding (context for Fix 3 below): internal rule names leaking into Q&A answers
+
+Separately found live: "what is the frequency band being set" answered
+with raw internal rule names verbatim — *"the system applies several
+rules... 'Hide Model selection frequency band attribute'... 'Associated
+Recommendation Rule'..."* Root cause traced to `render_context()`
+(`src/aryx/graph/retrieve.py:98-138`): it lists every graph neighbor of a
+matched entity with zero type filtering — `_SKIP_ATTR_KEYS` only filters
+an entity's own bookkeeping attributes, never its neighbor entities'
+types. When a ConfigAttr's neighbors include `BmConfigRule` nodes
+(BigMachines' own hiding/recommendation/constraint/validation rule
+construct, ingested per-catalog with a type prefix e.g.
+`ApxNextConfigBmConfigRule`), their raw `rule_name` values get dumped
+straight into the GRAPH FACTS block the LLM reads, and `_synthesise`'s own
+system prompt ("name the specific things you're talking about... relationships
+shown") makes it faithfully repeat them.
+
+A scoped fix here (not yet re-implemented — reverted along with this
+plan's own draft pending further verification) would filter neighbor
+entities whose `type` ends with `bmconfigrule` (case-insensitive suffix
+match, same catalog-prefix-agnostic convention `CpqEngine._attr_index`
+already uses) out of `render_context`'s neighbor listing entirely — a
+one-function, low-risk change with 12 existing `test_render_context.py`
+tests to guard it.
+
+## Fix 3 (scoped, not implemented): the graph-search Q&A path can't see session.filled at all
+
+Found live while first verifying the rule-leak fix above: once raw
+`BmConfigRule` neighbor names were filtered out (in an earlier, since-
+reverted attempt), "what is the frequency band being set" started
+answering *"The data doesn't show a specific frequency value being
+set..."* — even though `modelSelectionFrequencyBands_astro` was genuinely
+filled with "700/800 MHz" in the session at that exact moment. The rule-
+leak fix removed the distraction and exposed the real, deeper gap
+underneath: the answer was never wrong about "no rule names," it was
+wrong about not knowing the actual value.
+
+**Root cause, confirmed by direct code read**: `_handle_cpq_qa`'s generic
+fallback (`ask_api.py`, the `else` branch after the fast-path options
+check) resolves entities purely from the **static catalog graph** —
+`all_types(reader)` → `_extract_terms` → `gather(reader, terms)` →
+`render_context(entities)` → `_synthesise(...)`. None of these touch
+`session.filled` (the per-turn answered values) at any point. The function
+receives `session` as a parameter and uses it elsewhere in this same file
+(resume prompts, pending-question logic) — it's simply never
+cross-referenced against the entities the graph search found.
+
+**Scoped fix**: after `entities` is resolved and catalog-scoped, match
+each entity's `id` against the already-loaded `attrs` list's `entity_id`
+(both come from the same `bm_config_attr` source — a ConfigAttr entity's
+graph `id` IS its `entity_id`, no new lookup needed), restricted to
+entities whose `type` actually corresponds to a `ConfigAttr` (not a menu
+item, product node, or anything else the search might also return). For
+any match present in `session.filled`, build a small labeled block:
+
+```
+CURRENT SESSION VALUES (this customer's actual configuration, not just
+the catalog's static definition):
+- Frequency Bands (modelSelectionFrequencyBands_astro): 700/800 MHz
+```
+
+Extend `_synthesise`'s signature with a new optional `session_values: str
+= ""` param, inserted into the user prompt ABOVE the GRAPH FACTS block,
+with an explicit instruction: *"If the question asks what something is
+currently SET TO, answer from SESSION VALUES when present — it reflects
+this customer's real selection, which the static GRAPH FACTS alone cannot
+show."* Pass the built block from `_handle_cpq_qa`'s call site into this
+new parameter.
+
+**Why this is scoped narrowly, not a general session-awareness rewrite**:
+only inject values for entities the graph search ALREADY found relevant
+to this specific question — never dump the whole `session.filled` dict
+(that would bloat the prompt and risk surfacing irrelevant/confusing
+state for unrelated questions). The existing entity-matching work
+(`gather`, catalog-prefix filtering) already does the relevance
+filtering; this reuses it rather than adding new logic.
+
+**Risks**:
+1. An entity the graph search returns might not correspond 1:1 to a
+   single `ConfigAttr` (e.g. it could be a `bm_menu_item`, a product/
+   family node, or something else entirely) — the entity-to-attr match
+   needs an explicit type check (`entity.type` ends with the catalog's
+   `BmConfigAttr` suffix) before trusting `entity.id == attr.entity_id`,
+   not a bare id lookup.
+2. `_synthesise` may be called from other, non-`_handle_cpq_qa` contexts
+   — confirm the new optional param defaults safely to no-op (empty
+   string) everywhere it isn't explicitly passed.
+3. Needs a live re-test of the exact frequency-band scenario, plus a
+   negative test (a question about an attr that's genuinely unfilled,
+   e.g. a not-yet-reached pending field) to confirm it correctly stays
+   silent rather than fabricating a "current value" that doesn't exist.
+4. Full regression (`pytest tests/ -k "cpq or bml"`, plus the 12
+   `test_render_context.py` tests) must stay green.
+5. This fix depends on (or should land together with) the rule-leak fix
+   above — implementing session-value injection without also filtering
+   `BmConfigRule` neighbors would leave both problems compounding in the
+   same answer.
