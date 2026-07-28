@@ -41,10 +41,16 @@ from aryx.cpq.intent_schema import (
 )
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
 from aryx.cpq.session_guard import (
+    audit_intent_conservation,
     clear_clarify,
+    clear_queue_vn,
     detect_guided_mode_accept,
     detect_undo,
+    drain_intent_queue_into_pending,
     enforce_conversational_invariant,
+    enqueue_intent_targets,
+    format_dropped_intent_notice,
+    format_queue_overflow_notice,
     guided_mode_offer_message,
     note_clarify,
     numbered_options_prompt,
@@ -56,7 +62,7 @@ from aryx.cpq.session_guard import (
     undo_empty_message,
     undo_success_message,
 )
-from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.cpq.state import INTENT_QUEUE_CAP, ConfigAttr, CpqSession, MenuOption
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
 from aryx.queries import load
@@ -801,6 +807,92 @@ def _append_unmatched_targets_note(
     return result
 
 
+def _scan_and_enqueue_remaining_targets(
+    session: Any,
+    question: str,
+    attrs: list,
+    *,
+    exclude_vns: set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Scan utterance for all valueless change targets; enqueue all but active.
+
+    Returns (enqueued_vns, overflow_vns). The first target in appearance
+    order that is NOT in exclude is treated as "active" (caller handles it);
+    the rest go on pending_intent_queue.
+    """
+    exclude = set(exclude_vns or set())
+    all_targets = _cpq_engine.detect_all_change_targets_without_value(
+        question, attrs, session.filled,
+        filled_multi=session.filled_multi,
+        exclude_vns=exclude,
+        cap=INTENT_QUEUE_CAP + 5,  # detect a few past cap so overflow is visible
+    )
+    remaining = [a.variable_name for a in all_targets if a.variable_name not in exclude]
+    # If caller already has an active target excluded, remaining is the queue.
+    # If not, first is active (caller handles) and rest are queued.
+    overflow = enqueue_intent_targets(
+        session, remaining, exclude=exclude, cap=INTENT_QUEUE_CAP,
+    )
+    enqueued = [v for v in remaining if v in session.pending_intent_queue]
+    return enqueued, overflow
+
+
+def _queue_followup_note(session: Any, attrs: list) -> str:
+    """Human note listing queued targets still to ask."""
+    if not session.pending_intent_queue:
+        note = ""
+    else:
+        by_vn = {a.variable_name: a for a in attrs}
+        labels = [
+            _cpq_engine.disambiguated_label(by_vn[v], attrs)
+            if v in by_vn else v
+            for v in session.pending_intent_queue
+        ]
+        if len(labels) == 1:
+            note = f"\n\n*(I'll also ask about **{labels[0]}** next.)*"
+        else:
+            joined = ", ".join(f"**{lbl}**" for lbl in labels)
+            note = f"\n\n*(I'll ask about each next: {joined}.)*"
+    if session.pending_intent_overflow:
+        note += "\n\n" + format_queue_overflow_notice(
+            list(session.pending_intent_overflow), attrs,
+        )
+        session.pending_intent_overflow = []
+    return note
+
+
+def _apply_intent_conservation(
+    result: dict[str, Any] | None,
+    question: str,
+    detected_targets: set[str] | list[str],
+    handled_vns: set[str] | list[str],
+    session: Any,
+    attrs: list,
+    *,
+    clarified_vns: set[str] | list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Run intent-conservation audit; append dropped-intent notice to answer."""
+    if result is None:
+        return None
+    audit = audit_intent_conservation(
+        question, detected_targets, handled_vns, session,
+        clarified_vns=clarified_vns,
+        run_id=getattr(session, "run_id", "") or "",
+        turn=int(getattr(session, "turn", 0) or 0),
+        log=True,
+    )
+    if audit.dropped:
+        notice = format_dropped_intent_notice(audit.dropped, attrs)
+        if notice:
+            result["answer"] = (result.get("answer") or "") + "\n\n" + notice
+        # Refresh session_data after any queue mutations
+        result["session_data"] = session.to_dict()
+        tools = list(result.get("tools_called") or [])
+        tools.append("cpq_intent_dropped()")
+        result["tools_called"] = tools
+    return result
+
+
 def _build_no_value_response(
     req: "AskRequest",
     session: Any,
@@ -821,7 +913,19 @@ def _build_no_value_response(
     identified target instead of asking, the same class of gap
     `detect_change_target_without_value` already closed for its own regex
     matches.
+
+    Also scans the utterance for additional named targets and enqueues
+    them on pending_intent_queue so multi-target "change A, B and C"
+    asks each in sequence.
     """
+    # Enqueue every OTHER named no-value target in this utterance.
+    enqueued, _overflow = _scan_and_enqueue_remaining_targets(
+        session, req.question, attrs,
+        exclude_vns={target_attr.variable_name},
+    )
+    # Active target is not "queued" — it's pending_change_no_value.
+    clear_queue_vn(session, target_attr.variable_name)
+
     constrained = _cpq_engine.apply_constraint_rules(
         attrs, con_rules, session.filled, bml_eval)
     options_block = _cpq_engine.next_question_prompt(
@@ -838,7 +942,14 @@ def _build_no_value_response(
         f"**{_cpq_engine.disambiguated_label(target_attr, attrs)}**?"
         f"\n\n{options_block}{current_note}"
     )
+    answer += _queue_followup_note(session, attrs)
     session.pending_change_no_value_vn = target_attr.variable_name
+    detected = {target_attr.variable_name} | set(enqueued) | set(
+        session.pending_intent_queue or [],
+    )
+    # Also count overflow as detected for conservation (must not silently drop)
+    if _overflow:
+        detected |= set(_overflow)
     result = _append_unmatched_targets_note(
         {
             "answer": answer, "terms": [target_attr.variable_name],
@@ -848,6 +959,12 @@ def _build_no_value_response(
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         },
         req.question, attrs, {target_attr.variable_name},
+    )
+    result = _apply_intent_conservation(
+        result, req.question, detected,
+        handled_vns=set(),  # none applied yet
+        session=session, attrs=attrs,
+        clarified_vns={target_attr.variable_name},
     )
     _persist_cpq_history(req.workspace_id, req.question, result["answer"])
     return result
@@ -1023,29 +1140,14 @@ def _handle_cascade(
         if any(a.variable_name == k for a in visible_attrs)
     }
 
-    # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4):
-    # re-queue the second target stashed when a label collision was raised
-    # alongside it (session.pending_multi_intent_vn). _handle_cascade is
-    # the single common function every change-request entry point (STEP 6's
-    # plain detect_change_request match, the collision-resolution branches,
-    # the pending_change_no_value_vn branch, the LLM change-intent fallback)
-    # eventually calls — live-verified this is the actual convergence point
-    # missed by patching only individual outer call sites: a plain reply
-    # naming just a NEW VALUE (e.g. "Extended Warranty") for the already-
-    # pending attr matches STEP 6's own detect_change_request directly and
-    # calls this function without ever passing through the collision/no-
-    # value branches those outer patches lived in, so the promised second
-    # target was silently dropped every time. Centralizing here covers
-    # every caller at once; not excluded for already being in
-    # session.filled — the whole point is a CHANGE request to an
-    # already-filled attr.
-    if session.pending_multi_intent_vn:
-        _mi_vn = session.pending_multi_intent_vn
-        session.pending_multi_intent_vn = ""
-        _mi_attr = next((a for a in visible_attrs if a.variable_name == _mi_vn), None)
-        if _mi_attr is not None and not any(a.variable_name == _mi_vn for a in pending):
-            pending = [_mi_attr] + pending
-            session.pending_variables = [a.variable_name for a in pending]
+    # Multi-target intent queue drain: every change-request entry point
+    # converges here. Clear the just-applied attr from the queue, then
+    # force the queue head to pending_variables[0] (outranks catalog /
+    # hardware ordering) so the next turn asks for its value. Not excluded
+    # for already being in session.filled — change targets are normally
+    # already filled.
+    clear_queue_vn(session, changed_attr.variable_name)
+    pending = drain_intent_queue_into_pending(session, pending, visible_attrs)
 
     # D1, docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md: the value the customer
     # just explicitly chose is authoritative input for the REST of this
@@ -1124,6 +1226,15 @@ def _handle_cascade(
         # New conflicts to resolve → FORMAT A (change notice + next question only)
         session.status = "configuring"
         next_attr = pending[0]
+        # Queue head that is already filled still needs a value pick — set
+        # pending_change_no_value so the next bare reply is captured as the
+        # new value (same as _build_no_value_response).
+        if (
+            session.pending_intent_queue
+            and next_attr.variable_name == session.pending_intent_queue[0]
+            and session.filled.get(next_attr.variable_name)
+        ):
+            session.pending_change_no_value_vn = next_attr.variable_name
         _pending_collision = _label_collision_for(next_attr, visible_attrs, session)
         if _pending_collision:
             session.pending_label_collision_vns = [a.variable_name for a in _pending_collision]
@@ -1137,6 +1248,7 @@ def _handle_cascade(
                 next_attr, ctx, constrained_opts.get(next_attr.entity_id),
             )
         answer = cascade_note + "\n\n" + q_block
+        answer += _queue_followup_note(session, attrs)
     elif unresolved_grid_gaps:
         # A selected grid option has NO resolvable quantity attr at all
         # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 9) — never silently
@@ -1166,12 +1278,13 @@ def _handle_cascade(
         )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
-    return {
+    result = {
         "answer": answer, "terms": [], "tools_called": ["cpq_cascade()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
                   "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
         "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
     }
+    return result
 
 
 def _handle_multi_select_removal(
@@ -1916,10 +2029,16 @@ def _handle_cascade_multi(
                 session.filled_source[changed_attr.variable_name] = "user"
 
         if not result:
+            # Ask, don't report: queue unparsable targets so we solicit a
+            # value on the next turn instead of dead-ending in failed_labels.
             failed_labels.append(changed_attr.display_label)
+            enqueue_intent_targets(
+                session, [changed_attr.variable_name], cap=INTENT_QUEUE_CAP,
+            )
             continue
 
         changed_vns.add(changed_attr.variable_name)
+        clear_queue_vn(session, changed_attr.variable_name)
         all_dependent_eids |= set(dependent_eids)
         if changed_attr.select_type == "multi":
             changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
@@ -1934,10 +2053,23 @@ def _handle_cascade_multi(
                 changed_attr, result[0], result[1],
             )
 
-    if not changed_vns:
+    if not changed_vns and not session.pending_intent_queue:
         # None of the named changes could be applied at all — let the
         # caller fall through to the normal "didn't catch that" nudge,
         # same as detect_change_request returning None.
+        return None
+    if not changed_vns and session.pending_intent_queue:
+        # All targets lacked parseable values — ask the first queued one.
+        head_vn = session.pending_intent_queue[0]
+        head_attr = next((a for a in attrs if a.variable_name == head_vn), None)
+        if head_attr is not None:
+            bml_eval_nv = _cpq_engine.build_bml_evaluator(
+                req.workspace_id, attrs[0].catalog_prefix if attrs else "",
+            )
+            return _build_no_value_response(
+                req, session, attrs, head_attr, con_rules, bml_eval_nv,
+                "cpq_cascade_multi_queue_ask",
+            )
         return None
 
     # set_type=="2" attrs never re-enter filled/pending after this rerun
@@ -2054,10 +2186,13 @@ def _handle_cascade_multi(
     # plain-English framing as the single-change path).
     cascade_note = " ".join(applied_notes)
     if failed_labels:
+        # Queued for sequential asks — never dead-end as "left unchanged".
         cascade_note += (
-            f" Couldn't match a value for {', '.join(f'**{lbl}**' for lbl in failed_labels)} "
-            f"— left unchanged."
+            f" I'll ask about each next"
+            f" ({', '.join(f'**{lbl}**' for lbl in failed_labels)})."
         )
+    # Drain queue head to front of pending (same convergence as single cascade).
+    pending = drain_intent_queue_into_pending(session, pending, visible_attrs)
     if dependent_labels:
         if len(dependent_labels) == 1:
             cascade_note += (
@@ -4938,21 +5073,12 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         _cpq_engine.next_question_prompt(_resolved_attr)
                         if _resolved_attr.options else ""
                     )
-                    _still_pending_second = next(
-                        (a for a in attrs if a.variable_name == session.pending_multi_intent_vn),
-                        None,
-                    ) if session.pending_multi_intent_vn else None
                     answer = (
                         f"Couldn't find a value for "
                         f"**{_cpq_engine.disambiguated_label(_resolved_attr, attrs)}** in "
                         f"\"{_orig_question}\". Please say what to change it to."
                         + (f"\n\n{opts_prompt}" if opts_prompt else "")
-                        + (
-                            f"\n\n*(I'll still ask about "
-                            f"**{_cpq_engine.disambiguated_label(_still_pending_second, attrs)}** "
-                            f"right after this.)*"
-                            if _still_pending_second else ""
-                        )
+                        + _queue_followup_note(session, attrs)
                     )
                     session.status = "configuring"
                     session.pending_variables = [
@@ -5118,27 +5244,14 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 f"**\"{_change_collision[0].display_label}\"** in this catalog — which one "
                 f"did you mean to change? Reply with the number or the variable_name.\n\n{_lines}"
             )
-            # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
-            # Fix 4): confirmed live via count_turn_intents that "change
-            # solution type and primary service type" contains a SECOND,
-            # distinct, unambiguous change target that used to be silently
-            # dropped once this collision prompt returned. Scan the
-            # remaining attrs (excluding the collision's own candidates,
-            # so "Service Type" text can't re-match itself) for one more
-            # named-but-valueless target, and let the user know it's
-            # queued rather than losing it.
+            # Multi-target queue: scan the utterance for ALL other named
+            # valueless change targets (excluding the collision candidates)
+            # and enqueue them so none are silently dropped.
             _collision_vns = {a.variable_name for a in _change_collision}
-            _second_target = _cpq_engine.detect_change_target_without_value(
-                req.question, [a for a in attrs if a.variable_name not in _collision_vns],
-                session.filled,
+            _scan_and_enqueue_remaining_targets(
+                session, req.question, attrs, exclude_vns=_collision_vns,
             )
-            if _second_target:
-                session.pending_multi_intent_vn = _second_target.variable_name
-                answer += (
-                    f"\n\n*(Noted — I'll also ask about "
-                    f"**{_cpq_engine.disambiguated_label(_second_target, attrs)}** "
-                    f"once this is resolved.)*"
-                )
+            answer += _queue_followup_note(session, attrs)
             session.pending_change_collision_vns = [a.variable_name for a in _change_collision]
             session.pending_change_collision_question = req.question
             _persist_cpq_history(req.workspace_id, req.question, answer)
@@ -5157,6 +5270,11 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         _multi_matches = _cpq_engine.detect_change_requests_multi(
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if len(_multi_matches) >= 2:
+            # Enqueue any additional named no-value targets not already in the multi match.
+            _multi_vns = {a.variable_name for a, _ in _multi_matches}
+            _scan_and_enqueue_remaining_targets(
+                session, req.question, attrs, exclude_vns=_multi_vns,
+            )
             _multi_result = _handle_cascade_multi(
                 req, session, attrs, _multi_matches,
                 hiding_rules, rec_rules, con_rules,
@@ -5171,6 +5289,11 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req.question, attrs, session.filled, filled_multi=session.filled_multi)
             if change_result:
                 changed_attr, new_value_hint = change_result
+                # Enqueue sibling named targets before applying the primary.
+                _scan_and_enqueue_remaining_targets(
+                    session, req.question, attrs,
+                    exclude_vns={changed_attr.variable_name},
+                )
                 return _append_unmatched_targets_note(
                     _handle_cascade(
                         req, session, attrs, changed_attr, new_value_hint,
@@ -5453,6 +5576,10 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         _mc_multi_matches = _cpq_engine.detect_change_requests_multi(
             req.question, attrs, session.filled, filled_multi=session.filled_multi)
         if len(_mc_multi_matches) >= 2:
+            _scan_and_enqueue_remaining_targets(
+                session, req.question, attrs,
+                exclude_vns={a.variable_name for a, _ in _mc_multi_matches},
+            )
             _mc_multi_result = _handle_cascade_multi(
                 req, session, attrs, _mc_multi_matches,
                 hiding_rules, rec_rules, con_rules,
@@ -5467,6 +5594,10 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req.question, attrs, session.filled, filled_multi=session.filled_multi)
             if _mc_change_result:
                 _mc_changed_attr, _mc_new_value_hint = _mc_change_result
+                _scan_and_enqueue_remaining_targets(
+                    session, req.question, attrs,
+                    exclude_vns={_mc_changed_attr.variable_name},
+                )
                 return _append_unmatched_targets_note(
                     _handle_cascade(
                         req, session, attrs, _mc_changed_attr, _mc_new_value_hint,
@@ -5476,43 +5607,14 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 )
             # Recognized change-verb naming an already-filled attr, but no
             # resolvable new value ("change hardware version") — ask which
-            # value instead of falling through to the generic "I didn't
-            # quite catch that" nudge (Related finding 1 in the plan doc).
+            # value; also enqueues sibling targets on the intent queue.
             _mc_attr_no_value = _cpq_engine.detect_change_target_without_value(
                 req.question, attrs, session.filled,
             )
             if _mc_attr_no_value:
-                _mc_constrained = _cpq_engine.apply_constraint_rules(
-                    attrs, con_rules, session.filled, bml_eval)
-                _mc_options_block = _cpq_engine.next_question_prompt(
-                    _mc_attr_no_value,
-                    constrained_item_values=_mc_constrained.get(_mc_attr_no_value.entity_id),
-                )
-                _mc_current_val = session.filled.get(_mc_attr_no_value.variable_name)
-                _mc_current_note = (
-                    f"\n\n*Currently set to: **"
-                    f"{session.display_filled.get(_mc_attr_no_value.variable_name, _mc_current_val)}***"
-                    if _mc_current_val else ""
-                )
-                _mc_answer = (
-                    f"Which value would you like for "
-                    f"**{_cpq_engine.disambiguated_label(_mc_attr_no_value, attrs)}**?"
-                    f"\n\n{_mc_options_block}{_mc_current_note}"
-                )
-                _mc_other_pending = [
-                    v for v in session.pending_variables if v != _mc_attr_no_value.variable_name
-                ]
-                session.pending_variables = [_mc_attr_no_value.variable_name] + _mc_other_pending
-                _mc_nv_result = _append_unmatched_targets_note(
-                    {
-                        "answer": _mc_answer, "terms": [_mc_attr_no_value.variable_name],
-                        "tools_called": [
-                            f"cpq_change_target_no_value({_mc_attr_no_value.variable_name})"],
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                    },
-                    req.question, attrs, {_mc_attr_no_value.variable_name},
+                _mc_nv_result = _build_no_value_response(
+                    req, session, attrs, _mc_attr_no_value, con_rules, bml_eval,
+                    "cpq_change_target_no_value",
                 )
                 _persist_cpq_history(req.workspace_id, req.question, _mc_nv_result["answer"])
                 return _mc_nv_result
@@ -5939,32 +6041,11 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "rule": session.filled_source.get(var, ""), "turn": session.turn,
             })
 
-    # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4):
-    # re-queue the second target stashed when a label collision was raised
-    # alongside it. Live-verified gap (2026-07-28): the collision-resolution
-    # branches' own "I'll still ask about X" acknowledgment only fires when
-    # the FIRST target's reply is captured by one of THOSE branches directly
-    # — but a plain reply to the reordered pending_variables[0] (e.g.
-    # answering "Essential with Accidental Damage" to the re-shown options
-    # list) is instead captured here, by STEP 5's generic pending-answer
-    # lock, which had no idea a second target was ever promised. Re-queuing
-    # it into `pending` — rather than special-casing the "Configuration
-    # complete" branch below — lets the existing STEP 4 next-question flow
-    # ask it naturally, whatever else may or may not still be pending.
-    if session.pending_multi_intent_vn:
-        _mi_vn = session.pending_multi_intent_vn
-        session.pending_multi_intent_vn = ""
-        _mi_attr = next((a for a in visible_attrs if a.variable_name == _mi_vn), None)
-        # Deliberately NOT excluded for already being in session.filled —
-        # this second target was named in an explicit CHANGE request (e.g.
-        # "change solution type and primary service type"), so an existing
-        # value is exactly the normal case, not a signal it's already
-        # answered and can be skipped (live-verified: Solution Type was
-        # already filled with its auto-selected default, which is exactly
-        # why the customer wanted to change it).
-        if _mi_attr is not None and not any(a.variable_name == _mi_vn for a in pending):
-            pending = [_mi_attr] + pending
-            session.pending_variables = [a.variable_name for a in pending]
+    # Multi-target intent queue drain (STEP 5 convergence): the attr just
+    # answered is `pending_var` (captured at lock time). Clear it from the
+    # queue, then force the next queue head to the front of pending.
+    clear_queue_vn(session, pending_var)
+    pending = drain_intent_queue_into_pending(session, pending, visible_attrs)
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)

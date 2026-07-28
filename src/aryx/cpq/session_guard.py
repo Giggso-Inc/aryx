@@ -5,6 +5,10 @@
 - "undo" is a first-class intent restoring the last snapshot.
 - Clarify streak per attribute (max 2 → numbered options).
 - Unresolved-turn counter (max 5 → offer deterministic guided mode).
+- Conversational orphan-question invariant.
+
+Intent queue / conservation lives in ``aryx.cpq.intent_queue`` (re-exported
+here for call-site stability).
 """
 from __future__ import annotations
 
@@ -13,7 +17,20 @@ import logging
 import re
 from typing import Any
 
-from aryx.cpq.state import ConfigAttr, CpqSession  # noqa: TC001 — runtime type
+from aryx.cpq.intent_queue import (  # noqa: F401 — re-export public API
+    INTENT_QUEUE_CAP,
+    IntentAuditResult,
+    audit_intent_conservation,
+    clear_queue_vn,
+    drain_intent_queue_into_pending,
+    enqueue_intent_targets,
+    format_dropped_intent_notice,
+    format_queue_overflow_notice,
+    intent_dropped_count,
+    pop_intent_queue_head,
+    reset_intent_dropped_count,
+)
+from aryx.cpq.state import ConfigAttr, CpqSession
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +85,6 @@ def restore_last_snapshot(session: CpqSession) -> bool:
     snap = session.history.pop()
     snap = dict(snap)
     snap.pop("_snapshot_reason", None)
-    # Preserve the remaining history stack and run_id across restore.
     remaining = list(session.history)
     run_id = session.run_id
     restored = CpqSession.from_dict(snap)
@@ -153,11 +169,7 @@ def undo_success_message(session: CpqSession) -> str:
 
 
 # ── Conversational invariant (orphan-question guardrail) ─────────────────────
-# No turn may end with a config-seeking question unless session carries
-# consumable pending state that will absorb the next reply. Makes the
-# "clarify amnesia" bug family impossible to reintroduce silently.
 
-# Tail of an answer that is clearly soliciting a config decision from the user.
 _CONFIG_QUESTION_RE = re.compile(
     r"(?is)"
     r"(?:"
@@ -177,12 +189,7 @@ _CONFIG_QUESTION_RE = re.compile(
 
 
 def answer_is_config_question(answer: str) -> bool:
-    """True when the answer is soliciting a config/attribute/anchor reply.
-
-    Heuristic: last ~600 chars contain '?' and match a config-seeking
-    phrase. Pure informational prose with a rhetorical '?' is excluded
-    when no config-seeking phrase is present.
-    """
+    """True when the answer is soliciting a config/attribute/anchor reply."""
     if not answer or "?" not in answer:
         return False
     tail = answer.strip()[-600:]
@@ -215,6 +222,8 @@ def has_consumable_pending_state(session_data: dict[str, Any] | None) -> bool:
         return True
     if session_data.get("pending_model_leaf_candidates"):
         return True
+    if session_data.get("pending_intent_queue"):
+        return True
     if session_data.get("pending_multi_intent_vn"):
         return True
     return False
@@ -227,12 +236,7 @@ def assert_conversational_invariant(
     run_id: str = "",
     log: bool = True,
 ) -> list[str]:
-    """Post-turn guardrail: config-seeking questions need consumable pending.
-
-    Returns a list of violation strings (empty = pass). When log=True and a
-    violation is found, emits ``cpq_orphan_question`` at WARNING with run_id
-    so ops can spot reintroductions without crashing the user turn.
-    """
+    """Post-turn guardrail: config-seeking questions need consumable pending."""
     violations: list[str] = []
     if not answer_is_config_question(answer):
         return violations
@@ -251,12 +255,7 @@ def assert_conversational_invariant(
 
 
 def enforce_conversational_invariant(result: dict[str, Any]) -> dict[str, Any]:
-    """Attach invariant check onto a CPQ response dict (non-mutating of logic).
-
-    Always returns the same result dict. Side effect: logs
-    ``cpq_orphan_question`` on violation. Sets
-    ``result['_cpq_invariant_violations']`` for tests / offline replay.
-    """
+    """Attach invariant check onto a CPQ response dict."""
     if not isinstance(result, dict):
         return result
     answer = result.get("answer") or ""
@@ -279,12 +278,7 @@ def match_clarify_reply_offline(
     reply: str,
     candidates: list[tuple[str, str]],
 ) -> str | None:
-    """Deterministic clarify-reply match for offline multi-turn regression.
-
-    ``candidates`` is a list of ``(variable_name, display_label)``. Mirrors
-    the non-LLM half of ``ask_api._match_pending_clarify_reply`` so the
-    push-time gate can replay D-cases without the LLM/psycopg stack.
-    """
+    """Deterministic clarify-reply match for offline multi-turn regression."""
     r = (reply or "").strip()
     if not r or not candidates:
         return None
