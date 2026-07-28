@@ -62,3 +62,18 @@ def test_get_pool_after_close_all_creates_new():
         p.close_all()
         result = p.get_pool("postgresql://localhost/db")
     assert result is second
+
+
+def test_get_pool_validates_connections_on_checkout():
+    """Without a `check` callback, a connection that silently died while
+    idle in the pool is handed straight to the caller — the first real
+    query on it then fails with "server closed the connection
+    unexpectedly" instead of the pool swapping in a fresh one. Pins that
+    every pool this factory creates passes check=ConnectionPool.check_
+    connection so a dead idle connection is caught (and replaced) at
+    checkout time, before the caller's code ever touches it."""
+    p = _fresh_pool_module()
+    with patch.object(p, "ConnectionPool", MagicMock(return_value=MagicMock())) as MockCP:
+        p.get_pool("postgresql://localhost/db")
+    _args, kwargs = MockCP.call_args
+    assert kwargs.get("check") is MockCP.check_connection
