@@ -8,6 +8,7 @@ raw Node objects) so callers get plain, serializable dicts.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import Counter
 from typing import Any
@@ -16,6 +17,8 @@ from urllib.parse import urlparse
 from falkordb import FalkorDB
 
 from aryx.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # Module-level TTL cache for subgraph results.
 # Each GET /graph fires N+1 FalkorDB queries (1 DISTINCT + 1 per type).
@@ -40,8 +43,15 @@ class GraphReader:
         self._graph = self._db.select_graph(graph)
 
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """Execute a Cypher query and return its result rows."""
-        return self._graph.query(cypher, params or {}).result_set
+        """Execute a Cypher query and return its result rows.
+
+        `timeout_ms` (`ARYX_GRAPH_QUERY_TIMEOUT`, PR #121): caps how long
+        FalkorDB will run any single query before aborting it — without this,
+        a pathological query on a large workspace can hang the whole request
+        indefinitely instead of failing fast.
+        """
+        timeout_ms = get_settings().graph_query_timeout or None
+        return self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
 
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name/attributes, or None if absent."""
@@ -356,16 +366,36 @@ class GraphReader:
                     connected_ids.add(bid)
 
         # Step 6 — add truly isolated entities (zero edges in FalkorDB, not just
-        # in the subgraph view) for debugging visibility.
+        # in the subgraph view) for debugging visibility. This is a structural
+        # "has zero edges in either direction" check across every Entity node —
+        # no index can accelerate it (it's not a property lookup), unlike the
+        # REL.name index that fixed steps 2/5's queries. Confirmed live: this
+        # query alone took ~16.5s on a 344,961-entity workspace, ~3.3x over
+        # FalkorDB's default 5000ms timeout, causing GET /graph to 500 even
+        # after the REL.name index fix. Skipped above a configurable entity
+        # count — a cheap COUNT query, not the expensive scan itself — rather
+        # than attempting it unconditionally on graphs of any size.
         remaining = capped - len(entity_map)
         if remaining > 0:
-            iso_rows = self._query(
-                "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
-                f"RETURN e.id, e.type, e.name, properties(e) LIMIT {remaining}"
-            )
-            for row in iso_rows:
-                if row[0] not in entity_map:
-                    entity_map[row[0]] = _entity(row)
+            max_scan = get_settings().graph_isolated_scan_max_entities
+            total_entities = self._query("MATCH (e:Entity) RETURN count(e)")[0][0]
+            if total_entities > max_scan:
+                logger.warning(
+                    "graph subgraph: skipping isolated-entity debug scan for "
+                    "%s — %d entities exceeds graph_isolated_scan_max_entities=%d; "
+                    "this step has no index to accelerate it and times out on "
+                    "large graphs. Override with "
+                    "ARYX_GRAPH_ISOLATED_SCAN_MAX_ENTITIES.",
+                    self._graph.name, total_entities, max_scan,
+                )
+            else:
+                iso_rows = self._query(
+                    "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+                    f"RETURN e.id, e.type, e.name, properties(e) LIMIT {remaining}"
+                )
+                for row in iso_rows:
+                    if row[0] not in entity_map:
+                        entity_map[row[0]] = _entity(row)
 
         result = {"entities": list(entity_map.values()), "relationships": rels}
         _subgraph_cache[cache_key] = (now, result)
