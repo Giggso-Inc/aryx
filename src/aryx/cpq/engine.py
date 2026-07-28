@@ -5019,6 +5019,86 @@ class CpqEngine:
                 break
         return out
 
+    # Generic connector/control words a leftover clause commonly contains
+    # that are never themselves part of a real catalog label — excluded so
+    # e.g. "...and confirm" doesn't count "confirm" as catalog-word overlap
+    # just because some unrelated attr's label happens to share it.
+    _GENERIC_CLAUSE_STOPWORDS = frozenset({
+        "to", "the", "a", "an", "then", "please", "also", "and", "or",
+        "change", "set", "update", "make", "it", "that", "this", "for",
+        "with", "of", "in", "on", "confirm", "submit", "thanks", "thank",
+        "yes", "no", "ok", "okay", "done",
+    })
+
+    def detect_unmatched_change_targets(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        matched_vns: "set[str]",
+    ) -> list[str]:
+        """Live-verified gap (2026-07-28): "change solution type and
+        hardware type" — where "hardware type" names nothing real in this
+        catalog (it's "Hardware Version", not "Hardware Type") — silently
+        dropped "hardware type" entirely once "solution type" was
+        successfully matched. The customer explicitly asked for two
+        things and only saw one addressed, with no indication the second
+        wasn't understood — indistinguishable from the system just
+        forgetting it.
+
+        Returns plain-language leftover phrases from the message that
+        (a) weren't accounted for by any attr already in `matched_vns`,
+        (b) don't match ANY real attr's label either (a genuine second
+        VALID target — just one this caller hasn't resolved yet — is not
+        "unmatched", it's simply not this function's problem), and
+        (c) share at least one content word with SOME real catalog
+        label, the signal that this was a plausible-but-failed naming
+        attempt rather than an unrelated trailing clause ("...and
+        confirm") that happens to split on the same connective.
+
+        Deliberately conservative: only runs when the message has an
+        actual change-verb AND a connective ("and"/","/"&") joining
+        multiple clauses — a single-clause message has nothing "left
+        over" to flag by construction.
+        """
+        verb_match = self._CHANGE_VERB_RE.search(question) or self._ARROW_RE.search(question)
+        if not verb_match:
+            return []
+        if not re.search(r"\band\b|,|&", question, re.IGNORECASE):
+            return []
+        catalog_words: set[str] = set()
+        for a in attrs:
+            catalog_words |= set(re.findall(r"[a-z0-9]+", a.display_label.lower()))
+        clauses = re.split(r"\band\b|,|&", question, flags=re.IGNORECASE)
+        unmatched: list[str] = []
+        for clause in clauses:
+            clause = clause.strip()
+            if not clause:
+                continue
+            clause_lower = clause.lower()
+            # Already accounted for by an attr this caller DID match.
+            if any(
+                a.variable_name in matched_vns
+                and _label_mentioned_strict(a.display_label.lower(), clause_lower)
+                for a in attrs
+            ):
+                continue
+            # Names a REAL attr — just not (yet) one in matched_vns. Not
+            # this function's concern; a genuine second valid target is
+            # not the same failure as naming nothing at all.
+            if any(_label_mentioned_strict(a.display_label.lower(), clause_lower) for a in attrs):
+                continue
+            stripped = self._CHANGE_VERB_RE.sub("", clause, count=1).strip()
+            stripped = self._ARROW_RE.sub("", stripped, count=1).strip()
+            if not stripped or len(stripped.split()) > 6:
+                continue
+            clause_words = (
+                set(re.findall(r"[a-z0-9]+", stripped.lower()))
+                - self._GENERIC_CLAUSE_STOPWORDS
+            )
+            if clause_words & catalog_words:
+                unmatched.append(stripped)
+        return unmatched
+
     def _change_request_matches(
         self,
         question: str,
@@ -5098,11 +5178,38 @@ class CpqEngine:
             vn_flat = attr.variable_name.lower().replace("_", "")
             label_lower = attr.display_label.lower()
 
-            # When a change verb is present, require the attr to be mentioned by name/label
+            # Require the attr to be mentioned by name/label REGARDLESS of
+            # change-verb presence (2026-07-28 fix) — the original gate
+            # only skipped an unmentioned attr when has_change_verb was
+            # True, which backwards-guarded exactly the wrong case: a bare
+            # reply with NO change verb (e.g. a plain "77" meant to answer
+            # a totally different pending free-text quantity attr) let
+            # EVERY filled attr through unfiltered, since the whole
+            # condition short-circuits False when has_change_verb is
+            # False. Live-verified: with no verb and no mention, "77" got
+            # tried against ultimateDestinationCountry's own apply_answer,
+            # which treats a bare number as a 1-based option INDEX — and
+            # position 77 in that catalog's 251-country list happens to be
+            # United Kingdom — silently overwriting the country and
+            # cascading a dozen dependent attrs, while the customer's
+            # actual answer (a quantity) was never even attempted here.
+            # Naming still isn't required through the SEPARATE hint-path
+            # fallback further below (extract_hints's own token-to-vn
+            # match is its own, narrower signal) — this only closes the
+            # "nothing at all ties this attr to the message" hole.
+            #
+            # A multi-select attr's own OPTION VALUE mentioned in the text
+            # counts too, not just its label/variable_name — "add the
+            # Jacket Clip Mount too" legitimately names the value being
+            # added, never the generic "Mounting Type" label itself
+            # (pre-existing, tested behavior — test_cpq_grid_decline.py).
+            _multi_option_mentioned = attr.select_type == "multi" and any(
+                o.display_name.lower() in q_lower for o in attr.options
+            )
             if (
-                has_change_verb
-                and vn_flat not in q_lower.replace("_", "")
+                vn_flat not in q_lower.replace("_", "")
                 and not _label_mentioned(label_lower, q_lower)
+                and not _multi_option_mentioned
             ):
                 continue
 

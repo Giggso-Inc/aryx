@@ -647,6 +647,30 @@ def _handle_cpq_qa(
     }
 
 
+def _append_unmatched_targets_note(
+    result: dict, question: str, attrs: list, matched_vns: "set[str]",
+) -> dict:
+    """Surfaces (never silently drops) a fragment of a multi-target change
+    request that named nothing real — live-verified gap: "change solution
+    type and hardware type" successfully changed Solution Type but said
+    nothing at all about "hardware type" (which names no real attr in
+    this catalog), leaving the customer unable to tell whether it was
+    understood-and-ignored or simply forgotten. Called at every STEP 6
+    change-request dispatch site right after the real change succeeds, so
+    the note rides along with the genuine answer rather than blocking it —
+    an unrecognized SECOND fragment should never stop the FIRST, valid one
+    from being applied.
+    """
+    unmatched = _cpq_engine.detect_unmatched_change_targets(question, attrs, matched_vns)
+    if unmatched:
+        phrases = ", ".join(f'"{u}"' for u in unmatched)
+        result["answer"] += (
+            f"\n\n*(I didn't recognize {phrases} as anything in this "
+            f"configuration — did you mean something else?)*"
+        )
+    return result
+
+
 def _handle_cascade(
     req: "AskRequest",
     session: Any,
@@ -4195,15 +4219,21 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hiding_rules, rec_rules, con_rules,
             )
             if _multi_result is not None:
-                return _multi_result
+                return _append_unmatched_targets_note(
+                    _multi_result, req.question, attrs,
+                    {a.variable_name for a, _ in _multi_matches},
+                )
         else:
             change_result = _cpq_engine.detect_change_request(
                 req.question, attrs, session.filled, filled_multi=session.filled_multi)
             if change_result:
                 changed_attr, new_value_hint = change_result
-                return _handle_cascade(
-                    req, session, attrs, changed_attr, new_value_hint,
-                    hiding_rules, rec_rules, con_rules,
+                return _append_unmatched_targets_note(
+                    _handle_cascade(
+                        req, session, attrs, changed_attr, new_value_hint,
+                        hiding_rules, rec_rules, con_rules,
+                    ),
+                    req.question, attrs, {changed_attr.variable_name},
                 )
 
         # LLM fallback: every regex detector above found nothing — try the
@@ -4264,14 +4294,18 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 f"\n\n{_nv_options_block}{_nv_current_note}"
             )
             session.pending_change_no_value_vn = _no_value_attr.variable_name
-            _persist_cpq_history(req.workspace_id, req.question, _nv_answer)
-            return {
-                "answer": _nv_answer, "terms": [_no_value_attr.variable_name],
-                "tools_called": [f"cpq_change_target_no_value({_no_value_attr.variable_name})"],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-            }
+            _nv_result = _append_unmatched_targets_note(
+                {
+                    "answer": _nv_answer, "terms": [_no_value_attr.variable_name],
+                    "tools_called": [f"cpq_change_target_no_value({_no_value_attr.variable_name})"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                },
+                req.question, attrs, {_no_value_attr.variable_name},
+            )
+            _persist_cpq_history(req.workspace_id, req.question, _nv_result["answer"])
+            return _nv_result
 
         # Could not parse as approval, Q&A, change, or JSON request — nudge
         # with the verbose summary, NOT the raw JSON (§6/Phase K: JSON stays
@@ -4484,15 +4518,21 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hiding_rules, rec_rules, con_rules,
             )
             if _mc_multi_result is not None:
-                return _mc_multi_result
+                return _append_unmatched_targets_note(
+                    _mc_multi_result, req.question, attrs,
+                    {a.variable_name for a, _ in _mc_multi_matches},
+                )
         else:
             _mc_change_result = _cpq_engine.detect_change_request(
                 req.question, attrs, session.filled, filled_multi=session.filled_multi)
             if _mc_change_result:
                 _mc_changed_attr, _mc_new_value_hint = _mc_change_result
-                return _handle_cascade(
-                    req, session, attrs, _mc_changed_attr, _mc_new_value_hint,
-                    hiding_rules, rec_rules, con_rules,
+                return _append_unmatched_targets_note(
+                    _handle_cascade(
+                        req, session, attrs, _mc_changed_attr, _mc_new_value_hint,
+                        hiding_rules, rec_rules, con_rules,
+                    ),
+                    req.question, attrs, {_mc_changed_attr.variable_name},
                 )
             # Recognized change-verb naming an already-filled attr, but no
             # resolvable new value ("change hardware version") — ask which
@@ -4523,14 +4563,19 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     v for v in session.pending_variables if v != _mc_attr_no_value.variable_name
                 ]
                 session.pending_variables = [_mc_attr_no_value.variable_name] + _mc_other_pending
-                _persist_cpq_history(req.workspace_id, req.question, _mc_answer)
-                return {
-                    "answer": _mc_answer, "terms": [_mc_attr_no_value.variable_name],
-                    "tools_called": [f"cpq_change_target_no_value({_mc_attr_no_value.variable_name})"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
+                _mc_nv_result = _append_unmatched_targets_note(
+                    {
+                        "answer": _mc_answer, "terms": [_mc_attr_no_value.variable_name],
+                        "tools_called": [
+                            f"cpq_change_target_no_value({_mc_attr_no_value.variable_name})"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    },
+                    req.question, attrs, {_mc_attr_no_value.variable_name},
+                )
+                _persist_cpq_history(req.workspace_id, req.question, _mc_nv_result["answer"])
+                return _mc_nv_result
 
     # ── STEP 5: Lock user's answer from previous turn ────────────────────────
     if session.pending_variables and session.turn > 1 and not mode_request:
