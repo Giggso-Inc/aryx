@@ -2753,11 +2753,23 @@ def _resolve_target_description(
     narrowing an LLM prompt's candidate list — never needed a single
     winner). Reusing it here made every resolution attempt look
     "ambiguous" even for an attr with a genuinely unique label. This
-    scores every attr directly (same word-overlap signal, same `_WORD_RE`
-    tokenizer, against display_label + option display names) and only
-    resolves when there is a single STRICTLY-highest-scoring attr with a
-    nonzero score — a tie at the top, or zero overlap, both mean
-    "unresolved."
+    scores every attr directly against display_label + option display
+    names and only resolves when there is a single STRICTLY-highest-
+    scoring attr with a nonzero score — a tie at the top, or zero
+    overlap, both mean "unresolved."
+
+    Scoring is rarity-weighted (1/document_frequency per matched word,
+    same fix applied to `_relevant_intent_candidates` for the identical
+    bug): live-confirmed during Phase 2 validation that raw overlap
+    COUNT ties a distinctive word ("solution") together with a generic
+    word shared by dozens of attrs' labels/options ("type"), so e.g.
+    "Solution Type" (which should uniquely score highest against
+    `solutionTypeDevices_astro`, matching BOTH words) instead tied with
+    ~50 unrelated Type-suffixed attrs that only matched "type" — because
+    a raw count of 1 look identical to another count of 1 regardless of
+    how common the matched word is catalog-wide. Rarity weighting makes
+    a match on a rare word worth far more than a match on a word present
+    in every third attr's option list.
 
     Returns (resolved_attr, all_candidates_with_nonzero_overlap).
     `resolved_attr` is None whenever resolution didn't narrow to exactly
@@ -2769,14 +2781,22 @@ def _resolve_target_description(
     d_words = set(_WORD_RE.findall(description.lower()))
     if not d_words:
         return None, []
-    scored = []
+    vocabs = []
     for a in attrs:
         vocab = set(_WORD_RE.findall(a.display_label.lower()))
         for o in a.options:
             vocab |= set(_WORD_RE.findall(o.display_name.lower()))
-        overlap = len(d_words & vocab)
-        if overlap:
-            scored.append((overlap, a))
+        vocabs.append(vocab)
+    doc_freq: dict[str, int] = {}
+    for vocab in vocabs:
+        for w in vocab:
+            doc_freq[w] = doc_freq.get(w, 0) + 1
+    scored = []
+    for a, vocab in zip(attrs, vocabs):
+        overlap_words = d_words & vocab
+        if overlap_words:
+            score = sum(1.0 / doc_freq[w] for w in overlap_words)
+            scored.append((score, a))
     if not scored:
         return None, []
     scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -4297,26 +4317,54 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
 
         # Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md —
         # attempt LLM-first dispatch before the deterministic STEP 6
-        # waterfall below. Gated on cpq_llm_first_enabled (default OFF —
-        # same test-speed/CI-cost reasoning as cpq_shadow_intent_enabled,
-        # and this path has NOT yet been validated against real Phase 1
-        # shadow-mode disagreement data, which the plan doc's own Phase 2
-        # criteria calls for before a real cutover). _dispatch_intent_
-        # result returns None whenever it can't confidently and
-        # completely handle the turn — that is the ONLY signal this
-        # block treats as "fall through," so the existing STEP 6+
-        # detectors below run completely unchanged whenever this returns
-        # nothing, exactly like every existing early-return check above.
+        # waterfall below. Gated on cpq_llm_first_enabled (config.py
+        # default True as of 2026-07-28 for local/dev testing; this path
+        # still has NOT been validated against real Phase 1 shadow-mode
+        # disagreement data, which the plan doc's own Phase 2 criteria
+        # calls for before considering it production-ready). "cpq_llm_
+        # first: ..." log lines below (2026-07-28) make every outcome
+        # visible without needing an ad hoc debug script: classification
+        # failure/unparseable, a successful classification with its
+        # category/target/confidence/tokens, and — the case live-verified
+        # here to be a correct, intentional fallback rather than a bug —
+        # a successful classification whose DISPATCH still returns None
+        # (e.g. "change product" resolving to 4 tied candidates sharing
+        # generic "product" vocabulary, correctly deferred rather than
+        # guessed). _dispatch_intent_result returning None is the ONLY
+        # signal this block treats as "fall through" — the existing
+        # STEP 6+ detectors below run completely unchanged whenever it
+        # does, exactly like every existing early-return check above.
         if get_settings().cpq_llm_first_enabled:
             _llm_first_result, _llm_first_it, _llm_first_ot = _llm_classify_intent_universal(
                 req.question, attrs, session, req.workspace_id)
-            if _llm_first_result is not None:
+            if _llm_first_result is None:
+                logger.info(
+                    "cpq_llm_first: message %r -> classification failed/unparseable, "
+                    "falling through to deterministic path",
+                    req.question,
+                )
+            else:
+                logger.info(
+                    "cpq_llm_first: message %r -> category=%s confidence=%s "
+                    "target=%r targets=%r tokens=(%d, %d)",
+                    req.question, _llm_first_result.category.value,
+                    _llm_first_result.confidence.value,
+                    _llm_first_result.target, _llm_first_result.targets,
+                    _llm_first_it, _llm_first_ot,
+                )
                 _dispatched = _dispatch_intent_result(
                     req, session, attrs, _llm_first_result,
                     hiding_rules, rec_rules, con_rules, bml_eval,
                     _llm_first_it, _llm_first_ot,
                 )
-                if _dispatched is not None:
+                if _dispatched is None:
+                    logger.info(
+                        "cpq_llm_first: message %r classified as %s but dispatch "
+                        "returned None (unresolved target, low confidence, or "
+                        "uncovered category) -- falling through to deterministic path",
+                        req.question, _llm_first_result.category.value,
+                    )
+                else:
                     return _dispatched
 
         # STEP 6: change request → cascade
@@ -4797,7 +4845,41 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         pending_attr = next(
             (a for a in attrs if a.variable_name == pending_var), None,
         )
+        # Live-verified gap (2026-07-28): once an attr with no confident
+        # deterministic value got "stuck" pending (e.g. Product's 325
+        # options — no exact free-text match ever resolves it), EVERY
+        # subsequent message was blindly tried as an ANSWER to that same
+        # question — even an obviously distinct new request like "change
+        # the solution Type" (an explicit change verb naming a completely
+        # different attr's own label). This trapped the customer in an
+        # endless "I didn't recognise that as a valid choice for Product"
+        # loop with no way to ask about anything else. Detected BEFORE
+        # attempting apply_answer: if the message has a change verb AND
+        # deterministically names some OTHER real attr (never the
+        # currently-pending one), treat it as a genuine new request and
+        # skip locking it as an answer here entirely — falls through to
+        # the mid-config change-request block below, which already
+        # handles a fresh "change X" during a configuring-status turn
+        # (the same block that resolved "change the solution Type"
+        # correctly once Product wasn't blocking it).
+        _looks_like_new_request = False
         if pending_attr:
+            _other_attrs = [a for a in attrs if a.variable_name != pending_var]
+            _looks_like_new_request = bool(
+                (_cpq_engine._CHANGE_VERB_RE.search(req.question)
+                 or _cpq_engine._ARROW_RE.search(req.question))
+                and (
+                    _cpq_engine.detect_change_target_without_value(
+                        req.question, _other_attrs, session.filled)
+                    or _cpq_engine.detect_change_request(
+                        req.question, _other_attrs, session.filled,
+                        filled_multi=session.filled_multi)
+                    or _cpq_engine.detect_change_requests_multi(
+                        req.question, _other_attrs, session.filled,
+                        filled_multi=session.filled_multi)
+                )
+            )
+        if pending_attr and not _looks_like_new_request:
             vn_flat_pv = pending_var.lower().replace("_", "")
             hint_val_for_attr = next(
                 (hv for hk, hv in hints.items()
