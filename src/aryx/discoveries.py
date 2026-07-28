@@ -41,6 +41,21 @@ def get(discovery_id: str, workspace_id: int = 1) -> dict[str, Any] | None:
         store.close()
 
 
+def get_summary(discovery_id: str, workspace_id: int = 1) -> dict[str, Any] | None:
+    """Return just the summary for a discovery, scoped to the calling workspace.
+
+    Cheap path for the review-step UI — see DiscoveryStore.get_summary for why
+    the full get() (which deserializes the entire raw-file-bytes payload) is
+    unsuitable here.
+    """
+    settings = get_settings()
+    store = DiscoveryStore(settings.rdb_dsn)
+    try:
+        return store.get_summary(discovery_id, workspace_id)
+    finally:
+        store.close()
+
+
 def drop(discovery_id: str) -> None:
     """Delete a discovery result."""
     settings = get_settings()

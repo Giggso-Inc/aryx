@@ -26,6 +26,9 @@ unacceptably slow pipeline runs.
 | P11 | 🟡 High | Chunk embedding — unbatched OCI GenAI calls | *(fixed)* documents producing >~50 chunks (OCI mode) |
 | P12 | 🔴 Critical | Graph projection — 25-row batch cap on Oracle writes | *(fixed)* >~1,000 entities/relationships (OCI mode) |
 | P13 | 🔴 Critical | CPQ product config load — per-attribute `neighbors()` N+1 | *(fixed)* >~50 config attrs on a product (OCI mode) |
+| P14 | 🔴 Critical | Datasource/action/relationship-type writes — missing `workspace_id` scoping | *(fixed)* cross-tenant delete/write, any workspace |
+| P15 | 🔴 Critical | Discovery summary/confirm — full 257MB payload deserialized for a small read | *(fixed)* any multi-file discovery (OCI mode) |
+| P16 | 🟡 High | Oracle `RETURNING...INTO` ~16KB limit on JSON columns | *(fixed)* any datasource config json >~16KB (OCI mode) |
 
 ---
 
@@ -825,6 +828,219 @@ ADB's real network latency did.
 
 ---
 
+## P14 — Cross-Tenant Write/Delete: Missing `workspace_id` Scoping *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found via a systematic audit of every query
+against the 37 Oracle tables carrying a `workspace_id` column, prompted by
+the P13 investigation surfacing one such bug (`find_entities()`'s missing
+filter, a read-only leak). This audit found three more instances — all
+writes/deletes, a more serious class than the read-only one already fixed.
+
+**Source files:**
+- `src/aryx/api/datasource_api.py` — `DELETE /admin/datasources/{id}` and
+  `POST /admin/datasources/{id}/test`; `src/aryx/store/datasource_store.py`
+  — `get()`, `secret_of()`, `delete()`; `select_datasource_by_id.sql`,
+  `delete_datasource_row.sql`
+- `src/aryx/api/actions_api.py` — `POST /executions/{id}/decide`;
+  `src/aryx/store/action_store.py` — `decide()`, `record_applied()`,
+  `execution()`; `decide_action_execution.sql`, `apply_action_execution.sql`,
+  `select_action_execution_by_id.sql`
+- `src/aryx/api/relationship_type_api.py` — `DELETE /ontology/relationships/{id}`;
+  `src/aryx/store/relationship_type_store.py` — `delete()`;
+  `delete_relationship_type.sql`
+
+**What happened:**
+```sql
+-- delete_datasource_row.sql, before:
+DELETE FROM aryx_datasource WHERE id = %(id)s
+```
+Each of these deleted or mutated a row by its raw integer primary key alone
+— no `workspace_id` check anywhere in the SQL, the store method, or (for
+`datasource_api.py`) even in the route signature. All three underlying
+tables use `NUMBER GENERATED ALWAYS AS IDENTITY` — plain sequential integer
+IDs, enumerable across every workspace sharing the database. A caller
+supplying their own valid `workspace_id` alongside a *different* workspace's
+sequential ID could delete another workspace's datasource, or approve/
+reject/apply another workspace's pending action execution.
+
+For `ActionStore` specifically, the bug was a real inconsistency rather than
+an oversight repeated three times identically: the class already carries
+`self._ws` (used correctly by `select_action_executions`), but `decide()`,
+`record_applied()`, and `execution()` simply never referenced it.
+
+### Accuracy Impact
+**None** for legitimate same-workspace use — same rows read/written either
+way. The impact is a real cross-tenant integrity/security gap, not a
+correctness bug for the honest path.
+
+### Resource Impact
+N/A — this is a security/isolation gap, not a performance issue.
+
+### Cost Impact
+Not dollar-denominated — the risk is unauthorized cross-workspace deletes or
+action approvals, not spend.
+
+### Fix Applied
+Added `workspace_id` to every affected SQL statement's `WHERE` clause,
+threaded it through each store method's signature, and (for
+`datasource_api.py`, the only router missing it entirely) added it to the
+route signatures. `ActionStore`'s three methods now use the `self._ws` the
+class already carried — no route changes needed there, since
+`actions_api.py` already built a workspace-scoped store instance.
+
+**Verified live against real ADB**, not just unit tests: created a
+datasource in workspace 342, confirmed workspace 274 gets a clean 404 on
+test/get, confirmed a delete call from workspace 274 is silently a no-op
+(the real owner could still fetch the row immediately after), and confirmed
+only the real owner's delete actually removed it. Existing
+`tests/test_datasource_store.py` (8/8) still passes.
+
+### Fix — OCI Path
+N/A — the same fix applies identically to Postgres; nothing here is
+Oracle-specific. (Separately, `docs/OCI_ADB_NATIVE_AI_FEATURES_ANALYSIS.md`
+Part 4 proposes Oracle VPD/Row-Level Security as defense-in-depth against
+this exact bug *class* recurring in future code — not yet implemented.)
+
+---
+
+## P15 — Discovery Summary/Confirm: Full-Payload Deserialization for a Small Read *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found live while diagnosing a real user
+report: "read/discover completed but there's no way to hit confirm — I'm
+not seeing the button."
+
+**Source files:**
+- `src/aryx/store/discovery_store.py` — `DiscoveryStore.get()` /
+  new `get_summary()`
+- `src/aryx/discoveries.py` — `get()` / new `get_summary()`
+- `src/aryx/api/doc_discover_api.py` — `GET /admin/docs/summary/{did}`,
+  `POST /admin/docs/confirm`
+- `select_discovery.sql`, new `select_discovery_summary.sql`
+
+**What happened:**
+`aryx_discovery.data_json` stores the *entire* raw discovery payload —
+every uploaded file's bytes, base64-encoded, plus extracted mentions — as
+one CLOB. For a real 30-file customer discovery, that CLOB measured
+**257 MB**. Both `GET /admin/docs/summary/{did}` (loads the review-step
+checklist) and `POST /admin/docs/confirm` (the existence/ownership check
+before queuing the ingest job) called `discoveries.get()`, which
+unconditionally fetches and fully JSON-deserializes `data_json` — via a
+custom `object_hook` doing per-object Pydantic/bytes reconstruction, slower
+than plain `json.loads()` — just to read the separate, small `summary_json`
+field, or just to confirm the row exists.
+
+Measured live, same discovery, before the fix:
+| Call | Time |
+|---|---|
+| `GET /admin/docs/summary/{did}` | **246.4 s** |
+| Summary content actually needed | `{"types": [], "files": [...30 entries...]}` — a few KB |
+
+246 seconds is far beyond any browser fetch timeout a user would wait out —
+the review step's "Confirm & ingest" button never had a chance to render;
+from the user's side this looked exactly like a broken/missing button, with
+no error shown (the request was still in flight, not rejected).
+
+### Accuracy Impact
+**None.** Same summary content either way — pure wasted deserialization.
+
+### Resource Impact
+Before the fix, **any workspace with a multi-file (or otherwise large)
+pending discovery had a non-functional confirm flow** — not slow, but
+effectively broken past a certain payload size, since no realistic client
+timeout would wait 246+ seconds.
+
+### Cost Impact
+No dollar cost — CPU/wall-clock only, but the practical cost was a fully
+blocked feature for any sufficiently large discovery.
+
+### Fix Applied
+Added `DiscoveryStore.get_summary()` / `discoveries.get_summary()`, backed
+by a new `select_discovery_summary.sql` selecting *only* `summary_json` —
+skipping `data_json` (and `confirm_state`) entirely. Both the summary
+endpoint and the confirm endpoint's existence check now use this lightweight
+path; the full `discoveries.get()` remains only inside `_confirm_job()`'s
+background task, where the raw file data is genuinely required to actually
+perform ingestion.
+
+**Verified live, same 257MB discovery, before/after:** 246.4s → **2.7s**
+(~91x faster), identical 30-file summary content returned. Existing
+`tests/test_discovery_store.py` (11/11) still passes.
+
+**Known limitation, not fixed:** `_confirm_job()`'s own initial
+`discoveries.get()` call still pays the full ~4-minute deserialization cost
+once, at the very start of the background ingest job, before any progress
+appears — confirmed live on the same discovery (job showed "queued" for
+~4 minutes before its first real stage update). This is unavoidable within
+the current storage design, since the confirm job genuinely needs the raw
+file bytes/mentions, not just the summary. A real fix would mean splitting
+`data_json` storage (e.g., per-file rows instead of one giant blob per
+discovery) — a materially bigger change than today's fix, not undertaken
+here.
+
+### Fix — OCI Path
+N/A — same fix applies identically to Postgres; the bug was in the query
+shape (fetching two columns to read one), not anything Oracle-specific.
+
+---
+
+## P16 — Oracle `RETURNING...INTO` Size Limit on JSON Columns *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found live during the very next attempt to
+confirm the same real customer discovery, immediately after P15 was fixed
+and deployed — the confirm job progressed further than ever before, then
+failed with a new, previously-unseen error.
+
+**Source files:**
+- `insert_datasource.sql`, `update_datasource.sql`
+- `src/aryx/store/datasource_store.py` — `add()`, `update()`
+
+**What happened:**
+```
+ORA-40478: output value too large (maximum: 16386)
+JZN-00018: Input to serializer is too large
+```
+Confirming the discovery registers each source file as a datasource catalog
+entry (`upsert_xml_catalog_entry` → `DatasourceStore.add()`). The INSERT's
+`RETURNING` clause included `config_json` — a native Oracle `JSON` column.
+Oracle enforces a hard ~16KB limit specifically on `RETURNING ... INTO` for
+JSON columns (a documented Oracle limitation, distinct from and much smaller
+than ordinary CLOB/LOB limits), regardless of how large a JSON column can
+actually store. The SVX catalog's `config_json` (listing all its ingested
+assets) exceeded that, so the INSERT itself would have succeeded, but
+handing the value back through `RETURNING` failed outright.
+
+### Accuracy Impact
+**None once fixed.** Same row written either way; the bug only affected the
+value handed back to the caller, not what was persisted.
+
+### Resource Impact
+Before the fix, **any XML/multi-asset source whose catalog config exceeded
+~16KB could never be confirmed at all** — not slow, a hard failure on every
+attempt, for any discovery with enough assets in one source file.
+
+### Cost Impact
+No dollar cost — a correctness/availability issue, not a spend issue.
+
+### Fix Applied
+Dropped `config_json` from both `insert_datasource.sql`'s and
+`update_datasource.sql`'s `RETURNING` clauses. The caller already has the
+`config` dict in Python (it's what was just inserted/updated) — no need to
+round-trip it through Oracle at all. `DatasourceStore.add()`/`update()` now
+build their returned dict from the caller-supplied `config` plus the
+remaining (small, scalar) `RETURNING` columns.
+
+**Verified live:** reproduced the exact failure with a 151,792-byte config
+(far past the ~16KB limit) — insert now succeeds and returns correct data.
+Existing `tests/test_datasource_store.py` (8/8) still passes. Confirmed
+end-to-end: the real customer discovery's confirm job proceeded past this
+point on retry.
+
+### Fix — OCI Path
+N/A — Oracle-specific by nature (the limit itself is an Oracle `RETURNING`
+behavior; Postgres has no equivalent restriction and was never affected).
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
@@ -842,6 +1058,9 @@ ADB's real network latency did.
 | P11 | Embed calls unbatched | ✅ Fixed | 🔴 Was potential hard-fail on large docs | Low — 1 file | No (already OCI) |
 | P12 | Graph write 25-row cap | ✅ Fixed | 🔴 Was 21m55s of a 40m6s total run (55%) | Low — 1 constant + tests | No (already OCI) |
 | P13 | CPQ config load N+1 `neighbors()` | ✅ Fixed | 🔴 Was effectively non-functional for real products | Low — 1 method × 2 backends + 1 call site | No (already OCI) |
+| P14 | Missing `workspace_id` on writes/deletes | ✅ Fixed | 🔴 Was a real cross-tenant delete/write gap, 3 endpoints | Low — SQL + store + route changes | No |
+| P15 | Discovery summary full-payload deserialize | ✅ Fixed | 🔴 Was non-functional (246s) for large discoveries → 2.7s | Low — 1 SQL + 2 methods + 1 call site | No |
+| P16 | Oracle `RETURNING` 16KB JSON limit | ✅ Fixed | 🔴 Was a hard failure on any large datasource config | Low — 2 SQL files + 2 methods | No — Oracle-only bug |
 
 **P3 is now the most urgent unfixed risk** — silent data loss with no visible
 error. P1 was believed to be the other urgent unfixed risk (OOM at scale) but
@@ -853,6 +1072,14 @@ with **P12 (graph projection) the single largest cost at 55% of total time**
 — larger than P8 (Link stage) ever was, larger than Resolve+Relate+Discover
 combined. P11 was a latent reliability risk (potential hard failure on large
 documents) rather than a measured slowdown.
+
+**P14-P16 were all found and fixed during a live end-to-end confirm-flow
+investigation (2026-07-28)**, triggered by a real user report that document
+ingestion's "Confirm" button appeared broken. P14 was found by a proactive
+audit prompted by P13's discovery of a similar (read-only) gap; P15 and P16
+were each found live, one immediately after the other, by actually retrying
+the same real customer discovery through to completion rather than stopping
+once the first fix appeared to work.
 
 All fixes except P6 can be implemented today without OCI. OCI improves
 each fix but is not required for the initial scale improvements.
@@ -876,6 +1103,9 @@ each fix but is not required for the initial scale improvements.
 | P11 — Embed calls unbatched | Already OCI GenAI; batching applied | Model-id provenance still wrong for OCI embeds (unfixed) |
 | P12 — Graph write 25-row cap | Oracle-specific fix, already applied | None — byte cap remains the real ORA-03106 guard |
 | P13 — CPQ config load N+1 | Batched `neighbors_batch()`, already applied | None — same fix works identically on FalkorDB |
+| P14 — Missing workspace_id scoping | N/A — Python/SQL-side fix, backend-independent | None once fixed |
+| P15 — Discovery summary full deserialize | N/A — query-shape fix, backend-independent | Confirm job's own initial full-fetch still costs ~4 min for very large discoveries (unfixed) |
+| P16 — Oracle RETURNING 16KB JSON limit | Oracle-specific fix, already applied | None — Postgres was never affected |
 
 ---
 
@@ -904,9 +1134,15 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *OCI-mode ingest investigation, including one full measured end-to-end run*
 *Updated: 2026-07-27 — added P13, found and fixed while live-verifying the*
 *Ask-thread Oracle port's CPQ conversation flow*
+*Updated: 2026-07-28 — added P14-P16, found and fixed during a live*
+*document-ingestion confirm-flow investigation triggered by a real user*
+*report, verified end to end against a real 30-file customer discovery*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
 *src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
 *src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
 *src/aryx/store/chunk_store.py, src/aryx/pipeline/embed.py, src/aryx/broker/__init__.py,*
 *src/aryx/api/data_api.py, src/aryx/api/workspace_api.py, src/aryx/graph/oracle_graph_store.py,*
-*src/aryx/cpq/engine.py, src/aryx/graph/oracle_graph_reader.py, src/aryx/ports/protocols.py*
+*src/aryx/cpq/engine.py, src/aryx/graph/oracle_graph_reader.py, src/aryx/ports/protocols.py,*
+*src/aryx/store/datasource_store.py, src/aryx/store/action_store.py,*
+*src/aryx/store/relationship_type_store.py, src/aryx/store/discovery_store.py,*
+*src/aryx/discoveries.py, src/aryx/api/doc_discover_api.py*

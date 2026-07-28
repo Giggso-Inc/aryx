@@ -28,7 +28,14 @@ class DatasourceStore:
 
     def add(self, workspace_id: int, name: str, kind: str,
             config: dict[str, Any], secret: str) -> dict[str, Any]:
-        """Encrypt the secret then persist the datasource row."""
+        """Encrypt the secret then persist the datasource row.
+
+        config_json is deliberately NOT in insert_datasource.sql's RETURNING
+        clause — Oracle's RETURNING...INTO for a native JSON column hits a
+        hard ~16KB serialization limit (ORA-40478/JZN-00018), confirmed live
+        on a real large XML catalog config. The caller already has `config`
+        in Python, so there's no need to round-trip it through the DB at all.
+        """
         cipher = datasource_secrets.encrypt(secret)
         mask = datasource_secrets.mask(secret)
         with self._pool.connection() as conn, conn.cursor() as cur:
@@ -39,7 +46,11 @@ class DatasourceStore:
             row = cur.fetchone()
         logger.info("datasource added id=%s ws=%s kind=%s",
                     row[0], workspace_id, kind)
-        return self._row(row, omit_cipher=True)
+        return {
+            "id": row[0], "workspace_id": row[1], "name": row[2],
+            "kind": row[3], "config": config or {},
+            "secret_mask": row[4], "created_at": row[5],
+        }
 
     def list(self, workspace_id: int) -> list[dict[str, Any]]:
         """List all datasources in a workspace (never returns ciphertext)."""
@@ -48,11 +59,11 @@ class DatasourceStore:
                         {"workspace_id": int(workspace_id)})
             return [self._row(r, omit_cipher=True) for r in cur.fetchall()]
 
-    def get(self, datasource_id: int) -> dict[str, Any] | None:
-        """Return a single datasource row (callers may decrypt via secret_of)."""
+    def get(self, datasource_id: int, workspace_id: int) -> dict[str, Any] | None:
+        """Return a single datasource row scoped to workspace_id (callers may decrypt via secret_of)."""
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(load("select_datasource_by_id"),
-                        {"id": int(datasource_id)})
+                        {"id": int(datasource_id), "workspace_id": int(workspace_id)})
             row = cur.fetchone()
         if not row:
             return None
@@ -85,14 +96,21 @@ class DatasourceStore:
         if not row:
             raise ValueError(f"datasource {datasource_id} not found")
         logger.info("datasource updated id=%s kind=%s", datasource_id, kind)
-        return self._row(row, omit_cipher=True)
+        # config_json is deliberately not in update_datasource.sql's RETURNING
+        # clause either — same ORA-40478/JZN-00018 size limit as add(); use
+        # the caller-supplied config directly instead of round-tripping it.
+        return {
+            "id": row[0], "workspace_id": row[1], "name": row[2],
+            "kind": row[3], "config": config or {},
+            "secret_mask": row[4], "created_at": row[5],
+        }
 
-    def delete(self, datasource_id: int) -> None:
-        """Hard-delete a datasource and its audit trail (FK cascades)."""
+    def delete(self, datasource_id: int, workspace_id: int) -> None:
+        """Hard-delete a datasource and its audit trail (FK cascades), scoped to workspace_id."""
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(load("delete_datasource_row"),
-                        {"id": int(datasource_id)})
-        logger.info("datasource deleted id=%s", datasource_id)
+                        {"id": int(datasource_id), "workspace_id": int(workspace_id)})
+        logger.info("datasource deleted id=%s ws=%s", datasource_id, workspace_id)
 
     def ensure(self, workspace_id: int, name: str, kind: str) -> dict[str, Any]:
         """Return an existing datasource by (workspace_id, name) or create it."""
@@ -116,11 +134,11 @@ class DatasourceStore:
                 raise
             return self._row(row, omit_cipher=True)
 
-    def secret_of(self, datasource_id: int, actor: str) -> str:
+    def secret_of(self, datasource_id: int, workspace_id: int, actor: str) -> str:
         """Decrypt and return the secret; logs an audit row before returning."""
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(load("select_datasource_by_id"),
-                        {"id": int(datasource_id)})
+                        {"id": int(datasource_id), "workspace_id": int(workspace_id)})
             row = cur.fetchone()
             if not row:
                 raise ValueError(f"datasource {datasource_id} not found")

@@ -524,8 +524,8 @@ def _find_datasource_by_prefix(source_key: str, workspace_id: int, prefix: str) 
         datasource_id = int(source_key.split(":", 1)[1])
     except ValueError as exc:
         raise HTTPException(404, "source not found") from exc
-    datasource = _datasource_store().get(datasource_id)
-    if not datasource or int(datasource.get("workspace_id", 0)) != int(workspace_id):
+    datasource = _datasource_store().get(datasource_id, workspace_id)
+    if not datasource:
         raise HTTPException(404, "source not found")
     return datasource
 

@@ -85,8 +85,8 @@ class ActionStore:
         return [dict(zip(keys, r)) for r in rows]
 
     def execution(self, execution_id: int) -> dict[str, Any] | None:
-        """One execution row joined with its action definition."""
-        row = self._one("select_action_execution_by_id", (execution_id,))
+        """One execution row joined with its action definition, scoped to this workspace."""
+        row = self._one("select_action_execution_by_id", (execution_id, self._ws))
         if row is None:
             return None
         keys = ("id", "workspace_id", "action_id", "entity_id",
@@ -94,10 +94,10 @@ class ActionStore:
         return dict(zip(keys, row))
 
     def decide(self, execution_id: int, approve: bool, decided_by: str) -> dict[str, Any]:
-        """Flip a pending execution; ValueError when not pending."""
+        """Flip a pending execution in this workspace; ValueError when not pending or not found."""
         status = "approved" if approve else "rejected"
         row = self._one("decide_action_execution",
-                        (status, decided_by, execution_id))
+                        (status, decided_by, execution_id, self._ws))
         if row is None:
             raise ValueError(f"execution {execution_id} not pending")
         return {"id": row[0], "action_id": row[1], "entity_id": row[2],
@@ -105,12 +105,12 @@ class ActionStore:
 
     def record_applied(self, execution_id: int, status: str,
                        effect_log: list[dict]) -> None:
-        """Persist the effect log after application (or failure)."""
+        """Persist the effect log after application (or failure), scoped to this workspace."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("apply_action_execution"),
                             (status, Json(effect_log, dumps=_dumps),
-                             execution_id))
+                             execution_id, self._ws))
 
     def get_attribute(self, entity_id: int, key: str) -> Any:
         """Current value of one entity attribute (for before/after log)."""

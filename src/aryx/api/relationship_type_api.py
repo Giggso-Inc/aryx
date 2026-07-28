@@ -50,9 +50,9 @@ def relationship_type_router() -> APIRouter:
             raise HTTPException(400, f"upsert failed: {exc}") from exc
 
     @router.delete("/{rel_id}")
-    def delete_relationship_type(rel_id: int) -> dict[str, Any]:
+    def delete_relationship_type(rel_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Hard-delete a declared relationship type."""
-        RelationshipTypeStore(get_settings().rdb_dsn).delete(rel_id)
+        RelationshipTypeStore(get_settings().rdb_dsn).delete(rel_id, workspace_id)
         return {"status": "deleted", "id": rel_id}
 
     return router
