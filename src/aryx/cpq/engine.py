@@ -379,9 +379,16 @@ _COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
 # false-positive on any unrelated "X is Y" sentence) — safe because the
 # word "country" immediately preceding it is itself already a strong,
 # on-topic signal.
+# N1 harden (2026-07-28): also match "destination country is X",
+# "destination country X", "whose destination country is X" — confirmed
+# negative few-shot re-asked country when user already said United States.
+# Capture group allows Title Case OR single-token ALLCAPS (US) after the
+# trigger; multi-word countries use Title Case words.
 _COUNTRY_PREP = re.compile(
-    r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|country\s+is)\s+)"
-    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)"
+    r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|"
+    r"destination\s+country\s+is|destination\s+country|"
+    r"whose\s+destination\s+country\s+is|country\s+is)\s+)"
+    r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
 )
 
 # Region hints (abbreviations the generic extractor won't catch as country names)
