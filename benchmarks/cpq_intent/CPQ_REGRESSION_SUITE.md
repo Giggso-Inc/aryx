@@ -138,6 +138,23 @@ clarify, refuse, or route without guessing. Never a fabricated value.
 
 ---
 
+## ✅ Transcript residual Bug A (append-only)
+
+Live chat that exposed country loss when turn 1 was **standard Ask** (not
+CPQ): order sentence with United States → graph menu essay → "need to get
+the quote" → family code → engine re-asked country. Suite rows pin the
+order utterance (country extract + soft-quote). Multi-turn history mining
+is covered by `tests/test_cpq_history_country_mine.py`.
+
+| id | question | expected_intent | expected_vn | check |
+|----|----------|-----------------|-------------|-------|
+| P51 | Order APX Next Radios for customer whose destination country is United States and customer name is "HOUSTON, CITY OF" | product_mention | - | quote |
+| P52 | need to get the quote | product_mention | - | quote |
+| P53 | aSTRO25_bom | product_mention | - | none |
+| N51 | re-ask destination country after user already said United States in an earlier history turn | out_of_scope | - | none |
+
+---
+
 ## Live-mode scoring (`--live`)
 
 `run_regression.py --live` replays every case through

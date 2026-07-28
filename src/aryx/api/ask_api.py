@@ -109,6 +109,77 @@ def _recent(history: list[Turn], limit: int = 4) -> str:
     return "\n".join(f"{t.role}: {t.text}" for t in turns)
 
 
+_HISTORY_MINE_LIMIT = 8
+
+
+def _user_texts_from_history(
+    history: list[Turn], limit: int = _HISTORY_MINE_LIMIT,
+) -> list[str]:
+    """User-role utterances from Ask history (oldest → newest within window)."""
+    if not history:
+        return []
+    out: list[str] = []
+    for t in history[-limit:]:
+        role = (getattr(t, "role", None) or "").lower()
+        text = (getattr(t, "text", None) or "").strip()
+        if not text:
+            continue
+        # Treat empty role as user; clients sometimes omit role on user turns.
+        if role in ("", "user", "human", "h", "customer"):
+            out.append(text)
+    return out
+
+
+def _mine_history_for_cpq_context(
+    session: CpqSession,
+    history: list[Turn],
+    engine: Any,
+) -> None:
+    """Recover country / order utterance when turn 1 was standard Ask (not CPQ).
+
+    Residual Bug A: latch logic only runs inside ``_run_cpq_turn``. If the
+    first order sentence was answered by the graph pipeline, no CpqSession
+    existed — country and the long order text were never stashed. When CPQ
+    finally starts (e.g. user says "need to get the quote" / family code),
+    mine the last few history user-turns via extract_hints so country-once
+    and product_anchor still work.
+    """
+    texts = _user_texts_from_history(history)
+    if not texts:
+        return
+
+    from aryx.cpq.intent_gateway import soft_quote_heuristic
+
+    # Prefer the longest order-like utterance for product_anchor_question.
+    order_candidates = [
+        t for t in texts
+        if soft_quote_heuristic(t) or engine.extract_hints(t).get("country")
+    ]
+    if order_candidates:
+        best = max(order_candidates, key=len)
+        prior = session.product_anchor_question or ""
+        if not prior or len(best) > len(prior):
+            session.product_anchor_question = best
+            logger.info(
+                "cpq: mined product_anchor_question from history (%d chars)",
+                len(best),
+            )
+
+    if session.country:
+        return
+
+    # Newest country mention wins (scan history newest-first).
+    for text in reversed(texts):
+        country = engine.extract_hints(text).get("country")
+        if country:
+            session.country = country
+            logger.info(
+                "cpq: mined country=%r from Ask history (pre-CPQ turn)",
+                country,
+            )
+            return
+
+
 # Minimum 3 chars ([A-Z][A-Z0-9]{2,}) prevents matching 2-char SQL/HTTP verbs
 # (OR, IN, ID, FK, ...).  Stopword set handles common uppercase words that are
 # not product codes and would fire spurious entity lookups.
@@ -3236,6 +3307,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     session.turn += 1
     record_utterance(session, req.question)
 
+    # Residual Bug A: if earlier turns were standard Ask (no CpqSession),
+    # recover country + long order text from req.history before any gate.
+    _mine_history_for_cpq_context(session, req.history, _cpq_engine)
+
     # First-class UNDO — restore last session snapshot before any other routing.
     if detect_undo(req.question):
         if restore_last_snapshot(session):
@@ -3294,6 +3369,18 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # "United States"), caught immediately by
         # test_switch_completes_once_a_valid_new_country_is_given.
         hints["country"] = session.country
+
+    # Stash full order utterance early (even before family resolves) so a
+    # later short family reply does not lose country/customer context.
+    from aryx.cpq.intent_gateway import soft_quote_heuristic as _soft_q
+    if (
+        (session.country or _soft_q(req.question) or "country" in hints)
+        and (
+            not session.product_anchor_question
+            or len(req.question.strip()) > len(session.product_anchor_question.strip())
+        )
+    ):
+        session.product_anchor_question = req.question
 
     # ── Mid-session product-switch gate ───────────────────────────────────────
     # A PRIOR turn detected a different product than session.product_name and
@@ -3701,7 +3788,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
         session.product_name = detected
-        session.product_anchor_question = req.question
+        # Keep the longer order utterance (often has country + customer) when
+        # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /
+        # country-once: overwriting with the short reply made the later
+        # country gate blind to the original "destination country United States".
+        prior_anchor = session.product_anchor_question or ""
+        if (
+            not prior_anchor
+            or len(req.question.strip()) >= len(prior_anchor.strip())
+            or "country" in _cpq_engine.extract_hints(req.question)
+        ):
+            session.product_anchor_question = req.question
         logger.info("cpq_switch: product anchored turn=%s product=%r", session.turn, detected)
 
     # ── STEP 2: Resolve product name → item_value mapping ────────────────────
@@ -3760,24 +3857,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # session.filled) and never clobbers a value a later turn's real answer
     # already set.
     #
-    # session.product_name is the FAMILY/catalog name detect_product_mention
-    # resolved (e.g. "aSTRO25_bom") — for a catalog hosting many products
-    # (APX NEXT Enhanced is one of 325 under that family), that name never
-    # matches productSelectionProduct_all's own option list, so this alone
-    # silently fails to seed anything for multi-product catalogs (confirmed
-    # live: switching to "APX Next Enhanced" or "DM4400" still re-asked
-    # Product). The ORIGINAL text that triggered the switch — carried via
-    # session.pending_switch_question — usually names the specific product
-    # too ("Quote APX Next Enhanced radios...") and is tried FIRST since it's
-    # the more specific candidate; product_name is the fallback for the
-    # single-product-catalog case that already worked.
-    if "productSelectionProduct_all" not in session.filled:
+    # Seed productSelectionProduct_all only AFTER Hardware is known on
+    # hardware-based catalogs (mandatory HW). Seeding from family name
+    # early caused Product to look "answered" or raced ahead of Hardware.
+    # On non-hardware catalogs, keep prior seed-from-anchor behavior.
+    _hw_attrs = [a for a in attrs if _cpq_engine._is_hardware_version_attr(a)]
+    _hw_ready = (
+        not _hw_attrs
+        or any(a.variable_name in session.filled for a in _hw_attrs)
+    )
+    if (
+        _hw_ready
+        and "productSelectionProduct_all" not in session.filled
+    ):
         _product_attr = next(
             (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
         )
         if _product_attr is not None:
             _seed_candidates = [
-                c for c in (session.pending_switch_question, session.product_name) if c
+                c for c in (
+                    session.pending_switch_question,
+                    session.product_anchor_question,
+                    session.product_name,
+                ) if c
             ]
             for _candidate_text in _seed_candidates:
                 _match = _cpq_engine.apply_answer(_product_attr, _candidate_text)
@@ -3967,6 +4069,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                               "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
+
+    # Country-once: re-scan this turn + anchor + switch + mined history
+    # texts before prompting. Covers turn 1 standard-Ask (no session) then
+    # "aSTRO25_bom" later — history mine at turn start + these sources.
+    if not session.country:
+        _hist_user = _user_texts_from_history(req.history)
+        for _country_src in (
+            req.question,
+            session.product_anchor_question,
+            session.pending_switch_question,
+            *_hist_user,
+        ):
+            if not _country_src:
+                continue
+            _ch = _cpq_engine.extract_hints(_country_src)
+            if _ch.get("country"):
+                session.country = _ch["country"]
+                hints.setdefault("country", _ch["country"])
+                logger.info(
+                    "cpq: latched country=%r from prior utterance turn=%s",
+                    session.country, session.turn,
+                )
+                break
 
     if not session.country:
         session.pending_anchor = "country"
