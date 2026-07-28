@@ -5620,6 +5620,12 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 return _mc_nv_result
 
     # ── STEP 5: Lock user's answer from previous turn ────────────────────────
+    # pending_var must be bound regardless of whether this branch runs — the
+    # STEP 5 convergence block later in this turn (clear_queue_vn) references
+    # it unconditionally. None on a fresh/first-turn message (nothing was
+    # pending yet) is the correct, intended value — clear_queue_vn already
+    # no-ops on None.
+    pending_var: str | None = None
     if session.pending_variables and session.turn > 1 and not mode_request:
         pending_var = session.pending_variables[0]
         pending_attr = next(
