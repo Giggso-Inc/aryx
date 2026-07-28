@@ -8,7 +8,6 @@ raw Node objects) so callers get plain, serializable dicts.
 from __future__ import annotations
 
 import json
-import logging
 import time
 from collections import Counter
 from typing import Any
@@ -17,8 +16,6 @@ from urllib.parse import urlparse
 from falkordb import FalkorDB
 
 from aryx.config import get_settings
-
-logger = logging.getLogger(__name__)
 
 # Module-level TTL cache for subgraph results.
 # Each GET /graph fires N+1 FalkorDB queries (1 DISTINCT + 1 per type).
@@ -43,17 +40,8 @@ class GraphReader:
         self._graph = self._db.select_graph(graph)
 
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """Execute a Cypher query and log the input and output at INFO level."""
-        start = time.monotonic()
-        result = self._graph.query(cypher, params or {}).result_set
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        # Cap result preview to first 5 rows to keep logs readable.
-        preview = result[:5]
-        logger.info(
-            "cypher  query=%r  params=%r  rows=%d  ms=%d  preview=%r",
-            cypher, params or {}, len(result), elapsed_ms, preview,
-        )
-        return result
+        """Execute a Cypher query and return its result rows."""
+        return self._graph.query(cypher, params or {}).result_set
 
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name/attributes, or None if absent."""
