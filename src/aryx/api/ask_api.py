@@ -2504,7 +2504,7 @@ def _narrow_label_collision(question: str, collision: list) -> list:
 
 def _llm_classify_change_intent(
     question: str, attrs: list, session: Any, workspace_id: int,
-) -> dict[str, str] | None:
+) -> "tuple[dict[str, str] | None, int, int]":
     """LLM fallback for remove/change intent, tried only after every regex
     detector (detect_multi_select_removal, detect_change_request(s_multi))
     found nothing. Reuses the existing menial-tier model already wired for
@@ -2527,7 +2527,7 @@ def _llm_classify_change_intent(
         if a.variable_name in session.filled or a.variable_name in session.filled_multi
     ]
     if not filled_candidates:
-        return None
+        return None, 0, 0
     # Relevance-score BEFORE capping — a catalog with dozens of filled
     # attrs (promotions, accessories, etc.) can push the actually-relevant
     # attr past a fixed positional cap if capped by catalog order first.
@@ -2597,7 +2597,23 @@ def _llm_classify_change_intent(
                 return None
         return {"intent": intent, "variable_name": vn, "value": value}
 
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+    # Inlines _llm_classify_intent_core's call+parse shape rather than
+    # reusing it directly (2026-07-28): that shared helper's other 4 call
+    # sites return a bare bool/dict and never attach token usage to a
+    # user-visible response, so changing its signature to a 3-tuple would
+    # force pointless unpacking on all of them. This is the one caller
+    # whose result DOES reach a response with hardcoded "cpq-engine, 0
+    # tokens" usage (via the "change" + empty-value branch below) — same
+    # live-confirmed gap _llm_classify_intent_universal already fixed for
+    # the Phase 2 path.
+    try:
+        text, _it, _ot = llm_runtime.chat("menial", sys, user, workspace_id=workspace_id)
+        s, e = text.find("{"), text.rfind("}")
+        parsed = json.loads(text[s:e + 1])
+    except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
+        logger.debug("llm intent fallback: llm call or parse failed: %r", exc)
+        return None, 0, 0
+    return _validate(parsed), _it, _ot
 
 
 # ── Phase 1, docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md — shadow-mode ──────
@@ -4514,7 +4530,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # same downstream handlers as the regex path, so all their
         # guardrails (real-value validation, orphan quantity cleanup,
         # single rule-loop pass) apply identically.
-        _llm_intent = _llm_classify_change_intent(
+        _llm_intent, _ci_it, _ci_ot = _llm_classify_change_intent(
             req.question, attrs, session, req.workspace_id)
         if _llm_intent:
             _llm_attr = next(
@@ -4525,9 +4541,12 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                     _mentioned = _cpq_engine.apply_multi_answer(_llm_attr, _llm_intent["value"])
                     _to_remove = [iv for iv, _dn in _mentioned if iv in _current]
                     if _to_remove:
-                        return _handle_multi_select_removal(
-                            req, session, attrs, _llm_attr, _to_remove,
-                            hiding_rules, rec_rules, con_rules,
+                        return _with_classify_usage(
+                            _handle_multi_select_removal(
+                                req, session, attrs, _llm_attr, _to_remove,
+                                hiding_rules, rec_rules, con_rules,
+                            ),
+                            _ci_it, _ci_ot,
                         )
                 elif _llm_intent["intent"] == "change":
                     if not _llm_intent["value"]:
@@ -4543,14 +4562,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                         # asking which value, the same live-verified gap
                         # detect_change_target_without_value already fixes
                         # for its own regex-matched targets.
-                        return _build_no_value_response(
-                            req, session, attrs, _llm_attr, con_rules, bml_eval,
-                            "cpq_llm_change_target_no_value",
+                        return _with_classify_usage(
+                            _build_no_value_response(
+                                req, session, attrs, _llm_attr, con_rules, bml_eval,
+                                "cpq_llm_change_target_no_value",
+                            ),
+                            _ci_it, _ci_ot,
                         )
-                    return _handle_cascade(
+                    return _with_classify_usage(_handle_cascade(
                         req, session, attrs, _llm_attr, _llm_intent["value"],
                         hiding_rules, rec_rules, con_rules,
-                    )
+                    ), _ci_it, _ci_ot)
 
         # Recognized change-verb naming an already-filled attr, but no
         # resolvable new value ("change hardware version", "change product")
