@@ -373,6 +373,28 @@ class CpqSession:
     pending_label_collision_vns: list[str] = field(default_factory=list)
     pending_label_collision_question: str = ""
 
+    # Gateway clarify memory (live-verified gap, 2026-07-28): "change
+    # hardware" is too vague to pin one attr → gateway action=clarify asks
+    # "Hardware Version or System Key?" but historically saved NO pending
+    # state. The bare reply "Hardware Version" then arrived with no memory
+    # of the question, classified blind as ATTR_QUERY/QA, fell through
+    # partial dispatch, and hit the generic "I didn't quite catch that"
+    # nudge.
+    #
+    # Conceptual shape (serialized flat, same pattern as
+    # pending_change_collision_vns):
+    #   { candidate_vns, original_question, clarifying_question, asked_turn }
+    pending_clarify_vns: list[str] = field(default_factory=list)  # candidate_vns
+    pending_clarify_question: str = ""  # original_question (vague utterance)
+    # Grounded clarifying_question we showed (catalog labels only — never
+    # free-form LLM prose that may invent non-catalog examples).
+    pending_clarify_prompt: str = ""
+    # session.turn when the clarify was issued (for audit / loop detection).
+    pending_clarify_asked_turn: int = 0
+    # Consecutive unresolved replies to this clarify. After 2 misses,
+    # force a numbered pick list (loop-exit guard).
+    pending_clarify_misses: int = 0
+
     # Set when detect_change_target_without_value recognized a change-verb
     # naming an already-filled attr but no resolvable new value ("change
     # hardware version") and asked which value instead of guessing

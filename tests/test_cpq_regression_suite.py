@@ -29,6 +29,14 @@ def test_suite_offline_gate_passes() -> None:
     assert run_regression.run_offline(run_regression.parse_suite()) == []
 
 
+def test_dialogues_parsed_and_pass() -> None:
+    dialogues = run_regression.parse_dialogues()
+    assert len(dialogues) >= 3
+    ids = {d["id"] for d in dialogues}
+    assert {"D01", "D02", "D03"} <= ids
+    assert run_regression.run_dialogues_offline(dialogues) == []
+
+
 def test_mirrors_match_gateway_regexes() -> None:
     assert run_regression.SOFT_QUOTE.pattern == intent_gateway._SOFT_QUOTE.pattern
     assert run_regression.OFF_TOPIC.pattern == intent_gateway._OFF_TOPIC_HARD.pattern

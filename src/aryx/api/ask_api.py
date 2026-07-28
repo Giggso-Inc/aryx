@@ -44,6 +44,7 @@ from aryx.cpq.session_guard import (
     clear_clarify,
     detect_guided_mode_accept,
     detect_undo,
+    enforce_conversational_invariant,
     guided_mode_offer_message,
     note_clarify,
     numbered_options_prompt,
@@ -107,6 +108,77 @@ def _recent(history: list[Turn], limit: int = 4) -> str:
         return ""
     turns = history[-limit:]
     return "\n".join(f"{t.role}: {t.text}" for t in turns)
+
+
+_HISTORY_MINE_LIMIT = 8
+
+
+def _user_texts_from_history(
+    history: list[Turn], limit: int = _HISTORY_MINE_LIMIT,
+) -> list[str]:
+    """User-role utterances from Ask history (oldest → newest within window)."""
+    if not history:
+        return []
+    out: list[str] = []
+    for t in history[-limit:]:
+        role = (getattr(t, "role", None) or "").lower()
+        text = (getattr(t, "text", None) or "").strip()
+        if not text:
+            continue
+        # Treat empty role as user; clients sometimes omit role on user turns.
+        if role in ("", "user", "human", "h", "customer"):
+            out.append(text)
+    return out
+
+
+def _mine_history_for_cpq_context(
+    session: CpqSession,
+    history: list[Turn],
+    engine: Any,
+) -> None:
+    """Recover country / order utterance when turn 1 was standard Ask (not CPQ).
+
+    Residual Bug A: latch logic only runs inside ``_run_cpq_turn``. If the
+    first order sentence was answered by the graph pipeline, no CpqSession
+    existed — country and the long order text were never stashed. When CPQ
+    finally starts (e.g. user says "need to get the quote" / family code),
+    mine the last few history user-turns via extract_hints so country-once
+    and product_anchor still work.
+    """
+    texts = _user_texts_from_history(history)
+    if not texts:
+        return
+
+    from aryx.cpq.intent_gateway import soft_quote_heuristic
+
+    # Prefer the longest order-like utterance for product_anchor_question.
+    order_candidates = [
+        t for t in texts
+        if soft_quote_heuristic(t) or engine.extract_hints(t).get("country")
+    ]
+    if order_candidates:
+        best = max(order_candidates, key=len)
+        prior = session.product_anchor_question or ""
+        if not prior or len(best) > len(prior):
+            session.product_anchor_question = best
+            logger.info(
+                "cpq: mined product_anchor_question from history (%d chars)",
+                len(best),
+            )
+
+    if session.country:
+        return
+
+    # Newest country mention wins (scan history newest-first).
+    for text in reversed(texts):
+        country = engine.extract_hints(text).get("country")
+        if country:
+            session.country = country
+            logger.info(
+                "cpq: mined country=%r from Ask history (pre-CPQ turn)",
+                country,
+            )
+            return
 
 
 # Minimum 3 chars ([A-Z][A-Z0-9]{2,}) prevents matching 2-char SQL/HTTP verbs
@@ -2777,6 +2849,14 @@ def _llm_classify_intent_universal(
             f"{_pending_desc(session.pending_change_no_value_vn)}. A short "
             "reply is almost certainly that value, not a fresh request."
         )
+    if session.pending_clarify_vns:
+        _opts = ", ".join(_pending_desc(v) for v in session.pending_clarify_vns)
+        pending_lines.append(
+            f"- The system just asked WHICH attribute was meant by a vague "
+            f"request ({session.pending_clarify_question!r}): {_opts}. "
+            "A short reply naming one of these labels, variable_names, or a "
+            "list index is answering THAT clarify — not a fresh lookup."
+        )
     if session.pending_label_collision_vns:
         _opts = ", ".join(_pending_desc(v) for v in session.pending_label_collision_vns)
         pending_lines.append(
@@ -3080,14 +3160,18 @@ def _dispatch_intent_result(
     if result.category == IntentCategory.AMBIGUOUS:
         if not result.clarifying_question:
             return None
-        answer = result.clarifying_question
-        _persist_cpq_history(req.workspace_id, req.question, answer)
-        return _with_classify_usage({
-            "answer": answer, "terms": [], "tools_called": ["cpq_llm_first_ambiguous()"],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-        }, classify_prompt_tokens, classify_completion_tokens)
+        # Persist grounded pending_clarify so the next bare reply (e.g.
+        # "Hardware Version") resolves instead of falling to the nudge.
+        return _set_pending_clarify_and_answer(
+            req, session, attrs,
+            original_question=req.question,
+            clarifying_question=result.clarifying_question,
+            con_rules=con_rules,
+            bml_eval=bml_eval,
+            prompt_tokens=classify_prompt_tokens,
+            completion_tokens=classify_completion_tokens,
+            tool_name="cpq_llm_first_ambiguous()",
+        )
 
     if result.category == IntentCategory.OUT_OF_SCOPE:
         answer = (
@@ -3204,6 +3288,322 @@ def _llm_resolve_label_collision(
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
+# ── Gateway clarify memory (pending_clarify_*) ───────────────────────────────
+# Live gap: "change hardware" → clarify "Hardware Version or System Key?" →
+# reply "Hardware Version" had no pending state and fell to the review nudge.
+
+_CLARIFY_STOPWORDS = frozenset({
+    "change", "set", "update", "make", "switch", "modify", "edit", "alter",
+    "please", "the", "a", "an", "to", "for", "my", "our", "me", "i", "want",
+    "would", "like", "can", "you", "it", "this", "that", "and", "or", "of",
+    "in", "on", "with", "from", "into", "value", "field", "attribute", "attr",
+    "which", "what", "one", "option", "options",
+})
+_WORD_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+
+def _clear_pending_clarify(session: Any) -> None:
+    session.pending_clarify_vns = []
+    session.pending_clarify_question = ""
+    session.pending_clarify_prompt = ""
+    session.pending_clarify_asked_turn = 0
+    session.pending_clarify_misses = 0
+
+
+def _ground_clarify_candidates(
+    question: str,
+    attrs: list,
+    session: Any,
+    clarifying_question: str | None = None,
+) -> list:
+    """Build candidate attrs from REAL catalog labels only.
+
+    Prefer filled attrs with word-overlap against the vague utterance;
+    also accept labels that appear (validated) inside the LLM clarify text
+    so examples like "Hardware Version" are kept only when they exist in
+    the catalog — never free-invented names.
+    """
+    by_vn: dict[str, Any] = {}
+    q_words = {
+        w for w in _WORD_TOKEN_RE.findall((question or "").lower())
+        if w not in _CLARIFY_STOPWORDS and len(w) >= 2
+    }
+    cq_lower = (clarifying_question or "").lower()
+
+    for a in attrs:
+        is_filled = (
+            a.variable_name in session.filled
+            or a.variable_name in session.filled_multi
+        )
+        label_l = (a.display_label or "").lower()
+        vn_words = set(_WORD_TOKEN_RE.findall(
+            a.variable_name.lower().replace("_", " "),
+        ))
+        label_words = set(_WORD_TOKEN_RE.findall(label_l))
+        vocab = label_words | vn_words
+        overlap = len(q_words & vocab) if q_words else 0
+        label_in_cq = bool(label_l) and label_l in cq_lower
+        vn_in_cq = a.variable_name.lower() in cq_lower
+        if overlap > 0 or label_in_cq or vn_in_cq:
+            # Prefer filled for change-like clarifies; still allow unfilled
+            # when the catalog label is explicitly grounded in the CQ text.
+            if is_filled or label_in_cq or vn_in_cq or overlap >= 2:
+                by_vn[a.variable_name] = a
+
+    # Stable order: longer label first (more specific), then name.
+    candidates = list(by_vn.values())
+    candidates.sort(
+        key=lambda a: (-len(a.display_label or ""), a.display_label or "", a.variable_name),
+    )
+    return candidates[:8]
+
+
+def _grounded_clarify_prompt(candidates: list, attrs: list) -> str:
+    """Numbered catalog-label list — never LLM-invented example names."""
+    if not candidates:
+        return "Which field did you mean? Please name the attribute."
+    lines = [
+        "Which attribute did you mean? Reply with the name or the number:",
+    ]
+    for i, a in enumerate(candidates, start=1):
+        label = _cpq_engine.disambiguated_label(a, attrs)
+        lines.append(f"{i}. **{label}** (`{a.variable_name}`)")
+    return "\n".join(lines)
+
+
+def _match_pending_clarify_reply(
+    reply: str,
+    candidates: list,
+    session: Any,
+    workspace_id: int,
+) -> str | None:
+    """Resolve a bare reply to one candidate vn, or None (no guess)."""
+    r = (reply or "").strip()
+    if not r or not candidates:
+        return None
+    r_lower = r.lower().strip(" .,:;!?\"'")
+    by_vn = {a.variable_name: a for a in candidates}
+
+    # Exact variable_name
+    if r in by_vn:
+        return r
+    for vn, a in by_vn.items():
+        if vn.lower() == r_lower:
+            return vn
+
+    # Exact display label (case-insensitive)
+    for a in candidates:
+        if (a.display_label or "").lower() == r_lower:
+            return a.variable_name
+
+    # 1-based index
+    if r.isdigit():
+        idx = int(r) - 1
+        if 0 <= idx < len(candidates):
+            return candidates[idx].variable_name
+
+    # Label / vn containment (require uniqueness)
+    hits: list[str] = []
+    for a in candidates:
+        label = (a.display_label or "").lower()
+        vn_flat = a.variable_name.lower().replace("_", " ")
+        if (
+            r_lower in label
+            or label in r_lower
+            or r_lower in vn_flat
+            or vn_flat in r_lower
+        ):
+            hits.append(a.variable_name)
+    if len(hits) == 1:
+        return hits[0]
+
+    # LLM fallback over the FIXED candidate list only
+    return _llm_resolve_label_collision(r, candidates, session, workspace_id)
+
+
+def _apply_pending_clarify_resolution(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    resolved_vn: str,
+    orig_question: str,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+    bml_eval: Any,
+) -> dict[str, Any]:
+    """Replay the original vague utterance against the resolved attribute."""
+    _clear_pending_clarify(session)
+    clear_clarify(session, resolved_vn)
+    resolved_attr = next((a for a in attrs if a.variable_name == resolved_vn), None)
+    if resolved_attr is None:
+        answer = (
+            f"I couldn't load the attribute `{resolved_vn}` from this catalog. "
+            "Please name the field again."
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [],
+            "tools_called": ["cpq_pending_clarify_missing_attr()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+
+    # Prefer applying a value if the ORIGINAL utterance had one for this attr.
+    change = _cpq_engine.detect_change_request(
+        orig_question, [resolved_attr], session.filled,
+        filled_multi=session.filled_multi,
+    )
+    if change:
+        _attr, value_hint = change
+        return _handle_cascade(
+            req, session, attrs, _attr, value_hint,
+            hiding_rules, rec_rules, con_rules,
+        )
+    # Valueless change ("change hardware") → ask which value for the
+    # now-resolved attribute (same helper as regex/LLM no-value paths).
+    return _build_no_value_response(
+        req, session, attrs, resolved_attr, con_rules, bml_eval,
+        "cpq_pending_clarify_resolved",
+    )
+
+
+def _handle_pending_clarify_turn(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    hiding_rules: list,
+    rec_rules: list,
+    con_rules: list,
+    bml_eval: Any,
+) -> dict[str, Any] | None:
+    """If a gateway clarify is pending, try to resolve this reply first.
+
+    Returns a response dict when the pending path handles the turn;
+    None when no pending_clarify is set (caller continues normally).
+    """
+    if not session.pending_clarify_vns:
+        return None
+
+    candidates = [
+        a for a in attrs if a.variable_name in session.pending_clarify_vns
+    ]
+    # Preserve original candidate order from pending_clarify_vns
+    order = {vn: i for i, vn in enumerate(session.pending_clarify_vns)}
+    candidates.sort(key=lambda a: order.get(a.variable_name, 999))
+
+    if not candidates:
+        # Catalog no longer has these attrs — clear and fall through.
+        _clear_pending_clarify(session)
+        return None
+
+    resolved_vn = _match_pending_clarify_reply(
+        req.question, candidates, session, req.workspace_id,
+    )
+    if resolved_vn:
+        return _apply_pending_clarify_resolution(
+            req, session, attrs, resolved_vn,
+            session.pending_clarify_question or req.question,
+            hiding_rules, rec_rules, con_rules, bml_eval,
+        )
+
+    # Miss — do not mis-bind. Re-prompt; after 2 misses force numbered list.
+    session.pending_clarify_misses = int(session.pending_clarify_misses or 0) + 1
+    note_clarify(session, "_pending_clarify")
+    if session.pending_clarify_misses >= 2 or should_force_numbered_options(
+        session, "_pending_clarify",
+    ):
+        prompt = _grounded_clarify_prompt(candidates, attrs)
+        session.pending_clarify_prompt = prompt
+    else:
+        prompt = (
+            session.pending_clarify_prompt
+            or _grounded_clarify_prompt(candidates, attrs)
+        )
+        prompt = (
+            f"I still need to know which attribute you meant.\n\n{prompt}"
+        )
+    if should_offer_guided_mode(session):
+        prompt = f"{prompt}\n\n{guided_mode_offer_message()}"
+    _persist_cpq_history(req.workspace_id, req.question, prompt)
+    return {
+        "answer": prompt, "terms": list(session.pending_clarify_vns),
+        "tools_called": ["cpq_pending_clarify_reprompt()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _set_pending_clarify_and_answer(
+    req: "AskRequest",
+    session: Any,
+    attrs: list,
+    original_question: str,
+    clarifying_question: str | None,
+    con_rules: list | None = None,
+    bml_eval: Any = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    tool_name: str = "cpq_intent_gateway_clarify()",
+) -> dict[str, Any]:
+    """Persist grounded clarify state and return the clarify response."""
+    candidates = _ground_clarify_candidates(
+        original_question, attrs, session, clarifying_question,
+    )
+    # Single grounded candidate → skip the extra question; ask for value.
+    if len(candidates) == 1 and con_rules is not None:
+        _clear_pending_clarify(session)
+        return _with_classify_usage(
+            _build_no_value_response(
+                req, session, attrs, candidates[0], con_rules, bml_eval,
+                f"{tool_name}->single_candidate",
+            ),
+            prompt_tokens, completion_tokens,
+        )
+
+    if len(candidates) >= 2:
+        session.pending_clarify_vns = [a.variable_name for a in candidates]
+        session.pending_clarify_question = original_question
+        session.pending_clarify_prompt = _grounded_clarify_prompt(candidates, attrs)
+        session.pending_clarify_asked_turn = int(session.turn or 0)
+        session.pending_clarify_misses = 0
+        answer = session.pending_clarify_prompt
+    elif len(candidates) == 1:
+        # No rule context yet — stash as no-value pending for next turn.
+        _clear_pending_clarify(session)
+        session.pending_change_no_value_vn = candidates[0].variable_name
+        answer = (
+            f"Which value would you like for "
+            f"**{_cpq_engine.disambiguated_label(candidates[0], attrs)}**?"
+        )
+    else:
+        # No catalog-grounded candidates — still ask, but without binding
+        # memory to invented names.
+        _clear_pending_clarify(session)
+        answer = (
+            clarifying_question
+            or "Which field and value should I use? Please name the attribute."
+        )
+
+    _vn_key = candidates[0].variable_name if candidates else None
+    note_clarify(session, _vn_key or "_pending_clarify")
+    if should_force_numbered_options(session, _vn_key or "_pending_clarify") and candidates:
+        answer = _grounded_clarify_prompt(candidates, attrs)
+        session.pending_clarify_prompt = answer
+    if should_offer_guided_mode(session):
+        answer = f"{answer}\n\n{guided_mode_offer_message()}"
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return _with_classify_usage({
+        "answer": answer, "terms": list(session.pending_clarify_vns),
+        "tools_called": [tool_name],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }, prompt_tokens, completion_tokens)
+
+
 def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     """Execute one turn of the 8-step CPQ guided-configuration conversation.
 
@@ -3218,7 +3618,16 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
 
     The session_data dict is echoed back in every response so the client
     sends it on the next turn — no server-side session store needed.
+
+    Every returned response is checked by
+    ``enforce_conversational_invariant`` — a config-seeking question without
+    consumable pending state logs ``cpq_orphan_question``.
     """
+    return enforce_conversational_invariant(_run_cpq_turn_inner(req, reader))
+
+
+def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
+    """Inner CPQ turn body — see ``_run_cpq_turn`` for the step contract."""
     # Restore or initialise session
     session = (
         CpqSession.from_dict(req.session_data)
@@ -3235,6 +3644,10 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     set_run_id(session.run_id)
     session.turn += 1
     record_utterance(session, req.question)
+
+    # Residual Bug A: if earlier turns were standard Ask (no CpqSession),
+    # recover country + long order text from req.history before any gate.
+    _mine_history_for_cpq_context(session, req.history, _cpq_engine)
 
     # First-class UNDO — restore last session snapshot before any other routing.
     if detect_undo(req.question):
@@ -3294,6 +3707,18 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         # "United States"), caught immediately by
         # test_switch_completes_once_a_valid_new_country_is_given.
         hints["country"] = session.country
+
+    # Stash full order utterance early (even before family resolves) so a
+    # later short family reply does not lose country/customer context.
+    from aryx.cpq.intent_gateway import soft_quote_heuristic as _soft_q
+    if (
+        (session.country or _soft_q(req.question) or "country" in hints)
+        and (
+            not session.product_anchor_question
+            or len(req.question.strip()) > len(session.product_anchor_question.strip())
+        )
+    ):
+        session.product_anchor_question = req.question
 
     # ── Mid-session product-switch gate ───────────────────────────────────────
     # A PRIOR turn detected a different product than session.product_name and
@@ -3701,7 +4126,17 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
         session.product_name = detected
-        session.product_anchor_question = req.question
+        # Keep the longer order utterance (often has country + customer) when
+        # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /
+        # country-once: overwriting with the short reply made the later
+        # country gate blind to the original "destination country United States".
+        prior_anchor = session.product_anchor_question or ""
+        if (
+            not prior_anchor
+            or len(req.question.strip()) >= len(prior_anchor.strip())
+            or "country" in _cpq_engine.extract_hints(req.question)
+        ):
+            session.product_anchor_question = req.question
         logger.info("cpq_switch: product anchored turn=%s product=%r", session.turn, detected)
 
     # ── STEP 2: Resolve product name → item_value mapping ────────────────────
@@ -3760,24 +4195,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # session.filled) and never clobbers a value a later turn's real answer
     # already set.
     #
-    # session.product_name is the FAMILY/catalog name detect_product_mention
-    # resolved (e.g. "aSTRO25_bom") — for a catalog hosting many products
-    # (APX NEXT Enhanced is one of 325 under that family), that name never
-    # matches productSelectionProduct_all's own option list, so this alone
-    # silently fails to seed anything for multi-product catalogs (confirmed
-    # live: switching to "APX Next Enhanced" or "DM4400" still re-asked
-    # Product). The ORIGINAL text that triggered the switch — carried via
-    # session.pending_switch_question — usually names the specific product
-    # too ("Quote APX Next Enhanced radios...") and is tried FIRST since it's
-    # the more specific candidate; product_name is the fallback for the
-    # single-product-catalog case that already worked.
-    if "productSelectionProduct_all" not in session.filled:
+    # Seed productSelectionProduct_all only AFTER Hardware is known on
+    # hardware-based catalogs (mandatory HW). Seeding from family name
+    # early caused Product to look "answered" or raced ahead of Hardware.
+    # On non-hardware catalogs, keep prior seed-from-anchor behavior.
+    _hw_attrs = [a for a in attrs if _cpq_engine._is_hardware_version_attr(a)]
+    _hw_ready = (
+        not _hw_attrs
+        or any(a.variable_name in session.filled for a in _hw_attrs)
+    )
+    if (
+        _hw_ready
+        and "productSelectionProduct_all" not in session.filled
+    ):
         _product_attr = next(
             (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
         )
         if _product_attr is not None:
             _seed_candidates = [
-                c for c in (session.pending_switch_question, session.product_name) if c
+                c for c in (
+                    session.pending_switch_question,
+                    session.product_anchor_question,
+                    session.product_name,
+                ) if c
             ]
             for _candidate_text in _seed_candidates:
                 _match = _cpq_engine.apply_answer(_product_attr, _candidate_text)
@@ -3967,6 +4407,29 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                               "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
+
+    # Country-once: re-scan this turn + anchor + switch + mined history
+    # texts before prompting. Covers turn 1 standard-Ask (no session) then
+    # "aSTRO25_bom" later — history mine at turn start + these sources.
+    if not session.country:
+        _hist_user = _user_texts_from_history(req.history)
+        for _country_src in (
+            req.question,
+            session.product_anchor_question,
+            session.pending_switch_question,
+            *_hist_user,
+        ):
+            if not _country_src:
+                continue
+            _ch = _cpq_engine.extract_hints(_country_src)
+            if _ch.get("country"):
+                session.country = _ch["country"]
+                hints.setdefault("country", _ch["country"])
+                logger.info(
+                    "cpq: latched country=%r from prior utterance turn=%s",
+                    session.country, session.turn,
+                )
+                break
 
     if not session.country:
         session.pending_anchor = "country"
@@ -4184,6 +4647,15 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req, session, attrs, _pcnv_attr, req.question,
                 hiding_rules, rec_rules, con_rules,
             )
+
+    # Gateway clarify reply — resolve BEFORE any blind re-classification.
+    # Live gap: "change hardware" → clarify → "Hardware Version" had no
+    # memory and fell to the review nudge (ask_api.py gateway clarify branch).
+    _pending_clarify_resp = _handle_pending_clarify_turn(
+        req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
+    )
+    if _pending_clarify_resp is not None:
+        return _pending_clarify_resp
 
     # Rule-consistency auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
     # §4.1): a filled attr an active hiding rule currently matches was never
@@ -4524,44 +4996,36 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 _gw.model_id,
             )
             if _gw.action == "clarify" and _gw.result:
-                _vn = _gw.result.variable_name
-                _streak = note_clarify(session, _vn)
-                if should_force_numbered_options(session, _vn) and _vn:
-                    _attr_opt = next(
-                        (a for a in attrs if a.variable_name == _vn), None,
-                    )
-                    if _attr_opt is not None:
-                        _cq = numbered_options_prompt(_attr_opt)
-                    else:
-                        _cq = (
-                            _gw.result.clarifying_question
-                            or "Which field and value should I use?"
-                        )
-                else:
-                    _cq = (
-                        _gw.result.clarifying_question
-                        or "Which field and value should I use?"
-                    )
-                if should_offer_guided_mode(session):
-                    _cq = f"{_cq}\n\n{guided_mode_offer_message()}"
-                _persist_cpq_history(req.workspace_id, req.question, _cq)
-                return _with_classify_usage({
-                    "answer": _cq, "terms": [],
-                    "tools_called": ["cpq_intent_gateway_clarify()"],
-                    "usage": {
-                        "prompt_tokens": 0, "completion_tokens": 0,
-                        "latency_ms": 0, "menial_model": "cpq-engine",
-                        "answer_model": "cpq-engine",
-                    },
-                    "grounding": None, "session_data": session.to_dict(),
-                    "cpq_payload": None,
-                }, _gw.prompt_tokens, _gw.completion_tokens)
+                return _set_pending_clarify_and_answer(
+                    req, session, attrs,
+                    original_question=req.question,
+                    clarifying_question=_gw.result.clarifying_question,
+                    con_rules=con_rules,
+                    bml_eval=bml_eval,
+                    prompt_tokens=_gw.prompt_tokens,
+                    completion_tokens=_gw.completion_tokens,
+                    tool_name="cpq_intent_gateway_clarify()",
+                )
             if _gw.action == "dispatch" and _gw.result:
                 clear_clarify(session, _gw.result.variable_name)
+                # Successful non-clarify path — drop any stale clarify memory.
+                _clear_pending_clarify(session)
                 _mapped = _gateway_to_intent_result(
                     _gw.result, attrs, _gw.value_display,
                 )
                 if _mapped is not None:
+                    # AMBIGUOUS via dispatch path must also set pending memory.
+                    if _mapped.category == IntentCategory.AMBIGUOUS:
+                        return _set_pending_clarify_and_answer(
+                            req, session, attrs,
+                            original_question=req.question,
+                            clarifying_question=_mapped.clarifying_question,
+                            con_rules=con_rules,
+                            bml_eval=bml_eval,
+                            prompt_tokens=_gw.prompt_tokens,
+                            completion_tokens=_gw.completion_tokens,
+                            tool_name="cpq_llm_first_ambiguous()",
+                        )
                     _dispatched = _dispatch_intent_result(
                         req, session, attrs, _mapped,
                         hiding_rules, rec_rules, con_rules, bml_eval,
