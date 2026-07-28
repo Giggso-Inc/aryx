@@ -485,7 +485,23 @@ def _cpq_summary_text(
     # summary that (rightly) omits them got discarded every time,
     # falling all the way to raw_state_table(). Live-confirmed against
     # aSTRO25_bom / APX NEXT Single Band (~173 auto-filled fields).
-    curated_fields = {label: value for _cat, pairs in groups for label, value in pairs}
+    # Only the STRICT categories (Product Name, Service Plan, Quantity &
+    # Duration) are required to be fully covered. The fallback category
+    # (Associated Options) is deliberately excluded here — the prompt
+    # below explicitly tells the model it may OMIT facts in that one
+    # category ("pick whichever subset you can state with total accuracy
+    # and simply OMIT the rest"), so requiring every one of its facts to
+    # appear contradicts the very permission the prompt grants, and
+    # discarded a correct, intentionally-partial narration every time
+    # (live-confirmed: aSTRO25_bom / APX NEXT Single Band's Associated
+    # Options narration was rejected for omitting Primary Frequency,
+    # Keypad Type, Display Type, Knob Type, System Key — all deliberately
+    # dropped by design, not missing by error).
+    curated_fields = {
+        label: value for _cat, pairs in groups
+        if _cat != SUMMARY_FALLBACK_CATEGORY
+        for label, value in pairs
+    }
     sys = (
         "You summarise product configurations for sales reps in plain, "
         "everyday English — never technical or internal terminology."
@@ -6040,6 +6056,18 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     dropped_note = "".join(
         _dropped_phrase(dvar, dvals) for dvar, dvals in dropped_multi.items()
     )
+    if dropped_note:
+        # Suppressed from the customer-facing response by explicit
+        # product decision — the mechanism itself is correct (see
+        # _dropped_phrase's had_prior_value distinction, live-verified
+        # earlier this session), but surfacing "Removed X from Y" text
+        # directly in the summary reads as noisy/technical to the
+        # customer. Logged instead so the cascade is still auditable.
+        logger.info(
+            "cpq_cascade_dropped_note (suppressed from customer response): "
+            "%s [run_id=%s]", dropped_note.strip(), session.run_id or "-",
+        )
+        dropped_note = ""
 
     session.filled = filled
     session.display_filled = display_filled
