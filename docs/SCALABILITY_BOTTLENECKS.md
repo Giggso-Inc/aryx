@@ -29,6 +29,7 @@ unacceptably slow pipeline runs.
 | P14 | 🔴 Critical | Datasource/action/relationship-type writes — missing `workspace_id` scoping | *(fixed)* cross-tenant delete/write, any workspace |
 | P15 | 🔴 Critical | Discovery summary/confirm — full 257MB payload deserialized for a small read | *(fixed)* any multi-file discovery (OCI mode) |
 | P16 | 🟡 High | Oracle `RETURNING...INTO` ~16KB limit on JSON columns | *(fixed)* any datasource config json >~16KB (OCI mode) |
+| P17 | 🟢 Medium | Schema-FK LLM inference — sequential batches, not parallelized | *(identified, not fixed)* workspaces with many entity types |
 
 ---
 
@@ -1041,6 +1042,90 @@ behavior; Postgres has no equivalent restriction and was never affected).
 
 ---
 
+## P17 — Schema-FK LLM Inference: Sequential Batches *(Identified, Not Fixed)*
+
+**Status:** 🟡 Identified 2026-07-28, not yet fixed. Found by timing the real
+30-file SVX confirm job (P14-P16's fix verification) end to end and breaking
+down exactly where its 40m56s went.
+
+**Source file:** `src/aryx/pipeline/enrich.py` — `_infer_schema_fk_links()`
+
+**Full timing breakdown of the real confirm job (40m56s total):**
+
+| Phase | Duration | % of total |
+|---|---|---|
+| Initial full-payload fetch (P15's known remaining cost) | ~3m57s | 10% |
+| Discover+Resolve+Seed+Relate (30 files) | ~16m43s | 41% |
+| Schema-FK LLM inference (5 batches) | ~8m7s | 20% |
+| Deterministic FK-edge linking (54 specs) | ~2m29s | 6% |
+| Graph Project — vertices (12,244 rows) | ~2m37s | 6% |
+| Graph Project — provenance (12,246 rows) | ~1m28s | 4% |
+| Graph Project — edges (56,416 rows) | ~3m24s | 8% |
+| Final wrap-up | ~12s | <1% |
+
+**The striking part:** this is nearly the same *total* time as the pre-fix
+baseline in P8-P12 (40m6s, same-sized workspace) — but the composition
+completely inverted. That baseline was 55% graph projection (the P12 bug,
+now fixed to ~18% combined here). Nothing got newly slow — fixing the
+biggest bottleneck just stopped hiding the next ones. Discover/Resolve/Seed/
+Relate and schema-FK LLM inference were always this expensive; they're only
+now the visible cost.
+
+**What happened in schema-FK inference specifically:**
+```python
+for batch_types in batches:
+    batch_keys = [anchor_type] + batch_types
+    batch_schemas = {t: type_schemas[t] for t in batch_keys if t in type_schemas}
+    try:
+        links = infer_fk_links(batch_schemas, broker)   # one blocking LLM call
+    except Exception:
+        logger.exception(...)
+        continue
+    for lnk in links:
+        ...  # dedup into `seen`, order-independent
+```
+Five batches, run one after another, each a separate blocking
+`complete_json()` call. They're fully independent — different, non-
+overlapping type subsets, deduplicated into one `seen` set afterward
+regardless of completion order — so nothing requires them to run
+sequentially. Measured live: batch timings were highly uneven (one single
+batch took **4m6s** by itself — more than half of the entire 8m7s phase),
+consistent with ordinary LLM response-time variance rather than anything
+input-size-dependent. Running all 5 concurrently would let the phase's
+wall-clock time collapse to roughly the *slowest single batch* instead of
+the *sum* of all batches — a potential ~5-8x cut to this specific phase,
+similar in shape to P9's serial-LLM-call fix, but via concurrency rather
+than threshold tuning (this batching genuinely needs the LLM, unlike P9's
+adjudication calls which had a non-LLM fallback).
+
+### Accuracy Impact
+None — same links inferred either way, only wall-clock time would change.
+
+### Resource Impact
+~8 minutes of the ~41-minute confirm job, for this specific dataset
+(depends on how many entity types share a workspace — more types means
+more batches means more to parallelize).
+
+### Cost Impact
+No change in LLM $ cost — same number of calls either way, just concurrent
+instead of sequential.
+
+### Proposed Fix (not yet applied)
+Replace the sequential `for` loop with a concurrent dispatch (e.g.
+`ThreadPoolExecutor`, already used elsewhere in this codebase per P4) over
+independent batches, collecting results into the same `seen`-deduplicated
+list once all complete. Not implemented yet — flagged for a decision on
+whether the added complexity (thread safety around the shared `broker`
+client, potential provider-side rate limiting from concurrent calls) is
+worth it given the pipeline already completes successfully today, just
+takes longer than it could.
+
+### Fix — OCI Path
+N/A — same fix applies regardless of backend; this is Python-side
+orchestration around the LLM call, not anything Oracle- or Postgres-specific.
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
@@ -1137,6 +1222,8 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *Updated: 2026-07-28 — added P14-P16, found and fixed during a live*
 *document-ingestion confirm-flow investigation triggered by a real user*
 *report, verified end to end against a real 30-file customer discovery*
+*Updated: 2026-07-28 — added P17, identified by timing that same real*
+*confirm job's full 40m56s end-to-end run; not yet fixed*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
 *src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
 *src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
@@ -1145,4 +1232,5 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *src/aryx/cpq/engine.py, src/aryx/graph/oracle_graph_reader.py, src/aryx/ports/protocols.py,*
 *src/aryx/store/datasource_store.py, src/aryx/store/action_store.py,*
 *src/aryx/store/relationship_type_store.py, src/aryx/store/discovery_store.py,*
-*src/aryx/discoveries.py, src/aryx/api/doc_discover_api.py*
+*src/aryx/discoveries.py, src/aryx/api/doc_discover_api.py,*
+*src/aryx/pipeline/enrich.py, src/aryx/relationships.py*

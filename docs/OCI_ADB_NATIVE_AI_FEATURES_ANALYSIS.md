@@ -308,176 +308,7 @@ closes it.
 
 ---
 
-## Part 4 — Implementation Plan: Row-Level Security (VPD) for Workspace Isolation
-
-Three other native ADB capabilities are unused in this deployment today
-(verified live — no vector indexes, no `VECTOR_DISTANCE` usage anywhere in
-code, no `DBMS_RLS` policies, and the SQL/PGQ property graph object is
-declared but exercised by exactly one query). Of the three, VPD/RLS is the
-only one justified by a **proven bug**, not a performance hypothesis, so it
-gets a full implementation plan here. Vector search and the property-graph
-rewrite are covered at analysis depth in Part 5.
-
-### Problem Statement
-Multi-tenant workspace isolation in OCI mode is enforced **entirely by
-convention in application code** — every query against a workspace-scoped
-table (`aryx_entity`, `aryx_graph_vertex`, `aryx_chunk`, `aryx_document`,
-`aryx_job`, and ~15 others) must remember to include
-`WHERE workspace_id = :N`. Nothing in the schema, the query layer, or the
-connection pool ties a query's result set to the caller's actual workspace —
-the database will happily return rows for *any* workspace to *any* caller
-who forgets the filter.
-
-This is not theoretical. This session found and fixed exactly that failure:
-`OracleGraphReader.find_entities()` ([oracle_graph_reader.py](../src/aryx/graph/oracle_graph_reader.py))
-had no `workspace_id` predicate at all — every call returned entities from
-every workspace in the database, not just the caller's. It was caught only
-by manual code reading during an unrelated live-debugging session, not by
-any test, lint rule, or database-level control. Code review already failed
-to catch this once; there's nothing structural stopping it from happening
-again in a future store method, API endpoint, or hurried bug fix.
-
-### Root Cause
-- **Workspace scoping is a per-query convention, not a system invariant.**
-  `workspace_id` travels as an ordinary bind parameter that each query
-  author must remember to add — there's no single choke point that enforces
-  it universally.
-- **The connection pool is workspace-agnostic.** `get_oracle_pool(dsn)`
-  ([oracle_pool.py](../src/aryx/store/oracle_pool.py)) pools connections by
-  DSN only; a borrowed connection has no notion of "this session currently
-  belongs to workspace X" that Oracle itself could use to filter rows.
-- **No compensating control exists.** No RLS/VPD policies, no static
-  analysis flagging a query against a scoped table with no `workspace_id`
-  predicate, no regression test that would fail if a new store method
-  omitted the filter — the `find_entities()` bug could recur in any new code
-  tomorrow and nothing would flag it before a live incident does.
-
-### Fix — Oracle VPD (`DBMS_RLS`)
-
-**1. Session context.**
-```sql
-CREATE CONTEXT aryx_ctx USING aryx_ctx_pkg;  -- trusted: only this package may set it
-
-CREATE OR REPLACE PACKAGE aryx_ctx_pkg AS
-  PROCEDURE set_workspace(p_workspace_id IN NUMBER);
-END aryx_ctx_pkg;
-/
-CREATE OR REPLACE PACKAGE BODY aryx_ctx_pkg AS
-  PROCEDURE set_workspace(p_workspace_id IN NUMBER) IS
-  BEGIN
-    DBMS_SESSION.SET_CONTEXT('ARYX_CTX', 'WORKSPACE_ID', TO_CHAR(p_workspace_id));
-  END;
-END aryx_ctx_pkg;
-/
-```
-A *trusted* context means only `aryx_ctx_pkg.set_workspace` can set it — raw
-session variables can't be spoofed by any other SQL running on the same
-connection.
-
-**2. Policy function — fail closed, not fail open.**
-```sql
-CREATE OR REPLACE FUNCTION aryx_ws_policy(schema_var VARCHAR2, table_var VARCHAR2)
-RETURN VARCHAR2 IS
-  v_ws VARCHAR2(20) := SYS_CONTEXT('ARYX_CTX', 'WORKSPACE_ID');
-BEGIN
-  IF v_ws IS NULL THEN
-    RETURN '1 = 0';   -- no context set → zero rows, never "everything"
-  END IF;
-  RETURN 'workspace_id = ' || v_ws;
-END;
-```
-The `IF v_ws IS NULL THEN RETURN '1=0'` line is the single most important
-line in this plan — it's what makes RLS fail closed. Skipping it (or
-defaulting to an unfiltered predicate) would turn "forgot to set context"
-into "see everything," the exact opposite of the intended fix.
-
-**3. Attach the policy per table.**
-```sql
-BEGIN
-  DBMS_RLS.ADD_POLICY(
-    object_schema   => 'ARYX_APP',
-    object_name     => 'ARYX_GRAPH_VERTEX',
-    policy_name     => 'aryx_ws_isolation',
-    function_schema => 'ARYX_APP',
-    policy_function => 'aryx_ws_policy',
-    statement_types => 'SELECT,INSERT,UPDATE,DELETE'
-  );
-END;
-```
-Repeated per workspace-scoped table. `aryx_workspace` itself (the workspace
-*registry*, queried by `list_workspaces()` in `workspace_api.py`) is
-correctly **excluded** — it isn't workspace-scoped data, it's the table that
-defines workspaces, and no other cross-workspace admin/reporting query was
-found touching a scoped data table (verified by grep across `workspace_api.py`
-and the store layer) — no bypass role is needed for this rollout.
-
-**4. Wire context-setting into the app.** This is the real engineering work,
-not the SQL above. Every Oracle store class already carries or receives
-`workspace_id` (some at construction — `OracleGraphReader.__init__(dsn,
-workspace_id)` — others per call — `cpq/rdb.py`'s `fetch_*(workspace_id,
-...)` methods), so there's no single existing choke point. The fix:
-`OraclePool.connection()` gains an optional `workspace_id` parameter and
-calls `aryx_ctx_pkg.set_workspace` immediately after acquiring the raw
-connection, every time — connections are reused across requests for
-*different* workspaces, so the context must be (re)set on **every**
-checkout, not once. Every `with self._pool.connection() as conn:` call site
-across the Oracle store classes needs updating to pass its known
-`workspace_id` through.
-
-### Rollout Plan (ordered to avoid a self-inflicted outage)
-RLS policies fail closed — if they go live before the app reliably sets
-context on every request, every query against a protected table returns
-zero rows, everywhere, immediately. The order below exists specifically to
-prevent that:
-
-1. **Build the context-setting infrastructure first, with no policies yet.**
-   Ship the `connection(workspace_id=...)` change and update all Oracle
-   store call sites. With no `DBMS_RLS` policy attached to any table yet,
-   this step is inert — it sets a context nothing reads. Add logging/a debug
-   endpoint to confirm `SYS_CONTEXT('ARYX_CTX','WORKSPACE_ID')` is correctly
-   populated for real request traffic before proceeding.
-2. **Attach the policy to one table first** — `aryx_graph_vertex`, the table
-   where the bug was actually found. Run the same live-verification
-   discipline used all session (real Ask/CPQ requests against the running
-   `api` container, not just unit tests) to confirm no regression.
-3. **Roll out to the remaining scoped tables** in small batches, each
-   verified live before moving to the next, rather than all at once.
-4. **Keep `DBMS_RLS.DROP_POLICY` / `DISABLE_POLICY` as the rollback** for any
-   table — since app-side context-setting is harmless without an attached
-   policy, rollback never requires an app code change or redeploy, only a DB
-   change, at any point in the rollout.
-
-### Testing Plan
-This cannot be verified with mocked `oracledb` the way most of this
-codebase's Oracle-path unit tests work — it requires live ADB, the same
-constraint that made every fix this session (P8-P13, the Ask-thread port)
-ultimately depend on real testing over static review or mocks:
-- **Fail-closed check:** run a query against a protected table with no
-  context set — must return zero rows, not an error and not all rows.
-- **Isolation check:** two sequential requests for two different
-  workspace_ids against the *same physical pooled connection* (force reuse)
-  must never see each other's data — this is the specific new failure mode
-  RLS rollout could introduce if context isn't reset correctly on every
-  checkout, so it needs its own dedicated test, not just "does workspace A
-  see workspace A's data."
-- **Regression check:** re-run the exact live smoke tests already used this
-  session (the Ask-thread persistence test, the CPQ two-turn conversation)
-  after each table's policy goes live, confirming identical results to
-  today's unprotected behavior for legitimate same-workspace access.
-
-### Why this over the alternatives already ruled out
-Both the embedding and chat native-ADB options (Parts 1-3) were held to "no
-Oracle-only branch without a measured performance number." This one clears a
-different, higher bar: it isn't chasing a hypothetical speed-up, it's closing
-a demonstrated correctness/security gap with a fix Oracle provides natively.
-The added Oracle-only surface area (context package, policies, pool API
-change) is the same *kind* of cost as the ruled-out options, but here it's
-buying a structural guarantee against an entire bug class already proven to
-occur, not an unverified latency edge.
-
----
-
-## Part 5 — Other Identified but Lower-Priority ADB Features
+## Part 4 — Other Identified but Lower-Priority ADB Features
 
 Two more native capabilities are available on this instance and unused, but
 neither clears the bar for a full implementation plan right now — one is a
@@ -562,18 +393,10 @@ instance, but none is a drop-in win for aryx today:
   fixed this session (P8-P13, the Ask-thread port, the CPQ N+1). Any decision
   to add a fourth such branch should be justified by measured numbers, not
   architectural appeal.
-- **Row-Level Security (Part 4) is the one exception to that bar.** It's the
-  only native ADB feature in this document justified by a proven
-  correctness/security gap — the `find_entities()` workspace-scoping bug this
-  session already found and fixed — rather than an unmeasured performance
-  hope. It has a real implementation cost (connection-lifecycle changes
-  across every Oracle store class) and a real new failure mode to guard
-  against (stale context on a reused pooled connection), but the fix
-  addresses an entire bug *class*, not one instance of it.
-- **Vector search and the PGQ rewrite (Part 5)** are lower priority: vector
+- **Vector search and the PGQ rewrite (Part 4)** are lower priority: vector
   search is a genuine new feature (and currently has zero data to work with),
   and the PGQ rewrite would optimize a traversal path already fixed this
-  session (P13) — neither is an open problem today the way the RLS gap is.
+  session (P13) — neither is an open problem today.
 
 ---
 
@@ -588,6 +411,8 @@ instance, but none is a drop-in win for aryx today:
 *`src/aryx/pipeline/tag.py`, `src/aryx/brief_draft.py`.*
 *Updated: 2026-07-28 — added Part 3, the Select AI usability verdict and the*
 *graph-direct-linking analysis for CPQ's conversational loop.*
-*Updated: 2026-07-28 — added Part 4 (VPD/RLS implementation plan: problem*
-*statement, root cause, fix, phased rollout, testing plan) and Part 5*
-*(vector search and SQL/PGQ rewrite, analysis-level, lower priority).*
+*Updated: 2026-07-28 — added Part 4 (vector search and SQL/PGQ rewrite,*
+*analysis-level, lower priority).*
+*Updated: 2026-07-28 — removed the VPD/Row-Level Security implementation*
+*plan (formerly Part 4) at the user's request; the remaining lower-priority*
+*features section renumbered from Part 5 to Part 4.*
