@@ -3727,6 +3727,42 @@ class CpqEngine:
         return governed
 
     @staticmethod
+    def product_label_noise_vns(
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+    ) -> set[str]:
+        """Variable names of "Product"-labeled attrs that are genuinely
+        irrelevant noise once `session.model_leaf_resolved` is True — the
+        CommandCentral-style case Amendment 10 was built for, where a
+        generic "Product" attr carries no rule of its own and the real
+        model identity travels entirely through the resolved bm_catalog
+        leaf instead.
+
+        Deliberately NOT every attr labeled "Product" — live-confirmed bug
+        (2026-07-28): APX Next's order text ("Order APX Next Radios...")
+        also matches one of the workspace's catalog leaf candidates in the
+        ambiguous-multi-leaf resolution path, setting model_leaf_resolved
+        True for APX Next as well — but unlike CommandCentral, APX Next's
+        own "Product" attr (productSelectionProduct_all) IS a genuine,
+        rule-governed decision (a real constraint script narrows its
+        options by Hardware Version). The blanket "drop every Product-
+        labeled attr" rule silently dropped it from `pending` AND the
+        payload entirely, with no value ever collected. Scoping to
+        `rule_governed_ids` (a purely structural signal — which rules
+        already target which attrs, independent of current filled state)
+        distinguishes "truly noise, no rule cares about this" from "a real
+        rule narrows this, it must still be asked."
+        """
+        governed = CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        return {
+            a.variable_name for a in attrs
+            if a.display_label.strip().lower() == "product"
+            and a.entity_id not in governed
+        }
+
+    @staticmethod
     def governed_target_ids(
         attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],

@@ -839,10 +839,8 @@ def _handle_cascade(
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
@@ -865,7 +863,11 @@ def _handle_cascade(
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.
-        pending = [a for a in pending if a.display_label.strip().lower() != "product"]
+        pending = [
+            a for a in pending
+            if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                attrs, hiding_rules, rec_rules, con_rules)
+        ]
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
         visible_attrs, filled, session.filled_multi):
@@ -1134,10 +1136,8 @@ def _handle_multi_select_removal(
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
@@ -1160,7 +1160,11 @@ def _handle_multi_select_removal(
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.
-        pending = [a for a in pending if a.display_label.strip().lower() != "product"]
+        pending = [
+            a for a in pending
+            if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                attrs, hiding_rules, rec_rules, con_rules)
+        ]
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
         visible_attrs, filled, session.filled_multi):
@@ -1280,10 +1284,8 @@ def _handle_attr_activation(
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
@@ -1306,7 +1308,11 @@ def _handle_attr_activation(
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.
-        pending = [a for a in pending if a.display_label.strip().lower() != "product"]
+        pending = [
+            a for a in pending
+            if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                attrs, hiding_rules, rec_rules, con_rules)
+        ]
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
         visible_attrs, filled, session.filled_multi):
@@ -1446,10 +1452,8 @@ def _handle_attr_clear(
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
@@ -1472,7 +1476,11 @@ def _handle_attr_clear(
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.
-        pending = [a for a in pending if a.display_label.strip().lower() != "product"]
+        pending = [
+            a for a in pending
+            if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                attrs, hiding_rules, rec_rules, con_rules)
+        ]
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
         visible_attrs, filled, session.filled_multi):
@@ -1592,10 +1600,8 @@ def _handle_bulk_quantity_change(
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
@@ -1618,7 +1624,11 @@ def _handle_bulk_quantity_change(
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.
-        pending = [a for a in pending if a.display_label.strip().lower() != "product"]
+        pending = [
+            a for a in pending
+            if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                attrs, hiding_rules, rec_rules, con_rules)
+        ]
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
         visible_attrs, filled, session.filled_multi):
@@ -1824,10 +1834,8 @@ def _handle_cascade_multi(
     # be asked the raw-variable-name "Product" label collision this
     # protection exists specifically to suppress.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     visible_attrs, filled, display_filled, constrained_opts = _cpq_engine.evaluate_rules_loop(
         attrs, hints, dict(session.filled), hiding_rules, rec_rules, con_rules,
         bml_eval=bml_eval, filled_source=session.filled_source,
@@ -1850,7 +1858,11 @@ def _handle_cascade_multi(
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
         # doesn't stop a genuinely required, no-default attr from staying
         # "pending" outright. Same cascade-turn parity fix as above.
-        pending = [a for a in pending if a.display_label.strip().lower() != "product"]
+        pending = [
+            a for a in pending
+            if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                attrs, hiding_rules, rec_rules, con_rules)
+        ]
     _grid_qty_vns = {a.variable_name for a in pending}
     for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
         visible_attrs, filled, session.filled_multi):
@@ -4065,10 +4077,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # proven irrelevant here, so they must not ship in the payload either,
     # not just skip being asked.
     if session.model_leaf_resolved:
-        _hidden_for_payload = _hidden_for_payload | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        _hidden_for_payload = _hidden_for_payload | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     # Constraint/recommendation-type inconsistencies (same plan, §4.1) are
     # NOT auto-fixed — unlike hiding, the engine can't be certain what the
     # correct value should have been, so silently changing it risks
@@ -5166,10 +5176,8 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     # "_bm_model_variable_name is filled"), since that field could in
     # principle be set through some other, less certain path elsewhere.
     if session.model_leaf_resolved:
-        skip_always_ask = skip_always_ask | {
-            a.variable_name for a in attrs
-            if a.display_label.strip().lower() == "product"
-        }
+        skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
     def _recompute_pending(cur_hints):
         """One evaluate_rules_loop + auto_fill + post-filter pass, over
         whatever `cur_hints` currently holds. Factored out so Amendment 17
@@ -5201,7 +5209,11 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
             # are irrelevant to THIS catalog's real flow (Amendment 5 Finding
             # 3), drop them from `pending` outright rather than asking for
             # them at all — they're already excluded from the payload above.
-            p = [a for a in p if a.display_label.strip().lower() != "product"]
+            p = [
+                a for a in p
+                if a.variable_name not in _cpq_engine.product_label_noise_vns(
+                    v_attrs, hiding_rules, rec_rules, con_rules)
+            ]
         _gq_vns = {a.variable_name for a in p}
         for _qty_attr in _cpq_engine.resolve_pending_grid_quantities(
                 v_attrs, f, session.filled_multi):
