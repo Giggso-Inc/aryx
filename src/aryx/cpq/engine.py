@@ -5340,23 +5340,29 @@ class CpqEngine:
             return None
         q_lower = question.lower()
         multi = filled_multi or {}
-        # _label_mentioned, not a strict substring check — detect_change_
-        # request's own resolution uses this same fuzzy matcher (drops up
-        # to 2 leading words, e.g. the generic "mounting type" prefix), so
-        # a real user phrasing like "change the Shirt Magnetic Mount
-        # Quantity to 99" (the specific attr's actual label is "mounting
-        # type Shirt Magnetic Mount Quantity") must be seen as a candidate
-        # here too — confirmed live: the strict substring check never saw
-        # the specific attr as a candidate at all (its full label never
-        # literally appears when the "mounting type" prefix is dropped),
-        # only the generic "Quantity" attrs, so the supersession check
-        # below never fired and a bogus 3-way "Quantity" collision was
-        # reported even though detect_change_request's own resolver would
-        # have resolved it unambiguously.
+        # _label_mentioned_strict (2026-07-28 fix), NOT the loose
+        # _label_mentioned — live-confirmed bug: "change solution type and
+        # hardware type" (neither phrase contains "service type" anywhere)
+        # still reported a "Service Type" collision, because the loose
+        # matcher's leading-word-drop tier let "Service Type" degrade to
+        # the single generic shared word "Type", which then substring-
+        # matched "type" inside BOTH "solution type" and "hardware type".
+        # _label_mentioned's own docstring says this loose tier is "safe
+        # only as a coarse pre-filter" specifically because its OTHER
+        # caller (detect_change_request) always requires a separate real
+        # value-match before resolving anything — this function has no
+        # such second check; it hands loose matches straight to the user
+        # as a real collision, so it needs the strict variant instead,
+        # which explicitly never degrades to a single generic shared word
+        # (see _label_mentioned_strict's own docstring). Multi-word
+        # dropped-prefix matches (e.g. "mounting type Shirt Magnetic Mount
+        # Quantity" naming just "Shirt Magnetic Mount Quantity") still work
+        # under the strict variant — only the single-generic-word
+        # degradation is excluded.
         candidates = [
             a for a in attrs
             if (a.variable_name in filled or a.variable_name in multi)
-            and _label_mentioned(a.display_label.lower(), q_lower)
+            and _label_mentioned_strict(a.display_label.lower(), q_lower)
         ]
         # Group by the EXACT label text, not just "2+ candidates matched at
         # all" — a substring containment match (e.g. "Quantity" inside
