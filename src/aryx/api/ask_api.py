@@ -199,39 +199,43 @@ def _synthesise(question: str, context: str, overview: str = "",
     conv = _recent(history or [], limit=6)
     conv_block = f"\nCONVERSATION SO FAR:\n{conv}\n" if conv else ""
 
-    # Grounded scope check (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 2):
-    # only spent when there's nothing in GRAPH FACTS to answer from — the
-    # common "facts found" case is unaffected, zero extra calls. Confirmed
+    # Grounded scope check (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 2, extended
+    # 2026-07-28): originally only spent when GRAPH FACTS was empty. Confirmed
     # live this codepath previously fabricated plausible-sounding catalog
     # details (SVX Video RSM, currency options) for a genuinely unrelated
-    # astrology question, because its own instruction forbade ever saying
-    # "not stored" with no carve-out for "not CPQ-relevant at all."
-    is_cpq_relevant = True
-    if not has_context:
-        is_cpq_relevant = _llm_classify_is_cpq_question(question, workspace_id)
-        logger.info(
-            "cpq_qa_scope: empty graph context for %r -> is_cpq_relevant=%s",
-            question, is_cpq_relevant,
-        )
+    # astrology question ("astra in astrological sense") — but that fabricated
+    # answer came from a WEAK/SPURIOUS entity match the graph search DID
+    # return (has_context was True), not from an empty result, so the
+    # original has_context-gated check never even ran. The catalog-relevance
+    # question ("is this question actually about product config/quoting at
+    # all?") is independent of whether SOME entity happened to fuzzy-match —
+    # always classify, and let a genuinely irrelevant question override
+    # whatever facts were found.
+    is_cpq_relevant = _llm_classify_is_cpq_question(question, workspace_id)
+    logger.info(
+        "cpq_qa_scope: has_context=%s for %r -> is_cpq_relevant=%s",
+        has_context, question, is_cpq_relevant,
+    )
 
-    if has_context:
+    if not is_cpq_relevant:
+        empty_rule = (
+            "- The question is not about product configuration, quoting, or "
+            "enterprise data at all → say plainly that this is outside what "
+            "you track (product configuration and quoting), in one short "
+            "sentence, EVEN IF something below happens to loosely match a "
+            "word in the question. Do NOT invent or connect unrelated "
+            "catalog details to answer it anyway.\n"
+        )
+    elif has_context:
         empty_rule = (
             "- GRAPH FACTS present → answer specifically, naming the entities, "
             "values, and relationships shown, in plain language.\n"
         )
-    elif is_cpq_relevant:
+    else:
         empty_rule = (
             "- GRAPH FACTS empty → use the OVERVIEW to describe what IS tracked "
             "and suggest a concrete follow-up question. "
             "Do NOT say 'no matching entities' or 'not stored'.\n"
-        )
-    else:
-        empty_rule = (
-            "- GRAPH FACTS empty AND the question is not about product "
-            "configuration, quoting, or enterprise data at all → say plainly "
-            "that this is outside what you track (product configuration and "
-            "quoting), in one short sentence. Do NOT invent or connect "
-            "unrelated catalog details to answer it anyway.\n"
         )
 
     # Session-value rule (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 3): only
@@ -265,7 +269,9 @@ def _synthesise(question: str, context: str, overview: str = "",
         "naturally explain it. Use a short list only when multiple distinct "
         "items are being enumerated. Plain, everyday English — no technical "
         "or internal terms.\n\n"
-        f"{overview}{conv_block}{session_values_block}\nGRAPH FACTS:\n{facts}\n\nQUESTION: {question}"
+        f"{overview}{conv_block}{session_values_block}\nGRAPH FACTS:\n"
+        f"{facts if is_cpq_relevant else '(withheld — question is off-topic, see rule above)'}"
+        f"\n\nQUESTION: {question}"
     )
     start = time.monotonic()
     text, it, ot = llm_runtime.chat("answer", sys, user, workspace_id=workspace_id)
@@ -641,7 +647,7 @@ def _handle_cascade(
     # camera" was announced as recalculating, then silently never
     # reappeared anywhere — correct outcome, confusing wording).
     dependent_labels = [
-        by_eid[eid].display_label for eid in dependent_eids
+        _cpq_engine.disambiguated_label(by_eid[eid], attrs) for eid in dependent_eids
         if eid in by_eid and by_eid[eid].set_type != "2"
     ]
 
@@ -796,15 +802,22 @@ def _handle_cascade(
         session.pending_variables = [a.variable_name for a in pending]
 
     # Build cascade notice
+    # Amendment (2026-07-28), docs/CPQ_LLM_INTENT_FIRST_PLAN.md: use the
+    # disambiguated label here, not the raw shared one — several attrs in
+    # this catalog carry the identical display_label "Service Type", and
+    # when more than one changes value in the same turn (the user's own
+    # change plus an independently-firing recommendation rule elsewhere)
+    # the raw label made every line read as the same fact repeated.
+    _changed_label = _cpq_engine.disambiguated_label(changed_attr, attrs)
     if _user_value_overridden:
         cascade_note = (
-            f"Your choice for **{changed_attr.display_label}** "
+            f"Your choice for **{_changed_label}** "
             f"(**{_requested_display}**) isn't valid given the rest of this "
             f"configuration — please choose a different value:"
         )
     else:
         changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
-        cascade_note = f"Updated **{changed_attr.display_label}** → **{changed_disp}**."
+        cascade_note = f"Updated **{_changed_label}** → **{changed_disp}**."
     if dependent_labels and not _user_value_overridden:
         # Plain-English framing, not a raw label dump — "This invalidated:
         # X, Y — re-evaluating." read as internal/mechanical shorthand
@@ -814,14 +827,14 @@ def _handle_cascade(
         # oddly as a list.
         if len(dependent_labels) == 1:
             cascade_note += (
-                f" Because **{changed_attr.display_label}** changed, "
+                f" Because **{_changed_label}** changed, "
                 f"**{dependent_labels[0]}** depends on it and needs a fresh "
                 f"value — recalculating now."
             )
         else:
             dep_list = ", ".join(f"**{lbl}**" for lbl in dependent_labels)
             cascade_note += (
-                f" Because **{changed_attr.display_label}** changed, these "
+                f" Because **{_changed_label}** changed, these "
                 f"depend on it and need fresh values: {dep_list} — "
                 f"recalculating now."
             )
@@ -1622,7 +1635,10 @@ def _handle_cascade_multi(
         all_dependent_eids |= set(dependent_eids)
         if changed_attr.select_type == "multi":
             changed_disp = session.display_filled.get(changed_attr.variable_name, new_value_hint)
-            applied_notes.append(f"Updated **{changed_attr.display_label}** → **{changed_disp}**.")
+            applied_notes.append(
+                f"Updated **{_cpq_engine.disambiguated_label(changed_attr, attrs)}** "
+                f"→ **{changed_disp}**."
+            )
         else:
             # Note built after the rule pass below, once we know whether
             # this value actually stuck (D1).
@@ -1640,7 +1656,7 @@ def _handle_cascade_multi(
     # and are always excluded from the final payload — see _handle_cascade's
     # identical filter for the live-verified finding this addresses.
     dependent_labels = [
-        by_eid[eid].display_label for eid in all_dependent_eids
+        _cpq_engine.disambiguated_label(by_eid[eid], attrs) for eid in all_dependent_eids
         if eid in by_eid and by_eid[eid].variable_name not in changed_vns
         and by_eid[eid].set_type != "2"
     ]
@@ -1722,16 +1738,17 @@ def _handle_cascade_multi(
     # rule reasserting its own value over the customer's explicit choice).
     _overridden_attrs: list[Any] = []
     for _vn, (_attr, _want_value, _want_display) in _user_requested_single.items():
+        _attr_label = _cpq_engine.disambiguated_label(_attr, attrs)
         if session.filled.get(_vn) == _want_value:
             changed_disp = session.display_filled.get(_vn, _want_display)
-            applied_notes.append(f"Updated **{_attr.display_label}** → **{changed_disp}**.")
+            applied_notes.append(f"Updated **{_attr_label}** → **{changed_disp}**.")
         else:
             session.filled.pop(_vn, None)
             session.display_filled.pop(_vn, None)
             session.filled_source.pop(_vn, None)
             _overridden_attrs.append(_attr)
             applied_notes.append(
-                f"Your choice for **{_attr.display_label}** (**{_want_display}**) "
+                f"Your choice for **{_attr_label}** (**{_want_display}**) "
                 f"isn't valid given the rest of this configuration — please "
                 f"choose a different value."
             )
@@ -3385,10 +3402,42 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         session.pending_change_no_value_vn = ""
         if _pcnv_attr:
-            return _handle_cascade(
+            _pcnv_result = _handle_cascade(
                 req, session, attrs, _pcnv_attr, req.question,
                 hiding_rules, rec_rules, con_rules,
             )
+            # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4),
+            # same continuation the value-bearing collision-resolution branch
+            # already does below — this is the OTHER path that can leave a
+            # stashed second target (pending_multi_intent_vn) behind: a
+            # collision resolved to an attr that ALSO had no parseable value
+            # (e.g. "change solution type and primary service type"), so the
+            # first attr's own answer arrives here, as a plain pending-value
+            # reply, not through the collision-resolution branch at all.
+            # Previously this second target was only ever acknowledged
+            # ("I'll still ask about X right after this") and then silently
+            # dropped — live-confirmed gap, never actually re-asked.
+            _second_vn = session.pending_multi_intent_vn
+            session.pending_multi_intent_vn = ""
+            _second_attr = next(
+                (a for a in attrs if a.variable_name == _second_vn), None,
+            ) if _second_vn else None
+            if _second_attr is not None:
+                session.pending_change_no_value_vn = _second_attr.variable_name
+                _second_constrained = _cpq_engine.apply_constraint_rules(
+                    attrs, con_rules, session.filled, bml_eval)
+                _second_block = _cpq_engine.next_question_prompt(
+                    _second_attr,
+                    constrained_item_values=_second_constrained.get(_second_attr.entity_id),
+                    validation_rules=validation_rules,
+                )
+                _pcnv_result["answer"] += (
+                    f"\n\n---\n\nAs mentioned — which value would "
+                    f"you like for **{_second_attr.display_label}**?"
+                    f"\n\n{_second_block}"
+                )
+                _pcnv_result["session_data"] = session.to_dict()
+            return _pcnv_result
 
     # Rule-consistency auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
     # §4.1): a filled attr an active hiding rule currently matches was never
@@ -4540,6 +4589,33 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
                 "var": var, "old": old_val, "new": new_val,
                 "rule": session.filled_source.get(var, ""), "turn": session.turn,
             })
+
+    # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4):
+    # re-queue the second target stashed when a label collision was raised
+    # alongside it. Live-verified gap (2026-07-28): the collision-resolution
+    # branches' own "I'll still ask about X" acknowledgment only fires when
+    # the FIRST target's reply is captured by one of THOSE branches directly
+    # — but a plain reply to the reordered pending_variables[0] (e.g.
+    # answering "Essential with Accidental Damage" to the re-shown options
+    # list) is instead captured here, by STEP 5's generic pending-answer
+    # lock, which had no idea a second target was ever promised. Re-queuing
+    # it into `pending` — rather than special-casing the "Configuration
+    # complete" branch below — lets the existing STEP 4 next-question flow
+    # ask it naturally, whatever else may or may not still be pending.
+    if session.pending_multi_intent_vn:
+        _mi_vn = session.pending_multi_intent_vn
+        session.pending_multi_intent_vn = ""
+        _mi_attr = next((a for a in visible_attrs if a.variable_name == _mi_vn), None)
+        # Deliberately NOT excluded for already being in session.filled —
+        # this second target was named in an explicit CHANGE request (e.g.
+        # "change solution type and primary service type"), so an existing
+        # value is exactly the normal case, not a signal it's already
+        # answered and can be skipped (live-verified: Solution Type was
+        # already filled with its auto-selected default, which is exactly
+        # why the customer wanted to change it).
+        if _mi_attr is not None and not any(a.variable_name == _mi_vn for a in pending):
+            pending = [_mi_attr] + pending
+            session.pending_variables = [a.variable_name for a in pending]
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
