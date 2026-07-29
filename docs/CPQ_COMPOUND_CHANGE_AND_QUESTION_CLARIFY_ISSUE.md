@@ -971,3 +971,41 @@ in the selection remains valid.
 5 and only the invalid one triggers the re-ask (naming it specifically in
 the message); a fully-invalid selection still clears the whole key as
 before.
+
+---
+
+## 18. `_extract_replacement_clause`'s cue detection was position-based, not semantic — a reversed phrasing still leaked the rejected value. Fixed.
+
+**Finding**: the cue regex matches on the FIRST occurring cue word
+(`use`/`instead`/`prefer`/`rather`) and takes everything after it, then
+trims at the first contrastive word found *within that captured text*.
+"Instead of Standard, prefer Premium" matches on "instead" (the earliest
+cue), capturing "of Standard, prefer Premium" — that captured clause has
+no contrastive word of its own (the word "instead" that would normally
+trigger a cut was already consumed by the outer match), so nothing gets
+trimmed and "Standard" stays in the text handed to `apply_answer`.
+
+**Confirmed — live-tested directly**:
+```python
+>>> _extract_replacement_clause("instead of Standard, prefer Premium")
+'of Standard, prefer Premium'
+>>> engine.apply_answer(attr, 'of Standard, prefer Premium', None)
+('Standard', 'Standard')
+```
+
+**Root cause**: "instead" plays two different grammatical roles
+depending on what follows it. Alone, it introduces the WANTED value
+("use Premium instead"). As "instead of X", X is the REJECTED value and
+the real replacement is stated elsewhere in the sentence — but the cue
+regex treated both forms identically.
+
+**Fix**: excluded "instead of" from the cue match via a negative
+lookahead (`instead(?!\s+of)`). When "instead of X" appears, that
+alternative simply doesn't match there, and `re.search` naturally
+continues scanning forward to find the real cue word ("prefer") later in
+the sentence — no special-casing needed, the existing scan-forward
+behavior does the right thing once the false match is excluded.
+
+**Live-verified**: 2 new tests — the reversed phrasing now resolves to
+Premium, and bare "instead" (not followed by "of") still works as a
+direct cue exactly as before.

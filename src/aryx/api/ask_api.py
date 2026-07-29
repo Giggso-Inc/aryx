@@ -1058,8 +1058,19 @@ def _is_change_value_decline(reply: str) -> bool:
 # the substring being matched, just relocated instead of removed. A second
 # cut at the first contrastive word (over/than/instead of/rather than/not)
 # now trims the clause down to just the wanted value.
+#
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §18 — review
+# finding: cue detection is position-based (first cue word wins), not
+# semantic — "instead of Standard, prefer Premium" matched on "instead"
+# (the earliest cue) and captured "of Standard, prefer Premium", which has
+# no contrastive word of its own to cut at, so "Standard" leaked through.
+# The word "instead" plays two different roles: alone, it introduces the
+# WANTED value ("use Premium instead"); as "instead of X", X is the
+# REJECTED value and the real replacement is stated elsewhere. Excluding
+# "instead of" from the cue match (negative lookahead) lets the regex
+# correctly continue scanning and match the real cue ("prefer") instead.
 _REPLACEMENT_CUE_RE = re.compile(
-    r"\b(?:use|instead|prefer|rather)\b\s*[:,]?\s*(.+)$", re.IGNORECASE,
+    r"\b(?:use|instead(?!\s+of)|prefer|rather)\b\s*[:,]?\s*(.+)$", re.IGNORECASE,
 )
 _CONTRAST_CUT_RE = re.compile(
     r"\b(?:over|than|instead\s+of|rather\s+than|not)\b", re.IGNORECASE,

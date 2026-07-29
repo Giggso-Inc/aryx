@@ -277,6 +277,21 @@ def test_extract_replacement_clause_unaffected_without_contrast():
     assert _extract_replacement_clause("no cue here at all") is None
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §18 — review
+# finding: "instead of Standard, prefer Premium" (reversed phrasing) matched
+# on "instead" as the cue, capturing "of Standard, prefer Premium" — the
+# rejected value leaked through since that clause has no contrastive word
+# of its own to cut at.
+
+def test_extract_replacement_clause_handles_reversed_instead_of_phrasing():
+    from aryx.api.ask_api import _extract_replacement_clause
+    assert _extract_replacement_clause(
+        "instead of Standard, prefer Premium",
+    ) == "Premium"
+    # bare "instead" (no "of") must still work as a direct cue.
+    assert _extract_replacement_clause("not Standard, instead Premium") == "Premium"
+
+
 # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — "what is the
 # error" wrongly refused as out-of-scope because the mid-session Q&A
 # classifier had no idea the prior turn was the engine's own gate error.
