@@ -194,6 +194,8 @@ def build_candidate_bundles(
             score += 5.0
         if session.pending_variables and a.variable_name == session.pending_variables[0]:
             score += 8.0
+        if session.last_qa_variable and a.variable_name == session.last_qa_variable:
+            score += 8.0
         if a.variable_name in session.pending_change_collision_vns:
             score += 7.0
         if a.variable_name == session.pending_change_no_value_vn:
@@ -336,6 +338,14 @@ def _llm_classify_once(
                 if session.pending_clarify_question else ""
             )
         )
+    if session.last_qa_variable:
+        pending_bits.append(
+            f"customer_last_asked_about={session.last_qa_variable} "
+            "(their immediately preceding message was a question about this "
+            "attribute — a short follow-up like 'make it X' most likely "
+            "refers to it, even if X is also technically a valid value for "
+            "another attribute)"
+        )
     pending_line = (
         "SESSION PENDING: " + ", ".join(pending_bits) + "\n"
         if pending_bits else ""
@@ -429,8 +439,20 @@ def _deterministic_mutating_signals(
 def _mutating_agrees(
     result: GatewayIntentResult,
     det_signals: dict[str, set[str]],
+    last_qa_variable: str = "",
 ) -> bool:
-    """True when deterministic detectors agree on category + variable_name."""
+    """True when deterministic detectors agree on category + variable_name.
+
+    Also accepts corroboration from conversational recency: a bare-value
+    reply ("make it ATT/FirstNet") names no attribute at all, so
+    deterministic text-matching detectors can find nothing (or the wrong
+    sibling attribute that happens to share the same option value) even
+    when the LLM confidently and correctly names the attribute the
+    customer was just asking about. docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_
+    CLARIFY_ISSUE.md §8 — live-confirmed: "Wireless Carrier" and "Carrier
+    Selection" both genuinely accept the same value, so det_signals alone
+    can never disambiguate; last_qa_variable is the only signal that can.
+    """
     if result.intent_category not in MUTATING_CATEGORIES:
         return True
     cat = result.intent_category.value
@@ -442,6 +464,8 @@ def _mutating_agrees(
         )
     if not result.variable_name:
         return False
+    if last_qa_variable and result.variable_name == last_qa_variable:
+        return True
     if not det_vns:
         # No deterministic hit at all — treat as disagreement so we clarify
         # rather than mutate solely on LLM word.
@@ -581,7 +605,7 @@ def classify_intent(
 
     # Mutating intents: require deterministic agreement
     if quarantined.intent_category in MUTATING_CATEGORIES:
-        if not _mutating_agrees(quarantined, signals):
+        if not _mutating_agrees(quarantined, signals, session.last_qa_variable):
             clarify = GatewayIntentResult(
                 intent_category=IntentCategory.AMBIGUOUS,
                 confidence=Confidence.LOW,
