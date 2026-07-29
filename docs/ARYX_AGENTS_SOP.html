@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aryx Agents SOP — Augmented LLM · Hub-Spoke · Peer · Roster · Logs</title>
+<style>
+  :root {
+    --bg: #090d12; --panel: #121820; --panel2: #1a2330; --border: #2a3648;
+    --text: #e8eef7; --muted: #93a4b8; --accent: #5b9dff; --teal: #3dd6c6;
+    --warn: #f0b429; --ok: #3ecf8e; --danger: #ff6b7a; --agent: #a78bfa;
+    --mcp: #fb923c; --font: Inter, system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; font-family: var(--font); background: var(--bg); color: var(--text);
+    line-height: 1.55;
+    background-image:
+      radial-gradient(1000px 500px at 0% -10%, #1a2040 0%, transparent 50%),
+      radial-gradient(800px 400px at 100% 0%, #1a1040 0%, transparent 45%);
+  }
+  .layout { display: flex; min-height: 100vh; }
+  nav.side {
+    position: sticky; top: 0; height: 100vh; width: 290px; overflow-y: auto;
+    border-right: 1px solid var(--border); background: rgba(10,14,20,.95);
+    padding: 1rem .85rem 2rem; flex-shrink: 0;
+  }
+  nav.side .brand { font-weight: 700; padding: .3rem .4rem .8rem; border-bottom: 1px solid var(--border); margin-bottom: .7rem; }
+  nav.side .brand span { color: var(--agent); }
+  nav.side .g { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: .75rem 0 .25rem; padding: 0 .4rem; }
+  nav.side a {
+    display: block; padding: .32rem .5rem; border-radius: 7px; color: var(--muted);
+    text-decoration: none; font-size: .86rem; margin: 1px 0;
+  }
+  nav.side a:hover { background: var(--panel2); color: var(--text); }
+  main { flex: 1; max-width: 1040px; padding: 1.5rem 2rem 4rem; }
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    nav.side { position: relative; height: auto; width: 100%; max-height: 40vh; }
+  }
+  h1 { font-size: 1.75rem; margin: 0 0 .4rem; }
+  h2 { font-size: 1.28rem; margin: 2.2rem 0 .6rem; padding-bottom: .4rem; border-bottom: 1px solid var(--border); scroll-margin-top: 1rem; }
+  h3 { font-size: 1.05rem; margin: 1.3rem 0 .45rem; color: #d5e4f7; }
+  h4 { font-size: .95rem; margin: 1rem 0 .35rem; color: #b9c9dc; }
+  p, li { color: #d0dae8; }
+  .lead { color: var(--muted); max-width: 75ch; }
+  .chip {
+    display: inline-block; font-size: .72rem; padding: .15rem .45rem; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); margin: .15rem .2rem .15rem 0;
+  }
+  .chip.ok { color: var(--ok); border-color: #1f5a40; }
+  .chip.agent { color: var(--agent); border-color: #4c3a7a; }
+  .chip.warn { color: var(--warn); border-color: #5a4a1f; }
+  .chip.mcp { color: var(--mcp); border-color: #5a3a1f; }
+  .hero {
+    border: 1px solid var(--border); border-radius: 16px;
+    background: linear-gradient(145deg, #1a1530, #101820 65%);
+    padding: 1.4rem 1.6rem; margin-bottom: 1.5rem;
+  }
+  .callout {
+    border-left: 3px solid var(--agent); background: rgba(167,139,250,.08);
+    padding: .75rem 1rem; border-radius: 0 10px 10px 0; margin: 1rem 0;
+  }
+  .callout.warn { border-color: var(--warn); background: rgba(240,180,41,.08); }
+  .callout.danger { border-color: var(--danger); background: rgba(255,107,122,.08); }
+  .callout.ok { border-color: var(--ok); background: rgba(62,207,142,.08); }
+  table {
+    width: 100%; border-collapse: collapse; font-size: .86rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; margin: .6rem 0 1.1rem;
+  }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel2); color: #c8d7ea; }
+  tr:last-child td { border-bottom: 0; }
+  code, .mono { font-family: var(--mono); font-size: .84em; }
+  pre {
+    background: #0c1118; border: 1px solid var(--border); border-radius: 10px;
+    padding: .9rem 1rem; overflow-x: auto; font-family: var(--mono); font-size: .76rem;
+    color: #cfe0f5; line-height: 1.45;
+  }
+  .flow-board {
+    display: flex; flex-wrap: wrap; gap: .4rem; align-items: stretch;
+    margin: .6rem 0 1rem; padding: .85rem; background: #0c1118;
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .flow-step {
+    flex: 1 1 100px; min-width: 95px; max-width: 160px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: .5rem .55rem;
+  }
+  .flow-step .n { font-size: .66rem; font-weight: 700; color: var(--teal); font-family: var(--mono); }
+  .flow-step .l { font-size: .8rem; font-weight: 650; margin: .15rem 0; }
+  .flow-step .d { font-size: .7rem; color: var(--muted); line-height: 1.3; }
+  .flow-arrow { display: flex; align-items: center; color: var(--teal); opacity: .8; font-size: 1rem; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: .85rem; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1rem 1.1rem;
+  }
+  .card h4 { margin: 0 0 .35rem; color: #d5e4f7; }
+  .card p { margin: 0; font-size: .9rem; color: var(--muted); }
+  .diagram {
+    background: #0c1118; border: 1px solid var(--border); border-radius: 12px;
+    padding: 1rem; overflow-x: auto; font-family: var(--mono); font-size: .72rem;
+    white-space: pre; color: #b8d4c8; line-height: 1.35; margin: .6rem 0 1rem;
+  }
+  details {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: .6rem .85rem; margin: .5rem 0;
+  }
+  details summary { cursor: pointer; font-weight: 600; color: #dce8f7; }
+  details[open] summary { margin-bottom: .45rem; }
+  a { color: var(--accent); }
+  a.gh {
+    font-family: var(--mono); font-size: .78rem; color: var(--teal);
+    text-decoration: none; border-bottom: 1px dotted #2a6a5e;
+  }
+  a.gh:hover { color: #7eecdf; border-bottom-style: solid; }
+  .code-col { display: flex; flex-direction: column; gap: .2rem; }
+  .code-col a.gh { white-space: nowrap; }
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="side">
+  <div class="brand">Aryx <span>Agents SOP</span></div>
+  <div class="g">Start</div>
+  <a href="#overview">1. Overview &amp; honesty</a>
+  <a href="#taxonomy">2. Agent taxonomy</a>
+  <a href="#pattern-map">3. Pattern ↔ agent map</a>
+  <a href="#augmented">4. Augmented LLM</a>
+  <a href="#hub-spoke">5. Hub-and-spoke</a>
+  <a href="#pipeline">6. Pipeline chain</a>
+  <a href="#peer">7. Peer / blackboard</a>
+  <a href="#tiers">8. Model tiers</a>
+  <div class="g">Rosters</div>
+  <a href="#internal">9. Internal agents</a>
+  <a href="#mcp">10. External MCP agents</a>
+  <a href="#intent">11. Intent agent</a>
+  <a href="#dev">12. Dev multi-agent (Raven)</a>
+  <div class="g">Ops</div>
+  <a href="#tools">13. Tool matrix</a>
+  <a href="#state">14. State &amp; memory</a>
+  <a href="#logs">15. Logs (critical)</a>
+  <a href="#sop">16. Operator SOP</a>
+  <a href="#anti">17. Anti-patterns</a>
+  <div class="g">Nav</div>
+  <a href="ARYX_EXPLORE.html">← Back to SOP Explorer</a>
+  <a href="ARYX_SYSTEM_GUIDE.html">Linear system guide</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>Aryx Agents — SOP deep dive</h1>
+  <p class="lead">
+    Exhaustive reference for <strong>what is (and is not) an agent</strong> in Aryx:
+    augmented LLM patterns, hub-and-spoke orchestration, pipeline chains,
+    peer/blackboard coordination, model tiers, MCP external agents, internal
+    discovery agents, intent classification, Raven/Andie multi-agent development,
+    tool matrices, state, and <strong>where to read the logs</strong>.
+  </p>
+  <div style="margin-top:.9rem">
+    <span class="chip agent">SOP grade</span>
+    <span class="chip ok">Offline HTML</span>
+    <span class="chip mcp">MCP + internal</span>
+    <span class="chip warn">No fake “Agent OS” product — real code paths only</span>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="overview">
+  <h2>1. Overview &amp; honesty first</h2>
+  <p>
+    There is <strong>no single Python package named <code>agents/</code></strong> in the
+    runtime product. “Agent” in Aryx is a <em>role</em>: any component that (a) uses an LLM
+    (or external model host) to decide, (b) may call tools / side-effect systems, and
+    (c) operates under a correlation id (workspace, job, run_id).
+  </p>
+  <div class="grid2">
+    <div class="card">
+      <h4>What ships in production runtime</h4>
+      <p>Internal pipeline agents (schema, doc discover, tag, relate), Ask/CPQ augmented LLM, Intent gateway agent, MCP tool server for external hosts, kinetic <code>act</code> (always pending).</p>
+    </div>
+    <div class="card">
+      <h4>What is outer-loop (engineering)</h4>
+      <p>Raven + Andie + specialist skills (hub-spoke multi-agent for coding). Lives under <code>.claude/skills/</code> — not the customer-facing API process.</p>
+    </div>
+  </div>
+  <div class="callout warn">
+    <strong>SOP rule:</strong> When someone asks “where is the multi-agent system?”, answer with
+    <em>which plane</em>: (1) product runtime agents, (2) MCP external agent hosts, (3) engineering
+    multi-agent (Andie). Mixing the three in support tickets creates confusion.
+  </div>
+</section>
+
+<section id="taxonomy">
+  <h2>2. Agent taxonomy (complete map)</h2>
+  <table>
+    <thead>
+      <tr><th>Plane</th><th>Agent / role</th><th>Pattern</th><th>Code home (open)</th><th>Autonomous write?</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Runtime</td><td>Schema discovery agent</td><td>Augmented LLM → structured map</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/schema_agent.py" target="_blank" rel="noopener">schema_agent.py ↗</a></td>
+        <td>No (HITL map gate)</td></tr>
+      <tr><td>Runtime</td><td>Doc discovery agent</td><td>Extract + LLM propose types</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/doc_discovery.py" target="_blank" rel="noopener">doc_discovery.py ↗</a></td>
+        <td>No (confirm step)</td></tr>
+      <tr><td>Runtime</td><td>Field tagger</td><td>Cheap-tier classify</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/tag.py" target="_blank" rel="noopener">tag.py ↗</a></td>
+        <td>Yes (labels only)</td></tr>
+      <tr><td>Runtime</td><td>Relationship / FK infer</td><td>Frontier complete_json</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/relationships.py" target="_blank" rel="noopener">relationships.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/enrich.py" target="_blank" rel="noopener">enrich.py ↗</a>
+        </td>
+        <td>Yes (edges, optional)</td></tr>
+      <tr><td>Runtime</td><td>ER scorer / adjudicator</td><td>Cheap score + frontier band</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/resolution/run.py" target="_blank" rel="noopener">resolution/run.py ↗</a></td>
+        <td>Partial (review band HITL)</td></tr>
+      <tr><td>Runtime</td><td>Ask answerer</td><td>Augmented LLM (retrieve-then-read)</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/graph/retrieve.py" target="_blank" rel="noopener">retrieve.py ↗</a>
+        </td>
+        <td>No (read-only graph)</td></tr>
+      <tr><td>Runtime</td><td>CPQ intent gateway</td><td>Structured classifier + quarantine</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a></td>
+        <td>No alone (dispatches handlers)</td></tr>
+      <tr><td>Runtime</td><td>CPQ conversation engine</td><td>Deterministic core + LLM assists</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/engine.py" target="_blank" rel="noopener">engine.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+        </td>
+        <td>Session only; BOM gated</td></tr>
+      <tr><td>External</td><td>MCP host agent (Claude…)</td><td>Hub-spoke over tools</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/mcp/server.py" target="_blank" rel="noopener">mcp/server.py ↗</a></td>
+        <td><code>act</code> always pending</td></tr>
+      <tr><td>Engineering</td><td>Andie + specialists</td><td>Hub-spoke / parallel specialists</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/.claude/skills/andie/SKILL.md" target="_blank" rel="noopener">andie/SKILL.md ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/.claude/skills/agent-chaining/SKILL.md" target="_blank" rel="noopener">agent-chaining ↗</a>
+        </td>
+        <td>Writes code under Raven guards</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="pattern-map">
+  <h2>3. Pattern ↔ agent map (who uses what)</h2>
+  <p class="lead" style="margin-top:0">
+    <strong>Pattern ≠ agent.</strong> Pattern = how work is orchestrated. Agent = who runs.
+    Use this matrix first, then drill the pattern sections or open code on GitHub.
+    Interactive drill-down: <a href="ARYX_EXPLORE.html#agents">SOP Explorer → Agents</a>.
+  </p>
+
+  <h3>3.1 Pattern → agents</h3>
+  <table>
+    <thead>
+      <tr><th>Pattern</th><th>Agents that use it</th><th>Hub / coordinator</th><th>Key code (open)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="#augmented">Augmented LLM</a><br/><span class="chip">tools first → LLM</span></td>
+        <td>
+          Ask answerer · Intent gateway · Schema / doc / tag / relate agents
+        </td>
+        <td>Deterministic tools pack context; LLM only writes/classifies</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/graph/retrieve.py" target="_blank" rel="noopener">retrieve.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/schema_agent.py" target="_blank" rel="noopener">schema_agent.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/llm_runtime.py" target="_blank" rel="noopener">llm_runtime.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td><a href="#hub-spoke">Hub-and-spoke</a><br/><span class="chip">one coordinator</span></td>
+        <td>
+          Ask/CPQ orchestrator · Intent · CPQ engine · MCP host + dispatch · Pipeline orchestrator · Andie
+        </td>
+        <td><code>ask_api</code> · MCP host · <code>orchestrate</code> · Andie</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/mcp/server.py" target="_blank" rel="noopener">mcp/server.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/orchestrate.py" target="_blank" rel="noopener">orchestrate.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td><a href="#pipeline">Sequential pipeline</a><br/><span class="chip">ordered stages</span></td>
+        <td>
+          Schema / tag / doc / relate agents · ER scorer · Async workers
+        </td>
+        <td><code>orchestrate.run_pipeline</code> + StageTracker</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/orchestrate.py" target="_blank" rel="noopener">orchestrate.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/stages.py" target="_blank" rel="noopener">stages.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/schema_agent.py" target="_blank" rel="noopener">schema_agent.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td><a href="#peer">Peer / blackboard</a><br/><span class="chip warn">not A2A mesh</span></td>
+        <td>
+          All writers (ingest/ER/CPQ) · Ask / MCP ask · Intent shadow dual-control
+        </td>
+        <td>Postgres blackboard (+ FalkorDB readers); det authority in shadow</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/store/pool.py" target="_blank" rel="noopener">store/pool.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>3.2 Agent → patterns (reverse)</h3>
+  <table>
+    <thead><tr><th>Agent</th><th>Patterns it uses</th><th>Primary code (open)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Ask answerer / <code>run_ask</code> hub</td>
+        <td>Hub-and-spoke · Augmented LLM</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/graph/retrieve.py" target="_blank" rel="noopener">retrieve.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>CPQ intent gateway</td>
+        <td>Augmented LLM · Hub-and-spoke (spoke) · Blackboard dual-control (shadow)</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_queue.py" target="_blank" rel="noopener">intent_queue.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>CPQ engine</td>
+        <td>Hub-and-spoke (spoke under ask_api)</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/engine.py" target="_blank" rel="noopener">engine.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>Internal pipeline agents (schema/tag/doc/relate)</td>
+        <td>Augmented LLM · Sequential pipeline · Blackboard</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/schema_agent.py" target="_blank" rel="noopener">schema_agent.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/orchestrate.py" target="_blank" rel="noopener">orchestrate.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>MCP host + Aryx dispatch</td>
+        <td>Hub-and-spoke (host is hub) · Augmented LLM via <code>ask</code> tool</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/mcp/server.py" target="_blank" rel="noopener">mcp/server.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/mcp/act.py" target="_blank" rel="noopener">act.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>Andie / Raven specialists</td>
+        <td>Hub-and-spoke only (engineering plane)</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/.claude/skills/andie/SKILL.md" target="_blank" rel="noopener">andie ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/.claude/skills/agent-chaining/SKILL.md" target="_blank" rel="noopener">agent-chaining ↗</a>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout ok">
+    <strong>SOP rule:</strong> When debugging, name both the <em>pattern</em> (how) and the <em>agent</em> (who),
+    then open the code link for that row. Interactive: <a href="ARYX_EXPLORE.html#agents">Explorer Agents pillar</a>
+    and <a href="ARYX_EXPLORE.html#logging">Logging pillar</a> (log rows also link to files).
+  </div>
+</section>
+
+<section id="augmented">
+  <h2>4. Augmented LLM pattern (canonical product pattern)</h2>
+  <p>
+    Aryx deliberately <strong>does not</strong> give small models free-form tool-calling over the graph.
+    From <code>graph/retrieve.py</code>: local models are unreliable at free-form tools, so
+    <strong>deterministic retrieval runs first</strong>; the LLM only interprets and writes prose.
+  </p>
+  <h3>3.1 Pattern shape</h3>
+  <div class="flow-board">
+    <div class="flow-step"><div class="n">1</div><div class="l">User / agent utterance</div><div class="d">question or tool arg</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">2</div><div class="l">Deterministic tools</div><div class="d">retrieve, SQL, rules</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">3</div><div class="l">Context pack</div><div class="d">evidence structure</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">4</div><div class="l">LLM complete</div><div class="d">menial or answer tier</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">5</div><div class="l">Validate / ground</div><div class="d">schema, citations, quarantine</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">6</div><div class="l">Side effects</div><div class="d">only via gated handlers</div></div>
+  </div>
+  <div class="diagram">Augmented Ask (product):
+  question
+    → extract terms (deterministic)
+    → gather entities (GraphReader)     ← TOOL, not LLM
+    → render_context(evidence)
+    → LLM synthesise answer             ← LLM sees packed context only
+    → grounding/citations               ← same structure, no drift
+    → return {answer, usage, tools_called}
+
+Augmented Intent (CPQ):
+  question + session + candidate bundles (built deterministically)
+    → pinned structured completion (JSON schema)
+    → quarantine invalid variable_name / value_ref
+    → dispatch to handlers OR clarify
+    → handlers mutate CpqSession (not free LLM writes)
+    → bom_gate before payload</div>
+  <h3>3.2 Why this matters for SOP</h3>
+  <ul>
+    <li><strong>Provenance:</strong> evidence structure is shared by answer + grounding — cannot diverge.</li>
+    <li><strong>Safety:</strong> LLM never invents <code>item_value</code> for BOM; catalogs only.</li>
+    <li><strong>Debuggability:</strong> <code>tools_called</code> and graph retrieve logs show tool path; LLM is step 4.</li>
+  </ul>
+  <table>
+    <thead><tr><th>Component</th><th>Tools (deterministic)</th><th>LLM role</th><th>Validation</th></tr></thead>
+    <tbody>
+      <tr><td>Standard Ask</td><td>gather, all_types, path queries</td><td>Write answer</td><td>grounding / citations</td></tr>
+      <tr><td>Schema agent</td><td>schema introspect, FK list</td><td>Propose types/keys</td><td>JSON parse + heuristic fallback + HITL</td></tr>
+      <tr><td>Intent gateway</td><td>candidate bundles from catalog</td><td>Pick category + vn index</td><td>quarantine + det agreement on mutate</td></tr>
+      <tr><td>MCP host</td><td>list/ask/act/onboard/…</td><td>Host plans tool sequence</td><td>act always pending; REST validates</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="hub-spoke">
+  <h2>5. Hub-and-spoke multi-agent</h2>
+  <p>
+    Hub-and-spoke = one orchestrator keeps the conversation/job state and delegates to
+    specialized spokes that do not talk to each other directly.
+  </p>
+  <h3>4.1 Product hub: <code>run_ask</code> / <code>_run_cpq_turn</code></h3>
+  <div class="diagram">                    ┌─────────────────────────┐
+                    │   HUB: ask_api.run_ask  │
+                    │  (session_data, history)│
+                    └───────────┬─────────────┘
+            ┌───────────────────┼───────────────────┐
+            ▼                   ▼                   ▼
+   ┌────────────────┐  ┌────────────────┐  ┌────────────────────┐
+   │ SPOKE: hard_   │  │ SPOKE: intent  │  │ SPOKE: standard    │
+   │ off_topic gate │  │ gateway (LLM)  │  │ graph Ask pipeline │
+   └────────────────┘  └───────┬────────┘  └────────────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+     ┌──────────────┐ ┌──────────────┐ ┌─────────────────┐
+     │ CpqEngine    │ │ session_guard│ │ bom_gate        │
+     │ (det rules)  │ │ undo/invar.  │ │ payload hard OK │
+     └──────────────┘ └──────────────┘ └─────────────────┘
+              │
+              ▼
+     spokes do NOT call each other; hub sequences them</div>
+  <h3>4.2 External hub: MCP host (Claude Desktop / Cursor / …)</h3>
+  <div class="flow-board">
+    <div class="flow-step"><div class="n">HUB</div><div class="l">MCP host LLM</div><div class="d">plans tool calls</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">SPOKE</div><div class="l">list</div><div class="d">workspaces</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">SPOKE</div><div class="l">brief_*</div><div class="d">onboard</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">SPOKE</div><div class="l">ask</div><div class="d">NL / CPQ</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">SPOKE</div><div class="l">act</div><div class="d">pending only</div></div>
+  </div>
+  <p>
+    Implementation: <code>mcp/server.py</code> <code>_dispatch</code> is a pure spoke router — it does not
+    re-plan. The <em>host</em> is the planning hub. Aryx REST remains the system of record.
+  </p>
+  <h3>4.3 Pipeline hub: <code>orchestrate.run_pipeline</code></h3>
+  <p>
+    Job orchestrator is the hub; stages are spokes (discover, resolve, relate, project).
+    Optional LLM stages (tag, relate) are spokes that can be disabled so the deterministic
+    spine still completes.
+  </p>
+  <pre>run_pipeline(connector, broker, tag=?, relate=?)
+  → discover (extract/land [+ tag spoke])
+  → resolve_run (ER spokes)
+  → optional relate (frontier spoke)
+  → project_graph
+StageTracker checkpoints = hub durable state</pre>
+  <h3>4.4 Engineering hub: Andie (Raven)</h3>
+  <p>
+    From <code>agent-chaining</code> skill: orchestrator decides <em>what / order / who</em>; specialists
+    do work. Subagents get <strong>no parent memory</strong> — prompts must be self-contained.
+    Parallel specialists (security · db · api) → hub synthesizes.
+  </p>
+</section>
+
+<section id="pipeline">
+  <h2>6. Sequential multi-agent chain (pipeline)</h2>
+  <p>Strict order, shared Postgres blackboard, resume via checkpoints.</p>
+  <div class="flow-board">
+    <div class="flow-step"><div class="n">1</div><div class="l">Extract</div><div class="d">connector</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">2</div><div class="l">Land</div><div class="d">PG rows</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">3</div><div class="l">Tag agent</div><div class="d">cheap LLM</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">4</div><div class="l">Map agent</div><div class="d">HITL gate</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">5</div><div class="l">ER agents</div><div class="d">block/score/route</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">6</div><div class="l">Relate agent</div><div class="d">frontier opt</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">7</div><div class="l">Project</div><div class="d">FalkorDB</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Property</th><th>Value in Aryx</th></tr></thead>
+    <tbody>
+      <tr><td>Shared memory</td><td>Postgres tables (landed, entities, stages) — not in-RAM agent bus</td></tr>
+      <tr><td>Failure</td><td>Stage checkpoint; resume from last done</td></tr>
+      <tr><td>Parallelism</td><td>Within stage (e.g. enrich pool); stages mostly serial</td></tr>
+      <tr><td>LLM optional?</td><td>Yes — tag/relate can be off; spine still runs</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="peer">
+  <h2>7. Peer-to-peer &amp; blackboard (what exists / what does not)</h2>
+  <div class="callout">
+    <strong>Honest SOP answer:</strong> Aryx does <em>not</em> run a peer mesh of autonomous agents
+    negotiating over a message bus (no A2A protocol, no agent-to-agent RPC fabric).
+  </div>
+  <h3>6.1 What looks like “peer” but is blackboard</h3>
+  <ul>
+    <li><strong>Postgres blackboard:</strong> multiple modules read/write entities, adjudication, jobs without calling each other.</li>
+    <li><strong>FalkorDB projection:</strong> readers (Ask, UI) peer-consume graph writes produced by project stage.</li>
+    <li><strong>CpqSession client echo:</strong> browser and server pass state as message payload (turn-based), not agent mesh.</li>
+  </ul>
+  <h3>6.2 Shadow / dual-control (paired judgment)</h3>
+  <p>
+    Closest to “two agents disagree”: intent <code>shadow</code> mode runs LLM route + deterministic
+    auditor; deterministic still decides; divergence logs at WARN. That is
+    <strong>paired control</strong>, not peer negotiation.
+  </p>
+  <pre>LLM route ──┐
+            ├── log agreement ──► det path executes (shadow)
+Det auditor ┘
+llm_first: LLM path executes (with escape hatch)</pre>
+  <h3>6.3 When you would introduce real P2P</h3>
+  <p>Only if product requires concurrent specialist negotiation (e.g. pricing agent ↔ compliance agent). Today: keep hub-spoke; use Raven agent-chaining skill for design reviews before building a mesh.</p>
+</section>
+
+<section id="tiers">
+  <h2>8. Model tiers (augmented LLM substrate)</h2>
+  <p>Broker (<code>src/aryx/broker/</code>) selects models by tier and enforces token budgets.</p>
+  <table>
+    <thead><tr><th>Tier / role</th><th>Typical use</th><th>Config / API</th><th>Cost posture</th></tr></thead>
+    <tbody>
+      <tr><td><code>cheap</code> / menial</td><td>tagging, routine chat, many CPQ helpers</td><td><code>llm_menial_model</code>, <code>llm_runtime.chat("menial")</code></td><td>Local Ollama preferred</td></tr>
+      <tr><td><code>frontier</code> / answer</td><td>hard map, relate, intent pro, final answers</td><td><code>llm_reason_model</code>, intent Gemini pin</td><td>Paid cloud</td></tr>
+      <tr><td>Embeddings</td><td>ER / search</td><td>Ollama / OCI Cohere / Gemini embed backends</td><td>Separate from chat wire protocol</td></tr>
+    </tbody>
+  </table>
+  <h3>7.1 Persistence of LLM calls</h3>
+  <p>
+    <code>llm_runtime._log_call</code> best-effort inserts into <code>aryx_llm_call</code>
+    (role, model, tokens, latency, source, error). Surface: Observability API
+    <code>llm</code> + <code>llm_recent</code>.
+  </p>
+  <div class="callout ok">
+    <strong>SOP:</strong> “Is the model down?” → Observability <code>llm_recent</code> errors first,
+    then provider dashboard — not only application ERROR logs.
+  </div>
+</section>
+
+<section id="internal">
+  <h2>9. Internal agent roster (runtime)</h2>
+
+  <h3>8.1 Schema discovery agent</h3>
+  <table>
+    <tr><th>Field</th><th>Detail</th></tr>
+    <tr><td>File</td><td><code>src/aryx/pipeline/schema_agent.py</code></td></tr>
+    <tr><td>Trigger</td><td>DB connect + “Run discovery agent” / API discovery</td></tr>
+    <tr><td>Inputs</td><td>Introspected tables/columns/PKs + Brief text</td></tr>
+    <tr><td>Process</td><td>LLM proposes ontology mapping JSON; declared FKs merged deterministically</td></tr>
+    <tr><td>Fallback</td><td><code>_heuristic_mapping</code> from table names if LLM fails</td></tr>
+    <tr><td>Outputs</td><td>Proposed entity types, match keys, relationships</td></tr>
+    <tr><td>HITL</td><td>Human must confirm map before bulk ingest</td></tr>
+    <tr><td>Logs</td><td>Parse failures; fallback used; proposal size</td></tr>
+  </table>
+
+  <h3>8.2 Document discovery agent</h3>
+  <table>
+    <tr><th>Field</th><th>Detail</th></tr>
+    <tr><td>File</td><td><code>pipeline/doc_discovery.py</code> + doc discover API</td></tr>
+    <tr><td>Trigger</td><td>File upload “Read &amp; discover”</td></tr>
+    <tr><td>Correlation</td><td><code>discovery_id</code> / job ids (see ingestion logging plan)</td></tr>
+    <tr><td>HITL</td><td>Confirm entity types before graph add</td></tr>
+  </table>
+
+  <h3>8.3 Tag / enrich / relate</h3>
+  <table>
+    <thead><tr><th>Agent</th><th>File</th><th>Tier</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Tagger</td><td><code>pipeline/tag.py</code></td><td>cheap</td><td>Field semantic labels</td></tr>
+      <tr><td>Enrich</td><td><code>pipeline/enrich.py</code></td><td>mixed</td><td>Bounded concurrency; ancestor types; FK infer helpers</td></tr>
+      <tr><td>Relate</td><td><code>relationships.py</code> + orchestrate relate flag</td><td>frontier</td><td><code>complete_json</code> relationship labels; opt-in</td></tr>
+      <tr><td>Dimension hub</td><td><code>pipeline/dimension_link.py</code></td><td>det</td><td>Tier-2 hub edges — not LLM</td></tr>
+    </tbody>
+  </table>
+
+  <h3>8.4 ER “agents”</h3>
+  <p>Blocking is deterministic; scoring is cheap LLM pairwise; adjudication band uses frontier; review band is human agent. Treat bands as routed specialist lanes under the ER hub (<code>resolution/run.py</code>).</p>
+</section>
+
+<section id="mcp">
+  <h2>10. External MCP agents (host-spoke)</h2>
+  <h3>9.1 Architecture</h3>
+  <pre>┌──────────────────┐     stdio/SSE      ┌────────────────────┐
+│ MCP Host (LLM)   │ ◄────────────────► │ aryx.mcp.server    │
+│ plans tool calls │                    │ _dispatch → REST   │
+└──────────────────┘                    └─────────┬──────────┘
+                                                  │ HTTP
+                                        ┌─────────▼──────────┐
+                                        │ Aryx FastAPI :8088 │
+                                        │ Postgres + Graph   │
+                                        └────────────────────┘</pre>
+  <h3>9.2 Full tool matrix</h3>
+  <table>
+    <thead><tr><th>Group</th><th>Tools</th><th>Side effects</th><th>Dispatch module</th></tr></thead>
+    <tbody>
+      <tr><td>Core</td><td><code>list</code>, <code>ask</code>, <code>act</code></td><td>act → pending only</td><td><code>server._dispatch</code>, <code>act.py</code></td></tr>
+      <tr><td>Onboard</td><td><code>workspace_list/create/select</code>, <code>brief_get/draft/set/save</code></td><td>workspace/brief writes</td><td><code>onboard.py</code></td></tr>
+      <tr><td>Datasource</td><td><code>datasource_quiz/add/list/test/delete</code></td><td>credential store</td><td><code>datasource.py</code></td></tr>
+      <tr><td>Ingest HITL</td><td><code>ingest_questions/answer/status</code>, <code>entities_preview</code></td><td>unblocks pipeline</td><td><code>ingest_hitl.py</code></td></tr>
+      <tr><td>Ontology</td><td><code>ontology_get</code>, <code>ontology_export</code></td><td>read/export</td><td><code>ontology.py</code></td></tr>
+    </tbody>
+  </table>
+  <h3>9.3 Recommended host playbooks (hub plans)</h3>
+  <details open>
+    <summary>Playbook A — Greenfield workspace</summary>
+    <pre>1. list
+2. workspace_create / workspace_select
+3. brief_draft → brief_set → brief_save
+4. datasource_quiz → datasource_add → datasource_test
+5. (human confirms map in UI if required)
+6. ingest_status / entities_preview
+7. ask "summarize this workspace"</pre>
+  </details>
+  <details>
+    <summary>Playbook B — CPQ quote via MCP ask</summary>
+    <pre>1. list → pick workspace with catalog
+2. ask question="Order APX Next … country United States" workspace_id=N
+3. Echo session_data from response on every subsequent ask
+4. Continue until awaiting_approval; ask "confirm"
+5. Never invent BOM lines offline — only accept cpq_payload from server</pre>
+  </details>
+  <details>
+    <summary>Playbook C — Mutation</summary>
+    <pre>1. act action=… entity_id=… params=…
+2. Receive pending execution id
+3. Human: POST /actions/executions/{id}/decide
+4. Agent must not assume apply succeeded</pre>
+  </details>
+  <h3>9.4 Auth &amp; env</h3>
+  <table>
+    <tr><td><code>ARYX_API_URL</code></td><td>Base REST (default http://localhost:8088)</td></tr>
+    <tr><td><code>ARYX_MCP_DEFAULT_WORKSPACE</code></td><td>Fallback workspace_id</td></tr>
+    <tr><td><code>ARYX_MCP_POST_TIMEOUT</code></td><td>POST timeout seconds</td></tr>
+    <tr><td>MCP tokens</td><td><code>api/mcp_tokens_api.py</code> issue/revoke</td></tr>
+  </table>
+</section>
+
+<section id="intent">
+  <h2>11. Intent classification agent (CPQ / Ask)</h2>
+  <p>Specialized structured agent sitting between natural language and deterministic CPQ handlers.</p>
+  <div class="flow-board">
+    <div class="flow-step"><div class="n">1</div><div class="l">Build candidates</div><div class="d">from catalog+session</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">2</div><div class="l">Pinned LLM</div><div class="d">JSON schema</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">3</div><div class="l">Quarantine</div><div class="d">vn/value/span</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">4</div><div class="l">Mutate agree?</div><div class="d">det signals</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">5</div><div class="l">dispatch|clarify|fallback</div><div class="d">hub continues</div></div>
+  </div>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td><code>cpq/intent_gateway.py</code></td><td>classify_intent, classify_ask_route, soft_quote, hard_off_topic</td></tr>
+    <tr><td><code>cpq/intent_schema.py</code></td><td>Schema parse + quarantine</td></tr>
+    <tr><td><code>cpq/intent_queue.py</code></td><td>Multi-target queue + conservation audit</td></tr>
+    <tr><td><code>cpq/session_guard.py</code></td><td>Orphan-question invariant, undo</td></tr>
+  </table>
+  <h3>Multi-agent interaction on one turn</h3>
+  <pre>Host or UI
+  → ask_api hub
+    → intent agent (structured)
+    → engine det spokes (rules, detectors)
+    → optional BML / LLM tier-2
+    → guards (bom, summary, conservation)
+  → response + session_data</pre>
+</section>
+
+<section id="dev">
+  <h2>12. Engineering multi-agent (Raven / Andie) — outer plane</h2>
+  <p>Not customer runtime. Used to build/fix Aryx itself.</p>
+  <table>
+    <thead><tr><th>Role</th><th>Pattern</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Andie</td><td>Hub orchestrator</td><td>Plan-first; does not implement heavy code itself</td></tr>
+      <tr><td>Specialists</td><td>Spokes</td><td>postgres, security, fastapi, graph-db, …</td></tr>
+      <tr><td>Guards</td><td>Policy agents</td><td>Pre-commit / PostEdit hooks (style, secrets, SQL)</td></tr>
+      <tr><td>agent-chaining skill</td><td>Design SOP</td><td>When to chain, parallel, context handoff, anti-patterns</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    Subagents have <strong>zero memory</strong> of the parent chat. Prompts must include paths,
+    constraints, expected output form, and failure instructions (see agent-chaining skill).
+  </div>
+  <h3>Common engineering chains</h3>
+  <ul>
+    <li>Explore (read-only) → Plan → Implement → Explore verify</li>
+    <li>Parallel [security · db · api] → synthesize</li>
+    <li>Map-reduce over files/modules</li>
+    <li>Cross-check: implementer then independent reviewer</li>
+  </ul>
+</section>
+
+<section id="tools">
+  <h2>13. Tool matrix (who may call what)</h2>
+  <table>
+    <thead><tr><th>Caller</th><th>May call</th><th>Must not</th></tr></thead>
+    <tbody>
+      <tr><td>Ask standard</td><td>Graph retrieve, LLM answer</td><td>Silent graph mutation</td></tr>
+      <tr><td>CPQ engine</td><td>RDB catalog, BML, detectors</td><td>Invent item_value; skip bom_gate</td></tr>
+      <tr><td>Intent agent</td><td>LLM structured only</td><td>Write filled without dispatch</td></tr>
+      <tr><td>MCP host</td><td>Published tools only</td><td>Raw SQL / private env</td></tr>
+      <tr><td>MCP act</td><td>Create pending execution</td><td>Auto-apply effects</td></tr>
+      <tr><td>Schema agent</td><td>LLM + schema</td><td>Confirm own map without HITL</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="state">
+  <h2>14. State &amp; memory models</h2>
+  <table>
+    <thead><tr><th>Store</th><th>Used by</th><th>Lifetime</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Postgres</td><td>All runtime agents</td><td>Durable SoT</td><td>Workspace partitioned</td></tr>
+      <tr><td>FalkorDB</td><td>Ask retrieve, UI</td><td>Rebuildable</td><td>Never only write path</td></tr>
+      <tr><td>CpqSession JSON</td><td>UI ↔ Ask</td><td>Client-echoed</td><td>Must resend every turn</td></tr>
+      <tr><td>Job checkpoints</td><td>Pipeline hub</td><td>Durable</td><td>Resume after crash</td></tr>
+      <tr><td>LLM call table</td><td>Observability</td><td>Durable metrics</td><td>Best-effort insert</td></tr>
+      <tr><td>run_id contextvar</td><td>CPQ logs</td><td>Request-scoped</td><td>Filter appends [run_id=]</td></tr>
+      <tr><td>MCP host context</td><td>External agent</td><td>Host-owned</td><td>Not visible to Aryx except via tool args</td></tr>
+      <tr><td>Subagent prompts</td><td>Raven</td><td>Ephemeral</td><td>No parent memory</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="logs">
+  <h2>15. Logs — where, what, how to triage (critical)</h2>
+  <p>
+    Every critical row has a <strong>Code</strong> link to the emitting module (GitHub — no source pasted here).
+    Interactive drill with file SOP briefs: <a href="ARYX_EXPLORE.html#logging">Explorer → Logging</a>.
+  </p>
+  <h3>15.1 Streams</h3>
+  <table>
+    <thead><tr><th>Stream</th><th>How to open</th><th>Contents</th><th>Code (open)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Stdout application</td>
+        <td><code>docker compose logs -f &lt;api&gt;</code> or process console</td>
+        <td><code>asctime level name message</code> (+ optional <code>[run_id=…]</code>)</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/logging_setup.py" target="_blank" rel="noopener">logging_setup.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>Observability API/UI</td>
+        <td><code>GET /admin/observability?workspace_id=</code> · web observability page</td>
+        <td>jobs by status, llm totals, llm_recent (model, tokens, latency, error), graph counts</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/observability_api.py" target="_blank" rel="noopener">observability_api.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>raven_log</td>
+        <td>Deployment sink for raven-logger</td>
+        <td>level, criticality P1–P4, service=aryx-api, env, principal, trace_id, context</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/raven_log.py" target="_blank" rel="noopener">raven_log.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>CPQ run_id filter</td>
+        <td>grep <code>[run_id=…]</code> on stdout</td>
+        <td>Quotes entire lifecycle under one id</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/logging_context.py" target="_blank" rel="noopener">logging_context.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>Regression gate</td>
+        <td><code>make cpq-regression</code> / pre-push</td>
+        <td>CPQ-REG-001/002/003 machine lines; exit 0–3</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/benchmarks/cpq_intent/run_regression.py" target="_blank" rel="noopener">run_regression.py ↗</a></td>
+      </tr>
+    </tbody>
+  </table>
+  <h3>15.2 Agent-specific log patterns (with code links)</h3>
+  <table>
+    <thead><tr><th>Sev</th><th>Pattern</th><th>Agent</th><th>Meaning</th><th>Action</th><th>Code (open)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>P1</td><td><code>bom_gate</code> / blocked payload</td><td>CPQ hub</td><td>Invalid BOM prevented</td><td>Do not ship; fix state</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/bom_gate.py" target="_blank" rel="noopener">bom_gate.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td><td><code>cpq_intent_dropped</code></td><td>intent queue</td><td>Named target not handled/queued</td><td>Release blocker</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_queue.py" target="_blank" rel="noopener">intent_queue.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td><td><code>cpq_orphan_question</code></td><td>session_guard</td><td>Question without pending</td><td>State machine bug</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/session_guard.py" target="_blank" rel="noopener">session_guard.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td><td>MCP <code>act</code> pending created</td><td>external agent</td><td>Mutation requested</td><td>Human decide API</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/mcp/act.py" target="_blank" rel="noopener">act.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/actions_api.py" target="_blank" rel="noopener">actions_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td><td>stage failed / checkpoint</td><td>pipeline hub</td><td>Ingest stage crashed</td><td>Resume job</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/stages.py" target="_blank" rel="noopener">stages.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/jobs_api.py" target="_blank" rel="noopener">jobs_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P3</td><td><code>cpq_intent_gateway: llm call failed</code></td><td>intent</td><td>Timeout/transport</td><td>Escape hatch path</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>P3</td><td><code>cpq_router_shadow agreement=False</code></td><td>router dual control</td><td>LLM≠det</td><td>Monitor / cutover decision</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P3</td><td>schema_agent fallback heuristic</td><td>schema</td><td>LLM map failed</td><td>Review types before ingest</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/pipeline/schema_agent.py" target="_blank" rel="noopener">schema_agent.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>P3</td><td><code>llm_recent.error</code> set</td><td>broker</td><td>Provider error</td><td>Keys/quota/endpoint</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/llm_runtime.py" target="_blank" rel="noopener">llm_runtime.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/observability_api.py" target="_blank" rel="noopener">observability_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
+        <td>P4</td><td><code>cpq_intent_gateway: dispatch</code></td><td>intent</td><td>Happy path</td><td>Trace with run_id</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/logging_context.py" target="_blank" rel="noopener">logging_context.py ↗</a>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h3>15.3 Correlation cheat-sheet</h3>
+  <pre># Entire CPQ quote lifecycle
+grep 'run_id=&lt;SESSION_RUN_ID&gt;' api.log
+
+# Intent agent only
+grep 'cpq_intent_gateway' api.log | grep 'run_id=&lt;ID&gt;'
+
+# Pipeline job
+grep 'job_id=&lt;ID&gt;\|stage=' api.log
+
+# LLM cost / failures (DB)
+# → Observability llm_recent or SQL on aryx_llm_call</pre>
+</section>
+
+<section id="sop">
+  <h2>16. Operator SOP — common scenarios</h2>
+  <details open>
+    <summary>S1 — “Which agent answered this Ask?”</summary>
+    <ol>
+      <li>Inspect response <code>tools_called</code> and whether <code>session_data.mode==cpq</code>.</li>
+      <li>If CPQ: take <code>session_data.run_id</code>, grep logs.</li>
+      <li>If standard Ask: look for retrieve/gather + answer model in usage / llm_recent.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>S2 — “MCP agent did something wrong”</summary>
+    <ol>
+      <li>Identify tool name from host transcript.</li>
+      <li>If <code>act</code>: check pending executions — may not have been approved.</li>
+      <li>If <code>ask</code>: treat as normal Ask/CPQ debug with workspace_id from args.</li>
+      <li>Check MCP token scope and <code>ARYX_MCP_DEFAULT_WORKSPACE</code>.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>S3 — “Discovery agent mapped garbage types”</summary>
+    <ol>
+      <li>Confirm Brief quality (vague brief → generic types).</li>
+      <li>Check whether heuristic fallback fired in logs.</li>
+      <li>Do not confirm map; edit types; re-run discovery if needed.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>S4 — “Multi-agent engineering change broke prod”</summary>
+    <ol>
+      <li>This is Raven plane — check git PR, not customer MCP.</li>
+      <li>Run <code>make cpq-regression</code>; inspect CPQ-REG-* lines.</li>
+      <li>Rollback via git; do not “fix” via MCP act in prod without approval chain.</li>
+    </ol>
+  </details>
+</section>
+
+<section id="anti">
+  <h2>17. Anti-patterns (hard stops)</h2>
+  <table>
+    <thead><tr><th>Anti-pattern</th><th>Why banned</th><th>Do instead</th></tr></thead>
+    <tbody>
+      <tr><td>Free-form LLM tool-calling for graph on small models</td><td>Unreliable; loses provenance</td><td>Retrieve-then-read (augmented)</td></tr>
+      <tr><td>LLM invents BOM item_value</td><td>Data integrity / API reject</td><td>Options catalog + bom_gate</td></tr>
+      <tr><td>MCP act auto-apply</td><td>Uncontrolled mutation</td><td>Always pending + human decide</td></tr>
+      <tr><td>Assuming CpqSession server-side</td><td>State loss</td><td>Client echo every turn</td></tr>
+      <tr><td>Peer mesh without product need</td><td>Latency, cost, failure surface</td><td>Hub-spoke; justify via agent-chaining skill</td></tr>
+      <tr><td>Subagent without full prompt context</td><td>No parent memory</td><td>Self-contained prompts</td></tr>
+      <tr><td>Skipping regression with --no-verify</td><td>Drops intent / clarify bugs</td><td>Fix or ticket exception</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  Companion docs:
+  <a href="ARYX_EXPLORE.html">SOP Explorer (mind map)</a> ·
+  <a href="ARYX_SYSTEM_GUIDE.html">Linear system guide</a> ·
+  <code>src/aryx/mcp/</code> · <code>src/aryx/broker/</code> · <code>src/aryx/cpq/intent_*.py</code> ·
+  <code>.claude/skills/agent-chaining/SKILL.md</code>
+  <br/>Source of truth remains git. This page is the SOP map for agent behavior.
+</footer>
+</main>
+</div>
+</body>
+</html>
