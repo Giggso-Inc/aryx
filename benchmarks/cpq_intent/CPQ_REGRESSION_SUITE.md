@@ -242,6 +242,18 @@ Offline handler uses `_extract_replacement_clause` (PROMPT 6 design a).
 | 1 | change price tier | pending_no_value;vn=priceTier_astro;question;not_nudge;invariant |
 | 2 | instead of Standard, prefer Premium | filled=priceTier_astro:Premium;not_nudge;invariant |
 
+### D08 — disambiguate → mismatch → scoped re-ask → resolve
+Constrained product list (family scope) must survive a nonsense reply;
+never fall through to the catalog-wide 325-option Product prompt.
+(Offline uses a non-matching token on turn 2 so the re-ask path is forced;
+fuzzy "r7ex"→R7EX is covered by unit tests.)
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | which product from the SL3500e list | pending_scope;question;not_nudge;invariant |
+| 2 | zzznomatch999 | pending_scope;scope_reask;not_nudge;invariant |
+| 3 | SL3500e R7EX | filled=productSelectionProduct_all:SL3500e R7EX;scope_clear;not_nudge |
+
 ---
 
 ## Reversed-cue replacement pins (append-only N-cases)
@@ -259,6 +271,18 @@ only require a known intent category (`change_request`) + `none` gate.
 | N55 | not Standard, Premium please | change_request | - | none |
 | N56 | prefer Premium over Standard | change_request | - | none |
 | N57 | use Premium instead of Standard | change_request | - | none |
+
+## Pending-scope + pet-name pins (PROMPT 7, append-only)
+
+Partial-word in scope (P) and pet-name / typo mentions (N). Offline unit
+depth: `tests/test_cpq_pending_scope.py`. D08 covers the multi-turn path.
+
+| id | question | expected_intent | expected_vn | check |
+|----|----------|-----------------|-------------|-------|
+| P56 | Federal | change_request | - | none |
+| N58 | Asr | change_request | - | none |
+| N59 | asty | change_request | - | none |
+| N60 | r7ex | change_request | - | none |
 
 ---
 

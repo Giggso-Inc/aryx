@@ -273,6 +273,16 @@ def _check_expect(
                         f"expected filled/display {fvn}={fval!r}, "
                         f"got filled={got_fill!r} display={got_disp!r}"
                     )
+        if t == "pending_scope" and not sd.get("pending_scope_candidates"):
+            errs.append("expected pending_scope_candidates set")
+        if t == "scope_reask":
+            al = (answer or "").lower()
+            if "did you mean" not in al and "didn't get" not in al and "didnt get" not in al:
+                errs.append("expected scoped re-ask (did you mean / didn't get)")
+            if "325" in al:
+                errs.append("scoped re-ask must not mention 325-option dump")
+        if t == "scope_clear" and sd.get("pending_scope_candidates"):
+            errs.append("expected pending_scope cleared after successful match")
 
     if "invariant" in tokens or "question" in tokens:
         violations = guard.assert_conversational_invariant(  # type: ignore[attr-defined]
@@ -576,6 +586,60 @@ def run_dialogues_offline(
                             errors.append(
                                 f"CPQ-REG-001 {did}/t{t['turn']}: applied "
                                 f"rejected value {rejected!r}"
+                            )
+                            exit_hint = max(exit_hint, EXIT_REGRESSION)
+                else:
+                    answer = "OK."
+
+            elif did == "D08":
+                # PROMPT 7: constrained product scope survives mismatch.
+                scope = _load_mod(
+                    "aryx.cpq.pending_scope",
+                    "aryx/cpq/pending_scope.py",
+                )
+                PROD = "productSelectionProduct_all"
+                SCOPED = [
+                    "SL3500e R7", "SL3500e R7EX", "SL3500e Standard", "SL3500e Lite",
+                ]
+                if re.search(r"sl3500e|which product", user, re.I) and not (
+                    session.pending_scope_candidates
+                ):
+                    scope.set_pending_scope(
+                        session,
+                        kind="product_options",
+                        candidates=SCOPED,
+                        origin_question=user,
+                        attr_vn=PROD,
+                        asked_turn=session.turn,
+                    )
+                    session.pending_variables = [PROD]
+                    answer = (
+                        "Which product would you like?\n\n"
+                        + "\n".join(f"{i+1}. {c}" for i, c in enumerate(SCOPED))
+                    )
+                elif session.pending_scope_candidates:
+                    res = scope.resolve_against_scope(
+                        user, list(session.pending_scope_candidates),
+                    )
+                    if res.matched:
+                        session.filled[PROD] = res.matched
+                        session.display_filled[PROD] = res.matched
+                        handled.append(PROD)
+                        scope.clear_pending_scope(session)
+                        session.pending_variables = []
+                        answer = f"Updated **Product** → **{res.matched}**."
+                    else:
+                        session.pending_scope_misses = (
+                            int(session.pending_scope_misses or 0) + 1
+                        )
+                        answer = scope.format_did_you_mean(
+                            user, res.suggestions or SCOPED[:3],
+                            scope_label="Product",
+                        )
+                        if "325" in answer:
+                            errors.append(
+                                f"CPQ-REG-001 {did}/t{t['turn']}: "
+                                "scope lost — 325-option dump"
                             )
                             exit_hint = max(exit_hint, EXIT_REGRESSION)
                 else:

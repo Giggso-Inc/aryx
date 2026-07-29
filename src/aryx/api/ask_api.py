@@ -62,6 +62,16 @@ from aryx.cpq.session_guard import (
     undo_empty_message,
     undo_success_message,
 )
+from aryx.cpq.pending_scope import (
+    candidates_from_attr_options,
+    clear_pending_scope,
+    format_did_you_mean,
+    log_scope_lost,
+    log_scope_retained,
+    resolve_against_scope,
+    scope_loop_exit_threshold,
+    set_pending_scope,
+)
 from aryx.cpq.replacement_clause import extract_replacement_clause
 from aryx.cpq.state import INTENT_QUEUE_CAP, ConfigAttr, CpqSession, MenuOption
 from aryx.graph.retrieve import all_types, gather, render_context
@@ -1049,6 +1059,71 @@ def _extract_replacement_clause(text: str) -> tuple[str | None, str | None]:
     return extract_replacement_clause(text)
 
 
+def _remember_attr_scope(
+    session: Any,
+    attr: Any,
+    constrained_item_values: list[str] | None,
+    origin_question: str = "",
+) -> None:
+    """Persist the option list we just showed (PROMPT 7)."""
+    if attr is None or not getattr(attr, "options", None):
+        return
+    cands = candidates_from_attr_options(attr.options, constrained_item_values)
+    if not cands:
+        return
+    vn = getattr(attr, "variable_name", "") or ""
+    kind = (
+        "product_options"
+        if "productselection" in vn.lower().replace("_", "")
+        or vn.lower() == "productselectionproduct_all"
+        else "attr_options"
+    )
+    set_pending_scope(
+        session,
+        kind=kind,
+        candidates=cands,
+        origin_question=origin_question,
+        attr_vn=vn,
+        asked_turn=getattr(session, "turn", 0),
+    )
+
+
+def _scoped_reask_response(
+    req: "AskRequest",
+    session: Any,
+    reply: str,
+    *,
+    scope_label: str = "",
+    tools_called: str = "cpq_scope_reask()",
+) -> dict[str, Any]:
+    """Build a scoped 'did you mean' / numbered re-ask; retain scope."""
+    cands = list(session.pending_scope_candidates or [])
+    res = resolve_against_scope(reply, cands)
+    session.pending_scope_misses = int(session.pending_scope_misses or 0) + 1
+    log_scope_retained(
+        run_id=getattr(session, "run_id", "") or "",
+        reply=reply,
+        kind=session.pending_scope_kind or "",
+        n_candidates=len(cands),
+        suggestions=res.suggestions,
+        misses=session.pending_scope_misses,
+    )
+    numbered = session.pending_scope_misses >= scope_loop_exit_threshold()
+    sug = res.suggestions or cands[:3]
+    if numbered:
+        sug = cands  # full same-scope list, never catalog-wide
+    answer = format_did_you_mean(
+        reply, sug, numbered=numbered, scope_label=scope_label,
+    )
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": [tools_called],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
 def _constrain_excluding_rejected(
     attr: Any,
     rejected_text: str | None,
@@ -1386,9 +1461,11 @@ def _handle_cascade(
             ctx = _cpq_engine.build_context_sentence(
                 next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
             )
+            _cvals = constrained_opts.get(next_attr.entity_id)
             q_block = _cpq_engine.next_question_prompt(
-                next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+                next_attr, ctx, _cvals,
             )
+            _remember_attr_scope(session, next_attr, _cvals, req.question)
         answer = cascade_note + "\n\n" + q_block
         answer += _queue_followup_note(session, attrs)
     elif unresolved_grid_gaps:
@@ -1581,9 +1658,11 @@ def _handle_multi_select_removal(
             ctx = _cpq_engine.build_context_sentence(
                 next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
             )
+            _cvals_nqp = constrained_opts.get(next_attr.entity_id)
             q_block = _cpq_engine.next_question_prompt(
-                next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+                next_attr, ctx, _cvals_nqp,
             )
+            _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     elif unresolved_grid_gaps:
         session.status = "configuring"
@@ -1754,9 +1833,11 @@ def _handle_attr_activation(
             ctx = _cpq_engine.build_context_sentence(
                 next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
             )
+            _cvals_nqp = constrained_opts.get(next_attr.entity_id)
             q_block = _cpq_engine.next_question_prompt(
-                next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+                next_attr, ctx, _cvals_nqp,
             )
+            _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     else:
         session.status = "post_approval"
@@ -1896,9 +1977,11 @@ def _handle_attr_clear(
             ctx = _cpq_engine.build_context_sentence(
                 next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
             )
+            _cvals_nqp = constrained_opts.get(next_attr.entity_id)
             q_block = _cpq_engine.next_question_prompt(
-                next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+                next_attr, ctx, _cvals_nqp,
             )
+            _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     else:
         session.status = "post_approval"
@@ -2045,9 +2128,11 @@ def _handle_bulk_quantity_change(
             ctx = _cpq_engine.build_context_sentence(
                 next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
             )
+            _cvals_nqp = constrained_opts.get(next_attr.entity_id)
             q_block = _cpq_engine.next_question_prompt(
-                next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+                next_attr, ctx, _cvals_nqp,
             )
+            _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     elif unresolved_grid_gaps:
         session.status = "configuring"
@@ -2369,9 +2454,11 @@ def _handle_cascade_multi(
             ctx = _cpq_engine.build_context_sentence(
                 next_attr, visible_attrs, filled, display_filled, hiding_rules, rec_rules,
             )
+            _cvals_nqp = constrained_opts.get(next_attr.entity_id)
             q_block = _cpq_engine.next_question_prompt(
-                next_attr, ctx, constrained_opts.get(next_attr.entity_id),
+                next_attr, ctx, _cvals_nqp,
             )
+            _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     elif unresolved_grid_gaps:
         session.status = "configuring"
@@ -4536,9 +4623,35 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req.question, session.turn,
             )
             return _handle_cpq_qa(req, session, [], reader, resume_review=False)
-        detected = _cpq_engine.detect_product_mention(req.question, hints, reader, req.workspace_id)
+        # PROMPT 7: reply to a prior "did you mean" / family list first
+        detected = ""
+        if session.pending_scope_candidates and session.pending_scope_kind in (
+            "product_suggestions", "family_disambiguation", "",
+        ):
+            _sres0 = resolve_against_scope(
+                req.question, list(session.pending_scope_candidates),
+            )
+            if _sres0.matched:
+                detected = _sres0.matched
+                clear_pending_scope(session)
+            elif _sres0.suggestions:
+                return _scoped_reask_response(
+                    req, session, req.question,
+                    scope_label="product family",
+                    tools_called="cpq_product_did_you_mean()",
+                )
+        if not detected:
+            detected = _cpq_engine.detect_product_mention(
+                req.question, hints, reader, req.workspace_id,
+            )
         if not detected and session.pending_anchor == "product":
-            detected = req.question.strip()
+            # Only blind-accept raw text when it resolves via scope ladder
+            # against known families — never invent a product name.
+            _fams = _cpq_engine.list_ingested_families(reader, req.workspace_id)
+            if _fams:
+                _sraw = resolve_against_scope(req.question, list(_fams))
+                if _sraw.matched:
+                    detected = _sraw.matched
         if not detected:
             # Priority 2: resolve against real ingested catalog/family/
             # product-option data instead of falling back to accepting
@@ -4559,25 +4672,77 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             already_asked = session.pending_anchor == "product"
             session.pending_anchor = "product"
             families = _cpq_engine.list_ingested_families(reader, req.workspace_id)
-            fam_list = ", ".join(f"*{f}*" for f in families) if families else "*APX Next*, *MOTOTRBO*, *SL3500e*"
-            if already_asked:
-                answer = (
-                    f"I still couldn't match **{req.question.strip()}** to a "
-                    f"product family ingested in this workspace. Available "
-                    f"families: {fam_list}. Could you pick one of those?"
+            # PROMPT 7: pet names / typos ("Asr"/"asty") → did you mean,
+            # with pending_scope so the next reply is matched in-scope.
+            _alias = _cpq_engine.ingested_product_alias_map(reader, req.workspace_id)
+            suggestions = _cpq_engine.suggest_product_candidates(
+                req.question, reader, req.workspace_id, limit=5, alias_map=_alias,
+            )
+            # Also allow prefix / in-scope fuzzy against family names for
+            # short nicknames that fall below the mid-band threshold.
+            if not suggestions and families:
+                _sres = resolve_against_scope(req.question, list(families))
+                if _sres.matched:
+                    detected = _sres.matched
+                elif _sres.suggestions:
+                    suggestions = list(_sres.suggestions)
+            if detected:
+                pass  # fall through to anchor with fuzzy family match
+            elif suggestions:
+                set_pending_scope(
+                    session,
+                    kind="product_suggestions",
+                    candidates=list(suggestions),
+                    origin_question=req.question,
+                    attr_vn="",
+                    asked_turn=session.turn,
                 )
+                answer = format_did_you_mean(
+                    req.question, suggestions, scope_label="product family",
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_product_did_you_mean()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
             else:
-                answer = (
-                    f"To start the configuration I need the **product family** "
-                    f"(e.g., {fam_list}). Could you provide that?"
+                fam_list = (
+                    ", ".join(f"*{f}*" for f in families)
+                    if families else "*APX Next*, *MOTOTRBO*, *SL3500e*"
                 )
-            _persist_cpq_history(req.workspace_id, req.question, answer)
-            return {
-                "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-            }
+                if families:
+                    set_pending_scope(
+                        session,
+                        kind="product_suggestions",
+                        candidates=list(families),
+                        origin_question=req.question,
+                        attr_vn="",
+                        asked_turn=session.turn,
+                    )
+                if already_asked:
+                    answer = (
+                        f"I still couldn't match **{req.question.strip()}** to a "
+                        f"product family ingested in this workspace. Available "
+                        f"families: {fam_list}. Could you pick one of those?"
+                    )
+                else:
+                    answer = (
+                        f"To start the configuration I need the **product family** "
+                        f"(e.g., {fam_list}). Could you provide that?"
+                    )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_anchor_validation()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+        # If we fuzzy-matched a family via scope above, detected is set.
+        if not session.product_name and not detected:
+            # Defensive — should not reach here without return.
+            pass
         session.product_name = detected
         # Keep the longer order utterance (often has country + customer) when
         # this turn is only a short family reply (e.g. "aSTRO25_bom") — N1 /
@@ -4835,6 +5000,16 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # → the existing confirm_switch gate handles yes/no (and its
                 # country re-validation); several → suggest_switch, whose
                 # gate re-prompts on a bare "yes" instead of guessing.
+                # PROMPT 7: also set pending_scope so a near-miss typo on
+                # the reply re-asks within these suggestions only.
+                set_pending_scope(
+                    session,
+                    kind="product_suggestions",
+                    candidates=list(suggestions),
+                    origin_question=req.question,
+                    attr_vn="",
+                    asked_turn=session.turn,
+                )
                 if len(suggestions) == 1:
                     session.pending_switch_product = suggestions[0]
                     session.pending_switch_question = req.question
@@ -5003,16 +5178,13 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 session.model_leaf_resolved = True
             elif session.pending_model_leaf_candidates:
                 # A prior turn already asked — this reply should answer it.
+                # PROMPT 7: exact → partial → fuzzy within the same leaf list
+                # before LLM; on miss, scoped re-ask (never Product 325).
                 _reply = req.question.strip()
-                _reply_norm = _norm_leaf(_reply)
-                for leaf in session.pending_model_leaf_candidates:
-                    if _norm_leaf(leaf) == _reply_norm:
-                        _resolved_leaf = leaf
-                        break
-                if _resolved_leaf is None and _reply.isdigit():
-                    _idx = int(_reply) - 1
-                    if 0 <= _idx < len(session.pending_model_leaf_candidates):
-                        _resolved_leaf = session.pending_model_leaf_candidates[_idx]
+                _leaf_scope = list(session.pending_model_leaf_candidates)
+                _sres = resolve_against_scope(_reply, _leaf_scope)
+                if _sres.matched:
+                    _resolved_leaf = _sres.matched
                 if _resolved_leaf is None:
                     _leaf_attr_candidates = [
                         ConfigAttr(
@@ -5020,10 +5192,27 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                             required=False, default_value="",
                             options=[MenuOption(item_value=leaf, display_name=leaf)],
                         )
-                        for leaf in session.pending_model_leaf_candidates
+                        for leaf in _leaf_scope
                     ]
-                    _resolved_leaf = _llm_resolve_label_collision(
+                    _llm_leaf = _llm_resolve_label_collision(
                         _reply, _leaf_attr_candidates, session, req.workspace_id)
+                    if _llm_leaf and _llm_leaf in _leaf_scope:
+                        _resolved_leaf = _llm_leaf
+                if _resolved_leaf is None:
+                    # Keep model-leaf candidates AND pending_scope in sync
+                    set_pending_scope(
+                        session,
+                        kind="family_disambiguation",
+                        candidates=_leaf_scope,
+                        origin_question=req.question,
+                        attr_vn="",
+                        asked_turn=session.turn,
+                    )
+                    return _scoped_reask_response(
+                        req, session, _reply,
+                        scope_label="product line",
+                        tools_called="cpq_model_leaf_ambiguous()",
+                    )
             else:
                 # First time seeing this ambiguity — try to auto-resolve
                 # from what the customer already said (this turn's text,
@@ -5049,8 +5238,17 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 hints["_bm_model_variable_name"] = _resolved_leaf
                 session.pending_model_leaf_candidates = []
                 session.model_leaf_resolved = True
+                clear_pending_scope(session)
             else:
                 session.pending_model_leaf_candidates = _leaf_candidates
+                set_pending_scope(
+                    session,
+                    kind="family_disambiguation",
+                    candidates=list(_leaf_candidates),
+                    origin_question=req.question,
+                    attr_vn="",
+                    asked_turn=session.turn,
+                )
                 _leaf_lines = "\n".join(f"{i+1}. {leaf}" for i, leaf in enumerate(_leaf_candidates))
                 _static_leaf_answer = (
                     f"This family has more than one product line — which one are "
@@ -6222,6 +6420,57 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             pending_constrained = _cpq_engine.apply_constraint_rules(
                 attrs, con_rules, session.filled, bml_eval=bml_eval,
             ).get(pending_attr.entity_id)
+            # PROMPT 7: if we previously showed a durable scope for this
+            # attr, force matching into that candidate set (never widen to
+            # the full 325-option Product list on a typo/mismatch).
+            _scope_cands = list(session.pending_scope_candidates or [])
+            _scope_for_attr = (
+                bool(_scope_cands)
+                and (
+                    not session.pending_scope_attr_vn
+                    or session.pending_scope_attr_vn == pending_var
+                )
+            )
+            if _scope_for_attr and pending_constrained is None:
+                # Reconstruct constrained item_values from stored candidates
+                # (display names and/or item_values).
+                _scope_ivs: list[str] = []
+                for o in pending_attr.options or []:
+                    if (
+                        o.item_value in _scope_cands
+                        or o.display_name in _scope_cands
+                    ):
+                        _scope_ivs.append(o.item_value)
+                if _scope_ivs:
+                    pending_constrained = _scope_ivs
+            elif _scope_for_attr and pending_constrained is not None:
+                # Intersect recomputed constraints with remembered scope
+                _scope_ivs = []
+                for o in pending_attr.options or []:
+                    if o.item_value not in pending_constrained:
+                        continue
+                    if (
+                        o.item_value in _scope_cands
+                        or o.display_name in _scope_cands
+                    ):
+                        _scope_ivs.append(o.item_value)
+                if _scope_ivs:
+                    pending_constrained = _scope_ivs
+
+            # In-scope resolve ladder (exact → partial → fuzzy) before
+            # unconstrained free-text / LLM — preserves "Federal" partial
+            # and recovers "r7ex" within the same list.
+            _scope_match_text = req.question
+            if _scope_for_attr and pending_attr.select_type != "multi":
+                _sres = resolve_against_scope(req.question, _scope_cands)
+                if _sres.matched:
+                    _scope_match_text = _sres.matched
+                    logger.info(
+                        "cpq_scope_match tier=%s attr=%s match=%r run_id=%s",
+                        _sres.tier, pending_var, _sres.matched,
+                        session.run_id or "-",
+                    )
+
             # Try the user's full utterance first — they may have typed the exact
             # option name (e.g. "APX NEXT (4G LTE+5G)"). Only fall back to the
             # extracted hint if the full question produces no match; hints are
@@ -6241,9 +6490,14 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         pending_attr, hint_val_for_attr, pending_constrained)
                 result = multi_matches[0] if multi_matches else None
             else:
-                result = _cpq_engine.apply_answer(pending_attr, req.question, pending_constrained)
+                result = _cpq_engine.apply_answer(
+                    pending_attr, _scope_match_text, pending_constrained)
+                if not result and _scope_match_text != req.question:
+                    result = _cpq_engine.apply_answer(
+                        pending_attr, req.question, pending_constrained)
                 if not result and hint_val_for_attr:
-                    result = _cpq_engine.apply_answer(pending_attr, hint_val_for_attr, pending_constrained)
+                    result = _cpq_engine.apply_answer(
+                        pending_attr, hint_val_for_attr, pending_constrained)
             # Gap A (Amendment 2): fragment-match found nothing — try the
             # shared Tier-2 LLM fallback before giving up, scoped to only
             # this attr's own options. Single-select only: apply_multi_answer
@@ -6253,10 +6507,24 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             if not result and pending_attr.select_type != "multi":
                 _llm_pick = _llm_resolve_pending_answer(req.question, pending_attr, req.workspace_id)
                 if _llm_pick and _llm_pick["confidence"] == "high":
-                    result = (_llm_pick["iv"], _llm_pick["disp"])
+                    # Only accept LLM pick if it stays inside active scope
+                    _iv = _llm_pick["iv"]
+                    if (
+                        pending_constrained is None
+                        or _iv in pending_constrained
+                    ):
+                        result = (_llm_pick["iv"], _llm_pick["disp"])
                 elif _llm_pick and _llm_pick["confidence"] == "low":
-                    _llm_low_confidence_candidates = _llm_pick["candidates"]
+                    _cands = _llm_pick["candidates"]
+                    if pending_constrained is not None:
+                        _allowed_disp = {
+                            o.display_name for o in pending_attr.options
+                            if o.item_value in pending_constrained
+                        }
+                        _cands = [c for c in _cands if c in _allowed_disp]
+                    _llm_low_confidence_candidates = _cands or None
             if result:
+                clear_pending_scope(session)
                 iv, disp = result
                 if pending_attr.select_type == "multi":
                     # Every option apply_multi_answer() found in this answer
@@ -6354,6 +6622,14 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # so it must not silently commit (same "never guess a real
                 # decision" discipline as an ambiguous label collision).
                 _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
+                set_pending_scope(
+                    session,
+                    kind="attr_options",
+                    candidates=list(_llm_low_confidence_candidates),
+                    origin_question=req.question,
+                    attr_vn=pending_var,
+                    asked_turn=session.turn,
+                )
                 _lines = "\n".join(f"- {c}" for c in _llm_low_confidence_candidates)
                 _static_answer = (
                     f"I'm not certain which option you meant for "
@@ -6373,28 +6649,43 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
             elif pending_attr.options:
-                # Answer matched nothing — tell the user and re-show the options.
-                # A longer sentence means Gap A's LLM fallback was already tried
-                # and genuinely came up empty (not skipped) — phrase this as an
-                # open follow-up rather than a bare rejection, since the customer
-                # likely DID answer, just in words this catalog's option text
-                # doesn't textually resemble (decided 2026-07-26, Amendment 7
-                # follow-up: same reasoning that motivated exposing item_value
-                # to the model — the miss is real, but the tone shouldn't imply
-                # the customer did something wrong).
-                opts_prompt = _cpq_engine.next_question_prompt(pending_attr)
-                _is_long_sentence = pending_attr.select_type != "multi" and len(req.question.split()) > 6
+                # Answer matched nothing — SCOPED re-ask (PROMPT 7).
+                # Never fall through to next_question_prompt without
+                # constrained_item_values: that dumped the full 325-option
+                # Product list after a constrained family list (live: r7ex).
                 _pending_label = _cpq_engine.disambiguated_label(pending_attr, attrs)
-                if _is_long_sentence:
-                    answer = (
-                        f"I couldn't match that to one of **{_pending_label}**'s "
-                        f"options — could you just give me the name on its own?\n\n{opts_prompt}"
+                if not session.pending_scope_candidates or (
+                    session.pending_scope_attr_vn
+                    and session.pending_scope_attr_vn != pending_var
+                ):
+                    # First miss without a remembered scope — capture the
+                    # constrained set we just matched against.
+                    _remember_attr_scope(
+                        session, pending_attr, pending_constrained, req.question,
                     )
-                else:
-                    answer = (
-                        f"I didn't recognise **\"{req.question.strip()}\"** as a valid choice "
-                        f"for **{_pending_label}**. Please pick one:\n\n{opts_prompt}"
+                if session.pending_scope_candidates:
+                    return _scoped_reask_response(
+                        req, session, req.question,
+                        scope_label=_pending_label,
+                        tools_called="cpq_invalid_answer()",
                     )
+                # Structurally unexpected: options exist but no scope and
+                # no constraints — last resort constrained re-prompt.
+                log_scope_lost(
+                    run_id=session.run_id or "",
+                    reply=req.question,
+                    reason="invalid_answer_no_scope",
+                )
+                opts_prompt = _cpq_engine.next_question_prompt(
+                    pending_attr, "", pending_constrained,
+                )
+                _remember_attr_scope(
+                    session, pending_attr, pending_constrained, req.question,
+                )
+                answer = (
+                    f"I didn't recognise **\"{req.question.strip()}\"** as a valid "
+                    f"choice for **{_pending_label}**. Please pick one:\n\n{opts_prompt}"
+                )
                 _persist_cpq_history(req.workspace_id, req.question, answer)
                 return {
                     "answer": answer, "terms": [], "tools_called": ["cpq_invalid_answer()"],
@@ -6722,6 +7013,11 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 answer = _cpq_engine.next_question_prompt(
                     next_attr, context_sentence, constrained_vals,
                     validation_rules=validation_rules,
+                )
+                # PROMPT 7: remember the exact option list shown so a typo
+                # on the next turn re-asks within this scope (never 325).
+                _remember_attr_scope(
+                    session, next_attr, constrained_vals, req.question,
                 )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
