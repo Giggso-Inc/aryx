@@ -1,7 +1,10 @@
 # CPQ Compound "Change + Question" Message — Clarify Mismatch Issue
 
-**Status:** Root-caused, partial fix applied and live-verified. ONE
-architectural gap remains, root-caused but not fixed (see §8).
+**Status:** Root-caused, partial fix applied and live-verified. §9-§11 track
+QA-reported issues #1/#2/#3 (BOM gate crash, decline detection, constrained
+retry scope), all now fixed on this branch — see §9's cross-reference table
+for the full 10-issue QA status. Issues #7/8, #9, #10 (QA numbering) remain
+open.
 **Date:** 2026-07-29
 **Branch:** dev-rv (LLM-first intent gateway, `src/aryx/cpq/intent_gateway.py`)
 
@@ -430,3 +433,184 @@ new code confirmed present inside the running container.
 only gained an extra way to *agree* (never a new way to reject), so no
 existing passing case can newly fail; the "still clarifies when it points
 elsewhere" test guards against over-trusting recency.
+
+---
+
+## 9. `confirm` crash — constraint-recheck argument-order mismatch (QA issue #1). Fixed.
+
+A separate QA pass (workspace 21, `aSTRO25_bom`) reported 10 issues against
+`feature/msi_intent`. Re-verified each directly against actual code — on
+both `feature/msi_intent` and this branch — before touching anything.
+This section covers the one fixed here; the others are cross-referenced
+below.
+
+### 9.1 Problem
+
+Every `confirm` with an active constraint rule (e.g. hit via Carrier
+Selection / Wireless Carrier) failed the BOM gate with:
+
+```
+constraint recheck error: 'str' object has no attribute 'target_attr_id'
+```
+
+instead of emitting a payload.
+
+### 9.2 Root cause — confirmed by reading both sides of the call
+
+`bom_gate.py`'s `recheck_constraints` called:
+
+```python
+engine.apply_constraint_rules(attrs, session.filled, con_rules, bml_eval=bml_eval)
+```
+
+i.e. `(attrs, filled, rules)`. The real signature (`engine.py`) is:
+
+```python
+def apply_constraint_rules(self, attrs, rules, filled, bml_eval=None) -> dict[int, list[str]]
+```
+
+i.e. `(attrs, rules, filled)` — `session.filled` (a dict) landed in the
+`rules` parameter; the real rule-object list landed in `filled`. Inside the
+function, `for rule in rules:` iterated the dict's keys (plain strings),
+and `rule.target_attr_id` threw exactly the observed error.
+
+A second, latent bug: the function returns a single `dict`, but
+`bom_gate.py` unpacked it as `_allowed, messages = ...` (expects a
+2-tuple) — never reached since the AttributeError fired first, but would
+have broken even with the argument order alone fixed, since
+`apply_constraint_rules` has no `messages` output at all — it only returns
+`{entity_id: [allowed_item_values]}`.
+
+Checked all 7 other call sites of `apply_constraint_rules` (`ask_api.py`
+×4, `engine.py` ×3) — every one of them already uses the correct order and
+treats the return as a plain dict. `bom_gate.py` was the only outlier, so
+the fix belongs entirely there, not in `apply_constraint_rules` itself.
+
+### 9.3 Fix — live-verified
+
+`recheck_constraints` now calls the engine with the correct argument order
+and derives violation messages itself (since the engine never produced
+them): for each `entity_id` in the returned dict, if the attribute's
+current filled value isn't in that entity's freshly recomputed allowed
+set, that's a real violation — "**{label}** is currently {value!r}, which
+is no longer a valid option given your other selections."
+
+Also fixed a test (`test_cpq_post_failure_guards.py`) whose mock modeled
+the WRONG (buggy) contract — `apply_constraint_rules` mocked to return a
+2-tuple, matching the bug rather than the real single-dict signature. That
+specific test never actually exercised this path (`con_rules=[]` short-
+circuits before the mock is called), so it wasn't masking the bug, but the
+mock shape itself was misleading and is now corrected. Added 3 new
+regression tests: correct-argument-order is asserted directly, a filled
+value outside the recomputed allowed set is flagged, and a still-allowed
+value passes cleanly.
+
+**Live-verified**: 86/86 tests passing; `aryx-api-1` rebuilt, force-
+recreated, confirmed healthy.
+
+### 9.4 Cross-reference — status of all 10 QA-reported issues, verified against this branch
+
+Re-checked every QA claim directly against this branch's code (not
+`feature/msi_intent`, which this branch does not include) before recording
+status:
+
+| # | Issue | Status on this branch |
+|---|---|---|
+| 1 | `confirm` crash — constraint recheck arg-order mismatch | **Fixed** (§9, this section) |
+| 2 | "I don't want to change X" mismatched as an invalid value | **Fixed** (§10) |
+| 3 | Retry loses constrained option scope (false 328-option message) | **Fixed** (§10) |
+| 4 | Turn-1 `pending_var` UnboundLocalError | Already fixed upstream (`dev-rv`, `aac7a67`) |
+| 5 | Summary raw-dump fallback | Already fixed upstream (`dev-rv`, `6adc9fc` + `65a4d76`) |
+| 6 | `isFedRampRequired_astro` Yes→No discrepancy | Inconclusive — needs a live-logged repro, not re-traced here |
+| 7/8 | Dense-sentence trailing question disambiguates against unrelated attrs | Confirmed still open — `_relevant_intent_candidates` (`ask_api.py`) still falls back to the unfiltered candidate list when nothing scores. Distinct mechanism from §1-3/§8 above (`_ground_clarify_candidates`) — not touched by this branch's fixes |
+| 9 | Naming both attrs explicitly doesn't resolve either | Not root-caused by QA; not re-traced here |
+| 10 | "ATT/FirstNet" short answer fails to match its own just-shown option | Confirmed still open — and QA's own hypothesis (constraint-set inconsistency in `apply_answer`) is refined: the real attribute is multi-select, so the actual code path is `apply_multi_answer`, which has **no prefix-match tier at all** (only an exact, word-bounded full-display-name search) — a simpler, statically-confirmable mechanism, independent of `constrained_item_values` |
+
+Issues #2/#3 share one fix location (`_handle_cascade`) and are the
+recommended next pass.
+
+---
+
+## 10. QA issues #2 + #3 — decline detection + constrained-scope retry. Fixed.
+
+Both share one call site: `pending_change_no_value_vn`'s resolution
+(`ask_api.py`, right before it calls `_handle_cascade`).
+
+**#2 fix**: new `_CHANGE_VALUE_DECLINE_RE` / `_is_change_value_decline()` —
+checked before `_handle_cascade` is ever called, so a decline is always a
+no-op (nothing in `session.filled` has been touched yet at that point).
+Stemmed with `\w*` on verb forms (`want\w*`, `chang\w*`) rather than one
+literal phrase — learned directly from §6's regex missing "wanted" vs
+"want". Deliberately does **not** match bare "no" alone, since that's a
+legitimate value for yes/no-shaped attrs. On a match, returns a friendly
+"I'll leave **{label}** as it is" answer and clears
+`pending_change_no_value_vn` without ever reaching `apply_answer`.
+
+**#3 fix**: `_handle_cascade` gained an optional `constrained_item_values`
+parameter (default `None` — every other one of its 9 call sites is
+unaffected). The `pending_change_no_value_vn` call site now recomputes the
+same `apply_constraint_rules(...)` set the *original* "which value?" ask
+used and passes it through — both into `apply_answer` (so validation and
+the prompt agree) and into the retry's `next_question_prompt`. A failed
+match now re-shows the same scoped 8-option list instead of falling back
+to `attr.options` unfiltered.
+
+**Live-verified**: 5 new tests (2 full-turn integration tests via
+`_run_cpq_turn`, 3 unit tests on the decline regex including the
+"wanted"-class stemming check) — 131/132 in the full combined suite (the
+1 failure is pre-existing, unrelated: a DNS resolution error hitting a
+docker-only hostname from outside the container, identical before and
+after this change). `aryx-api-1` rebuilt, force-recreated, confirmed
+healthy.
+
+---
+
+## 11. Live bug from §9's own fix — stale constraint values now correctly hard-blocked confirm, but that contradicts an existing product decision. Redesigned.
+
+Once §9 made `recheck_constraints` actually reachable (instead of crash-
+and-swallowed), a real confirm hit two genuine violations: `Carry Type`
+and `Frequency Bands`, both auto-filled earlier in the session with
+values that a later Product/model selection's constraint rules no longer
+allow.
+
+**Not a bug in §9's fix** — cross-checked against a completely separate,
+pre-existing mechanism (`find_rule_inconsistencies`, logged as `"cpq:
+rule-consistency check found N issue(s)"`) that runs independently every
+turn. It found the *same two* violations (plus 5 more recommendation-rule
+mismatches it also doesn't act on). Both mechanisms agree these are real.
+
+**The actual problem**: `docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
+§4.1` already made an explicit decision about this exact issue class —
+*"NOT auto-fixed... the engine can't be certain what the correct value
+should have been... logged only, for now... surfacing it to the user
+directly is a separate, not-yet-built follow-up."* §9's fix, by finally
+working, started hard-blocking confirm on precisely the class of issue
+this codebase had already decided not to hard-block on anywhere else.
+
+**Decision (asked directly): auto-clear the stale value and re-ask**,
+rather than hard-block or silently warn-and-proceed.
+
+**Fix**:
+- `bom_gate.py`: `recheck_constraints` now returns structured
+  `StaleConstraintViolation` objects (`attr`, `current_value`, `allowed`)
+  instead of hard-fail message strings. `BomGateResult` gained a
+  `stale_violations` field, separate from `errors` — provenance failures
+  (invented/hallucinated values) still hard-fail exactly as before; that's
+  a different, more serious integrity problem this decision doesn't touch.
+- `ask_api.py`'s confirm handler: when `gate.stale_violations` is non-
+  empty (and there are no hard provenance errors), it pops each stale
+  attr from `filled`/`display_filled`/`filled_source`, queues them in
+  `pending_variables`, flips `session.status` back to `"configuring"`,
+  and re-asks the first one using the *corrected* constrained option list
+  (same `next_question_prompt(..., constrained_item_values=...)` pattern
+  as §10) — no payload emitted, but framed as a fresh question rather
+  than a block the customer has to self-diagnose.
+
+**Live-verified**: 3 new tests (structured-violation shape at the
+`bom_gate.py` level, `validate_before_payload` confirmed to return
+`ok=False` + `stale_violations` with an empty `catch_message` rather than
+hard-failing, and a full `_run_cpq_turn` reproduction of the live Carry
+Type/Frequency Bands scenario proving auto-clear + re-ask end to end).
+131/132 in the full combined suite (same pre-existing unrelated DNS
+failure as §10). `aryx-api-1` rebuilt, force-recreated, confirmed
+healthy, new code confirmed present in the running container.

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.api.ask_api import _llm_split_compound_change_and_question
+from aryx.api.ask_api import _is_change_value_decline, _llm_split_compound_change_and_question
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
     build_candidate_bundles,
@@ -209,3 +209,42 @@ def test_compound_split_fails_closed_on_malformed_json():
             workspace_id=1,
         )
     assert result is None
+
+
+# ── docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10 (QA issue #2) ─
+# Learned directly from §6's regex miss ("wanted" vs "want") — these pin
+# the stemmed forms so the same class of gap can't reopen here.
+
+def test_change_value_decline_matches_common_phrasings():
+    for phrase in [
+        "I don't want to change product",
+        "I don't want to change it",
+        "do not want to change this",
+        "no changes please",
+        "not changing anything",
+        "leave it as is",
+        "keep it the way it is",
+        "never mind",
+        "nevermind",
+        "cancel that",
+        "cancel this",
+        "skip this",
+    ]:
+        assert _is_change_value_decline(phrase), f"should match: {phrase!r}"
+
+
+def test_change_value_decline_matches_stemmed_verb_forms():
+    """The earlier regex attempt (§6) missed 'wanted' vs 'want' — pin the
+    stemmed forms here so this decline check can't repeat that mistake."""
+    for phrase in [
+        "I don't wanted to change the attribute",
+        "I don't wanting to change this",
+    ]:
+        assert _is_change_value_decline(phrase), f"should match: {phrase!r}"
+
+
+def test_change_value_decline_does_not_match_bare_no_or_real_values():
+    """Bare 'no' must NOT match — it's a legitimate value for yes/no-shaped
+    attrs, and a real attempted value must still reach apply_answer."""
+    for phrase in ["no", "No", "H45", "APX NEXT XE", "ATT/FirstNet"]:
+        assert not _is_change_value_decline(phrase), f"must not match: {phrase!r}"

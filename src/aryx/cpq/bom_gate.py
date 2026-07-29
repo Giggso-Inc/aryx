@@ -10,7 +10,7 @@ Before any Step-8 payload is returned to the client:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from aryx.cpq.state import ConfigAttr, CpqSession
@@ -22,9 +22,25 @@ _USER_LIKE_SOURCES = frozenset({"user", "hint", "cascade"})
 
 
 @dataclass
+class StaleConstraintViolation:
+    """A filled attr whose value no longer satisfies the freshly recomputed
+    constraint. Auto-clearable — unlike a provenance failure, the engine
+    knows exactly what's wrong (this value isn't in `allowed` anymore) but
+    can't guess the right replacement, so the caller re-asks rather than
+    silently picking one or hard-blocking (docs/
+    CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1 — same "never guess"
+    reasoning already established for this class of issue elsewhere)."""
+
+    attr: ConfigAttr
+    current_value: str
+    allowed: list[str]
+
+
+@dataclass
 class BomGateResult:
     ok: bool
     errors: list[str]
+    stale_violations: list[StaleConstraintViolation] = field(default_factory=list)
     catch_message: str = ""
 
 
@@ -55,23 +71,56 @@ def recheck_constraints(
     session: CpqSession,
     con_rules: list,
     bml_eval: Any,
-) -> list[str]:
-    """Re-run constraint rules; return human-readable violation messages."""
+) -> list[StaleConstraintViolation]:
+    """Re-run constraint rules; return attrs whose filled value no longer
+    satisfies the freshly recomputed allowed set.
+
+    docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §9 — this
+    previously called `engine.apply_constraint_rules(attrs, session.filled,
+    con_rules, ...)`, i.e. (attrs, filled, rules), then unpacked the result
+    as a 2-tuple. The real signature is `(attrs, rules, filled, bml_eval=None)
+    -> dict[int, list[str]]` — a SINGLE dict of {entity_id: [allowed
+    item_values]}, no messages of its own. `session.filled` (a dict) landed
+    in the `rules` parameter, `for rule in rules:` iterated its keys (plain
+    strings), and `rule.target_attr_id` crashed every confirm with an active
+    constraint rule. Every other call site in the codebase (ask_api.py,
+    engine.py) already uses the correct order and treats the return as a
+    plain dict — this was the only outlier.
+
+    docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §11 — once this
+    was actually reachable (rather than crash-and-swallowed), live traffic
+    showed real, legitimate hits: an independent mechanism
+    (`find_rule_inconsistencies`, ask_api.py) already logs this exact same
+    class of issue and — per docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
+    §4.1 — deliberately does NOT hard-fail on it, since the engine can't be
+    sure what the correct replacement value is. Returns structured
+    violations (not messages) so the caller can auto-clear + re-ask rather
+    than hard-block confirm.
+    """
     if not con_rules:
         return []
     try:
-        _allowed, messages = engine.apply_constraint_rules(
-            attrs, session.filled, con_rules, bml_eval=bml_eval,
+        constrained = engine.apply_constraint_rules(
+            attrs, con_rules, session.filled, bml_eval=bml_eval,
         )
-        # messages is typically list[str] of constraint prompts/violations
-        if not messages:
+        if not constrained:
             return []
-        if isinstance(messages, list):
-            return [str(m) for m in messages if m]
-        return [str(messages)]
+        by_eid = {a.entity_id: a for a in attrs}
+        violations: list[StaleConstraintViolation] = []
+        for entity_id, allowed in constrained.items():
+            attr = by_eid.get(entity_id)
+            if attr is None:
+                continue
+            current = session.filled.get(attr.variable_name)
+            if current is not None and current not in allowed:
+                violations.append(StaleConstraintViolation(attr, current, allowed))
+        return violations
     except Exception as exc:  # noqa: BLE001
+        # Fail OPEN here (not a hard block) — an unexpected error in this
+        # recheck is not itself proof the config is invalid, and
+        # check_provenance remains a separate, independent safety net.
         logger.warning("bom_gate: constraint recheck failed: %r", exc)
-        return [f"constraint recheck error: {exc}"]
+        return []
 
 
 def check_provenance(
@@ -136,10 +185,20 @@ def validate_before_payload(
     con_rules: list,
     bml_eval: Any,
 ) -> BomGateResult:
-    """Full Step-8 gate. ok=False → never emit payload."""
-    errors: list[str] = []
-    errors.extend(recheck_constraints(engine, attrs, session, con_rules, bml_eval))
-    errors.extend(check_provenance(attrs, session))
+    """Full Step-8 gate. ok=False → never emit payload.
+
+    Two distinct failure classes, deliberately handled differently
+    (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §11):
+    - Provenance failures (an invented/hallucinated value with no catalog
+      or utterance backing) are a real integrity problem — hard-fail,
+      same as always.
+    - Stale constraint violations (a real, previously-valid value that a
+      later selection has now made invalid) are NOT hard-failed — the
+      caller auto-clears and re-asks instead, since the engine knows
+      what's wrong but not what the replacement should be.
+    """
+    stale = recheck_constraints(engine, attrs, session, con_rules, bml_eval)
+    errors = check_provenance(attrs, session)
 
     if errors:
         logger.warning(
@@ -149,12 +208,19 @@ def validate_before_payload(
         catch = (
             "⚠️ **Configuration gate blocked the BOM payload.**\n\n"
             "One or more values could not be verified against the catalog "
-            "or your stated answers (or a constraint still fires):\n"
+            "or your stated answers:\n"
             + "\n".join(f"- {e}" for e in errors[:8])
             + "\n\nNo payload was emitted. Fix the fields above, or say "
             "**undo** to restore the previous snapshot."
         )
         return BomGateResult(ok=False, errors=errors, catch_message=catch)
+
+    if stale:
+        logger.info(
+            "bom_gate: STALE CONSTRAINT run_id=%s attrs=%s",
+            session.run_id or "-", [v.attr.variable_name for v in stale],
+        )
+        return BomGateResult(ok=False, errors=[], stale_violations=stale)
 
     logger.info("bom_gate: PASS run_id=%s fields=%d",
                 session.run_id or "-", len(session.filled) + len(session.filled_multi))

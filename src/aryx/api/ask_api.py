@@ -1008,6 +1008,29 @@ def _build_no_value_response(
     return result
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10 (QA issue #2):
+# no decline detector existed anywhere on the pending "which value?" path —
+# "I don't want to change product" fell straight into apply_answer as an
+# attempted (and failed) Product value. Stemmed with \w* on the verb forms
+# (change/changing/changed) rather than one literal, learning directly from
+# the earlier clarify-decline regex missing "wanted" vs "want" (§6) —
+# deliberately does NOT match bare "no" alone, since that's a legitimate
+# value for yes/no-shaped attrs.
+_CHANGE_VALUE_DECLINE_RE = re.compile(
+    r"don'?t\s+want\w*|do\s+not\s+want\w*"
+    r"|no\s+chang\w*|not\s+chang\w*"
+    r"|leave\s+it|keep\s+it"
+    r"|never\s*mind"
+    r"|cancel\s+(this|that|it)"
+    r"|skip\s+(this|that)",
+    re.IGNORECASE,
+)
+
+
+def _is_change_value_decline(reply: str) -> bool:
+    return bool(_CHANGE_VALUE_DECLINE_RE.search(reply or ""))
+
+
 def _handle_cascade(
     req: "AskRequest",
     session: Any,
@@ -1017,6 +1040,7 @@ def _handle_cascade(
     hiding_rules: list,
     rec_rules: list,
     con_rules: list,
+    constrained_item_values: list[str] | None = None,
 ) -> dict[str, Any]:
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
     push_snapshot(session, reason="cascade")
@@ -1083,14 +1107,23 @@ def _handle_cascade(
         else:
             result = None
     else:
-        result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+        result = _cpq_engine.apply_answer(
+            changed_attr, new_value_hint, constrained_item_values,
+        )
         if result:
             session.filled[changed_attr.variable_name] = result[0]
             session.display_filled[changed_attr.variable_name] = result[1]
             session.filled_source[changed_attr.variable_name] = "user"
     if not result:
-        # Could not parse new value — ask for clarification
-        opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
+        # Could not parse new value — ask for clarification. Re-passes the
+        # SAME constrained_item_values the original ask used (docs/
+        # CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10, QA issue
+        # #3) — without this, a retry after a failed match fell back to
+        # attr.options unfiltered (the full cross-family catalog, e.g. 328
+        # legacy models) instead of the scoped list shown on the first ask.
+        opts_prompt = _cpq_engine.next_question_prompt(
+            changed_attr, constrained_item_values=constrained_item_values,
+        )
         answer = (
             f"I couldn't match that to a valid option for "
             f"**{_cpq_engine.disambiguated_label(changed_attr, attrs)}**. "
@@ -4970,6 +5003,32 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         session.pending_change_no_value_vn = ""
         if _pcnv_attr:
+            # QA issue #2 (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_
+            # ISSUE.md §10): "I don't want to change product" is a decline,
+            # not an attempted value — checked here, before _handle_cascade
+            # ever touches session.filled, so declining is always a no-op.
+            if _is_change_value_decline(req.question):
+                _pcnv_current = session.display_filled.get(_pcnv_attr.variable_name)
+                answer = (
+                    f"No problem — I'll leave "
+                    f"**{_cpq_engine.disambiguated_label(_pcnv_attr, attrs)}** "
+                    f"as it is"
+                    + (f" (**{_pcnv_current}**)." if _pcnv_current else ".")
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_change_declined()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+            # QA issue #3 (same doc §10): re-derive the SAME constrained set
+            # the original "which value?" ask used, so a failed-match retry
+            # re-shows the scoped option list instead of falling back to
+            # attr.options unfiltered.
+            _pcnv_constrained = _cpq_engine.apply_constraint_rules(
+                attrs, con_rules, session.filled, bml_eval,
+            ).get(_pcnv_attr.entity_id)
             # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
             # Fix 4) is now handled INSIDE _handle_cascade itself — it's the
             # single common convergence point every change-request entry
@@ -4978,6 +5037,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cascade(
                 req, session, attrs, _pcnv_attr, req.question,
                 hiding_rules, rec_rules, con_rules,
+                constrained_item_values=_pcnv_constrained,
             )
 
     # Gateway clarify reply — resolve BEFORE any blind re-classification.
@@ -5098,6 +5158,61 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             gate = validate_before_payload(
                 _cpq_engine, attrs, session, con_rules, bml_gate,
             )
+            if not gate.ok and gate.stale_violations:
+                # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
+                # §11 — auto-clear + re-ask rather than hard-block: the
+                # engine knows these values are stale but not what the
+                # replacement should be, so it asks instead of guessing or
+                # refusing outright.
+                _stale_display: dict[str, str] = {}
+                _stale_vns: list[str] = []
+                for _v in gate.stale_violations:
+                    _vn = _v.attr.variable_name
+                    _stale_display[_vn] = (
+                        session.display_filled.get(_vn) or _v.current_value
+                    )
+                    session.filled.pop(_vn, None)
+                    session.display_filled.pop(_vn, None)
+                    session.filled_source.pop(_vn, None)
+                    _stale_vns.append(_vn)
+                session.pending_variables = _stale_vns + [
+                    v for v in session.pending_variables if v not in _stale_vns
+                ]
+                session.status = "configuring"
+                session.complete = False
+                _first = gate.stale_violations[0]
+                _stale_opts_prompt = _cpq_engine.next_question_prompt(
+                    _first.attr, constrained_item_values=_first.allowed,
+                )
+                _rest_labels = [
+                    _cpq_engine.disambiguated_label(_v.attr, attrs)
+                    for _v in gate.stale_violations[1:]
+                ]
+                _also_note = (
+                    f"\n\n*(I'll also ask about {', '.join(f'**{l}**' for l in _rest_labels)} next.)*"
+                    if _rest_labels else ""
+                )
+                answer = (
+                    f"A couple of your earlier selections no longer match your "
+                    f"other choices — let's update "
+                    f"{'them' if _rest_labels else 'it'} before I generate the BOM.\n\n"
+                    f"**{_cpq_engine.disambiguated_label(_first.attr, attrs)}** is "
+                    f"currently *{_stale_display[_first.attr.variable_name]}*, which "
+                    f"isn't valid anymore given your other choices:\n\n"
+                    f"{_stale_opts_prompt}{_also_note}"
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [],
+                    "tools_called": ["cpq_stale_constraint_reask()"],
+                    "usage": {
+                        "prompt_tokens": 0, "completion_tokens": 0,
+                        "latency_ms": 0, "menial_model": "cpq-engine",
+                        "answer_model": "cpq-engine",
+                    },
+                    "grounding": None, "session_data": session.to_dict(),
+                    "cpq_payload": None,
+                }
             if not gate.ok:
                 session.complete = False
                 session.status = "awaiting_approval"
