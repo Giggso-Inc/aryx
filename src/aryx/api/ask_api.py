@@ -680,6 +680,11 @@ def _handle_cpq_qa(
             f"The available options for **{_cpq_engine.disambiguated_label(_attr_q, attrs)}** "
             f"are:\n\n{_numbered}"
         )
+        # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §8: remember
+        # what the customer just asked about so a follow-up bare-value reply
+        # ("make it ATT/FirstNet") can be preferred toward THIS attribute
+        # even when a sibling attribute genuinely shares the same option value.
+        session.last_qa_variable = _attr_q.variable_name
         p_in = p_out = p_ms = s_in = s_out = s_ms = 0
     else:
         types = all_types(reader)
@@ -3466,6 +3471,14 @@ _CLARIFY_STOPWORDS = frozenset({
     "would", "like", "can", "you", "it", "this", "that", "and", "or", "of",
     "in", "on", "with", "from", "into", "value", "field", "attribute", "attr",
     "which", "what", "one", "option", "options",
+    # Copula/auxiliary verbs — as generic as "and"/"or"/"of" above, just
+    # missed. Live-confirmed: "what IS the carrier being selected" let
+    # "is" survive the filter and false-match every already-filled
+    # attribute whose display_label happens to start with "Is " (a common
+    # BM-catalog boolean-flag naming convention: "Is provisioning
+    # required...", "Is Quantity of X > 0", etc.) — none of them related
+    # to carrier/product at all.
+    "is", "are", "was", "were", "be", "being", "been",
 })
 _WORD_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 
@@ -3539,36 +3552,110 @@ def _grounded_clarify_prompt(candidates: list, attrs: list) -> str:
     return "\n".join(lines)
 
 
+def _llm_classify_pending_clarify_reply(
+    reply: str, candidates: list, session: Any, workspace_id: int,
+) -> tuple[str, str | None]:
+    """LLM-first classification of a pending-clarify reply into exactly
+    one of three outcomes, replacing regex-based decline detection
+    (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §5.2 — a
+    keyword regex missed real phrasing like "don't WANTED to select"
+    during testing; an LLM classification doesn't have that brittleness).
+
+    Only reached after the cheap deterministic tiers in
+    _match_pending_clarify_reply (exact variable_name, exact label,
+    1-based index, containment) already found nothing — same
+    "deterministic first, LLM only for genuinely looser phrasing"
+    discipline as _llm_resolve_label_collision, which this scopes
+    alongside rather than replaces (that function's other 5 call sites
+    are untouched — this is a separate function for this one call site
+    only, since its 3-way contract differs from that function's plain
+    resolve-or-nothing one).
+
+    Returns (status, variable_name):
+      - ("resolved", vn)  — reply clearly names or picks one candidate
+      - ("decline", None) — reply explicitly rejects all candidates
+      - ("unclear", None) — reply doesn't address the question at all
+    """
+    catalog_lines = [
+        f"- {a.variable_name} [{a.select_type}] ({a.display_label}): "
+        f"current={session.filled_multi.get(a.variable_name) or session.display_filled.get(a.variable_name)!r}"
+        for a in candidates
+    ]
+    sys = (
+        "A customer was asked to pick which of several candidate "
+        "attributes they meant, from a numbered list. Classify their "
+        "reply as exactly one of: "
+        '"resolved" (clearly names or picks one candidate), '
+        '"decline" (explicitly rejects all of them — e.g. "no", "none of '
+        "these\", \"that's not what I meant\", even with loose/incorrect "
+        'grammar), or "unclear" (doesn\'t address the question at all — '
+        "a totally unrelated new request). Only use variable_names from "
+        "the list given — never invent one."
+    )
+    user = (
+        "CANDIDATES (variable_name [select_type] (label): current=...):\n"
+        + "\n".join(catalog_lines)
+        + f"\n\nUSER REPLY: {reply}\n\n"
+        'Reply ONLY as JSON: {"status": "resolved"|"decline"|"unclear", '
+        '"variable_name": "<exact name from list, or empty>"}'
+    )
+    valid_vns = {a.variable_name for a in candidates}
+
+    def _validate(parsed: dict) -> tuple[str, str | None] | None:
+        status = parsed.get("status")
+        if status not in ("resolved", "decline", "unclear"):
+            return None
+        if status == "resolved":
+            vn = parsed.get("variable_name") or ""
+            if vn not in valid_vns:
+                logger.debug(
+                    "llm pending-clarify classify: model named vn %r not "
+                    "in candidates %r", vn, valid_vns,
+                )
+                return ("unclear", None)
+            return ("resolved", vn)
+        return (status, None)
+
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return result if result is not None else ("unclear", None)
+
+
 def _match_pending_clarify_reply(
     reply: str,
     candidates: list,
     session: Any,
     workspace_id: int,
-) -> str | None:
-    """Resolve a bare reply to one candidate vn, or None (no guess)."""
+) -> tuple[str, str | None]:
+    """Resolve a bare reply against the pending-clarify candidate list.
+
+    Returns (status, variable_name) — see
+    _llm_classify_pending_clarify_reply's docstring for the 3-way
+    contract; the deterministic tiers below only ever return "resolved"
+    or defer to that function for "decline"/"unclear".
+    """
     r = (reply or "").strip()
     if not r or not candidates:
-        return None
+        return ("unclear", None)
     r_lower = r.lower().strip(" .,:;!?\"'")
     by_vn = {a.variable_name: a for a in candidates}
 
     # Exact variable_name
     if r in by_vn:
-        return r
+        return ("resolved", r)
     for vn, a in by_vn.items():
         if vn.lower() == r_lower:
-            return vn
+            return ("resolved", vn)
 
     # Exact display label (case-insensitive)
     for a in candidates:
         if (a.display_label or "").lower() == r_lower:
-            return a.variable_name
+            return ("resolved", a.variable_name)
 
     # 1-based index
     if r.isdigit():
         idx = int(r) - 1
         if 0 <= idx < len(candidates):
-            return candidates[idx].variable_name
+            return ("resolved", candidates[idx].variable_name)
 
     # Label / vn containment (require uniqueness)
     hits: list[str] = []
@@ -3583,10 +3670,10 @@ def _match_pending_clarify_reply(
         ):
             hits.append(a.variable_name)
     if len(hits) == 1:
-        return hits[0]
+        return ("resolved", hits[0])
 
-    # LLM fallback over the FIXED candidate list only
-    return _llm_resolve_label_collision(r, candidates, session, workspace_id)
+    # LLM-first: resolved / explicit decline / unclear.
+    return _llm_classify_pending_clarify_reply(r, candidates, session, workspace_id)
 
 
 def _apply_pending_clarify_resolution(
@@ -3666,15 +3753,36 @@ def _handle_pending_clarify_turn(
         _clear_pending_clarify(session)
         return None
 
-    resolved_vn = _match_pending_clarify_reply(
+    clarify_status, resolved_vn = _match_pending_clarify_reply(
         req.question, candidates, session, req.workspace_id,
     )
-    if resolved_vn:
+    if clarify_status == "resolved" and resolved_vn:
         return _apply_pending_clarify_resolution(
             req, session, attrs, resolved_vn,
             session.pending_clarify_question or req.question,
             hiding_rules, rec_rules, con_rules, bml_eval,
         )
+
+    # Explicit decline (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_
+    # ISSUE.md §5.2) — LLM-classified, not regex — never treat "no" as
+    # just another failed guess. Clear the stale candidate list (which
+    # may itself be wrong, e.g. a compound change+question message the
+    # gateway couldn't resolve to one target) and ask a genuinely open
+    # question instead of re-showing the same list a third time.
+    if clarify_status == "decline":
+        _clear_pending_clarify(session)
+        answer = (
+            "No problem — could you tell me specifically which attribute "
+            "or setting you'd like to change or ask about?"
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [],
+            "tools_called": ["cpq_pending_clarify_decline()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
 
     # Miss — do not mis-bind. Re-prompt; after 2 misses force numbered list.
     session.pending_clarify_misses = int(session.pending_clarify_misses or 0) + 1
@@ -3702,6 +3810,62 @@ def _handle_pending_clarify_turn(
                   "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
         "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
     }
+
+
+def _llm_split_compound_change_and_question(
+    question: str, workspace_id: int,
+) -> tuple[str, str] | None:
+    """LLM-first check: does this message combine a change request AND a
+    separate question in one turn (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_
+    CLARIFY_ISSUE.md §4)? If so, split into two self-contained strings so
+    each can be dispatched through its OWN existing pipeline in the same
+    turn — change applied first, then the question answered against the
+    post-change state. Never invents catalog IDs/values; only rephrases
+    the customer's own words into two standalone requests.
+
+    Returns None when the message is NOT genuinely compound (a single
+    change, a single question, or multiple changes with no separate
+    question — that last case is already handled by
+    CHANGE_REQUESTS_MULTI) — caller falls through to the existing
+    clarify/ambiguous path unchanged, so a wrong split can never happen
+    silently; it just means no split was applied.
+
+    Only called from the gateway's "clarify" path (not every turn), and
+    only after a cheap pre-check that the message contains a conjunction
+    at all — so this adds no cost to the common, already-successful
+    single-intent case.
+    """
+    sys = (
+        "A customer sent a message to a product configuration assistant. "
+        "Determine whether it combines TWO separate things: (1) a request "
+        "to CHANGE or SET one attribute's value, and (2) a genuinely "
+        "SEPARATE question asking about something else (a current value, "
+        "available options, etc.) that is not part of the same change. "
+        "If both are clearly present, split the message into two "
+        "self-contained requests, each rephrased in the customer's own "
+        "words as a complete standalone request. If the message is "
+        "really just ONE thing — a single change, a single question, or "
+        "multiple changes to different fields with no separate question "
+        "mixed in — say it is not compound. Never invent details that "
+        "weren't in the original message."
+    )
+    user = (
+        f"MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"is_compound": true|false, '
+        '"change_text": "<self-contained change request, or empty>", '
+        '"question_text": "<self-contained question, or empty>"}'
+    )
+
+    def _validate(parsed: dict) -> tuple[str, str] | None:
+        if not parsed.get("is_compound"):
+            return None
+        change_text = (parsed.get("change_text") or "").strip()
+        question_text = (parsed.get("question_text") or "").strip()
+        if not change_text or not question_text:
+            return None
+        return (change_text, question_text)
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
 def _set_pending_clarify_and_answer(
@@ -5155,6 +5319,56 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 _gw.model_id,
             )
             if _gw.action == "clarify" and _gw.result:
+                # Compound "change X and what is Y" messages (docs/CPQ_
+                # COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §4) land
+                # here as an ambiguous clarify — the gateway's own schema
+                # can't hold two targets. Try an LLM-first split BEFORE
+                # falling to the generic clarify prompt; cheap conjunction
+                # pre-check keeps this from firing on ordinary ambiguous
+                # single-intent messages that have no "and"/";" at all.
+                _cq_lower = req.question.lower()
+                if " and " in _cq_lower or ";" in req.question:
+                    _split = _llm_split_compound_change_and_question(
+                        req.question, req.workspace_id,
+                    )
+                    if _split is not None:
+                        _change_text, _question_text = _split
+                        _change_hint = _cpq_engine.detect_change_request(
+                            _change_text, attrs, session.filled, session.filled_multi,
+                        )
+                        if _change_hint is not None:
+                            _changed_attr, _new_value_hint = _change_hint
+                            _change_req = req.model_copy(
+                                update={"question": _change_text},
+                            )
+                            _change_result = _handle_cascade(
+                                _change_req, session, attrs, _changed_attr,
+                                _new_value_hint, hiding_rules, rec_rules, con_rules,
+                            )
+                            _qa_req = req.model_copy(
+                                update={"question": _question_text},
+                            )
+                            _qa_result = _handle_cpq_qa(
+                                _qa_req, session, attrs, reader,
+                            )
+                            _combined = (
+                                f"{_change_result.get('answer', '')}\n\n"
+                                f"{_qa_result.get('answer', '')}"
+                            )
+                            _persist_cpq_history(
+                                req.workspace_id, req.question, _combined,
+                            )
+                            return {
+                                **_qa_result,
+                                "answer": _combined,
+                                "tools_called": (
+                                    list(_change_result.get("tools_called") or [])
+                                    + list(_qa_result.get("tools_called") or [])
+                                ),
+                            }
+                        # Split succeeded but the change clause didn't
+                        # resolve deterministically — fall through to the
+                        # existing clarify path unchanged (safe default).
                 return _set_pending_clarify_and_answer(
                     req, session, attrs,
                     original_question=req.question,
@@ -5484,6 +5698,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         other_pending = [v for v in session.pending_variables if v != queried_attr.variable_name]
         session.pending_variables = [queried_attr.variable_name] + other_pending
+        session.last_qa_variable = queried_attr.variable_name
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [queried_attr.variable_name],

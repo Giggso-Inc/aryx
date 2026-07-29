@@ -399,6 +399,19 @@ class CpqSession:
     # force a numbered pick list (loop-exit guard).
     pending_clarify_misses: int = 0
 
+    # variable_name of the attribute the CUSTOMER most recently asked a
+    # question about (e.g. "what are the other options for Wireless
+    # Carrier"), set by _handle_cpq_qa's attr-query fast path. Deliberately
+    # separate from pending_variables (which tracks what the SYSTEM is
+    # still waiting on an answer for, and is wiped the moment an attribute
+    # is filled) — this tracks conversational recency instead, and stays
+    # set even for an already-filled attribute the customer is revisiting.
+    # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §8: without
+    # this, "make it ATT/FirstNet" right after asking about Wireless
+    # Carrier had no way to prefer that attr over a genuinely-ambiguous
+    # sibling (Carrier Selection) that also accepts the same value.
+    last_qa_variable: str = ""
+
     # Set when detect_change_target_without_value recognized a change-verb
     # naming an already-filled attr but no resolvable new value ("change
     # hardware version") and asked which value instead of guessing
