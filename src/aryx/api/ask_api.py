@@ -322,9 +322,9 @@ def _synthesise(question: str, context: str, overview: str = "",
     # all?") is independent of whether SOME entity happened to fuzzy-match —
     # always classify, and let a genuinely irrelevant question override
     # whatever facts were found.
-    is_cpq_relevant = _llm_classify_is_cpq_question(question, workspace_id)
+    is_cpq_relevant = _llm_classify_is_ask_in_scope(question, workspace_id)
     logger.info(
-        "cpq_qa_scope: has_context=%s for %r -> is_cpq_relevant=%s",
+        "cpq_qa_scope: has_context=%s for %r -> is_ask_in_scope=%s",
         has_context, question, is_cpq_relevant,
     )
 
@@ -2519,6 +2519,53 @@ def _llm_classify_is_cpq_question(question: str, workspace_id: int) -> bool:
         if classification not in ("quote", "not_quote"):
             return None
         return classification == "quote"
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate) is True
+
+
+def _llm_classify_is_ask_in_scope(question: str, workspace_id: int) -> bool:
+    """Scope gate for the general Ask synthesis path (`_synthesise`'s
+    call site only — NOT the CPQ-routing call site in `run_ask`, which
+    must keep using `_llm_classify_is_cpq_question`'s narrower,
+    quote-biased judgment).
+
+    `_llm_classify_is_cpq_question` was previously reused here, but that
+    function only ever answers "is this an order/configure/quote
+    request?" — confirmed live this caused the Ask feature to refuse
+    almost every question, including legitimate lookups against tracked
+    data (e.g. "what are the entities present in suppliers?"), because
+    most real questions aren't literally quote/order requests and so
+    correctly got `not_quote` from that classifier, which this call site
+    then wrongly treated as "off-topic."
+
+    This classifier answers the broader, actually-relevant question for
+    Ask: is this about product configuration/quoting OR the enterprise/
+    catalog data this system tracks at all? Only a question genuinely
+    unrelated to that domain (small talk, an unrelated topic) should
+    classify as out of scope.
+    """
+    sys = (
+        "You classify whether a customer's message is in scope for a "
+        "product-configuration and enterprise-data assistant — meaning "
+        "it asks about product configuration, quoting/ordering, OR the "
+        "catalog/enterprise data this system tracks (entities, "
+        "attributes, relationships, records) in any way. "
+        "Bias toward \"in_scope\" whenever the message plausibly could be "
+        "asking about tracked data or product configuration, even if "
+        "phrased as a general question rather than a quote request; only "
+        "classify as \"out_of_scope\" when you are confident it is about "
+        "something else entirely (e.g. small talk, an unrelated topic)."
+    )
+    user = (
+        f"MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"classification": "in_scope"|"out_of_scope"}'
+    )
+
+    def _validate(parsed: dict) -> bool | None:
+        classification = parsed.get("classification")
+        if classification not in ("in_scope", "out_of_scope"):
+            return None
+        return classification == "in_scope"
 
     return _llm_classify_intent_core(sys, user, workspace_id, _validate) is True
 
