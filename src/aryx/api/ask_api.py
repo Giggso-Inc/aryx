@@ -62,6 +62,7 @@ from aryx.cpq.session_guard import (
     undo_empty_message,
     undo_success_message,
 )
+from aryx.cpq.replacement_clause import extract_replacement_clause
 from aryx.cpq.state import INTENT_QUEUE_CAP, ConfigAttr, CpqSession, MenuOption
 from aryx.graph.retrieve import all_types, gather, render_context
 from aryx.ports import GraphReaderPort, ports
@@ -1039,53 +1040,43 @@ def _is_change_value_decline(reply: str) -> bool:
     return bool(_CHANGE_VALUE_DECLINE_RE.search(reply or ""))
 
 
-# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — review finding:
-# "I don't want Standard; use Premium" states a real replacement, but
-# apply_answer's own substring matching (with no concept of negation) can
-# resolve to "Standard" (the REJECTED value) just as readily as "Premium" —
-# confirmed live: apply_answer(attr, "I don't want Standard, use Premium")
-# returned Standard, not Premium, because both names appear in the text and
-# the matcher has no idea one of them was just rejected. When a correction
-# cue ("use X" / "instead X" / "prefer X" / "rather X") is present, only the
-# text AFTER it is matched — the rejected value never even appears in the
-# substring being searched.
-#
-# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
-# finding: "prefer Premium over Standard" / "rather Premium than Standard"
-# still resolved to Standard — confirmed live. The cue regex only strips
-# text BEFORE the cue, so the captured clause was "Premium over Standard"
-# / "Premium than Standard" — the rejected value was still right there in
-# the substring being matched, just relocated instead of removed. A second
-# cut at the first contrastive word (over/than/instead of/rather than/not)
-# now trims the clause down to just the wanted value.
-#
-# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §18 — review
-# finding: cue detection is position-based (first cue word wins), not
-# semantic — "instead of Standard, prefer Premium" matched on "instead"
-# (the earliest cue) and captured "of Standard, prefer Premium", which has
-# no contrastive word of its own to cut at, so "Standard" leaked through.
-# The word "instead" plays two different roles: alone, it introduces the
-# WANTED value ("use Premium instead"); as "instead of X", X is the
-# REJECTED value and the real replacement is stated elsewhere. Excluding
-# "instead of" from the cue match (negative lookahead) lets the regex
-# correctly continue scanning and match the real cue ("prefer") instead.
-_REPLACEMENT_CUE_RE = re.compile(
-    r"\b(?:use|instead(?!\s+of)|prefer|rather)\b\s*[:,]?\s*(.+)$", re.IGNORECASE,
-)
-_CONTRAST_CUT_RE = re.compile(
-    r"\b(?:over|than|instead\s+of|rather\s+than|not)\b", re.IGNORECASE,
-)
+# Thin wrappers — pure logic lives in aryx.cpq.replacement_clause so offline
+# regression / unit tests can load it without FastAPI. Ask-api keeps the
+# historical private names for call sites and monkeypatches.
+# PROMPT 6: returns (wanted, rejected); contrast-first reversed forms.
+def _extract_replacement_clause(text: str) -> tuple[str | None, str | None]:
+    """See ``aryx.cpq.replacement_clause.extract_replacement_clause``."""
+    return extract_replacement_clause(text)
 
 
-def _extract_replacement_clause(text: str) -> str | None:
-    m = _REPLACEMENT_CUE_RE.search(text or "")
-    if not m or not m.group(1).strip():
-        return None
-    clause = m.group(1).strip()
-    cut = _CONTRAST_CUT_RE.search(clause)
-    if cut:
-        clause = clause[:cut.start()].strip()
-    return clause or None
+def _constrain_excluding_rejected(
+    attr: Any,
+    rejected_text: str | None,
+    base_constrained: list[str] | None,
+) -> list[str] | None:
+    """Drop the option matching ``rejected_text`` from the allowed set.
+
+    Option-level rejection (not VN-level): ``session.negated_vns`` tracks
+    *attributes* suppressed by "exclude any X", while a replacement rejects
+    a *value* on the target attr. Constrained-values is the correct path.
+    """
+    if not rejected_text or not getattr(attr, "options", None):
+        return base_constrained
+    rej = _cpq_engine.apply_answer(attr, rejected_text)
+    if not rej:
+        return base_constrained
+    excluded_iv = rej[0]
+    base = (
+        list(base_constrained)
+        if base_constrained is not None
+        else [o.item_value for o in attr.options]
+    )
+    filtered = [v for v in base if v != excluded_iv]
+    # Never return an empty allow-list — that would force match failure even
+    # for the wanted value if option inventory was unexpected.
+    if not filtered:
+        return base_constrained
+    return filtered
 
 
 def _handle_cascade(
@@ -1143,6 +1134,23 @@ def _handle_cascade(
             session.display_filled.pop(a.variable_name, None)
             session.filled_source.pop(a.variable_name, None)
 
+    # Replacement extraction: only the WANTED value reaches apply_answer.
+    # Rejected option is excluded via constrained_item_values so fuzzy match
+    # cannot re-pick it even if residual text leaks through.
+    wanted_clause, rejected_clause = _extract_replacement_clause(new_value_hint)
+    apply_hint = wanted_clause if wanted_clause else new_value_hint
+    apply_constrained = _constrain_excluding_rejected(
+        changed_attr, rejected_clause, constrained_item_values,
+    )
+    if wanted_clause or rejected_clause:
+        logger.info(
+            "cpq_replacement: attr=%s wanted=%r rejected=%r apply_hint=%r "
+            "constrained_excl=%s",
+            getattr(changed_attr, "variable_name", None),
+            wanted_clause, rejected_clause, apply_hint,
+            apply_constrained is not None and apply_constrained != constrained_item_values,
+        )
+
     # Lock in the new value for the changed attr
     if changed_attr.select_type == "multi":
         # UNION every mentioned option with the current selection — a
@@ -1152,9 +1160,10 @@ def _handle_cascade(
         # extracts all named options, not just the best single match.
         # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — the
         # constrained set must reach the multi-select matcher too, not just
-        # the single-select apply_answer path below.
+        # the single-select apply_answer path below. PROMPT 6: apply_hint
+        # is wanted-only; apply_constrained excludes rejected option.
         mentioned = _cpq_engine.apply_multi_answer(
-            changed_attr, new_value_hint, constrained_item_values,
+            changed_attr, apply_hint, apply_constrained,
         )
         result = ("", "") if not mentioned else mentioned[0]
         if mentioned:
@@ -1170,7 +1179,7 @@ def _handle_cascade(
             result = None
     else:
         result = _cpq_engine.apply_answer(
-            changed_attr, new_value_hint, constrained_item_values,
+            changed_attr, apply_hint, apply_constrained,
         )
         if result:
             session.filled[changed_attr.variable_name] = result[0]
@@ -5082,19 +5091,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         session.pending_change_no_value_vn = ""
         if _pcnv_attr:
-            # QA issue #3 (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_
-            # ISSUE.md §10): re-derive the SAME constrained set the original
-            # "which value?" ask used, so a failed-match retry re-shows the
-            # scoped option list instead of falling back to attr.options
-            # unfiltered.
-            # §15 review finding: this used to run unconditionally, BEFORE
-            # the decline check below — a pure "I don't want to change it"
-            # (which should always be a harmless no-op) would raise if
-            # constraint evaluation itself failed for an unrelated reason.
-            # Falls back to None (unconstrained) on failure — safe here
-            # specifically because this value only SCOPES matching/
-            # prompting, it's not a final integrity gate (unlike
-            # bom_gate.py's recheck, where fail-closed is correct).
+            # QA issue #3: re-derive constrained set for scoped match/retry.
+            # §15: try/except so pure declines never crash on rule engine.
             try:
                 _pcnv_constrained = _cpq_engine.apply_constraint_rules(
                     attrs, con_rules, session.filled, bml_eval,
@@ -5106,22 +5104,14 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     _pcnv_attr.variable_name, exc,
                 )
                 _pcnv_constrained = None
-            # QA issue #2 (§10) + review finding §12: "I don't want to
-            # change product" is a decline, not an attempted value — but a
-            # compound reply like "I don't want Standard; use Premium"
-            # STATES a real replacement and must not be misread as a pure
-            # cancellation. A correction cue ("use X"/"instead X"/
-            # "prefer X") narrows matching to the clause AFTER it, so the
-            # rejected value ("Standard") never even appears in the text
-            # being searched — confirmed live that without this, apply_
-            # answer's own substring matching resolved to the REJECTED
-            # value just as readily as the wanted one, since it has no
-            # concept of negation. Falls back to the full message when no
-            # cue is present. Try to extract a real value FIRST; only
-            # treat the reply as a decline when nothing resolves at all.
-            _pcnv_match_text = (
-                _extract_replacement_clause(req.question) or req.question
+            # PROMPT 6: extract wanted (+ rejected); exclude rejected option.
+            _pcnv_wanted, _pcnv_rejected = _extract_replacement_clause(req.question)
+            _pcnv_match_text = _pcnv_wanted or req.question
+            _pcnv_constrained = _constrain_excluding_rejected(
+                _pcnv_attr, _pcnv_rejected, _pcnv_constrained,
             )
+            # QA issue #2: try real value FIRST; only treat as decline when
+            # nothing resolves (compound "don't want Standard; use Premium").
             if _pcnv_attr.select_type == "multi":
                 _pcnv_matched = bool(_cpq_engine.apply_multi_answer(
                     _pcnv_attr, _pcnv_match_text, _pcnv_constrained,

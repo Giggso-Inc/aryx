@@ -240,6 +240,11 @@ def _check_expect(
         if got != "hWVersion_astro":
             errs.append(f"expected hWVersion_astro, got {got!r}")
     for t in tokens:
+        if t.startswith("vn=") and t != "vn=hWVersion_astro":
+            want = t.split("=", 1)[1]
+            got = sd.get("pending_change_no_value_vn") or active_vn or resolved_vn
+            if got != want:
+                errs.append(f"expected vn={want}, got {got!r}")
         if t.startswith("active="):
             want = t.split("=", 1)[1]
             got = (
@@ -254,6 +259,20 @@ def _check_expect(
             got_set = set(handled or [])
             if not want_set.issubset(got_set):
                 errs.append(f"expected handled ⊇ {want_set}, got {got_set}")
+        # filled=vn:Value — display_filled / filled must hold Value for vn
+        if t.startswith("filled="):
+            body = t.split("=", 1)[1]
+            if ":" not in body:
+                errs.append(f"malformed filled token {t!r} (want filled=vn:Value)")
+            else:
+                fvn, fval = body.split(":", 1)
+                got_disp = (sd.get("display_filled") or {}).get(fvn)
+                got_fill = (sd.get("filled") or {}).get(fvn)
+                if got_disp != fval and got_fill != fval:
+                    errs.append(
+                        f"expected filled/display {fvn}={fval!r}, "
+                        f"got filled={got_fill!r} display={got_disp!r}"
+                    )
 
     if "invariant" in tokens or "question" in tokens:
         violations = guard.assert_conversational_invariant(  # type: ignore[attr-defined]
@@ -506,6 +525,59 @@ def run_dialogues_offline(
                     if overflow or session.pending_intent_overflow:
                         ov = list(session.pending_intent_overflow) or overflow
                         answer += "\n\n" + guard.format_queue_overflow_notice(ov)
+                else:
+                    answer = "OK."
+
+            elif did == "D07":
+                # Reversed-cue replacement (PROMPT 6): pending value ask
+                # then "instead of Standard, prefer Premium" → Premium.
+                TIER = "priceTier_astro"
+                repl = _load_mod(
+                    "aryx.cpq.replacement_clause",
+                    "aryx/cpq/replacement_clause.py",
+                )
+                if re.search(r"change\s+price\s+tier", user, re.I) and not (
+                    session.pending_change_no_value_vn
+                ):
+                    session.filled[TIER] = "Standard"
+                    session.display_filled[TIER] = "Standard"
+                    session.pending_change_no_value_vn = TIER
+                    active_vn = TIER
+                    answer = (
+                        "Which value would you like for **Price Tier**?\n\n"
+                        "1. Standard\n2. Premium"
+                    )
+                elif session.pending_change_no_value_vn == TIER:
+                    wanted, rejected = repl.extract_replacement_clause(user)
+                    apply_val = wanted or user
+                    if rejected and rejected.lower() in (apply_val or "").lower():
+                        answer = (
+                            f"I couldn't match a clear replacement "
+                            f"(wanted still contains rejected {rejected!r})."
+                        )
+                    else:
+                        apply_norm = (apply_val or "").strip()
+                        for token in ("Premium", "Standard"):
+                            if re.search(
+                                rf"(?<!\w){re.escape(token)}(?!\w)",
+                                apply_norm, re.I,
+                            ):
+                                apply_norm = token
+                                break
+                        session.filled[TIER] = apply_norm
+                        session.display_filled[TIER] = apply_norm
+                        handled.append(TIER)
+                        session.pending_change_no_value_vn = ""
+                        active_vn = None
+                        answer = (
+                            f"Updated **Price Tier** → **{apply_norm}**."
+                        )
+                        if rejected and apply_norm.lower() == rejected.lower():
+                            errors.append(
+                                f"CPQ-REG-001 {did}/t{t['turn']}: applied "
+                                f"rejected value {rejected!r}"
+                            )
+                            exit_hint = max(exit_hint, EXIT_REGRESSION)
                 else:
                     answer = "OK."
 

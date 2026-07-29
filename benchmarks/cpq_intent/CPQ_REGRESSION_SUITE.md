@@ -232,6 +232,34 @@ A applied immediately; B asked next from the queue.
 |------|------|--------|
 | 1 | change hardware version and extraAttr1 extraAttr2 extraAttr3 extraAttr4 extraAttr5 extraAttr6 extraAttr7 extraAttr8 extraAttr9 extraAttr10 extraAttr11 | pending_no_value;pending_queue;queue_len=10;overflow;question;not_nudge;invariant |
 
+### D07 — reversed-cue replacement applies wanted value
+After a valueless change ask, a reversed phrasing ("instead of Standard,
+prefer Premium") must lock **Premium**, never the rejected **Standard**.
+Offline handler uses `_extract_replacement_clause` (PROMPT 6 design a).
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | change price tier | pending_no_value;vn=priceTier_astro;question;not_nudge;invariant |
+| 2 | instead of Standard, prefer Premium | filled=priceTier_astro:Premium;not_nudge;invariant |
+
+---
+
+## Reversed-cue replacement pins (append-only N-cases)
+
+Behavioral pins for PROMPT 6. Offline **unit** coverage is
+`tests/test_cpq_replacement_clause.py` (wanted never contains rejected;
+pending path applies Premium). These N-rows keep the phrasings in the
+suite so reviews/telemetry can cite them; offline single-turn checks
+only require a known intent category (`change_request`) + `none` gate.
+
+| id | question | expected_intent | expected_vn | check |
+|----|----------|-----------------|-------------|-------|
+| N53 | instead of Standard, prefer Premium | change_request | - | none |
+| N54 | rather than Standard, use Premium | change_request | - | none |
+| N55 | not Standard, Premium please | change_request | - | none |
+| N56 | prefer Premium over Standard | change_request | - | none |
+| N57 | use Premium instead of Standard | change_request | - | none |
+
 ---
 
 ## Live-mode scoring (`--live`)
