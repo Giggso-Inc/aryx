@@ -614,3 +614,107 @@ Type/Frequency Bands scenario proving auto-clear + re-ask end to end).
 131/132 in the full combined suite (same pre-existing unrelated DNS
 failure as §10). `aryx-api-1` rebuilt, force-recreated, confirmed
 healthy, new code confirmed present in the running container.
+
+---
+
+## 12. External review of §11 — 4 findings, all confirmed and fixed
+
+A code review of the §11 changes (before merge) raised 4 issues. Each was
+independently verified against the actual code before being accepted —
+all 4 were real.
+
+### 12.1 P1 — Constraint validation fails open on an unexpected exception
+
+**Finding**: `recheck_constraints`'s `except Exception: return []` meant
+an unexpected engine error looked identical to "no violations found" —
+silently letting a possibly constraint-invalid BOM through.
+
+**Confirmed**: yes — this was a deliberate design choice in §11
+("fail OPEN here (not a hard block)"), but on reflection it contradicts
+the "never guess" discipline every other integrity check in this file
+follows (`check_provenance` hard-fails; §11 itself hard-fails on
+provenance for the same reason).
+
+**Fix**: `recheck_constraints` no longer catches its own exceptions — it
+propagates. `validate_before_payload` catches it and returns a hard fail
+(`ok=False`, populated `errors`, real `catch_message`), the same
+fail-closed treatment as a provenance failure. `stale_violations` stays
+empty in this case, so the caller's auto-clear branch is never reached —
+an unexpected error and a real known violation are now handled
+differently, on purpose.
+
+### 12.2 P1 — Constrained multi-selects bypassed validation entirely
+
+**Finding**: `apply_multi_answer()` never received the constrained set,
+and the final recheck only read `session.filled` — a multi-select
+attribute's stale value(s) were invisible to both the retry-scope fix
+(§10) and the confirm-time recheck (§11).
+
+**Confirmed**: yes, two separate gaps in the same class of bug:
+- `_handle_cascade`'s multi-select branch called
+  `apply_multi_answer(changed_attr, new_value_hint)` with no third
+  argument at all.
+- `recheck_constraints` only ever did
+  `session.filled.get(attr.variable_name)` — a multi-select's values live
+  in `session.filled_multi`, so `current` was always `None` and the
+  `if current is not None` guard silently skipped every multi-select attr.
+
+**Fix**: `apply_multi_answer` now receives `constrained_item_values` at
+the `_handle_cascade` call site. `recheck_constraints` now branches on
+`attr.select_type == "multi"` and checks `session.filled_multi` for that
+case, flagging any selected value(s) outside the recomputed allowed set.
+The confirm-handler's auto-clear loop now pops from `filled_multi` (not
+`filled`) for multi-select violations.
+
+### 12.3 P2 — Auto-clear mutation not undoable
+
+**Finding**: the §11 auto-clear block mutates `filled`/`display_filled`/
+`filled_source` directly with no `push_snapshot()` call first, unlike
+every other mutation site in this file (`_handle_cascade` pushes one at
+its very start).
+
+**Confirmed**: yes — a customer saying "undo" right after this re-ask
+would jump back further than just this turn's clear, to whatever the
+last actually-snapshotted state was.
+
+**Fix**: added `push_snapshot(session, reason="stale_constraint_reask")`
+immediately before the mutation loop, matching the established pattern.
+
+### 12.4 P2 — Decline check discarded a stated replacement value
+
+**Finding**: `"I don't want Standard; use Premium"` would be classified
+as a pure decline (cancel, keep current value) rather than resolving to
+Premium, because the decline-phrase regex fired on "don't want" without
+checking whether a real replacement was also named.
+
+**Confirmed — and worse than reported.** Testing directly against the
+live engine:
+
+```python
+>>> engine.apply_answer(price_tier_attr, "I don't want Standard, use Premium", None)
+('Standard', 'Standard')
+```
+
+`apply_answer`'s substring matching has no concept of negation — both
+"Standard" and "Premium" appear in the text, and it matched the
+**rejected** value, not the intended one. The original planned fix
+("try a real value match before checking decline") would have silently
+applied the *wrong* value here — worse than misreading it as a decline.
+
+**Fix**: new `_extract_replacement_clause()` — when a correction cue
+("use X" / "instead X" / "prefer X" / "rather X") is present, only the
+text *after* the cue is matched against the catalog. For "I don't want
+Standard, use Premium", this narrows matching to just "Premium" — the
+rejected value never appears in the substring being searched at all, so
+it can't be matched by mistake. Falls back to the full message when no
+cue is present (the common, non-compound case is unaffected). This
+extracted clause is what actually gets matched *and* what's passed as
+`new_value_hint` into `_handle_cascade`, so its own internal matching
+stays consistent with the decision made at the call site.
+
+**Live-verified**: 8 new tests across `bom_gate.py`-level unit tests and
+full `_run_cpq_turn` integration tests — exception hard-fail, multi-select
+stale-value detection (both violating and passing), `push_snapshot`
+called before mutation, multi-select auto-clear from the correct dict,
+and the compound decline+replacement case resolving to the *stated*
+value rather than the rejected one or a false cancellation.

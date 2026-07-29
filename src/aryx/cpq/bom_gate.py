@@ -73,7 +73,9 @@ def recheck_constraints(
     bml_eval: Any,
 ) -> list[StaleConstraintViolation]:
     """Re-run constraint rules; return attrs whose filled value no longer
-    satisfies the freshly recomputed allowed set.
+    satisfies the freshly recomputed allowed set. Raises on an unexpected
+    engine error — the caller (`validate_before_payload`) decides how to
+    handle that, this function never silently swallows one.
 
     docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §9 — this
     previously called `engine.apply_constraint_rules(attrs, session.filled,
@@ -96,31 +98,43 @@ def recheck_constraints(
     sure what the correct replacement value is. Returns structured
     violations (not messages) so the caller can auto-clear + re-ask rather
     than hard-block confirm.
+
+    docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — two review
+    findings fixed: (1) this used to swallow ANY exception and return `[]`
+    ("no violations"), which would fail OPEN — a genuine, unexpected engine
+    error looked identical to "config is fine." Now propagates; the caller
+    treats an exception as a hard-fail, same fail-closed discipline as
+    `check_provenance`. (2) multi-select attrs (`select_type == "multi"`)
+    were invisible to this check entirely — it only ever read
+    `session.filled`, never `session.filled_multi`. Now checks both.
     """
     if not con_rules:
         return []
-    try:
-        constrained = engine.apply_constraint_rules(
-            attrs, con_rules, session.filled, bml_eval=bml_eval,
-        )
-        if not constrained:
-            return []
-        by_eid = {a.entity_id: a for a in attrs}
-        violations: list[StaleConstraintViolation] = []
-        for entity_id, allowed in constrained.items():
-            attr = by_eid.get(entity_id)
-            if attr is None:
-                continue
-            current = session.filled.get(attr.variable_name)
-            if current is not None and current not in allowed:
-                violations.append(StaleConstraintViolation(attr, current, allowed))
-        return violations
-    except Exception as exc:  # noqa: BLE001
-        # Fail OPEN here (not a hard block) — an unexpected error in this
-        # recheck is not itself proof the config is invalid, and
-        # check_provenance remains a separate, independent safety net.
-        logger.warning("bom_gate: constraint recheck failed: %r", exc)
+    constrained = engine.apply_constraint_rules(
+        attrs, con_rules, session.filled, bml_eval=bml_eval,
+    )
+    if not constrained:
         return []
+    by_eid = {a.entity_id: a for a in attrs}
+    violations: list[StaleConstraintViolation] = []
+    for entity_id, allowed in constrained.items():
+        attr = by_eid.get(entity_id)
+        if attr is None:
+            continue
+        if attr.select_type == "multi":
+            current_multi = session.filled_multi.get(attr.variable_name)
+            if not current_multi:
+                continue
+            invalid = [v for v in current_multi if v not in allowed]
+            if invalid:
+                violations.append(
+                    StaleConstraintViolation(attr, ", ".join(invalid), allowed),
+                )
+            continue
+        current = session.filled.get(attr.variable_name)
+        if current is not None and current not in allowed:
+            violations.append(StaleConstraintViolation(attr, current, allowed))
+    return violations
 
 
 def check_provenance(
@@ -196,8 +210,27 @@ def validate_before_payload(
       later selection has now made invalid) are NOT hard-failed — the
       caller auto-clears and re-asks instead, since the engine knows
       what's wrong but not what the replacement should be.
+
+    An unexpected error DURING the constraint recheck itself (§12) is a
+    third case, deliberately treated as a hard fail — same "never guess"
+    discipline as a provenance failure, not silently treated as "no
+    violations found."
     """
-    stale = recheck_constraints(engine, attrs, session, con_rules, bml_eval)
+    try:
+        stale = recheck_constraints(engine, attrs, session, con_rules, bml_eval)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("bom_gate: constraint recheck failed: %r", exc)
+        catch = (
+            "⚠️ **Configuration gate blocked the BOM payload.**\n\n"
+            f"Constraint verification failed unexpectedly ({exc}) — "
+            "this can't be verified as valid, so nothing was emitted.\n\n"
+            "Try **confirm** again, or say **undo** to restore the "
+            "previous snapshot."
+        )
+        return BomGateResult(
+            ok=False, errors=[f"constraint recheck error: {exc}"],
+            catch_message=catch,
+        )
     errors = check_provenance(attrs, session)
 
     if errors:

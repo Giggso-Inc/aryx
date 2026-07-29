@@ -459,6 +459,36 @@ def test_pending_change_no_value_decline_leaves_value_unchanged(monkeypatch):
     assert resp["tools_called"] == ["cpq_change_declined()"]
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — external
+# review found the decline check fired even when a real replacement value
+# was stated in the same message ("I don't want Standard; use Premium").
+# Fixed by trying a real value match FIRST — a match always wins over
+# decline phrasing.
+
+def test_pending_change_no_value_compound_decline_with_replacement_resolves_to_value(monkeypatch):
+    """"I don't want Standard, use Premium" must resolve to Premium —
+    NOT be misread as a pure cancellation just because "don't want"
+    appears in the text."""
+    _rules_setup(monkeypatch)
+    tier = _attr(1, "priceTier_astro", "Price Tier", options=_opt("Standard", "Premium"))
+    attrs = [tier]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"priceTier_astro": "Standard"},
+                         display_filled={"priceTier_astro": "Standard"},
+                         pending_change_no_value_vn="priceTier_astro",
+                         country="United States", status="configuring", turn=3)
+    req = AskRequest(question="I don't want Standard, use Premium",
+                      workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert resp["tools_called"] != ["cpq_change_declined()"], (
+        "a stated replacement value must win over decline phrasing"
+    )
+    assert resp["session_data"]["filled"].get("priceTier_astro") == "Premium"
+
+
 def test_pending_change_no_value_retry_keeps_constrained_option_scope(monkeypatch):
     """After a failed-match retry, the re-shown option list must stay
     scoped to the SAME constrained set the original "which value?" ask
@@ -549,6 +579,86 @@ def test_confirm_auto_clears_stale_constraint_value_and_reasks(monkeypatch):
     assert resp["session_data"]["status"] == "configuring"
     # The unrelated, still-valid attr must survive untouched.
     assert resp["session_data"]["filled"].get("familyAstro") == "APX_NEXT"
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — external
+# review of the auto-clear fix caught 2 more gaps, pinned here.
+
+def test_confirm_auto_clear_pushes_snapshot_before_mutating(monkeypatch):
+    """The auto-clear mutation must push_snapshot first, same discipline
+    as every other session mutation, so "undo" right after this re-ask
+    reverts just this clear instead of skipping past it."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+
+    family = _attr(1, "familyAstro", "Family", options=_opt("APX_NEXT", "APX_LEGACY"))
+    hw = _attr(2, "hWVersion_astro", "Hardware Version", options=_opt("H1", "H45"))
+    attrs = [family, hw]
+    con_rule = ConstraintRule(
+        rule_name="scope hardware to family",
+        condition_attr_id=1, condition_value="APX_NEXT",
+        target_attr_id=2, allowed_values=["H1"],
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], [con_rule]))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"familyAstro": "APX_NEXT", "hWVersion_astro": "H45"},
+                         display_filled={"familyAstro": "APX_NEXT", "hWVersion_astro": "H45"},
+                         filled_source={"familyAstro": "user", "hWVersion_astro": "auto"},
+                         country="United States", status="awaiting_approval", turn=4)
+    assert len(session.history) == 0
+    req = AskRequest(question="confirm", workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert len(resp["session_data"]["history"]) == 1, (
+        "must push a snapshot before clearing the stale value"
+    )
+
+
+def test_confirm_auto_clears_stale_multi_select_value(monkeypatch):
+    """A multi-select attr's stale value must be cleared from filled_multi
+    (not silently left in place because the code only checked filled)."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+
+    family = _attr(1, "familyAstro", "Family", options=_opt("APX_NEXT", "APX_LEGACY"))
+    carrier = _attr(2, "carrierSel_astro", "Carrier Selection",
+                     options=_opt("ATT", "VZW"), select_type="multi")
+    attrs = [family, carrier]
+    con_rule = ConstraintRule(
+        rule_name="scope carrier to family",
+        condition_attr_id=1, condition_value="APX_NEXT",
+        target_attr_id=2, allowed_values=["VZW"],
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], [con_rule]))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"familyAstro": "APX_NEXT"},
+                         display_filled={"familyAstro": "APX_NEXT", "carrierSel_astro": "ATT, VZW"},
+                         filled_multi={"carrierSel_astro": ["ATT", "VZW"]},
+                         filled_source={"familyAstro": "user", "carrierSel_astro": "auto"},
+                         country="United States", status="awaiting_approval", turn=4)
+    req = AskRequest(question="confirm", workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert resp["cpq_payload"] is None
+    assert resp["tools_called"] == ["cpq_stale_constraint_reask()"]
+    assert resp["session_data"]["filled_multi"].get("carrierSel_astro") is None, (
+        "stale multi-select value must be cleared from filled_multi"
+    )
+    assert resp["session_data"]["pending_variables"] == ["carrierSel_astro"]
 
 
 # ── B2. Mid-session product/attribute change ────────────────────────────

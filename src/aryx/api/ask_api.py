@@ -1031,6 +1031,26 @@ def _is_change_value_decline(reply: str) -> bool:
     return bool(_CHANGE_VALUE_DECLINE_RE.search(reply or ""))
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — review finding:
+# "I don't want Standard; use Premium" states a real replacement, but
+# apply_answer's own substring matching (with no concept of negation) can
+# resolve to "Standard" (the REJECTED value) just as readily as "Premium" —
+# confirmed live: apply_answer(attr, "I don't want Standard, use Premium")
+# returned Standard, not Premium, because both names appear in the text and
+# the matcher has no idea one of them was just rejected. When a correction
+# cue ("use X" / "instead X" / "prefer X" / "rather X") is present, only the
+# text AFTER it is matched — the rejected value never even appears in the
+# substring being searched.
+_REPLACEMENT_CUE_RE = re.compile(
+    r"\b(?:use|instead|prefer|rather)\b\s*[:,]?\s*(.+)$", re.IGNORECASE,
+)
+
+
+def _extract_replacement_clause(text: str) -> str | None:
+    m = _REPLACEMENT_CUE_RE.search(text or "")
+    return m.group(1).strip() if m and m.group(1).strip() else None
+
+
 def _handle_cascade(
     req: "AskRequest",
     session: Any,
@@ -1093,7 +1113,12 @@ def _handle_cascade(
         # doesn't wipe rows already chosen (and a previously DECLINED
         # empty grid simply becomes the new rows). apply_multi_answer
         # extracts all named options, not just the best single match.
-        mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+        # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — the
+        # constrained set must reach the multi-select matcher too, not just
+        # the single-select apply_answer path below.
+        mentioned = _cpq_engine.apply_multi_answer(
+            changed_attr, new_value_hint, constrained_item_values,
+        )
         result = ("", "") if not mentioned else mentioned[0]
         if mentioned:
             existing = session.filled_multi.get(changed_attr.variable_name, [])
@@ -5003,11 +5028,39 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         session.pending_change_no_value_vn = ""
         if _pcnv_attr:
-            # QA issue #2 (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_
-            # ISSUE.md §10): "I don't want to change product" is a decline,
-            # not an attempted value — checked here, before _handle_cascade
-            # ever touches session.filled, so declining is always a no-op.
-            if _is_change_value_decline(req.question):
+            # QA issue #3 (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_
+            # ISSUE.md §10): re-derive the SAME constrained set the original
+            # "which value?" ask used, so a failed-match retry re-shows the
+            # scoped option list instead of falling back to attr.options
+            # unfiltered.
+            _pcnv_constrained = _cpq_engine.apply_constraint_rules(
+                attrs, con_rules, session.filled, bml_eval,
+            ).get(_pcnv_attr.entity_id)
+            # QA issue #2 (§10) + review finding §12: "I don't want to
+            # change product" is a decline, not an attempted value — but a
+            # compound reply like "I don't want Standard; use Premium"
+            # STATES a real replacement and must not be misread as a pure
+            # cancellation. A correction cue ("use X"/"instead X"/
+            # "prefer X") narrows matching to the clause AFTER it, so the
+            # rejected value ("Standard") never even appears in the text
+            # being searched — confirmed live that without this, apply_
+            # answer's own substring matching resolved to the REJECTED
+            # value just as readily as the wanted one, since it has no
+            # concept of negation. Falls back to the full message when no
+            # cue is present. Try to extract a real value FIRST; only
+            # treat the reply as a decline when nothing resolves at all.
+            _pcnv_match_text = (
+                _extract_replacement_clause(req.question) or req.question
+            )
+            if _pcnv_attr.select_type == "multi":
+                _pcnv_matched = bool(_cpq_engine.apply_multi_answer(
+                    _pcnv_attr, _pcnv_match_text, _pcnv_constrained,
+                ))
+            else:
+                _pcnv_matched = _cpq_engine.apply_answer(
+                    _pcnv_attr, _pcnv_match_text, _pcnv_constrained,
+                ) is not None
+            if not _pcnv_matched and _is_change_value_decline(req.question):
                 _pcnv_current = session.display_filled.get(_pcnv_attr.variable_name)
                 answer = (
                     f"No problem — I'll leave "
@@ -5022,20 +5075,13 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                               "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
-            # QA issue #3 (same doc §10): re-derive the SAME constrained set
-            # the original "which value?" ask used, so a failed-match retry
-            # re-shows the scoped option list instead of falling back to
-            # attr.options unfiltered.
-            _pcnv_constrained = _cpq_engine.apply_constraint_rules(
-                attrs, con_rules, session.filled, bml_eval,
-            ).get(_pcnv_attr.entity_id)
             # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
             # Fix 4) is now handled INSIDE _handle_cascade itself — it's the
             # single common convergence point every change-request entry
             # point reaches, so re-queuing pending_multi_intent_vn there
             # covers this caller too without needing its own copy here.
             return _handle_cascade(
-                req, session, attrs, _pcnv_attr, req.question,
+                req, session, attrs, _pcnv_attr, _pcnv_match_text,
                 hiding_rules, rec_rules, con_rules,
                 constrained_item_values=_pcnv_constrained,
             )
@@ -5164,6 +5210,11 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # engine knows these values are stale but not what the
                 # replacement should be, so it asks instead of guessing or
                 # refusing outright.
+                # §12 — push_snapshot BEFORE mutating, same discipline as
+                # every other mutation site (_handle_cascade etc.), so
+                # "undo" right after this re-ask reverts just this clear
+                # instead of skipping past it to an earlier state.
+                push_snapshot(session, reason="stale_constraint_reask")
                 _stale_display: dict[str, str] = {}
                 _stale_vns: list[str] = []
                 for _v in gate.stale_violations:
@@ -5171,7 +5222,12 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     _stale_display[_vn] = (
                         session.display_filled.get(_vn) or _v.current_value
                     )
-                    session.filled.pop(_vn, None)
+                    # §12 — a multi-select's value lives in filled_multi,
+                    # not filled; popping the wrong dict left it untouched.
+                    if _v.attr.select_type == "multi":
+                        session.filled_multi.pop(_vn, None)
+                    else:
+                        session.filled.pop(_vn, None)
                     session.display_filled.pop(_vn, None)
                     session.filled_source.pop(_vn, None)
                     _stale_vns.append(_vn)

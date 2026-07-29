@@ -188,6 +188,77 @@ def test_validate_before_payload_stale_constraint_does_not_hard_fail():
     assert result.stale_violations[0].attr.variable_name == "hW"
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — external
+# review of §11's fix caught 2 real gaps, fixed here:
+# (1) an unexpected engine exception used to be swallowed as "no
+#     violations" (fail OPEN) instead of a hard fail (fail CLOSED).
+# (2) multi-select attrs were invisible to the recheck — it only ever
+#     read session.filled, never session.filled_multi.
+
+def test_validate_before_payload_hard_fails_on_unexpected_constraint_exception():
+    """An unexpected error during constraint recheck must hard-fail
+    (hallucinated/unverifiable state), never silently pass as if no
+    violations were found."""
+    attr = _attr("hW", "Hardware", [("H1", "H1"), ("H45", "H45")])
+    s = CpqSession()
+    s.filled = {"hW": "H45"}
+
+    def _raises(attrs, rules, filled, bml_eval=None):
+        raise RuntimeError("boom")
+
+    engine = type("E", (), {"apply_constraint_rules": staticmethod(_raises)})()
+    result = validate_before_payload(engine, [attr], s, ["some rule"], None)
+    assert result.ok is False
+    assert result.stale_violations == []
+    assert result.errors and "boom" in result.errors[0]
+    assert result.catch_message != ""
+
+
+def test_recheck_constraints_detects_stale_multi_select_value():
+    """A multi-select attr's currently-selected value(s) must be checked
+    against the recomputed allowed set too — session.filled_multi, not
+    just session.filled."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="carrierSel", display_label="Carrier Selection",
+        required=False, default_value="", select_type="multi",
+        options=[
+            MenuOption(item_value="ATT", display_name="ATT/FirstNet"),
+            MenuOption(item_value="VZW", display_name="Verizon"),
+        ],
+    )
+    s = CpqSession()
+    s.filled_multi = {"carrierSel": ["ATT", "VZW"]}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["VZW"]},
+        ),
+    })()
+    violations = recheck_constraints(engine, [attr], s, ["some rule"], None)
+    assert len(violations) == 1
+    assert violations[0].attr.variable_name == "carrierSel"
+    assert "ATT" in violations[0].current_value
+    assert "VZW" not in violations[0].current_value
+
+
+def test_recheck_constraints_multi_select_passes_when_all_values_still_allowed():
+    attr = ConfigAttr(
+        entity_id=1, variable_name="carrierSel", display_label="Carrier Selection",
+        required=False, default_value="", select_type="multi",
+        options=[
+            MenuOption(item_value="ATT", display_name="ATT/FirstNet"),
+            MenuOption(item_value="VZW", display_name="Verizon"),
+        ],
+    )
+    s = CpqSession()
+    s.filled_multi = {"carrierSel": ["ATT", "VZW"]}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["ATT", "VZW"]},
+        ),
+    })()
+    assert recheck_constraints(engine, [attr], s, ["some rule"], None) == []
+
+
 def test_summary_missing_fields_detected():
     missing = fields_missing_from_summary(
         "Your configuration is complete.",
