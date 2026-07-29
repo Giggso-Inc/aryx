@@ -947,3 +947,27 @@ step-3/step-5 guard checks, and trace the actual turn-by-turn fill order
 of `isProvisioningRequiredInCloudEnv_astro` relative to this attribute in
 a live session. This is now a scoped, evidence-backed investigation
 rather than a dead end — the previous "inconclusive" status is retired.
+
+---
+
+## 17. Multi-select stale-value clear discarded valid selections alongside the invalid one. Fixed.
+
+**Finding**: the auto-clear handler popped the ENTIRE `filled_multi` entry
+for a stale multi-select attribute, even though `bom_gate.py`'s recheck
+already isolates only the invalid item(s) (`invalid = [v for v in
+current_multi if v not in allowed]`). A customer with 5 valid carrier
+selections and 1 now-invalid one lost all 5 and had to re-pick everything.
+
+**Confirmed**: `ask_api.py`'s auto-clear loop called
+`session.filled_multi.pop(_vn, None)` unconditionally for any multi-select
+violation — no filtering.
+
+**Fix**: filter `session.filled_multi.get(_vn, [])` down to the values
+still in `_v.allowed`, keep them (rebuilding `display_filled` from the
+survivors' display names), and only clear the key entirely when nothing
+in the selection remains valid.
+
+**Live-verified**: 2 tests — 5 valid + 1 invalid selection now keeps the
+5 and only the invalid one triggers the re-ask (naming it specifically in
+the message); a fully-invalid selection still clears the whole key as
+before.
