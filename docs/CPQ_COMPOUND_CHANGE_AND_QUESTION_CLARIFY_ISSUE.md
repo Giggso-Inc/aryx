@@ -1,7 +1,10 @@
 # CPQ Compound "Change + Question" Message — Clarify Mismatch Issue
 
-**Status:** Root-caused, partial fix applied and live-verified. ONE
-architectural gap remains, root-caused but not fixed (see §8).
+**Status:** Root-caused, partial fix applied and live-verified. §9-§11 track
+QA-reported issues #1/#2/#3 (BOM gate crash, decline detection, constrained
+retry scope), all now fixed on this branch — see §9's cross-reference table
+for the full 10-issue QA status. Issues #7/8, #9, #10 (QA numbering) remain
+open.
 **Date:** 2026-07-29
 **Branch:** dev-rv (LLM-first intent gateway, `src/aryx/cpq/intent_gateway.py`)
 
@@ -430,3 +433,579 @@ new code confirmed present inside the running container.
 only gained an extra way to *agree* (never a new way to reject), so no
 existing passing case can newly fail; the "still clarifies when it points
 elsewhere" test guards against over-trusting recency.
+
+---
+
+## 9. `confirm` crash — constraint-recheck argument-order mismatch (QA issue #1). Fixed.
+
+A separate QA pass (workspace 21, `aSTRO25_bom`) reported 10 issues against
+`feature/msi_intent`. Re-verified each directly against actual code — on
+both `feature/msi_intent` and this branch — before touching anything.
+This section covers the one fixed here; the others are cross-referenced
+below.
+
+### 9.1 Problem
+
+Every `confirm` with an active constraint rule (e.g. hit via Carrier
+Selection / Wireless Carrier) failed the BOM gate with:
+
+```
+constraint recheck error: 'str' object has no attribute 'target_attr_id'
+```
+
+instead of emitting a payload.
+
+### 9.2 Root cause — confirmed by reading both sides of the call
+
+`bom_gate.py`'s `recheck_constraints` called:
+
+```python
+engine.apply_constraint_rules(attrs, session.filled, con_rules, bml_eval=bml_eval)
+```
+
+i.e. `(attrs, filled, rules)`. The real signature (`engine.py`) is:
+
+```python
+def apply_constraint_rules(self, attrs, rules, filled, bml_eval=None) -> dict[int, list[str]]
+```
+
+i.e. `(attrs, rules, filled)` — `session.filled` (a dict) landed in the
+`rules` parameter; the real rule-object list landed in `filled`. Inside the
+function, `for rule in rules:` iterated the dict's keys (plain strings),
+and `rule.target_attr_id` threw exactly the observed error.
+
+A second, latent bug: the function returns a single `dict`, but
+`bom_gate.py` unpacked it as `_allowed, messages = ...` (expects a
+2-tuple) — never reached since the AttributeError fired first, but would
+have broken even with the argument order alone fixed, since
+`apply_constraint_rules` has no `messages` output at all — it only returns
+`{entity_id: [allowed_item_values]}`.
+
+Checked all 7 other call sites of `apply_constraint_rules` (`ask_api.py`
+×4, `engine.py` ×3) — every one of them already uses the correct order and
+treats the return as a plain dict. `bom_gate.py` was the only outlier, so
+the fix belongs entirely there, not in `apply_constraint_rules` itself.
+
+### 9.3 Fix — live-verified
+
+`recheck_constraints` now calls the engine with the correct argument order
+and derives violation messages itself (since the engine never produced
+them): for each `entity_id` in the returned dict, if the attribute's
+current filled value isn't in that entity's freshly recomputed allowed
+set, that's a real violation — "**{label}** is currently {value!r}, which
+is no longer a valid option given your other selections."
+
+Also fixed a test (`test_cpq_post_failure_guards.py`) whose mock modeled
+the WRONG (buggy) contract — `apply_constraint_rules` mocked to return a
+2-tuple, matching the bug rather than the real single-dict signature. That
+specific test never actually exercised this path (`con_rules=[]` short-
+circuits before the mock is called), so it wasn't masking the bug, but the
+mock shape itself was misleading and is now corrected. Added 3 new
+regression tests: correct-argument-order is asserted directly, a filled
+value outside the recomputed allowed set is flagged, and a still-allowed
+value passes cleanly.
+
+**Live-verified**: 86/86 tests passing; `aryx-api-1` rebuilt, force-
+recreated, confirmed healthy.
+
+### 9.4 Cross-reference — status of all 10 QA-reported issues, verified against this branch
+
+Re-checked every QA claim directly against this branch's code (not
+`feature/msi_intent`, which this branch does not include) before recording
+status:
+
+| # | Issue | Status on this branch |
+|---|---|---|
+| 1 | `confirm` crash — constraint recheck arg-order mismatch | **Fixed** (§9, this section) |
+| 2 | "I don't want to change X" mismatched as an invalid value | **Fixed** (§10) |
+| 3 | Retry loses constrained option scope (false 328-option message) | **Fixed** (§10) |
+| 4 | Turn-1 `pending_var` UnboundLocalError | Already fixed upstream (`dev-rv`, `aac7a67`) |
+| 5 | Summary raw-dump fallback | Already fixed upstream (`dev-rv`, `6adc9fc` + `65a4d76`) |
+| 6 | `isFedRampRequired_astro` Yes→No discrepancy | Inconclusive — needs a live-logged repro, not re-traced here |
+| 7/8 | Dense-sentence trailing question disambiguates against unrelated attrs | Confirmed still open — `_relevant_intent_candidates` (`ask_api.py`) still falls back to the unfiltered candidate list when nothing scores. Distinct mechanism from §1-3/§8 above (`_ground_clarify_candidates`) — not touched by this branch's fixes |
+| 9 | Naming both attrs explicitly doesn't resolve either | Not root-caused by QA; not re-traced here |
+| 10 | "ATT/FirstNet" short answer fails to match its own just-shown option | Confirmed still open — and QA's own hypothesis (constraint-set inconsistency in `apply_answer`) is refined: the real attribute is multi-select, so the actual code path is `apply_multi_answer`, which has **no prefix-match tier at all** (only an exact, word-bounded full-display-name search) — a simpler, statically-confirmable mechanism, independent of `constrained_item_values` |
+
+Issues #2/#3 share one fix location (`_handle_cascade`) and are the
+recommended next pass.
+
+---
+
+## 10. QA issues #2 + #3 — decline detection + constrained-scope retry. Fixed.
+
+Both share one call site: `pending_change_no_value_vn`'s resolution
+(`ask_api.py`, right before it calls `_handle_cascade`).
+
+**#2 fix**: new `_CHANGE_VALUE_DECLINE_RE` / `_is_change_value_decline()` —
+checked before `_handle_cascade` is ever called, so a decline is always a
+no-op (nothing in `session.filled` has been touched yet at that point).
+Stemmed with `\w*` on verb forms (`want\w*`, `chang\w*`) rather than one
+literal phrase — learned directly from §6's regex missing "wanted" vs
+"want". Deliberately does **not** match bare "no" alone, since that's a
+legitimate value for yes/no-shaped attrs. On a match, returns a friendly
+"I'll leave **{label}** as it is" answer and clears
+`pending_change_no_value_vn` without ever reaching `apply_answer`.
+
+**#3 fix**: `_handle_cascade` gained an optional `constrained_item_values`
+parameter (default `None` — every other one of its 9 call sites is
+unaffected). The `pending_change_no_value_vn` call site now recomputes the
+same `apply_constraint_rules(...)` set the *original* "which value?" ask
+used and passes it through — both into `apply_answer` (so validation and
+the prompt agree) and into the retry's `next_question_prompt`. A failed
+match now re-shows the same scoped 8-option list instead of falling back
+to `attr.options` unfiltered.
+
+**Live-verified**: 5 new tests (2 full-turn integration tests via
+`_run_cpq_turn`, 3 unit tests on the decline regex including the
+"wanted"-class stemming check) — 131/132 in the full combined suite (the
+1 failure is pre-existing, unrelated: a DNS resolution error hitting a
+docker-only hostname from outside the container, identical before and
+after this change). `aryx-api-1` rebuilt, force-recreated, confirmed
+healthy.
+
+---
+
+## 11. Live bug from §9's own fix — stale constraint values now correctly hard-blocked confirm, but that contradicts an existing product decision. Redesigned.
+
+Once §9 made `recheck_constraints` actually reachable (instead of crash-
+and-swallowed), a real confirm hit two genuine violations: `Carry Type`
+and `Frequency Bands`, both auto-filled earlier in the session with
+values that a later Product/model selection's constraint rules no longer
+allow.
+
+**Not a bug in §9's fix** — cross-checked against a completely separate,
+pre-existing mechanism (`find_rule_inconsistencies`, logged as `"cpq:
+rule-consistency check found N issue(s)"`) that runs independently every
+turn. It found the *same two* violations (plus 5 more recommendation-rule
+mismatches it also doesn't act on). Both mechanisms agree these are real.
+
+**The actual problem**: `docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
+§4.1` already made an explicit decision about this exact issue class —
+*"NOT auto-fixed... the engine can't be certain what the correct value
+should have been... logged only, for now... surfacing it to the user
+directly is a separate, not-yet-built follow-up."* §9's fix, by finally
+working, started hard-blocking confirm on precisely the class of issue
+this codebase had already decided not to hard-block on anywhere else.
+
+**Decision (asked directly): auto-clear the stale value and re-ask**,
+rather than hard-block or silently warn-and-proceed.
+
+**Fix**:
+- `bom_gate.py`: `recheck_constraints` now returns structured
+  `StaleConstraintViolation` objects (`attr`, `current_value`, `allowed`)
+  instead of hard-fail message strings. `BomGateResult` gained a
+  `stale_violations` field, separate from `errors` — provenance failures
+  (invented/hallucinated values) still hard-fail exactly as before; that's
+  a different, more serious integrity problem this decision doesn't touch.
+- `ask_api.py`'s confirm handler: when `gate.stale_violations` is non-
+  empty (and there are no hard provenance errors), it pops each stale
+  attr from `filled`/`display_filled`/`filled_source`, queues them in
+  `pending_variables`, flips `session.status` back to `"configuring"`,
+  and re-asks the first one using the *corrected* constrained option list
+  (same `next_question_prompt(..., constrained_item_values=...)` pattern
+  as §10) — no payload emitted, but framed as a fresh question rather
+  than a block the customer has to self-diagnose.
+
+**Live-verified**: 3 new tests (structured-violation shape at the
+`bom_gate.py` level, `validate_before_payload` confirmed to return
+`ok=False` + `stale_violations` with an empty `catch_message` rather than
+hard-failing, and a full `_run_cpq_turn` reproduction of the live Carry
+Type/Frequency Bands scenario proving auto-clear + re-ask end to end).
+131/132 in the full combined suite (same pre-existing unrelated DNS
+failure as §10). `aryx-api-1` rebuilt, force-recreated, confirmed
+healthy, new code confirmed present in the running container.
+
+---
+
+## 12. External review of §11 — 4 findings, all confirmed and fixed
+
+A code review of the §11 changes (before merge) raised 4 issues. Each was
+independently verified against the actual code before being accepted —
+all 4 were real.
+
+### 12.1 P1 — Constraint validation fails open on an unexpected exception
+
+**Finding**: `recheck_constraints`'s `except Exception: return []` meant
+an unexpected engine error looked identical to "no violations found" —
+silently letting a possibly constraint-invalid BOM through.
+
+**Confirmed**: yes — this was a deliberate design choice in §11
+("fail OPEN here (not a hard block)"), but on reflection it contradicts
+the "never guess" discipline every other integrity check in this file
+follows (`check_provenance` hard-fails; §11 itself hard-fails on
+provenance for the same reason).
+
+**Fix**: `recheck_constraints` no longer catches its own exceptions — it
+propagates. `validate_before_payload` catches it and returns a hard fail
+(`ok=False`, populated `errors`, real `catch_message`), the same
+fail-closed treatment as a provenance failure. `stale_violations` stays
+empty in this case, so the caller's auto-clear branch is never reached —
+an unexpected error and a real known violation are now handled
+differently, on purpose.
+
+### 12.2 P1 — Constrained multi-selects bypassed validation entirely
+
+**Finding**: `apply_multi_answer()` never received the constrained set,
+and the final recheck only read `session.filled` — a multi-select
+attribute's stale value(s) were invisible to both the retry-scope fix
+(§10) and the confirm-time recheck (§11).
+
+**Confirmed**: yes, two separate gaps in the same class of bug:
+- `_handle_cascade`'s multi-select branch called
+  `apply_multi_answer(changed_attr, new_value_hint)` with no third
+  argument at all.
+- `recheck_constraints` only ever did
+  `session.filled.get(attr.variable_name)` — a multi-select's values live
+  in `session.filled_multi`, so `current` was always `None` and the
+  `if current is not None` guard silently skipped every multi-select attr.
+
+**Fix**: `apply_multi_answer` now receives `constrained_item_values` at
+the `_handle_cascade` call site. `recheck_constraints` now branches on
+`attr.select_type == "multi"` and checks `session.filled_multi` for that
+case, flagging any selected value(s) outside the recomputed allowed set.
+The confirm-handler's auto-clear loop now pops from `filled_multi` (not
+`filled`) for multi-select violations.
+
+### 12.3 P2 — Auto-clear mutation not undoable
+
+**Finding**: the §11 auto-clear block mutates `filled`/`display_filled`/
+`filled_source` directly with no `push_snapshot()` call first, unlike
+every other mutation site in this file (`_handle_cascade` pushes one at
+its very start).
+
+**Confirmed**: yes — a customer saying "undo" right after this re-ask
+would jump back further than just this turn's clear, to whatever the
+last actually-snapshotted state was.
+
+**Fix**: added `push_snapshot(session, reason="stale_constraint_reask")`
+immediately before the mutation loop, matching the established pattern.
+
+### 12.4 P2 — Decline check discarded a stated replacement value
+
+**Finding**: `"I don't want Standard; use Premium"` would be classified
+as a pure decline (cancel, keep current value) rather than resolving to
+Premium, because the decline-phrase regex fired on "don't want" without
+checking whether a real replacement was also named.
+
+**Confirmed — and worse than reported.** Testing directly against the
+live engine:
+
+```python
+>>> engine.apply_answer(price_tier_attr, "I don't want Standard, use Premium", None)
+('Standard', 'Standard')
+```
+
+`apply_answer`'s substring matching has no concept of negation — both
+"Standard" and "Premium" appear in the text, and it matched the
+**rejected** value, not the intended one. The original planned fix
+("try a real value match before checking decline") would have silently
+applied the *wrong* value here — worse than misreading it as a decline.
+
+**Fix**: new `_extract_replacement_clause()` — when a correction cue
+("use X" / "instead X" / "prefer X" / "rather X") is present, only the
+text *after* the cue is matched against the catalog. For "I don't want
+Standard, use Premium", this narrows matching to just "Premium" — the
+rejected value never appears in the substring being searched at all, so
+it can't be matched by mistake. Falls back to the full message when no
+cue is present (the common, non-compound case is unaffected). This
+extracted clause is what actually gets matched *and* what's passed as
+`new_value_hint` into `_handle_cascade`, so its own internal matching
+stays consistent with the decision made at the call site.
+
+**Live-verified**: 8 new tests across `bom_gate.py`-level unit tests and
+full `_run_cpq_turn` integration tests — exception hard-fail, multi-select
+stale-value detection (both violating and passing), `push_snapshot`
+called before mutation, multi-select auto-clear from the correct dict,
+and the compound decline+replacement case resolving to the *stated*
+value rather than the rejected one or a false cancellation.
+
+---
+
+## 13. Second QA report cross-check — 2 staleness corrections, everything else confirmed accurate
+
+A second, independent QA report (synthesizing `CPQ_SESSION_2026_07_29_ISSUES_PLAN.md`
+and `CPQ_LLM_INTENT_FIRST_TRANSCRIPT_ANALYSIS_AND_RISK_PLAN.md`) tracked
+the same 9 numbered issues plus 3 more (a downstream "provisioning"
+hijack, "what is the error" wrongly refused, and an `llm_normalize`
+envelope crash) against `origin/dev-rv`. Verified every claim directly
+(`git merge-base --is-ancestor`, and grepping each cited function against
+`origin/dev-rv`'s actual tree) before accepting any of it.
+
+**Confirmed accurate, no corrections needed:**
+- #2, #4, #5, #7/8, #9, and the transitive "provisioning hijack" fix — all
+  genuinely merged into `dev-rv` via `da7246c`/`aac7a67`/`6adc9fc`/`65a4d76`.
+  Line numbers the report cited had drifted slightly from the actual
+  current file, but every named function/fix is genuinely present.
+- #6 (FedRAMP) and "what is the error wrongly refused" — confirmed still
+  unfixed anywhere, on any branch. No code touches either.
+
+**2 corrections to the report's own claims:**
+
+1. **#1 and #3/10** ("confirm crash", "retry loses constrained scope") —
+   the report says *"not on `dev-rv` — fix exists only as my own
+   uncommitted local edit."* That was true when written; it's stale now.
+   Both are committed (`5b84bd1`) and pushed, with PR #134 open against
+   `dev-rv` — not yet merged, but no longer uncommitted. Separately: the
+   report's cited symbols for the fix (`_hc_constrained`/`_hc_allowed`,
+   `bom_gate.py:77`) don't match this repo's actual implementation
+   (`constrained_item_values`, `StaleConstraintViolation` — see §9-§10) —
+   same bug, independently identified and described, not a description of
+   this branch's own diff.
+
+2. **`llm_normalize` envelope crash** — the report says *"not on `dev-rv`
+   — only on `feature/msi_intent` (`eaaecc3`)."* This is simply wrong:
+   `git merge-base --is-ancestor eaaecc3 origin/dev-rv` returns **true** —
+   `eaaecc3` merged into `dev-rv` via PR #132 ("Merge pull request #132
+   from Giggso-Inc/feature/msi_intent"), which landed *before* `da7246c`.
+   It has been on `dev-rv` the whole time.
+
+**Also not tracked by this QA report at all**: §11 (the stale-constraint
+auto-clear redesign) and §12 (its own follow-up review — fail-open
+exception, multi-select bypass, undo safety, decline-regex over-match) —
+both newer findings from work after this report was written.
+
+---
+
+## 14. "what is the error" wrongly refused as out-of-scope. Fixed.
+
+Of the 2 issues §13 confirmed genuinely unfixed anywhere (FedRAMP and
+this one), this one had a clear, scoped fix — implemented.
+
+### 14.1 Root cause, confirmed
+
+`_llm_classify_is_cpq_question` has exactly **2** call sites — its own
+docstring claimed "one call site in `run_ask`", which was already stale:
+
+1. `run_ask`'s fresh-turn router (`ask_api.py` ~6891) — decides whether
+   to enter CPQ mode at all, before any session/CPQ context exists. Must
+   stay context-free.
+2. `_synthesise` (`ask_api.py` ~325) — the mid-session Q&A scope check,
+   deciding whether an in-flight follow-up is still in scope.
+
+Call site 2 already computes `conv` (the last-6-turn conversation, via
+`_recent(history, limit=6)`) one line before the classify call — for the
+answer-synthesis prompt right below it — but was never passing that same
+`conv` into the classify call itself. Classified alone, "what is the
+error" reasonably reads as an unrelated tech-support question; the one
+fact that would make it recognizable (the prior turn was the engine's own
+gate error) was never shown to the classifier.
+
+### 14.2 Fix — live-verified
+
+`_llm_classify_is_cpq_question` gained an optional `prior_context: str = ""`
+parameter, folded into the prompt only when non-empty (`RECENT
+CONVERSATION` block). Call site 2 (`_synthesise`) now passes the
+already-computed `conv`. Call site 1 (`run_ask`'s router) passes nothing —
+default empty string, prompt byte-identical to before.
+
+**Impact confirmed additive/backward-compatible**: no test anywhere
+references this function directly (none to update); the only 2 callers of
+`_synthesise` both already pass `history`, so both benefit identically; no
+new LLM call — same call, richer prompt, same cost.
+
+**Live-verified**: 2 new tests proving `prior_context` reaches the prompt
+when given and is fully absent when not (pinning call site 1's
+behavior as byte-identical to before). 66/66 in the targeted suite;
+full combined suite run pending at time of writing.
+
+### 14.3 FedRAMP (§13's other open item) — investigation finding, not yet a fix
+
+Checked whether `CpqSession.cascade_log` already captures this class of
+discrepancy before proposing any new logging: confirmed it does, in
+principle — `ask_api.py` ~6494-6504 appends `{var, old, new, rule, turn}`
+to `cascade_log` for **every** value that changes during the rule-loop
+rerun, on every turn, not just explicit cascades. This should already
+record an `isFedRampRequired_astro` flip if one occurs — the `rule` field
+is a source tag ("auto"/"cascade"/"rule"/"user"), not the specific
+condition, so it wouldn't explain *why*, but it would confirm *when* and
+*whether* it happens at all.
+
+**Not yet fixable further from static reading alone** — needs a live
+repro of the exact reported sequence (Single Band / Houston / US / Police
+Protection) with `session_data.cascade_log` inspected afterward. If an
+entry for this attr is present, that's the "when" already answered
+without any new logging. If absent despite the value genuinely changing,
+that would itself be a second, real finding (a code path that changes
+`filled` without going through this cascade-log block at all) — worth
+its own investigation. No code changed for this item this round.
+
+---
+
+## 15. Third review round on §11/§12 — 3 more findings, all confirmed and fixed
+
+A third review of the stale-constraint auto-clear and pending-change
+flows caught 3 more real gaps (1 P1, 2 P2). Same discipline: verified
+every claim directly before planning any fix.
+
+### 15.1 P1 — Empty constraint intersections created an unanswerable loop
+
+**Finding**: multiple active constraints can legitimately intersect to
+`[]` — the auto-clear handler cleared the stale value and prompted with
+that empty set anyway; every subsequent reply was rejected since no
+option was ever allowed.
+
+**Confirmed**: traced `next_question_prompt`/`apply_answer` directly with
+`constrained_item_values=[]` — `effective_opts`/`options` both filter to
+empty regardless of input, producing "Please provide a value" with no
+option able to ever match. A genuine dead end, not a wording problem.
+
+**Fix**: the confirm handler now checks `gate.stale_violations` for any
+entry with an empty `allowed` set *before* doing any clearing. If found,
+it reports a rule conflict explicitly (which attribute(s), and that
+active rules conflict) and suggests changing an earlier selection or
+saying **undo** — nothing is mutated, since there's no productive value to
+ask for. Only when no conflict is present does the existing auto-clear +
+re-ask flow (§11/§12) run, unchanged.
+
+### 15.2 P2 — "Prefer X over Y" / "rather X than Y" could still select the rejected Y
+
+**Finding**: `_extract_replacement_clause()` only strips text *before* the
+correction cue — "prefer Premium over Standard" extracts "Premium over
+Standard", which still contains the rejected value.
+
+**Confirmed — live-tested directly**:
+```python
+>>> engine.apply_answer(attr, "Premium over Standard", None)
+('Standard', 'Standard')
+```
+Reproduced for both "prefer X over Y" and "rather X than Y", exactly as
+reported.
+
+**Fix**: added a second cut at the first contrastive word (`over` /
+`than` / `instead of` / `rather than` / `not`) found *within* the
+extracted clause — "Premium over Standard" → "Premium". Verified against
+all phrasings including the original §12 case ("I don't want Standard,
+use Premium"), which is unaffected since it has no contrastive word to
+cut at.
+
+### 15.3 P2 — A pure cancellation depended on constraint evaluation succeeding
+
+**Finding**: `apply_constraint_rules()` runs unconditionally *before* the
+decline check — if it raises, a pure "I don't want to change it" (which
+should always be a harmless no-op) crashes instead.
+
+**Confirmed**: yes, by inspection — no try/except existed around that
+call at this specific site.
+
+**Fix**: wrapped the call in try/except, falling back to `None`
+(unconstrained) on failure. Safe here specifically because this value
+only *scopes* matching/prompting at this call site — it is not a final
+integrity gate the way `bom_gate.py`'s recheck is (where fail-closed was
+the correct call in §12). A pure decline, or a real value match, now both
+proceed regardless of the rule engine's health.
+
+**Live-verified**: 6 new tests — empty-intersection reports a conflict
+without mutating state, "prefer/rather...over/than" resolves to the
+wanted value, and decline survives a forced constraint-engine exception.
+Full combined suite run pending at time of writing.
+
+---
+
+## 16. FedRAMP (#6) — no longer inconclusive. Real mechanism found; fix not yet implemented.
+
+The earlier investigation concluded "no rule sets this attribute's Yes/No
+value via script — only hide/show." That conclusion was **wrong** —
+apparently because it only checked script-backed rules. A live query
+against the real ingested catalog (workspace 3, `aSTRO25_bom`, via
+`GraphReader('redis://falkordb:6379', graph='aryx_ws_3')` +
+`CpqEngine.load_product_config`/`load_recommendation_and_constraint_rules`
+run directly inside the running container) found plain declarative
+recommendation rules that DO set this value:
+
+- **"Set NO for Is FedRAMP High Baseline required?"** — condition
+  `isProvisioningRequiredInCloudEnv_astro == "YES"` → recommends `NO`.
+- **"Default No Is fedramp high baseline required"** — unconditional
+  (`condition_attr_id=0`) → recommends `NO`.
+- **"Associated Rec Rule: Hide FedRamp Required for US FED customer Only
+  (Molokai)"** — condition `systemEnhancementFeatureType_astro ==
+  "RADIO FED TA FCC TRIGGER"` → recommends `NO`.
+
+### 16.1 Root-cause hypothesis, evidence-backed but not turn-traced
+
+`isFedRampRequired_astro`'s own options list has `YES` at `order=1`, `NO`
+at `order=2`. `CpqEngine.auto_fill`'s own docstring
+(`engine.py:3974-3987`) documents an **already-known bug class**: if a
+recommendation's driving attribute isn't filled yet at the moment THIS
+attribute is auto-filled, the guard meant to catch "condition already
+satisfied" can't fire, so first-by-order picks the first option instead —
+and since neither `auto_fill` nor `apply_recommendation_rules` ever
+revisits an attribute already in `filled`, that choice is permanent. The
+docstring cites a near-identical historical case already fixed for a
+DIFFERENT attribute (`hWVersion_astro`'s region=NA recommendation losing
+this exact race). The working hypothesis: `isProvisioningRequiredInCloudEnv_astro`
+(or `systemEnhancementFeatureType_astro`) isn't filled yet when
+`isFedRampRequired_astro` is first auto-filled → first-by-order locks in
+`YES` → a later turn's driving-attribute resolution can't undo it via the
+normal recommendation path, but something (unconfirmed which mechanism)
+still produced the later "No" observation.
+
+### 16.2 Not yet fixed — needs one more confirmation step
+
+Before changing any code: confirm whether `isFedRampRequired_astro` is a
+member of the `governed_ids`/`rule_governed_ids` sets `auto_fill`'s
+step-3/step-5 guard checks, and trace the actual turn-by-turn fill order
+of `isProvisioningRequiredInCloudEnv_astro` relative to this attribute in
+a live session. This is now a scoped, evidence-backed investigation
+rather than a dead end — the previous "inconclusive" status is retired.
+
+---
+
+## 17. Multi-select stale-value clear discarded valid selections alongside the invalid one. Fixed.
+
+**Finding**: the auto-clear handler popped the ENTIRE `filled_multi` entry
+for a stale multi-select attribute, even though `bom_gate.py`'s recheck
+already isolates only the invalid item(s) (`invalid = [v for v in
+current_multi if v not in allowed]`). A customer with 5 valid carrier
+selections and 1 now-invalid one lost all 5 and had to re-pick everything.
+
+**Confirmed**: `ask_api.py`'s auto-clear loop called
+`session.filled_multi.pop(_vn, None)` unconditionally for any multi-select
+violation — no filtering.
+
+**Fix**: filter `session.filled_multi.get(_vn, [])` down to the values
+still in `_v.allowed`, keep them (rebuilding `display_filled` from the
+survivors' display names), and only clear the key entirely when nothing
+in the selection remains valid.
+
+**Live-verified**: 2 tests — 5 valid + 1 invalid selection now keeps the
+5 and only the invalid one triggers the re-ask (naming it specifically in
+the message); a fully-invalid selection still clears the whole key as
+before.
+
+---
+
+## 18. `_extract_replacement_clause`'s cue detection was position-based, not semantic — a reversed phrasing still leaked the rejected value. Fixed.
+
+**Finding**: the cue regex matches on the FIRST occurring cue word
+(`use`/`instead`/`prefer`/`rather`) and takes everything after it, then
+trims at the first contrastive word found *within that captured text*.
+"Instead of Standard, prefer Premium" matches on "instead" (the earliest
+cue), capturing "of Standard, prefer Premium" — that captured clause has
+no contrastive word of its own (the word "instead" that would normally
+trigger a cut was already consumed by the outer match), so nothing gets
+trimmed and "Standard" stays in the text handed to `apply_answer`.
+
+**Confirmed — live-tested directly**:
+```python
+>>> _extract_replacement_clause("instead of Standard, prefer Premium")
+'of Standard, prefer Premium'
+>>> engine.apply_answer(attr, 'of Standard, prefer Premium', None)
+('Standard', 'Standard')
+```
+
+**Root cause**: "instead" plays two different grammatical roles
+depending on what follows it. Alone, it introduces the WANTED value
+("use Premium instead"). As "instead of X", X is the REJECTED value and
+the real replacement is stated elsewhere in the sentence — but the cue
+regex treated both forms identically.
+
+**Fix**: excluded "instead of" from the cue match via a negative
+lookahead (`instead(?!\s+of)`). When "instead of X" appears, that
+alternative simply doesn't match there, and `re.search` naturally
+continues scanning forward to find the real cue word ("prefer") later in
+the sentence — no special-casing needed, the existing scan-forward
+behavior does the right thing once the false match is excluded.
+
+**Live-verified**: 2 new tests — the reversed phrasing now resolves to
+Premium, and bare "instead" (not followed by "of") still works as a
+direct cue exactly as before.

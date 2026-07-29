@@ -322,7 +322,20 @@ def _synthesise(question: str, context: str, overview: str = "",
     # all?") is independent of whether SOME entity happened to fuzzy-match —
     # always classify, and let a genuinely irrelevant question override
     # whatever facts were found.
-    is_cpq_relevant = _llm_classify_is_ask_in_scope(question, workspace_id)
+    # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — pass the
+    # recent conversation (already computed above as `conv`) so a mid-
+    # session follow-up like "what is the error" can be recognized as
+    # relevant when the prior turn was the engine's own gate error. The
+    # OTHER call site (run_ask's fresh-turn router) intentionally does not
+    # pass this — it has no session context to give. Ported onto
+    # _llm_classify_is_ask_in_scope (not _llm_classify_is_cpq_question) —
+    # this call site needs the BROADER scope gate (general enterprise/
+    # catalog questions, not just quote/order intent); see that function's
+    # own docstring for why reusing the narrow classifier here caused Ask
+    # to refuse almost every question.
+    is_cpq_relevant = _llm_classify_is_ask_in_scope(
+        question, workspace_id, prior_context=conv,
+    )
     logger.info(
         "cpq_qa_scope: has_context=%s for %r -> is_ask_in_scope=%s",
         has_context, question, is_cpq_relevant,
@@ -1008,6 +1021,78 @@ def _build_no_value_response(
     return result
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10 (QA issue #2):
+# no decline detector existed anywhere on the pending "which value?" path —
+# "I don't want to change product" fell straight into apply_answer as an
+# attempted (and failed) Product value. Stemmed with \w* on the verb forms
+# (change/changing/changed) rather than one literal, learning directly from
+# the earlier clarify-decline regex missing "wanted" vs "want" (§6) —
+# deliberately does NOT match bare "no" alone, since that's a legitimate
+# value for yes/no-shaped attrs.
+_CHANGE_VALUE_DECLINE_RE = re.compile(
+    r"don'?t\s+want\w*|do\s+not\s+want\w*"
+    r"|no\s+chang\w*|not\s+chang\w*"
+    r"|leave\s+it|keep\s+it"
+    r"|never\s*mind"
+    r"|cancel\s+(this|that|it)"
+    r"|skip\s+(this|that)",
+    re.IGNORECASE,
+)
+
+
+def _is_change_value_decline(reply: str) -> bool:
+    return bool(_CHANGE_VALUE_DECLINE_RE.search(reply or ""))
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — review finding:
+# "I don't want Standard; use Premium" states a real replacement, but
+# apply_answer's own substring matching (with no concept of negation) can
+# resolve to "Standard" (the REJECTED value) just as readily as "Premium" —
+# confirmed live: apply_answer(attr, "I don't want Standard, use Premium")
+# returned Standard, not Premium, because both names appear in the text and
+# the matcher has no idea one of them was just rejected. When a correction
+# cue ("use X" / "instead X" / "prefer X" / "rather X") is present, only the
+# text AFTER it is matched — the rejected value never even appears in the
+# substring being searched.
+#
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
+# finding: "prefer Premium over Standard" / "rather Premium than Standard"
+# still resolved to Standard — confirmed live. The cue regex only strips
+# text BEFORE the cue, so the captured clause was "Premium over Standard"
+# / "Premium than Standard" — the rejected value was still right there in
+# the substring being matched, just relocated instead of removed. A second
+# cut at the first contrastive word (over/than/instead of/rather than/not)
+# now trims the clause down to just the wanted value.
+#
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §18 — review
+# finding: cue detection is position-based (first cue word wins), not
+# semantic — "instead of Standard, prefer Premium" matched on "instead"
+# (the earliest cue) and captured "of Standard, prefer Premium", which has
+# no contrastive word of its own to cut at, so "Standard" leaked through.
+# The word "instead" plays two different roles: alone, it introduces the
+# WANTED value ("use Premium instead"); as "instead of X", X is the
+# REJECTED value and the real replacement is stated elsewhere. Excluding
+# "instead of" from the cue match (negative lookahead) lets the regex
+# correctly continue scanning and match the real cue ("prefer") instead.
+_REPLACEMENT_CUE_RE = re.compile(
+    r"\b(?:use|instead(?!\s+of)|prefer|rather)\b\s*[:,]?\s*(.+)$", re.IGNORECASE,
+)
+_CONTRAST_CUT_RE = re.compile(
+    r"\b(?:over|than|instead\s+of|rather\s+than|not)\b", re.IGNORECASE,
+)
+
+
+def _extract_replacement_clause(text: str) -> str | None:
+    m = _REPLACEMENT_CUE_RE.search(text or "")
+    if not m or not m.group(1).strip():
+        return None
+    clause = m.group(1).strip()
+    cut = _CONTRAST_CUT_RE.search(clause)
+    if cut:
+        clause = clause[:cut.start()].strip()
+    return clause or None
+
+
 def _handle_cascade(
     req: "AskRequest",
     session: Any,
@@ -1017,6 +1102,7 @@ def _handle_cascade(
     hiding_rules: list,
     rec_rules: list,
     con_rules: list,
+    constrained_item_values: list[str] | None = None,
 ) -> dict[str, Any]:
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
     push_snapshot(session, reason="cascade")
@@ -1069,7 +1155,12 @@ def _handle_cascade(
         # doesn't wipe rows already chosen (and a previously DECLINED
         # empty grid simply becomes the new rows). apply_multi_answer
         # extracts all named options, not just the best single match.
-        mentioned = _cpq_engine.apply_multi_answer(changed_attr, new_value_hint)
+        # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — the
+        # constrained set must reach the multi-select matcher too, not just
+        # the single-select apply_answer path below.
+        mentioned = _cpq_engine.apply_multi_answer(
+            changed_attr, new_value_hint, constrained_item_values,
+        )
         result = ("", "") if not mentioned else mentioned[0]
         if mentioned:
             existing = session.filled_multi.get(changed_attr.variable_name, [])
@@ -1083,14 +1174,23 @@ def _handle_cascade(
         else:
             result = None
     else:
-        result = _cpq_engine.apply_answer(changed_attr, new_value_hint)
+        result = _cpq_engine.apply_answer(
+            changed_attr, new_value_hint, constrained_item_values,
+        )
         if result:
             session.filled[changed_attr.variable_name] = result[0]
             session.display_filled[changed_attr.variable_name] = result[1]
             session.filled_source[changed_attr.variable_name] = "user"
     if not result:
-        # Could not parse new value — ask for clarification
-        opts_prompt = _cpq_engine.next_question_prompt(changed_attr)
+        # Could not parse new value — ask for clarification. Re-passes the
+        # SAME constrained_item_values the original ask used (docs/
+        # CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10, QA issue
+        # #3) — without this, a retry after a failed match fell back to
+        # attr.options unfiltered (the full cross-family catalog, e.g. 328
+        # legacy models) instead of the scoped list shown on the first ask.
+        opts_prompt = _cpq_engine.next_question_prompt(
+            changed_attr, constrained_item_values=constrained_item_values,
+        )
         answer = (
             f"I couldn't match that to a valid option for "
             f"**{_cpq_engine.disambiguated_label(changed_attr, attrs)}**. "
@@ -2478,15 +2578,26 @@ def _llm_classify_intent_core(
     return validate(parsed)
 
 
-def _llm_classify_is_cpq_question(question: str, workspace_id: int) -> bool:
+def _llm_classify_is_cpq_question(
+    question: str, workspace_id: int, prior_context: str = "",
+) -> bool:
     """Amendment 16 Layer 1 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
-    Tier-2 intent gate, tried only when `CpqEngine.is_cpq_question`'s
-    Tier-1 regex-trigger/ingested-alias check already returned False (see
-    this function's one call site in `run_ask`) — never replaces that
-    check, only covers what it structurally can't (a genuine request
-    phrased without any trigger word or a recognizable product name/alias).
-    No session state or reader needed — this classifies the raw sentence
-    alone, same as the Tier-1 check it follows.
+    Tier-2 intent gate. Two call sites with structurally different needs:
+
+    1. `run_ask`'s fresh-turn router — deciding whether to enter CPQ mode
+       at all, before any CPQ session/context exists. No `prior_context`
+       is passed here; this classification is, and must stay, the raw
+       sentence alone.
+    2. `_synthesise`'s mid-session Q&A scope check — deciding whether an
+       in-flight follow-up question is still in scope. Live-confirmed gap
+       (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14): "what
+       is the error" right after the CPQ engine's own gate error was
+       wrongly refused as out-of-scope, because classified alone it reads
+       as an unrelated tech-support question — the one fact that would
+       make it recognizably relevant (the prior turn WAS an error) was
+       never shown to the classifier. `prior_context` (the recent
+       conversation, already computed by the caller) fixes this for call
+       site 2 without changing call site 1's behavior at all.
 
     Deliberately biased toward "quote" on anything but a confident "no":
     live-confirmed twice this session (a missing regex plural, an
@@ -2509,8 +2620,14 @@ def _llm_classify_is_cpq_question(question: str, workspace_id: int) -> bool:
         "unusually or missing an obvious trigger word; only classify as "
         "\"not_quote\" when you are confident it is NOT that at all."
     )
+    context_block = (
+        f"\nRECENT CONVERSATION (for context only — classify the MESSAGE "
+        f"below, but consider whether it plausibly follows up on this):\n"
+        f"{prior_context}\n"
+        if prior_context.strip() else ""
+    )
     user = (
-        f"MESSAGE: {question}\n\n"
+        f"{context_block}MESSAGE: {question}\n\n"
         'Reply ONLY as JSON: {"classification": "quote"|"not_quote"}'
     )
 
@@ -2523,7 +2640,9 @@ def _llm_classify_is_cpq_question(question: str, workspace_id: int) -> bool:
     return _llm_classify_intent_core(sys, user, workspace_id, _validate) is True
 
 
-def _llm_classify_is_ask_in_scope(question: str, workspace_id: int) -> bool:
+def _llm_classify_is_ask_in_scope(
+    question: str, workspace_id: int, prior_context: str = "",
+) -> bool:
     """Scope gate for the general Ask synthesis path (`_synthesise`'s
     call site only — NOT the CPQ-routing call site in `run_ask`, which
     must keep using `_llm_classify_is_cpq_question`'s narrower,
@@ -2543,6 +2662,14 @@ def _llm_classify_is_ask_in_scope(question: str, workspace_id: int) -> bool:
     catalog data this system tracks at all? Only a question genuinely
     unrelated to that domain (small talk, an unrelated topic) should
     classify as out of scope.
+
+    `prior_context` (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
+    §14, ported from `_llm_classify_is_cpq_question` onto this broader
+    classifier since this — not that one — is the call site that gates
+    general Ask): the recent conversation, when the caller has it, so a
+    mid-session follow-up like "what is the error" can be recognized as
+    in-scope when the prior turn was the engine's own gate error, rather
+    than classified alone as an unrelated tech-support question.
 
     Fails OPEN, not closed: `_llm_classify_intent_core` returns `None` on
     a malformed reply or an LLM-call exception, same as every other
@@ -2568,8 +2695,14 @@ def _llm_classify_is_ask_in_scope(question: str, workspace_id: int) -> bool:
         "classify as \"out_of_scope\" when you are confident it is about "
         "something else entirely (e.g. small talk, an unrelated topic)."
     )
+    context_block = (
+        f"\nRECENT CONVERSATION (for context only — classify the MESSAGE "
+        f"below, but consider whether it plausibly follows up on this):\n"
+        f"{prior_context}\n"
+        if prior_context.strip() else ""
+    )
     user = (
-        f"MESSAGE: {question}\n\n"
+        f"{context_block}MESSAGE: {question}\n\n"
         'Reply ONLY as JSON: {"classification": "in_scope"|"out_of_scope"}'
     )
 
@@ -5030,14 +5163,78 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         session.pending_change_no_value_vn = ""
         if _pcnv_attr:
+            # QA issue #3 (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_
+            # ISSUE.md §10): re-derive the SAME constrained set the original
+            # "which value?" ask used, so a failed-match retry re-shows the
+            # scoped option list instead of falling back to attr.options
+            # unfiltered.
+            # §15 review finding: this used to run unconditionally, BEFORE
+            # the decline check below — a pure "I don't want to change it"
+            # (which should always be a harmless no-op) would raise if
+            # constraint evaluation itself failed for an unrelated reason.
+            # Falls back to None (unconstrained) on failure — safe here
+            # specifically because this value only SCOPES matching/
+            # prompting, it's not a final integrity gate (unlike
+            # bom_gate.py's recheck, where fail-closed is correct).
+            try:
+                _pcnv_constrained = _cpq_engine.apply_constraint_rules(
+                    attrs, con_rules, session.filled, bml_eval,
+                ).get(_pcnv_attr.entity_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cpq: constraint recompute failed for pending change "
+                    "value on %r, proceeding unconstrained: %r",
+                    _pcnv_attr.variable_name, exc,
+                )
+                _pcnv_constrained = None
+            # QA issue #2 (§10) + review finding §12: "I don't want to
+            # change product" is a decline, not an attempted value — but a
+            # compound reply like "I don't want Standard; use Premium"
+            # STATES a real replacement and must not be misread as a pure
+            # cancellation. A correction cue ("use X"/"instead X"/
+            # "prefer X") narrows matching to the clause AFTER it, so the
+            # rejected value ("Standard") never even appears in the text
+            # being searched — confirmed live that without this, apply_
+            # answer's own substring matching resolved to the REJECTED
+            # value just as readily as the wanted one, since it has no
+            # concept of negation. Falls back to the full message when no
+            # cue is present. Try to extract a real value FIRST; only
+            # treat the reply as a decline when nothing resolves at all.
+            _pcnv_match_text = (
+                _extract_replacement_clause(req.question) or req.question
+            )
+            if _pcnv_attr.select_type == "multi":
+                _pcnv_matched = bool(_cpq_engine.apply_multi_answer(
+                    _pcnv_attr, _pcnv_match_text, _pcnv_constrained,
+                ))
+            else:
+                _pcnv_matched = _cpq_engine.apply_answer(
+                    _pcnv_attr, _pcnv_match_text, _pcnv_constrained,
+                ) is not None
+            if not _pcnv_matched and _is_change_value_decline(req.question):
+                _pcnv_current = session.display_filled.get(_pcnv_attr.variable_name)
+                answer = (
+                    f"No problem — I'll leave "
+                    f"**{_cpq_engine.disambiguated_label(_pcnv_attr, attrs)}** "
+                    f"as it is"
+                    + (f" (**{_pcnv_current}**)." if _pcnv_current else ".")
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_change_declined()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
             # Multi-intent follow-up (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
             # Fix 4) is now handled INSIDE _handle_cascade itself — it's the
             # single common convergence point every change-request entry
             # point reaches, so re-queuing pending_multi_intent_vn there
             # covers this caller too without needing its own copy here.
             return _handle_cascade(
-                req, session, attrs, _pcnv_attr, req.question,
+                req, session, attrs, _pcnv_attr, _pcnv_match_text,
                 hiding_rules, rec_rules, con_rules,
+                constrained_item_values=_pcnv_constrained,
             )
 
     # Gateway clarify reply — resolve BEFORE any blind re-classification.
@@ -5158,6 +5355,134 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             gate = validate_before_payload(
                 _cpq_engine, attrs, session, con_rules, bml_gate,
             )
+            if not gate.ok and gate.stale_violations:
+                # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15
+                # — review finding: multiple active constraints can
+                # legitimately intersect to an EMPTY allowed set (a genuine
+                # rule conflict, not a stale-but-fixable value). Auto-
+                # clearing and re-asking with `constrained_item_values=[]`
+                # produced an unanswerable "Please provide a value" loop —
+                # confirmed live, no reply could ever match. Report the
+                # conflict instead; nothing is mutated (no push_snapshot,
+                # no pops) since there's no productive value to ask for.
+                _conflicted = [v for v in gate.stale_violations if not v.allowed]
+                if _conflicted:
+                    _conflict_labels = [
+                        _cpq_engine.disambiguated_label(v.attr, attrs)
+                        for v in _conflicted
+                    ]
+                    answer = (
+                        "⚠️ **Rule conflict detected.**\n\n"
+                        + (
+                            f"**{_conflict_labels[0]}** has no valid options "
+                            if len(_conflict_labels) == 1 else
+                            "The following have no valid options "
+                            + ", ".join(f"**{l}**" for l in _conflict_labels) + " "
+                        )
+                        + "left, given your other selections — the active "
+                        "rules conflict with each other.\n\nPlease change one "
+                        "of your earlier selections, or say **undo** to "
+                        "restore the previous snapshot."
+                    )
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_rule_conflict()"],
+                        "usage": {
+                            "prompt_tokens": 0, "completion_tokens": 0,
+                            "latency_ms": 0, "menial_model": "cpq-engine",
+                            "answer_model": "cpq-engine",
+                        },
+                        "grounding": None, "session_data": session.to_dict(),
+                        "cpq_payload": None,
+                    }
+                # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
+                # §11 — auto-clear + re-ask rather than hard-block: the
+                # engine knows these values are stale but not what the
+                # replacement should be, so it asks instead of guessing or
+                # refusing outright.
+                # §12 — push_snapshot BEFORE mutating, same discipline as
+                # every other mutation site (_handle_cascade etc.), so
+                # "undo" right after this re-ask reverts just this clear
+                # instead of skipping past it to an earlier state.
+                push_snapshot(session, reason="stale_constraint_reask")
+                _stale_display: dict[str, str] = {}
+                _stale_vns: list[str] = []
+                for _v in gate.stale_violations:
+                    _vn = _v.attr.variable_name
+                    _stale_display[_vn] = (
+                        session.display_filled.get(_vn) or _v.current_value
+                    )
+                    # §12 — a multi-select's value lives in filled_multi,
+                    # not filled; popping the wrong dict left it untouched.
+                    # §17 review finding: popping the ENTIRE filled_multi
+                    # entry discarded every still-valid selection alongside
+                    # the invalid one(s) — a customer with 5 valid carrier
+                    # selections and 1 now-invalid one lost all 5. `_v.
+                    # current_value` (bom_gate.py) already isolates only the
+                    # invalid item(s); keep everything else instead of
+                    # wiping the whole key.
+                    if _v.attr.select_type == "multi":
+                        _kept = [
+                            iv for iv in session.filled_multi.get(_vn, [])
+                            if iv in _v.allowed
+                        ]
+                        if _kept:
+                            session.filled_multi[_vn] = _kept
+                            session.display_filled[_vn] = ", ".join(
+                                next(
+                                    (o.display_name for o in _v.attr.options
+                                     if o.item_value == iv),
+                                    iv,
+                                )
+                                for iv in _kept
+                            )
+                        else:
+                            session.filled_multi.pop(_vn, None)
+                            session.display_filled.pop(_vn, None)
+                    else:
+                        session.filled.pop(_vn, None)
+                        session.display_filled.pop(_vn, None)
+                    session.filled_source.pop(_vn, None)
+                    _stale_vns.append(_vn)
+                session.pending_variables = _stale_vns + [
+                    v for v in session.pending_variables if v not in _stale_vns
+                ]
+                session.status = "configuring"
+                session.complete = False
+                _first = gate.stale_violations[0]
+                _stale_opts_prompt = _cpq_engine.next_question_prompt(
+                    _first.attr, constrained_item_values=_first.allowed,
+                )
+                _rest_labels = [
+                    _cpq_engine.disambiguated_label(_v.attr, attrs)
+                    for _v in gate.stale_violations[1:]
+                ]
+                _also_note = (
+                    f"\n\n*(I'll also ask about {', '.join(f'**{l}**' for l in _rest_labels)} next.)*"
+                    if _rest_labels else ""
+                )
+                answer = (
+                    f"A couple of your earlier selections no longer match your "
+                    f"other choices — let's update "
+                    f"{'them' if _rest_labels else 'it'} before I generate the BOM.\n\n"
+                    f"**{_cpq_engine.disambiguated_label(_first.attr, attrs)}** is "
+                    f"currently *{_stale_display[_first.attr.variable_name]}*, which "
+                    f"isn't valid anymore given your other choices:\n\n"
+                    f"{_stale_opts_prompt}{_also_note}"
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [],
+                    "tools_called": ["cpq_stale_constraint_reask()"],
+                    "usage": {
+                        "prompt_tokens": 0, "completion_tokens": 0,
+                        "latency_ms": 0, "menial_model": "cpq-engine",
+                        "answer_model": "cpq-engine",
+                    },
+                    "grounding": None, "session_data": session.to_dict(),
+                    "cpq_payload": None,
+                }
             if not gate.ok:
                 session.complete = False
                 session.status = "awaiting_approval"
