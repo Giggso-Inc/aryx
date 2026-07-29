@@ -1,8 +1,10 @@
 # Ask Feature — Blanket "Outside What I Track" Refusal
 
-**Status: Diagnosed, not yet fixed.** Root cause identified in
-`src/aryx/api/ask_api.py`; two fix options proposed below, awaiting a
-decision before implementation.
+**Status: Fixed.** Root cause identified in `src/aryx/api/ask_api.py`;
+Option A (below) was implemented — a separate `_llm_classify_is_ask_in_scope`
+classifier now gates the general Ask synthesis path, leaving
+`_llm_classify_is_cpq_question` unchanged for CPQ routing. See
+`fix/ask-scope-misclassification-devrv` (PR against `dev-rv`).
 
 **Reported by:** g.sivasankari@giggso.com — user was getting the canned
 refusal *"This question falls outside of what I track, which is limited to
@@ -114,27 +116,35 @@ blanket refusal seen for nearly every question.
 questions ("is this a quote intent?" vs. "is this in-scope for Ask at
 all?"), and it was only ever built to correctly answer the first one.
 
-## 4. Proposed fixes
+## 4. Fix implemented
 
-**Option A — split the classifier (recommended).** Keep
+**Option A — split the classifier (implemented).** Kept
 `_llm_classify_is_cpq_question` exactly as-is for CPQ routing (line 4820).
-Add a second, separately-prompted classifier for the line-214 scope check
-whose system prompt explicitly includes "questions about tracked
-enterprise/catalog data" as in-scope, only rejecting things genuinely
-unrelated to the product/catalog domain (weather, general chit-chat,
-unrelated topics).
+Added a second, separately-prompted classifier,
+`_llm_classify_is_ask_in_scope`, for the line-214 scope check, whose system
+prompt explicitly includes "questions about tracked enterprise/catalog
+data" as in-scope, only rejecting things genuinely unrelated to the
+product/catalog domain (weather, general chit-chat, unrelated topics).
 
-**Option B — broaden the existing prompt.** Change
+The new classifier also fails **open**, not closed: a malformed LLM reply
+or a call exception (both surfaced as `None` by the shared
+`_llm_classify_intent_core` skeleton) is treated as in-scope, not
+out-of-scope. Only an explicit `out_of_scope` classification rejects the
+question — an unavailable classification provides no evidence either way,
+and treating it as a rejection would silently reproduce this exact bug
+under a different trigger (an LLM/parse failure instead of a genuine
+"not_quote" judgment).
+
+**Option B (not taken) — broaden the existing prompt.** Change
 `_llm_classify_is_cpq_question`'s system prompt to also accept "a question
 about enterprise data this system tracks" as a "quote"-equivalent
 classification. Smaller change, but re-couples the CPQ-routing decision
 and the Ask-scope decision again — risks reintroducing this same
-confusion later if the two concerns diverge further.
-
-Recommendation: Option A. The two call sites already have documented,
-different tolerances for false positives/negatives (see the docstring at
+confusion later if the two concerns diverge further. Option A was chosen
+instead: the two call sites already have documented, different
+tolerances for false positives/negatives (see the docstring at
 `ask_api.py:2040-2050`); forcing them to share one classifier is what
-caused this bug.
+caused this bug in the first place.
 
 ## 5. Attachments
 

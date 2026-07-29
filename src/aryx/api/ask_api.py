@@ -2543,6 +2543,18 @@ def _llm_classify_is_ask_in_scope(question: str, workspace_id: int) -> bool:
     catalog data this system tracks at all? Only a question genuinely
     unrelated to that domain (small talk, an unrelated topic) should
     classify as out of scope.
+
+    Fails OPEN, not closed: `_llm_classify_intent_core` returns `None` on
+    a malformed reply or an LLM-call exception, same as every other
+    caller of that shared skeleton. Collapsing that `None` into `False`
+    (as an earlier version of this function did via `is True`) recreates
+    the exact bug this function exists to fix — a classification
+    failure would silently withhold valid graph facts and reproduce the
+    blanket "outside what I track" refusal, indistinguishable from a
+    genuine out-of-scope question. Only an explicit `out_of_scope`
+    result should count as out of scope; a failed or unparseable call
+    provides no information at all and must not be treated as evidence
+    either way, so it's treated as in-scope.
     """
     sys = (
         "You classify whether a customer's message is in scope for a "
@@ -2567,7 +2579,8 @@ def _llm_classify_is_ask_in_scope(question: str, workspace_id: int) -> bool:
             return None
         return classification == "in_scope"
 
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate) is True
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return result is not False
 
 
 def _llm_extract_multi_attr_hints(
