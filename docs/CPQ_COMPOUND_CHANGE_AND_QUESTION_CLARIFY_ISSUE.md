@@ -718,3 +718,183 @@ stale-value detection (both violating and passing), `push_snapshot`
 called before mutation, multi-select auto-clear from the correct dict,
 and the compound decline+replacement case resolving to the *stated*
 value rather than the rejected one or a false cancellation.
+
+---
+
+## 13. Second QA report cross-check — 2 staleness corrections, everything else confirmed accurate
+
+A second, independent QA report (synthesizing `CPQ_SESSION_2026_07_29_ISSUES_PLAN.md`
+and `CPQ_LLM_INTENT_FIRST_TRANSCRIPT_ANALYSIS_AND_RISK_PLAN.md`) tracked
+the same 9 numbered issues plus 3 more (a downstream "provisioning"
+hijack, "what is the error" wrongly refused, and an `llm_normalize`
+envelope crash) against `origin/dev-rv`. Verified every claim directly
+(`git merge-base --is-ancestor`, and grepping each cited function against
+`origin/dev-rv`'s actual tree) before accepting any of it.
+
+**Confirmed accurate, no corrections needed:**
+- #2, #4, #5, #7/8, #9, and the transitive "provisioning hijack" fix — all
+  genuinely merged into `dev-rv` via `da7246c`/`aac7a67`/`6adc9fc`/`65a4d76`.
+  Line numbers the report cited had drifted slightly from the actual
+  current file, but every named function/fix is genuinely present.
+- #6 (FedRAMP) and "what is the error wrongly refused" — confirmed still
+  unfixed anywhere, on any branch. No code touches either.
+
+**2 corrections to the report's own claims:**
+
+1. **#1 and #3/10** ("confirm crash", "retry loses constrained scope") —
+   the report says *"not on `dev-rv` — fix exists only as my own
+   uncommitted local edit."* That was true when written; it's stale now.
+   Both are committed (`5b84bd1`) and pushed, with PR #134 open against
+   `dev-rv` — not yet merged, but no longer uncommitted. Separately: the
+   report's cited symbols for the fix (`_hc_constrained`/`_hc_allowed`,
+   `bom_gate.py:77`) don't match this repo's actual implementation
+   (`constrained_item_values`, `StaleConstraintViolation` — see §9-§10) —
+   same bug, independently identified and described, not a description of
+   this branch's own diff.
+
+2. **`llm_normalize` envelope crash** — the report says *"not on `dev-rv`
+   — only on `feature/msi_intent` (`eaaecc3`)."* This is simply wrong:
+   `git merge-base --is-ancestor eaaecc3 origin/dev-rv` returns **true** —
+   `eaaecc3` merged into `dev-rv` via PR #132 ("Merge pull request #132
+   from Giggso-Inc/feature/msi_intent"), which landed *before* `da7246c`.
+   It has been on `dev-rv` the whole time.
+
+**Also not tracked by this QA report at all**: §11 (the stale-constraint
+auto-clear redesign) and §12 (its own follow-up review — fail-open
+exception, multi-select bypass, undo safety, decline-regex over-match) —
+both newer findings from work after this report was written.
+
+---
+
+## 14. "what is the error" wrongly refused as out-of-scope. Fixed.
+
+Of the 2 issues §13 confirmed genuinely unfixed anywhere (FedRAMP and
+this one), this one had a clear, scoped fix — implemented.
+
+### 14.1 Root cause, confirmed
+
+`_llm_classify_is_cpq_question` has exactly **2** call sites — its own
+docstring claimed "one call site in `run_ask`", which was already stale:
+
+1. `run_ask`'s fresh-turn router (`ask_api.py` ~6891) — decides whether
+   to enter CPQ mode at all, before any session/CPQ context exists. Must
+   stay context-free.
+2. `_synthesise` (`ask_api.py` ~325) — the mid-session Q&A scope check,
+   deciding whether an in-flight follow-up is still in scope.
+
+Call site 2 already computes `conv` (the last-6-turn conversation, via
+`_recent(history, limit=6)`) one line before the classify call — for the
+answer-synthesis prompt right below it — but was never passing that same
+`conv` into the classify call itself. Classified alone, "what is the
+error" reasonably reads as an unrelated tech-support question; the one
+fact that would make it recognizable (the prior turn was the engine's own
+gate error) was never shown to the classifier.
+
+### 14.2 Fix — live-verified
+
+`_llm_classify_is_cpq_question` gained an optional `prior_context: str = ""`
+parameter, folded into the prompt only when non-empty (`RECENT
+CONVERSATION` block). Call site 2 (`_synthesise`) now passes the
+already-computed `conv`. Call site 1 (`run_ask`'s router) passes nothing —
+default empty string, prompt byte-identical to before.
+
+**Impact confirmed additive/backward-compatible**: no test anywhere
+references this function directly (none to update); the only 2 callers of
+`_synthesise` both already pass `history`, so both benefit identically; no
+new LLM call — same call, richer prompt, same cost.
+
+**Live-verified**: 2 new tests proving `prior_context` reaches the prompt
+when given and is fully absent when not (pinning call site 1's
+behavior as byte-identical to before). 66/66 in the targeted suite;
+full combined suite run pending at time of writing.
+
+### 14.3 FedRAMP (§13's other open item) — investigation finding, not yet a fix
+
+Checked whether `CpqSession.cascade_log` already captures this class of
+discrepancy before proposing any new logging: confirmed it does, in
+principle — `ask_api.py` ~6494-6504 appends `{var, old, new, rule, turn}`
+to `cascade_log` for **every** value that changes during the rule-loop
+rerun, on every turn, not just explicit cascades. This should already
+record an `isFedRampRequired_astro` flip if one occurs — the `rule` field
+is a source tag ("auto"/"cascade"/"rule"/"user"), not the specific
+condition, so it wouldn't explain *why*, but it would confirm *when* and
+*whether* it happens at all.
+
+**Not yet fixable further from static reading alone** — needs a live
+repro of the exact reported sequence (Single Band / Houston / US / Police
+Protection) with `session_data.cascade_log` inspected afterward. If an
+entry for this attr is present, that's the "when" already answered
+without any new logging. If absent despite the value genuinely changing,
+that would itself be a second, real finding (a code path that changes
+`filled` without going through this cascade-log block at all) — worth
+its own investigation. No code changed for this item this round.
+
+---
+
+## 15. Third review round on §11/§12 — 3 more findings, all confirmed and fixed
+
+A third review of the stale-constraint auto-clear and pending-change
+flows caught 3 more real gaps (1 P1, 2 P2). Same discipline: verified
+every claim directly before planning any fix.
+
+### 15.1 P1 — Empty constraint intersections created an unanswerable loop
+
+**Finding**: multiple active constraints can legitimately intersect to
+`[]` — the auto-clear handler cleared the stale value and prompted with
+that empty set anyway; every subsequent reply was rejected since no
+option was ever allowed.
+
+**Confirmed**: traced `next_question_prompt`/`apply_answer` directly with
+`constrained_item_values=[]` — `effective_opts`/`options` both filter to
+empty regardless of input, producing "Please provide a value" with no
+option able to ever match. A genuine dead end, not a wording problem.
+
+**Fix**: the confirm handler now checks `gate.stale_violations` for any
+entry with an empty `allowed` set *before* doing any clearing. If found,
+it reports a rule conflict explicitly (which attribute(s), and that
+active rules conflict) and suggests changing an earlier selection or
+saying **undo** — nothing is mutated, since there's no productive value to
+ask for. Only when no conflict is present does the existing auto-clear +
+re-ask flow (§11/§12) run, unchanged.
+
+### 15.2 P2 — "Prefer X over Y" / "rather X than Y" could still select the rejected Y
+
+**Finding**: `_extract_replacement_clause()` only strips text *before* the
+correction cue — "prefer Premium over Standard" extracts "Premium over
+Standard", which still contains the rejected value.
+
+**Confirmed — live-tested directly**:
+```python
+>>> engine.apply_answer(attr, "Premium over Standard", None)
+('Standard', 'Standard')
+```
+Reproduced for both "prefer X over Y" and "rather X than Y", exactly as
+reported.
+
+**Fix**: added a second cut at the first contrastive word (`over` /
+`than` / `instead of` / `rather than` / `not`) found *within* the
+extracted clause — "Premium over Standard" → "Premium". Verified against
+all phrasings including the original §12 case ("I don't want Standard,
+use Premium"), which is unaffected since it has no contrastive word to
+cut at.
+
+### 15.3 P2 — A pure cancellation depended on constraint evaluation succeeding
+
+**Finding**: `apply_constraint_rules()` runs unconditionally *before* the
+decline check — if it raises, a pure "I don't want to change it" (which
+should always be a harmless no-op) crashes instead.
+
+**Confirmed**: yes, by inspection — no try/except existed around that
+call at this specific site.
+
+**Fix**: wrapped the call in try/except, falling back to `None`
+(unconstrained) on failure. Safe here specifically because this value
+only *scopes* matching/prompting at this call site — it is not a final
+integrity gate the way `bom_gate.py`'s recheck is (where fail-closed was
+the correct call in §12). A pure decline, or a real value match, now both
+proceed regardless of the rule engine's health.
+
+**Live-verified**: 6 new tests — empty-intersection reports a conflict
+without mutating state, "prefer/rather...over/than" resolves to the
+wanted value, and decline survives a forced constraint-engine exception.
+Full combined suite run pending at time of writing.

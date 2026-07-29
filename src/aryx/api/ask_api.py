@@ -322,7 +322,15 @@ def _synthesise(question: str, context: str, overview: str = "",
     # all?") is independent of whether SOME entity happened to fuzzy-match —
     # always classify, and let a genuinely irrelevant question override
     # whatever facts were found.
-    is_cpq_relevant = _llm_classify_is_cpq_question(question, workspace_id)
+    # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — pass the
+    # recent conversation (already computed above as `conv`) so a mid-
+    # session follow-up like "what is the error" can be recognized as
+    # relevant when the prior turn was the engine's own gate error. The
+    # OTHER call site (run_ask's fresh-turn router) intentionally does not
+    # pass this — it has no session context to give.
+    is_cpq_relevant = _llm_classify_is_cpq_question(
+        question, workspace_id, prior_context=conv,
+    )
     logger.info(
         "cpq_qa_scope: has_context=%s for %r -> is_cpq_relevant=%s",
         has_context, question, is_cpq_relevant,
@@ -1041,14 +1049,32 @@ def _is_change_value_decline(reply: str) -> bool:
 # cue ("use X" / "instead X" / "prefer X" / "rather X") is present, only the
 # text AFTER it is matched — the rejected value never even appears in the
 # substring being searched.
+#
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
+# finding: "prefer Premium over Standard" / "rather Premium than Standard"
+# still resolved to Standard — confirmed live. The cue regex only strips
+# text BEFORE the cue, so the captured clause was "Premium over Standard"
+# / "Premium than Standard" — the rejected value was still right there in
+# the substring being matched, just relocated instead of removed. A second
+# cut at the first contrastive word (over/than/instead of/rather than/not)
+# now trims the clause down to just the wanted value.
 _REPLACEMENT_CUE_RE = re.compile(
     r"\b(?:use|instead|prefer|rather)\b\s*[:,]?\s*(.+)$", re.IGNORECASE,
+)
+_CONTRAST_CUT_RE = re.compile(
+    r"\b(?:over|than|instead\s+of|rather\s+than|not)\b", re.IGNORECASE,
 )
 
 
 def _extract_replacement_clause(text: str) -> str | None:
     m = _REPLACEMENT_CUE_RE.search(text or "")
-    return m.group(1).strip() if m and m.group(1).strip() else None
+    if not m or not m.group(1).strip():
+        return None
+    clause = m.group(1).strip()
+    cut = _CONTRAST_CUT_RE.search(clause)
+    if cut:
+        clause = clause[:cut.start()].strip()
+    return clause or None
 
 
 def _handle_cascade(
@@ -2536,15 +2562,26 @@ def _llm_classify_intent_core(
     return validate(parsed)
 
 
-def _llm_classify_is_cpq_question(question: str, workspace_id: int) -> bool:
+def _llm_classify_is_cpq_question(
+    question: str, workspace_id: int, prior_context: str = "",
+) -> bool:
     """Amendment 16 Layer 1 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
-    Tier-2 intent gate, tried only when `CpqEngine.is_cpq_question`'s
-    Tier-1 regex-trigger/ingested-alias check already returned False (see
-    this function's one call site in `run_ask`) — never replaces that
-    check, only covers what it structurally can't (a genuine request
-    phrased without any trigger word or a recognizable product name/alias).
-    No session state or reader needed — this classifies the raw sentence
-    alone, same as the Tier-1 check it follows.
+    Tier-2 intent gate. Two call sites with structurally different needs:
+
+    1. `run_ask`'s fresh-turn router — deciding whether to enter CPQ mode
+       at all, before any CPQ session/context exists. No `prior_context`
+       is passed here; this classification is, and must stay, the raw
+       sentence alone.
+    2. `_synthesise`'s mid-session Q&A scope check — deciding whether an
+       in-flight follow-up question is still in scope. Live-confirmed gap
+       (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14): "what
+       is the error" right after the CPQ engine's own gate error was
+       wrongly refused as out-of-scope, because classified alone it reads
+       as an unrelated tech-support question — the one fact that would
+       make it recognizably relevant (the prior turn WAS an error) was
+       never shown to the classifier. `prior_context` (the recent
+       conversation, already computed by the caller) fixes this for call
+       site 2 without changing call site 1's behavior at all.
 
     Deliberately biased toward "quote" on anything but a confident "no":
     live-confirmed twice this session (a missing regex plural, an
@@ -2567,8 +2604,14 @@ def _llm_classify_is_cpq_question(question: str, workspace_id: int) -> bool:
         "unusually or missing an obvious trigger word; only classify as "
         "\"not_quote\" when you are confident it is NOT that at all."
     )
+    context_block = (
+        f"\nRECENT CONVERSATION (for context only — classify the MESSAGE "
+        f"below, but consider whether it plausibly follows up on this):\n"
+        f"{prior_context}\n"
+        if prior_context.strip() else ""
+    )
     user = (
-        f"MESSAGE: {question}\n\n"
+        f"{context_block}MESSAGE: {question}\n\n"
         'Reply ONLY as JSON: {"classification": "quote"|"not_quote"}'
     )
 
@@ -5033,9 +5076,25 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             # "which value?" ask used, so a failed-match retry re-shows the
             # scoped option list instead of falling back to attr.options
             # unfiltered.
-            _pcnv_constrained = _cpq_engine.apply_constraint_rules(
-                attrs, con_rules, session.filled, bml_eval,
-            ).get(_pcnv_attr.entity_id)
+            # §15 review finding: this used to run unconditionally, BEFORE
+            # the decline check below — a pure "I don't want to change it"
+            # (which should always be a harmless no-op) would raise if
+            # constraint evaluation itself failed for an unrelated reason.
+            # Falls back to None (unconstrained) on failure — safe here
+            # specifically because this value only SCOPES matching/
+            # prompting, it's not a final integrity gate (unlike
+            # bom_gate.py's recheck, where fail-closed is correct).
+            try:
+                _pcnv_constrained = _cpq_engine.apply_constraint_rules(
+                    attrs, con_rules, session.filled, bml_eval,
+                ).get(_pcnv_attr.entity_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cpq: constraint recompute failed for pending change "
+                    "value on %r, proceeding unconstrained: %r",
+                    _pcnv_attr.variable_name, exc,
+                )
+                _pcnv_constrained = None
             # QA issue #2 (§10) + review finding §12: "I don't want to
             # change product" is a decline, not an attempted value — but a
             # compound reply like "I don't want Standard; use Premium"
@@ -5205,6 +5264,46 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 _cpq_engine, attrs, session, con_rules, bml_gate,
             )
             if not gate.ok and gate.stale_violations:
+                # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15
+                # — review finding: multiple active constraints can
+                # legitimately intersect to an EMPTY allowed set (a genuine
+                # rule conflict, not a stale-but-fixable value). Auto-
+                # clearing and re-asking with `constrained_item_values=[]`
+                # produced an unanswerable "Please provide a value" loop —
+                # confirmed live, no reply could ever match. Report the
+                # conflict instead; nothing is mutated (no push_snapshot,
+                # no pops) since there's no productive value to ask for.
+                _conflicted = [v for v in gate.stale_violations if not v.allowed]
+                if _conflicted:
+                    _conflict_labels = [
+                        _cpq_engine.disambiguated_label(v.attr, attrs)
+                        for v in _conflicted
+                    ]
+                    answer = (
+                        "⚠️ **Rule conflict detected.**\n\n"
+                        + (
+                            f"**{_conflict_labels[0]}** has no valid options "
+                            if len(_conflict_labels) == 1 else
+                            "The following have no valid options "
+                            + ", ".join(f"**{l}**" for l in _conflict_labels) + " "
+                        )
+                        + "left, given your other selections — the active "
+                        "rules conflict with each other.\n\nPlease change one "
+                        "of your earlier selections, or say **undo** to "
+                        "restore the previous snapshot."
+                    )
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_rule_conflict()"],
+                        "usage": {
+                            "prompt_tokens": 0, "completion_tokens": 0,
+                            "latency_ms": 0, "menial_model": "cpq-engine",
+                            "answer_model": "cpq-engine",
+                        },
+                        "grounding": None, "session_data": session.to_dict(),
+                        "cpq_payload": None,
+                    }
                 # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
                 # §11 — auto-clear + re-ask rather than hard-block: the
                 # engine knows these values are stale but not what the

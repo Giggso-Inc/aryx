@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.api.ask_api import _is_change_value_decline, _llm_split_compound_change_and_question
+from aryx.api.ask_api import (
+    _is_change_value_decline,
+    _llm_classify_is_cpq_question,
+    _llm_split_compound_change_and_question,
+)
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
     build_candidate_bundles,
@@ -248,3 +252,64 @@ def test_change_value_decline_does_not_match_bare_no_or_real_values():
     attrs, and a real attempted value must still reach apply_answer."""
     for phrase in ["no", "No", "H45", "APX NEXT XE", "ATT/FirstNet"]:
         assert not _is_change_value_decline(phrase), f"must not match: {phrase!r}"
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
+# finding: "prefer Premium over Standard" / "rather Premium than Standard"
+# still resolved to the REJECTED value (Standard), because the extracted
+# clause ("Premium over Standard") still contained it.
+
+def test_extract_replacement_clause_cuts_trailing_contrastive_word():
+    from aryx.api.ask_api import _extract_replacement_clause
+    assert _extract_replacement_clause("prefer Premium over Standard") == "Premium"
+    assert _extract_replacement_clause("rather Premium than Standard") == "Premium"
+    assert _extract_replacement_clause(
+        "use Premium instead of Standard",
+    ) == "Premium"
+
+
+def test_extract_replacement_clause_unaffected_without_contrast():
+    from aryx.api.ask_api import _extract_replacement_clause
+    assert _extract_replacement_clause(
+        "I don't want Standard, use Premium",
+    ) == "Premium"
+    assert _extract_replacement_clause("use Premium") == "Premium"
+    assert _extract_replacement_clause("no cue here at all") is None
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — "what is the
+# error" wrongly refused as out-of-scope because the mid-session Q&A
+# classifier had no idea the prior turn was the engine's own gate error.
+
+def test_llm_classify_is_cpq_question_includes_prior_context_when_given():
+    """The mid-session call site (via _synthesise) passes prior_context —
+    it must actually reach the LLM prompt."""
+    captured = {}
+
+    def _fake_chat(tier, sys_prompt, user_prompt, workspace_id=1):
+        captured["user_prompt"] = user_prompt
+        return '{"classification": "quote"}', 10, 5
+
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=_fake_chat):
+        result = _llm_classify_is_cpq_question(
+            "what is the error", workspace_id=1,
+            prior_context="assistant: Configuration gate blocked the BOM payload.",
+        )
+    assert result is True
+    assert "RECENT CONVERSATION" in captured["user_prompt"]
+    assert "gate blocked the BOM payload" in captured["user_prompt"]
+
+
+def test_llm_classify_is_cpq_question_omits_context_block_when_not_given():
+    """The fresh-turn router call site passes no prior_context at all —
+    its prompt must stay exactly as before, unchanged."""
+    captured = {}
+
+    def _fake_chat(tier, sys_prompt, user_prompt, workspace_id=1):
+        captured["user_prompt"] = user_prompt
+        return '{"classification": "not_quote"}', 10, 5
+
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=_fake_chat):
+        result = _llm_classify_is_cpq_question("what's the weather", workspace_id=1)
+    assert result is False
+    assert "RECENT CONVERSATION" not in captured["user_prompt"]

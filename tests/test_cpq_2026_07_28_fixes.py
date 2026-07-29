@@ -489,6 +489,56 @@ def test_pending_change_no_value_compound_decline_with_replacement_resolves_to_v
     assert resp["session_data"]["filled"].get("priceTier_astro") == "Premium"
 
 
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — 2 more
+# review findings on this same flow.
+
+def test_pending_change_no_value_prefer_over_resolves_to_wanted_value(monkeypatch):
+    """"Prefer Premium over Standard" must resolve to Premium, not the
+    rejected value — live-confirmed this previously resolved to Standard."""
+    _rules_setup(monkeypatch)
+    tier = _attr(1, "priceTier_astro", "Price Tier", options=_opt("Standard", "Premium"))
+    attrs = [tier]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"priceTier_astro": "Standard"},
+                         display_filled={"priceTier_astro": "Standard"},
+                         pending_change_no_value_vn="priceTier_astro",
+                         country="United States", status="configuring", turn=3)
+    req = AskRequest(question="prefer Premium over Standard",
+                      workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert resp["session_data"]["filled"].get("priceTier_astro") == "Premium"
+
+
+def test_pending_change_no_value_decline_survives_constraint_engine_failure(monkeypatch):
+    """A pure "I don't want to change it" must remain a harmless no-op even
+    if constraint recomputation itself raises — it must never crash the
+    turn just because the rule engine is unhappy about something unrelated."""
+    _rules_setup(monkeypatch)
+    hw = _attr(1, "hWVersion_astro", "Hardware Version", options=_opt("H1", "H45"))
+    attrs = [hw]
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+
+    def _raises(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(api._cpq_engine, "apply_constraint_rules", _raises)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"hWVersion_astro": "H1"},
+                         display_filled={"hWVersion_astro": "H1"},
+                         pending_change_no_value_vn="hWVersion_astro",
+                         country="United States", status="configuring", turn=3)
+    req = AskRequest(question="I don't want to change hardware version",
+                      workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert resp["tools_called"] == ["cpq_change_declined()"]
+    assert resp["session_data"]["filled"].get("hWVersion_astro") == "H1"
+
+
 def test_pending_change_no_value_retry_keeps_constrained_option_scope(monkeypatch):
     """After a failed-match retry, the re-shown option list must stay
     scoped to the SAME constrained set the original "which value?" ask
@@ -659,6 +709,64 @@ def test_confirm_auto_clears_stale_multi_select_value(monkeypatch):
         "stale multi-select value must be cleared from filled_multi"
     )
     assert resp["session_data"]["pending_variables"] == ["carrierSel_astro"]
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
+# finding: two active constraints can legitimately intersect to an EMPTY
+# allowed set (a genuine rule conflict) — auto-clearing and re-asking with
+# constrained_item_values=[] produced an unanswerable "Please provide a
+# value" loop, since no reply could ever match zero allowed options.
+
+def test_confirm_reports_rule_conflict_instead_of_unanswerable_reask(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+
+    family = _attr(1, "familyAstro", "Family", options=_opt("APX_NEXT", "APX_LEGACY"))
+    region = _attr(2, "regionAstro", "Region", options=_opt("US", "EU"))
+    hw = _attr(3, "hWVersion_astro", "Hardware Version", options=_opt("H1", "H45"))
+    attrs = [family, region, hw]
+    # Two rules that, both active at once, intersect to an empty allowed
+    # set for hWVersion_astro — a genuine conflict, not a fixable stale value.
+    con_rules = [
+        ConstraintRule(
+            rule_name="family scopes hw to H1",
+            condition_attr_id=1, condition_value="APX_NEXT",
+            target_attr_id=3, allowed_values=["H1"],
+        ),
+        ConstraintRule(
+            rule_name="region scopes hw to H45",
+            condition_attr_id=2, condition_value="EU",
+            target_attr_id=3, allowed_values=["H45"],
+        ),
+    ]
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], con_rules))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom",
+                         filled={"familyAstro": "APX_NEXT", "regionAstro": "EU",
+                                 "hWVersion_astro": "H1"},
+                         display_filled={"familyAstro": "APX_NEXT", "regionAstro": "EU",
+                                          "hWVersion_astro": "H1"},
+                         filled_source={"familyAstro": "user", "regionAstro": "user",
+                                        "hWVersion_astro": "auto"},
+                         country="United States", status="awaiting_approval", turn=4)
+    req = AskRequest(question="confirm", workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert resp["cpq_payload"] is None
+    assert resp["tools_called"] == ["cpq_rule_conflict()"], (
+        "an empty constraint intersection must be reported as a conflict, "
+        "not routed into the normal auto-clear-and-reask flow"
+    )
+    assert "conflict" in resp["answer"].lower()
+    # Nothing should be mutated — there's no productive value to clear to.
+    assert resp["session_data"]["filled"].get("hWVersion_astro") == "H1"
+    assert resp["session_data"]["status"] == "awaiting_approval"
 
 
 # ── B2. Mid-session product/attribute change ────────────────────────────
