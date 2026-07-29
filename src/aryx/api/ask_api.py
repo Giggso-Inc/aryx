@@ -5323,11 +5323,34 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     )
                     # §12 — a multi-select's value lives in filled_multi,
                     # not filled; popping the wrong dict left it untouched.
+                    # §17 review finding: popping the ENTIRE filled_multi
+                    # entry discarded every still-valid selection alongside
+                    # the invalid one(s) — a customer with 5 valid carrier
+                    # selections and 1 now-invalid one lost all 5. `_v.
+                    # current_value` (bom_gate.py) already isolates only the
+                    # invalid item(s); keep everything else instead of
+                    # wiping the whole key.
                     if _v.attr.select_type == "multi":
-                        session.filled_multi.pop(_vn, None)
+                        _kept = [
+                            iv for iv in session.filled_multi.get(_vn, [])
+                            if iv in _v.allowed
+                        ]
+                        if _kept:
+                            session.filled_multi[_vn] = _kept
+                            session.display_filled[_vn] = ", ".join(
+                                next(
+                                    (o.display_name for o in _v.attr.options
+                                     if o.item_value == iv),
+                                    iv,
+                                )
+                                for iv in _kept
+                            )
+                        else:
+                            session.filled_multi.pop(_vn, None)
+                            session.display_filled.pop(_vn, None)
                     else:
                         session.filled.pop(_vn, None)
-                    session.display_filled.pop(_vn, None)
+                        session.display_filled.pop(_vn, None)
                     session.filled_source.pop(_vn, None)
                     _stale_vns.append(_vn)
                 session.pending_variables = _stale_vns + [

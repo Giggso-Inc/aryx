@@ -898,3 +898,52 @@ proceed regardless of the rule engine's health.
 without mutating state, "prefer/rather...over/than" resolves to the
 wanted value, and decline survives a forced constraint-engine exception.
 Full combined suite run pending at time of writing.
+
+---
+
+## 16. FedRAMP (#6) — no longer inconclusive. Real mechanism found; fix not yet implemented.
+
+The earlier investigation concluded "no rule sets this attribute's Yes/No
+value via script — only hide/show." That conclusion was **wrong** —
+apparently because it only checked script-backed rules. A live query
+against the real ingested catalog (workspace 3, `aSTRO25_bom`, via
+`GraphReader('redis://falkordb:6379', graph='aryx_ws_3')` +
+`CpqEngine.load_product_config`/`load_recommendation_and_constraint_rules`
+run directly inside the running container) found plain declarative
+recommendation rules that DO set this value:
+
+- **"Set NO for Is FedRAMP High Baseline required?"** — condition
+  `isProvisioningRequiredInCloudEnv_astro == "YES"` → recommends `NO`.
+- **"Default No Is fedramp high baseline required"** — unconditional
+  (`condition_attr_id=0`) → recommends `NO`.
+- **"Associated Rec Rule: Hide FedRamp Required for US FED customer Only
+  (Molokai)"** — condition `systemEnhancementFeatureType_astro ==
+  "RADIO FED TA FCC TRIGGER"` → recommends `NO`.
+
+### 16.1 Root-cause hypothesis, evidence-backed but not turn-traced
+
+`isFedRampRequired_astro`'s own options list has `YES` at `order=1`, `NO`
+at `order=2`. `CpqEngine.auto_fill`'s own docstring
+(`engine.py:3974-3987`) documents an **already-known bug class**: if a
+recommendation's driving attribute isn't filled yet at the moment THIS
+attribute is auto-filled, the guard meant to catch "condition already
+satisfied" can't fire, so first-by-order picks the first option instead —
+and since neither `auto_fill` nor `apply_recommendation_rules` ever
+revisits an attribute already in `filled`, that choice is permanent. The
+docstring cites a near-identical historical case already fixed for a
+DIFFERENT attribute (`hWVersion_astro`'s region=NA recommendation losing
+this exact race). The working hypothesis: `isProvisioningRequiredInCloudEnv_astro`
+(or `systemEnhancementFeatureType_astro`) isn't filled yet when
+`isFedRampRequired_astro` is first auto-filled → first-by-order locks in
+`YES` → a later turn's driving-attribute resolution can't undo it via the
+normal recommendation path, but something (unconfirmed which mechanism)
+still produced the later "No" observation.
+
+### 16.2 Not yet fixed — needs one more confirmation step
+
+Before changing any code: confirm whether `isFedRampRequired_astro` is a
+member of the `governed_ids`/`rule_governed_ids` sets `auto_fill`'s
+step-3/step-5 guard checks, and trace the actual turn-by-turn fill order
+of `isProvisioningRequiredInCloudEnv_astro` relative to this attribute in
+a live session. This is now a scoped, evidence-backed investigation
+rather than a dead end — the previous "inconclusive" status is retired.

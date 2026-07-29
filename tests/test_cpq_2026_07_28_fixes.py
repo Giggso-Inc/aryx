@@ -671,9 +671,10 @@ def test_confirm_auto_clear_pushes_snapshot_before_mutating(monkeypatch):
     )
 
 
-def test_confirm_auto_clears_stale_multi_select_value(monkeypatch):
-    """A multi-select attr's stale value must be cleared from filled_multi
-    (not silently left in place because the code only checked filled)."""
+def test_confirm_auto_clears_stale_multi_select_value_when_all_invalid(monkeypatch):
+    """A multi-select attr whose ENTIRE selection is now invalid must be
+    cleared from filled_multi (not silently left in place because the
+    code only checked filled)."""
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
@@ -687,7 +688,7 @@ def test_confirm_auto_clears_stale_multi_select_value(monkeypatch):
     con_rule = ConstraintRule(
         rule_name="scope carrier to family",
         condition_attr_id=1, condition_value="APX_NEXT",
-        target_attr_id=2, allowed_values=["VZW"],
+        target_attr_id=2, allowed_values=["TMO"],
     )
     monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
                          lambda *a, **k: ([], [con_rule]))
@@ -706,9 +707,59 @@ def test_confirm_auto_clears_stale_multi_select_value(monkeypatch):
     assert resp["cpq_payload"] is None
     assert resp["tools_called"] == ["cpq_stale_constraint_reask()"]
     assert resp["session_data"]["filled_multi"].get("carrierSel_astro") is None, (
-        "stale multi-select value must be cleared from filled_multi"
+        "when NOTHING in the selection is still valid, the whole key must clear"
     )
     assert resp["session_data"]["pending_variables"] == ["carrierSel_astro"]
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §17 — review
+# finding: clearing the ENTIRE filled_multi entry discarded every still-
+# valid selection alongside the invalid one(s) — a customer with 5 valid
+# carrier selections and 1 now-invalid one lost all 5.
+
+def test_confirm_auto_clear_keeps_still_valid_multi_select_values(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+
+    family = _attr(1, "familyAstro", "Family", options=_opt("APX_NEXT", "APX_LEGACY"))
+    valid_values = ["V1", "V2", "V3", "V4", "V5"]
+    carrier = _attr(
+        2, "carrierSel_astro", "Carrier Selection",
+        options=_opt(*valid_values, "STALE"), select_type="multi",
+    )
+    attrs = [family, carrier]
+    con_rule = ConstraintRule(
+        rule_name="scope carrier to family",
+        condition_attr_id=1, condition_value="APX_NEXT",
+        target_attr_id=2, allowed_values=valid_values,
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], [con_rule]))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "aSTRO25_bom"))
+
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom",
+        filled={"familyAstro": "APX_NEXT"},
+        display_filled={"familyAstro": "APX_NEXT",
+                         "carrierSel_astro": ", ".join([*valid_values, "STALE"])},
+        filled_multi={"carrierSel_astro": [*valid_values, "STALE"]},
+        filled_source={"familyAstro": "user", "carrierSel_astro": "auto"},
+        country="United States", status="awaiting_approval", turn=4,
+    )
+    req = AskRequest(question="confirm", workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp
+    assert resp["cpq_payload"] is None
+    assert resp["tools_called"] == ["cpq_stale_constraint_reask()"]
+    assert resp["session_data"]["filled_multi"].get("carrierSel_astro") == valid_values, (
+        "the 5 still-valid selections must survive — only the invalid one is cleared"
+    )
+    assert resp["session_data"]["pending_variables"] == ["carrierSel_astro"]
+    assert "STALE" in resp["answer"], "the re-ask must name the specific invalid item"
 
 
 # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
