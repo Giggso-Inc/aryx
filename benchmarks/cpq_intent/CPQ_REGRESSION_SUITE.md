@@ -232,6 +232,58 @@ A applied immediately; B asked next from the queue.
 |------|------|--------|
 | 1 | change hardware version and extraAttr1 extraAttr2 extraAttr3 extraAttr4 extraAttr5 extraAttr6 extraAttr7 extraAttr8 extraAttr9 extraAttr10 extraAttr11 | pending_no_value;pending_queue;queue_len=10;overflow;question;not_nudge;invariant |
 
+### D07 — reversed-cue replacement applies wanted value
+After a valueless change ask, a reversed phrasing ("instead of Standard,
+prefer Premium") must lock **Premium**, never the rejected **Standard**.
+Offline handler uses `_extract_replacement_clause` (PROMPT 6 design a).
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | change price tier | pending_no_value;vn=priceTier_astro;question;not_nudge;invariant |
+| 2 | instead of Standard, prefer Premium | filled=priceTier_astro:Premium;not_nudge;invariant |
+
+### D08 — disambiguate → mismatch → scoped re-ask → resolve
+Constrained product list (family scope) must survive a nonsense reply;
+never fall through to the catalog-wide 325-option Product prompt.
+(Offline uses a non-matching token on turn 2 so the re-ask path is forced;
+fuzzy "r7ex"→R7EX is covered by unit tests.)
+
+| turn | user | expect |
+|------|------|--------|
+| 1 | which product from the SL3500e list | pending_scope;question;not_nudge;invariant |
+| 2 | zzznomatch999 | pending_scope;scope_reask;not_nudge;invariant |
+| 3 | SL3500e R7EX | filled=productSelectionProduct_all:SL3500e R7EX;scope_clear;not_nudge |
+
+---
+
+## Reversed-cue replacement pins (append-only N-cases)
+
+Behavioral pins for PROMPT 6. Offline **unit** coverage is
+`tests/test_cpq_replacement_clause.py` (wanted never contains rejected;
+pending path applies Premium). These N-rows keep the phrasings in the
+suite so reviews/telemetry can cite them; offline single-turn checks
+only require a known intent category (`change_request`) + `none` gate.
+
+| id | question | expected_intent | expected_vn | check |
+|----|----------|-----------------|-------------|-------|
+| N53 | instead of Standard, prefer Premium | change_request | - | none |
+| N54 | rather than Standard, use Premium | change_request | - | none |
+| N55 | not Standard, Premium please | change_request | - | none |
+| N56 | prefer Premium over Standard | change_request | - | none |
+| N57 | use Premium instead of Standard | change_request | - | none |
+
+## Pending-scope + pet-name pins (PROMPT 7, append-only)
+
+Partial-word in scope (P) and pet-name / typo mentions (N). Offline unit
+depth: `tests/test_cpq_pending_scope.py`. D08 covers the multi-turn path.
+
+| id | question | expected_intent | expected_vn | check |
+|----|----------|-----------------|-------------|-------|
+| P56 | Federal | change_request | - | none |
+| N58 | Asr | change_request | - | none |
+| N59 | asty | change_request | - | none |
+| N60 | r7ex | change_request | - | none |
+
 ---
 
 ## Live-mode scoring (`--live`)

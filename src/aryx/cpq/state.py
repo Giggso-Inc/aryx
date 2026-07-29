@@ -456,6 +456,24 @@ class CpqSession:
     # THIS catalog (Amendment 5 Finding 3) and asking for them is pure
     # noise — but only when resolved through THIS specific, verified path.
     model_leaf_resolved: bool = False
+
+    # PROMPT 7 — durable candidate-list scope (flat, session-echoed).
+    # When the engine shows a constrained option list / family
+    # disambiguation / "did you mean" set, the NEXT reply is matched
+    # against pending_scope_candidates FIRST (exact → partial → fuzzy).
+    # Without this, a mismatch re-prompt called next_question_prompt
+    # unconstrained and dumped the catalog-wide 325-option Product list
+    # (live: "sl3500e" → 70 codes → "r7ex" → full catalog). Mirrors
+    # pending_clarify / pending_change_collision memory patterns.
+    # kind: family_disambiguation | product_options | attr_options |
+    #       product_suggestions | ""
+    pending_scope_kind: str = ""
+    pending_scope_candidates: list[str] = field(default_factory=list)
+    pending_scope_origin_question: str = ""
+    pending_scope_asked_turn: int = 0
+    pending_scope_misses: int = 0
+    # variable_name when scope is attr/product options; else ""
+    pending_scope_attr_vn: str = ""
     # The ORIGINAL message that first anchored session.product_name (e.g.
     # "I want to configure CommandCentral Aware 2024 for a customer in
     # the United States") — captured once, on the anchoring turn, so
