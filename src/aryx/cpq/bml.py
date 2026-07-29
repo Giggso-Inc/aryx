@@ -215,7 +215,24 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     Supports single comparisons and chains joined by a uniform AND or OR,
     each optionally wrapped in its own parens. The first tuple's joiner is ''.
     """
-    cond = cond.strip()
+    # Strip a redundant OUTER wrapping layer around the WHOLE chain before
+    # splitting on AND/OR (2026-07-28) — live-confirmed real BML script:
+    # `if( ((A) OR (B) OR ... OR (H)) ){` (a real 8-clause "Hide Housing
+    # attribute if not XE model" condition). Splitting on OR first (the
+    # prior order) breaks this into "((A)", "(B)", ..., "(H))" — the
+    # first/last fragments are individually unbalanced, so per-fragment
+    # _strip_wrapping_parens can't repair them and the whole condition was
+    # silently rejected as unparseable, forcing this hiding rule to Tier-2
+    # (which returns unknown when the LLM fallback is disabled, and
+    # apply_hiding_rules' safe default then leaves the target VISIBLE when
+    # it should have been hidden). _strip_wrapping_parens already handles
+    # a genuinely-fully-wrapped string correctly (only strips when the
+    # leading "(" closes at the very last character) — it just needed to
+    # run on the whole cond once before the split, not only per-fragment
+    # after. Safe for the existing per-clause-only-wrapped shape
+    # ("(x==A) OR (y==B)", no full outer wrap) too: that shape's outer
+    # "(" closes well before the string's end, so this strips nothing.
+    cond = _strip_wrapping_parens(cond.strip())
     for joiner, sep in (("AND", re.compile(r'\bAND\b|&&', re.IGNORECASE)),
                         ("OR", re.compile(r'\bOR\b|\|\|', re.IGNORECASE))):
         parts = sep.split(cond)

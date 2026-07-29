@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from aryx.api.ask_api import _llm_split_compound_change_and_question
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
     build_candidate_bundles,
@@ -140,3 +141,71 @@ def test_t10_semantic_pending_answer_resolves_via_index_not_literal_text():
     display, item_value = resolve_value_from_ref(quarantined, bundles)
     assert item_value == "standard"
     assert display == "Standard Tier"
+
+
+# ── docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §7 ────────────────
+# The residual risk flagged when that fix landed: could the LLM-first split
+# ever mis-classify a genuine MULTI-CHANGE message ("change X and change Y",
+# no separate question at all — already correctly owned by
+# CHANGE_REQUESTS_MULTI) as a change+question compound, discarding half of it
+# into a nonsense Q&A answer? These tests pin the safety net: the function's
+# own prompt instructs the model not to split that case, and its validator
+# fails closed (returns None) whenever the model's JSON doesn't cleanly
+# provide BOTH a non-empty change_text and a non-empty question_text.
+
+def test_compound_split_returns_none_for_multi_change_not_compound():
+    """Multi-change message ("change hardware version and system key") —
+    the model correctly reports is_compound=false (both are changes, no
+    separate question) — must NOT be split."""
+    fake_reply = '{"is_compound": false, "change_text": "", "question_text": ""}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_compound_change_and_question(
+            "change hardware version and system key", workspace_id=1,
+        )
+    assert result is None
+
+
+def test_compound_split_resolves_genuine_change_and_question():
+    """Genuine compound message DOES split into two self-contained
+    requests when the model reports is_compound=true with both fields."""
+    fake_reply = (
+        '{"is_compound": true, '
+        '"change_text": "make product APX NEXT XE (4G LTE+5G)", '
+        '"question_text": "what is the carrier being selected"}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_compound_change_and_question(
+            "make product as APX NEXT XE (4G LTE+5G) and what is the "
+            "carrier being selected",
+            workspace_id=1,
+        )
+    assert result == (
+        "make product APX NEXT XE (4G LTE+5G)",
+        "what is the carrier being selected",
+    )
+
+
+def test_compound_split_fails_closed_on_missing_change_text():
+    """is_compound=true but change_text empty — must fail closed (None),
+    never split with a blank half."""
+    fake_reply = (
+        '{"is_compound": true, "change_text": "", '
+        '"question_text": "what is the carrier being selected"}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_compound_change_and_question(
+            "make product as X and what is the carrier being selected",
+            workspace_id=1,
+        )
+    assert result is None
+
+
+def test_compound_split_fails_closed_on_malformed_json():
+    """LLM call returns garbage — must fail closed (None), never crash
+    the turn."""
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json", 1, 1)):
+        result = _llm_split_compound_change_and_question(
+            "make product as X and what is the carrier being selected",
+            workspace_id=1,
+        )
+    assert result is None

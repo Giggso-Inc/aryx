@@ -291,3 +291,117 @@ def test_mutating_categories_cover_change_family():
     assert IntentCategory.CHANGE_REQUEST in MUTATING_CATEGORIES
     assert IntentCategory.ATTR_CLEAR in MUTATING_CATEGORIES
     assert IntentCategory.QA_QUESTION not in MUTATING_CATEGORIES
+
+
+# ── docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §8 ────────────────
+# Live bug: "make it ATT/FirstNet" right after asking "what are the other
+# options for Wireless Carrier" kept re-triggering the disambiguation
+# clarify, even though the customer had just named the attribute by asking
+# about it. Root cause: two sibling attrs (Wireless Carrier, Carrier
+# Selection) both genuinely accept "ATT/FirstNet" as a valid option, so
+# deterministic detectors can never disambiguate a bare-value reply — the
+# only usable signal is conversational recency (session.last_qa_variable).
+
+def test_classify_dispatch_when_last_qa_variable_corroborates():
+    """Deterministic side finds nothing at all (bare-value reply names no
+    attribute) but the LLM confidently names the attribute the customer
+    was JUST asking about — last_qa_variable must corroborate and dispatch,
+    not force a clarify."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.filled = {
+        "wirelessCarrier_astro": "LTE_NO_SVC",
+        "carrierSelectionMultiSelect_astro": "LTE_NO_SVC",
+    }
+    session.last_qa_variable = "wirelessCarrier_astro"
+    wireless = _attr(
+        "wirelessCarrier_astro", "Wireless Carrier",
+        [("LTE_NO_SVC", "LTE CAPABILITY NO SERVICE"), ("ATT_FN", "ATT/FirstNet")],
+    )
+    carrier_sel = _attr(
+        "carrierSelectionMultiSelect_astro", "Carrier Selection",
+        [("LTE_NO_SVC", "LTE CAPABILITY NO SERVICE"), ("ATT_FN", "ATT/FirstNet")],
+    )
+    attrs = [wireless, carrier_sel]
+    engine = MagicMock()
+    # Bare-value reply — deterministic detectors find NOTHING (no attribute
+    # name/label mentioned in "make it ATT/FirstNet").
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"change_request","confidence":"high",'
+        '"variable_name":"wirelessCarrier_astro","value_ref":1,'
+        '"evidence_span":"make it ATT/FirstNet",'
+        '"rationale":"customer just asked about this attribute"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "make it ATT/FirstNet", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "dispatch"
+    assert decision.result is not None
+    assert decision.result.variable_name == "wirelessCarrier_astro"
+
+
+def test_classify_still_clarifies_when_last_qa_variable_points_elsewhere():
+    """last_qa_variable must only corroborate ITS OWN attribute — if the LLM
+    names a DIFFERENT attribute than the one last discussed, and the
+    deterministic side still finds nothing, the disagreement guard must
+    still fire (no blanket bypass of the agreement check)."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.filled = {
+        "wirelessCarrier_astro": "LTE_NO_SVC",
+        "carrierSelectionMultiSelect_astro": "LTE_NO_SVC",
+    }
+    session.last_qa_variable = "wirelessCarrier_astro"
+    wireless = _attr(
+        "wirelessCarrier_astro", "Wireless Carrier",
+        [("LTE_NO_SVC", "LTE CAPABILITY NO SERVICE"), ("ATT_FN", "ATT/FirstNet")],
+    )
+    carrier_sel = _attr(
+        "carrierSelectionMultiSelect_astro", "Carrier Selection",
+        [("LTE_NO_SVC", "LTE CAPABILITY NO SERVICE"), ("ATT_FN", "ATT/FirstNet")],
+    )
+    attrs = [wireless, carrier_sel]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"change_request","confidence":"high",'
+        '"variable_name":"carrierSelectionMultiSelect_astro","value_ref":1,'
+        '"evidence_span":"make it ATT/FirstNet","rationale":"llm only"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "make it ATT/FirstNet", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "clarify"
+    assert decision.reason == "mutating_disagreement"
+
+
+def test_build_candidates_boosts_last_qa_variable():
+    session = CpqSession()
+    session.last_qa_variable = "wirelessCarrier_astro"
+    attrs = [
+        _attr("noise_a", "Noise A"),
+        _attr("wirelessCarrier_astro", "Wireless Carrier", [("ATT_FN", "ATT/FirstNet")]),
+    ]
+    bundles = build_candidate_bundles(attrs, session, "make it ATT/FirstNet")
+    assert bundles[0].attr.variable_name == "wirelessCarrier_astro"
