@@ -651,6 +651,7 @@ add({
     "Check Observability for LLM errors and job stage status",
     "If BOM failed: search bom_gate — click code column → bom_gate.py",
     "If multi-change incomplete: search cpq_intent_dropped → intent_queue.py",
+    "If change applied the rejected option (Standard not Premium): grep cpq_replacement → replacement_clause.py",
   ],
   children: ["log_stdout", "log_raven", "log_cpq", "log_ui", "log_regression"],
   plugs: ["cpq", "ask", "ingest", "ops"],
@@ -670,6 +671,7 @@ add({
       { p: "P2", pattern: "stage=failed / checkpoint", meaning: "Ingest stage failed", action: "Resume or re-run from checkpoint", files: ["src/aryx/pipeline/stages.py", "src/aryx/api/jobs_api.py", "src/aryx/store/checkpoint_store.py"] },
       { p: "P3", pattern: "LLM error in llm_recent", meaning: "Provider failure", action: "Check keys/quotas; retry", files: ["src/aryx/llm_runtime.py", "src/aryx/api/observability_api.py"] },
       { p: "P3", pattern: "cpq_intent_gateway llm call failed", meaning: "Intent agent down", action: "Escape hatch path", files: ["src/aryx/cpq/intent_gateway.py"] },
+      { p: "P3", pattern: "cpq_replacement:", meaning: "Wanted/rejected split on change apply", action: "If wrong option locked, open replacement_clause.py", files: ["src/aryx/cpq/replacement_clause.py", "src/aryx/api/ask_api.py"] },
       { p: "P4", pattern: "[run_id=…] on cpq lines", meaning: "Quote correlation tag", action: "Grep full lifecycle", files: ["src/aryx/cpq/logging_context.py", "src/aryx/cpq/state.py"] },
     ],
   },
@@ -1037,9 +1039,9 @@ add({
     { n: "7", l: "Approve", d: "user confirm" },
     { n: "8", l: "BOM", d: "bom_gate → payload" },
   ],
-  children: ["cpq_engine", "cpq_intent", "cpq_guards", "cpq_state"],
+  children: ["cpq_engine", "cpq_intent", "cpq_guards", "cpq_state", "cpq_replacement"],
   plugs: ["ask", "graph", "postgres", "logging", "agents"],
-  callout: "CPQ is not a separate product binary — it is a conversation mode of Ask over the same workspace graph that holds the product catalog.",
+  callout: "CPQ is not a separate product binary — it is a conversation mode of Ask over the same workspace graph that holds the product catalog. Replacement phrasings (forward + reversed) strip the rejected option before apply_answer — see cpq_replacement.",
   usesPatterns: [
     { pattern: "Hub-and-spoke", patternId: "pattern_hub_spoke", how: "ask_api hub; engine/intent/guards are spokes", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/engine.py"] },
     { pattern: "Augmented LLM", patternId: "pattern_augmented", how: "Intent classify + optional BML LLM tiers", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/cpq/bml.py"] },
@@ -1050,6 +1052,7 @@ add({
       { p: "P1", pattern: "bom_gate", meaning: "Payload blocked", action: "Fix filled/provenance; never force", files: ["src/aryx/cpq/bom_gate.py", "src/aryx/cpq/engine.py", "src/aryx/api/ask_api.py"] },
       { p: "P2", pattern: "cpq_intent_dropped", meaning: "Multi-change lost a target", action: "Queue bug; regression must fail", files: ["src/aryx/cpq/intent_queue.py", "src/aryx/api/ask_api.py"] },
       { p: "P2", pattern: "cpq_orphan_question", meaning: "Asked without pending", action: "State machine bug", files: ["src/aryx/cpq/session_guard.py", "src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "cpq_replacement:", meaning: "Wanted/rejected clause extracted on change apply", action: "Confirm filled holds wanted, not rejected", files: ["src/aryx/cpq/replacement_clause.py", "src/aryx/api/ask_api.py"] },
       { p: "P3", pattern: "cpq_session_guard: undo", meaning: "User restored snapshot", action: "Expected", files: ["src/aryx/cpq/session_guard.py"] },
     ],
   },
@@ -1061,6 +1064,12 @@ add({
       outputs: ["pending attrs", "constrained options", "BOM dict"],
       logs: ["rule-consistency", "array-grid", "detector outcomes"],
       sop: "Never call build_payload without bom_gate in production path.",
+    }),
+    F("src/aryx/cpq/replacement_clause.py", {
+      brief: "Wanted vs rejected extraction",
+      purpose: "Contrast-first + cue path so apply_answer never sees the rejected value.",
+      logs: ["cpq_replacement: (logged at cascade site)"],
+      sop: "Forward and reversed English forms; design (a) deterministic; (b) gateway piggyback is follow-up.",
     }),
     F("src/aryx/cpq/rdb.py", {
       brief: "Catalog SQL access",
@@ -1138,6 +1147,61 @@ add({
     F("src/aryx/cpq/telemetry.py", {
       brief: "Divergence telemetry",
       purpose: "Track LLM vs deterministic disagreement rates.",
+    }),
+  ],
+});
+
+add({
+  id: "cpq_replacement", title: "Replacement clause (wanted vs rejected)", kind: "module", tone: "cpq",
+  blurb: "Forward + reversed English change phrasings.",
+  summary: "When the user replaces a value (\"use Premium instead of Standard\" or the reverse \"instead of Standard, prefer Premium\"), apply_answer must never fuzzy-match the rejected option. extract_replacement_clause returns (wanted, rejected); cascade and the pending_change_no_value path pass only the wanted clause and exclude the rejected option via constrained_item_values. Design (a) deterministic patterns now; design (b) intent-gateway piggyback is the follow-up once one LLM call/turn already runs.",
+  flowSteps: [
+    { n: "1", l: "Utterance", d: "change / which-value reply" },
+    { n: "2", l: "Contrast-first?", d: "instead of / rather than / not" },
+    { n: "3", l: "Or cue path", d: "use|prefer|rather + cut" },
+    { n: "4", l: "wanted + rejected", d: "tuple" },
+    { n: "5", l: "apply_answer", d: "wanted only + exclude rejected" },
+    { n: "6", l: "filled", d: "wanted value locked" },
+  ],
+  tasks: [
+    "On wrong value applied after a replacement phrase: grep cpq_replacement and re-check extract",
+    "Add new English mirror forms only with unit + D07-style regression coverage",
+    "Do not pass full raw question into apply_answer when a cue/contrast form is present",
+  ],
+  children: [],
+  plugs: ["cpq", "ask", "logging", "log_regression"],
+  logs: {
+    where: ["aryx.api.ask_api logger — line prefix cpq_replacement:", "tests/test_cpq_replacement_clause.py", "D07 + N53–N57 in CPQ_REGRESSION_SUITE.md"],
+    critical: [
+      { p: "P2", pattern: "filled holds rejected option after replacement phrase", meaning: "Extractor/cascade regression", action: "Run test_cpq_replacement_clause + D07; fix extract patterns", files: ["src/aryx/cpq/replacement_clause.py", "src/aryx/api/ask_api.py", "tests/test_cpq_replacement_clause.py"] },
+      { p: "P3", pattern: "cpq_replacement: wanted=… rejected=…", meaning: "Clause split logged at cascade", action: "Confirm apply_hint is wanted only", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/replacement_clause.py"] },
+    ],
+  },
+  callout: "Option-level rejection uses constrained_item_values — not session.negated_vns (that set is for attributes suppressed by exclude-any phrases). Pattern ≠ agent: this is deterministic hub logic under ask_api, not a free LLM tool call.",
+  files: [
+    F("src/aryx/cpq/replacement_clause.py", {
+      brief: "Pure extractor (no FastAPI)",
+      purpose: "extract_replacement_clause(text) → (wanted, rejected). Contrast-first before leftmost cue; of-remnant belt-and-braces.",
+      inputs: ["user utterance / new_value_hint"],
+      outputs: ["wanted clause string | None", "rejected clause string | None"],
+      called_by: ["ask_api._extract_replacement_clause", "run_regression D07 offline"],
+      calls: [],
+      logs: ["(logging is at cascade call site)"],
+      sop: "Keep free of engine/FastAPI imports so offline regression can load the module.",
+    }),
+    F("src/aryx/api/ask_api.py", {
+      brief: "Cascade + pending-value wiring",
+      purpose: "_handle_cascade and pending_change_no_value call site apply wanted-only + constrain-excluding-rejected.",
+      logs: ["cpq_replacement: attr= wanted= rejected= apply_hint="],
+      sop: "Every cascade entry point benefits — not only the pending-value path.",
+    }),
+    F("tests/test_cpq_replacement_clause.py", {
+      brief: "Unit + pending integration",
+      purpose: "Forward/reversed cases; property: wanted never contains rejected; pcnv → Premium.",
+    }),
+    F("benchmarks/cpq_intent/CPQ_REGRESSION_SUITE.md", {
+      brief: "N53–N57 + D07",
+      purpose: "Documented pins and offline dialogue for reversed-cue apply.",
     }),
   ],
 });
@@ -1514,18 +1578,29 @@ add({
 add({
   id: "log_regression", title: "Regression Gates as Logs", kind: "log", tone: "log",
   blurb: "Push-time SOP enforcement.",
-  summary: "make cpq-regression runs golden bench + markdown suite + dialogues. Exit 0 pass; 1 case fail; 2 parse; 3 dropped intent. Pre-push prints CPQ-REG-00x class. These are policy logs for releases.",
+  summary: "make cpq-regression runs golden bench + markdown suite + dialogues (incl. D07 reversed-cue). Exit 0 pass; 1 case fail; 2 parse; 3 dropped intent. Pre-push prints CPQ-REG-00x class. N53–N57 pin replacement phrasings; unit depth is tests/test_cpq_replacement_clause.py.",
   children: [],
-  plugs: ["ops", "cpq"],
+  plugs: ["ops", "cpq", "cpq_replacement"],
+  logs: {
+    where: ["make cpq-regression stdout", "CPQ-REG-001/002/003 lines"],
+    critical: [
+      { p: "P2", pattern: "D07 filled≠Premium", meaning: "Reversed replacement dialogue failed", action: "Check replacement_clause + run_regression D07 handler", files: ["src/aryx/cpq/replacement_clause.py", "benchmarks/cpq_intent/run_regression.py"] },
+      { p: "P3", pattern: "CPQ-REG-003 dropped intent", meaning: "Multi-target conservation failed", action: "Fix intent_queue; exit 3 blocks push", files: ["src/aryx/cpq/intent_queue.py"] },
+    ],
+  },
   files: [
     F("benchmarks/cpq_intent/run_regression.py", {
       brief: "Offline regression runner",
-      purpose: "Enforce P/N/D cases and conservation invariants.",
+      purpose: "Enforce P/N/D cases and conservation invariants; D07 uses extract_replacement_clause.",
       sop: "Never --no-verify push to skip without incident ticket.",
     }),
     F("benchmarks/cpq_intent/CPQ_REGRESSION_SUITE.md", {
       brief: "Case definitions",
-      purpose: "Source of truth for positive/negative/dialogue scripts.",
+      purpose: "Source of truth for positive/negative/dialogue scripts (N53–N57, D07).",
+    }),
+    F("tests/test_cpq_replacement_clause.py", {
+      brief: "Replacement unit suite",
+      purpose: "Enforces wanted-only clauses beyond the offline dialogue stub.",
     }),
   ],
 });
@@ -2039,7 +2114,7 @@ function buildRail() {
     { name: "Start", ids: ["root"] },
     { name: "Identity", ids: ["identity", "sso", "onboarding", "workspace"] },
     { name: "Data plane", ids: ["data_plane", "brief", "ingest", "er", "graph"] },
-    { name: "Intelligence", ids: ["intelligence", "ask", "cpq", "cpq_intent", "cpq_guards"] },
+    { name: "Intelligence", ids: ["intelligence", "ask", "cpq", "cpq_intent", "cpq_guards", "cpq_replacement"] },
     { name: "Agents", ids: ["agents", "pattern_augmented", "pattern_hub_spoke", "pattern_pipeline", "pattern_peer", "agent_internal", "agent_mcp", "agent_intent", "agent_dev_raven", "actions"] },
     { name: "Logs (critical)", ids: ["logging", "log_stdout", "log_raven", "log_cpq", "log_ui", "log_regression"] },
     { name: "Platform", ids: ["web_ui", "aryx_api", "postgres", "llm_broker", "ops"] },

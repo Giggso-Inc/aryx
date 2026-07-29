@@ -141,13 +141,14 @@
   <a href="#internal">9. Internal agents</a>
   <a href="#mcp">10. External MCP agents</a>
   <a href="#intent">11. Intent agent</a>
-  <a href="#dev">12. Dev multi-agent (Raven)</a>
+  <a href="#replacement">12. Replacement clause</a>
+  <a href="#dev">13. Dev multi-agent (Raven)</a>
   <div class="g">Ops</div>
-  <a href="#tools">13. Tool matrix</a>
-  <a href="#state">14. State &amp; memory</a>
-  <a href="#logs">15. Logs (critical)</a>
-  <a href="#sop">16. Operator SOP</a>
-  <a href="#anti">17. Anti-patterns</a>
+  <a href="#tools">14. Tool matrix</a>
+  <a href="#state">15. State &amp; memory</a>
+  <a href="#logs">16. Logs (critical)</a>
+  <a href="#sop">17. Operator SOP</a>
+  <a href="#anti">18. Anti-patterns</a>
   <div class="g">Nav</div>
   <a href="ARYX_EXPLORE.html">← Back to SOP Explorer</a>
   <a href="ARYX_SYSTEM_GUIDE.html">Linear system guide</a>
@@ -698,8 +699,81 @@ llm_first: LLM path executes (with escape hatch)</pre>
   → response + session_data</pre>
 </section>
 
+<section id="replacement">
+  <h2>12. Replacement clause (wanted vs rejected)</h2>
+  <p>
+    Deterministic hub logic under <code>ask_api</code> / cascade — <strong>not</strong> a free LLM tool call.
+    When the user replaces a catalog option, <code>apply_answer</code> must never fuzzy-match the
+    value they just rejected.
+  </p>
+  <div class="callout ok">
+    <strong>Design (a) now:</strong> pattern-first extractor in
+    <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/replacement_clause.py" target="_blank" rel="noopener">replacement_clause.py ↗</a>.
+    <strong>Design (b) follow-up:</strong> piggyback <code>rejected_value_ref</code> on the intent-gateway schema once that path is already one LLM call/turn.
+  </div>
+  <h3>12.1 Problem (reversed cue)</h3>
+  <p>
+    Cue words (<code>use|instead|prefer|rather</code>) overlap contrast phrases
+    (<code>instead of|rather than|not</code>). Taking the <em>leftmost</em> cue alone turns
+    “instead of Standard, prefer Premium” into a capture that still contains <strong>Standard</strong>,
+    so <code>apply_answer</code> can lock the rejected option.
+  </p>
+  <h3>12.2 Algorithm</h3>
+  <div class="flow-board">
+    <div class="flow-step"><div class="n">1</div><div class="l">Contrast-first</div><div class="d">instead of / rather than / not … → rejected, wanted</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">2</div><div class="l">Cue path</div><div class="d">use|prefer|… then cut at over/than/instead of/not</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">3</div><div class="l">of-remnant</div><div class="d">belt-and-braces if “instead” ate the cue</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="n">4</div><div class="l">apply</div><div class="d">wanted only + exclude rejected option</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Utterance</th><th>wanted</th><th>rejected</th></tr></thead>
+    <tbody>
+      <tr><td>use Premium instead of Standard</td><td>Premium</td><td>Standard</td></tr>
+      <tr><td>prefer Premium over Standard</td><td>Premium</td><td>Standard</td></tr>
+      <tr><td>instead of Standard, prefer Premium</td><td>Premium</td><td>Standard</td></tr>
+      <tr><td>rather than Standard, use Premium</td><td>Premium</td><td>Standard</td></tr>
+      <tr><td>not Standard, Premium please</td><td>Premium</td><td>Standard</td></tr>
+    </tbody>
+  </table>
+  <h3>12.3 Wiring</h3>
+  <table>
+    <thead><tr><th>Site</th><th>What happens</th><th>Code (open)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>_handle_cascade</code></td>
+        <td>Always extracts before apply; logs <code>cpq_replacement:</code>; excludes rejected via <code>constrained_item_values</code></td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a></td>
+      </tr>
+      <tr>
+        <td><code>pending_change_no_value</code></td>
+        <td>“Which value?” reply path: same extract + constrained set into cascade</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a></td>
+      </tr>
+      <tr>
+        <td>Pure module</td>
+        <td>No FastAPI/engine imports — offline regression can load it</td>
+        <td class="code-col"><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/replacement_clause.py" target="_blank" rel="noopener">replacement_clause.py ↗</a></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <strong>Note:</strong> rejected options use the <em>constrained-values</em> path.
+    <code>session.negated_vns</code> is for <em>attributes</em> suppressed by “exclude any X” — different concern.
+  </div>
+  <h3>12.4 Tests &amp; gates</h3>
+  <ul>
+    <li><a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/tests/test_cpq_replacement_clause.py" target="_blank" rel="noopener">tests/test_cpq_replacement_clause.py ↗</a> — unit + pending integration</li>
+    <li>Suite pins <strong>N53–N57</strong> and dialogue <strong>D07</strong> in <code>CPQ_REGRESSION_SUITE.md</code></li>
+    <li><code>make cpq-regression</code> must stay green (push gate)</li>
+  </ul>
+  <p>Interactive map: <a href="ARYX_EXPLORE.html#cpq_replacement">Explorer → Replacement clause</a>.</p>
+</section>
+
 <section id="dev">
-  <h2>12. Engineering multi-agent (Raven / Andie) — outer plane</h2>
+  <h2>13. Engineering multi-agent (Raven / Andie) — outer plane</h2>
   <p>Not customer runtime. Used to build/fix Aryx itself.</p>
   <table>
     <thead><tr><th>Role</th><th>Pattern</th><th>Notes</th></tr></thead>
@@ -724,7 +798,7 @@ llm_first: LLM path executes (with escape hatch)</pre>
 </section>
 
 <section id="tools">
-  <h2>13. Tool matrix (who may call what)</h2>
+  <h2>14. Tool matrix (who may call what)</h2>
   <table>
     <thead><tr><th>Caller</th><th>May call</th><th>Must not</th></tr></thead>
     <tbody>
@@ -739,7 +813,7 @@ llm_first: LLM path executes (with escape hatch)</pre>
 </section>
 
 <section id="state">
-  <h2>14. State &amp; memory models</h2>
+  <h2>15. State &amp; memory models</h2>
   <table>
     <thead><tr><th>Store</th><th>Used by</th><th>Lifetime</th><th>Notes</th></tr></thead>
     <tbody>
@@ -756,12 +830,12 @@ llm_first: LLM path executes (with escape hatch)</pre>
 </section>
 
 <section id="logs">
-  <h2>15. Logs — where, what, how to triage (critical)</h2>
+  <h2>16. Logs — where, what, how to triage (critical)</h2>
   <p>
     Every critical row has a <strong>Code</strong> link to the emitting module (GitHub — no source pasted here).
     Interactive drill with file SOP briefs: <a href="ARYX_EXPLORE.html#logging">Explorer → Logging</a>.
   </p>
-  <h3>15.1 Streams</h3>
+  <h3>16.1 Streams</h3>
   <table>
     <thead><tr><th>Stream</th><th>How to open</th><th>Contents</th><th>Code (open)</th></tr></thead>
     <tbody>
@@ -797,7 +871,7 @@ llm_first: LLM path executes (with escape hatch)</pre>
       </tr>
     </tbody>
   </table>
-  <h3>15.2 Agent-specific log patterns (with code links)</h3>
+  <h3>16.2 Agent-specific log patterns (with code links)</h3>
   <table>
     <thead><tr><th>Sev</th><th>Pattern</th><th>Agent</th><th>Meaning</th><th>Action</th><th>Code (open)</th></tr></thead>
     <tbody>
@@ -859,6 +933,13 @@ llm_first: LLM path executes (with escape hatch)</pre>
         </td>
       </tr>
       <tr>
+        <td>P3</td><td><code>cpq_replacement:</code></td><td>cascade hub</td><td>Wanted/rejected clause split on change apply</td><td>Confirm filled is wanted, not rejected</td>
+        <td class="code-col">
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/replacement_clause.py" target="_blank" rel="noopener">replacement_clause.py ↗</a>
+          <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/api/ask_api.py" target="_blank" rel="noopener">ask_api.py ↗</a>
+        </td>
+      </tr>
+      <tr>
         <td>P4</td><td><code>cpq_intent_gateway: dispatch</code></td><td>intent</td><td>Happy path</td><td>Trace with run_id</td>
         <td class="code-col">
           <a class="gh" href="https://github.com/Giggso-Inc/aryx/blob/dev-rv/src/aryx/cpq/intent_gateway.py" target="_blank" rel="noopener">intent_gateway.py ↗</a>
@@ -867,7 +948,7 @@ llm_first: LLM path executes (with escape hatch)</pre>
       </tr>
     </tbody>
   </table>
-  <h3>15.3 Correlation cheat-sheet</h3>
+  <h3>16.3 Correlation cheat-sheet</h3>
   <pre># Entire CPQ quote lifecycle
 grep 'run_id=&lt;SESSION_RUN_ID&gt;' api.log
 
@@ -882,7 +963,7 @@ grep 'job_id=&lt;ID&gt;\|stage=' api.log
 </section>
 
 <section id="sop">
-  <h2>16. Operator SOP — common scenarios</h2>
+  <h2>17. Operator SOP — common scenarios</h2>
   <details open>
     <summary>S1 — “Which agent answered this Ask?”</summary>
     <ol>
@@ -916,20 +997,31 @@ grep 'job_id=&lt;ID&gt;\|stage=' api.log
       <li>Rollback via git; do not “fix” via MCP act in prod without approval chain.</li>
     </ol>
   </details>
+  <details>
+    <summary>S5 — “I said prefer Premium over Standard but it locked Standard”</summary>
+    <ol>
+      <li>Capture <code>session_data.run_id</code> and the exact user utterance.</li>
+      <li>Grep API logs for <code>cpq_replacement:</code> — confirm <code>wanted</code> / <code>rejected</code> / <code>apply_hint</code>.</li>
+      <li>If <code>wanted</code> still contains the rejected token, file a bug against
+        <code>replacement_clause.py</code> (add unit case + D07-style dialogue).</li>
+      <li>Repro offline: <code>pytest tests/test_cpq_replacement_clause.py</code> and <code>make cpq-regression</code>.</li>
+    </ol>
+  </details>
 </section>
 
 <section id="anti">
-  <h2>17. Anti-patterns (hard stops)</h2>
+  <h2>18. Anti-patterns (hard stops)</h2>
   <table>
     <thead><tr><th>Anti-pattern</th><th>Why banned</th><th>Do instead</th></tr></thead>
     <tbody>
       <tr><td>Free-form LLM tool-calling for graph on small models</td><td>Unreliable; loses provenance</td><td>Retrieve-then-read (augmented)</td></tr>
       <tr><td>LLM invents BOM item_value</td><td>Data integrity / API reject</td><td>Options catalog + bom_gate</td></tr>
+      <tr><td>Pass full raw question into <code>apply_answer</code> when a replacement cue is present</td><td>Fuzzy match can lock the rejected option</td><td><code>extract_replacement_clause</code> → wanted only + constrain exclude</td></tr>
       <tr><td>MCP act auto-apply</td><td>Uncontrolled mutation</td><td>Always pending + human decide</td></tr>
       <tr><td>Assuming CpqSession server-side</td><td>State loss</td><td>Client echo every turn</td></tr>
       <tr><td>Peer mesh without product need</td><td>Latency, cost, failure surface</td><td>Hub-spoke; justify via agent-chaining skill</td></tr>
       <tr><td>Subagent without full prompt context</td><td>No parent memory</td><td>Self-contained prompts</td></tr>
-      <tr><td>Skipping regression with --no-verify</td><td>Drops intent / clarify bugs</td><td>Fix or ticket exception</td></tr>
+      <tr><td>Skipping regression with --no-verify</td><td>Drops intent / clarify / replacement bugs</td><td>Fix or ticket exception</td></tr>
     </tbody>
   </table>
 </section>

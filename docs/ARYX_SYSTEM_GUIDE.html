@@ -223,6 +223,7 @@
   <a class="nav sub" href="#cpq-hw">Hardware-before-product</a>
   <a class="nav sub" href="#cpq-country">Country + history mine</a>
   <a class="nav sub" href="#cpq-modules">CPQ modules</a>
+  <a class="nav sub" href="#cpq-replacement">Replacement clause</a>
   <a class="nav" href="#intent">14. Intent &amp; guards</a>
   <a class="nav" href="#mcp">15. MCP &amp; actions</a>
   <div class="group">Platform</div>
@@ -926,15 +927,29 @@ awaiting_approval → confirm → bom_gate → payload</div>
       <tr><td><code>cpq/summary_guard.py</code></td><td>Field-diff summary vs session; raw table fallback</td></tr>
       <tr><td><code>cpq/telemetry.py</code></td><td>Divergence LLM vs det; warn if disagree rate high</td></tr>
       <tr><td><code>cpq/logging_context.py</code></td><td>run_id binding for logs</td></tr>
+      <tr><td><code>cpq/replacement_clause.py</code></td><td>Wanted vs rejected extraction for replacement phrasings (forward + reversed)</td></tr>
       <tr><td><code>cpq/validation/</code></td><td>Read-only oracle for rule-loop consistency</td></tr>
       <tr><td><code>api/ask_api.py</code></td><td>Orchestration, cascade handlers, routing, history mine</td></tr>
     </tbody>
   </table>
 
-  <h3>13.5 Multi-product session</h3>
+  <h3 id="cpq-replacement">13.5 Replacement phrasings (wanted only)</h3>
+  <p>
+    Change replies like “use Premium instead of Standard” and the reverse
+    “instead of Standard, prefer Premium” are split by
+    <code>extract_replacement_clause</code> before <code>apply_answer</code>.
+    Only the <strong>wanted</strong> fragment is matched; the rejected option is
+    excluded via constrained values so fuzzy match cannot re-pick it.
+    Log line: <code>cpq_replacement:</code>. Regression: N53–N57 + dialogue D07;
+    units in <code>tests/test_cpq_replacement_clause.py</code>.
+    Deep dive: <a href="ARYX_EXPLORE.html#cpq_replacement">Explorer</a> ·
+    <a href="ARYX_AGENTS_SOP.html#replacement">Agents SOP §12</a>.
+  </p>
+
+  <h3>13.6 Multi-product session</h3>
   <p><code>product_snapshots</code> (cap ~5) on switch A→B→A; switch confirmation gates; country re-validation when needed. N3 loop-exit: affirmative answers to pending switch questions stay inside <code>_run_cpq_turn</code>.</p>
 
-  <h3>13.6 BOM invariants (non-negotiable)</h3>
+  <h3>13.7 BOM invariants (non-negotiable)</h3>
   <ul>
     <li>Payload only from <code>build_payload</code> after rule loop + user confirm.</li>
     <li><code>bom_gate</code> must pass (constraints + provenance).</li>
