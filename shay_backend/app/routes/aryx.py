@@ -135,6 +135,62 @@ async def ask(
     return resp.json()
 
 
+async def call_aryx_docs_read(
+    aryx_workspace_id: int,
+    files: List[tuple],
+    context: str = "",
+) -> dict[str, Any]:
+    """Call Aryx's POST /admin/docs/read directly — the reusable core of the
+    read_documents route below, also used by datasources.py's kind="aryx"
+    bulk-upload integration so that path doesn't have to make a self-loopback
+    HTTP call into this same service.
+
+    Args:
+        aryx_workspace_id: already-resolved Aryx integer workspace id.
+        files: list of (filename, content_bytes, content_type) tuples —
+               already read into memory by the caller.
+        context: optional free-text context passed through to Aryx.
+    """
+    upload_files = [("files", (fname, content, ctype)) for fname, content, ctype in files]
+    async with httpx.AsyncClient(timeout=_TIMEOUT_UPLOAD) as client:
+        try:
+            resp = await client.post(
+                f"{settings.ARYX_API_URL_INTERNAL}/admin/docs/read",
+                data={"context": context, "workspace_id": str(aryx_workspace_id)},
+                files=upload_files,
+                headers={"x-aryx-api-key": _aryx_headers()["x-aryx-api-key"]},
+            )
+            resp.raise_for_status()
+        except (httpx.HTTPStatusError, httpx.RequestError, RuntimeError) as exc:
+            _raise_for_bridge_error(exc, "document read")
+    return resp.json()
+
+
+async def call_aryx_job_status(job_id: str) -> dict[str, Any]:
+    """Call Aryx's GET /admin/jobs/{job_id} directly — reusable core of the
+    job_status route below. Aryx's job endpoint is workspace-agnostic (job_id
+    alone is sufficient), so no workspace resolution is needed here.
+
+    Best-effort callers (e.g. datasources.py's status-merge) should catch the
+    HTTPException this can raise and degrade gracefully rather than fail an
+    otherwise-successful response.
+    """
+    async with httpx.AsyncClient(timeout=_TIMEOUT_BRIDGE) as client:
+        try:
+            resp = await client.get(
+                f"{settings.ARYX_API_URL_INTERNAL}/admin/jobs/{job_id}",
+                headers=_aryx_headers(),
+            )
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
+            resp.raise_for_status()
+        except HTTPException:
+            raise
+        except (httpx.HTTPStatusError, httpx.RequestError, RuntimeError) as exc:
+            _raise_for_bridge_error(exc, "job status lookup")
+    return resp.json()
+
+
 @router.post("/workspaces/{workspace_id}/documents/read", response_model=AryxDocsReadResponse)
 async def read_documents(
     workspace_id: str,
@@ -154,24 +210,8 @@ async def read_documents(
     """
     await _require_workspace_access(request, db, workspace_id)
     aryx_workspace_id = await _resolve_aryx_workspace_id(workspace_id)
-
-    upload_files = []
-    for f in files:
-        content = await f.read()
-        upload_files.append(("files", (f.filename, content, f.content_type)))
-
-    async with httpx.AsyncClient(timeout=_TIMEOUT_UPLOAD) as client:
-        try:
-            resp = await client.post(
-                f"{settings.ARYX_API_URL_INTERNAL}/admin/docs/read",
-                data={"context": context, "workspace_id": str(aryx_workspace_id)},
-                files=upload_files,
-                headers={"x-aryx-api-key": _aryx_headers()["x-aryx-api-key"]},
-            )
-            resp.raise_for_status()
-        except (httpx.HTTPStatusError, httpx.RequestError, RuntimeError) as exc:
-            _raise_for_bridge_error(exc, "document read")
-    return resp.json()
+    files_data = [(f.filename, await f.read(), f.content_type) for f in files]
+    return await call_aryx_docs_read(aryx_workspace_id, files_data, context)
 
 
 @router.get("/workspaces/{workspace_id}/documents/{discovery_id}/summary",
@@ -246,18 +286,4 @@ async def job_status(
 ) -> dict[str, Any]:
     """Poll a read or confirm job's live progress (stage/pct/status)."""
     await _require_workspace_access(request, db, workspace_id)
-
-    async with httpx.AsyncClient(timeout=_TIMEOUT_BRIDGE) as client:
-        try:
-            resp = await client.get(
-                f"{settings.ARYX_API_URL_INTERNAL}/admin/jobs/{job_id}",
-                headers=_aryx_headers(),
-            )
-            if resp.status_code == status.HTTP_404_NOT_FOUND:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
-            resp.raise_for_status()
-        except HTTPException:
-            raise
-        except (httpx.HTTPStatusError, httpx.RequestError, RuntimeError) as exc:
-            _raise_for_bridge_error(exc, "job status lookup")
-    return resp.json()
+    return await call_aryx_job_status(job_id)

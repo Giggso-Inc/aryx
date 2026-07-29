@@ -187,7 +187,17 @@ class DatasourceResponse(BaseModel):
     embedding_status: int
     created_at: datetime
     updated_at: datetime
-    
+    aryx_ingestion_status: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Present only when this datasource's datasource_metadata carries an "
+            "aryx.discovery_id (linked via a kind='aryx' upload) — live Aryx job "
+            "status merged in at read time: {status, stage, pct, detail, ...} "
+            "(same shape as Aryx's GET /admin/jobs/{id}). None for every datasource "
+            "without that linkage — additive, backward compatible."
+        ),
+    )
+
     class Config:
         from_attributes = True
 
@@ -297,6 +307,14 @@ class FileUploadResponse(BaseModel):
     file_url: str
     storage_path: str
     provider: str
+    aryx_ingestion: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Present only when the bulk-upload call passed kind='aryx' for this "
+            "file — {'discovery_id': ...} on success or {'error': ...} on failure. "
+            "None for every existing (non-Aryx) upload — additive, backward compatible."
+        ),
+    )
 
 
 class FileUploadBulkResponse(BaseModel):
