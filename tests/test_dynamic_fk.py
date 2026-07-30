@@ -313,6 +313,50 @@ def test_judge_workers_setting_bounds_concurrency_not_coverage():
         assert call_count["n"] == 10
 
 
+# docs/falkordb_high_cpu_2026-07-29.md follow-up — this stage previously had
+# no progress signal at all. A live ingestion job sat with zero log output
+# and near-zero CPU for 9+ minutes of real (LLM-call-bound) work here,
+# genuinely indistinguishable from a hang without on_progress.
+
+def test_on_progress_called_once_per_candidate_with_final_totals():
+    candidates = [_candidate(i) for i in range(6)]
+    calls: list[tuple[int, int]] = []
+    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=3)), \
+         patch("aryx.pipeline.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
+        judge_candidates_with_llm(candidates, broker=object(), on_progress=lambda d, t: calls.append((d, t)))
+    assert len(calls) == 6
+    assert all(total == 6 for _done, total in calls)
+    assert sorted(done for done, _total in calls) == [1, 2, 3, 4, 5, 6]
+
+
+def test_on_progress_exception_does_not_break_judging():
+    """Progress reporting is a side channel — a bug in the caller's callback
+    (e.g. a job-store write failing) must never lose a candidate's verdict."""
+    candidates = [_candidate(i) for i in range(4)]
+
+    def _bad_progress(done, total):
+        raise RuntimeError("job store unavailable")
+
+    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings(fk_dynamic_judge_workers=2)), \
+         patch("aryx.pipeline.dynamic_fk.complete_json", return_value={"linked": True, "reason": "yes"}):
+        links = judge_candidates_with_llm(candidates, broker=object(), on_progress=_bad_progress)
+    assert len(links) == 4
+
+
+def test_detect_dynamic_fk_links_threads_on_progress_through():
+    plans = [
+        {"filename": "a.csv", "ontology_type": "A",
+         "data": _csv_bytes(["x"], [[str(i)] for i in range(20)])},
+        {"filename": "b.csv", "ontology_type": "B",
+         "data": _csv_bytes(["y"], [[str(i)] for i in range(20)])},
+    ]
+    calls: list[tuple[int, int]] = []
+    with patch("aryx.pipeline.dynamic_fk.get_settings", return_value=_settings()), \
+         patch("aryx.pipeline.dynamic_fk.complete_json", return_value={"linked": False, "reason": "no"}):
+        detect_dynamic_fk_links(plans, broker=object(), on_progress=lambda d, t: calls.append((d, t)))
+    assert calls, "on_progress must fire when detect_dynamic_fk_links actually judges candidates"
+
+
 # ── detect_dynamic_fk_links ──────────────────────────────────────────────────
 
 def test_disabled_via_config_returns_no_links():

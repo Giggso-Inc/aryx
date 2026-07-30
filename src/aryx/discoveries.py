@@ -19,6 +19,13 @@ aren't natively JSON-serialisable, so they're encoded on the way in and
 decoded on the way out — everything else in the payload passes through
 unchanged.
 
+`data` is stored as gzip-compressed JSON in a BYTEA column (migration
+0036), not live JSONB — see DiscoveryPayloadTooLarge's docstring for why:
+a large multi-file tabular batch's serialized JSONB array can exceed
+Postgres's own hard, non-configurable ~256MB limit on a single JSONB
+array's size. BYTEA has no such array-size restriction, and gzip shrinks
+text-heavy CSV payloads substantially before they're ever written.
+
 Postgres-only for now (no Oracle migration/query variant) — matches this
 store's existing DSN-driven backend selection elsewhere, but ARYX_DB_BACKEND=oci
 deployments won't get durability from this fix until an Oracle variant is
@@ -27,11 +34,10 @@ added.
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import logging
 from typing import Any
-
-from psycopg.types.json import Json
 
 from aryx.config import get_settings
 from aryx.models import RawRecord
@@ -44,19 +50,29 @@ logger = logging.getLogger(__name__)
 class DiscoveryPayloadTooLarge(ValueError):
     """Raised when a discovery result is too large to persist in one write.
 
-    A single discovery result is written as ONE JSONB value in ONE INSERT
-    parameter. Postgres's wire protocol frames each message with a fixed-
-    size length header — a sufficiently large single parameter (e.g. dozens
-    of CSV files' full bytes, base64-inflated, concatenated into one
-    payload) can overrun that framing and get the connection killed
-    outright with "invalid message length", rather than a normal query
-    error. Confirmed live: a 32-file BigMachines CSV catalog batch did
-    exactly this. `put()` guards against it with
-    `settings.discovery_max_payload_mb` (default 300MB, well under where
-    that framing breaks) so an oversized batch fails as a clean, catchable
-    error — surfaced as a normal "failed" job status by
-    doc_discover_api._read_job's except block — instead of crashing the
-    connection.
+    Two real, confirmed incidents motivate this guard:
+    - A 32-file BigMachines CSV catalog batch's serialized payload was large
+      enough to overrun Postgres's wire-protocol fixed-size message-length
+      framing, killing the connection outright with "invalid message
+      length" instead of a normal query error.
+    - A 33-file SL3500e batch separately hit a second, harder wall: when
+      `data` was stored as live JSONB, Postgres hard-caps a single JSONB
+      array's serialized size at 268,435,455 bytes (~256MB) —
+      `psycopg.errors.ProgramLimitExceeded: total size of jsonb array
+      elements exceeds the maximum of 268435455 bytes` — a fixed
+      database-engine limit, not a Postgres setting, so raising the old
+      JSONB-based guard past ~256MB could never have helped.
+
+    Migration 0036 closed the second wall structurally: `data` is now
+    gzip-compressed JSON in a BYTEA column, which has no JSONB-array-size
+    restriction (Postgres TOASTs a BYTEA value up to ~1GB), and compression
+    shrinks text-heavy CSV payloads substantially on top of that headroom.
+    This guard remains for the first wall (and as a sane upper bound in
+    general) — it now measures the size AFTER gzip compression against
+    `settings.discovery_max_payload_mb`, so an oversized batch still fails
+    as a clean, catchable error — surfaced as a normal "failed" job status
+    by doc_discover_api._read_job's except block — instead of crashing the
+    connection or failing deep inside a database write.
     """
 
 
@@ -110,29 +126,30 @@ def _deserialize(data: dict[str, Any]) -> dict[str, Any]:
 def put(discovery_id: str, data: dict[str, Any]) -> None:
     """Persist a discovery result — durable across process restarts/crashes.
 
-    Raises DiscoveryPayloadTooLarge instead of attempting the write when the
-    serialized payload exceeds settings.discovery_max_payload_mb — see that
-    exception's docstring for why an oversized single write is dangerous
-    here, not just slow.
+    Serialized as JSON, then gzip-compressed, then written as BYTEA
+    (migration 0036) — see DiscoveryPayloadTooLarge's docstring for why
+    live JSONB couldn't hold an oversized multi-file batch at all.
+
+    Raises DiscoveryPayloadTooLarge instead of attempting the write when
+    the COMPRESSED payload exceeds settings.discovery_max_payload_mb.
     """
     settings = get_settings()
     workspace_id = data.get("workspace_id", 1)
     payload = _serialize(data)
-    # Cheap, exact-enough size estimate: the same encoding Json() will send
-    # over the wire. Computed once, not held onto — payload_size is only
-    # used to enforce the guard below.
-    payload_size = len(json.dumps(payload, default=str).encode("utf-8"))
+    raw_json = json.dumps(payload, default=str).encode("utf-8")
+    compressed = gzip.compress(raw_json)
     max_bytes = settings.discovery_max_payload_mb * 1024 * 1024
-    if payload_size > max_bytes:
+    if len(compressed) > max_bytes:
         logger.warning(
             "discoveries.put did=%s REJECTED payload_size=%d bytes "
-            "(limit=%d) mentions=%d tabular=%d — split into a smaller "
-            "batch or raise ARYX_DISCOVERY_MAX_PAYLOAD_MB",
-            discovery_id, payload_size, max_bytes,
+            "raw=%d bytes (limit=%d) mentions=%d tabular=%d — split into a "
+            "smaller batch or raise ARYX_DISCOVERY_MAX_PAYLOAD_MB",
+            discovery_id, len(compressed), len(raw_json), max_bytes,
             len(data.get("mentions", [])), len(data.get("tabular", [])),
         )
         raise DiscoveryPayloadTooLarge(
-            f"Discovery result is {payload_size / 1024 / 1024:.1f} MB, over "
+            f"Discovery result is {len(compressed) / 1024 / 1024:.1f} MB "
+            f"compressed ({len(raw_json) / 1024 / 1024:.1f} MB raw), over "
             f"the {settings.discovery_max_payload_mb} MB limit for a single "
             f"batch. Upload fewer files at once, or raise "
             f"ARYX_DISCOVERY_MAX_PAYLOAD_MB if your deployment's Postgres "
@@ -141,10 +158,12 @@ def put(discovery_id: str, data: dict[str, Any]) -> None:
     pool = get_pool(settings.rdb_dsn)
     with pool.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(load("upsert_discovery"), (discovery_id, workspace_id, Json(payload)))
-    logger.info("discoveries.put did=%s mentions=%d tabular=%d payload_size=%d",
-                discovery_id, len(data.get("mentions", [])), len(data.get("tabular", [])),
-                payload_size)
+            cur.execute(load("upsert_discovery"), (discovery_id, workspace_id, compressed))
+    logger.info(
+        "discoveries.put did=%s mentions=%d tabular=%d payload_size=%d raw=%d",
+        discovery_id, len(data.get("mentions", [])), len(data.get("tabular", [])),
+        len(compressed), len(raw_json),
+    )
 
 
 def get(discovery_id: str) -> dict[str, Any] | None:
@@ -157,7 +176,8 @@ def get(discovery_id: str) -> dict[str, Any] | None:
     if row is None:
         logger.warning("discoveries.get did=%s not found (unknown or expired)", discovery_id)
         return None
-    return _deserialize(row[0])
+    payload = json.loads(gzip.decompress(bytes(row[0])).decode("utf-8"))
+    return _deserialize(payload)
 
 
 def drop(discovery_id: str) -> None:
