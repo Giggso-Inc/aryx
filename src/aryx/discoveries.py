@@ -27,6 +27,7 @@ added.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from typing import Any
 
@@ -38,6 +39,25 @@ from aryx.queries import load
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+
+class DiscoveryPayloadTooLarge(ValueError):
+    """Raised when a discovery result is too large to persist in one write.
+
+    A single discovery result is written as ONE JSONB value in ONE INSERT
+    parameter. Postgres's wire protocol frames each message with a fixed-
+    size length header — a sufficiently large single parameter (e.g. dozens
+    of CSV files' full bytes, base64-inflated, concatenated into one
+    payload) can overrun that framing and get the connection killed
+    outright with "invalid message length", rather than a normal query
+    error. Confirmed live: a 32-file BigMachines CSV catalog batch did
+    exactly this. `put()` guards against it with
+    `settings.discovery_max_payload_mb` (default 300MB, well under where
+    that framing breaks) so an oversized batch fails as a clean, catchable
+    error — surfaced as a normal "failed" job status by
+    doc_discover_api._read_job's except block — instead of crashing the
+    connection.
+    """
 
 
 def _serialize_mentions(mentions: list[Any]) -> list[dict]:
@@ -88,15 +108,43 @@ def _deserialize(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def put(discovery_id: str, data: dict[str, Any]) -> None:
-    """Persist a discovery result — durable across process restarts/crashes."""
+    """Persist a discovery result — durable across process restarts/crashes.
+
+    Raises DiscoveryPayloadTooLarge instead of attempting the write when the
+    serialized payload exceeds settings.discovery_max_payload_mb — see that
+    exception's docstring for why an oversized single write is dangerous
+    here, not just slow.
+    """
+    settings = get_settings()
     workspace_id = data.get("workspace_id", 1)
     payload = _serialize(data)
-    pool = get_pool(get_settings().rdb_dsn)
+    # Cheap, exact-enough size estimate: the same encoding Json() will send
+    # over the wire. Computed once, not held onto — payload_size is only
+    # used to enforce the guard below.
+    payload_size = len(json.dumps(payload, default=str).encode("utf-8"))
+    max_bytes = settings.discovery_max_payload_mb * 1024 * 1024
+    if payload_size > max_bytes:
+        logger.warning(
+            "discoveries.put did=%s REJECTED payload_size=%d bytes "
+            "(limit=%d) mentions=%d tabular=%d — split into a smaller "
+            "batch or raise ARYX_DISCOVERY_MAX_PAYLOAD_MB",
+            discovery_id, payload_size, max_bytes,
+            len(data.get("mentions", [])), len(data.get("tabular", [])),
+        )
+        raise DiscoveryPayloadTooLarge(
+            f"Discovery result is {payload_size / 1024 / 1024:.1f} MB, over "
+            f"the {settings.discovery_max_payload_mb} MB limit for a single "
+            f"batch. Upload fewer files at once, or raise "
+            f"ARYX_DISCOVERY_MAX_PAYLOAD_MB if your deployment's Postgres "
+            f"connection can handle a larger single write."
+        )
+    pool = get_pool(settings.rdb_dsn)
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(load("upsert_discovery"), (discovery_id, workspace_id, Json(payload)))
-    logger.info("discoveries.put did=%s mentions=%d tabular=%d",
-                discovery_id, len(data.get("mentions", [])), len(data.get("tabular", [])))
+    logger.info("discoveries.put did=%s mentions=%d tabular=%d payload_size=%d",
+                discovery_id, len(data.get("mentions", [])), len(data.get("tabular", [])),
+                payload_size)
 
 
 def get(discovery_id: str) -> dict[str, Any] | None:
