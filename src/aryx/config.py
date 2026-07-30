@@ -315,6 +315,21 @@ class Settings(BaseSettings):
             "Override with ARYX_XML_MAX_ENTITY_TYPES."
         ),
     )
+    discovery_max_payload_mb: int = Field(
+        default=300,
+        description=(
+            "Max size (MB) of a single serialized document-discovery result "
+            "written to aryx_discovery in one INSERT. A multi-file tabular "
+            "batch (e.g. dozens of BigMachines/Oracle CPQ CSV catalog "
+            "exports) that exceeds this is rejected with a clear error at "
+            "the application layer instead of being attempted as one giant "
+            "JSONB write -- confirmed live that an oversized single write "
+            "can overrun Postgres's wire-protocol message-length framing "
+            "and get the connection killed outright ('invalid message "
+            "length'), not just run slowly. Override with "
+            "ARYX_DISCOVERY_MAX_PAYLOAD_MB."
+        ),
+    )
     xml_max_rows_per_type: int = Field(
         default=500,
         description=(
