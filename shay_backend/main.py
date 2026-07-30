@@ -47,7 +47,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 from app.core.migrations import run_migrations
 from app.core.socket import initialize_socket_service, cleanup_socket_service, get_socket_health_status
 
-from app.routes import auth_router, companies, users, workspaces_router, channels_router, messages_router, attachments_router, agent_router, apps_router, app_accounts_router, datasources, user_auth, tasks_router, checklists_router, approvals_router, subscription_plans, subscriptions, public_router, payment_gateway_router, notifications_router, support_router, template, token_details, shortener,  audit, threads_router, gg_datasources_router, gg_app_connections_router, gg_workspaces_router, gg_channels_router, sso_router
+from app.routes import auth_router, companies, users, workspaces_router, channels_router, messages_router, attachments_router, agent_router, apps_router, app_accounts_router, datasources, user_auth, tasks_router, checklists_router, approvals_router, subscription_plans, subscriptions, public_router, payment_gateway_router, notifications_router, support_router, template, token_details, shortener,  audit, threads_router, gg_datasources_router, gg_app_connections_router, gg_workspaces_router, gg_channels_router, sso_router, aryx_router
 from app.routes.sso import router as sso_router
 from app.routes.gmail_connect import router as gmail_connect_router
 from app.routes.zoho_connect import router as zoho_connect_router
@@ -496,6 +496,7 @@ app.include_router(template.router, prefix="/api/v1/template", tags=["Templates"
 app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["Notifications"])
 app.include_router(support_router, prefix="/api/v1/support", tags=["Customer Support"])
 app.include_router(audit.router, prefix="/api/v1/audit-log", tags=["Audit Log"])
+app.include_router(aryx_router, prefix="/api/v1/aryx", tags=["Aryx Bridge"])
 
 
 if __name__ == "__main__":
