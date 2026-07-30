@@ -5634,6 +5634,34 @@ class CpqEngine:
             ):
                 continue
 
+            # docs/config_consistency_issues_2026-07-30.md issue 4 follow-up
+            # — a multi-select the customer never touched still gets a `[]`
+            # entry in filled_multi from auto_fill/hiding-rule evaluation
+            # (confirmed live: nearly every multi-select in a real catalog
+            # carries this, touched or not), so the gate above alone lets a
+            # BARE VALUE mention — with no explicit label/variable_name
+            # naming at all — match an untouched, empty multi-select purely
+            # because that value happens to also be one of ITS real
+            # options. Live-confirmed: with Frequency Bands (single-select)
+            # correctly the sole pending attribute, a bare "VHF" reply
+            # still matched an unrelated, never-touched
+            # modelSelectionFrequencyBandMsl_astro this way, writing the
+            # reply into the wrong attribute and leaving the real pending
+            # one stale (bom_gate re-detects it as invalid every confirm,
+            # looping forever). An EMPTY multi-select stays eligible when
+            # explicitly named by label/variable_name (test_cpq_grid_
+            # decline.py's declined-grid-reconsidered case: "I wanted to
+            # include the mounting type: X" must still work) — only a
+            # bare, unnamed value-only mention requires the multi-select to
+            # already hold a real selection.
+            if (
+                attr.select_type == "multi"
+                and not multi.get(attr.variable_name)
+                and vn_flat not in q_lower.replace("_", "")
+                and not _label_mentioned(label_lower, q_lower)
+            ):
+                continue
+
             # Direct apply_answer match — checked FIRST so the full NL question
             # (with verbatim display-name substring matching) wins over the coarse
             # hint token. Without this ordering, "4G LTE Only" collapsed to "LTE"
