@@ -166,7 +166,7 @@ The fixes above are about *this specific incident*. This section looks wider: is
 
 Worth saying up front: the team already found and fixed a much bigger version of this exact class of problem before. A note left in the code (`falkor_store.py`, in the function that wipes and rebuilds a workspace's graph) describes an earlier incident where **missing database indexes** made every single write get slower than the last one as the graph grew — on an 83,000-record workspace, that alone caused **69 of 70 minutes** in the write stage. That's already fixed: the three indexes that matter (on entity ID, on the internal "source" record, and on relationship names) are now created automatically at the start of every full import. The big bulk-write functions also already batch hundreds of records into one request instead of one request per record, which was measured at roughly **8x faster** than writing one at a time. Good foundation — the two findings below are gaps in that same standard, not a wholesale rewrite.
 
-### Bottleneck A — "small update" imports don't use the fast path the "full import" ones do
+### Bottleneck A — "small update" imports don't use the fast path the "full import" ones do — FIXED
 
 **Where:** `src/aryx/project.py`, function `project_incremental()` (used for day-to-day small updates — e.g. someone edits a few rows — as opposed to a brand-new full import).
 
@@ -176,7 +176,11 @@ There are two ways new data gets written into the graph:
 
 In plain terms: the fast lane exists and works, but the *most commonly used* road (small daily updates, which happen far more often than big one-time imports) isn't using it. On a small update this is barely noticeable. On a workspace where many rows change at once (e.g. a source system pushes a large daily batch of changes), this path would hit the exact same kind of slowdown a full import would — just via a different door.
 
-**Suggested fix:** make `project_incremental()` collect its changed entities and provenance records into a list first, then call the same batched `add_entities_batch()` / `add_provenance_batch()` functions `project_graph()` already uses, instead of writing them one by one. (Relationship writes in this same function already do this correctly — only entities and provenance don't.)
+**Fix applied:** `project_incremental()` now collects its changed entities and provenance records into a list first, then calls the same batched `add_entities_batch()` / `add_provenance_batch()` functions `project_graph()` already uses, instead of writing them one by one. (Relationship writes in this same function already did this correctly — only entities and provenance needed the change.) Falls back to the original one-row-at-a-time behavior automatically if a graph store doesn't support the batch methods, so nothing else needed to change.
+
+3 new tests added (`tests/test_graph_projection_performance.py`): confirms the batched path is used (UNWIND queries, not per-row MERGE) and produces the same counts as before; confirms tombstone handling and watermark advancement are unaffected; confirms the fallback path still works for a graph store without batch support. All 27 tests in the affected file pass.
+
+**One honest caveat found while implementing this:** `project_incremental()` (and its dispatcher, `project_auto()`, which picks incremental vs. full based on how much of the workspace changed) aren't currently called from anywhere in the live ingestion pipeline (`orchestrate.py` and the API routes only call `project_graph()` directly) — they appear to be built for a planned "G8 mode=auto" incremental-update flow that isn't wired up yet. The fix is still correct and ready for whenever that gets connected, but it won't change today's production behavior until it is.
 
 ### Bottleneck B — a full import always rewrites everything, even if almost nothing changed
 
@@ -214,7 +218,7 @@ This isn't a bug — it's a reasonable, deliberate design choice for a "start cl
 3. **Fix the label-naming problem** so bad data gets safely renamed instead of silently thrown away, and so future imports don't flood the logs (Fix 1).
 4. **Stop recalculating answers that rarely change** — cache them instead, and only refresh after an import (Fix 3).
 5. **Make the graph-browse feature ask for only what it needs**, not everything, on every request (Fix 2).
-6. **Make small, everyday updates use the same fast batched writes as full imports** (Bottleneck A) — this is the highest-value fix of the two bottleneck findings, since it affects the path used far more often than a full import.
-7. **Route routine updates through the incremental path, not a full wipe-and-rebuild**, once Bottleneck A is fixed (Bottleneck B).
+6. ~~Make small, everyday updates use the same fast batched writes as full imports~~ — **done** (Bottleneck A).
+7. **Wire up the incremental path and route routine updates through it** instead of a full wipe-and-rebuild (Bottleneck B) — the code is ready (Bottleneck A's fix applies to it), it just isn't called from the live pipeline yet.
 
 None of these fixes have been applied to the code yet — this document is the analysis and the plan. Let us know which of these you'd like implemented first.
