@@ -3947,6 +3947,7 @@ def _ground_clarify_candidates(
     cq_lower = (clarifying_question or "").lower()
     _hidden = hidden_vns or set()
 
+    scores: dict[str, float] = {}
     for a in attrs:
         if a.variable_name in _hidden:
             continue
@@ -3968,11 +3969,28 @@ def _ground_clarify_candidates(
             # when the catalog label is explicitly grounded in the CQ text.
             if is_filled or label_in_cq or vn_in_cq or overlap >= 2:
                 by_vn[a.variable_name] = a
+                # docs/config_consistency_issues_2026-07-30.md Issue 11:
+                # a label grounded in the LLM's own clarifying text is the
+                # strongest possible signal — rank it above any word-count
+                # match. Otherwise rank by overlap (relevance), NOT label
+                # length — the old `-len(display_label)` sort let long,
+                # only-incidentally-matching already-filled labels ("Is
+                # provisioning required in the Motorola Solutions
+                # Authorized Cloud environment?") bump genuinely relevant,
+                # short-labeled attrs ("Frequency Bands", "Wireless
+                # Carrier") out of the top-8 cutoff entirely.
+                scores[a.variable_name] = overlap + (100 if (label_in_cq or vn_in_cq) else 0)
 
-    # Stable order: longer label first (more specific), then name.
+    # Highest relevance score first; label length only breaks ties among
+    # equally-relevant candidates.
     candidates = list(by_vn.values())
     candidates.sort(
-        key=lambda a: (-len(a.display_label or ""), a.display_label or "", a.variable_name),
+        key=lambda a: (
+            -scores.get(a.variable_name, 0),
+            -len(a.display_label or ""),
+            a.display_label or "",
+            a.variable_name,
+        ),
     )
     return candidates[:8]
 
@@ -4233,6 +4251,24 @@ def _handle_pending_clarify_turn(
         # Catalog no longer has these attrs — clear and fall through.
         _clear_pending_clarify(session)
         return None
+
+    # docs/config_consistency_issues_2026-07-30.md Issue 11: a stale/wrong
+    # candidate pool (e.g. from _ground_clarify_candidates surfacing
+    # irrelevant attrs) must never force-match an unrelated, well-formed
+    # follow-up request — confirmed live: "change Frequency Bands to X and
+    # Wireless Carrier to Y" got silently mis-bound to "Carrier Selection"
+    # purely because that WRONG attr was in the stale pool and happened to
+    # share an option value, while the actually-correct wirelessCarrier_
+    # astro was never even a candidate. _resolve_target_description is run
+    # UNSCOPED (against every attr, not just the stale pool) as the
+    # deterministic "exactness" check it already is elsewhere in this
+    # file; a confident resolution to an attr OUTSIDE the stale pool means
+    # this is a fresh request, not a reply to the old clarify.
+    if _cpq_engine._CHANGE_VERB_RE.search(req.question) or _cpq_engine._ARROW_RE.search(req.question):
+        _fresh_attr, _fresh_candidates = _resolve_target_description(req.question, attrs)
+        if _fresh_attr is not None and _fresh_attr.variable_name not in session.pending_clarify_vns:
+            _clear_pending_clarify(session)
+            return None
 
     clarify_status, resolved_vn = _match_pending_clarify_reply(
         req.question, candidates, session, req.workspace_id,
