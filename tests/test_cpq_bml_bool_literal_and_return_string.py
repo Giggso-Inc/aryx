@@ -147,3 +147,38 @@ def test_restrict_service_type_script_resolves_correctly_for_capex_purchase():
         "Essential Support Software and Hardware Repair",
         "Essential with Accidental Damage and Advanced Replacement",
     ]
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 2 follow-up — real
+# APX Next scripts build a |^|-delimited allowed-list via string
+# CONCATENATION instead of one packed literal, e.g.
+# `retVal = "CORE BUNDLE" + "|^|" + "SECURITY BUNDLE" + "|^|" + ...;` —
+# a fully-literal chain (no variables) that's genuinely resolvable, but
+# previously bailed as "unparseable" the same as a real dynamic
+# concatenation would, and paid an unnecessary Tier-2 LLM call every time.
+
+def test_branch_values_resolves_literal_concatenated_pipe_caret_list():
+    body = (
+        'retVal = "CORE BUNDLE" + "|^|" + "SECURITY BUNDLE"+ "|^|" '
+        '+ "OPERATIONAL ASSURANCE BUNDLE" + "|^|" + "TACTICAL BUNDLE";'
+    )
+    assert _branch_values(body) == [
+        "CORE BUNDLE", "SECURITY BUNDLE", "OPERATIONAL ASSURANCE BUNDLE", "TACTICAL BUNDLE",
+    ]
+
+
+def test_branch_values_resolves_literal_concatenated_return_string():
+    body = 'return "A" + "|^|" + "B" + "|^|" + "C";'
+    assert _branch_values(body) == ["A", "B", "C"]
+
+
+def test_branch_values_still_rejects_a_real_variable_in_the_chain():
+    # The ORIGINAL guard this fix sits next to (SVX HTML-building case) —
+    # a genuine variable mixed into the concatenation is NOT statically
+    # resolvable and must stay rejected, never guessed at.
+    assert _branch_values('retVal = "A" + link + "B";') is None
+    assert _branch_values('return "A" + link + "B";') is None
+
+
+def test_branch_values_rejects_a_function_call_in_the_chain():
+    assert _branch_values('retVal = "A" + someFunc() + "B";') is None

@@ -412,6 +412,22 @@ class CpqSession:
     # sibling (Carrier Selection) that also accepts the same value.
     last_qa_variable: str = ""
 
+    # variable_name of the attribute a gateway clarify ("which attribute
+    # did you mean?") was most recently RESOLVED to, and the turn it was
+    # resolved on. docs/config_consistency_issues_2026-07-30.md issue 4:
+    # once the customer explicitly names one candidate (e.g. "Frequency
+    # Bands" out of a 7-way clarify), a LATER bare value reply ("VHF") can
+    # be a legal option on several OTHER candidates too (Frequency Band/
+    # Msl, Primary/Secondary Frequency all also accept "VHF" — confirmed
+    # live) and re-triggers a fresh clarify with no memory of the earlier
+    # answer, forever (the LLM fallback has no per-candidate option
+    # visibility to break the tie either). Reused as a tie-breaker in
+    # `_set_pending_clarify_and_answer`/`_match_pending_clarify_reply`:
+    # if this attr is among the fresh candidates and the reply is one of
+    # ITS real option values, resolve straight to it instead of re-asking.
+    last_clarified_attr_vn: str = ""
+    last_clarified_turn: int = 0
+
     # Set when detect_change_target_without_value recognized a change-verb
     # naming an already-filled attr but no resolvable new value ("change
     # hardware version") and asked which value instead of guessing

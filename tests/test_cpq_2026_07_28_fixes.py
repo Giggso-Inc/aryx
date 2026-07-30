@@ -27,7 +27,7 @@ from aryx.api.ask_api import (
 from aryx.cpq.bml import BmlEvaluator, evaluate_tier1
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_schema import ChangeTarget, Confidence, IntentCategory, IntentResult
-from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
+from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption
 
 
 def _opt(*values: str) -> list[MenuOption]:
@@ -377,6 +377,134 @@ def test_llm_first_ambiguous_with_clarifying_question_asks_it():
     assert resp is not None
     assert "Solution Type" in resp["answer"]
     assert resp["usage"]["prompt_tokens"] == 50
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 1 — a change request
+# landing on a currently-hidden-for-this-product attribute (live case:
+# VHF written to modelSelectionFrequencyBandMsl_astro, gated OFF for
+# Single-Band products) because it remained a valid disambiguation
+# candidate right alongside the correct, visible attribute.
+
+def test_llm_first_ambiguous_excludes_hidden_attr_from_clarify_candidates():
+    family = _attr(1, "productFamily_astro", "Product Family")
+    freq_visible = _attr(2, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                          options=_opt("700/800 MHz", "VHF"))
+    freq_plus = _attr(3, "modelSelectionFrequencyBandPlus_astro", "Additional Frequency Bands",
+                       options=_opt("700/800 MHz +", "VHF +"))
+    freq_hidden = _attr(4, "modelSelectionFrequencyBandMsl_astro", "Frequency Band",
+                         options=_opt("VHF", "UHF"))
+    attrs = [family, freq_visible, freq_plus, freq_hidden]
+    hide_rule = HidingRule(
+        rule_name="Hide Msl variant for Single Band",
+        condition_attr_id=1, condition_value="SINGLE_BAND",
+        target_attr_id=4, hide=True,
+    )
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+        filled={"productFamily_astro": "SINGLE_BAND",
+                "modelSelectionFrequencyBands_astro": "700/800 MHz",
+                "modelSelectionFrequencyBandPlus_astro": "700/800 MHz +"},
+        display_filled={"modelSelectionFrequencyBands_astro": "700/800 MHz",
+                         "modelSelectionFrequencyBandPlus_astro": "700/800 MHz +"},
+    )
+    req = AskRequest(question="add VHF (136-174 MHz) as frequency bands",
+                      workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.AMBIGUOUS, confidence=Confidence.MEDIUM,
+        clarifying_question="Did you mean Frequency Bands or Additional Frequency Bands?",
+        rationale="ambiguous frequency attribute",
+    )
+    resp = _dispatch_intent_result(
+        req, session, attrs, result, [hide_rule], [], [], None,
+    )
+    assert resp is not None
+    assert "modelSelectionFrequencyBandMsl_astro" not in session.pending_clarify_vns, (
+        "a hidden-for-this-product attribute must never be offered as a "
+        "disambiguation candidate"
+    )
+    assert set(session.pending_clarify_vns) == {
+        "modelSelectionFrequencyBands_astro", "modelSelectionFrequencyBandPlus_astro",
+    }
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 4 — a bare value reply
+# ("VHF") to a "which attribute did you mean?" clarify is a legal option on
+# SEVERAL candidates at once (confirmed live against the real APX NEXT
+# catalog: Frequency Bands, Frequency Band/Msl, Primary Frequency, and
+# Secondary Frequency all accept "VHF"), so it can't disambiguate on its
+# own — but once the customer already resolved an earlier clarify to one
+# specific candidate, THAT anchor should break the tie instead of
+# re-asking the same question forever (live-confirmed infinite loop).
+
+def test_dispatch_intent_result_resolves_directly_via_remembered_clarify_anchor():
+    bands = _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                   options=_opt("700/800 MHZ", "VHF", "UHF"))
+    msl = _attr(2, "modelSelectionFrequencyBandMsl_astro", "Frequency Band",
+                options=_opt("700/800 MHZ", "VHF", "UHF"), select_type="multi")
+    primary = _attr(3, "modelSelectionPrimaryFrequency_astro", "Primary Frequency",
+                     options=_opt("700/800 MHZ", "VHF"))
+    secondary = _attr(4, "modelSelectionSecondaryFrequency_astro", "Secondary Frequency",
+                       options=_opt("700/800 MHZ", "VHF"))
+    attrs = [bands, msl, primary, secondary]
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+        filled={"modelSelectionFrequencyBands_astro": "700/800 MHZ"},
+        display_filled={"modelSelectionFrequencyBands_astro": "700/800 MHz"},
+        # Customer already picked "Frequency Bands" from an earlier clarify.
+        last_clarified_attr_vn="modelSelectionFrequencyBands_astro", last_clarified_turn=3,
+        turn=5,
+    )
+    req = AskRequest(question="VHF", workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.AMBIGUOUS, confidence=Confidence.MEDIUM,
+        clarifying_question=(
+            "Did you mean Secondary Frequency, Primary Frequency, "
+            "Frequency Bands, or Frequency Band?"
+        ),
+        rationale="VHF matches several frequency-band-ish attrs",
+    )
+    resp = _dispatch_intent_result(
+        req, session, attrs, result, [], [], [], None,
+    )
+    assert resp is not None
+    # Resolved to the remembered attribute directly — never re-asked "which
+    # attribute did you mean?" a second time. "VHF" alone isn't parsed as a
+    # change-with-value (no verb/target phrasing), so this lands on the
+    # normal "which value for Frequency Bands?" follow-up scoped to the
+    # CORRECT attribute, not a fresh multi-way clarify and not a write into
+    # the wrong sibling (modelSelectionFrequencyBandMsl_astro also legally
+    # accepts "VHF" — that's exactly the ambiguity the anchor must avoid).
+    assert session.pending_clarify_vns == []
+    assert "Frequency Bands" in resp["answer"]
+    assert session.filled.get("modelSelectionFrequencyBands_astro") == "700/800 MHZ"
+    assert "modelSelectionFrequencyBandMsl_astro" not in session.filled_multi
+
+
+def test_match_pending_clarify_reply_stays_ambiguous_without_an_anchor():
+    """No remembered anchor + value shared by 2+ candidates -> never guess,
+    same 'never guess' discipline as everywhere else in this engine."""
+    bands = _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                   options=_opt("700/800 MHZ", "VHF"))
+    primary = _attr(2, "modelSelectionPrimaryFrequency_astro", "Primary Frequency",
+                     options=_opt("700/800 MHZ", "VHF"))
+    session = CpqSession(mode="cpq")
+    with patch.object(
+        api, "_llm_classify_pending_clarify_reply", return_value=("unclear", None),
+    ) as mock_llm:
+        status, vn = api._match_pending_clarify_reply("VHF", [bands, primary], session, 1)
+    assert (status, vn) == ("unclear", None)
+    mock_llm.assert_called_once()
+
+
+def test_match_pending_clarify_reply_resolves_unique_value_without_an_anchor():
+    """No anchor needed when the value is unique across candidates."""
+    bands = _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                   options=_opt("700/800 MHZ", "VHF"))
+    carry = _attr(2, "beltClipType_astro", "Carry Type",
+                   options=_opt("Plastic Holster", "Hard Leather Case"))
+    session = CpqSession(mode="cpq")
+    status, vn = api._match_pending_clarify_reply("VHF", [bands, carry], session, 1)
+    assert (status, vn) == ("resolved", "modelSelectionFrequencyBands_astro")
 
 
 def test_llm_first_out_of_scope_answers_without_touching_config():
@@ -1204,6 +1332,40 @@ def test_qa_ambiguity_check_never_calls_the_llm_when_disabled(monkeypatch):
     mock_classify.assert_not_called()
     mock_synth.assert_called_once()
     assert resp["answer"] == "Here's what the graph shows."
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 3 — "what are the
+# Frequency Bands and Wireless Carrier available?" must answer BOTH
+# attributes in one turn, not get misread as a label collision or
+# silently drop one of them.
+
+def test_handle_cpq_qa_answers_both_attrs_in_a_compound_options_query(monkeypatch):
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], []))
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+
+    freq = _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                 options=_opt("700/800 MHz", "VHF"))
+    carrier = _attr(2, "wirelessCarrier_astro", "Wireless Carrier",
+                     options=_opt("ATT/FirstNet", "Verizon"))
+    attrs = [freq, carrier]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(
+        question="what are the Frequency Bands and Wireless Carrier available?",
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    fake_reply = (
+        '{"is_multi_attr": true, '
+        '"questions": ["what are the Frequency Bands available", '
+        '"what is the Wireless Carrier available"]}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _handle_cpq_qa(req, session, attrs, object())
+    assert resp["tools_called"] == ["cpq_multi_attr_options()"]
+    assert "Frequency Bands" in resp["answer"]
+    assert "700/800 MHz" in resp["answer"]
+    assert "Wireless Carrier" in resp["answer"]
+    assert "ATT/FirstNet" in resp["answer"]
 
 
 def test_qa_ambiguity_check_failure_falls_back_to_synthesis_safely(monkeypatch):
