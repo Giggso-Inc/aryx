@@ -240,6 +240,11 @@ def _check_expect(
         if got != "hWVersion_astro":
             errs.append(f"expected hWVersion_astro, got {got!r}")
     for t in tokens:
+        if t.startswith("vn=") and t != "vn=hWVersion_astro":
+            want = t.split("=", 1)[1]
+            got = sd.get("pending_change_no_value_vn") or active_vn or resolved_vn
+            if got != want:
+                errs.append(f"expected vn={want}, got {got!r}")
         if t.startswith("active="):
             want = t.split("=", 1)[1]
             got = (
@@ -254,6 +259,30 @@ def _check_expect(
             got_set = set(handled or [])
             if not want_set.issubset(got_set):
                 errs.append(f"expected handled ⊇ {want_set}, got {got_set}")
+        # filled=vn:Value — display_filled / filled must hold Value for vn
+        if t.startswith("filled="):
+            body = t.split("=", 1)[1]
+            if ":" not in body:
+                errs.append(f"malformed filled token {t!r} (want filled=vn:Value)")
+            else:
+                fvn, fval = body.split(":", 1)
+                got_disp = (sd.get("display_filled") or {}).get(fvn)
+                got_fill = (sd.get("filled") or {}).get(fvn)
+                if got_disp != fval and got_fill != fval:
+                    errs.append(
+                        f"expected filled/display {fvn}={fval!r}, "
+                        f"got filled={got_fill!r} display={got_disp!r}"
+                    )
+        if t == "pending_scope" and not sd.get("pending_scope_candidates"):
+            errs.append("expected pending_scope_candidates set")
+        if t == "scope_reask":
+            al = (answer or "").lower()
+            if "did you mean" not in al and "didn't get" not in al and "didnt get" not in al:
+                errs.append("expected scoped re-ask (did you mean / didn't get)")
+            if "325" in al:
+                errs.append("scoped re-ask must not mention 325-option dump")
+        if t == "scope_clear" and sd.get("pending_scope_candidates"):
+            errs.append("expected pending_scope cleared after successful match")
 
     if "invariant" in tokens or "question" in tokens:
         violations = guard.assert_conversational_invariant(  # type: ignore[attr-defined]
@@ -506,6 +535,113 @@ def run_dialogues_offline(
                     if overflow or session.pending_intent_overflow:
                         ov = list(session.pending_intent_overflow) or overflow
                         answer += "\n\n" + guard.format_queue_overflow_notice(ov)
+                else:
+                    answer = "OK."
+
+            elif did == "D07":
+                # Reversed-cue replacement (PROMPT 6): pending value ask
+                # then "instead of Standard, prefer Premium" → Premium.
+                TIER = "priceTier_astro"
+                repl = _load_mod(
+                    "aryx.cpq.replacement_clause",
+                    "aryx/cpq/replacement_clause.py",
+                )
+                if re.search(r"change\s+price\s+tier", user, re.I) and not (
+                    session.pending_change_no_value_vn
+                ):
+                    session.filled[TIER] = "Standard"
+                    session.display_filled[TIER] = "Standard"
+                    session.pending_change_no_value_vn = TIER
+                    active_vn = TIER
+                    answer = (
+                        "Which value would you like for **Price Tier**?\n\n"
+                        "1. Standard\n2. Premium"
+                    )
+                elif session.pending_change_no_value_vn == TIER:
+                    wanted, rejected = repl.extract_replacement_clause(user)
+                    apply_val = wanted or user
+                    if rejected and rejected.lower() in (apply_val or "").lower():
+                        answer = (
+                            f"I couldn't match a clear replacement "
+                            f"(wanted still contains rejected {rejected!r})."
+                        )
+                    else:
+                        apply_norm = (apply_val or "").strip()
+                        for token in ("Premium", "Standard"):
+                            if re.search(
+                                rf"(?<!\w){re.escape(token)}(?!\w)",
+                                apply_norm, re.I,
+                            ):
+                                apply_norm = token
+                                break
+                        session.filled[TIER] = apply_norm
+                        session.display_filled[TIER] = apply_norm
+                        handled.append(TIER)
+                        session.pending_change_no_value_vn = ""
+                        active_vn = None
+                        answer = (
+                            f"Updated **Price Tier** → **{apply_norm}**."
+                        )
+                        if rejected and apply_norm.lower() == rejected.lower():
+                            errors.append(
+                                f"CPQ-REG-001 {did}/t{t['turn']}: applied "
+                                f"rejected value {rejected!r}"
+                            )
+                            exit_hint = max(exit_hint, EXIT_REGRESSION)
+                else:
+                    answer = "OK."
+
+            elif did == "D08":
+                # PROMPT 7: constrained product scope survives mismatch.
+                scope = _load_mod(
+                    "aryx.cpq.pending_scope",
+                    "aryx/cpq/pending_scope.py",
+                )
+                PROD = "productSelectionProduct_all"
+                SCOPED = [
+                    "SL3500e R7", "SL3500e R7EX", "SL3500e Standard", "SL3500e Lite",
+                ]
+                if re.search(r"sl3500e|which product", user, re.I) and not (
+                    session.pending_scope_candidates
+                ):
+                    scope.set_pending_scope(
+                        session,
+                        kind="product_options",
+                        candidates=SCOPED,
+                        origin_question=user,
+                        attr_vn=PROD,
+                        asked_turn=session.turn,
+                    )
+                    session.pending_variables = [PROD]
+                    answer = (
+                        "Which product would you like?\n\n"
+                        + "\n".join(f"{i+1}. {c}" for i, c in enumerate(SCOPED))
+                    )
+                elif session.pending_scope_candidates:
+                    res = scope.resolve_against_scope(
+                        user, list(session.pending_scope_candidates),
+                    )
+                    if res.matched:
+                        session.filled[PROD] = res.matched
+                        session.display_filled[PROD] = res.matched
+                        handled.append(PROD)
+                        scope.clear_pending_scope(session)
+                        session.pending_variables = []
+                        answer = f"Updated **Product** → **{res.matched}**."
+                    else:
+                        session.pending_scope_misses = (
+                            int(session.pending_scope_misses or 0) + 1
+                        )
+                        answer = scope.format_did_you_mean(
+                            user, res.suggestions or SCOPED[:3],
+                            scope_label="Product",
+                        )
+                        if "325" in answer:
+                            errors.append(
+                                f"CPQ-REG-001 {did}/t{t['turn']}: "
+                                "scope lost — 325-option dump"
+                            )
+                            exit_hint = max(exit_hint, EXIT_REGRESSION)
                 else:
                     answer = "OK."
 

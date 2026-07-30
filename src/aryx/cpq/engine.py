@@ -3337,6 +3337,104 @@ class CpqEngine:
             logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
         return new_fills
 
+    def resync_stale_recommendations(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_source: dict[str, str] | None,
+        rules: list[RecommendationRule],
+        bml_eval: BmlEvaluator | None = None,
+    ) -> dict[str, tuple[str, str]]:
+        """Re-apply recommendation rules to attrs the ENGINE already filled
+        (never a customer's own choice), correcting them when a driving
+        attribute's later value now changes what they should be.
+
+        docs/config_consistency_issues_2026-07-30.md issue 6 (FedRAMP) /
+        docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1: this codebase
+        previously only DETECTED this class of drift
+        (`find_rule_inconsistencies` — logged, never corrected), deliberately,
+        since "the engine can't be certain what the correct value should
+        have been" for a value the CUSTOMER chose. That reasoning does not
+        apply to a value the engine itself auto-filled before its own
+        driving attribute had a value yet (the documented "first-by-order
+        claimed it first" race in `auto_fill`'s own docstring) — re-running
+        the SAME deterministic rule with fresher inputs isn't guessing, it's
+        finishing a computation that fired too early. Scoped by
+        `filled_source`, the exact boundary `find_rule_inconsistencies`
+        already uses: "user" is never touched. Also excludes "hint" and
+        "cascade" — both still trace back to something the customer said or
+        confirmed, not a value this method has any business overwriting.
+
+        Only ever revisits attrs already in `filled` (single-select) — a
+        multi-select target's value lives in `filled_multi`, out of scope
+        for this pass; `apply_recommendation_rules` (unfilled attrs) is
+        unaffected, this only ever touches already-filled ones.
+
+        Returns {variable_name: (item_value, display)} for every attr whose
+        value actually changed. The caller is expected to apply these
+        exactly like any other rule-sourced fill and treat them as a real
+        change for cascade-dependent invalidation, same as an explicit
+        customer edit would.
+        """
+        if not rules:
+            return {}
+        _NEVER_OVERRIDE = {"user", "hint", "cascade"}
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        corrections: dict[str, tuple[str, str]] = {}
+        for rule in rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if not target:
+                continue
+            vn = target.variable_name
+            current = filled.get(vn)
+            if not current:
+                continue  # unfilled — apply_recommendation_rules' job, not this one
+            if filled_source and filled_source.get(vn) in _NEVER_OVERRIDE:
+                continue
+            if rule.script is not None:
+                if bml_eval is None:
+                    continue
+                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                if not allowed or len(allowed) != 1:
+                    continue
+                recommended_value = allowed[0]
+            elif rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is not True:
+                    continue
+                recommended_value = rule.recommended_value
+            else:
+                if rule.conditions:
+                    matched, _blocked = evaluate_declarative_conditions(
+                        rule.conditions, filled_by_rule_id)
+                    if matched is not True:
+                        continue
+                else:
+                    if rule.condition_attr_id not in filled_by_rule_id:
+                        continue
+                    if not _condition_value_matches(
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                    ):
+                        continue
+                recommended_value = rule.recommended_value
+            if not _valid(recommended_value) or current.lower() == recommended_value.lower():
+                continue
+            matched_display = next(
+                (o.display_name for o in target.options
+                 if o.item_value.lower() == recommended_value.lower()),
+                recommended_value,
+            )
+            corrections[vn] = (recommended_value, matched_display)
+        if corrections:
+            logger.info(
+                "cpq: resynced stale recommendation-governed attrs %s",
+                list(corrections.keys()),
+            )
+        return corrections
+
     def apply_validation_rules(
         self,
         attrs: list[ConfigAttr],
@@ -3699,11 +3797,31 @@ class CpqEngine:
                     # real rule firing — never a real prior value's tag.
                     sources[k] = "rule"
 
+            # docs/config_consistency_issues_2026-07-30.md issue 6 (FedRAMP)
+            # — a recommendation-governed attr the ENGINE already filled
+            # (never the customer's own choice) must not be permanently
+            # locked in if its driving attribute's value changes on a LATER
+            # pass of this same loop (e.g. auto_fill initially claimed it by
+            # first-by-order before the real condition could be checked).
+            # Scoped to filled_source != user/hint/cascade — see
+            # resync_stale_recommendations' own docstring for why that
+            # boundary is safe to cross where find_rule_inconsistencies
+            # deliberately only logs.
+            _resynced = self.resync_stale_recommendations(
+                attrs, filled, sources, rec_rules, bml_eval=bml_eval,
+            )
+            if _resynced:
+                for k, (iv, d) in _resynced.items():
+                    filled[k] = iv
+                    display_filled[k] = d
+                    sources[k] = "rule"
+
             constrained_opts = self.apply_constraint_rules(
                 attrs, con_rules, filled, bml_eval=bml_eval,
             )
 
-            if (set(filled.keys()) == prev_filled_keys
+            if (not _resynced
+                    and set(filled.keys()) == prev_filled_keys
                     and {a.entity_id for a in attrs} == prev_visible_ids):
                 break
 
@@ -5700,6 +5818,22 @@ class CpqEngine:
         silently resolves the tie via `max(..., key=len)`. Returns the tied
         candidates so the caller can ask the user to disambiguate instead of
         guessing, or None when there's no collision to report.
+
+        docs/config_consistency_issues_2026-07-30.md — live-confirmed bug: a
+        genuine COLLISION (one shared label, 2+ attrs) was being conflated
+        with a compound question naming several DIFFERENT, unambiguous
+        attrs by their own distinct labels in one sentence ("what are the
+        Frequency Bands and Wireless Carrier available?" wrongly pulled
+        wirelessCarrier_astro — label "Wireless Carrier", zero shared
+        tokens with "Frequency Bands" — into the SAME disambiguation
+        prompt, because the old check only counted `len(distinct_vns) >= 2`
+        across ALL label matches combined, never checking whether they
+        actually shared ONE label. Now groups matches by their OWN exact
+        label text first — only a group where 2+ DISTINCT variable_names
+        share the SAME label text is a real collision. Every `_narrow_label_
+        collision` caller already assumes this invariant (its own docstring:
+        "every candidate here has the IDENTICAL label by construction") —
+        this fix makes that actually true instead of assumed.
         """
         q_lower = question.lower()
         if not any(kw in q_lower for kw in self._OPTIONS_KEYWORDS):
@@ -5713,9 +5847,12 @@ class CpqEngine:
         if vn_matches:
             return None
         label_matches = [attr for attr in attrs if attr.display_label.lower() in q_lower]
-        distinct_vns = {a.variable_name for a in label_matches}
-        if len(distinct_vns) >= 2:
-            return label_matches
+        by_label: dict[str, list[ConfigAttr]] = {}
+        for a in label_matches:
+            by_label.setdefault(a.display_label.lower(), []).append(a)
+        for group in by_label.values():
+            if len({a.variable_name for a in group}) >= 2:
+                return group
         return None
 
     def detect_change_request_collision(

@@ -28,6 +28,7 @@ import io
 import logging
 import time
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from aryx.broker import Broker
@@ -400,17 +401,27 @@ def _judge_one(candidate: dict, broker: Broker, log_id: str | None) -> dict | No
 
 def judge_candidates_with_llm(
     candidates: list[dict], broker: Broker, log_id: str | None = None,
+    on_progress: "Callable[[int, int], None] | None" = None,
 ) -> list[dict]:
     """Stage 2: judge every candidate pair concurrently.
 
     ARYX_FK_DYNAMIC_JUDGE_WORKERS bounds how many judge calls run at once —
     it never caps how many candidates get judged. Every item in *candidates*
     receives a verdict.
+
+    on_progress(done, total) — optional, called after each candidate's
+    verdict comes back (docs/falkordb_high_cpu_2026-07-29.md follow-up: this
+    stage can run for a long time with zero visibility — a live ingestion
+    job sat with no log output and near-zero CPU for 9+ minutes while
+    workers waited on individual LLM calls, indistinguishable from a hang
+    without this). Never lets a callback exception break judging.
     """
     if not candidates:
         return []
     settings = get_settings()
     workers = max(1, settings.fk_dynamic_judge_workers)
+    total = len(candidates)
+    done = 0
     links: list[dict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_judge_one, c, broker, log_id) for c in candidates]
@@ -418,6 +429,12 @@ def judge_candidates_with_llm(
             link = future.result()
             if link is not None:
                 links.append(link)
+            done += 1
+            if on_progress is not None:
+                try:
+                    on_progress(done, total)
+                except Exception:  # noqa: BLE001 — progress reporting must never break judging
+                    logger.warning("dynamic_fk on_progress callback failed", exc_info=True)
     return links
 
 
@@ -425,6 +442,7 @@ def detect_dynamic_fk_links(
     plans: list[dict], broker: Broker,
     already_linked: set[tuple[str, str]] | None = None,
     log_id: str | None = None,
+    on_progress: "Callable[[int, int], None] | None" = None,
 ) -> list[dict]:
     """Full Stage 1 + Stage 2 dynamic FK detection over *plans*.
 
@@ -432,6 +450,10 @@ def detect_dynamic_fk_links(
     should be the set of (source_type, target_type) pairs those column-name
     passes already resolved, so this stage only fills the gap they miss —
     it never duplicates or overrides an already-found relationship.
+
+    on_progress — see judge_candidates_with_llm; threaded through so the
+    caller (ingest_confirmed) can report real progress during the slow,
+    uncapped, per-candidate LLM-judge stage.
     """
     settings = get_settings()
     if not settings.fk_dynamic_detection_enabled or len(plans) < 2:
@@ -439,7 +461,7 @@ def detect_dynamic_fk_links(
     t0 = time.monotonic()
     candidates = generate_candidate_pairs(plans, already_linked=already_linked, log_id=log_id)
     t1 = time.monotonic()
-    links = judge_candidates_with_llm(candidates, broker, log_id=log_id)
+    links = judge_candidates_with_llm(candidates, broker, log_id=log_id, on_progress=on_progress)
     t2 = time.monotonic()
     logger.info(
         "ingest_timing log_id=%s stage=dynamic_fk plans=%d candidates=%d "

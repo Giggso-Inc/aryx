@@ -1,7 +1,7 @@
 """Unit tests for post-failure prevention guards (session/BOM/summary/telemetry)."""
 from __future__ import annotations
 
-from aryx.cpq.bom_gate import check_provenance, validate_before_payload
+from aryx.cpq.bom_gate import check_provenance, recheck_constraints, validate_before_payload
 from aryx.cpq.session_guard import (
     CLARIFY_STREAK_MAX,
     HISTORY_CAP,
@@ -94,11 +94,169 @@ def test_bom_gate_hard_fail_never_ok_on_bad_value():
     s.filled = {"hW": "NOPE"}
     s.filled_source = {"hW": "auto"}
     engine = type("E", (), {
-        "apply_constraint_rules": staticmethod(lambda *a, **k: ({}, [])),
+        "apply_constraint_rules": staticmethod(lambda *a, **k: {}),
     })()
     result = validate_before_payload(engine, [attr], s, [], None)
     assert result.ok is False
     assert "blocked" in result.catch_message.lower() or "gate" in result.catch_message.lower()
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §9 — the ONLY
+# call site that swapped apply_constraint_rules' argument order AND
+# unpacked its single-dict return as a 2-tuple, crashing every confirm
+# with an active constraint rule ("'str' object has no attribute
+# 'target_attr_id'" — session.filled's dict landed in the `rules` param).
+
+def test_recheck_constraints_calls_engine_with_correct_argument_order():
+    """Regression: must call (attrs, rules, filled, bml_eval=...), not
+    (attrs, filled, rules, ...) — the real engine signature crashes on the
+    swapped order since `for rule in rules` would iterate a dict's keys."""
+    attr = _attr("hW", "Hardware", [("H1", "H1"), ("H45", "H45")])
+    s = CpqSession()
+    s.filled = {"hW": "H45"}
+    seen_args = {}
+
+    def _fake_apply_constraint_rules(attrs, rules, filled, bml_eval=None):
+        seen_args["attrs"] = attrs
+        seen_args["rules"] = rules
+        seen_args["filled"] = filled
+        return {}
+
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(_fake_apply_constraint_rules),
+    })()
+    con_rules = ["a real rule object, not a dict"]
+    result = recheck_constraints(engine, [attr], s, con_rules, None)
+    assert result == []
+    # filled must be the actual filled dict, rules must be the rule list —
+    # the exact swap that used to crash every confirm.
+    assert seen_args["filled"] == {"hW": "H45"}
+    assert seen_args["rules"] == con_rules
+
+
+def test_recheck_constraints_flags_value_outside_recomputed_allowed_set():
+    """A filled value the freshly recomputed constraint no longer allows
+    must surface as a structured, auto-clearable violation — not a hard-
+    fail message (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
+    §11: the engine can't guess the replacement, so the caller re-asks)."""
+    attr = _attr("hW", "Hardware", [("H1", "H1"), ("H45", "H45")])
+    s = CpqSession()
+    s.filled = {"hW": "H45"}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["H1"]},
+        ),
+    })()
+    violations = recheck_constraints(engine, [attr], s, ["some rule"], None)
+    assert len(violations) == 1
+    assert violations[0].attr.variable_name == "hW"
+    assert violations[0].current_value == "H45"
+    assert violations[0].allowed == ["H1"]
+
+
+def test_recheck_constraints_passes_when_filled_value_still_allowed():
+    attr = _attr("hW", "Hardware", [("H1", "H1"), ("H45", "H45")])
+    s = CpqSession()
+    s.filled = {"hW": "H45"}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["H1", "H45"]},
+        ),
+    })()
+    assert recheck_constraints(engine, [attr], s, ["some rule"], None) == []
+
+
+def test_validate_before_payload_stale_constraint_does_not_hard_fail():
+    """Live-confirmed 2026-07-29: a stale constraint violation (e.g. Carry
+    Type/Frequency Bands auto-filled before Product narrowed their allowed
+    set) must come back as ok=False + stale_violations, NOT as a hard-fail
+    catch_message — the caller re-asks instead of blocking."""
+    attr = _attr("hW", "Hardware", [("H1", "H1"), ("H45", "H45")])
+    s = CpqSession()
+    s.filled = {"hW": "H45"}
+    s.filled_source = {"hW": "auto"}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["H1"]},
+        ),
+    })()
+    result = validate_before_payload(engine, [attr], s, ["some rule"], None)
+    assert result.ok is False
+    assert result.errors == []
+    assert result.catch_message == ""
+    assert len(result.stale_violations) == 1
+    assert result.stale_violations[0].attr.variable_name == "hW"
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §12 — external
+# review of §11's fix caught 2 real gaps, fixed here:
+# (1) an unexpected engine exception used to be swallowed as "no
+#     violations" (fail OPEN) instead of a hard fail (fail CLOSED).
+# (2) multi-select attrs were invisible to the recheck — it only ever
+#     read session.filled, never session.filled_multi.
+
+def test_validate_before_payload_hard_fails_on_unexpected_constraint_exception():
+    """An unexpected error during constraint recheck must hard-fail
+    (hallucinated/unverifiable state), never silently pass as if no
+    violations were found."""
+    attr = _attr("hW", "Hardware", [("H1", "H1"), ("H45", "H45")])
+    s = CpqSession()
+    s.filled = {"hW": "H45"}
+
+    def _raises(attrs, rules, filled, bml_eval=None):
+        raise RuntimeError("boom")
+
+    engine = type("E", (), {"apply_constraint_rules": staticmethod(_raises)})()
+    result = validate_before_payload(engine, [attr], s, ["some rule"], None)
+    assert result.ok is False
+    assert result.stale_violations == []
+    assert result.errors and "boom" in result.errors[0]
+    assert result.catch_message != ""
+
+
+def test_recheck_constraints_detects_stale_multi_select_value():
+    """A multi-select attr's currently-selected value(s) must be checked
+    against the recomputed allowed set too — session.filled_multi, not
+    just session.filled."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="carrierSel", display_label="Carrier Selection",
+        required=False, default_value="", select_type="multi",
+        options=[
+            MenuOption(item_value="ATT", display_name="ATT/FirstNet"),
+            MenuOption(item_value="VZW", display_name="Verizon"),
+        ],
+    )
+    s = CpqSession()
+    s.filled_multi = {"carrierSel": ["ATT", "VZW"]}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["VZW"]},
+        ),
+    })()
+    violations = recheck_constraints(engine, [attr], s, ["some rule"], None)
+    assert len(violations) == 1
+    assert violations[0].attr.variable_name == "carrierSel"
+    assert "ATT" in violations[0].current_value
+    assert "VZW" not in violations[0].current_value
+
+
+def test_recheck_constraints_multi_select_passes_when_all_values_still_allowed():
+    attr = ConfigAttr(
+        entity_id=1, variable_name="carrierSel", display_label="Carrier Selection",
+        required=False, default_value="", select_type="multi",
+        options=[
+            MenuOption(item_value="ATT", display_name="ATT/FirstNet"),
+            MenuOption(item_value="VZW", display_name="Verizon"),
+        ],
+    )
+    s = CpqSession()
+    s.filled_multi = {"carrierSel": ["ATT", "VZW"]}
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(
+            lambda attrs, rules, filled, bml_eval=None: {1: ["ATT", "VZW"]},
+        ),
+    })()
+    assert recheck_constraints(engine, [attr], s, ["some rule"], None) == []
 
 
 def test_summary_missing_fields_detected():

@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from aryx.api.ask_api import _llm_split_compound_change_and_question
+from aryx.api.ask_api import (
+    _is_change_value_decline,
+    _llm_classify_is_cpq_question,
+    _llm_split_compound_change_and_question,
+    _llm_split_multi_attr_options_query,
+)
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
     build_candidate_bundles,
@@ -207,5 +212,192 @@ def test_compound_split_fails_closed_on_malformed_json():
         result = _llm_split_compound_change_and_question(
             "make product as X and what is the carrier being selected",
             workspace_id=1,
+        )
+    assert result is None
+
+
+# ── docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10 (QA issue #2) ─
+# Learned directly from §6's regex miss ("wanted" vs "want") — these pin
+# the stemmed forms so the same class of gap can't reopen here.
+
+def test_change_value_decline_matches_common_phrasings():
+    for phrase in [
+        "I don't want to change product",
+        "I don't want to change it",
+        "do not want to change this",
+        "no changes please",
+        "not changing anything",
+        "leave it as is",
+        "keep it the way it is",
+        "never mind",
+        "nevermind",
+        "cancel that",
+        "cancel this",
+        "skip this",
+    ]:
+        assert _is_change_value_decline(phrase), f"should match: {phrase!r}"
+
+
+def test_change_value_decline_matches_stemmed_verb_forms():
+    """The earlier regex attempt (§6) missed 'wanted' vs 'want' — pin the
+    stemmed forms here so this decline check can't repeat that mistake."""
+    for phrase in [
+        "I don't wanted to change the attribute",
+        "I don't wanting to change this",
+    ]:
+        assert _is_change_value_decline(phrase), f"should match: {phrase!r}"
+
+
+def test_change_value_decline_does_not_match_bare_no_or_real_values():
+    """Bare 'no' must NOT match — it's a legitimate value for yes/no-shaped
+    attrs, and a real attempted value must still reach apply_answer."""
+    for phrase in ["no", "No", "H45", "APX NEXT XE", "ATT/FirstNet"]:
+        assert not _is_change_value_decline(phrase), f"must not match: {phrase!r}"
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15/§18 — these
+# reversed/contrastive-phrasing findings were superseded upstream by a
+# dedicated module (`aryx.cpq.replacement_clause`, see
+# tests/test_cpq_replacement_clause.py for its own full coverage).
+# `_extract_replacement_clause` here is now a thin wrapper returning
+# (wanted, rejected) instead of a single string — assertions updated to
+# match; the phrasings pinned are unchanged.
+
+def test_extract_replacement_clause_cuts_trailing_contrastive_word():
+    from aryx.api.ask_api import _extract_replacement_clause
+    assert _extract_replacement_clause("prefer Premium over Standard")[0] == "Premium"
+    assert _extract_replacement_clause("rather Premium than Standard")[0] == "Premium"
+    assert _extract_replacement_clause(
+        "use Premium instead of Standard",
+    )[0] == "Premium"
+
+
+def test_extract_replacement_clause_unaffected_without_contrast():
+    from aryx.api.ask_api import _extract_replacement_clause
+    assert _extract_replacement_clause(
+        "I don't want Standard, use Premium",
+    )[0] == "Premium"
+    assert _extract_replacement_clause("use Premium")[0] == "Premium"
+    assert _extract_replacement_clause("no cue here at all") == (None, None)
+
+
+def test_extract_replacement_clause_handles_reversed_instead_of_phrasing():
+    from aryx.api.ask_api import _extract_replacement_clause
+    assert _extract_replacement_clause(
+        "instead of Standard, prefer Premium",
+    )[0] == "Premium"
+    # bare "instead" (no "of") must still work as a direct cue — the
+    # rejected value must never leak into the wanted clause, even if the
+    # cue word itself is retained as a stylistic leftover.
+    _wanted, _rejected = _extract_replacement_clause("not Standard, instead Premium")
+    assert "Premium" in _wanted
+    assert "Standard" not in _wanted
+    assert _rejected == "Standard"
+
+
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — "what is the
+# error" wrongly refused as out-of-scope because the mid-session Q&A
+# classifier had no idea the prior turn was the engine's own gate error.
+
+def test_llm_classify_is_cpq_question_includes_prior_context_when_given():
+    """The mid-session call site (via _synthesise) passes prior_context —
+    it must actually reach the LLM prompt."""
+    captured = {}
+
+    def _fake_chat(tier, sys_prompt, user_prompt, workspace_id=1):
+        captured["user_prompt"] = user_prompt
+        return '{"classification": "quote"}', 10, 5
+
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=_fake_chat):
+        result = _llm_classify_is_cpq_question(
+            "what is the error", workspace_id=1,
+            prior_context="assistant: Configuration gate blocked the BOM payload.",
+        )
+    assert result is True
+    assert "RECENT CONVERSATION" in captured["user_prompt"]
+    assert "gate blocked the BOM payload" in captured["user_prompt"]
+
+
+def test_llm_classify_is_cpq_question_omits_context_block_when_not_given():
+    """The fresh-turn router call site passes no prior_context at all —
+    its prompt must stay exactly as before, unchanged."""
+    captured = {}
+
+    def _fake_chat(tier, sys_prompt, user_prompt, workspace_id=1):
+        captured["user_prompt"] = user_prompt
+        return '{"classification": "not_quote"}', 10, 5
+
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=_fake_chat):
+        result = _llm_classify_is_cpq_question("what's the weather", workspace_id=1)
+    assert result is False
+    assert "RECENT CONVERSATION" not in captured["user_prompt"]
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 3 — "what are the
+# Frequency Bands and Wireless Carrier available?" must answer BOTH
+# attributes, not silently drop one or get misread as a label collision.
+
+def test_llm_split_multi_attr_options_query_splits_two_real_attributes():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="700_800", display_name="700/800 MHz")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    fake_reply = (
+        '{"is_multi_attr": true, '
+        '"questions": ["what are the Frequency Bands available", '
+        '"what is the Wireless Carrier available"]}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_multi_attr_options_query(
+            "what are the Frequency Bands and Wireless Carrier available?",
+            [freq, carrier], workspace_id=1,
+        )
+    assert result == [
+        "what are the Frequency Bands available",
+        "what is the Wireless Carrier available",
+    ]
+
+
+def test_llm_split_multi_attr_options_query_none_for_single_attribute():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="700_800", display_name="700/800 MHz")],
+    )
+    fake_reply = '{"is_multi_attr": false, "questions": []}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_multi_attr_options_query(
+            "what are the Frequency Bands available?", [freq], workspace_id=1,
+        )
+    assert result is None
+
+
+def test_llm_split_multi_attr_options_query_fails_closed_on_malformed_json():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="700_800", display_name="700/800 MHz")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json", 1, 1)):
+        result = _llm_split_multi_attr_options_query(
+            "what are the Frequency Bands and Wireless Carrier available?",
+            [freq, carrier], workspace_id=1,
         )
     assert result is None

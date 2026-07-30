@@ -226,6 +226,9 @@ def has_consumable_pending_state(session_data: dict[str, Any] | None) -> bool:
         return True
     if session_data.get("pending_multi_intent_vn"):
         return True
+    # PROMPT 7: constrained option / family / "did you mean" lists
+    if session_data.get("pending_scope_candidates"):
+        return True
     return False
 
 
