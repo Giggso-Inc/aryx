@@ -316,17 +316,26 @@ class Settings(BaseSettings):
         ),
     )
     discovery_max_payload_mb: int = Field(
-        default=300,
+        default=512,
         description=(
-            "Max size (MB) of a single serialized document-discovery result "
-            "written to aryx_discovery in one INSERT. A multi-file tabular "
-            "batch (e.g. dozens of BigMachines/Oracle CPQ CSV catalog "
-            "exports) that exceeds this is rejected with a clear error at "
-            "the application layer instead of being attempted as one giant "
-            "JSONB write -- confirmed live that an oversized single write "
-            "can overrun Postgres's wire-protocol message-length framing "
-            "and get the connection killed outright ('invalid message "
-            "length'), not just run slowly. Override with "
+            "Max size (MB), AFTER gzip compression, of a single document-"
+            "discovery result written to aryx_discovery in one INSERT "
+            "(migration 0036: gzip-compressed JSON in a BYTEA column). A "
+            "multi-file tabular batch (e.g. dozens of BigMachines/Oracle "
+            "CPQ CSV catalog exports) whose compressed size exceeds this "
+            "is rejected with a clear error at the application layer "
+            "instead of being attempted as one giant write -- confirmed "
+            "live that an oversized single write can overrun Postgres's "
+            "wire-protocol message-length framing and get the connection "
+            "killed outright ('invalid message length'), not just run "
+            "slowly. Earlier versions of this guard measured the RAW "
+            "(uncompressed) JSONB size and were capped near Postgres's "
+            "hard, non-configurable ~256MB limit on a single JSONB array's "
+            "serialized size (confirmed live via psycopg.errors."
+            "ProgramLimitExceeded on a 33-file batch) -- BYTEA has no such "
+            "array-size restriction (TOASTed up to ~1GB), and compressing "
+            "text-heavy CSV data before writing buys substantial headroom "
+            "on top of that, hence the higher default here. Override with "
             "ARYX_DISCOVERY_MAX_PAYLOAD_MB."
         ),
     )
