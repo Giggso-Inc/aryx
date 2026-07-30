@@ -626,6 +626,115 @@ def _cpq_summary_text(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
 
 
+def _build_attr_options_text(
+    req: "AskRequest", session: Any, attrs: list, attr_q: Any,
+) -> str | None:
+    """Build "The available options for X are: ..." text for one already-
+    resolved attribute, constrained to the currently-active allowed set.
+    Returns None when the attribute has no presentable options at all.
+
+    Factored out of `_handle_cpq_qa`'s single-attr fast path (docs/
+    config_consistency_issues_2026-07-30.md issue 3) so the same constrained-
+    options logic can answer more than one attribute in one turn — a
+    customer asking about 2+ different attributes must get both answered,
+    not have `detect_attr_query`'s single-best-match nature silently drop
+    the second one.
+    """
+    _presentable = [o for o in attr_q.options if o.display_name.strip()]
+    if not _presentable:
+        return None
+    # Constrain to values compatible with what's already selected
+    # (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 2 —
+    # confirmed live: this Q&A fast path, exercised once the config is
+    # already awaiting_approval, listed all 325 raw Product codes instead
+    # of the ~2 an active constraint rule actually allows; the first fix
+    # attempt only patched _run_cpq_turn's OWN separate options-query
+    # block, which isn't the one reached here).
+    _qa_catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    _, _qa_con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
+        req.workspace_id, _qa_catalog_prefix)
+    _qa_bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, _qa_catalog_prefix)
+    _qa_constrained = _cpq_engine.apply_constraint_rules(
+        attrs, _qa_con_rules, session.filled, _qa_bml_eval)
+    _qa_allowed = _qa_constrained.get(attr_q.entity_id)
+    if _qa_allowed is not None:
+        _presentable = [o for o in _presentable if o.item_value in _qa_allowed]
+    _numbered = "\n".join(
+        f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
+    )
+    return (
+        f"The available options for **{_cpq_engine.disambiguated_label(attr_q, attrs)}** "
+        f"are:\n\n{_numbered}"
+    )
+
+
+def _llm_split_multi_attr_options_query(
+    question: str, attrs: list, workspace_id: int,
+) -> list[str] | None:
+    """LLM-first check: does this options-query ask about 2+ genuinely
+    DIFFERENT attributes at once (docs/config_consistency_issues_2026-07-30.md
+    issue 3)?
+
+    "what are the Frequency Bands and Wireless Carrier available?" must
+    answer BOTH — `detect_attr_query` only ever returns a single best
+    match, and (before the `detect_label_collision` grouping fix,
+    engine.py) this exact question was wrongly treated as a single 3-way
+    label collision even though "Wireless Carrier" shares zero tokens
+    with "Frequency Bands" and isn't ambiguous at all. Those are two
+    different bugs: a genuine label collision needs disambiguation
+    (unchanged, still handled first); a compound multi-attribute mention
+    needs BOTH answered, never a pick-one prompt.
+
+    LLM-first rather than pure label-substring matching so this also
+    catches paraphrased/synonym attribute mentions a literal-label check
+    would miss — same "don't guess with a fragile heuristic" reasoning
+    that moved earlier compound-detection work in this codebase
+    (_llm_split_compound_change_and_question) off deterministic splitting.
+
+    Scoped to `_relevant_intent_candidates`' own word-overlap narrowing
+    (fallback_to_full=False — if NOTHING plausibly overlaps, there's
+    nothing to split) so the prompt stays bounded on large catalogs and
+    this never even calls the LLM for an unrelated question. Returns None
+    when fewer than 2 real candidates overlap, or when the LLM's own
+    judgment says this isn't genuinely a multi-attribute question —
+    caller falls through to the existing single-attr fast path unchanged.
+    """
+    candidates = _relevant_intent_candidates(question, attrs, fallback_to_full=False)
+    if len(candidates) < 2:
+        return None
+    catalog_lines = "\n".join(
+        f"- \"{a.display_label}\" (variable_name={a.variable_name})"
+        for a in candidates
+    )
+    sys = (
+        "A customer asked a product-configuration assistant about the "
+        "available options for one or more attributes. Determine whether "
+        "the question asks about TWO OR MORE genuinely DIFFERENT "
+        "attributes from the CANDIDATE list below — not one attribute "
+        "whose own label happens to be ambiguous or shared by several "
+        "catalog entries (that is a separate disambiguation concern, not "
+        "a multi-attribute question). If it names 2+ different "
+        "attributes, split it into that many self-contained per-attribute "
+        "questions, each rephrased in the customer's own words. Never "
+        "invent an attribute that isn't named in the message."
+    )
+    user = (
+        f"CANDIDATE ATTRIBUTES:\n{catalog_lines}\n\n"
+        f"MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"is_multi_attr": true|false, '
+        '"questions": ["<self-contained question 1>", "<question 2>", ...]}'
+    )
+
+    def _validate(parsed: dict) -> list[str] | None:
+        if not parsed.get("is_multi_attr"):
+            return None
+        raw_qs = parsed.get("questions") or []
+        qs = [q.strip() for q in raw_qs if isinstance(q, str) and q.strip()]
+        return qs if len(qs) >= 2 else None
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
 def _handle_cpq_qa(
     req: "AskRequest",
     session: Any,
@@ -672,38 +781,54 @@ def _handle_cpq_qa(
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         }
 
+    # docs/config_consistency_issues_2026-07-30.md issue 3 — compound
+    # multi-attribute options query, must run BEFORE the single-attr fast
+    # path below: detect_attr_query only ever returns ONE best match, so
+    # "what are the Frequency Bands and Wireless Carrier available?" would
+    # otherwise silently answer just one and drop the other (or, before the
+    # detect_label_collision grouping fix above, get wrongly treated as a
+    # 3-way label collision — a different, deterministic bug; this one is
+    # a customer genuinely naming 2+ real, unambiguous attributes at once).
+    # LLM-first, gated behind a cheap options-keyword + conjunction
+    # pre-check so the common single-attribute case never pays this call.
+    if (
+        any(kw in req.question.lower() for kw in _cpq_engine._OPTIONS_KEYWORDS)
+        and (" and " in f" {req.question.lower()} " or "," in req.question)
+    ):
+        _multi_qs = _llm_split_multi_attr_options_query(
+            req.question, attrs, req.workspace_id,
+        )
+        if _multi_qs:
+            _multi_answers = []
+            for _sub_q in _multi_qs:
+                _sub_attr = _cpq_engine.detect_attr_query(_sub_q, attrs)
+                _sub_answer = (
+                    _build_attr_options_text(req, session, attrs, _sub_attr)
+                    if _sub_attr else None
+                )
+                if _sub_answer:
+                    _multi_answers.append(_sub_answer)
+                    session.last_qa_variable = _sub_attr.variable_name
+            if len(_multi_answers) >= 2:
+                qa_answer = "\n\n".join(_multi_answers)
+                _persist_cpq_history(req.workspace_id, req.question, qa_answer)
+                return {
+                    "answer": qa_answer, "terms": [],
+                    "tools_called": ["cpq_multi_attr_options()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+            # Fewer than 2 of the split questions actually resolved to a
+            # real attribute — fall through to the single-attr fast path
+            # unchanged rather than returning a half-answered response.
+
     # Fast path: question asks about a specific attribute's available options.
     # Uses attr.options already in memory from BmMenuItem — no graph query,
     # no LLM synthesis, no schema leakage possible.
     _attr_q = _cpq_engine.detect_attr_query(req.question, attrs)
-    _presentable = (
-        [o for o in _attr_q.options if o.display_name.strip()]
-        if _attr_q else []
-    )
-    if _presentable:
-        # Constrain to values compatible with what's already selected
-        # (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 2 —
-        # confirmed live: this Q&A fast path, exercised once the config is
-        # already awaiting_approval, listed all 325 raw Product codes
-        # instead of the ~2 an active constraint rule actually allows; the
-        # first fix attempt only patched _run_cpq_turn's OWN separate
-        # options-query block, which isn't the one reached here).
-        _qa_catalog_prefix = attrs[0].catalog_prefix if attrs else ""
-        _, _qa_con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
-            req.workspace_id, _qa_catalog_prefix)
-        _qa_bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, _qa_catalog_prefix)
-        _qa_constrained = _cpq_engine.apply_constraint_rules(
-            attrs, _qa_con_rules, session.filled, _qa_bml_eval)
-        _qa_allowed = _qa_constrained.get(_attr_q.entity_id)
-        if _qa_allowed is not None:
-            _presentable = [o for o in _presentable if o.item_value in _qa_allowed]
-        _numbered = "\n".join(
-            f"{i + 1}. {o.display_name}" for i, o in enumerate(_presentable)
-        )
-        qa_answer = (
-            f"The available options for **{_cpq_engine.disambiguated_label(_attr_q, attrs)}** "
-            f"are:\n\n{_numbered}"
-        )
+    qa_answer = _build_attr_options_text(req, session, attrs, _attr_q) if _attr_q else None
+    if qa_answer:
         # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §8: remember
         # what the customer just asked about so a follow-up bare-value reply
         # ("make it ATT/FirstNet") can be preferred toward THIS attribute
@@ -3622,6 +3747,13 @@ def _dispatch_intent_result(
     if result.category == IntentCategory.AMBIGUOUS:
         if not result.clarifying_question:
             return None
+        # docs/config_consistency_issues_2026-07-30.md issue 1 — an attribute
+        # currently hidden for this product (e.g. modelSelectionFrequency
+        # BandMsl_astro on a Single-Band order) must never be offered as a
+        # disambiguation candidate, no matter how well it scores.
+        _hidden_vns = _cpq_engine.apply_hiding_rules(
+            attrs, session.filled, hiding_rules, bml_eval,
+        )[2]
         # Persist grounded pending_clarify so the next bare reply (e.g.
         # "Hardware Version") resolves instead of falling to the nudge.
         return _set_pending_clarify_and_answer(
@@ -3633,6 +3765,9 @@ def _dispatch_intent_result(
             prompt_tokens=classify_prompt_tokens,
             completion_tokens=classify_completion_tokens,
             tool_name="cpq_llm_first_ambiguous()",
+            hidden_vns=_hidden_vns,
+            hiding_rules=hiding_rules,
+            rec_rules=rec_rules,
         )
 
     if result.category == IntentCategory.OUT_OF_SCOPE:
@@ -3785,6 +3920,7 @@ def _ground_clarify_candidates(
     attrs: list,
     session: Any,
     clarifying_question: str | None = None,
+    hidden_vns: set[str] | None = None,
 ) -> list:
     """Build candidate attrs from REAL catalog labels only.
 
@@ -3792,6 +3928,16 @@ def _ground_clarify_candidates(
     also accept labels that appear (validated) inside the LLM clarify text
     so examples like "Hardware Version" are kept only when they exist in
     the catalog — never free-invented names.
+
+    hidden_vns — docs/config_consistency_issues_2026-07-30.md issue 1:
+    live-confirmed bug — a change request ("add VHF... as frequency
+    bands") landed on modelSelectionFrequencyBandMsl_astro, an attribute
+    the catalog's own hiding rule gates OFF for Single-Band products,
+    because it remained a valid word-overlap candidate right alongside
+    the correct, visible modelSelectionFrequencyBands_astro in this same
+    disambiguation list. An attribute currently hidden for this product
+    must never be offered as something to change at all, regardless of
+    how well its label/name happens to score.
     """
     by_vn: dict[str, Any] = {}
     q_words = {
@@ -3799,8 +3945,11 @@ def _ground_clarify_candidates(
         if w not in _CLARIFY_STOPWORDS and len(w) >= 2
     }
     cq_lower = (clarifying_question or "").lower()
+    _hidden = hidden_vns or set()
 
     for a in attrs:
+        if a.variable_name in _hidden:
+            continue
         is_filled = (
             a.variable_name in session.filled
             or a.variable_name in session.filled_multi
@@ -3909,6 +4058,25 @@ def _llm_classify_pending_clarify_reply(
     return result if result is not None else ("unclear", None)
 
 
+def _reply_matches_attr_option(reply: str, attr: Any) -> bool:
+    """True if `reply` exactly names one of `attr`'s real catalog values.
+
+    docs/config_consistency_issues_2026-07-30.md issue 4 — a bare value
+    reply to a "which attribute did you mean?" clarify (e.g. "VHF") often
+    isn't unique across candidates (VHF is a legal option on 4 different
+    frequency-band-ish attrs in the APX NEXT catalog), so this alone
+    can't resolve the ambiguity — it's a building block for the
+    anchor-based tie-break below, not a standalone matcher.
+    """
+    r = (reply or "").strip().lower()
+    if not r:
+        return False
+    for o in (attr.options or []):
+        if r == (o.item_value or "").lower() or r == (o.display_name or "").lower():
+            return True
+    return False
+
+
 def _match_pending_clarify_reply(
     reply: str,
     candidates: list,
@@ -3961,6 +4129,26 @@ def _match_pending_clarify_reply(
     if len(hits) == 1:
         return ("resolved", hits[0])
 
+    # Value-based match, anchored on the last clarify this session actually
+    # resolved. docs/config_consistency_issues_2026-07-30.md issue 4 —
+    # confirmed live: a bare value like "VHF" is a legal option on several
+    # of these candidates at once, so an unanchored value match would still
+    # be ambiguous; but once the customer already picked one of them
+    # earlier (e.g. "Frequency Bands"), a later bare value that's valid for
+    # THAT specific attr should resolve to it directly rather than
+    # re-asking a question already answered.
+    _anchor_vn = session.last_clarified_attr_vn
+    if _anchor_vn and _anchor_vn in by_vn and _reply_matches_attr_option(r, by_vn[_anchor_vn]):
+        return ("resolved", _anchor_vn)
+
+    # No remembered anchor (or it doesn't apply here) — fall back to a
+    # plain value match, only when it's unique across candidates. Never
+    # guess when 2+ candidates share the value; that's still genuinely
+    # ambiguous and must go to the LLM/re-ask below.
+    value_hits = [a.variable_name for a in candidates if _reply_matches_attr_option(r, a)]
+    if len(value_hits) == 1:
+        return ("resolved", value_hits[0])
+
     # LLM-first: resolved / explicit decline / unclear.
     return _llm_classify_pending_clarify_reply(r, candidates, session, workspace_id)
 
@@ -3979,6 +4167,10 @@ def _apply_pending_clarify_resolution(
     """Replay the original vague utterance against the resolved attribute."""
     _clear_pending_clarify(session)
     clear_clarify(session, resolved_vn)
+    # Remember this resolution as the anchor for a later bare-value reply
+    # that's ambiguous across several candidates by itself (issue 4).
+    session.last_clarified_attr_vn = resolved_vn
+    session.last_clarified_turn = int(session.turn or 0)
     resolved_attr = next((a for a in attrs if a.variable_name == resolved_vn), None)
     if resolved_attr is None:
         answer = (
@@ -4168,11 +4360,41 @@ def _set_pending_clarify_and_answer(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     tool_name: str = "cpq_intent_gateway_clarify()",
+    hidden_vns: set[str] | None = None,
+    hiding_rules: list | None = None,
+    rec_rules: list | None = None,
 ) -> dict[str, Any]:
     """Persist grounded clarify state and return the clarify response."""
     candidates = _ground_clarify_candidates(
-        original_question, attrs, session, clarifying_question,
+        original_question, attrs, session, clarifying_question, hidden_vns=hidden_vns,
     )
+    # docs/config_consistency_issues_2026-07-30.md issue 4 — a fresh clarify
+    # can re-propose an attribute the customer already resolved earlier in
+    # this session (e.g. "Frequency Bands"), and the triggering utterance
+    # can be a bare value ("VHF") that's ALSO legal on other candidates
+    # (Frequency Band/Msl, Primary/Secondary Frequency) — genuinely
+    # ambiguous on its own, confirmed live. If the remembered anchor is
+    # among these candidates and the utterance is one of ITS real option
+    # values, resolve straight to it instead of re-asking a question
+    # already answered. Requires rule context (con_rules) to actually
+    # apply the change; without it there's nothing to replay against yet.
+    _anchor_vn = session.last_clarified_attr_vn
+    if (
+        _anchor_vn
+        and con_rules is not None
+        and hiding_rules is not None
+        and rec_rules is not None
+    ):
+        _anchor_attr = next(
+            (a for a in candidates if a.variable_name == _anchor_vn), None,
+        )
+        if _anchor_attr is not None and _reply_matches_attr_option(
+            original_question, _anchor_attr,
+        ):
+            return _apply_pending_clarify_resolution(
+                req, session, attrs, _anchor_vn, original_question,
+                hiding_rules, rec_rules, con_rules, bml_eval,
+            )
     # Single grounded candidate → skip the extra question; ask for value.
     if len(candidates) == 1 and con_rules is not None:
         _clear_pending_clarify(session)
@@ -5942,6 +6164,12 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         # Split succeeded but the change clause didn't
                         # resolve deterministically — fall through to the
                         # existing clarify path unchanged (safe default).
+                # docs/config_consistency_issues_2026-07-30.md issue 1 — never
+                # offer a currently-hidden-for-this-product attribute as a
+                # disambiguation candidate.
+                _hidden_vns = _cpq_engine.apply_hiding_rules(
+                    attrs, session.filled, hiding_rules, bml_eval,
+                )[2]
                 return _set_pending_clarify_and_answer(
                     req, session, attrs,
                     original_question=req.question,
@@ -5951,6 +6179,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     prompt_tokens=_gw.prompt_tokens,
                     completion_tokens=_gw.completion_tokens,
                     tool_name="cpq_intent_gateway_clarify()",
+                    hidden_vns=_hidden_vns,
+                    hiding_rules=hiding_rules,
+                    rec_rules=rec_rules,
                 )
             if _gw.action == "dispatch" and _gw.result:
                 clear_clarify(session, _gw.result.variable_name)
@@ -5962,6 +6193,10 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 if _mapped is not None:
                     # AMBIGUOUS via dispatch path must also set pending memory.
                     if _mapped.category == IntentCategory.AMBIGUOUS:
+                        # docs/config_consistency_issues_2026-07-30.md issue 1
+                        _hidden_vns = _cpq_engine.apply_hiding_rules(
+                            attrs, session.filled, hiding_rules, bml_eval,
+                        )[2]
                         return _set_pending_clarify_and_answer(
                             req, session, attrs,
                             original_question=req.question,
@@ -5971,6 +6206,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                             prompt_tokens=_gw.prompt_tokens,
                             completion_tokens=_gw.completion_tokens,
                             tool_name="cpq_llm_first_ambiguous()",
+                            hidden_vns=_hidden_vns,
+                            hiding_rules=hiding_rules,
+                            rec_rules=rec_rules,
                         )
                     _dispatched = _dispatch_intent_result(
                         req, session, attrs, _mapped,

@@ -14,6 +14,7 @@ from aryx.api.ask_api import (
     _is_change_value_decline,
     _llm_classify_is_cpq_question,
     _llm_split_compound_change_and_question,
+    _llm_split_multi_attr_options_query,
 )
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
@@ -254,42 +255,44 @@ def test_change_value_decline_does_not_match_bare_no_or_real_values():
         assert not _is_change_value_decline(phrase), f"must not match: {phrase!r}"
 
 
-# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 — review
-# finding: "prefer Premium over Standard" / "rather Premium than Standard"
-# still resolved to the REJECTED value (Standard), because the extracted
-# clause ("Premium over Standard") still contained it.
+# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15/§18 — these
+# reversed/contrastive-phrasing findings were superseded upstream by a
+# dedicated module (`aryx.cpq.replacement_clause`, see
+# tests/test_cpq_replacement_clause.py for its own full coverage).
+# `_extract_replacement_clause` here is now a thin wrapper returning
+# (wanted, rejected) instead of a single string — assertions updated to
+# match; the phrasings pinned are unchanged.
 
 def test_extract_replacement_clause_cuts_trailing_contrastive_word():
     from aryx.api.ask_api import _extract_replacement_clause
-    assert _extract_replacement_clause("prefer Premium over Standard") == "Premium"
-    assert _extract_replacement_clause("rather Premium than Standard") == "Premium"
+    assert _extract_replacement_clause("prefer Premium over Standard")[0] == "Premium"
+    assert _extract_replacement_clause("rather Premium than Standard")[0] == "Premium"
     assert _extract_replacement_clause(
         "use Premium instead of Standard",
-    ) == "Premium"
+    )[0] == "Premium"
 
 
 def test_extract_replacement_clause_unaffected_without_contrast():
     from aryx.api.ask_api import _extract_replacement_clause
     assert _extract_replacement_clause(
         "I don't want Standard, use Premium",
-    ) == "Premium"
-    assert _extract_replacement_clause("use Premium") == "Premium"
-    assert _extract_replacement_clause("no cue here at all") is None
+    )[0] == "Premium"
+    assert _extract_replacement_clause("use Premium")[0] == "Premium"
+    assert _extract_replacement_clause("no cue here at all") == (None, None)
 
-
-# docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §18 — review
-# finding: "instead of Standard, prefer Premium" (reversed phrasing) matched
-# on "instead" as the cue, capturing "of Standard, prefer Premium" — the
-# rejected value leaked through since that clause has no contrastive word
-# of its own to cut at.
 
 def test_extract_replacement_clause_handles_reversed_instead_of_phrasing():
     from aryx.api.ask_api import _extract_replacement_clause
     assert _extract_replacement_clause(
         "instead of Standard, prefer Premium",
-    ) == "Premium"
-    # bare "instead" (no "of") must still work as a direct cue.
-    assert _extract_replacement_clause("not Standard, instead Premium") == "Premium"
+    )[0] == "Premium"
+    # bare "instead" (no "of") must still work as a direct cue — the
+    # rejected value must never leak into the wanted clause, even if the
+    # cue word itself is retained as a stylistic leftover.
+    _wanted, _rejected = _extract_replacement_clause("not Standard, instead Premium")
+    assert "Premium" in _wanted
+    assert "Standard" not in _wanted
+    assert _rejected == "Standard"
 
 
 # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §14 — "what is the
@@ -328,3 +331,73 @@ def test_llm_classify_is_cpq_question_omits_context_block_when_not_given():
         result = _llm_classify_is_cpq_question("what's the weather", workspace_id=1)
     assert result is False
     assert "RECENT CONVERSATION" not in captured["user_prompt"]
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 3 — "what are the
+# Frequency Bands and Wireless Carrier available?" must answer BOTH
+# attributes, not silently drop one or get misread as a label collision.
+
+def test_llm_split_multi_attr_options_query_splits_two_real_attributes():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="700_800", display_name="700/800 MHz")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    fake_reply = (
+        '{"is_multi_attr": true, '
+        '"questions": ["what are the Frequency Bands available", '
+        '"what is the Wireless Carrier available"]}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_multi_attr_options_query(
+            "what are the Frequency Bands and Wireless Carrier available?",
+            [freq, carrier], workspace_id=1,
+        )
+    assert result == [
+        "what are the Frequency Bands available",
+        "what is the Wireless Carrier available",
+    ]
+
+
+def test_llm_split_multi_attr_options_query_none_for_single_attribute():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="700_800", display_name="700/800 MHz")],
+    )
+    fake_reply = '{"is_multi_attr": false, "questions": []}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_multi_attr_options_query(
+            "what are the Frequency Bands available?", [freq], workspace_id=1,
+        )
+    assert result is None
+
+
+def test_llm_split_multi_attr_options_query_fails_closed_on_malformed_json():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="700_800", display_name="700/800 MHz")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json", 1, 1)):
+        result = _llm_split_multi_attr_options_query(
+            "what are the Frequency Bands and Wireless Carrier available?",
+            [freq, carrier], workspace_id=1,
+        )
+    assert result is None

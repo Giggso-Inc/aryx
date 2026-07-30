@@ -903,6 +903,14 @@ Full combined suite run pending at time of writing.
 
 ## 16. FedRAMP (#6) — no longer inconclusive. Real mechanism found; fix not yet implemented.
 
+**Update: fixed.** See `docs/config_consistency_issues_2026-07-30.md` §6
+for the implemented fix — a new `CpqEngine.resync_stale_recommendations()`,
+wired into `evaluate_rules_loop`, that generically re-syncs any
+recommendation-governed attribute the engine (not the customer) filled
+once its driving attribute's value later disagrees with the
+recommendation. Scoped to `filled_source != user/hint/cascade`, the exact
+boundary `find_rule_inconsistencies` already used for detection-only.
+
 The earlier investigation concluded "no rule sets this attribute's Yes/No
 value via script — only hide/show." That conclusion was **wrong** —
 apparently because it only checked script-backed rules. A live query
