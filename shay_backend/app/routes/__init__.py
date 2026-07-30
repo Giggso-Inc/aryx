@@ -23,9 +23,11 @@ from .gg_app_connections import router as gg_app_connections_router
 from .gg_workspaces import router as gg_workspaces_router
 from .gg_channels import router as gg_channels_router
 from .sso import router as sso_router
+from .aryx import router as aryx_router
 from . import token_details  # Token details (module with router)
 
 __all__ = [
+    "aryx_router",
     "auth_router",
     "workspaces_router",
     "messages_router",
