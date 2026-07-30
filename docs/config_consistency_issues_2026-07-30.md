@@ -417,34 +417,28 @@ end via `_dispatch_intent_result`; without an anchor, a value shared by
 2+ candidates still correctly stays ambiguous (never guesses); without an
 anchor, a value unique to one candidate still resolves normally.
 
-### Two narrower bugs found as side effects — NOT fixed yet
+### Follow-up investigation (2026-07-30, second pass)
 
-1. **Raw, unvalidated literal write.** On "add VHF (136-174 MHz) as
-   frequency bands," the engine wrote the literal string
-   `"VHF (136-174 MHz)"` into Frequency Bands (`filled_source="hint"`)
-   and announced "Updated → VHF (136-174 MHz)" then, in the same
-   message, "Removed VHF (136-174 MHz) — no longer valid." Primary/
-   Secondary Frequency, updated in the same turn, correctly resolved to
-   clean `"VHF"` — only Frequency Bands' own write bypassed
-   `apply_answer`'s option validation. Exact code path not yet isolated
-   (multiple candidate write sites — `_handle_cascade`,
-   `_handle_cascade_multi`, the DECISION_REQUIRED_KEYS sibling-copy at
-   STEP 5 — were traced but none conclusively reproduced the raw string
-   in isolation).
+1. **"Raw, unvalidated literal write" — RETRACTED, not a bug.** Direct
+   catalog dump confirms `"VHF (136-174 MHz)"` is a real, distinct,
+   literal `item_value` on `modelSelectionFrequencyBands_astro` — a
+   separate, more specific catalog option from plain `"VHF"` (the
+   catalog also carries `"UHF (403-470 MHz)"`, `"900 (896-940 MHz)"`,
+   etc. as their own distinct codes alongside the bare bands). Direct
+   test against the real attribute confirms `apply_answer` correctly
+   matches the customer's exact phrase to this real option — it is not
+   bypassing validation, it's validly picking the more specific of two
+   real choices. The same-turn "Updated → VHF (136-174 MHz)" then
+   "Removed VHF (136-174 MHz) — no longer valid" sequence is therefore a
+   real, subsequent cascade/constraint narrowing (same class as Issue 1's
+   already-documented, correctly-behaving narrowing), not a validation
+   bypass — the exact rule that narrows it away wasn't pinned down this
+   pass, but the earlier "bypasses `apply_answer`" framing was wrong and
+   is withdrawn. Matches this session's Issue 2 precedent: a PDF/earlier
+   theory that doesn't survive direct verification gets retracted, not
+   patched around.
 
-   **Why not fixed yet:** `apply_answer`'s word-boundary matcher, traced
-   by hand, correctly reduces `"VHF (136-174 MHz)"` down to `"VHF"` — so
-   the bug isn't in the validation logic itself, it's that *this specific
-   write* never went through that function at all. Primary/Secondary
-   Frequency (same turn, same source message) got the clean value;
-   Frequency Bands didn't — meaning the write path differs per attribute,
-   and which one actually fired for Frequency Bands wasn't pinned down
-   before the investigation moved on. Patching one of the three suspect
-   sites without knowing which one is live would be fixing a guess, not
-   the bug — the same mistake the PDF's own root-cause theory made for
-   Issue 4.
-
-2. **Wrong-sibling write despite a correctly-pending attribute.** After
+2. **Wrong-sibling write despite a correctly-pending attribute — CONFIRMED, still not fixed.** After
    the Issue 4 fix correctly narrows to "Frequency Bands — choose one:
    VHF/UHF" with `session.pending_variables = ["modelSelectionFrequency
    Bands_astro"]`, the next turn's plain "UHF" reply was live-observed
@@ -456,8 +450,32 @@ anchor, a value unique to one candidate still resolves normally.
    context-free message before STEP 5 ever consults
    `session.pending_variables`. Needs its own live-repro-then-fix pass.
 
-   **Why not fixed yet:** this was only just discovered as a side effect
-   of verifying the Issue 4 fix — the gateway-runs-before-STEP-5 theory
-   above is an untested hypothesis based on code layout order, not a
-   confirmed trace. No live repro isolating this mechanism in isolation
-   has been run yet.
+   **Root cause, confirmed by code trace:** `_run_cpq_turn_inner`'s
+   LLM-first mid-session gateway block (`ask_api.py` ~line 6098) runs
+   *before* "STEP 5: Lock user's answer from previous turn" (~line
+   6681), and its guard condition
+   (`cpq_llm_first_enabled and not guided_mode and not
+   top_level_route_used()`) has **no check for
+   `session.pending_variables`** at all. So even when a single-select
+   question is actively pending (Bands, in this case), a bare reply like
+   "UHF" is still classified by the gateway first — context-free, with no
+   awareness that a specific attribute is already waiting on exactly this
+   reply — and if the gateway confidently dispatches it as a fresh
+   `CHANGE_REQUEST`/`CHANGE_REQUESTS_MULTI` naming a *different but
+   plausible* attribute (Frequency Band/Msl also legally accepts "UHF"),
+   it writes there and STEP 5 never even sees the turn. This is the same
+   *shape* of bug STEP 5's own `_looks_like_new_request` guard already
+   defends against for its own domain (a bare reply must not be
+   reinterpreted as a fresh request without a clear change-verb/arrow
+   signal) — the gateway has no equivalent guard.
+
+   **Why not fixed yet:** the fix requires either gating the gateway call
+   on `session.pending_variables` (skip it, or require a strong
+   new-request signal, whenever a single-select answer is actively
+   pending) or moving STEP 5's pending-answer check to run *before* the
+   gateway. Both are re-orderings of the core per-turn dispatch sequence
+   used by every conversation, not a localized change — they need
+   explicit scoping and dedicated regression coverage (specifically:
+   confirm a genuine "change X" mid-pending-answer still correctly
+   reaches the gateway, only a bare answer-shaped reply gets deferred to
+   STEP 5) before shipping, which hasn't been done yet.
