@@ -10,6 +10,7 @@ from aryx.store.oracle_pool import OracleConnectionWrapper, get_oracle_pool
 
 logger = logging.getLogger(__name__)
 
+
 class OracleWorkspaceStore:
     """WorkspaceStore backed by Oracle ADB 23ai via oracledb.
 
