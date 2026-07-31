@@ -675,7 +675,7 @@ instead of guessing). Shipped alongside Issues 4 and 7 on
 
 ## Issue 9 — Regression sweep for Issues 7/8 hung indefinitely on a bare host (pre-existing test-fixture bug, not a product bug)
 
-**Status: root-caused, confirmed pre-existing and unrelated to Issues 7/8. Not yet fixed (test-infra only).**
+**Status: root-caused, confirmed pre-existing and unrelated to Issues 7/8. Fixed, live-verified.**
 
 ### Problem statement
 
@@ -735,20 +735,570 @@ by this session's work. `git diff` also confirms neither fix touches
 
 ### Fix
 
-Not applied yet — flagged, not requested. The correct fix is narrow:
-patch `CpqEngine._batch_fetch` on the **class** (or route the fake
-reader's id→name map through `api._cpq_engine` instead of a fresh
-instance) so a locally-constructed `CpqEngine()` picks up the mock too.
-Recommended, not yet made — a one-line `monkeypatch.setattr` target
-change in `_fake_reader_with_batch_fetch` plus reusing `api._cpq_engine`
-in the two `detect_product_mention` tests.
+Two parts:
 
-### How the Issue 7/8 sign-off was actually completed
+1. `_fake_reader_with_batch_fetch` now patches `_batch_fetch` on
+   **`type(api._cpq_engine)`** (the class) instead of the `api._cpq_engine`
+   singleton instance, so a test that constructs its own local
+   `CpqEngine()` (the two `detect_product_mention` tests) still picks up
+   the mock.
+
+2. The third hang (`test_switch_preserves_valid_country_without_reasking`)
+   turned out to be a **different** real RDB call than `_batch_fetch` —
+   traced live via `faulthandler` (all-thread stack dump on a running
+   hung process) through THREE distinct call chains in turn, each fixed
+   individually before the next one surfaced:
+   `extract_flag_hints` → `_build_flag_keyword_index` →
+   `PostgresCpqRdb.fetch_function_scripts`; then `load_validation_rules`
+   → `_load_value_rules` → `IngestQuestionStore.list`; then
+   `payload_flow_exclusions` → `_detect_layout_tier` →
+   `fetch_layout_attr_assoc`. Mocking each `CpqEngine` method one at a
+   time is a moving target — a fourth call site surfaced every time the
+   previous one was patched, and the same gap was found independently
+   affecting 3 more tests elsewhere in the same file
+   (`test_confirmed_switch_seeds_product_identifier_without_reasking`,
+   its `..._when_family_name_wont_match` sibling, and
+   `_pending_menu_setup`'s consumers) that duplicate this same
+   fake-catalog-config setup inline rather than sharing a helper.
+
+   Rather than continuing to enumerate call sites, the fix targets the
+   actual **choke point**: every `PostgresCpqRdb`/`OracleCpqRdb` method
+   routes through its own `self._connection()`, and `IngestQuestionStore`
+   calls `get_pool(dsn)` in `__init__` — both ultimately resolve
+   `aryx.store.pool.get_pool`. A new `_block_real_rdb_access(monkeypatch)`
+   helper patches `get_pool` at its two import sites
+   (`aryx.store.pool.get_pool` for `rdb.py`'s lazy per-call import,
+   `aryx.store.ingest_question_store.get_pool` for its module-level
+   binding) to raise immediately instead of hanging on connection. This
+   is safe because every `PostgresCpqRdb` method already wraps its query
+   in `try/except Exception: ... return {}/[]` (the module's own
+   documented contract — "Failures are logged and surface as empty
+   results, never a hard error") and `_load_value_rules` wraps its
+   `IngestQuestionStore` call the same way — so a fast-failing
+   `get_pool` degrades exactly the way a genuinely unreachable
+   production DB would, it just doesn't hang getting there. Applied at
+   all 4 sites in `test_cpq_product_switch.py` that build this kind of
+   fake catalog config.
+
+**Live-verified**: full file now runs in **0.81s, 47 passed, 0 hangs**
+on a bare host (previously hung indefinitely at 3+ different tests).
+Broader sweep (`test_cpq_product_switch.py` + `test_cpq_pending_clarify.py`
++ the Issue 7/8 test files + 2 more thematically-related files): 77
+passed, 4 pre-existing failures confirmed unrelated (the same stale
+`_match_pending_clarify_reply` tuple-vs-string contract mismatch noted
+below Issue 11).
+
+### How the Issue 7/8 sign-off was actually completed (at the time, before this fix)
 
 Re-ran the full 9-file sweep (81 tests) inside the running `aryx-api-1`
 container instead, where the docker-compose network makes `postgres`
 genuinely reachable — **81 passed**, including
 `test_cpq_product_switch.py` in full, no hang. This is the same
 container-based workaround already established earlier in this session
-for the host/container Python-version mismatch, now shown to also cover
-this class of "incompletely-mocked network call" test-fixture issue.
+for the host/container Python-version mismatch — no longer necessary
+for this file now that the actual fix above is in place, but still a
+valid general fallback for any future, not-yet-discovered case of this
+same class of gap.
+
+---
+
+## Issue 10 — Five attributes never get their catalog-recommended value on a vanilla APX NEXT Single Band order
+
+**Status: root-caused (two distinct causes), not yet fixed — fix approach for the second cause deliberately deferred pending a blast-radius decision.**
+
+### Problem statement
+
+A vanilla APX NEXT Single Band order never picks up the catalog's own
+recommended values for five attributes, even though the values are
+valid, real catalog options:
+
+| Attribute | Catalog would recommend |
+|---|---|
+| `operationModeType_astro` | DIGITAL TRUNKING (SMARTNET/SMARTZONE AND P25 PHASE I INTEROPERABILITY) |
+| `solutionTypeDuration_astro` | 7 YEARS |
+| `multikeyType_astro` | NO MULTIKEY |
+| `modelSelectionHousing_astro` | BLACK |
+| `secureEncryptionType_astro` | AES |
+
+Live tracing showed these split into two unrelated root causes.
+
+### Cause A (3 attrs: operationModeType, secureEncryptionType, multikeyType) — genuine catalog-authoring gap, not an aryx bug
+
+All three are governed by the declarative rule **"Set Default for APX
+Next"**, whose condition is:
+
+```
+productSelectionProduct_all == "APX NEXT MULTI" OR "APX NEXT XE MULTI"
+```
+
+(an 18-attribute rule also covering `beltClipType_astro`,
+`antennasType_astro`, `batteryType_astro`, and others — all with the
+identical condition.) This condition was authored to cover only the
+**MULTI-band** product variants and was never extended to
+`"APX NEXT SINGLE BAND"`. For a Single Band order the rule simply never
+fires — confirmed by reading the condition's raw text directly, not a
+parsing or matching bug on our side (unlike Issue 7's casing bug, the
+strings here are exact and the tilde-OR list is just incomplete).
+
+### Cause B (2 attrs: modelSelectionHousing_astro, solutionTypeDuration_astro) — a real aryx engine ordering bug
+
+Unlike Cause A, these two attributes' governing BML **does** fire
+correctly:
+
+- Housing's paired rule **"Associated rec rule for Hide Housing
+  attribute if not XE model"** — condition script explicitly lists
+  `"APX NEXT SINGLE BAND"` and evaluates to `True`; recommends `BLACK`.
+- Duration's script evaluates to `'7 YEARS'` given
+  `solutionTypeDevices_astro == 'CLOUD RC'`.
+
+Live-tracing `evaluate_rules_loop`'s internals confirmed both attrs get
+correctly filled (`BLACK`, `7 YEARS`) in the turn's early passes. But a
+**separate hiding rule** later legitimately hides each attribute for
+this exact state — `"Hide Housing attribute if not XE model"` (Housing
+is genuinely not customer-choosable for non-XE models) and `"Hide
+Solution Type Duration if Solution Type<>Radio Management (MSI Hosted)
+(Molokai)"` (a module-specific condition). Once hidden, the attribute is
+correctly popped from `filled` (matching this doc's own established
+"hidden attrs must not carry stale values" principle) — but
+`evaluate_rules_loop` runs `apply_hiding_rules` before
+`apply_recommendation_rules` on every pass, and a hidden attr is dropped
+from the `attrs` list passed to recommendations. The "associated"
+recommendation rule — whose entire purpose, per its own name, is to
+silently backfill a BOM-payload value for an attribute the customer will
+never be shown — never gets a chance to run again, because by the time
+its condition would evaluate `True`, its target attribute is no longer
+in the list recommendations consider at all.
+
+This `"Associated rec rule for Hide X..."` pairing pattern (hide the
+question from the customer, but still silently default the backend
+value) is used **repeatedly** throughout this catalog — also seen for
+Encryption Bundle LACR, Essential Core Bundle, and Essential Security
+Bundle (Molokai) — so this ordering bug likely silently drops backend
+defaults for other hidden attributes too, not just these 2.
+
+### Fix — deliberately not yet applied
+
+Three candidate approaches were discussed:
+1. Run `apply_recommendation_rules` against the pre-hide attr list each
+   pass, so any rule can still backfill a hidden attr's backend value.
+2. Narrower: only exempt rules matching the `"Associated...Hide..."`
+   naming convention from the hidden-attr exclusion.
+3. Document only, decide the fix separately.
+
+Option 3 was chosen — this is a catalog-wide behavioral change (given
+how pervasive the "hide but still recommend" pattern is, a fix could
+surface many previously-silent backend defaults across many attributes
+and products at once), so the blast radius needs assessment before
+committing to an approach.
+
+### Verified directly against the raw source XML (`APX Next.xml`)
+
+Both causes were cross-checked against the actual BigMachines/Oracle CPQ
+export, not just the engine's parsed/ingested view of it — ruling out an
+ingestion or parsing bug as the explanation for either.
+
+**Cause A.** Rule `"Set Default for APX Next"` (`bm_config_rule id=
+19435387773`) carries a single `bm_config_rule_input` condition on
+`productSelectionProduct_all` (`attribute_id=39427019`):
+
+```
+value1 = "APX NEXT MULTI~APX NEXT XE MULTI"
+```
+
+— byte-for-byte the same tilde-OR list the engine parsed. Its
+`bm_config_rule_action` children confirm the per-attribute recommended
+values match exactly: `operationModeType_astro` (`attribute_id=
+19435386979`) → `"DIGITAL TRUNKING (SMARTNET/SMARTZONE AND P25 PHASE I
+INTEROPERABILITY)"`, `secureEncryptionType_astro` (`19435386991`) →
+`"AES"`, `multikeyType_astro` (`19435386993`) → `"NO MULTIKEY"`. The
+source data itself simply never lists `"APX NEXT SINGLE BAND"` in this
+condition — confirms Cause A is a genuine catalog-authoring gap, not
+anything introduced by our XML ingestion.
+
+**Cause B.** The hiding rule `"Hide Housing attribute if not XE model"`
+and `"Associated rec rule for Hide Housing attribute if not XE model"`
+reference two *different* condition functions (`19435386508` and
+`19435386509` respectively) — but pulling both `script_text` bodies from
+the XML shows they are **byte-for-byte identical** (`script_size=168`
+each, same 8-way product OR-list, both explicitly including
+`"APX NEXT SINGLE BAND"`):
+
+```
+if( ((productSelectionProduct_all=="APX NEXT INTL FED") OR
+     (productSelectionProduct_all=="APX NEXT XN SINGLE BAND") OR
+     (productSelectionProduct_all=="APX NEXT ENHANCED") OR
+     (productSelectionProduct_all=="APX NEXT MULTI") OR
+     (productSelectionProduct_all=="APX NEXT SINGLE BAND") OR
+     (productSelectionProduct_all=="APX NEXT INTL") OR
+     (productSelectionProduct_all=="APX NEXT SINGLE INTL") OR
+     (productSelectionProduct_all=="APX NEXT XN ALL"))){
+    return true;
+}
+return false;
+```
+
+The catalog authors cloned the exact same condition into both rules so
+they are guaranteed to fire together — there is no catalog-side scenario
+where Housing is hidden but the `BLACK` recommendation doesn't also
+apply. Separately, Duration's recommendation action (`attribute_id=
+19435387025`, its own function `id=22194395116`) matches the engine's
+live-evaluated script exactly:
+
+```
+if (solutionTypeDevices_astro=="RADIOCENTRAL PLUS CPS PROGRAMMING" OR
+    solutionTypeDevices_astro=="CLOUD RC") { retVal = "7 YEARS"; }
+```
+
+Since the hide-condition and its paired recommend-condition are
+literally identical source scripts (not just similarly-named or
+similarly-scoped), this rules out any alternate reading of the rules —
+Cause B is conclusively an aryx-side ordering bug in `evaluate_rules_loop`
+(hidden attrs excluded from `attrs` before recommendations get a chance
+to run against them), not a misconfigured or ambiguous catalog rule.
+
+---
+
+## Issue 11 — Compound "Frequency Bands + Wireless Carrier" change silently mis-bound to the wrong attribute
+
+**Status: root-caused (two chained bugs), fixed, live-verified.**
+
+### Problem statement
+
+Live transcript: after asking "what are the Frequency Bands and Wireless
+Carrier available?" (worked correctly), the customer tried to set both
+in one message:
+
+> Frequency Bands -700/800 MHz Wireless Carrier- ATT/FirstNet (provided
+> by Motorola)
+
+The gateway classified this as ambiguous and responded:
+
+> Which attribute did you mean? Reply with the name or the number:
+> Is provisioning required in the Motorola Solutions Authorized Cloud
+> environment? / Add SVX Video Wireless Remote Speaker Microphone /
+> Agency has Motorola evidence solution / Extend Range to 762-764 MHz /
+> Additional Frequency Bands / Secondary Frequency / Carrier Selection /
+> Primary Frequency
+
+— a candidate list containing **neither** of the two attributes the
+customer actually named. The customer then rephrased explicitly:
+
+> change Frequency Bands to 700/800 MHz and Wireless Carrier to
+> ATT/FirstNet (provided by Motorola)
+
+This time the system accepted it — but the response said **"Updated
+Carrier Selection → ATT/FirstNet"**, a completely different attribute
+(`carrierSelectionMultiSelect_astro`) than the one requested
+(`wirelessCarrier_astro`, "Wireless Carrier"). Frequency Bands was never
+confirmed either. Configuration then completed without either value
+having been correctly set — a silent wrong-attribute write plus a
+silently-dropped request, the customer only discovering it by inspecting
+the final JSON.
+
+### Root cause 1 — `_ground_clarify_candidates` ranks by label length, not relevance
+
+`_ground_clarify_candidates` (`ask_api.py`) scores every attr by
+word-overlap against the message, then — before this fix — sorted the
+survivors by `-len(display_label)` (longest label first) and truncated
+to the top 8. Reproduced live with the exact message: both real targets
+("Frequency Bands", "Wireless Carrier" — each a clean 2-word overlap)
+scored *more* relevant than every attr that actually made the cut, but
+lost the sort because their labels are short. The winners were all
+long-labeled, already-filled attrs matching on a single incidental word
+("Motorola" appears in the display label of three unrelated Yes/No
+attributes; "MHz" and "wireless" appear once each in two more) — a
+data shape that is common throughout this catalog's verbose,
+boilerplate-heavy attribute labels.
+
+### Root cause 2 — a stale candidate pool force-matches any follow-up reply
+
+Once root cause 1 seeded `session.pending_clarify_vns` with that wrong
+8-item list, `_handle_pending_clarify_turn` had no way to recognize that
+the customer's next, perfectly well-formed message was a **fresh**
+request rather than a reply to the earlier (wrong) clarify question — it
+unconditionally matched against the stale pool. `carrierSelectionMultiSelect_
+astro` ("Carrier Selection") happened to be in that pool *and* shares
+`ATT/FIRSTNET` as a real option value with the correct `wirelessCarrier_
+astro`, so it won the match — while the correct attribute was never even
+a candidate at that point (confirmed separately: `_resolve_target_
+description("Wireless Carrier", attrs)` resolves correctly to
+`wirelessCarrier_astro` in isolation — this is not a scoring bug in that
+function, purely a consequence of being trapped in the wrong pool).
+
+### Fix
+
+1. `_ground_clarify_candidates` now tracks each attr's overlap score
+   (with a large bonus for a label/variable_name explicitly grounded in
+   the LLM's own clarifying-question text) and sorts by **that score
+   first**; label length is only a tiebreaker among equally-relevant
+   candidates.
+2. `_handle_pending_clarify_turn` now runs a cheap escape-hatch check
+   before matching against the stale pool: if the message has an
+   explicit change-verb/arrow AND `_resolve_target_description` (run
+   unscoped, against every attr — not just the stale pool) confidently
+   resolves to a real attribute **outside** `pending_clarify_vns`, the
+   stale clarify is cleared and the turn falls through to normal
+   dispatch instead of force-matching. This mirrors the existing
+   `_pending_reply_looks_like_new_request` escape hatch STEP 5 already
+   has for the sibling `pending_variables` mechanism (Issue 4) — this
+   was the missing analog for `pending_clarify_vns`.
+
+### Live-verified, end-to-end, including the negative case
+
+Re-ran the exact transcript against the fixed code. The candidate list
+now correctly includes both real targets. The compound message no
+longer touches `carrierSelectionMultiSelect_astro` at all
+(`filled_multi["carrierSelectionMultiSelect_astro"] == []` throughout).
+It takes a few follow-up turns to fully apply both values (the pending-
+clarify resolution path binds to one attribute as a topic before
+re-confirming its value, rather than applying an inline value from the
+same message in one shot — a narrower, separate gap not in scope here),
+but each attribute is correctly asked in turn and set to the right
+value: `modelSelectionFrequencyBands_astro == "700/800 MHZ"`,
+`wirelessCarrier_astro == "ATT/FIRSTNET"`.
+
+Per explicit request, the negative case was also verified: when a
+cascade-triggered follow-up ("Additional Frequency Bands") was declined
+("no thanks, leave it"), the system accepted the decline gracefully
+("No problem — I'll leave Additional Frequency Bands as it is...")
+rather than re-forcing the question — matching the "ask the second
+value in the next turn; a decline is fine" behavior explicitly
+requested.
+
+2 new tests added to `tests/test_cpq_pending_clarify.py`:
+`test_relevance_beats_label_length_in_ground_candidates` and
+`test_stale_clarify_pool_does_not_misbind_a_fresh_named_request`. Full
+file run: 29 passed, 4 pre-existing failures confirmed unrelated (a
+stale contract mismatch in `test_match_reply_by_label`/`test_match_
+reply_by_index`/`test_match_reply_by_variable_name`/`test_unrelated_
+reply_does_not_misbind` — these assert `_match_pending_clarify_reply`
+returns a bare string, but it has returned a `(status, variable_name)`
+tuple since this session's LLM-first clarify-decline work; not touched
+by this fix, flagged for a separate cleanup).
+
+---
+
+## Issue 12 — Session only remembers ONE of the two attributes from a compound options query
+
+**Status: root-caused, fixed, live-verified. LLM classification consistency for this exact phrasing remains a separate, open, non-deterministic gap — see "What this fix does NOT guarantee" below.**
+
+### Problem statement
+
+Live transcript: after correctly answering "what are the Frequency Bands
+and Wireless Carrier available?" (both attributes' options listed
+correctly), the customer tried to set both at once:
+
+> Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet
+
+Instead of setting both, the response was:
+
+> Added Frequency Band to your quote — what value would you like?
+
+— followed by the configuration completing without either value applied.
+The customer's question: *why can't the LLM tell this belongs to the
+question it just answered?*
+
+### Root cause, confirmed by reading the code
+
+`CpqSession.last_qa_variable` (`state.py`) was a single `str` field whose
+entire purpose is telling the LLM classifier "the customer just asked
+about attribute X, so a short follow-up naming a value most likely
+refers to X" — exactly the signal needed here. But the compound
+options-query handler (`ask_api.py`, the `_multi_qs` loop) processes
+**multiple** attributes in one turn and did:
+
+```python
+for _sub_q in _multi_qs:
+    _sub_attr = _cpq_engine.detect_attr_query(_sub_q, attrs)
+    ...
+    session.last_qa_variable = _sub_attr.variable_name   # overwritten every iteration!
+```
+
+Each loop iteration **overwrites** the field — so after asking about
+both Frequency Bands and Wireless Carrier, the session only remembers
+whichever one was processed **last** ("Wireless Carrier"). "Frequency
+Bands" was silently forgotten as a follow-up-resolution hint. When the
+customer's next message named both attributes, the LLM's classification
+prompt carried a strong contextual anchor for only one of them — the
+other had no memory hint at all, leaving its resolution to depend purely
+on the LLM's own judgment for that one attribute, with nothing to
+stabilize it turn-to-turn.
+
+Live-verified before the fix: driving the exact transcript through
+`_run_cpq_turn` directly and inspecting `session_data["last_qa_variable"]`
+after the compound options-query turn showed only `"wirelessCarrier_
+astro"` — `"modelSelectionFrequencyBands_astro"` was already gone by the
+time the next turn needed it.
+
+### Fix
+
+`last_qa_variable: str` → `last_qa_variables: list[str]` throughout
+(`state.py`, `ask_api.py`'s three assignment sites, `intent_gateway.py`'s
+three read sites: the candidate-scoring boost in `build_candidate_
+bundles`, the LLM prompt's `customer_last_asked_about=` context line, and
+`_mutating_agrees`' corroboration check). The compound-query loop now
+collects every resolved attribute into one list and assigns it once
+after the loop, instead of overwriting a scalar on each pass. The LLM
+prompt's context line was also reworded to explicitly say "asked about
+ALL of these attributes at once" when there's more than one, rather than
+implying a single topic.
+
+**Live-verified**: re-running the exact transcript and inspecting
+`session_data["last_qa_variables"]` after the compound options-query
+turn now shows `["modelSelectionFrequencyBands_astro",
+"wirelessCarrier_astro"]` — both attributes correctly retained. 2 new
+tests: `tests/test_cpq_2026_07_28_fixes.py::test_compound_options_query_
+remembers_every_attribute_not_just_the_last` (pins the exact bug —
+asserts both survive, not just the last one) and the existing
+`test_cpq_intent_gateway.py` suite updated for the new list-typed field
+(3 assignments changed from a bare string to a single-item list; all 18
+tests in that file still pass unmodified otherwise). Broader sweep across
+`test_cpq_intent_gateway.py` + `test_cpq_pending_clarify.py` +
+`test_cpq_product_switch.py` + `test_cpq_llm_first_cutover_regression.py`:
+92 passed, only the same 4 pre-existing failures already flagged under
+Issue 11 (unrelated stale test contract).
+
+### Follow-up: the initial state fix alone didn't guarantee single-turn resolution
+
+The `last_qa_variables` fix above corrects a real, confirmed
+state-tracking bug — the session no longer silently forgets one of two
+just-discussed attributes. On its own, though, it did **not** make the
+"Add X as Y and Z as W" message resolve reliably in one turn: re-running
+it post-fix still sometimes landed on `ambiguous` rather than directly
+dispatching. The user asked directly why the LLM couldn't tie the
+follow-up back to the question it had just answered — that question led
+to the real structural root cause below.
+
+### Root cause 2 — `classify_intent`'s schema cannot represent two targets, and no splitter existed for change+change compounds
+
+`classify_intent`'s `GatewayIntentResult` (`intent_schema.py`) has
+**exactly one** `variable_name`/`value_ref` slot. It structurally cannot
+report "set Frequency Bands to VHF AND set Wireless Carrier to
+ATT/FirstNet" — a genuine two-target compound collapses to `ambiguous`
+(or an inconsistent single-target guess) no matter how well-formed the
+message is, *before* `last_qa_variables`/`_mutating_agrees`
+corroboration is ever consulted (that corroboration only fires once the
+LLM has already committed to a mutating category).
+
+A splitter already exists for the sibling case — **change + question**
+("change X and what is Y", `_llm_split_compound_change_and_question`) —
+and one already exists for **options + options**
+("what are the Frequency Bands and Wireless Carrier available?",
+`_llm_split_multi_attr_options_query`). Neither covers **change +
+change**. The change+question splitter's own docstring claimed that case
+was "already handled by CHANGE_REQUESTS_MULTI" — live-confirmed false:
+that category only ever corroborates a single already-resolved
+`variable_name`; it never applies a second one.
+
+Also confirmed live: the codebase's two generic full-catalog resolvers
+are not reliable enough to resolve a split fragment on their own once
+one exists — `detect_change_request("change Frequency Bands to VHF", ...)`
+resolved to the **wrong sibling** ("Primary Frequency", which also has a
+VHF option), and `_resolve_target_description` resolved the same text to
+an unrelated attribute entirely (the added word "change" itself picked
+up incidental vocabulary overlap elsewhere in the catalog).
+
+### Fix
+
+1. New `_llm_split_multi_attr_change_request` (`ask_api.py`), mirroring
+   `_llm_split_multi_attr_options_query`'s already-working pattern:
+   detects a genuine 2+-attribute change compound and splits it into
+   self-contained "change X to Y" strings. `last_qa_variables` is passed
+   into its prompt as explicit context ("the customer's immediately
+   preceding message already discussed: Frequency Bands, Wireless
+   Carrier — a follow-up naming these same attributes... is very likely
+   setting both of them, not a fresh ambiguous request") — directly
+   addressing the user's own diagnosis that this "Add" message should be
+   treated as continuing the prior topic, not a separate call.
+2. New `_resolve_split_change_text`, since the generic detectors proved
+   unreliable per the collisions above: resolves each split fragment
+   directly against the small, already-known `last_qa_variables` set
+   first (exact label containment, then a real option value of that same
+   attribute named in the text) — a strictly narrower and more precise
+   search than either generic catalog-wide detector — before falling
+   back to `detect_change_request` only when `last_qa_variables` doesn't
+   cover the fragment at all.
+3. Wired into the same gateway "clarify" branch the change+question
+   splitter already occupies: tried whenever that splitter reports "not
+   a change+question compound," resolving and applying every split
+   fragment via `_handle_cascade` in sequence — but only when **every**
+   fragment resolves (same never-half-apply-and-guess discipline as the
+   sibling splitter); otherwise falls through to the existing clarify
+   path completely unchanged.
+
+**Live-verified end-to-end**: re-running the exact reported transcript,
+"Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet" now
+resolves in a **single turn** — `tools_called: ['cpq_cascade()',
+'cpq_cascade()']`, `Frequency Bands: VHF`, `Wireless Carrier:
+ATT/FIRSTNET`, no clarify prompt at all. 7 new tests across
+`tests/test_cpq_llm_first_cutover_regression.py` (the new splitter's
+split/gate/fail-closed behavior, and the resolver's collision-avoidance
+pinning the exact wrong-sibling-match and wrong-attribute-match failures
+found live). Broader sweep across `test_cpq_llm_first_cutover_regression.py`
++ `test_cpq_intent_gateway.py` + `test_cpq_pending_clarify.py` +
+`test_cpq_product_switch.py` + `test_cpq_change_request_multi.py` +
+`test_cpq_grid_decline.py`: 112 passed, only the same 4 pre-existing
+failures already flagged (unrelated stale test contract). Full
+`test_cpq_2026_07_28_fixes.py` sweep: 54 passed, only the same
+pre-existing DNS-environment failure seen throughout this entire session.
+
+Root cause note, still accurate and still open: `_CHANGE_VERB_RE` (the
+shared deterministic change-verb gate used throughout this codebase)
+does not recognize "add" at all — confirmed via direct regex test. The
+LLM-first splitter above is what makes "Add X as Y" reliable now, not a
+deterministic detector; `detect_change_request`/`detect_change_requests_
+multi` still can't see this phrasing directly. A proposed complementary
+fix — recognizing the specific "`<name> as <value>`" construction as an
+additional unambiguous signal (mirroring how `→` is already treated
+alongside verbs), without touching the word "add" itself so genuine "add
+this accessory" requests are unaffected — remains undiscussed further;
+flagged here only if full deterministic (non-LLM-dependent) coverage for
+this phrasing is wanted later.
+
+### Follow-up 2 — a THIRD phrasing the "and"/";" pre-check gate still missed entirely
+
+After the fix above shipped, the customer hit the same symptom again
+with yet another compound phrasing that predates both "change...to..."
+and "Add...as...": the very first transcript that opened this whole
+investigation —
+
+> Frequency Bands -700/800 MHz Wireless Carrier- ATT/FirstNet (provided
+> by Motorola)
+
+— uses `-` as its separator, with **no** "and" and **no** `;` anywhere
+in the message. Both compound splitters (`_llm_split_compound_change_
+and_question` and the new `_llm_split_multi_attr_change_request`) are
+only ever *attempted* behind a shared pre-check:
+
+```python
+if " and " in _cq_lower or ";" in req.question:
+```
+
+Since this message matches neither keyword, **neither splitter was ever
+called at all** — straight through to the generic clarify prompt, no
+matter how much better that prompt's own candidate ranking had already
+gotten from Issue 11's fix. A keyword-only gate can never anticipate
+every way a customer might separate two requests (dashes, commas,
+newlines, bullet-style pastes from a spreadsheet, ...).
+
+**Fix**: the gate now also fires whenever `session.last_qa_variables`
+already holds 2+ entries — a cheap, keyword-free, context-driven signal
+that's exactly as strong as (and complements) the surface-level "and"/
+";" check, and directly uses the same `last_qa_variables` signal the
+customer had already pointed at as the right fix earlier in this
+investigation:
+
+```python
+_looks_compound = " and " in _cq_lower or ";" in req.question
+_recent_multi_topic = len(session.last_qa_variables or []) >= 2
+if _looks_compound or _recent_multi_topic:
+```
+
+**Live-verified**: re-running the exact original dash-separated
+transcript now resolves in a single turn —
+`tools_called: ['cpq_cascade()', 'cpq_cascade()']`, `Frequency Bands:
+700/800 MHZ`, `Wireless Carrier: ATT/FIRSTNET`, `Carrier Selection`
+confirmed untouched (`[]`). Regression sweep across the same 6 files as
+the previous fix: 112 passed, only the same 4 pre-existing failures
+already flagged. Full `test_cpq_2026_07_28_fixes.py` sweep re-run
+afterward for final sign-off.
