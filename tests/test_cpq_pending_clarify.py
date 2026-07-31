@@ -23,6 +23,7 @@ from aryx.api.ask_api import (
     _ground_clarify_candidates,
     _grounded_clarify_prompt,
     _handle_pending_clarify_turn,
+    _is_global_change_decline,
     _match_pending_clarify_reply,
     _set_pending_clarify_and_answer,
 )
@@ -72,6 +73,20 @@ def _service() -> ConfigAttr:
         select_type="single",
         options=_menu("Advantage", "Essential"),
         catalog_prefix="aSTRO25",
+    )
+
+
+def _update_flag() -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=4,
+        variable_name="update",
+        display_label="Update",
+        required=False,
+        default_value="false",
+        select_type="boolean",
+        options=[],
+        catalog_prefix="aSTRO25",
+        set_type="2",
     )
 
 
@@ -229,6 +244,90 @@ def test_pending_clarify_miss_reprompts_without_binding():
     assert session.pending_clarify_misses == 1
     assert session.pending_change_no_value_vn == ""
     assert "cpq_pending_clarify_reprompt()" in resp["tools_called"]
+
+
+def test_global_change_decline_matches_reported_phrase_only_without_replacement():
+    assert _is_global_change_decline(
+        "i don't want to change any attributes for now",
+    )
+    assert _is_global_change_decline(
+        "I don’t want to change any settings right now",
+    )
+    assert not _is_global_change_decline(
+        "I don't want to change any attributes; use Hardware Version",
+    )
+    assert not _is_global_change_decline(
+        "I don't want to change Hardware Version",
+    )
+
+
+def test_pending_clarify_global_change_decline_is_noop():
+    update, hardware = _update_flag(), _hw_version()
+    attrs = [update, hardware]
+    session = _session()
+    session.filled[update.variable_name] = "false"
+    session.display_filled[update.variable_name] = "false"
+    session.pending_clarify_vns = [update.variable_name, hardware.variable_name]
+    session.pending_clarify_question = "What is my current Primary Frequency set to?"
+    original_filled = dict(session.filled)
+    req = AskRequest(
+        question="i don't want to change any attributes for now",
+        workspace_id=1,
+        history=[],
+        session_data=session.to_dict(),
+    )
+
+    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
+        "aryx.api.ask_api._match_pending_clarify_reply",
+        return_value=("resolved", "update"),
+    ) as match_reply:
+        resp = _handle_pending_clarify_turn(
+            req,
+            session,
+            attrs,
+            hiding_rules=[],
+            rec_rules=[],
+            con_rules=[],
+            bml_eval=None,
+        )
+
+    assert resp is not None
+    assert resp["tools_called"] == ["cpq_pending_clarify_decline()"]
+    assert resp["answer"] == "No problem — no attributes were changed."
+    assert session.filled == original_filled
+    assert session.pending_clarify_vns == []
+    assert session.pending_change_no_value_vn == ""
+    match_reply.assert_not_called()
+
+
+def test_pending_clarify_candidate_decline_keeps_existing_guidance():
+    attrs = [_hw_version(), _system_key()]
+    session = _session()
+    session.pending_clarify_vns = [a.variable_name for a in attrs]
+    req = AskRequest(
+        question="none of these",
+        workspace_id=1,
+        history=[],
+        session_data=session.to_dict(),
+    )
+
+    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
+        "aryx.api.ask_api._match_pending_clarify_reply",
+        return_value=("decline", None),
+    ):
+        resp = _handle_pending_clarify_turn(
+            req,
+            session,
+            attrs,
+            hiding_rules=[],
+            rec_rules=[],
+            con_rules=[],
+            bml_eval=None,
+        )
+
+    assert resp is not None
+    assert "which attribute or setting" in resp["answer"]
+    assert session.pending_clarify_vns == []
 
 
 def test_clear_pending_clarify():
