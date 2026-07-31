@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _attach_share_flags
-from aryx.cpq.state import CpqSession
+from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 
 
 def _session_data(filled, display_filled, status="configuring",
@@ -27,6 +27,17 @@ def _patch_engine(monkeypatch):
     monkeypatch.setattr(
         api._cpq_engine, "load_product_config",
         lambda reader, workspace_id, product_name: ([], product_name),
+    )
+    # docs/APX_Next_RootCause_And_Fix_Report — Raven review on PR #142:
+    # _attach_share_flags now loads hiding/rec/con rules (a plain DB read,
+    # no script evaluation) to pass to build_payload's `rules` param for
+    # dependency-aware ordering. Mocked here the same way
+    # load_product_config already is — these tests exercise the
+    # threshold/status gate, not rule loading, and must not need a real DB.
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], []),
     )
 
 
@@ -98,3 +109,48 @@ def test_no_product_name_yet_is_noop(monkeypatch):
         product_name="")}
     _attach_share_flags(result, _req(), reader=None)
     assert "json_button_flag" not in result
+
+
+def _menu(*values: str) -> list[MenuOption]:
+    return [MenuOption(item_value=v, display_name=f"Display {v}", order=i)
+            for i, v in enumerate(values, start=1)]
+
+
+def test_json_response_is_dependency_ordered_not_just_order_number(monkeypatch):
+    """Raven review on PR #142 (docs/APX_Next_RootCause_And_Fix_Report):
+    the web UI's JSON/share-button preview (this function's own
+    json_response) is customer-visible and must not exhibit the exact
+    order_number-only sequencing bug the rest of the PR fixed elsewhere —
+    e.g. an attribute placed ahead of the other attribute that gates it.
+    Made-up attribute/rule names, not real APX Next data."""
+    attrs = [
+        ConfigAttr(entity_id=10, source_id=10, variable_name="gate",
+                   display_label="Gate Attr", required=False, default_value="",
+                   options=_menu("A", "B"), order=128),
+        ConfigAttr(entity_id=20, source_id=20, variable_name="gated",
+                   display_label="Gated Attr", required=False, default_value="",
+                   options=_menu("X", "Y"), order=26),
+    ]
+    monkeypatch.setattr(
+        api._cpq_engine, "load_product_config",
+        lambda reader, workspace_id, product_name: (attrs, product_name),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    con_rules = [
+        ConstraintRule(rule_name="Restrict gated based on gate",
+                        condition_attr_id=10, condition_value="A",
+                        target_attr_id=20, allowed_values=["X"]),
+    ]
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], con_rules),
+    )
+    filled = {"gate": "A", "gated": "X", "extra": "1"}
+    result = {"answer": "...", "session_data": _session_data(
+        filled=filled, display_filled=filled)}
+    _attach_share_flags(result, _req(), reader=None)
+    keys = list(result["json_response"]["configData"].keys())
+    assert keys.index("gate") < keys.index("gated"), (
+        "the share-preview payload must respect the rule-proven dependency, "
+        "not order_number alone (gate=128, gated=26 -- inverted)"
+    )
