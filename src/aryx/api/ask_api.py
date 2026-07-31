@@ -5938,7 +5938,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_response_mode_request(req.question) == "json":
             preview_payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
-                hidden_vns=_hidden_for_payload)
+                hidden_vns=_hidden_for_payload,
+                rules=[*hiding_rules, *rec_rules, *con_rules])
             rule_ids_preview = _cpq_engine.rule_governed_ids(
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
@@ -6124,7 +6125,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             session.complete = True
             payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
-                hidden_vns=_hidden_for_payload)
+                hidden_vns=_hidden_for_payload,
+                rules=[*hiding_rules, *rec_rules, *con_rules])
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -7590,7 +7592,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req.workspace_id, catalog_prefix, attrs)
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi, visible_attrs,
-                hidden_vns=_hidden_now)
+                hidden_vns=_hidden_now,
+                rules=[*hiding_rules, *rec_rules, *con_rules])
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
