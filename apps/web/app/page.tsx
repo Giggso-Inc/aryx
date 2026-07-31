@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
-import type { AskThreadMessage, ChatTurn, Citation } from "@/lib/types";
+import type { AskThreadMessage, ChatTurn, Citation, Usage } from "@/lib/types";
 
 const FOLLOWUPS = [
   "What else do we know about that Customer?",
@@ -331,6 +331,25 @@ export default function HomePage() {
               // History entries don't carry terms, so citations aren't available
               // for recovered answers — the answer itself is still complete.
               const recoveryCitations: Citation[] = [];
+              // This answer was never seen in the live response (the connection
+              // dropped before it arrived) — it's being read back out of
+              // ask_history/thread-messages, not freshly computed, so surface
+              // both the real usage (when the store has it) and a visible
+              // "recovered from history" marker rather than presenting it as
+              // if it were a normal live turn.
+              const recoveredUsage: Usage | undefined =
+                "content" in match
+                  ? match.usage
+                  : match.prompt_tokens !== undefined ||
+                      match.completion_tokens !== undefined ||
+                      match.answer_model
+                    ? {
+                        prompt_tokens: match.prompt_tokens ?? 0,
+                        completion_tokens: match.completion_tokens ?? 0,
+                        latency_ms: match.latency_ms ?? 0,
+                        answer_model: match.answer_model,
+                      }
+                    : undefined;
               streamReveal(recoveredAnswer, (full) => {
                 setTurns((prev) =>
                   prev.map((t) => (t.id === assistantId ? { ...t, content: full } : t)),
@@ -347,6 +366,8 @@ export default function HomePage() {
                           content: recoveredAnswer,
                           requestId,
                           citations: recoveryCitations,
+                          usage: recoveredUsage,
+                          fromHistory: true,
                           streaming: false,
                         }
                       : t,

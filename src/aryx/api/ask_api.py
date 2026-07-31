@@ -444,12 +444,33 @@ def _enrich_with_attributes(
 
 
 
+def _current_turn_usage_dict(default_model: str = "cpq-engine") -> dict[str, Any]:
+    """Real per-turn LLM usage accumulated so far, or the deterministic default.
+
+    docs/CPQ_Usage_Reporting_Gap — same llm_runtime.get_turn_usage() ContextVar
+    _apply_real_llm_usage reads from; shared here so every one of the ~50
+    _persist_cpq_history call sites scattered through _run_cpq_turn_inner
+    picks up real tokens/model too, without touching each one individually.
+    """
+    real = llm_runtime.get_turn_usage()
+    if real and real["calls"]:
+        models = ", ".join(real["models"]) or default_model
+        return {
+            "prompt_tokens": real["prompt_tokens"],
+            "completion_tokens": real["completion_tokens"],
+            "latency_ms": real["latency_ms"],
+            "menial_model": models,
+            "answer_model": models,
+        }
+    return {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+            "menial_model": default_model, "answer_model": default_model}
+
+
 def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
     try:
         hstore = AskHistoryStore(get_settings().rdb_dsn)
         try:
-            usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                     "menial_model": "cpq-engine", "answer_model": "cpq-engine"}
+            usage = _current_turn_usage_dict()
             hstore.append(workspace_id, question, answer, [], [], usage)
         finally:
             hstore.close()
@@ -4671,8 +4692,47 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     Every returned response is checked by
     ``enforce_conversational_invariant`` — a config-seeking question without
     consumable pending state logs ``cpq_orphan_question``.
+
+    docs/CPQ_Usage_Reporting_Gap — this is the single choke point every
+    internal CPQ code path converges through, so it's also where real
+    per-turn LLM usage is reported. llm_runtime.reset_turn_usage() starts
+    a fresh accumulator scoped to this request (ContextVar, safe under
+    concurrent requests); llm_runtime.chat() — the one function every LLM
+    call anywhere in the codebase already goes through, BML Tier-2 script
+    evaluation included — adds into it automatically. If anything real
+    happened this turn, _apply_real_llm_usage replaces whichever
+    hardcoded "cpq-engine, 0 tokens" placeholder the internal handler
+    returned with the real totals, instead of patching each of the
+    dozens of individual response-construction blocks by hand.
     """
-    return enforce_conversational_invariant(_run_cpq_turn_inner(req, reader))
+    llm_runtime.reset_turn_usage()
+    result = enforce_conversational_invariant(_run_cpq_turn_inner(req, reader))
+    _apply_real_llm_usage(result)
+    return result
+
+
+def _apply_real_llm_usage(result: dict[str, Any]) -> None:
+    """Replace a CPQ turn response's usage dict with real totals, in place,
+    when llm_runtime recorded any actual LLM call during this turn.
+
+    A no-op when nothing was recorded (reset_turn_usage() was never
+    reached, or genuinely zero calls happened — the common, correct case
+    for a purely deterministic turn) or when `result` has no "usage" key
+    at all (an early-return shape, e.g. a gate-blocked response).
+    """
+    if not isinstance(result, dict) or "usage" not in result:
+        return
+    real = llm_runtime.get_turn_usage()
+    if not real or not real["calls"]:
+        return
+    models = ", ".join(real["models"]) or result["usage"].get("menial_model", "cpq-engine")
+    result["usage"] = {
+        "prompt_tokens": real["prompt_tokens"],
+        "completion_tokens": real["completion_tokens"],
+        "latency_ms": real["latency_ms"],
+        "menial_model": models,
+        "answer_model": models,
+    }
 
 
 def _pending_reply_looks_like_new_request(
