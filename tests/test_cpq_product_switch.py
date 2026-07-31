@@ -75,9 +75,16 @@ def _fake_reader_with_batch_fetch(
     trees: dict[str, list[str]] | None = None,
 ) -> _FakeProductReader:
     reader = _FakeProductReader(catalogs, trees)
+    # Patched on the CLASS, not on the api._cpq_engine singleton instance:
+    # some callers (e.g. the detect_product_mention tests below) construct
+    # their own local CpqEngine() rather than using the module singleton,
+    # and an instance-level monkeypatch never reaches a different instance
+    # — that gap let _batch_fetch fall through to a real RDB connection
+    # attempt and hang indefinitely on any host without a route to
+    # Postgres (docs/config_consistency_issues_2026-07-30.md, Issue 9).
     monkeypatch.setattr(
-        api._cpq_engine, "_batch_fetch",
-        lambda ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
+        type(api._cpq_engine), "_batch_fetch",
+        lambda self, ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
     )
     return reader
 
@@ -624,6 +631,47 @@ _FAKE_COUNTRY_ATTR = ConfigAttr(
 )
 
 
+def _block_real_rdb_access(monkeypatch) -> None:
+    """Make every real-RDB entry point fail fast instead of hanging.
+
+    docs/config_consistency_issues_2026-07-30.md Issue 9: this test's
+    faked product-switch-reload flow (new catalog_prefix from
+    load_product_config's fake return) is never warm in any of the
+    engine's per-catalog caches, so _run_cpq_turn_inner falls through to
+    several REAL RDB calls — extract_flag_hints (-> _build_flag_keyword_
+    index -> PostgresCpqRdb.fetch_function_scripts), load_validation_rules
+    (-> _load_value_rules -> IngestQuestionStore.list), payload_flow_
+    exclusions (-> _detect_layout_tier -> fetch_layout_attr_assoc), and
+    potentially others not yet identified. On a bare host with no route
+    to the `postgres` compose service, each one hangs indefinitely on
+    connection rather than failing fast — and mocking every individual
+    CpqEngine method one at a time is a moving target (three were found
+    this way before this fix; there is no guarantee a fourth doesn't
+    exist).
+
+    Every PostgresCpqRdb/OracleCpqRdb method routes through the single
+    `self._connection()` choke point (`rdb.py`), and IngestQuestionStore
+    routes through its own `get_pool(dsn)` call in `__init__` — both
+    ultimately call `aryx.store.pool.get_pool`. Patching get_pool itself
+    to raise immediately covers every current AND future caller in one
+    place, rather than enumerating call sites. This is safe: every
+    PostgresCpqRdb method already wraps its query in
+    `try/except Exception: ... return {}/[]` (its own module docstring:
+    "Failures are logged and surface as empty results, never a hard
+    error"), and _load_value_rules wraps its IngestQuestionStore call in
+    the same pattern — so a fast-failing get_pool degrades exactly the
+    way a genuinely unreachable production DB would, it just doesn't
+    hang getting there.
+    """
+    def _fail_fast(dsn, min_size=2, max_size=10):
+        raise RuntimeError(
+            "real RDB access attempted from an offline unit test — see "
+            "docs/config_consistency_issues_2026-07-30.md Issue 9"
+        )
+    monkeypatch.setattr("aryx.store.pool.get_pool", _fail_fast)
+    monkeypatch.setattr("aryx.store.ingest_question_store.get_pool", _fail_fast)
+
+
 def _country_check_setup(monkeypatch, available: bool):
     """Override load_product_config (normally mocked to return ([], "") by
     _no_switch_setup, which would make _country_available_for short-circuit
@@ -645,6 +693,7 @@ def _country_check_setup(monkeypatch, available: bool):
     monkeypatch.setattr(
         api._cpq_engine, "check_country_availability", lambda *a, **k: available,
     )
+    _block_real_rdb_access(monkeypatch)
 
 
 def test_switch_preserves_valid_country_without_reasking(monkeypatch):
@@ -705,6 +754,7 @@ def test_confirmed_switch_seeds_product_identifier_without_reasking(monkeypatch)
         lambda *a, **k: ([], []),
     )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    _block_real_rdb_access(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e", country="United States")
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "MOTOTRBO"
@@ -755,6 +805,7 @@ def test_confirmed_switch_seeds_product_identifier_from_original_question_when_f
         lambda *a, **k: ([], []),
     )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    _block_real_rdb_access(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e", country="United States")
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "aSTRO25_bom"
@@ -1036,6 +1087,7 @@ def _pending_menu_setup(monkeypatch):
         lambda *a, **k: ([], []),
     )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    _block_real_rdb_access(monkeypatch)
     return reader
 
 

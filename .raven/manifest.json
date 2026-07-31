@@ -5,14 +5,33 @@
   "user_email": "m.munir@giggso.com",
   "hub_url": "https://ravenhub.giggso.com",
   "version": "1.0.5",
-  "raven_version": "3.4.0",
+  "raven_version": "4.4.0",
   "work_type": "full-stack-data-platform",
   "stack": {
-    "language": ["python", "typescript"],
-    "frontend": ["next.js", "react", "tailwindcss"],
-    "data": ["falkordb", "pgvector", "postgresql", "oracle-adb-23ai"],
-    "db": ["postgresql", "falkordb", "oracle-adb-23ai"],
-    "infra": ["docker", "docker-compose"],
+    "language": [
+      "python",
+      "typescript"
+    ],
+    "frontend": [
+      "next.js",
+      "react",
+      "tailwindcss"
+    ],
+    "data": [
+      "falkordb",
+      "pgvector",
+      "postgresql",
+      "oracle-adb-23ai"
+    ],
+    "db": [
+      "postgresql",
+      "falkordb",
+      "oracle-adb-23ai"
+    ],
+    "infra": [
+      "docker",
+      "docker-compose"
+    ],
     "cloud": "oci",
     "libraries": [
       "anthropic",
@@ -113,31 +132,31 @@
       "version": "1.0.5",
       "date": "2026-06-26T00:00:00Z",
       "changed_by": "m.munir@giggso.com",
-      "summary": "Add oci (OCI SDK) and defusedxml to approved libraries — oci is used throughout the OCI backend (oci_client.py, oci_doc.py, llm_providers.py); defusedxml added in PR #12 for secure XML parsing. Update cloud from 'none' to 'oci' and add oracle-adb-23ai to data and db arrays to reflect the Oracle ADB 23ai backend introduced in the oci-backend-toggle feature."
+      "summary": "Add oci (OCI SDK) and defusedxml to approved libraries \u2014 oci is used throughout the OCI backend (oci_client.py, oci_doc.py, llm_providers.py); defusedxml added in PR #12 for secure XML parsing. Update cloud from 'none' to 'oci' and add oracle-adb-23ai to data and db arrays to reflect the Oracle ADB 23ai backend introduced in the oci-backend-toggle feature."
     },
     {
       "version": "1.0.4",
       "date": "2026-06-24T00:00:00Z",
       "changed_by": "m.munir@giggso.com",
-      "summary": "Add fdk to approved libraries — OCI Functions Python runtime, installed only inside the aryx-ingest-fn Docker image (functions/aryx-ingest-fn/Dockerfile). Never installed in local dev or main requirements.txt. Approved by Raven review PR #6."
+      "summary": "Add fdk to approved libraries \u2014 OCI Functions Python runtime, installed only inside the aryx-ingest-fn Docker image (functions/aryx-ingest-fn/Dockerfile). Never installed in local dev or main requirements.txt. Approved by Raven review PR #6."
     },
     {
       "version": "1.0.3",
       "date": "2026-06-22T18:00:00Z",
       "changed_by": "g.sivasankari@giggso.com",
-      "summary": "Confirm manifest gap intent vs dev baseline: (1) guard.infra.terraform_state and guard.firewall.open_world omitted — project has no Terraform and ports are bound by Docker not app code, so these guards are not applicable. (2) allowed_tools.web.blocked_url_patterns omitted — project uses Ollama exclusively, not OpenAI; no direct OpenAI call risk from skill code. (3) project_rules.commit_convention omitted — conventional commits are followed by convention, not enforced via manifest pre-commit hook in this branch. (4) pool-fitter, auth-warden, block-smith, survivor-smith added to approved_skills — these are registered gap-closure skills in the org skill registry."
+      "summary": "Confirm manifest gap intent vs dev baseline: (1) guard.infra.terraform_state and guard.firewall.open_world omitted \u2014 project has no Terraform and ports are bound by Docker not app code, so these guards are not applicable. (2) allowed_tools.web.blocked_url_patterns omitted \u2014 project uses Ollama exclusively, not OpenAI; no direct OpenAI call risk from skill code. (3) project_rules.commit_convention omitted \u2014 conventional commits are followed by convention, not enforced via manifest pre-commit hook in this branch. (4) pool-fitter, auth-warden, block-smith, survivor-smith added to approved_skills \u2014 these are registered gap-closure skills in the org skill registry."
     },
     {
       "version": "1.0.2",
       "date": "2026-06-22T14:00:00Z",
       "changed_by": "g.sivasankari@giggso.com",
-      "summary": "Bump raven_version to 3.3.0 to match main — was regressed to 3.0.0 by auto-init"
+      "summary": "Bump raven_version to 3.3.0 to match main \u2014 was regressed to 3.0.0 by auto-init"
     },
     {
       "version": "1.0.1",
       "date": "2026-06-22T13:30:00Z",
       "changed_by": "g.sivasankari@giggso.com",
-      "summary": "Restored guard thresholds, style rules, approved_skills, full library list, and work_type — all stripped in v1.0.0 auto-init"
+      "summary": "Restored guard thresholds, style rules, approved_skills, full library list, and work_type \u2014 all stripped in v1.0.0 auto-init"
     },
     {
       "version": "1.0.0",

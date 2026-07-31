@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+# Max variable_names held in CpqSession.pending_intent_queue. Overflow is
+# reported to the user (never silently dropped).
+INTENT_QUEUE_CAP = 10
+
 
 @dataclass
 class HidingRule:
@@ -373,6 +377,66 @@ class CpqSession:
     pending_label_collision_vns: list[str] = field(default_factory=list)
     pending_label_collision_question: str = ""
 
+    # Gateway clarify memory (live-verified gap, 2026-07-28): "change
+    # hardware" is too vague to pin one attr → gateway action=clarify asks
+    # "Hardware Version or System Key?" but historically saved NO pending
+    # state. The bare reply "Hardware Version" then arrived with no memory
+    # of the question, classified blind as ATTR_QUERY/QA, fell through
+    # partial dispatch, and hit the generic "I didn't quite catch that"
+    # nudge.
+    #
+    # Conceptual shape (serialized flat, same pattern as
+    # pending_change_collision_vns):
+    #   { candidate_vns, original_question, clarifying_question, asked_turn }
+    pending_clarify_vns: list[str] = field(default_factory=list)  # candidate_vns
+    pending_clarify_question: str = ""  # original_question (vague utterance)
+    # Grounded clarifying_question we showed (catalog labels only — never
+    # free-form LLM prose that may invent non-catalog examples).
+    pending_clarify_prompt: str = ""
+    # session.turn when the clarify was issued (for audit / loop detection).
+    pending_clarify_asked_turn: int = 0
+    # Consecutive unresolved replies to this clarify. After 2 misses,
+    # force a numbered pick list (loop-exit guard).
+    pending_clarify_misses: int = 0
+
+    # variable_name of the attribute the CUSTOMER most recently asked a
+    # question about (e.g. "what are the other options for Wireless
+    # Carrier"), set by _handle_cpq_qa's attr-query fast path. Deliberately
+    # separate from pending_variables (which tracks what the SYSTEM is
+    # still waiting on an answer for, and is wiped the moment an attribute
+    # is filled) — this tracks conversational recency instead, and stays
+    # set even for an already-filled attribute the customer is revisiting.
+    # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §8: without
+    # this, "make it ATT/FirstNet" right after asking about Wireless
+    # Carrier had no way to prefer that attr over a genuinely-ambiguous
+    # sibling (Carrier Selection) that also accepts the same value.
+    #
+    # A list, not a single string (docs/config_consistency_issues_2026-
+    # 07-30.md Issue 12): a compound options query ("what are the
+    # Frequency Bands and Wireless Carrier available?") asks about
+    # MULTIPLE attributes in one turn. A single-string field can only
+    # remember the last one processed, silently losing the others as
+    # a follow-up-resolution hint for the LLM classifier — live-confirmed
+    # as the reason a two-attribute follow-up ("Add Frequency Bands as
+    # VHF and Wireless Carrier as ATT/FirstNet") resolved inconsistently.
+    last_qa_variables: list[str] = field(default_factory=list)
+
+    # variable_name of the attribute a gateway clarify ("which attribute
+    # did you mean?") was most recently RESOLVED to, and the turn it was
+    # resolved on. docs/config_consistency_issues_2026-07-30.md issue 4:
+    # once the customer explicitly names one candidate (e.g. "Frequency
+    # Bands" out of a 7-way clarify), a LATER bare value reply ("VHF") can
+    # be a legal option on several OTHER candidates too (Frequency Band/
+    # Msl, Primary/Secondary Frequency all also accept "VHF" — confirmed
+    # live) and re-triggers a fresh clarify with no memory of the earlier
+    # answer, forever (the LLM fallback has no per-candidate option
+    # visibility to break the tie either). Reused as a tie-breaker in
+    # `_set_pending_clarify_and_answer`/`_match_pending_clarify_reply`:
+    # if this attr is among the fresh candidates and the reply is one of
+    # ITS real option values, resolve straight to it instead of re-asking.
+    last_clarified_attr_vn: str = ""
+    last_clarified_turn: int = 0
+
     # Set when detect_change_target_without_value recognized a change-verb
     # naming an already-filled attr but no resolvable new value ("change
     # hardware version") and asked which value instead of guessing
@@ -385,18 +449,19 @@ class CpqSession:
     # when no such prompt is pending.
     pending_change_no_value_vn: str = ""
 
-    # Set when a message named a label-collision target ("change service
-    # type...") AND a second, distinct, already-filled attr with no given
-    # value in the same message ("...and solution type") -- confirmed live
-    # (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4): a message naming 2+
-    # distinct intents only ever got the FIRST one addressed, the rest
-    # silently dropped once the collision detector's own caller returned.
-    # The collision must be resolved first (its own reply format is a
-    # number/variable_name, not a value), so this stashes the second
-    # target's variable_name to continue to automatically once the
-    # collision resolves, rather than losing it. Empty string when none
-    # is pending.
-    pending_multi_intent_vn: str = ""
+    # Ordered queue of variable_names still to ask after a multi-target
+    # change utterance ("change hardware version, service type and
+    # activation delay"). Replaces the single-string
+    # pending_multi_intent_vn slot (which only ever held one secondary
+    # target and was filled in only two branches). Deduped, FIFO, cap 10
+    # (INTENT_QUEUE_CAP). Old session_data payloads with
+    # pending_multi_intent_vn still migrate via from_dict / the
+    # pending_multi_intent_vn property.
+    pending_intent_queue: list[str] = field(default_factory=list)
+
+    # Overflow variable_names from a queue that hit the cap — surfaced
+    # once in the reply so the customer can re-ask; never silently dropped.
+    pending_intent_overflow: list[str] = field(default_factory=list)
 
     # Set when a catalog's own bm_catalog tree has 2+ model leaves (so
     # single_model_variable_name can't auto-seed _bm_model_variable_name
@@ -416,6 +481,24 @@ class CpqSession:
     # THIS catalog (Amendment 5 Finding 3) and asking for them is pure
     # noise — but only when resolved through THIS specific, verified path.
     model_leaf_resolved: bool = False
+
+    # PROMPT 7 — durable candidate-list scope (flat, session-echoed).
+    # When the engine shows a constrained option list / family
+    # disambiguation / "did you mean" set, the NEXT reply is matched
+    # against pending_scope_candidates FIRST (exact → partial → fuzzy).
+    # Without this, a mismatch re-prompt called next_question_prompt
+    # unconstrained and dumped the catalog-wide 325-option Product list
+    # (live: "sl3500e" → 70 codes → "r7ex" → full catalog). Mirrors
+    # pending_clarify / pending_change_collision memory patterns.
+    # kind: family_disambiguation | product_options | attr_options |
+    #       product_suggestions | ""
+    pending_scope_kind: str = ""
+    pending_scope_candidates: list[str] = field(default_factory=list)
+    pending_scope_origin_question: str = ""
+    pending_scope_asked_turn: int = 0
+    pending_scope_misses: int = 0
+    # variable_name when scope is attr/product options; else ""
+    pending_scope_attr_vn: str = ""
     # The ORIGINAL message that first anchored session.product_name (e.g.
     # "I want to configure CommandCentral Aware 2024 for a customer in
     # the United States") — captured once, on the anchoring turn, so
@@ -428,10 +511,71 @@ class CpqSession:
     # product_name itself.
     product_anchor_question: str = ""
 
+    # Post-failure prevention (session_guard): deep-copied CpqSession
+    # dicts taken BEFORE each mutating intent. Cap 10 (evict oldest).
+    # Nested history is stripped on push so snapshots stay bounded.
+    # Restored by the first-class "undo" intent.
+    history: list[dict[str, Any]] = field(default_factory=list)
+
+    # Consecutive clarification prompts for the same variable_name.
+    # After 2, the orchestrator presents numbered options instead of
+    # another free-form clarify (loop-exit guard).
+    clarify_streak_by_vn: dict[str, int] = field(default_factory=dict)
+
+    # Turns that ended unresolved (clarify / unparseable / no progress).
+    # After 5, offer deterministic guided mode.
+    unresolved_turns: int = 0
+
+    # When True, skip LLM-first gateway and force the deterministic
+    # detector waterfall (user accepted guided mode, or loop-exit
+    # automatic offer was taken).
+    guided_mode: bool = False
+
+    # Recent user utterance snippets (capped) for BOM provenance —
+    # "trace to a user utterance" without re-scanning ask history store.
+    recent_utterances: list[str] = field(default_factory=list)
+
+    @property
+    def pending_multi_intent_vn(self) -> str:
+        """Compat for pre-queue session_data / callers.
+
+        Returns the head of pending_intent_queue, or "" when empty.
+        """
+        return self.pending_intent_queue[0] if self.pending_intent_queue else ""
+
+    @pending_multi_intent_vn.setter
+    def pending_multi_intent_vn(self, value: str) -> None:
+        """Compat setter: assign/clear maps onto the queue head.
+
+        - Empty / None → pop head (legacy clear pattern).
+        - Non-empty → ensure vn is at the front of the queue (deduped).
+        """
+        vn = (value or "").strip()
+        if not vn:
+            if self.pending_intent_queue:
+                self.pending_intent_queue.pop(0)
+            return
+        q = [v for v in self.pending_intent_queue if v != vn]
+        self.pending_intent_queue = [vn] + q
+        while len(self.pending_intent_queue) > INTENT_QUEUE_CAP:
+            self.pending_intent_queue.pop()
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "CpqSession":
-        known = {k for k in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in d.items() if k in known})
+        raw = dict(d or {})
+        # Migrate legacy single-string multi-intent into the queue.
+        legacy = raw.pop("pending_multi_intent_vn", None)
+        init_fields = {
+            k for k, f in cls.__dataclass_fields__.items()
+            if f.init
+        }
+        obj = cls(**{k: v for k, v in raw.items() if k in init_fields})
+        if legacy and isinstance(legacy, str) and legacy.strip():
+            if legacy not in obj.pending_intent_queue:
+                obj.pending_intent_queue = [legacy] + list(obj.pending_intent_queue)
+                while len(obj.pending_intent_queue) > INTENT_QUEUE_CAP:
+                    obj.pending_intent_queue.pop()
+        return obj

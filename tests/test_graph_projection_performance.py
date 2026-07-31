@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from aryx.graph.falkor_store import FalkorStore
-from aryx.project import project_graph
+from aryx.project import project_graph, project_incremental
 
 
 class _FakeGraphHandle:
@@ -194,3 +194,98 @@ def test_project_graph_without_on_progress_is_unaffected():
     result = project_graph(_FakeEntityStore(n_entities=5, n_provenance=5, n_rels=2), fs)
 
     assert result == {"entities": 5, "provenance": 5, "relationships": 2}
+
+
+class _FakeProjectionStore:
+    """Minimal double for project_incremental's ProjectionStore side."""
+
+    def __init__(self, n_dirty=10, n_rels=5, tombstones=None):
+        self._dirty = [(i, "T", {"name": f"e{i}"}) for i in range(n_dirty)]
+        self._rels = [(i, (i + 1) % max(n_dirty, 1), "REL") for i in range(n_rels)]
+        self._tombstones = tombstones or []
+        self.marked_projected: list[int] = []
+        self.unmarked_projected: list[int] = []
+        self.watermark_advanced = False
+
+    def watermark(self):
+        return None
+
+    def dirty_entities(self, since):
+        return self._dirty
+
+    def provenance_for(self, entity_ids):
+        return [(i, "xml", "f.xml", f"r{i}") for i in entity_ids]
+
+    def relationships_for(self, entity_ids):
+        return self._rels
+
+    def tombstones(self):
+        return self._tombstones
+
+    def mark_projected(self, entity_ids):
+        self.marked_projected = list(entity_ids)
+
+    def unmark_projected(self, entity_ids):
+        self.unmarked_projected = list(entity_ids)
+
+    def advance_watermark(self):
+        self.watermark_advanced = True
+
+
+# docs/falkordb_high_cpu_2026-07-29.md, ingestion bottleneck A: project_
+# incremental previously wrote entities/provenance one MERGE per row —
+# the same per-row pattern project_graph's own fix (above) already
+# proved ~8x slower than the batched UNWIND path — even though this is
+# the MORE frequently run path (routine dirty-set updates, not just a
+# one-off full import).
+
+def test_project_incremental_uses_batch_methods_for_entities_and_provenance(store):
+    result = project_incremental(
+        store=None, pstore=_FakeProjectionStore(n_dirty=50, n_rels=20), graph=store,
+    )
+
+    assert result == {"entities": 50, "provenance": 50, "relationships": 20,
+                       "tombstones": 0}
+    unwind_queries = [q for q, _p in store._graph.queries if "UNWIND" in q]
+    assert unwind_queries, (
+        "add_entities_batch/add_provenance_batch (UNWIND) must be used, "
+        "not per-row add_entity/add_provenance"
+    )
+    # Exactly one UNWIND batch each for entities and provenance (all dirty
+    # rows share the same label-set "T" and fit under the default batch
+    # size), plus one for relationships — never one query per row.
+    assert len(unwind_queries) == 3
+
+
+def test_project_incremental_still_advances_watermark_and_marks_projected(store):
+    pstore = _FakeProjectionStore(n_dirty=3, n_rels=0, tombstones=[99])
+    project_incremental(store=None, pstore=pstore, graph=store)
+
+    assert pstore.marked_projected == [0, 1, 2]
+    assert pstore.unmarked_projected == [99]
+    assert pstore.watermark_advanced is True
+
+
+def test_project_incremental_falls_back_to_per_row_without_batch_support():
+    """Backward compatible — a graph store without the batch methods
+    (e.g. a minimal test double) must still work, just without the
+    speedup."""
+    calls: list[tuple] = []
+
+    class _NoBatchGraph:
+        def add_entity(self, entity_id, ontology_type, attributes, labels=None, iri=None):
+            calls.append(("entity", entity_id))
+
+        def add_provenance(self, entity_id, system, dataset, record_id):
+            calls.append(("provenance", entity_id))
+
+        def remove_entity(self, entity_id):
+            calls.append(("remove", entity_id))
+
+    result = project_incremental(
+        store=None, pstore=_FakeProjectionStore(n_dirty=3, n_rels=0), graph=_NoBatchGraph(),
+    )
+
+    assert result["entities"] == 3
+    assert sum(1 for c in calls if c[0] == "entity") == 3
+    assert sum(1 for c in calls if c[0] == "provenance") == 3

@@ -150,21 +150,42 @@ def project_incremental(
     relationship edges, DETACH-DELETEs tombstones, advances the watermark.
     ``pstore`` is a ProjectionStore; other args match ``project_graph``.
 
+    Entities and provenance are written via the same batched UNWIND path
+    ``project_graph`` already uses for a full import (docs/
+    falkordb_high_cpu_2026-07-29.md, ingestion bottleneck A) — this
+    function previously issued one MERGE round-trip per dirty entity and
+    per provenance row even though the batch writers were measured ~8x
+    faster, and this is the MORE frequently exercised path (routine
+    dirty-set updates run far more often than a full re-import), so the
+    gap mattered more here, not less. Relationship writes already used
+    the batch path; only entities/provenance needed this.
+
     Returns:
         Counts of {entities, provenance, relationships, tombstones} written.
     """
     since = pstore.watermark()
     ancestors_for = type_ancestors or {}
     dirty = pstore.dirty_entities(since)
-    for entity_id, ontology_type, attributes in dirty:
-        labels = ancestors_for.get(ontology_type, [])
-        iri = _entity_iri(base_uri, workspace_id, entity_id)
-        graph.add_entity(entity_id, ontology_type, attributes,
-                         labels=labels, iri=iri)
+    if hasattr(graph, "add_entities_batch"):
+        rows = [
+            (eid, ot, attrs, ancestors_for.get(ot, []),
+             _entity_iri(base_uri, workspace_id, eid))
+            for eid, ot, attrs in dirty
+        ]
+        graph.add_entities_batch(rows)
+    else:
+        for entity_id, ontology_type, attributes in dirty:
+            labels = ancestors_for.get(ontology_type, [])
+            iri = _entity_iri(base_uri, workspace_id, entity_id)
+            graph.add_entity(entity_id, ontology_type, attributes,
+                             labels=labels, iri=iri)
     dirty_ids = [e[0] for e in dirty]
     provenance = pstore.provenance_for(dirty_ids) if dirty_ids else []
-    for entity_id, system, dataset, record_id in provenance:
-        graph.add_provenance(entity_id, system, dataset, record_id)
+    if hasattr(graph, "add_provenance_batch"):
+        graph.add_provenance_batch(provenance)
+    else:
+        for entity_id, system, dataset, record_id in provenance:
+            graph.add_provenance(entity_id, system, dataset, record_id)
     relationships = pstore.relationships_for(dirty_ids) if dirty_ids else []
     if hasattr(graph, "add_relationships_batch"):
         graph.add_relationships_batch(relationships)

@@ -41,6 +41,18 @@ def _coerce_envelope(raw: Any, schema: dict[str, Any]) -> Any:
 
     Handles the most common Gemini quirk: top-level schema is one array
     property, model returns the inner list directly.
+
+    A second, distinct quirk (live-confirmed, docs/CPQ_LLM_NORMALIZE_LIST_
+    ENVELOPE_FIX.md): a schema with NO array property at all (a plain flat
+    object — e.g. {linked: bool, reason: str}) sometimes comes back as the
+    object wrapped in a single-element list instead of the bare object
+    itself. The array-property branch above can't fire here (there IS no
+    array property to wrap into), so without this the raw list was
+    returned unchanged and every caller's `.get(...)` on it crashed with
+    `AttributeError: 'list' object has no attribute 'get'`. Narrowly
+    scoped — only unwraps when the list has EXACTLY one element and that
+    element is a dict; anything else (empty list, 2+ items, a bare
+    scalar) is left as-is rather than guessed at.
     """
     if not isinstance(raw, list):
         return raw
@@ -52,6 +64,9 @@ def _coerce_envelope(raw: Any, schema: dict[str, Any]) -> Any:
     if len(array_props) == 1:
         logger.debug("envelope coerced list -> {%s: ...}", array_props[0])
         return {array_props[0]: raw}
+    if not array_props and len(raw) == 1 and isinstance(raw[0], dict):
+        logger.debug("envelope coerced single-item list -> inner object")
+        return raw[0]
     return raw
 
 
