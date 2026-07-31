@@ -67,6 +67,48 @@ _CMP_RE = re.compile(r'^\s*(\w+)\s*(==|<>|!=)\s*(?:"([^"]*)"|(true|false))\s*$',
 _ASSIGN_RE = re.compile(r're(?:t|turn)[Vv]al\s*=\s*((?:"[^"]*"\s*(?:\|\s*)?)+);?')
 _STR_RE = re.compile(r'"([^"]*)"')
 
+# docs/config_consistency_issues_2026-07-30.md issue 2 follow-up —
+# live-confirmed real APX Next scripts build a |^|-delimited allowed-list
+# via STRING CONCATENATION instead of one packed literal, e.g.
+# `retVal = "CORE BUNDLE" + "|^|" + "SECURITY BUNDLE" + "|^|" + ...;` —
+# a DIFFERENT authoring style than `_split_pipe_caret_values`'s existing
+# single-literal `"A|^|B|^|C"` case. `_ASSIGN_RE`/`_RETURN_STR_RE` only
+# match the FIRST quoted fragment here, and the concatenation guard below
+# (existing, correctly built for the SVX HTML-building case where a real
+# variable like `link` is mixed into the chain) then bails as
+# unparseable — correct for a GENUINELY dynamic chain, but this shape is
+# not dynamic at all: every single term is a quoted literal, nothing else.
+# Fully statically resolvable — just authored with `+` instead of one
+# big string.
+_FULL_LITERAL_CONCAT_RE = re.compile(r'^(?:"[^"]*"\s*\+\s*)*"[^"]*"\s*;?\s*$')
+# A pure delimiter literal (`|^|`, `|`, etc.) — never a real catalog value,
+# must be filtered out of the extracted literal chain.
+_PURE_DELIMITER_RE = re.compile(r'^\|[^|"]*\|$|^\|$')
+
+
+def _literal_concat_values(rhs: str) -> list[str] | None:
+    """If `rhs` (everything from right after the `=`/`return` through the
+    terminating `;`) is ENTIRELY a chain of quoted-string literals joined
+    by `+` — no variables, no function calls, nothing else — return the
+    non-delimiter literals in order. Returns None when the chain contains
+    anything else at all; a real variable/expression genuinely can't be
+    resolved statically and this must never guess at one (same "never
+    guess" discipline as everywhere else in this module).
+    """
+    rhs = rhs.strip()
+    if not rhs or not _FULL_LITERAL_CONCAT_RE.match(rhs):
+        return None
+    literals = _STR_RE.findall(rhs)
+    return [v for v in literals if v and not _PURE_DELIMITER_RE.match(v)]
+
+
+# Full right-hand-side of a returnVal/return assignment, from right after
+# the `=`/keyword through the terminating `;` — used only by the literal-
+# concatenation fallback above, which needs the WHOLE chain, not just the
+# first fragment `_ASSIGN_RE`/`_RETURN_STR_RE` themselves capture.
+_FULL_ASSIGN_RHS_RE = re.compile(r're(?:t|turn)[Vv]al\s*=\s*(.+?);', re.DOTALL)
+_FULL_RETURN_RHS_RE = re.compile(r'\breturn\s+(.+?);', re.DOTALL)
+
 # return "literal"; directly inside a branch body — a different idiom from
 # the returnVal assignment above. Confirmed live: the same recommendation
 # script above returns "YES" (or "" outside any branch) as a literal
@@ -215,7 +257,24 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     Supports single comparisons and chains joined by a uniform AND or OR,
     each optionally wrapped in its own parens. The first tuple's joiner is ''.
     """
-    cond = cond.strip()
+    # Strip a redundant OUTER wrapping layer around the WHOLE chain before
+    # splitting on AND/OR (2026-07-28) — live-confirmed real BML script:
+    # `if( ((A) OR (B) OR ... OR (H)) ){` (a real 8-clause "Hide Housing
+    # attribute if not XE model" condition). Splitting on OR first (the
+    # prior order) breaks this into "((A)", "(B)", ..., "(H))" — the
+    # first/last fragments are individually unbalanced, so per-fragment
+    # _strip_wrapping_parens can't repair them and the whole condition was
+    # silently rejected as unparseable, forcing this hiding rule to Tier-2
+    # (which returns unknown when the LLM fallback is disabled, and
+    # apply_hiding_rules' safe default then leaves the target VISIBLE when
+    # it should have been hidden). _strip_wrapping_parens already handles
+    # a genuinely-fully-wrapped string correctly (only strips when the
+    # leading "(" closes at the very last character) — it just needed to
+    # run on the whole cond once before the split, not only per-fragment
+    # after. Safe for the existing per-clause-only-wrapped shape
+    # ("(x==A) OR (y==B)", no full outer wrap) too: that shape's outer
+    # "(" closes well before the string's end, so this strips nothing.
+    cond = _strip_wrapping_parens(cond.strip())
     for joiner, sep in (("AND", re.compile(r'\bAND\b|&&', re.IGNORECASE)),
                         ("OR", re.compile(r'\bOR\b|\|\|', re.IGNORECASE))):
         parts = sep.split(cond)
@@ -387,6 +446,12 @@ def _branch_values(body: str) -> list[str] | None:
             return None
         tail2 = body[m2.end():].lstrip()
         if tail2.startswith("+"):
+            _full = _FULL_RETURN_RHS_RE.search(body)
+            _literal_vals = (
+                _literal_concat_values(_full.group(1)) if _full else None
+            )
+            if _literal_vals is not None:
+                return _split_pipe_caret_values(_literal_vals)
             logger.warning(
                 "cpq: Tier-1 _branch_values found a `return \"...\";` whose "
                 "value continues past the matched literal (string "
@@ -399,6 +464,18 @@ def _branch_values(body: str) -> list[str] | None:
         return _split_pipe_caret_values([value]) if value else []
     tail = body[m.end():].lstrip()
     if tail.startswith("+"):
+        # docs/config_consistency_issues_2026-07-30.md issue 2 follow-up —
+        # try the fully-literal concatenation fallback FIRST: real APX Next
+        # scripts build a |^|-delimited allowed-list via `"A" + "|^|" +
+        # "B" + ...` — every term a quoted literal, genuinely resolvable —
+        # before falling back to the WARNING/unparseable path below, which
+        # stays correct for an actually dynamic chain (a real variable
+        # mixed in, e.g. the SVX HTML-building case this guard was
+        # originally built for).
+        _full = _FULL_ASSIGN_RHS_RE.search(body)
+        _literal_vals = _literal_concat_values(_full.group(1)) if _full else None
+        if _literal_vals is not None:
+            return _split_pipe_caret_values(_literal_vals)
         # WARNING, not info — this deployment's root logger is configured
         # at WARNING (confirmed live: aryx.cpq.bml's effective level was
         # WARNING, silently dropping an earlier INFO call here), and this

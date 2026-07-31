@@ -60,6 +60,10 @@ class IntentCategory(str, Enum):
     # Mirrors the existing _llm_classify_is_cpq_question negative case —
     # the question is not about product configuration/quoting at all.
     OUT_OF_SCOPE = "out_of_scope"
+    # First-class undo — restore last CpqSession snapshot from history[]
+    # (session_guard). Not a regex cascade detector; handled before
+    # LLM-first dispatch in ask_api.
+    UNDO = "undo"
 
 
 class Confidence(str, Enum):
@@ -225,3 +229,170 @@ def parse_intent_result(raw: dict) -> IntentResult | None:
         clarifying_question=raw.get("clarifying_question"),
         rationale=str(raw.get("rationale", "")),
     )
+
+
+# ── Gateway quarantine contract (LLM-first with candidate selection) ──────────
+# The intent gateway never lets the model invent catalog IDs or free-text
+# values. It selects from injected candidate lists only:
+#   variable_name ∈ candidate variable_names
+#   value_ref     = integer index into that attr's value candidates (or null)
+#   evidence_span = exact substring of the user question
+# Validated by parse_gateway_intent + validate_gateway_quarantine.
+
+
+@dataclass
+class GatewayIntentResult:
+    """Parsed LLM gateway result — selection-only fields, no free-text IDs."""
+
+    intent_category: IntentCategory
+    confidence: Confidence
+    variable_name: str | None = None
+    value_ref: int | None = None
+    evidence_span: str = ""
+    clarifying_question: str | None = None
+    rationale: str = ""
+
+
+GATEWAY_INTENT_JSON_SCHEMA: dict = {
+    "type": "object",
+    "required": [
+        "intent_category", "confidence", "variable_name",
+        "value_ref", "evidence_span",
+    ],
+    "properties": {
+        "intent_category": {
+            "type": "string",
+            "enum": [c.value for c in IntentCategory],
+        },
+        "confidence": {
+            "type": "string",
+            "enum": [c.value for c in Confidence],
+        },
+        "variable_name": {
+            "type": ["string", "null"],
+            "description": (
+                "Exact variable_name from the CANDIDATE ATTRIBUTES list, "
+                "or null when the category has no attribute target."
+            ),
+        },
+        "value_ref": {
+            "type": ["integer", "null"],
+            "description": (
+                "0-based index into that attribute's VALUE CANDIDATES list. "
+                "Never free text. Null when no value is named."
+            ),
+        },
+        "evidence_span": {
+            "type": "string",
+            "description": "Exact contiguous substring of the user question.",
+        },
+        "clarifying_question": {"type": ["string", "null"]},
+        "rationale": {"type": "string"},
+    },
+}
+
+
+# Categories that do not require a variable_name target.
+_GATEWAY_NO_TARGET_CATEGORIES = frozenset({
+    IntentCategory.APPROVAL,
+    IntentCategory.RESPONSE_MODE_REQUEST,
+    IntentCategory.QA_QUESTION,
+    IntentCategory.OUT_OF_SCOPE,
+    IntentCategory.AMBIGUOUS,
+    IntentCategory.PRODUCT_MENTION,
+})
+
+
+def parse_gateway_intent(raw: dict) -> GatewayIntentResult | None:
+    """Fail-closed parse of one gateway structured-output payload."""
+    try:
+        category = IntentCategory(raw["intent_category"])
+        confidence = Confidence(raw["confidence"])
+    except (KeyError, ValueError, TypeError):
+        return None
+
+    vn = raw.get("variable_name")
+    if vn is not None and not isinstance(vn, str):
+        return None
+    if vn == "":
+        vn = None
+
+    value_ref = raw.get("value_ref")
+    if value_ref is not None:
+        if isinstance(value_ref, bool) or not isinstance(value_ref, int):
+            return None
+
+    evidence = raw.get("evidence_span")
+    if not isinstance(evidence, str):
+        return None
+
+    clarifying = raw.get("clarifying_question")
+    if clarifying is not None and not isinstance(clarifying, str):
+        return None
+    if category == IntentCategory.AMBIGUOUS and not clarifying:
+        return None
+
+    return GatewayIntentResult(
+        intent_category=category,
+        confidence=confidence,
+        variable_name=vn,
+        value_ref=value_ref,
+        evidence_span=evidence,
+        clarifying_question=clarifying,
+        rationale=str(raw.get("rationale") or ""),
+    )
+
+
+def validate_gateway_quarantine(
+    result: GatewayIntentResult,
+    question: str,
+    candidate_vns: set[str],
+    value_counts: dict[str, int],
+) -> GatewayIntentResult:
+    """Quarantine guardrails: illegal selection → AMBIGUOUS downgrade.
+
+    Rejects when:
+    - variable_name not in the injected candidate set (when a target is required)
+    - value_ref out of range for that attribute's value list
+    - evidence_span not found verbatim in the user question
+    - confidence is LOW (always clarify rather than act)
+    """
+    def _ambiguous(reason: str) -> GatewayIntentResult:
+        q = result.clarifying_question or (
+            "I want to make sure I update the right field — which attribute "
+            "and value did you mean?"
+        )
+        return GatewayIntentResult(
+            intent_category=IntentCategory.AMBIGUOUS,
+            confidence=Confidence.LOW,
+            variable_name=None,
+            value_ref=None,
+            evidence_span=result.evidence_span or "",
+            clarifying_question=q,
+            rationale=f"quarantine:{reason}; {result.rationale}".strip(),
+        )
+
+    if result.confidence == Confidence.LOW:
+        return _ambiguous("low_confidence")
+
+    span = result.evidence_span or ""
+    if span and span not in question:
+        # case-insensitive fallback still requires contiguous chars present
+        if span.lower() not in question.lower():
+            return _ambiguous("evidence_span_missing")
+
+    needs_target = result.intent_category not in _GATEWAY_NO_TARGET_CATEGORIES
+    if needs_target:
+        if not result.variable_name or result.variable_name not in candidate_vns:
+            return _ambiguous("variable_name_not_in_candidates")
+        n_vals = value_counts.get(result.variable_name, 0)
+        if result.value_ref is not None:
+            if result.value_ref < 0 or result.value_ref >= n_vals:
+                return _ambiguous("value_ref_out_of_range")
+    else:
+        # No-target categories must not smuggle a hallucinated variable_name
+        # that isn't in the candidate list (null is fine).
+        if result.variable_name and result.variable_name not in candidate_vns:
+            return _ambiguous("variable_name_not_in_candidates")
+
+    return result

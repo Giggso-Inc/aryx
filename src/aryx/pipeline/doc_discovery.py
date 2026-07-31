@@ -1161,6 +1161,26 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                     for fn in approved_files)
                    if p is not None]
     _persist_tabular_sources(valid_plans, workspace_id, settings.rdb_dsn)
+
+    def _report_fk_stage(pct: int, detail: str) -> None:
+        # A transient job-store failure while reporting progress must never
+        # abort real FK-detection work — same discipline as dynamic_fk.py's
+        # own on_progress guard (judge_candidates_with_llm).
+        try:
+            jobs.update_stage(job_id, "FK Detection", pct, detail)
+        except Exception:  # noqa: BLE001
+            logger.warning("confirm job=%s FK-detection stage report failed", job_id, exc_info=True)
+
+    # docs/falkordb_high_cpu_2026-07-29.md follow-up — this whole FK-detection
+    # block (column-name passes + the dynamic value-overlap/LLM-judge pass
+    # below) previously called jobs.update_stage() nowhere at all. A
+    # CSV-only confirm (no approved_types, so the mentions loop above never
+    # runs either) sat at its initial jobs.create() values — status
+    # "queued", pct 0 — for the entire duration of this block, genuinely
+    # indistinguishable in the UI/API from a job that never started, even
+    # though real work was running. Live-confirmed: a 33-file SL3500e batch
+    # sat "queued" for 9+ minutes of real dynamic-FK activity.
+    _report_fk_stage(1, "Detecting column-name foreign keys…")
     auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
@@ -1171,6 +1191,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # column-name-based FK detection above. Mutates the bm_function plan's
     # own CSV data (adds 3 derived columns) when it finds recognized
     # scripts, so this must run before _run_one_plan below reads plan["data"].
+    if valid_plans:
+        _report_fk_stage(2, "Analyzing script data-flow links…")
     script_flow_links = _detect_script_data_flow_links(valid_plans, log_id=job_id)
     if script_flow_links:
         auto_fk.extend(script_flow_links)
@@ -1180,6 +1202,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # Detect FK links from the last plan to types already in the workspace.
     # Fires for single-file jobs where _detect_fk_links returns [].
     if valid_plans:
+        _report_fk_stage(3, "Detecting workspace-level foreign keys…")
         try:
             onto = OntologyStore(settings.rdb_dsn, workspace_id)
             try:
@@ -1206,9 +1229,21 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # derived/semantic joins). Runs once over the whole batch, only on pairs
     # not already resolved above, so it's purely additive.
     if valid_plans:
+        _report_fk_stage(4, "Scanning for dynamic (value-overlap) foreign keys…")
         already_linked = {(lk["source_type"], lk["target_type"]) for lk in auto_fk}
+
+        def _dynamic_fk_progress(done: int, total_candidates: int) -> None:
+            # 5-10%: this stage alone can run for many minutes on a large
+            # multi-table batch (every candidate gets its own LLM call, no
+            # cap) — real "N/M judged" progress here is what would have
+            # told us live whether the 9-minute-silent run was working or
+            # actually hung, instead of guessing from CPU% and log gaps.
+            pct = 5 + int(done * 5 / max(total_candidates, 1))
+            _report_fk_stage(pct, f"Judging candidate foreign keys ({done}/{total_candidates})…")
+
         dynamic_fk = detect_dynamic_fk_links(
             valid_plans, broker, already_linked=already_linked, log_id=job_id,
+            on_progress=_dynamic_fk_progress,
         )
         if dynamic_fk:
             auto_fk.extend(dynamic_fk)

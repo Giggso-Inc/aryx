@@ -10,9 +10,13 @@ restart resumes from the last flush instead of losing everything.
 """
 from __future__ import annotations
 
+import gzip
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 from aryx.discoveries import (
+    DiscoveryPayloadTooLarge,
     _deserialize,
     _serialize,
     drop,
@@ -128,6 +132,7 @@ class TestPutGetDrop:
         with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
              patch("aryx.discoveries.get_settings") as mock_cfg:
             mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            mock_cfg.return_value.discovery_max_payload_mb = 300
             put("did-123", data)
 
         sql, params = mock_cur.execute.call_args[0]
@@ -141,6 +146,7 @@ class TestPutGetDrop:
         with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
              patch("aryx.discoveries.get_settings") as mock_cfg:
             mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            mock_cfg.return_value.discovery_max_payload_mb = 300
             put("did-456", data)
 
         _, params = mock_cur.execute.call_args[0]
@@ -161,7 +167,11 @@ class TestPutGetDrop:
                                      "payload": {"type": "Entity", "name": "Acme Corp"},
                                      "extracted_at": "2026-01-01T00:00:00Z"}],
                       "tabular": [], "summary": {}, "workspace_id": 5}
-        mock_pool, _ = _mock_pool(fetchone_return=(stored_json,))
+        # data is now gzip-compressed JSON bytes in a BYTEA column (migration
+        # 0036), not a live JSONB dict — the mock must match what a real row
+        # actually contains.
+        stored_bytes = gzip.compress(json.dumps(stored_json).encode("utf-8"))
+        mock_pool, _ = _mock_pool(fetchone_return=(stored_bytes,))
         with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
              patch("aryx.discoveries.get_settings") as mock_cfg:
             mock_cfg.return_value.rdb_dsn = "postgresql://test"
@@ -181,3 +191,145 @@ class TestPutGetDrop:
         sql, params = mock_cur.execute.call_args[0]
         assert "aryx_discovery" in sql
         assert params == ("did-123",)
+
+
+# ---------------------------------------------------------------------------
+# Oversized-payload guard (RCA 2026-07-30, revised after migration 0036):
+# discoveries.put() writes an entire multi-file discovery result as ONE
+# gzip-compressed BYTEA value in ONE INSERT parameter. Two real incidents
+# motivate the guard — a 32-file batch overran Postgres's wire-protocol
+# message-length framing ("invalid message length"), and (while `data` was
+# still live JSONB) a 33-file batch hit Postgres's hard, non-configurable
+# ~256MB limit on a single JSONB array's serialized size
+# (psycopg.errors.ProgramLimitExceeded). put() computes the size AFTER
+# gzip compression and rejects anything over settings.discovery_max_payload_mb
+# BEFORE attempting the write, so an oversized batch fails cleanly (caught
+# by doc_discover_api._read_job's existing except block, surfaced as a
+# normal "failed" job status) instead of crashing the connection or the
+# database.
+#
+# Test payloads use os.urandom(), not a repeated byte — gzip compresses
+# `b"x" * N` down to almost nothing, which would silently defeat these
+# tests' whole premise (the guard must trip on data that doesn't compress
+# away, which is exactly what real CSV-plus-base64 content does not do
+# perfectly either).
+# ---------------------------------------------------------------------------
+
+class TestOversizedPayloadGuard:
+    def test_put_rejects_payload_over_the_configured_limit(self):
+        """A payload whose COMPRESSED size exceeds discovery_max_payload_mb
+        must raise DiscoveryPayloadTooLarge and never reach the DB -- this
+        is the exact failure mode from the live incident, reproduced
+        deterministically with a small limit instead of a multi-hundred-MB
+        real catalog batch."""
+        mock_pool, mock_cur = _mock_pool()
+        # Random bytes, base64-encoded — incompressible, so ~2MB stays ~2MB
+        # after gzip and reliably exceeds a 1MB cap.
+        oversized_csv = os.urandom(2 * 1024 * 1024)
+        data = {
+            "mentions": [], "workspace_id": 9,
+            "tabular": [{"filename": "big.csv", "data": oversized_csv,
+                        "ontology_type": "Big", "match_keys": ["id"]}],
+            "summary": {},
+        }
+        with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
+             patch("aryx.discoveries.get_settings") as mock_cfg:
+            mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            mock_cfg.return_value.discovery_max_payload_mb = 1
+            try:
+                put("did-oversized", data)
+                assert False, "expected DiscoveryPayloadTooLarge to be raised"
+            except DiscoveryPayloadTooLarge as exc:
+                assert "1 MB" in str(exc) or "1MB" in str(exc).replace(" ", "")
+
+        # The write must never have been attempted -- rejecting BEFORE the
+        # execute() call is the entire point (avoid the protocol-level kill).
+        mock_cur.execute.assert_not_called()
+
+    def test_put_allows_payload_at_or_under_the_configured_limit(self):
+        """A normal-sized discovery result must be unaffected -- the guard
+        must not false-positive on everyday small batches."""
+        mock_pool, mock_cur = _mock_pool()
+        small_csv = b"id,name\n1,Widget\n"
+        data = {
+            "mentions": [], "workspace_id": 9,
+            "tabular": [{"filename": "small.csv", "data": small_csv,
+                        "ontology_type": "Small", "match_keys": ["id"]}],
+            "summary": {},
+        }
+        with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
+             patch("aryx.discoveries.get_settings") as mock_cfg:
+            mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            mock_cfg.return_value.discovery_max_payload_mb = 300
+            put("did-small", data)
+
+        mock_cur.execute.assert_called_once()
+
+    def test_put_error_message_reports_actual_and_limit_size(self):
+        """The rejection error must be self-explanatory -- actionable
+        without needing to read the source, since it surfaces straight to
+        the job's user-facing error field (doc_discover_api._read_job)."""
+        mock_pool, _ = _mock_pool()
+        oversized_csv = os.urandom(3 * 1024 * 1024)
+        data = {
+            "mentions": [], "workspace_id": 1,
+            "tabular": [{"filename": "big.csv", "data": oversized_csv,
+                        "ontology_type": "Big", "match_keys": ["id"]}],
+            "summary": {},
+        }
+        with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
+             patch("aryx.discoveries.get_settings") as mock_cfg:
+            mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            mock_cfg.return_value.discovery_max_payload_mb = 1
+            try:
+                put("did-msg", data)
+                assert False, "expected DiscoveryPayloadTooLarge to be raised"
+            except DiscoveryPayloadTooLarge as exc:
+                msg = str(exc)
+                assert "ARYX_DISCOVERY_MAX_PAYLOAD_MB" in msg
+                assert "MB" in msg
+
+    def test_put_writes_gzip_compressed_bytes_not_live_json(self):
+        """put() must store gzip-compressed JSON bytes (migration 0036),
+        not a Json()-wrapped dict — the whole point of the fix is to avoid
+        ever constructing a live JSONB array for a large batch."""
+        mock_pool, mock_cur = _mock_pool()
+        data = {"mentions": [], "tabular": [], "summary": {}, "workspace_id": 1}
+        with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
+             patch("aryx.discoveries.get_settings") as mock_cfg:
+            mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            mock_cfg.return_value.discovery_max_payload_mb = 300
+            put("did-gzip", data)
+
+        _, params = mock_cur.execute.call_args[0]
+        stored = params[2]
+        assert isinstance(stored, bytes)
+        # Must decompress back to the original JSON, proving it's gzip, not
+        # some other encoding or a raw/uncompressed dump.
+        assert json.loads(gzip.decompress(stored).decode("utf-8"))["workspace_id"] == 1
+
+    def test_compression_lets_a_batch_that_was_too_big_as_raw_jsonb_through(self):
+        """The actual incident this fix closes: a highly-compressible (CSV-
+        like) payload whose RAW size would have exceeded the old JSONB-based
+        ~256MB ceiling must now succeed, because the guard measures the
+        compressed size instead."""
+        mock_pool, mock_cur = _mock_pool()
+        # Repetitive, CSV-like content compresses extremely well — stands in
+        # for the real SL3500e incident's highly-repetitive tabular data.
+        compressible_csv = (b"id,name,value\n1,Widget,100\n") * 200_000  # ~5MB raw
+        data = {
+            "mentions": [], "workspace_id": 3,
+            "tabular": [{"filename": "big.csv", "data": compressible_csv,
+                        "ontology_type": "Big", "match_keys": ["id"]}],
+            "summary": {},
+        }
+        with patch("aryx.discoveries.get_pool", return_value=mock_pool), \
+             patch("aryx.discoveries.get_settings") as mock_cfg:
+            mock_cfg.return_value.rdb_dsn = "postgresql://test"
+            # Raw payload is ~5MB+ (base64-inflated further) — would have
+            # been rejected by the old raw-size guard at a 2MB limit, but
+            # compresses to well under 2MB.
+            mock_cfg.return_value.discovery_max_payload_mb = 2
+            put("did-compressible", data)
+
+        mock_cur.execute.assert_called_once()

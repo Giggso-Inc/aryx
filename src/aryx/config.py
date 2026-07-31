@@ -315,6 +315,30 @@ class Settings(BaseSettings):
             "Override with ARYX_XML_MAX_ENTITY_TYPES."
         ),
     )
+    discovery_max_payload_mb: int = Field(
+        default=512,
+        description=(
+            "Max size (MB), AFTER gzip compression, of a single document-"
+            "discovery result written to aryx_discovery in one INSERT "
+            "(migration 0036: gzip-compressed JSON in a BYTEA column). A "
+            "multi-file tabular batch (e.g. dozens of BigMachines/Oracle "
+            "CPQ CSV catalog exports) whose compressed size exceeds this "
+            "is rejected with a clear error at the application layer "
+            "instead of being attempted as one giant write -- confirmed "
+            "live that an oversized single write can overrun Postgres's "
+            "wire-protocol message-length framing and get the connection "
+            "killed outright ('invalid message length'), not just run "
+            "slowly. Earlier versions of this guard measured the RAW "
+            "(uncompressed) JSONB size and were capped near Postgres's "
+            "hard, non-configurable ~256MB limit on a single JSONB array's "
+            "serialized size (confirmed live via psycopg.errors."
+            "ProgramLimitExceeded on a 33-file batch) -- BYTEA has no such "
+            "array-size restriction (TOASTed up to ~1GB), and compressing "
+            "text-heavy CSV data before writing buys substantial headroom "
+            "on top of that, hence the higher default here. Override with "
+            "ARYX_DISCOVERY_MAX_PAYLOAD_MB."
+        ),
+    )
     xml_max_rows_per_type: int = Field(
         default=500,
         description=(
@@ -679,6 +703,35 @@ class Settings(BaseSettings):
             "not actually been met. Set ARYX_CPQ_LLM_FIRST_ENABLED=false "
             "to fall back to the pure deterministic path (e.g. for a fast "
             "CI run) or before considering this validated for production."
+        ),
+    )
+    cpq_intent_gemini_model: str = Field(
+        default="gemini-2.5-pro",
+        description=(
+            "Pinned model id for the CPQ intent gateway (cpq/intent_gateway.py). "
+            "One structured call per turn; logged with session run_id. "
+            "Override with ARYX_CPQ_INTENT_GEMINI_MODEL."
+        ),
+    )
+    cpq_intent_mode: str = Field(
+        default="shadow",
+        description=(
+            "Top-level /ask intent router mode (Prompt 3). "
+            "'llm_first' — gateway classifies every cold-start turn; "
+            "handlers only execute. "
+            "'deterministic_first' — legacy is_cpq_question regex/alias gate "
+            "(no gateway). "
+            "'shadow' (default) — deterministic path decides; gateway "
+            "classifies in parallel for agreement logs only (grep by run_id). "
+            "Rollback = set ARYX_CPQ_INTENT_MODE=deterministic_first."
+        ),
+    )
+    cpq_intent_timeout_s: float = Field(
+        default=10.0,
+        description=(
+            "Hard timeout (seconds) for the top-level intent gateway call. "
+            "On timeout/error, escape hatch falls back to the deterministic "
+            "is_cpq_question path. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
         ),
     )
     bml_tier2_max_per_turn: int = Field(
