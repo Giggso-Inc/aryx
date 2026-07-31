@@ -194,7 +194,7 @@ def build_candidate_bundles(
             score += 5.0
         if session.pending_variables and a.variable_name == session.pending_variables[0]:
             score += 8.0
-        if session.last_qa_variable and a.variable_name == session.last_qa_variable:
+        if a.variable_name in session.last_qa_variables:
             score += 8.0
         if a.variable_name in session.pending_change_collision_vns:
             score += 7.0
@@ -338,13 +338,23 @@ def _llm_classify_once(
                 if session.pending_clarify_question else ""
             )
         )
-    if session.last_qa_variable:
+    if session.last_qa_variables:
+        _multi_qa = len(session.last_qa_variables) > 1
         pending_bits.append(
-            f"customer_last_asked_about={session.last_qa_variable} "
-            "(their immediately preceding message was a question about this "
-            "attribute — a short follow-up like 'make it X' most likely "
-            "refers to it, even if X is also technically a valid value for "
-            "another attribute)"
+            "customer_last_asked_about="
+            + "|".join(session.last_qa_variables)
+            + (
+                " (their immediately preceding message asked about ALL of "
+                "these attributes at once — a short follow-up naming a "
+                "value for each most likely refers to them respectively, "
+                "even if a value is also technically valid for another "
+                "attribute)"
+                if _multi_qa else
+                " (their immediately preceding message was a question about "
+                "this attribute — a short follow-up like 'make it X' most "
+                "likely refers to it, even if X is also technically a valid "
+                "value for another attribute)"
+            )
         )
     pending_line = (
         "SESSION PENDING: " + ", ".join(pending_bits) + "\n"
@@ -439,7 +449,7 @@ def _deterministic_mutating_signals(
 def _mutating_agrees(
     result: GatewayIntentResult,
     det_signals: dict[str, set[str]],
-    last_qa_variable: str = "",
+    last_qa_variables: list[str] | None = None,
 ) -> bool:
     """True when deterministic detectors agree on category + variable_name.
 
@@ -451,7 +461,10 @@ def _mutating_agrees(
     customer was just asking about. docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_
     CLARIFY_ISSUE.md §8 — live-confirmed: "Wireless Carrier" and "Carrier
     Selection" both genuinely accept the same value, so det_signals alone
-    can never disambiguate; last_qa_variable is the only signal that can.
+    can never disambiguate; last_qa_variables is the only signal that can.
+    A list, not a single value (docs/config_consistency_issues_2026-07-30.md
+    Issue 12) — a compound options query can put more than one attribute
+    into conversational recency at once.
     """
     if result.intent_category not in MUTATING_CATEGORIES:
         return True
@@ -464,7 +477,7 @@ def _mutating_agrees(
         )
     if not result.variable_name:
         return False
-    if last_qa_variable and result.variable_name == last_qa_variable:
+    if last_qa_variables and result.variable_name in last_qa_variables:
         return True
     if not det_vns:
         # No deterministic hit at all — treat as disagreement so we clarify
@@ -605,7 +618,7 @@ def classify_intent(
 
     # Mutating intents: require deterministic agreement
     if quarantined.intent_category in MUTATING_CATEGORIES:
-        if not _mutating_agrees(quarantined, signals, session.last_qa_variable):
+        if not _mutating_agrees(quarantined, signals, session.last_qa_variables):
             clarify = GatewayIntentResult(
                 intent_category=IntentCategory.AMBIGUOUS,
                 confidence=Confidence.LOW,

@@ -314,7 +314,7 @@ def test_classify_dispatch_when_last_qa_variable_corroborates():
         "wirelessCarrier_astro": "LTE_NO_SVC",
         "carrierSelectionMultiSelect_astro": "LTE_NO_SVC",
     }
-    session.last_qa_variable = "wirelessCarrier_astro"
+    session.last_qa_variables = ["wirelessCarrier_astro"]
     wireless = _attr(
         "wirelessCarrier_astro", "Wireless Carrier",
         [("LTE_NO_SVC", "LTE CAPABILITY NO SERVICE"), ("ATT_FN", "ATT/FirstNet")],
@@ -363,7 +363,7 @@ def test_classify_still_clarifies_when_last_qa_variable_points_elsewhere():
         "wirelessCarrier_astro": "LTE_NO_SVC",
         "carrierSelectionMultiSelect_astro": "LTE_NO_SVC",
     }
-    session.last_qa_variable = "wirelessCarrier_astro"
+    session.last_qa_variables = ["wirelessCarrier_astro"]
     wireless = _attr(
         "wirelessCarrier_astro", "Wireless Carrier",
         [("LTE_NO_SVC", "LTE CAPABILITY NO SERVICE"), ("ATT_FN", "ATT/FirstNet")],
@@ -398,7 +398,7 @@ def test_classify_still_clarifies_when_last_qa_variable_points_elsewhere():
 
 def test_build_candidates_boosts_last_qa_variable():
     session = CpqSession()
-    session.last_qa_variable = "wirelessCarrier_astro"
+    session.last_qa_variables = ["wirelessCarrier_astro"]
     attrs = [
         _attr("noise_a", "Noise A"),
         _attr("wirelessCarrier_astro", "Wireless Carrier", [("ATT_FN", "ATT/FirstNet")]),

@@ -1075,3 +1075,230 @@ reply_does_not_misbind` — these assert `_match_pending_clarify_reply`
 returns a bare string, but it has returned a `(status, variable_name)`
 tuple since this session's LLM-first clarify-decline work; not touched
 by this fix, flagged for a separate cleanup).
+
+---
+
+## Issue 12 — Session only remembers ONE of the two attributes from a compound options query
+
+**Status: root-caused, fixed, live-verified. LLM classification consistency for this exact phrasing remains a separate, open, non-deterministic gap — see "What this fix does NOT guarantee" below.**
+
+### Problem statement
+
+Live transcript: after correctly answering "what are the Frequency Bands
+and Wireless Carrier available?" (both attributes' options listed
+correctly), the customer tried to set both at once:
+
+> Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet
+
+Instead of setting both, the response was:
+
+> Added Frequency Band to your quote — what value would you like?
+
+— followed by the configuration completing without either value applied.
+The customer's question: *why can't the LLM tell this belongs to the
+question it just answered?*
+
+### Root cause, confirmed by reading the code
+
+`CpqSession.last_qa_variable` (`state.py`) was a single `str` field whose
+entire purpose is telling the LLM classifier "the customer just asked
+about attribute X, so a short follow-up naming a value most likely
+refers to X" — exactly the signal needed here. But the compound
+options-query handler (`ask_api.py`, the `_multi_qs` loop) processes
+**multiple** attributes in one turn and did:
+
+```python
+for _sub_q in _multi_qs:
+    _sub_attr = _cpq_engine.detect_attr_query(_sub_q, attrs)
+    ...
+    session.last_qa_variable = _sub_attr.variable_name   # overwritten every iteration!
+```
+
+Each loop iteration **overwrites** the field — so after asking about
+both Frequency Bands and Wireless Carrier, the session only remembers
+whichever one was processed **last** ("Wireless Carrier"). "Frequency
+Bands" was silently forgotten as a follow-up-resolution hint. When the
+customer's next message named both attributes, the LLM's classification
+prompt carried a strong contextual anchor for only one of them — the
+other had no memory hint at all, leaving its resolution to depend purely
+on the LLM's own judgment for that one attribute, with nothing to
+stabilize it turn-to-turn.
+
+Live-verified before the fix: driving the exact transcript through
+`_run_cpq_turn` directly and inspecting `session_data["last_qa_variable"]`
+after the compound options-query turn showed only `"wirelessCarrier_
+astro"` — `"modelSelectionFrequencyBands_astro"` was already gone by the
+time the next turn needed it.
+
+### Fix
+
+`last_qa_variable: str` → `last_qa_variables: list[str]` throughout
+(`state.py`, `ask_api.py`'s three assignment sites, `intent_gateway.py`'s
+three read sites: the candidate-scoring boost in `build_candidate_
+bundles`, the LLM prompt's `customer_last_asked_about=` context line, and
+`_mutating_agrees`' corroboration check). The compound-query loop now
+collects every resolved attribute into one list and assigns it once
+after the loop, instead of overwriting a scalar on each pass. The LLM
+prompt's context line was also reworded to explicitly say "asked about
+ALL of these attributes at once" when there's more than one, rather than
+implying a single topic.
+
+**Live-verified**: re-running the exact transcript and inspecting
+`session_data["last_qa_variables"]` after the compound options-query
+turn now shows `["modelSelectionFrequencyBands_astro",
+"wirelessCarrier_astro"]` — both attributes correctly retained. 2 new
+tests: `tests/test_cpq_2026_07_28_fixes.py::test_compound_options_query_
+remembers_every_attribute_not_just_the_last` (pins the exact bug —
+asserts both survive, not just the last one) and the existing
+`test_cpq_intent_gateway.py` suite updated for the new list-typed field
+(3 assignments changed from a bare string to a single-item list; all 18
+tests in that file still pass unmodified otherwise). Broader sweep across
+`test_cpq_intent_gateway.py` + `test_cpq_pending_clarify.py` +
+`test_cpq_product_switch.py` + `test_cpq_llm_first_cutover_regression.py`:
+92 passed, only the same 4 pre-existing failures already flagged under
+Issue 11 (unrelated stale test contract).
+
+### Follow-up: the initial state fix alone didn't guarantee single-turn resolution
+
+The `last_qa_variables` fix above corrects a real, confirmed
+state-tracking bug — the session no longer silently forgets one of two
+just-discussed attributes. On its own, though, it did **not** make the
+"Add X as Y and Z as W" message resolve reliably in one turn: re-running
+it post-fix still sometimes landed on `ambiguous` rather than directly
+dispatching. The user asked directly why the LLM couldn't tie the
+follow-up back to the question it had just answered — that question led
+to the real structural root cause below.
+
+### Root cause 2 — `classify_intent`'s schema cannot represent two targets, and no splitter existed for change+change compounds
+
+`classify_intent`'s `GatewayIntentResult` (`intent_schema.py`) has
+**exactly one** `variable_name`/`value_ref` slot. It structurally cannot
+report "set Frequency Bands to VHF AND set Wireless Carrier to
+ATT/FirstNet" — a genuine two-target compound collapses to `ambiguous`
+(or an inconsistent single-target guess) no matter how well-formed the
+message is, *before* `last_qa_variables`/`_mutating_agrees`
+corroboration is ever consulted (that corroboration only fires once the
+LLM has already committed to a mutating category).
+
+A splitter already exists for the sibling case — **change + question**
+("change X and what is Y", `_llm_split_compound_change_and_question`) —
+and one already exists for **options + options**
+("what are the Frequency Bands and Wireless Carrier available?",
+`_llm_split_multi_attr_options_query`). Neither covers **change +
+change**. The change+question splitter's own docstring claimed that case
+was "already handled by CHANGE_REQUESTS_MULTI" — live-confirmed false:
+that category only ever corroborates a single already-resolved
+`variable_name`; it never applies a second one.
+
+Also confirmed live: the codebase's two generic full-catalog resolvers
+are not reliable enough to resolve a split fragment on their own once
+one exists — `detect_change_request("change Frequency Bands to VHF", ...)`
+resolved to the **wrong sibling** ("Primary Frequency", which also has a
+VHF option), and `_resolve_target_description` resolved the same text to
+an unrelated attribute entirely (the added word "change" itself picked
+up incidental vocabulary overlap elsewhere in the catalog).
+
+### Fix
+
+1. New `_llm_split_multi_attr_change_request` (`ask_api.py`), mirroring
+   `_llm_split_multi_attr_options_query`'s already-working pattern:
+   detects a genuine 2+-attribute change compound and splits it into
+   self-contained "change X to Y" strings. `last_qa_variables` is passed
+   into its prompt as explicit context ("the customer's immediately
+   preceding message already discussed: Frequency Bands, Wireless
+   Carrier — a follow-up naming these same attributes... is very likely
+   setting both of them, not a fresh ambiguous request") — directly
+   addressing the user's own diagnosis that this "Add" message should be
+   treated as continuing the prior topic, not a separate call.
+2. New `_resolve_split_change_text`, since the generic detectors proved
+   unreliable per the collisions above: resolves each split fragment
+   directly against the small, already-known `last_qa_variables` set
+   first (exact label containment, then a real option value of that same
+   attribute named in the text) — a strictly narrower and more precise
+   search than either generic catalog-wide detector — before falling
+   back to `detect_change_request` only when `last_qa_variables` doesn't
+   cover the fragment at all.
+3. Wired into the same gateway "clarify" branch the change+question
+   splitter already occupies: tried whenever that splitter reports "not
+   a change+question compound," resolving and applying every split
+   fragment via `_handle_cascade` in sequence — but only when **every**
+   fragment resolves (same never-half-apply-and-guess discipline as the
+   sibling splitter); otherwise falls through to the existing clarify
+   path completely unchanged.
+
+**Live-verified end-to-end**: re-running the exact reported transcript,
+"Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet" now
+resolves in a **single turn** — `tools_called: ['cpq_cascade()',
+'cpq_cascade()']`, `Frequency Bands: VHF`, `Wireless Carrier:
+ATT/FIRSTNET`, no clarify prompt at all. 7 new tests across
+`tests/test_cpq_llm_first_cutover_regression.py` (the new splitter's
+split/gate/fail-closed behavior, and the resolver's collision-avoidance
+pinning the exact wrong-sibling-match and wrong-attribute-match failures
+found live). Broader sweep across `test_cpq_llm_first_cutover_regression.py`
++ `test_cpq_intent_gateway.py` + `test_cpq_pending_clarify.py` +
+`test_cpq_product_switch.py` + `test_cpq_change_request_multi.py` +
+`test_cpq_grid_decline.py`: 112 passed, only the same 4 pre-existing
+failures already flagged (unrelated stale test contract). Full
+`test_cpq_2026_07_28_fixes.py` sweep: 54 passed, only the same
+pre-existing DNS-environment failure seen throughout this entire session.
+
+Root cause note, still accurate and still open: `_CHANGE_VERB_RE` (the
+shared deterministic change-verb gate used throughout this codebase)
+does not recognize "add" at all — confirmed via direct regex test. The
+LLM-first splitter above is what makes "Add X as Y" reliable now, not a
+deterministic detector; `detect_change_request`/`detect_change_requests_
+multi` still can't see this phrasing directly. A proposed complementary
+fix — recognizing the specific "`<name> as <value>`" construction as an
+additional unambiguous signal (mirroring how `→` is already treated
+alongside verbs), without touching the word "add" itself so genuine "add
+this accessory" requests are unaffected — remains undiscussed further;
+flagged here only if full deterministic (non-LLM-dependent) coverage for
+this phrasing is wanted later.
+
+### Follow-up 2 — a THIRD phrasing the "and"/";" pre-check gate still missed entirely
+
+After the fix above shipped, the customer hit the same symptom again
+with yet another compound phrasing that predates both "change...to..."
+and "Add...as...": the very first transcript that opened this whole
+investigation —
+
+> Frequency Bands -700/800 MHz Wireless Carrier- ATT/FirstNet (provided
+> by Motorola)
+
+— uses `-` as its separator, with **no** "and" and **no** `;` anywhere
+in the message. Both compound splitters (`_llm_split_compound_change_
+and_question` and the new `_llm_split_multi_attr_change_request`) are
+only ever *attempted* behind a shared pre-check:
+
+```python
+if " and " in _cq_lower or ";" in req.question:
+```
+
+Since this message matches neither keyword, **neither splitter was ever
+called at all** — straight through to the generic clarify prompt, no
+matter how much better that prompt's own candidate ranking had already
+gotten from Issue 11's fix. A keyword-only gate can never anticipate
+every way a customer might separate two requests (dashes, commas,
+newlines, bullet-style pastes from a spreadsheet, ...).
+
+**Fix**: the gate now also fires whenever `session.last_qa_variables`
+already holds 2+ entries — a cheap, keyword-free, context-driven signal
+that's exactly as strong as (and complements) the surface-level "and"/
+";" check, and directly uses the same `last_qa_variables` signal the
+customer had already pointed at as the right fix earlier in this
+investigation:
+
+```python
+_looks_compound = " and " in _cq_lower or ";" in req.question
+_recent_multi_topic = len(session.last_qa_variables or []) >= 2
+if _looks_compound or _recent_multi_topic:
+```
+
+**Live-verified**: re-running the exact original dash-separated
+transcript now resolves in a single turn —
+`tools_called: ['cpq_cascade()', 'cpq_cascade()']`, `Frequency Bands:
+700/800 MHZ`, `Wireless Carrier: ATT/FIRSTNET`, `Carrier Selection`
+confirmed untouched (`[]`). Regression sweep across the same 6 files as
+the previous fix: 112 passed, only the same 4 pre-existing failures
+already flagged. Full `test_cpq_2026_07_28_fixes.py` sweep re-run
+afterward for final sign-off.

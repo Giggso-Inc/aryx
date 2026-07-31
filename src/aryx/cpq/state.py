@@ -410,7 +410,16 @@ class CpqSession:
     # this, "make it ATT/FirstNet" right after asking about Wireless
     # Carrier had no way to prefer that attr over a genuinely-ambiguous
     # sibling (Carrier Selection) that also accepts the same value.
-    last_qa_variable: str = ""
+    #
+    # A list, not a single string (docs/config_consistency_issues_2026-
+    # 07-30.md Issue 12): a compound options query ("what are the
+    # Frequency Bands and Wireless Carrier available?") asks about
+    # MULTIPLE attributes in one turn. A single-string field can only
+    # remember the last one processed, silently losing the others as
+    # a follow-up-resolution hint for the LLM classifier — live-confirmed
+    # as the reason a two-attribute follow-up ("Add Frequency Bands as
+    # VHF and Wireless Carrier as ATT/FirstNet") resolved inconsistently.
+    last_qa_variables: list[str] = field(default_factory=list)
 
     # variable_name of the attribute a gateway clarify ("which attribute
     # did you mean?") was most recently RESOLVED to, and the turn it was

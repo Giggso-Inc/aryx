@@ -735,6 +735,141 @@ def _llm_split_multi_attr_options_query(
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
+def _llm_split_multi_attr_change_request(
+    question: str, attrs: list, workspace_id: int,
+    last_qa_variables: list[str] | None = None,
+) -> list[str] | None:
+    """LLM-first check: does this message set 2+ genuinely DIFFERENT
+    attributes' values at once (docs/config_consistency_issues_2026-07-30.md
+    Issue 12)?
+
+    Mirrors _llm_split_multi_attr_options_query's already-working pattern,
+    but for changes rather than options-questions. classify_intent's
+    GatewayIntentResult schema has exactly ONE variable_name/value_ref
+    slot — it structurally cannot represent two separate target+value
+    pairs, so a genuine two-change compound ("Add Frequency Bands as VHF
+    and Wireless Carrier as ATT/FirstNet") always collapsed to that
+    gateway's own "ambiguous" category (or an inconsistent single-target
+    guess), regardless of how well-formed the message was.
+    _llm_split_compound_change_and_question already splits a CHANGE +
+    QUESTION compound; this covers the CHANGE + CHANGE case its own
+    docstring assumed (incorrectly — confirmed live) was "already handled
+    by CHANGE_REQUESTS_MULTI": that category only ever corroborates a
+    single already-resolved variable_name, it never applies a second one.
+
+    last_qa_variables — the attributes the customer's immediately
+    preceding turn discussed (e.g. a compound options query just listed
+    both). Passed as context so the LLM recognizes "Add Frequency Bands
+    as VHF and Wireless Carrier as ATT/FirstNet" as directly continuing
+    that same topic, not a fresh, unrelated request — the same
+    conversational-recency signal build_candidate_bundles/_mutating_agrees
+    already use elsewhere, applied here to help produce a correct split
+    in the first place rather than only correcting a result after the
+    fact.
+
+    Each returned string is a self-contained "change X to Y" style
+    request, resolved the same way the sibling change+question splitter's
+    own change_text already is (`detect_change_request`) — no new
+    resolution machinery, this only adds the missing split step. Returns
+    None when fewer than 2 real candidates overlap, or when the LLM's own
+    judgment says this isn't genuinely a multi-attribute change — caller
+    falls through to the existing single-target gateway path unchanged.
+    """
+    candidates = _relevant_intent_candidates(question, attrs, fallback_to_full=False)
+    if len(candidates) < 2:
+        return None
+    catalog_lines = "\n".join(
+        f"- \"{a.display_label}\" (variable_name={a.variable_name})"
+        for a in candidates
+    )
+    recency_line = ""
+    if last_qa_variables:
+        _recent_labels = [
+            a.display_label for a in attrs if a.variable_name in last_qa_variables
+        ]
+        if _recent_labels:
+            recency_line = (
+                "\nThe customer's immediately preceding message already "
+                "discussed: " + ", ".join(_recent_labels) + " — a follow-up "
+                "naming these same attributes with values is very likely "
+                "setting both of them, not a fresh ambiguous request.\n"
+            )
+    sys = (
+        "A customer sent a message to a product-configuration assistant "
+        "trying to SET the value of one or more attributes. Determine "
+        "whether the message sets TWO OR MORE genuinely DIFFERENT "
+        "attributes from the CANDIDATE list below in one message — not a "
+        "single attribute change, and not a change combined with a "
+        "separate question (that is handled elsewhere). If it sets 2+ "
+        "different attributes, split it into that many self-contained "
+        "change requests, each phrased as \"change <attribute> to "
+        "<value>\" using the customer's own words for the attribute and "
+        "value. Never invent an attribute or value that isn't named in "
+        "the message."
+    )
+    user = (
+        f"CANDIDATE ATTRIBUTES:\n{catalog_lines}\n"
+        f"{recency_line}\n"
+        f"MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"is_multi_change": true|false, '
+        '"changes": ["<change request 1>", "<change request 2>", ...]}'
+    )
+
+    def _validate(parsed: dict) -> list[str] | None:
+        if not parsed.get("is_multi_change"):
+            return None
+        raw_cs = parsed.get("changes") or []
+        cs = [c.strip() for c in raw_cs if isinstance(c, str) and c.strip()]
+        return cs if len(cs) >= 2 else None
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _resolve_split_change_text(
+    text: str, attrs: list, filled: dict, filled_multi: dict,
+    last_qa_variables: list[str] | None = None,
+) -> tuple[Any, str] | None:
+    """Resolve one self-contained "change X to Y" fragment from
+    _llm_split_multi_attr_change_request to (attr, new_value_hint).
+
+    docs/config_consistency_issues_2026-07-30.md Issue 12 — live-confirmed
+    the generic catalog-wide detectors are NOT reliable enough for this:
+    `detect_change_request("change Frequency Bands to VHF", ...)` resolved
+    to the wrong sibling ("Primary Frequency", which also has a VHF
+    option), and `_resolve_target_description` resolved the same text to
+    an unrelated attr entirely (the added word "change" itself picked up
+    incidental vocabulary overlap elsewhere in the catalog). Both were
+    live-verified to work FINE for Wireless Carrier — the unreliability is
+    specific to which attribute happens to collide with others, not a
+    blanket failure.
+
+    Since last_qa_variables already narrows the search to the exact 1-2
+    attributes the customer was just discussing, resolving directly
+    against ONLY those (exact label containment, then a real option value
+    of that SAME attr named in the text) is a strictly smaller and more
+    precise search than either generic catalog-wide detector — and
+    correctly sidesteps both wrong-match failure modes above. Only falls
+    back to the generic deterministic detector when last_qa_variables
+    doesn't cover this fragment at all (e.g. a genuinely new attribute
+    named in the same compound message that wasn't part of the prior
+    turn's topic).
+    """
+    text_lower = text.lower()
+    preferred = [a for a in attrs if a.variable_name in (last_qa_variables or [])]
+    for a in preferred:
+        label_l = (a.display_label or "").lower()
+        if label_l and label_l in text_lower:
+            for opt in sorted(
+                a.options, key=lambda o: -len(o.display_name or o.item_value or ""),
+            ):
+                if (
+                    (opt.display_name or "").lower() in text_lower
+                    or (opt.item_value or "").lower() in text_lower
+                ):
+                    return a, opt.item_value
+    return _cpq_engine.detect_change_request(text, attrs, filled, filled_multi)
+
+
 def _handle_cpq_qa(
     req: "AskRequest",
     session: Any,
@@ -800,6 +935,7 @@ def _handle_cpq_qa(
         )
         if _multi_qs:
             _multi_answers = []
+            _multi_qa_vns: list[str] = []
             for _sub_q in _multi_qs:
                 _sub_attr = _cpq_engine.detect_attr_query(_sub_q, attrs)
                 _sub_answer = (
@@ -808,8 +944,12 @@ def _handle_cpq_qa(
                 )
                 if _sub_answer:
                     _multi_answers.append(_sub_answer)
-                    session.last_qa_variable = _sub_attr.variable_name
+                    _multi_qa_vns.append(_sub_attr.variable_name)
             if len(_multi_answers) >= 2:
+                # Remember EVERY attribute this compound query asked about,
+                # not just the last one processed — see last_qa_variables'
+                # own docstring (Issue 12).
+                session.last_qa_variables = _multi_qa_vns
                 qa_answer = "\n\n".join(_multi_answers)
                 _persist_cpq_history(req.workspace_id, req.question, qa_answer)
                 return {
@@ -833,7 +973,7 @@ def _handle_cpq_qa(
         # what the customer just asked about so a follow-up bare-value reply
         # ("make it ATT/FirstNet") can be preferred toward THIS attribute
         # even when a sibling attribute genuinely shares the same option value.
-        session.last_qa_variable = _attr_q.variable_name
+        session.last_qa_variables = [_attr_q.variable_name]
         p_in = p_out = p_ms = s_in = s_out = s_ms = 0
     else:
         types = all_types(reader)
@@ -6220,8 +6360,27 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # falling to the generic clarify prompt; cheap conjunction
                 # pre-check keeps this from firing on ordinary ambiguous
                 # single-intent messages that have no "and"/";" at all.
+                #
+                # docs/config_consistency_issues_2026-07-30.md Issue 12
+                # follow-up — live-confirmed a THIRD phrasing this
+                # conjunction-only gate still misses entirely: "Frequency
+                # Bands -700/800 MHz Wireless Carrier- ATT/FirstNet
+                # (provided by Motorola)" uses "-" as its separator, no
+                # "and"/";" anywhere, so neither splitter below was ever
+                # even attempted — straight through to the generic clarify
+                # prompt every time, regardless of how well last_qa_
+                # variables/_ground_clarify_candidates already improved
+                # that prompt's own candidate ranking. A keyword-only gate
+                # can never anticipate every way a customer separates two
+                # requests; last_qa_variables already knows — cheaply,
+                # without any extra LLM call — that the immediately
+                # preceding turn discussed exactly these 2+ attributes, so
+                # it's an equally valid (and keyword-free) signal that a
+                # split is worth attempting.
                 _cq_lower = req.question.lower()
-                if " and " in _cq_lower or ";" in req.question:
+                _looks_compound = " and " in _cq_lower or ";" in req.question
+                _recent_multi_topic = len(session.last_qa_variables or []) >= 2
+                if _looks_compound or _recent_multi_topic:
                     _split = _llm_split_compound_change_and_question(
                         req.question, req.workspace_id,
                     )
@@ -6263,6 +6422,64 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         # Split succeeded but the change clause didn't
                         # resolve deterministically — fall through to the
                         # existing clarify path unchanged (safe default).
+                    else:
+                        # Not a change+question compound — try change+change
+                        # (docs/config_consistency_issues_2026-07-30.md
+                        # Issue 12): classify_intent's schema can only ever
+                        # name ONE target, so "Add Frequency Bands as VHF
+                        # and Wireless Carrier as ATT/FirstNet" collapses to
+                        # "ambiguous" here regardless of how well-formed it
+                        # is. last_qa_variables (both attrs from the
+                        # customer's immediately preceding compound options
+                        # query) is passed in as context to help produce a
+                        # correct split.
+                        _multi_change_texts = _llm_split_multi_attr_change_request(
+                            req.question, attrs, req.workspace_id,
+                            last_qa_variables=session.last_qa_variables,
+                        )
+                        if _multi_change_texts:
+                            _resolved_changes = [
+                                (
+                                    _mc_text,
+                                    _resolve_split_change_text(
+                                        _mc_text, attrs, session.filled,
+                                        session.filled_multi,
+                                        last_qa_variables=session.last_qa_variables,
+                                    ),
+                                )
+                                for _mc_text in _multi_change_texts
+                            ]
+                            # Never half-apply and guess (same discipline as
+                            # the change+question split above) — only
+                            # proceed when EVERY split fragment resolved to
+                            # a real attr+value; otherwise fall through to
+                            # the existing clarify path unchanged.
+                            if all(hint is not None for _, hint in _resolved_changes):
+                                _mc_results = []
+                                for _mc_text, _mc_hint in _resolved_changes:
+                                    _mc_attr, _mc_value_hint = _mc_hint
+                                    _mc_req = req.model_copy(
+                                        update={"question": _mc_text},
+                                    )
+                                    _mc_results.append(_handle_cascade(
+                                        _mc_req, session, attrs, _mc_attr,
+                                        _mc_value_hint, hiding_rules, rec_rules,
+                                        con_rules,
+                                    ))
+                                _combined = "\n\n".join(
+                                    r.get("answer", "") for r in _mc_results
+                                )
+                                _persist_cpq_history(
+                                    req.workspace_id, req.question, _combined,
+                                )
+                                return {
+                                    **_mc_results[-1],
+                                    "answer": _combined,
+                                    "tools_called": [
+                                        t for r in _mc_results
+                                        for t in (r.get("tools_called") or [])
+                                    ],
+                                }
                 # docs/config_consistency_issues_2026-07-30.md issue 1 — never
                 # offer a currently-hidden-for-this-product attribute as a
                 # disambiguation candidate.
@@ -6608,7 +6825,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         )
         other_pending = [v for v in session.pending_variables if v != queried_attr.variable_name]
         session.pending_variables = [queried_attr.variable_name] + other_pending
-        session.last_qa_variable = queried_attr.variable_name
+        session.last_qa_variables = [queried_attr.variable_name]
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
             "answer": answer, "terms": [queried_attr.variable_name],

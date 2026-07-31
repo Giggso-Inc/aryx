@@ -1368,6 +1368,46 @@ def test_handle_cpq_qa_answers_both_attrs_in_a_compound_options_query(monkeypatc
     assert "ATT/FirstNet" in resp["answer"]
 
 
+def test_compound_options_query_remembers_every_attribute_not_just_the_last(monkeypatch):
+    """Issue 12 (docs/config_consistency_issues_2026-07-30.md): the loop
+    building the compound answer above used to do `session.last_qa_variable
+    = _sub_attr.variable_name` on every iteration — a single-string field
+    silently overwritten each pass, so only the LAST attribute asked about
+    ("Wireless Carrier") survived and "Frequency Bands" was forgotten as a
+    follow-up-resolution hint. A follow-up naming BOTH attributes then had
+    no conversational-recency anchor for Frequency Bands at all, making its
+    resolution depend entirely on LLM classification luck. Both must now
+    survive in last_qa_variables."""
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], []))
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+
+    freq = _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                 options=_opt("700/800 MHz", "VHF"))
+    carrier = _attr(2, "wirelessCarrier_astro", "Wireless Carrier",
+                     options=_opt("ATT/FirstNet", "Verizon"))
+    attrs = [freq, carrier]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(
+        question="what are the Frequency Bands and Wireless Carrier available?",
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    fake_reply = (
+        '{"is_multi_attr": true, '
+        '"questions": ["what are the Frequency Bands available", '
+        '"what is the Wireless Carrier available"]}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        _handle_cpq_qa(req, session, attrs, object())
+
+    assert set(session.last_qa_variables) == {
+        "modelSelectionFrequencyBands_astro", "wirelessCarrier_astro",
+    }, (
+        "a compound options query must remember EVERY attribute it asked "
+        "about, not just the last one processed in the loop"
+    )
+
+
 def test_qa_ambiguity_check_failure_falls_back_to_synthesis_safely(monkeypatch):
     """The classifier call is wrapped in a bare except -- any failure
     (LLM error, malformed reply) must never break the Q&A turn; it must

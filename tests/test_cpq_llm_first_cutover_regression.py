@@ -14,7 +14,9 @@ from aryx.api.ask_api import (
     _is_change_value_decline,
     _llm_classify_is_cpq_question,
     _llm_split_compound_change_and_question,
+    _llm_split_multi_attr_change_request,
     _llm_split_multi_attr_options_query,
+    _resolve_split_change_text,
 )
 from aryx.cpq.intent_gateway import (
     _format_candidates_for_prompt,
@@ -401,3 +403,204 @@ def test_llm_split_multi_attr_options_query_fails_closed_on_malformed_json():
             [freq, carrier], workspace_id=1,
         )
     assert result is None
+
+
+# docs/config_consistency_issues_2026-07-30.md Issue 12 — "Add Frequency
+# Bands as VHF and Wireless Carrier as ATT/FirstNet" must split into two
+# real changes, not collapse to classify_intent's single-target
+# "ambiguous" category (that gateway's own GatewayIntentResult schema has
+# exactly one variable_name/value_ref slot — it cannot represent two
+# separate target+value pairs at all).
+
+def test_llm_split_multi_attr_change_request_splits_two_real_attributes():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="VHF", display_name="VHF")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    fake_reply = (
+        '{"is_multi_change": true, '
+        '"changes": ["change Frequency Bands to VHF", '
+        '"change Wireless Carrier to ATT/FirstNet"]}'
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_multi_attr_change_request(
+            "Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet",
+            [freq, carrier], workspace_id=1,
+        )
+    assert result == [
+        "change Frequency Bands to VHF",
+        "change Wireless Carrier to ATT/FirstNet",
+    ]
+
+
+def test_llm_split_multi_attr_change_request_passes_last_qa_variables_as_context():
+    """last_qa_variables (the attributes the customer's immediately
+    preceding turn discussed) must reach the LLM prompt — it's the signal
+    that this follow-up continues the same topic, not a fresh request."""
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="VHF", display_name="VHF")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    fake_reply = (
+        '{"is_multi_change": true, '
+        '"changes": ["change Frequency Bands to VHF", '
+        '"change Wireless Carrier to ATT/FirstNet"]}'
+    )
+    with patch(
+        "aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5),
+    ) as mock_chat:
+        _llm_split_multi_attr_change_request(
+            "Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet",
+            [freq, carrier], workspace_id=1,
+            last_qa_variables=[
+                "modelSelectionFrequencyBands_astro", "wirelessCarrier_astro",
+            ],
+        )
+    user_prompt = mock_chat.call_args.args[2]
+    assert "Frequency Bands" in user_prompt
+    assert "Wireless Carrier" in user_prompt
+    assert "immediately preceding message already discussed" in user_prompt
+
+
+def test_llm_split_multi_attr_change_request_none_for_single_attribute():
+    """Multi-change message ("change Frequency Bands to VHF") — the model
+    correctly reports is_multi_change=false — must NOT be split."""
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="VHF", display_name="VHF")],
+    )
+    fake_reply = '{"is_multi_change": false, "changes": []}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _llm_split_multi_attr_change_request(
+            "change Frequency Bands to VHF", [freq], workspace_id=1,
+        )
+    assert result is None
+
+
+def test_llm_split_multi_attr_change_request_fails_closed_on_malformed_json():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="VHF", display_name="VHF")],
+    )
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT", display_name="ATT/FirstNet")],
+    )
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json", 1, 1)):
+        result = _llm_split_multi_attr_change_request(
+            "Add Frequency Bands as VHF and Wireless Carrier as ATT/FirstNet",
+            [freq, carrier], workspace_id=1,
+        )
+    assert result is None
+
+
+# Live-confirmed: the generic catalog-wide detectors are NOT reliable
+# enough to resolve a split fragment on their own — detect_change_request
+# resolved "change Frequency Bands to VHF" to the WRONG sibling ("Primary
+# Frequency", which also has a VHF option), and _resolve_target_description
+# resolved the same text to an unrelated attr entirely (the word "change"
+# itself picked up incidental vocabulary overlap elsewhere in the
+# catalog). last_qa_variables narrows the search to the exact attributes
+# already known from context, sidestepping both failure modes.
+
+def test_resolve_split_change_text_prefers_last_qa_variables_over_a_colliding_sibling():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    freq = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        options=[MenuOption(item_value="VHF", display_name="VHF")],
+    )
+    # A real sibling that ALSO has "VHF" as an option and a similar label —
+    # the exact collision that fooled detect_change_request live.
+    primary_freq = ConfigAttr(
+        entity_id=3, variable_name="modelSelectionPrimaryFrequency_astro",
+        display_label="Primary Frequency", required=False, default_value="",
+        options=[MenuOption(item_value="VHF", display_name="VHF")],
+    )
+    attrs = [freq, primary_freq]
+
+    result = _resolve_split_change_text(
+        "change Frequency Bands to VHF", attrs, {}, {},
+        last_qa_variables=["modelSelectionFrequencyBands_astro"],
+    )
+    assert result is not None
+    resolved_attr, value = result
+    assert resolved_attr.variable_name == "modelSelectionFrequencyBands_astro"
+    assert value == "VHF"
+
+
+def test_resolve_split_change_text_resolves_wireless_carrier():
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    carrier = ConfigAttr(
+        entity_id=2, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        options=[MenuOption(item_value="ATT/FIRSTNET", display_name="ATT/FirstNet")],
+    )
+    selection = ConfigAttr(
+        entity_id=4, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier Selection", required=False, default_value="",
+        select_type="multi",
+        options=[MenuOption(item_value="ATT/FIRSTNET", display_name="ATT/FirstNet")],
+    )
+    attrs = [carrier, selection]
+
+    result = _resolve_split_change_text(
+        "change Wireless Carrier to ATT/FirstNet", attrs, {}, {},
+        last_qa_variables=["wirelessCarrier_astro"],
+    )
+    assert result is not None
+    resolved_attr, value = result
+    assert resolved_attr.variable_name == "wirelessCarrier_astro"
+    assert value == "ATT/FIRSTNET"
+
+
+def test_resolve_split_change_text_falls_back_to_deterministic_detector_when_unscoped():
+    """When last_qa_variables doesn't cover this fragment at all (a
+    genuinely new attribute in the same compound message), fall back to
+    the existing deterministic detector rather than failing outright."""
+    from aryx.cpq.state import ConfigAttr, MenuOption
+
+    hw = ConfigAttr(
+        entity_id=5, variable_name="hWVersion_astro",
+        display_label="Hardware Version", required=False, default_value="",
+        options=[
+            MenuOption(item_value="APX NEXT (4G LTE Only)", display_name="APX NEXT (4G LTE Only)"),
+            MenuOption(item_value="APX NEXT (4G LTE+5G)", display_name="APX NEXT (4G LTE+5G)"),
+        ],
+    )
+    # detect_change_request (the deterministic fallback) only recognizes
+    # a "change" as changing something already filled — matches its own
+    # existing contract, not something this resolver needs to work around.
+    filled = {"hWVersion_astro": "APX NEXT (4G LTE+5G)"}
+    result = _resolve_split_change_text(
+        "change Hardware Version to APX NEXT (4G LTE Only)", [hw], filled, {},
+        last_qa_variables=["someOtherAttr_astro"],
+    )
+    assert result is not None
+    resolved_attr, _value = result
+    assert resolved_attr.variable_name == "hWVersion_astro"
