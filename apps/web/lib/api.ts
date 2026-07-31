@@ -19,6 +19,14 @@ import {
 // production (proxies to api:8000) without any client-side knowledge.
 const BASE = "/api";
 
+export type DataSourceDeleteResult = {
+  status: string;
+  source_key: string;
+  asset_key?: string;
+  catalog_rows_deleted: number;
+  graph_sync: "complete" | "repair_required";
+};
+
 /** Throw on non-2xx; return parsed JSON otherwise. */
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -174,7 +182,7 @@ export const api = {
     fetchBlob(`/data/sources/${encodeURIComponent(sourceKey)}/download?workspace_id=${workspaceId}`),
 
   deleteDataSource: (workspaceId: number, sourceKey: string) =>
-    fetchJSON<{ status: string; source_key: string }>(
+    fetchJSON<DataSourceDeleteResult>(
       `/data/sources/${encodeURIComponent(sourceKey)}?workspace_id=${workspaceId}`,
       { method: "DELETE" },
     ),
@@ -185,7 +193,7 @@ export const api = {
     ),
 
   deleteGeneratedAsset: (workspaceId: number, sourceKey: string, assetKey: string) =>
-    fetchJSON<{ status: string; source_key: string; asset_key: string }>(
+    fetchJSON<DataSourceDeleteResult>(
       `/data/sources/${encodeURIComponent(sourceKey)}/assets/${encodeURIComponent(assetKey)}?workspace_id=${workspaceId}`,
       { method: "DELETE" },
     ),

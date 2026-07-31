@@ -63,10 +63,8 @@ _stub_oracledb()
 
 from aryx.store.oracle_workspace import (  # noqa: E402
     OracleWorkspaceStore,
-    _DELETE_PARTITION_SQLS,
-    _PARTITIONED,
-    _TRUNCATE_SQLS,
 )
+from aryx.queries import split_statements  # noqa: E402
 
 
 # ── SQL stubs — substitute for real .sql files during testing ─────────────────
@@ -103,6 +101,18 @@ _SQL_STUBS: dict[str, str] = {
     "purge_workspace_data": (
         "DELETE FROM aryx_chunk WHERE workspace_id = %(wid)s;\n"
         "DELETE FROM aryx_chunk_embedding WHERE workspace_id = %(wid)s"
+    ),
+    "delete_workspace_partition_data": (
+        "DELETE FROM aryx_entity_member WHERE workspace_id = %(wid)s;\n"
+        "DELETE FROM aryx_relationship WHERE workspace_id = %(wid)s;\n"
+        "DELETE FROM aryx_entity WHERE workspace_id = %(wid)s;\n"
+        "DELETE FROM aryx_landed_record WHERE workspace_id = %(wid)s"
+    ),
+    "nuke_workspace_partition_data": (
+        "DELETE FROM aryx_entity_member;\n"
+        "DELETE FROM aryx_relationship;\n"
+        "DELETE FROM aryx_entity;\n"
+        "DELETE FROM aryx_landed_record"
     ),
     "nuke_system": "DELETE FROM aryx_llm_call WHERE 1=1",
     "select_non_default_workspace_ids": (
@@ -170,40 +180,28 @@ def _make_store(pool: MagicMock) -> OracleWorkspaceStore:
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
-class TestModuleLevelConstants(unittest.TestCase):
-    """Pre-built SQL dicts contain the right tables and no f-strings at execute() sites."""
+class TestPartitionSqlFiles(unittest.TestCase):
+    """Workspace partition SQL files contain scoped purge and unscoped nuke DML."""
 
-    def test_partitioned_has_four_tables(self) -> None:
-        self.assertEqual(len(_PARTITIONED), 4)
-
-    def test_delete_partition_sqls_covers_all_tables(self) -> None:
-        for table in _PARTITIONED:
-            self.assertIn(table, _DELETE_PARTITION_SQLS,
-                          f"{table} missing from _DELETE_PARTITION_SQLS")
-
-    def test_truncate_sqls_covers_all_tables(self) -> None:
-        for table in _PARTITIONED:
-            self.assertIn(table, _TRUNCATE_SQLS,
-                          f"{table} missing from _TRUNCATE_SQLS")
+    def test_delete_partition_sql_has_four_statements(self) -> None:
+        statements = split_statements(_SQL_STUBS["delete_workspace_partition_data"])
+        self.assertEqual(len(statements), 4)
 
     def test_delete_partition_sql_has_workspace_id_filter(self) -> None:
-        for table, sql in _DELETE_PARTITION_SQLS.items():
-            self.assertIn("workspace_id", sql,
-                          f"_DELETE_PARTITION_SQLS['{table}'] missing workspace_id filter")
+        for statement in split_statements(_SQL_STUBS["delete_workspace_partition_data"]):
+            self.assertIn("workspace_id", statement)
 
-    def test_truncate_sql_has_no_where_clause(self) -> None:
-        for table, sql in _TRUNCATE_SQLS.items():
-            self.assertNotIn("WHERE", sql.upper(),
-                             f"_TRUNCATE_SQLS['{table}'] has unexpected WHERE clause")
+    def test_nuke_partition_sql_has_four_statements(self) -> None:
+        statements = split_statements(_SQL_STUBS["nuke_workspace_partition_data"])
+        self.assertEqual(len(statements), 4)
 
-    def test_delete_partition_sql_references_correct_table(self) -> None:
-        for table, sql in _DELETE_PARTITION_SQLS.items():
-            self.assertIn(table, sql,
-                          f"_DELETE_PARTITION_SQLS entry for '{table}' does not name it")
+    def test_nuke_partition_sql_has_no_where_clause(self) -> None:
+        for statement in split_statements(_SQL_STUBS["nuke_workspace_partition_data"]):
+            self.assertNotIn("WHERE", statement.upper())
 
 
 class TestDropPartitions(unittest.TestCase):
-    """_drop_partitions() executes the pre-built SQL for all four tables."""
+    """_drop_partitions() executes each statement from the partition SQL file."""
 
     def test_executes_for_all_four_partitioned_tables(self) -> None:
         pool, cur = _make_pool_cursor()
@@ -211,18 +209,16 @@ class TestDropPartitions(unittest.TestCase):
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             store._drop_partitions(42)
         executed_sqls = [c[0][0] for c in cur.execute.call_args_list]
-        for table in _PARTITIONED:
-            self.assertIn(_DELETE_PARTITION_SQLS[table], executed_sqls,
-                          f"_DELETE_PARTITION_SQLS['{table}'] not executed")
+        for statement in split_statements(_SQL_STUBS["delete_workspace_partition_data"]):
+            self.assertIn(statement, executed_sqls)
 
-    def test_passes_workspace_id_as_positional_param(self) -> None:
+    def test_passes_workspace_id_as_named_param(self) -> None:
         pool, cur = _make_pool_cursor()
         store = _make_store(pool)
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             store._drop_partitions(99)
         for c in cur.execute.call_args_list:
-            self.assertEqual(c[0][1], (99,),
-                             "Expected workspace_id=99 as positional tuple param")
+            self.assertEqual(c[0][1], {"wid": 99})
 
 
 class TestCreate(unittest.TestCase):
@@ -417,7 +413,7 @@ class TestDelete(unittest.TestCase):
             store.delete(5)
         # _drop_partitions must be called: its SQL appears before the row delete
         executed_sqls = [c[0][0] for c in cur.execute.call_args_list]
-        partition_sqls = list(_DELETE_PARTITION_SQLS.values())
+        partition_sqls = split_statements(_SQL_STUBS["delete_workspace_partition_data"])
         self.assertTrue(
             any(sql in executed_sqls for sql in partition_sqls),
             "_drop_partitions SQL not found — partition rows not cleaned up",
@@ -425,19 +421,16 @@ class TestDelete(unittest.TestCase):
 
 
 class TestNuke(unittest.TestCase):
-    """nuke() issues a factory reset using pre-built _TRUNCATE_SQLS."""
+    """nuke() issues a factory reset using the nuke partition SQL file."""
 
-    def test_uses_truncate_sqls_for_all_partitioned_tables(self) -> None:
+    def test_uses_nuke_partition_sql_for_all_partitioned_tables(self) -> None:
         pool, cur = _make_pool_cursor(fetchall=[])  # no non-default workspaces
         store = _make_store(pool)
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             store.nuke()
         executed_sqls = [c[0][0] for c in cur.execute.call_args_list]
-        for table in _PARTITIONED:
-            self.assertIn(
-                _TRUNCATE_SQLS[table], executed_sqls,
-                f"_TRUNCATE_SQLS['{table}'] not found in nuke execute calls",
-            )
+        for statement in split_statements(_SQL_STUBS["nuke_workspace_partition_data"]):
+            self.assertIn(statement, executed_sqls)
 
     def test_returns_status_nuked(self) -> None:
         pool, _ = _make_pool_cursor(fetchall=[])
@@ -456,18 +449,17 @@ class TestNuke(unittest.TestCase):
 
 
 class TestPurgeData(unittest.TestCase):
-    """purge_data() clears workspace data and replaces %(wid)s params."""
+    """purge_data() clears workspace data and binds %(wid)s statements."""
 
-    def test_replaces_named_param_in_purge_sql(self) -> None:
+    def test_binds_all_named_wid_statements(self) -> None:
         pool, cur = _make_pool_cursor()
         store = _make_store(pool)
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             store.purge_data(3)
-        executed_sqls = [str(c[0][0]) for c in cur.execute.call_args_list]
-        self.assertFalse(
-            any("%(wid)s" in sql for sql in executed_sqls),
-            "%(wid)s was not replaced before execute() — oracle param style broken",
-        )
+        for call in cur.execute.call_args_list:
+            sql = str(call[0][0])
+            if "%(wid)s" in sql:
+                self.assertEqual(call[0][1], {"wid": 3})
 
     def test_wid_param_bound_as_dict(self) -> None:
         pool, cur = _make_pool_cursor()

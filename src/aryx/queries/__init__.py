@@ -43,3 +43,21 @@ def load(name: str) -> str:
     sql = (_SQL_DIR / f"{name}.sql").read_text(encoding="utf-8").strip()
     _cache[key] = sql
     return sql
+
+
+def split_statements(sql: str) -> list[str]:
+    """Split simple DML scripts after removing SQL line comments.
+
+    This intentionally targets the repository's semicolon-delimited DML
+    query files. It is not a PL/SQL parser.
+    """
+    uncommented = []
+    for line in sql.splitlines():
+        statement_text = line.split("--", 1)[0].strip()
+        if statement_text:
+            uncommented.append(statement_text)
+    return [
+        statement.strip()
+        for statement in "\n".join(uncommented).split(";")
+        if statement.strip()
+    ]
