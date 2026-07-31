@@ -5938,7 +5938,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         if _cpq_engine.detect_response_mode_request(req.question) == "json":
             preview_payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
-                hidden_vns=_hidden_for_payload)
+                hidden_vns=_hidden_for_payload,
+                rules=[*hiding_rules, *rec_rules, *con_rules])
             rule_ids_preview = _cpq_engine.rule_governed_ids(
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
@@ -6124,7 +6125,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             session.complete = True
             payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
-                hidden_vns=_hidden_for_payload)
+                hidden_vns=_hidden_for_payload,
+                rules=[*hiding_rules, *rec_rules, *con_rules])
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -7590,7 +7592,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req.workspace_id, catalog_prefix, attrs)
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi, visible_attrs,
-                hidden_vns=_hidden_now)
+                hidden_vns=_hidden_now,
+                rules=[*hiding_rules, *rec_rules, *con_rules])
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
@@ -7687,10 +7690,27 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     attrs, _ = _cpq_engine.load_product_config(reader, req.workspace_id, session.product_name)
     # NOTE: hiding-rule auto-fix (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md
     # §4.1) is not applied here — this is only the share-button preview
-    # snapshot, and loading hiding_rules/bml_eval here would mean a second
-    # rule-fetch round trip on every ready turn just for a preview. The real
-    # submission path (_run_cpq_turn's Step 8 build_payload call) already
-    # applies it.
+    # snapshot, and running apply_hiding_rules + a BmlEvaluator here would
+    # mean a second, potentially Tier-2-LLM-backed evaluation pass on every
+    # ready turn just for a preview. The real submission path
+    # (_run_cpq_turn's Step 8 build_payload call) already applies it.
+    #
+    # Raven review on PR #142 (docs/APX_Next_RootCause_And_Fix_Report):
+    # this preview payload is customer-visible (the web UI's JSON/share
+    # button) and was still using build_payload's order_number-only
+    # fallback, so it could show the exact wrong-sequence bug that PR
+    # fixed elsewhere (e.g. Product listed before the Hardware Version
+    # that gates it). Fixed by loading JUST the rule lists here — a plain
+    # DB read via load_hiding_rules/load_recommendation_and_constraint_
+    # rules, no script evaluation, no BmlEvaluator, no LLM calls — and
+    # passing them to build_payload's `rules` param for ordering only.
+    # This is a materially cheaper cost than the hiding-rule auto-fix this
+    # function already deliberately skips, so it doesn't reintroduce the
+    # round-trip this comment originally avoided.
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    hiding_rules_preview = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    rec_rules_preview, con_rules_preview = _cpq_engine.load_recommendation_and_constraint_rules(
+        req.workspace_id, catalog_prefix)
     # Flow exclusions MUST apply here too (Issue 11 §5) — this is the web
     # UI's JSON-button payload, a separate emission path from the chat
     # "show me the json" preview and the Step-8 submission (both already
@@ -7699,10 +7719,11 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     # flows, the skipped product selector). Cheap: layout scope is cached
     # per (workspace, catalog); no extra rule fetch.
     flow_exclusions = _cpq_engine.payload_flow_exclusions(
-        req.workspace_id, attrs[0].catalog_prefix if attrs else "", attrs)
+        req.workspace_id, catalog_prefix, attrs)
     payload = _cpq_engine.build_payload(
         session.filled, session.filled_source, session.filled_multi, attrs,
-        hidden_vns=flow_exclusions)
+        hidden_vns=flow_exclusions,
+        rules=[*hiding_rules_preview, *rec_rules_preview, *con_rules_preview])
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)
