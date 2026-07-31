@@ -3530,12 +3530,30 @@ class CpqEngine:
         filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
         constrained: dict[int, list[str]] = {}
 
-        def _intersect(target_eid: int, allowed: list[str]) -> None:
-            if target_eid in constrained:
-                existing = set(constrained[target_eid])
-                constrained[target_eid] = [v for v in allowed if v in existing]
+        def _intersect(target: ConfigAttr, allowed: list[str]) -> None:
+            # docs/config_consistency_issues_2026-07-30.md — a raw catalog
+            # rule's own authored allowed-value list can carry different
+            # letter-casing than the attribute's real menu item_value
+            # (confirmed live: the declarative rule "Constrain for
+            # APXNEXTSINGLE & APXNEXTXNSINGLE" lists "700/800 MHz" while
+            # every real menu item for this attribute is "700/800 MHZ" —
+            # a genuine source-catalog authoring inconsistency, not a bug
+            # in this parsing). Left uncorrected, this made a brand-new,
+            # completely default APX NEXT Single Band order fail its own
+            # BOM-gate stale-constraint check on the very first confirm,
+            # every time — the default value was never actually invalid,
+            # it just didn't case-exact-match the rule's own typo.
+            # Normalize each allowed value back to its real catalog
+            # item_value (case-insensitive lookup) before comparing/
+            # intersecting, so a same-value-different-case rule entry
+            # behaves exactly like the correctly-cased one would.
+            by_lower_item_value = {o.item_value.lower(): o.item_value for o in target.options}
+            normalized = [by_lower_item_value.get(v.lower(), v) for v in allowed]
+            if target.entity_id in constrained:
+                existing = set(constrained[target.entity_id])
+                constrained[target.entity_id] = [v for v in normalized if v in existing]
             else:
-                constrained[target_eid] = list(allowed)
+                constrained[target.entity_id] = list(normalized)
 
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
@@ -3546,14 +3564,14 @@ class CpqEngine:
                     continue
                 allowed = bml_eval.allowed_values_for_script(rule.script, filled)
                 if allowed:
-                    _intersect(target.entity_id, allowed)
+                    _intersect(target, allowed)
                 continue
             if rule.condition_script is not None:
                 if bml_eval is None:
                     continue
                 fires = bml_eval.condition_holds(rule.condition_script, filled)
                 if fires is True:
-                    _intersect(target.entity_id, rule.allowed_values)
+                    _intersect(target, rule.allowed_values)
                 continue  # False or unknown — never guess, no constraint applied
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
@@ -3567,7 +3585,7 @@ class CpqEngine:
                     filled_by_rule_id[rule.condition_attr_id], rule.condition_value
                 ):
                     continue
-            _intersect(target.entity_id, rule.allowed_values)
+            _intersect(target, rule.allowed_values)
         if constrained:
             names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
             logger.info("cpq: constraint rules active for %s", names)
@@ -4467,8 +4485,31 @@ class CpqEngine:
                     source = "rule"
 
             # 3. Default value (pointer-defaults excluded — see
-            # _is_pointer_default above; the post-pass resolves them)
-            if not value and _valid(attr.default_value) and not _is_pointer_default(attr):
+            # _is_pointer_default above; the post-pass resolves them).
+            # Also skipped when an active constraint has already narrowed
+            # this attr's allowed set and the raw default isn't in it
+            # (docs/config_consistency_issues_2026-07-30.md Issue 7
+            # follow-up: the catalog's own generic default_value is not
+            # guaranteed to satisfy a PRODUCT-SPECIFIC constraint rule —
+            # confirmed live, Carry Type's catalog default "2.0 INCH /
+            # 5.08 CM (STANDARD)" is genuinely invalid for APX NEXT Single
+            # Band's own constraint rule, yet this step locked it in
+            # unconditionally before the constraint-aware fallback a few
+            # lines below (which already correctly picks a real, valid
+            # option) ever got a chance to run — forcing a BOM-gate
+            # correction round-trip on every single default order for
+            # this product). Falling through here instead of locking in a
+            # known-bad value lets that existing fallback do its job.
+            _default_excluded_by_constraint = (
+                constrained_opts is not None
+                and attr.entity_id in constrained_opts
+                and attr.default_value not in constrained_opts[attr.entity_id]
+            )
+            if (
+                not value and _valid(attr.default_value)
+                and not _is_pointer_default(attr)
+                and not _default_excluded_by_constraint
+            ):
                 value = attr.default_value
                 source = "default"
                 display = next(
@@ -5631,6 +5672,34 @@ class CpqEngine:
                 vn_flat not in q_lower.replace("_", "")
                 and not _label_mentioned(label_lower, q_lower)
                 and not _multi_option_mentioned
+            ):
+                continue
+
+            # docs/config_consistency_issues_2026-07-30.md issue 4 follow-up
+            # — a multi-select the customer never touched still gets a `[]`
+            # entry in filled_multi from auto_fill/hiding-rule evaluation
+            # (confirmed live: nearly every multi-select in a real catalog
+            # carries this, touched or not), so the gate above alone lets a
+            # BARE VALUE mention — with no explicit label/variable_name
+            # naming at all — match an untouched, empty multi-select purely
+            # because that value happens to also be one of ITS real
+            # options. Live-confirmed: with Frequency Bands (single-select)
+            # correctly the sole pending attribute, a bare "VHF" reply
+            # still matched an unrelated, never-touched
+            # modelSelectionFrequencyBandMsl_astro this way, writing the
+            # reply into the wrong attribute and leaving the real pending
+            # one stale (bom_gate re-detects it as invalid every confirm,
+            # looping forever). An EMPTY multi-select stays eligible when
+            # explicitly named by label/variable_name (test_cpq_grid_
+            # decline.py's declined-grid-reconsidered case: "I wanted to
+            # include the mounting type: X" must still work) — only a
+            # bare, unnamed value-only mention requires the multi-select to
+            # already hold a real selection.
+            if (
+                attr.select_type == "multi"
+                and not multi.get(attr.variable_name)
+                and vn_flat not in q_lower.replace("_", "")
+                and not _label_mentioned(label_lower, q_lower)
             ):
                 continue
 

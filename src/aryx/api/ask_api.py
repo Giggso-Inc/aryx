@@ -4469,6 +4469,40 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     return enforce_conversational_invariant(_run_cpq_turn_inner(req, reader))
 
 
+def _pending_reply_looks_like_new_request(
+    question: str, pending_attr: Any, attrs: list, filled: dict, filled_multi: dict,
+) -> bool:
+    """True only if `question` has an explicit change-verb/arrow AND names
+    some OTHER real attr (never `pending_attr` itself) — i.e. a genuine new
+    request, not a bare reply meant to answer the currently-pending
+    question. Shared by STEP 5's own answer-lock and the LLM-first
+    gateway's pre-STEP-5 gate (docs/config_consistency_issues_2026-07-30.md
+    issue 4 follow-up): the gateway ran unconditionally BEFORE STEP 5 with
+    no awareness of `session.pending_variables` at all, so a bare reply
+    like "VHF" — meant to answer an actively-pending single-select
+    question — could be reclassified fresh by the gateway and dispatched
+    to a different, plausible-but-wrong sibling attribute (confirmed live:
+    "VHF" is a legal option on modelSelectionFrequencyBandMsl_astro too),
+    leaving the real pending attribute's stale value untouched and
+    producing the exact "asked the same question again" loop this doc's
+    Issue 4 already fixed one cause of.
+    """
+    if pending_attr is None:
+        return False
+    other_attrs = [a for a in attrs if a.variable_name != pending_attr.variable_name]
+    return bool(
+        (_cpq_engine._CHANGE_VERB_RE.search(question)
+         or _cpq_engine._ARROW_RE.search(question))
+        and (
+            _cpq_engine.detect_change_target_without_value(question, other_attrs, filled)
+            or _cpq_engine.detect_change_request(
+                question, other_attrs, filled, filled_multi=filled_multi)
+            or _cpq_engine.detect_change_requests_multi(
+                question, other_attrs, filled, filled_multi=filled_multi)
+        )
+    )
+
+
 def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     """Inner CPQ turn body — see ``_run_cpq_turn`` for the step contract."""
     # Restore or initialise session
@@ -6091,6 +6125,34 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             session.pending_change_collision_vns = []
             session.pending_change_collision_question = ""
 
+        # docs/config_consistency_issues_2026-07-30.md issue 4 follow-up —
+        # this gateway used to run unconditionally here, BEFORE STEP 5 ever
+        # got a chance to apply a bare reply to an actively-pending
+        # single-select question. Live-confirmed: replying "VHF" to a
+        # correctly-pending "Frequency Bands — choose one: VHF/UHF"
+        # reprompt got reclassified fresh by the gateway and dispatched to
+        # a different, plausible-but-wrong sibling attribute
+        # (modelSelectionFrequencyBandMsl_astro also legally accepts
+        # "VHF"), leaving the real pending attribute's stale value
+        # untouched — the customer then confirms, the same staleness is
+        # detected again, and the whole reprompt loops forever. Deferring
+        # to STEP 5 whenever a reply doesn't clearly look like a fresh
+        # request (same _pending_reply_looks_like_new_request check STEP 5
+        # already uses for its own domain) closes that gap without
+        # touching genuine new requests, which still reach the gateway.
+        _pending_attr_for_gate = None
+        if session.pending_variables and session.turn > 1:
+            _pending_attr_for_gate = next(
+                (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+            )
+        _defer_gateway_to_pending_answer = (
+            _pending_attr_for_gate is not None
+            and not _pending_reply_looks_like_new_request(
+                req.question, _pending_attr_for_gate, attrs,
+                session.filled, session.filled_multi,
+            )
+        )
+
         # LLM-first mid-session gateway. N4: skip when top-level
         # classify_ask_route already ran this turn (one classification LLM
         # call per turn). Live sessions never mark top-level, so they still
@@ -6099,6 +6161,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             get_settings().cpq_llm_first_enabled
             and not session.guided_mode
             and not top_level_route_used()
+            and not _defer_gateway_to_pending_answer
         ):
             _gw = gateway_classify_intent(
                 req.question, attrs, session, _cpq_engine, req.workspace_id,
@@ -6707,23 +6770,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         # handles a fresh "change X" during a configuring-status turn
         # (the same block that resolved "change the solution Type"
         # correctly once Product wasn't blocking it).
-        _looks_like_new_request = False
-        if pending_attr:
-            _other_attrs = [a for a in attrs if a.variable_name != pending_var]
-            _looks_like_new_request = bool(
-                (_cpq_engine._CHANGE_VERB_RE.search(req.question)
-                 or _cpq_engine._ARROW_RE.search(req.question))
-                and (
-                    _cpq_engine.detect_change_target_without_value(
-                        req.question, _other_attrs, session.filled)
-                    or _cpq_engine.detect_change_request(
-                        req.question, _other_attrs, session.filled,
-                        filled_multi=session.filled_multi)
-                    or _cpq_engine.detect_change_requests_multi(
-                        req.question, _other_attrs, session.filled,
-                        filled_multi=session.filled_multi)
-                )
-            )
+        _looks_like_new_request = _pending_reply_looks_like_new_request(
+            req.question, pending_attr, attrs, session.filled, session.filled_multi,
+        )
         if pending_attr and not _looks_like_new_request:
             vn_flat_pv = pending_var.lower().replace("_", "")
             hint_val_for_attr = next(

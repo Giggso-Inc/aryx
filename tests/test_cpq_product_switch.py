@@ -75,9 +75,16 @@ def _fake_reader_with_batch_fetch(
     trees: dict[str, list[str]] | None = None,
 ) -> _FakeProductReader:
     reader = _FakeProductReader(catalogs, trees)
+    # Patched on the CLASS, not on the api._cpq_engine singleton instance:
+    # some callers (e.g. the detect_product_mention tests below) construct
+    # their own local CpqEngine() rather than using the module singleton,
+    # and an instance-level monkeypatch never reaches a different instance
+    # — that gap let _batch_fetch fall through to a real RDB connection
+    # attempt and hang indefinitely on any host without a route to
+    # Postgres (docs/config_consistency_issues_2026-07-30.md, Issue 9).
     monkeypatch.setattr(
-        api._cpq_engine, "_batch_fetch",
-        lambda ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
+        type(api._cpq_engine), "_batch_fetch",
+        lambda self, ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
     )
     return reader
 
@@ -645,6 +652,17 @@ def _country_check_setup(monkeypatch, available: bool):
     monkeypatch.setattr(
         api._cpq_engine, "check_country_availability", lambda *a, **k: available,
     )
+    # extract_flag_hints (-> _build_flag_keyword_index -> RDB
+    # fetch_function_scripts) and load_validation_rules (-> _load_value_
+    # rules -> ingest_question_store.list, also RDB) are two more real DB
+    # calls _run_cpq_turn_inner makes right after load_product_config,
+    # not covered by any mock above. The new catalog_prefix from
+    # load_product_config's fake return is never warm in either's cache,
+    # so this test always misses it — unlike other tests here that
+    # happen to hit an already-cached key
+    # (docs/config_consistency_issues_2026-07-30.md, Issue 9).
+    monkeypatch.setattr(api._cpq_engine, "extract_flag_hints", lambda *a, **k: {})
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
 
 
 def test_switch_preserves_valid_country_without_reasking(monkeypatch):

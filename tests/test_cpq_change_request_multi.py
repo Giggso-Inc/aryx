@@ -14,11 +14,17 @@ from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr
 
 
-def _attr(entity_id, vn, label):
+def _attr(entity_id, vn, label, *, options=None, select_type="single"):
     return ConfigAttr(
         entity_id=entity_id, variable_name=vn, display_label=label,
-        required=False, default_value="", options=[],
+        required=False, default_value="", options=options or [],
+        select_type=select_type,
     )
+
+
+def _opt(*values):
+    from aryx.cpq.state import MenuOption
+    return [MenuOption(item_value=v, display_name=v, order=i) for i, v in enumerate(values)]
 
 
 def test_multi_change_finds_both_sibling_quantities_with_their_own_numbers():
@@ -90,3 +96,69 @@ def test_multi_change_is_capped_at_three():
     )
     matches = eng.detect_change_requests_multi(q, attrs, filled)
     assert len(matches) == 3
+
+
+# docs/config_consistency_issues_2026-07-30.md issue 4 follow-up — a
+# multi-select the customer never touched still gets a `[]` entry in
+# filled_multi from auto_fill/hiding-rule evaluation (confirmed live:
+# nearly every multi-select attr in a real catalog carries this). The old
+# `vn in filled_multi` check treated dict KEY PRESENCE as "already
+# filled", wrongly making an untouched multi-select an eligible implicit
+# change-request target the moment its option list happens to contain the
+# customer's bare value — even while a genuinely pending, unrelated
+# single-select attribute was correctly waiting for that exact reply.
+
+def test_untouched_empty_multi_select_is_not_an_eligible_candidate():
+    """Real incident: with Frequency Bands (single-select) as the actual,
+    correctly-pending attribute, a bare 'VHF' reply still matched an
+    untouched Frequency Band Msl multi-select (filled_multi[vn] == [])
+    here, because 'VHF' is also one of ITS real option values — writing
+    the reply into the wrong attribute entirely and leaving the real
+    pending one stale (bom_gate then re-detects it as invalid every
+    confirm, looping forever).
+
+    detect_change_request itself has no special-case value-only matching
+    for a single-select attr with no label mention — Bands correctly
+    returns no match here either way (it needs STEP 5's dedicated
+    pending-answer lock, tested at the ask_api layer, not this generic
+    scan). The fix this test pins is narrower and just as critical: the
+    untouched Msl multi-select must ALSO return no match, instead of
+    incorrectly winning by default and consuming the reply before STEP 5
+    ever sees it.
+    """
+    eng = CpqEngine()
+    bands = _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands",
+                   options=_opt("700/800 MHZ", "VHF", "UHF"))
+    msl = _attr(2, "modelSelectionFrequencyBandMsl_astro", "Frequency Band",
+                options=_opt("700/800 MHZ", "VHF", "UHF"), select_type="multi")
+    attrs = [bands, msl]
+    filled = {"modelSelectionFrequencyBands_astro": "700/800 MHZ"}
+    # Untouched — engine seeded an empty list, customer never selected anything.
+    filled_multi = {"modelSelectionFrequencyBandMsl_astro": []}
+
+    result = eng.detect_change_request("VHF", attrs, filled, filled_multi=filled_multi)
+
+    assert result is None, (
+        "an untouched multi-select (empty [] entry, never a real "
+        "selection) must never be treated as an eligible change-request "
+        "target just because its option list happens to contain the "
+        "customer's bare value — that's the exact wrong-attribute-write "
+        "bug this test pins"
+    )
+
+
+def test_multi_select_with_a_real_selection_is_still_an_eligible_candidate():
+    """The fix must not break the legitimate case — a multi-select the
+    customer actually populated stays a valid change-request target."""
+    eng = CpqEngine()
+    msl = _attr(1, "modelSelectionFrequencyBandMsl_astro", "Frequency Band",
+                options=_opt("700/800 MHZ", "VHF", "UHF"), select_type="multi")
+    attrs = [msl]
+    filled_multi = {"modelSelectionFrequencyBandMsl_astro": ["700/800 MHZ"]}
+
+    result = eng.detect_change_request(
+        "change Frequency Band to VHF", attrs, {}, filled_multi=filled_multi)
+
+    assert result is not None
+    attr, _value = result
+    assert attr.variable_name == "modelSelectionFrequencyBandMsl_astro"

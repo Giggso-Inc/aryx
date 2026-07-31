@@ -350,7 +350,8 @@ not just the standalone method.
 ## Issue 4 — Repeated re-ask loop: the same Frequency Bands question asked three times
 
 **Status: primary loop cause fixed and live-verified. Two narrower,
-independent bugs found as side effects — documented below, not yet fixed.**
+independent bugs found as side effects — one retracted (not a real bug),
+one confirmed and fixed. See "Follow-up investigation" below.**
 
 ### What the PDF got right and wrong
 
@@ -438,7 +439,7 @@ anchor, a value unique to one candidate still resolves normally.
    theory that doesn't survive direct verification gets retracted, not
    patched around.
 
-2. **Wrong-sibling write despite a correctly-pending attribute — CONFIRMED, still not fixed.** After
+2. **Wrong-sibling write despite a correctly-pending attribute — CONFIRMED, now FIXED.** After
    the Issue 4 fix correctly narrows to "Frequency Bands — choose one:
    VHF/UHF" with `session.pending_variables = ["modelSelectionFrequency
    Bands_astro"]`, the next turn's plain "UHF" reply was live-observed
@@ -469,13 +470,285 @@ anchor, a value unique to one candidate still resolves normally.
    reinterpreted as a fresh request without a clear change-verb/arrow
    signal) — the gateway has no equivalent guard.
 
-   **Why not fixed yet:** the fix requires either gating the gateway call
-   on `session.pending_variables` (skip it, or require a strong
-   new-request signal, whenever a single-select answer is actively
-   pending) or moving STEP 5's pending-answer check to run *before* the
-   gateway. Both are re-orderings of the core per-turn dispatch sequence
-   used by every conversation, not a localized change — they need
-   explicit scoping and dedicated regression coverage (specifically:
-   confirm a genuine "change X" mid-pending-answer still correctly
-   reaches the gateway, only a bare answer-shaped reply gets deferred to
-   STEP 5) before shipping, which hasn't been done yet.
+   **The gateway hypothesis above was only half the picture.** A gate on
+   `session.pending_variables` was added to the gateway (`ask_api.py`,
+   via a new shared `_pending_reply_looks_like_new_request()` helper also
+   used by STEP 5's own pre-existing answer-lock, removing the prior
+   duplicated logic) — but re-running the exact live transcript afterward
+   showed the **identical** misrouting persisted unchanged. Tracing the
+   actual call stack (a live `traceback.format_stack()` dump on
+   `_handle_cascade`, not further static reading) showed the write wasn't
+   coming from the gateway at all — it came from a *separate*,
+   unconditional deterministic "mid-config change request" block further
+   down in `_run_cpq_turn_inner`, which the gateway's own gate never
+   touched.
+
+   **Actual root cause, confirmed live:** `CpqEngine._change_request_matches`
+   (`engine.py`) — the shared scan behind `detect_change_request`/
+   `detect_change_requests_multi` — decides whether an attribute is
+   "already filled" (and therefore an eligible implicit target) using
+   `attr.variable_name in filled_multi` — **dict KEY presence**, not
+   whether the multi-select actually holds a selection. `auto_fill`/
+   hiding-rule evaluation seeds nearly every multi-select attribute in a
+   real catalog with an empty `[]` entry whether the customer ever
+   touched it or not — confirmed live by dumping the session state:
+   `modelSelectionFrequencyBandMsl_astro` sat in `filled_multi` as `[]`,
+   never selected by the customer at any point. Because `"VHF"`/`"UHF"`
+   are also real option values on that untouched multi-select, a bare
+   reply meant to answer the correctly-pending single-select
+   `modelSelectionFrequencyBands_astro` matched Msl instead, through this
+   generic scan — a completely different code path from either the
+   gateway or STEP 5, running unconditionally before both.
+
+   **Fix:** an empty (never-selected) multi-select now only stays
+   eligible for an implicit change-request match when explicitly named by
+   its own label/variable_name — a bare, unnamed value-only mention now
+   requires the multi-select to already hold a real selection. A first
+   attempt at this fix was too broad (excluded ANY empty multi-select
+   unconditionally) and broke a real, pre-existing, correctly-tested case
+   — `tests/test_cpq_grid_decline.py`'s "I wanted to include the mounting
+   type: X" after an explicit decline — caught by the existing regression
+   suite (`test_change_request_detected_on_declined_multi` failed) before
+   this reached anyone; corrected to the label/name-explicit exception
+   above.
+
+   **Live-verified, end-to-end, twice** (once per fix iteration) against
+   the real running container and catalog: the exact reported transcript
+   (order APX NEXT Single Band for United States, confirm, answer the
+   Carry Type + Frequency Bands stale-constraint reasks) now completes
+   cleanly to `status=post_approval, complete=True`, with no repeated
+   questions and the real `modelSelectionFrequencyBands_astro` attribute
+   correctly holding `"VHF"` — not the sibling Msl multi-select.
+   150/150 tests pass across the affected CPQ test files (excluding the
+   one pre-existing, unrelated DNS-resolution failure confirmed
+   throughout this whole session:
+   `test_llm_first_gate_calls_the_llm_and_dispatches_when_enabled`).
+   Shipped on `fix/cpq-frequency-band-multiselect-collision`.
+
+---
+
+## Issue 7 — A brand-new, completely default order fails its own BOM-gate on the first confirm
+
+**Status: root-caused and fixed, live-verified.**
+
+### Problem statement
+
+After the Issue 4 fix above, a customer reported *still* hitting a
+stale-constraint reask on the very first `confirm` of a totally vanilla
+order — no explicit frequency-band request, no mid-config edits, just
+"i want to order APX Next radios for destination country United States" →
+pick "APX NEXT Single Band" → `confirm`:
+
+> **Frequency Bands** is currently *700/800 MHz*, which isn't valid
+> anymore given your other choices...
+
+This is a different symptom from Issue 4: there's no repeated question
+and no wrong-attribute write here — the config only ever asks about
+Frequency Bands *once* per order — but it shouldn't need to ask about it
+**at all**, since nothing about Frequency Bands was ever touched. Every
+single default APX NEXT Single Band order hit this same extra,
+unnecessary correction round-trip.
+
+### Root cause, confirmed live — a real catalog data typo, not a logic bug
+
+Dumping the full `filled` state right before the failing `confirm` and
+calling `apply_constraint_rules` directly against it isolated the exact
+rule responsible: **"Constrain for APXNEXTSINGLE & APXNEXTXNSINGLE"** — a
+plain declarative constraint rule (no BML script involved) whose allowed-
+value list is pulled straight from the raw catalog data. Its authored
+list is:
+
+```
+['UHF', 'VHF', '700/800 MHz']
+```
+
+— note the lowercase `z`. Every real menu item for
+`modelSelectionFrequencyBands_astro` elsewhere in the catalog spells this
+value `"700/800 MHZ"` (uppercase Z). `bom_gate.py`'s stale-constraint
+check (`recheck_constraints`) does a plain, case-sensitive
+`current not in allowed` comparison, so the correctly-defaulted
+`"700/800 MHZ"` value never matched the rule's own `"700/800 MHz"` entry
+and was flagged as stale on every order, unconditionally — regardless of
+anything the customer did.
+
+This is a genuine authoring inconsistency in the source BigMachines/
+Oracle CPQ catalog data itself (confirmed by direct comparison against
+the attribute's real menu items) — not something fixable at the source
+from this codebase, and not a "cascading defaults don't converge" issue
+as first suspected.
+
+### Fix
+
+`CpqEngine.apply_constraint_rules` (`engine.py`) now normalizes every
+rule's allowed-value list back to the attribute's real, canonically-cased
+catalog `item_value` (case-insensitive lookup against `target.options`)
+before intersecting — for both script-derived and declarative allowed
+lists. A value with no matching real catalog option (a genuinely unknown
+value, not just a casing variant) passes through unchanged rather than
+being silently dropped or invented.
+
+**Live-verified**: re-running the exact reported transcript, Frequency
+Bands is no longer flagged at all — the vanilla order needed only the
+one remaining Carry Type correction after this fix (see Issue 8 below
+for why that one *also* turned out to be fixable, and the resulting
+zero-correction outcome). 4 new unit tests in
+`tests/test_cpq_constraint_value_casing.py` (mismatched-casing value
+still matches; correctly-cased rules unaffected; multi-rule intersection
+still works after normalization; a genuinely unknown value is never
+invented or silently accepted). Shipped alongside Issue 4's fix on
+`fix/cpq-frequency-band-multiselect-collision`.
+
+---
+
+## Issue 8 — The catalog's own generic default_value can be invalid for the selected product, and nothing corrected it before asking
+
+**Status: root-caused and fixed, live-verified.**
+
+### Problem statement
+
+After Issue 7's fix removed the false Frequency Bands flag, the customer
+asked a sharper follow-up question: since the product is already known
+by the time defaults get filled, why does the engine ever lock in a
+default value that isn't even valid for that product in the first place
+— shouldn't it pick a real, valid option automatically instead of
+forcing a correction round-trip?
+
+### Root cause, confirmed by direct code trace
+
+`CpqEngine.auto_fill`'s default-value step (`engine.py`, "3. Default
+value") applies the catalog's raw XML `default_value` **unconditionally**
+— it never checks the attribute's currently-active constrained allowed
+set at all:
+
+```python
+if not value and _valid(attr.default_value) and not _is_pointer_default(attr):
+    value = attr.default_value
+```
+
+A later step in the *same* function (a few lines down) already does the
+right thing for rule-governed attributes: filter the option list by the
+active constraint, then pick the first remaining option by menu order —
+exactly the "auto-select a real, valid default" behavior the customer
+was asking for. But that step is gated on `if not value`, and by the
+time execution reaches it, `value` is already set from the unconditional
+default step above — **the correct, constraint-aware logic never gets a
+chance to run**, because the invalid default already won.
+
+For Carry Type specifically: the catalog's generic default
+(`"2.0 INCH / 5.08 CM (STANDARD)"`) is locked in immediately, even though
+it's excluded by "Constrain for APXNEXTSINGLE & APXNEXTXNSINGLE" (Issue
+7's own finding) for this exact product.
+
+### Fix
+
+Added a check to the default-value step: if `constrained_opts` has an
+entry for this attribute and the raw `default_value` isn't in it, skip
+locking in the default and fall through — letting the existing,
+already-correct constraint-aware fallback pick the first valid option by
+catalog menu order instead. No new selection logic was written; this
+only stops a known-bad value from winning the race before the correct
+logic runs.
+
+Scoped deliberately narrow: this fallback only auto-picks for
+**rule-governed** attributes (`is_governed`) — an excluded default on an
+*ungoverned* attribute still falls through to asking the customer,
+unchanged (verified by `test_ungoverned_attr_with_excluded_default_asks_
+instead_of_guessing`), preserving this engine's "never silently guess"
+discipline everywhere it already applies.
+
+**Live-verified**: re-running the exact reported transcript end to end —
+"order APX NEXT radios for United States" → pick "APX NEXT Single Band"
+→ `confirm` — now goes straight from product selection to
+`status=post_approval, complete=True` with **zero** correction
+round-trips. Carry Table now shows `PLASTIC HOLSTER WITH 2.5 INCH BELT
+CLIP (STANDARD)` — auto-selected as the first catalog-order option
+within the constrained allowed set — exactly the value the customer
+previously had to pick manually every time. 4 new unit tests in
+`tests/test_cpq_default_value_ignores_active_constraint.py` (excluded
+default falls through to the first valid option; an allowed default
+still wins outright with no unnecessary fall-through; no active
+constraint at all is fully unaffected; an ungoverned attr still asks
+instead of guessing). Shipped alongside Issues 4 and 7 on
+`fix/cpq-frequency-band-multiselect-collision`.
+
+---
+
+## Issue 9 — Regression sweep for Issues 7/8 hung indefinitely on a bare host (pre-existing test-fixture bug, not a product bug)
+
+**Status: root-caused, confirmed pre-existing and unrelated to Issues 7/8. Not yet fixed (test-infra only).**
+
+### Problem statement
+
+While running the broader regression sweep to sign off on the Issue 7
+and Issue 8 fixes, `tests/test_cpq_product_switch.py` hung indefinitely
+instead of completing in the usual sub-second range — no output, no
+crash, no timeout, just stuck. This blocked getting a clean pass/fail
+signal for that file on a bare host (i.e. `pytest` run directly, not
+inside the `aryx-api-1` container).
+
+### Root cause, confirmed live
+
+Process inspection showed the hung `pytest` process burning almost no
+CPU (2s of CPU time over 20+ minutes) with all threads parked on
+`futex_wait_queue` — a lock/IO wait, not a slow computation. Bisecting
+file-by-file, then test-by-test, isolated it to two tests:
+
+- `test_detect_product_mention_prefers_specific_variant_over_generic_name`
+- `test_detect_product_mention_recognises_a_brand_new_product_with_no_code_change`
+
+Both instantiate their own local engine —
+```python
+reader = _fake_reader_with_batch_fetch(monkeypatch, {...})
+engine = CpqEngine()          # <-- a NEW instance
+engine.detect_product_mention(..., reader=reader, workspace_id=1)
+```
+but `_fake_reader_with_batch_fetch`'s monkeypatch targets the wrong
+object:
+```python
+monkeypatch.setattr(api._cpq_engine, "_batch_fetch", lambda ids, ws: {...})
+```
+`api._cpq_engine` is the module-level singleton instance used by
+`_run_cpq_turn`/`ask_api.py` — patching an attribute directly on *that*
+instance never affects a separate, locally-constructed `CpqEngine()`.
+So the local `engine.detect_product_mention(...)` call falls through to
+the **real** `CpqEngine._batch_fetch`, which calls
+`get_cpq_rdb().fetch_entity_attributes(...)` — a genuine attempt to
+reach the Postgres RDB. On a bare host with no route to the `postgres`
+compose service, the connection attempt never resolves and never times
+out on its own, hanging the test (and the whole file, and the whole
+sweep) forever.
+
+A third test further down the same file,
+`test_switch_preserves_valid_country_without_reasking`, hangs for the
+same underlying reason (an incompletely-mocked path that falls through
+to a real network call) via a different code route
+(`_run_cpq_turn`'s product-switch confirmation flow).
+
+**Confirmed unrelated to Issues 7/8**: `git stash`-ing every uncommitted
+change (the `apply_constraint_rules` and `auto_fill` fixes, both new
+test files) and re-running these exact tests against clean `dev-rv`
+reproduced the identical hang — this is a latent bug in
+`test_cpq_product_switch.py`'s own fixtures, not a regression introduced
+by this session's work. `git diff` also confirms neither fix touches
+`detect_product_mention`, `ingested_product_alias_map`, or
+`_batch_fetch` at all.
+
+### Fix
+
+Not applied yet — flagged, not requested. The correct fix is narrow:
+patch `CpqEngine._batch_fetch` on the **class** (or route the fake
+reader's id→name map through `api._cpq_engine` instead of a fresh
+instance) so a locally-constructed `CpqEngine()` picks up the mock too.
+Recommended, not yet made — a one-line `monkeypatch.setattr` target
+change in `_fake_reader_with_batch_fetch` plus reusing `api._cpq_engine`
+in the two `detect_product_mention` tests.
+
+### How the Issue 7/8 sign-off was actually completed
+
+Re-ran the full 9-file sweep (81 tests) inside the running `aryx-api-1`
+container instead, where the docker-compose network makes `postgres`
+genuinely reachable — **81 passed**, including
+`test_cpq_product_switch.py` in full, no hang. This is the same
+container-based workaround already established earlier in this session
+for the host/container Python-version mismatch, now shown to also cover
+this class of "incompletely-mocked network call" test-fixture issue.
