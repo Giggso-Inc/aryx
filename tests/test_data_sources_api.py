@@ -1,13 +1,56 @@
 """Tests for XML-aware data source endpoints."""
 from __future__ import annotations
 
+import sys
+import types
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from aryx.api.data_api import data_router
+
+def _stub_import_only_dependencies() -> None:
+    if "falkordb" not in sys.modules:
+        falkordb = types.ModuleType("falkordb")
+        falkordb.FalkorDB = object
+        sys.modules["falkordb"] = falkordb
+    if "raven_logger" not in sys.modules:
+        raven_logger = types.ModuleType("raven_logger")
+        raven_logger.new_span_id = lambda: "span-test"
+        raven_logger.new_trace_id = lambda: "trace-test"
+        raven_logger.raven_log = lambda **kwargs: kwargs
+        sys.modules["raven_logger"] = raven_logger
+    if "cryptography.fernet" not in sys.modules:
+        cryptography = types.ModuleType("cryptography")
+        fernet = types.ModuleType("cryptography.fernet")
+
+        class _Fernet:
+            def __init__(self, _key: bytes) -> None:
+                pass
+
+            def encrypt(self, value: bytes) -> bytes:
+                return value
+
+            def decrypt(self, value: bytes) -> bytes:
+                return value
+
+        class _InvalidToken(Exception):
+            pass
+
+        fernet.Fernet = _Fernet
+        fernet.InvalidToken = _InvalidToken
+        cryptography.fernet = fernet
+        sys.modules["cryptography"] = cryptography
+        sys.modules["cryptography.fernet"] = fernet
+
+
+_stub_import_only_dependencies()
+
+from aryx.api.data_api import _purge_relational_source, data_router
+from aryx.store.entity_store import EntityStore
+from aryx.store.source_purge_store import SourcePurgeBusy
 
 
 @pytest.fixture
@@ -152,6 +195,29 @@ class _WorkingGraphStore:
 
     def add_relationship(self, *_args, **_kwargs) -> None:
         return None
+
+
+class _FakeSourcePurgeStore:
+    def __init__(self, result: dict | None = None, error: Exception | None = None) -> None:
+        self.result = result or {"sources_purged": 1}
+        self.error = error
+        self.calls: list[tuple[object, object, object]] = []
+
+    def purge(
+        self,
+        refs: list[tuple[str, str]],
+        *,
+        catalog_delete_ids: list[int],
+        catalog_update: object = None,
+    ) -> dict:
+        self.calls.append((refs, catalog_delete_ids, catalog_update))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _real_entity_store_stub() -> EntityStore:
+    return object.__new__(EntityStore)
 
 
 def _xml_row() -> dict:
@@ -318,6 +384,51 @@ def test_delete_generic_csv_source_purges_source_records(client: TestClient) -> 
     assert response.status_code == 200
     assert entity_store.purged_refs == [("csv", "orders")]
     assert response.json()["landed_records_deleted"] == 2
+
+
+def test_purge_relational_source_uses_atomic_store_for_real_entity_store() -> None:
+    purge_store = _FakeSourcePurgeStore({"sources_purged": 1, "runs_deleted": 2})
+    with patch("aryx.api.data_api._source_purge_store", return_value=purge_store):
+        result = _purge_relational_source(
+            _real_entity_store_stub(),
+            _FakeDatasourceStore([]),
+            1,
+            [("csv", "orders")],
+            catalog_delete_ids=[9],
+        )
+
+    assert result["runs_deleted"] == 2
+    assert purge_store.calls == [([("csv", "orders")], [9], None)]
+
+
+def test_purge_relational_source_maps_busy_to_409() -> None:
+    purge_store = _FakeSourcePurgeStore(error=SourcePurgeBusy("job-1"))
+    with patch("aryx.api.data_api._source_purge_store", return_value=purge_store):
+        with pytest.raises(HTTPException) as exc_info:
+            _purge_relational_source(
+                _real_entity_store_stub(),
+                _FakeDatasourceStore([]),
+                1,
+                [("csv", "orders")],
+                catalog_delete_ids=[],
+            )
+
+    assert exc_info.value.status_code == 409
+
+
+def test_purge_relational_source_maps_missing_workspace_to_404() -> None:
+    purge_store = _FakeSourcePurgeStore(error=ValueError("workspace 99 not found"))
+    with patch("aryx.api.data_api._source_purge_store", return_value=purge_store):
+        with pytest.raises(HTTPException) as exc_info:
+            _purge_relational_source(
+                _real_entity_store_stub(),
+                _FakeDatasourceStore([]),
+                99,
+                [("csv", "orders")],
+                catalog_delete_ids=[],
+            )
+
+    assert exc_info.value.status_code == 404
 
 
 def test_delete_source_is_blocked_while_ingestion_is_active(

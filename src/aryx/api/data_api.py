@@ -839,6 +839,8 @@ def _purge_relational_source(
                 409,
                 "Source deletion is unavailable while ingestion is active.",
             ) from exc
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     stats = entity_store.purge_source_references(refs)
     for datasource_id in catalog_delete_ids:

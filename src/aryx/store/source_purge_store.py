@@ -3,17 +3,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from psycopg.types.json import Json
 
 from aryx.queries import load, split_statements
+from aryx.resolution.confidence import SINGLETON_CONFIDENCE
 from aryx.resolution.golden import golden_record_with_policy
 from aryx.resolution.survivorship import SurvivorshipPolicy
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+_ARYX_RUN_DELETE_RE = re.compile(r"^\s*DELETE\s+FROM\s+ARYX_RUN\b", re.IGNORECASE)
 
 
 class SourcePurgeBusy(RuntimeError):
@@ -71,7 +74,11 @@ def rebuild_survivor_states(
         )
         states[entity_id] = SurvivorState(
             attributes=attributes,
-            confidence=0.5,
+            # Purge rebuilds the golden record from surviving members only. The
+            # merge-edge evidence that produced the original score is run-scoped
+            # and may be deleted by this same transaction, so rebuilt entities
+            # get the same honest prior used for singleton/legacy clusters.
+            confidence=SINGLETON_CONFIDENCE,
             conflicts=conflicts,
         )
     return states
@@ -225,7 +232,7 @@ class SourcePurgeStore:
             }
             for statement in statements:
                 cursor.execute(statement, params)
-                if statement.upper().startswith("DELETE FROM ARYX_RUN "):
+                if _ARYX_RUN_DELETE_RE.match(statement):
                     runs_deleted += self._rowcount(cursor)
         return runs_deleted
 
