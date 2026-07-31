@@ -444,12 +444,33 @@ def _enrich_with_attributes(
 
 
 
+def _current_turn_usage_dict(default_model: str = "cpq-engine") -> dict[str, Any]:
+    """Real per-turn LLM usage accumulated so far, or the deterministic default.
+
+    docs/CPQ_Usage_Reporting_Gap — same llm_runtime.get_turn_usage() ContextVar
+    _apply_real_llm_usage reads from; shared here so every one of the ~50
+    _persist_cpq_history call sites scattered through _run_cpq_turn_inner
+    picks up real tokens/model too, without touching each one individually.
+    """
+    real = llm_runtime.get_turn_usage()
+    if real and real["calls"]:
+        models = ", ".join(real["models"]) or default_model
+        return {
+            "prompt_tokens": real["prompt_tokens"],
+            "completion_tokens": real["completion_tokens"],
+            "latency_ms": real["latency_ms"],
+            "menial_model": models,
+            "answer_model": models,
+        }
+    return {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+            "menial_model": default_model, "answer_model": default_model}
+
+
 def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
     try:
         hstore = AskHistoryStore(get_settings().rdb_dsn)
         try:
-            usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                     "menial_model": "cpq-engine", "answer_model": "cpq-engine"}
+            usage = _current_turn_usage_dict()
             hstore.append(workspace_id, question, answer, [], [], usage)
         finally:
             hstore.close()
