@@ -1329,6 +1329,28 @@ def _extract_replacement_clause(text: str) -> tuple[str | None, str | None]:
     return extract_replacement_clause(text)
 
 
+_GLOBAL_CHANGE_SCOPE_RE = re.compile(
+    r"\b(?:any\s+(?:attributes?|fields?|settings?)|anything)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_global_change_decline(reply: str) -> bool:
+    """Return True only for an explicit request to make no changes at all.
+
+    A replacement clause wins over decline wording so messages such as
+    "I don't want any attributes; use Hardware Version" keep flowing to
+    normal resolution instead of being cancelled.
+    """
+    normalized = (reply or "").replace("’", "'")
+    wanted, _rejected = _extract_replacement_clause(normalized)
+    return (
+        wanted is None
+        and _is_change_value_decline(normalized)
+        and bool(_GLOBAL_CHANGE_SCOPE_RE.search(normalized))
+    )
+
+
 def _remember_attr_scope(
     session: Any,
     attr: Any,
@@ -4392,27 +4414,31 @@ def _handle_pending_clarify_turn(
         _clear_pending_clarify(session)
         return None
 
-    # docs/config_consistency_issues_2026-07-30.md Issue 11: a stale/wrong
-    # candidate pool (e.g. from _ground_clarify_candidates surfacing
-    # irrelevant attrs) must never force-match an unrelated, well-formed
-    # follow-up request — confirmed live: "change Frequency Bands to X and
-    # Wireless Carrier to Y" got silently mis-bound to "Carrier Selection"
-    # purely because that WRONG attr was in the stale pool and happened to
-    # share an option value, while the actually-correct wirelessCarrier_
-    # astro was never even a candidate. _resolve_target_description is run
-    # UNSCOPED (against every attr, not just the stale pool) as the
-    # deterministic "exactness" check it already is elsewhere in this
-    # file; a confident resolution to an attr OUTSIDE the stale pool means
-    # this is a fresh request, not a reply to the old clarify.
-    if _cpq_engine._CHANGE_VERB_RE.search(req.question) or _cpq_engine._ARROW_RE.search(req.question):
-        _fresh_attr, _fresh_candidates = _resolve_target_description(req.question, attrs)
-        if _fresh_attr is not None and _fresh_attr.variable_name not in session.pending_clarify_vns:
-            _clear_pending_clarify(session)
-            return None
+    global_change_decline = _is_global_change_decline(req.question)
+    if global_change_decline:
+        clarify_status, resolved_vn = ("decline", None)
+    else:
+        # docs/config_consistency_issues_2026-07-30.md Issue 11: a stale/wrong
+        # candidate pool must never force-match an unrelated, well-formed
+        # follow-up request. Resolve fresh named changes against every attr;
+        # a target outside the stale pool belongs to normal dispatch.
+        if (
+            _cpq_engine._CHANGE_VERB_RE.search(req.question)
+            or _cpq_engine._ARROW_RE.search(req.question)
+        ):
+            _fresh_attr, _fresh_candidates = _resolve_target_description(
+                req.question, attrs,
+            )
+            if (
+                _fresh_attr is not None
+                and _fresh_attr.variable_name not in session.pending_clarify_vns
+            ):
+                _clear_pending_clarify(session)
+                return None
 
-    clarify_status, resolved_vn = _match_pending_clarify_reply(
-        req.question, candidates, session, req.workspace_id,
-    )
+        clarify_status, resolved_vn = _match_pending_clarify_reply(
+            req.question, candidates, session, req.workspace_id,
+        )
     if clarify_status == "resolved" and resolved_vn:
         return _apply_pending_clarify_resolution(
             req, session, attrs, resolved_vn,
@@ -4429,8 +4455,12 @@ def _handle_pending_clarify_turn(
     if clarify_status == "decline":
         _clear_pending_clarify(session)
         answer = (
-            "No problem — could you tell me specifically which attribute "
-            "or setting you'd like to change or ask about?"
+            "No problem — no attributes were changed."
+            if global_change_decline
+            else (
+                "No problem — could you tell me specifically which attribute "
+                "or setting you'd like to change or ask about?"
+            )
         )
         _persist_cpq_history(req.workspace_id, req.question, answer)
         return {
