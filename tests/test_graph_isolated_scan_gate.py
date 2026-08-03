@@ -1,14 +1,20 @@
-"""GraphReader.subgraph() Step 6 — isolated-entity debug scan size gate.
+"""GraphReader.subgraph() Step 6 — isolated-entity lookup.
 
 Real incident: GET /graph?workspace_id=44 returned 500
 (redis.exceptions.ResponseError: Query timed out) even after indexing
 REL.name fixed the endpoint's other slow queries. Root cause #2: Step 6's
 `MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() ...` is a
 structural "has zero edges" check across every Entity node — no index
-accelerates it. Confirmed live: ~16.5s on a 344,961-entity workspace, ~3.3x
-over FalkorDB's default 5000ms timeout. Fix: skip the scan above a
-configurable entity-count threshold, checked via one cheap COUNT query
-first.
+accelerates it. An entity-count size gate (skip the scan above a threshold)
+patched the crash but meant isolated nodes silently stopped appearing once a
+workspace grew past that threshold, and any workspace slow enough could
+still time out below it.
+
+docs/graph_isolated_scan_gate — fixed at the source instead:
+FalkorStore.mark_isolated_entities() now stamps every Entity's `isolated`
+boolean once, at projection time, with an index on that property. Step 6
+reads that indexed property directly — a cheap lookup regardless of graph
+size, no gate needed at all.
 """
 from __future__ import annotations
 
@@ -23,13 +29,10 @@ def _mock_result(rows):
     return result
 
 
-def _run_subgraph(total_entities: int, max_scan: int, graph_name: str):
+def _run_subgraph(iso_rows: list, graph_name: str):
     """Build a GraphReader whose graph reports no entity types (so
     subgraph() skips straight past steps 2-5 to Step 6), call subgraph(),
-    and return every query issued. Construction AND the subgraph() call
-    both happen inside the same patch context — get_settings() is read
-    live inside subgraph() itself, so the mock must still be active when
-    that call runs, not just while the reader is constructed.
+    and return every query issued plus the final result.
 
     graph_name must be unique per call: subgraph() caches its result by
     (graph name, capped) for 30s — reusing the same name across tests in
@@ -42,10 +45,8 @@ def _run_subgraph(total_entities: int, max_scan: int, graph_name: str):
     def _query_side_effect(cypher, params=None, timeout=None):
         if "DISTINCT e.type" in cypher:
             return _mock_result([])  # no entity types -> steps 2-5 no-op
-        if "count(e)" in cypher:
-            return _mock_result([[total_entities]])
-        if "NOT (e)-[:REL]-()" in cypher:
-            return _mock_result([])  # the expensive scan itself
+        if "isolated: true" in cypher:
+            return _mock_result(iso_rows)
         return _mock_result([])
 
     mock_graph.query.side_effect = _query_side_effect
@@ -53,34 +54,33 @@ def _run_subgraph(total_entities: int, max_scan: int, graph_name: str):
     with patch("aryx.graph.reader.FalkorDB") as MockDB, \
          patch("aryx.graph.reader.get_settings") as mock_cfg:
         mock_cfg.return_value.graph_query_limit = 2000
-        mock_cfg.return_value.graph_isolated_scan_max_entities = max_scan
         mock_cfg.return_value.graph_query_timeout = 30_000
         MockDB.return_value.select_graph.return_value = mock_graph
         reader = GraphReader("redis://localhost:6379")
-        reader.subgraph()
+        result = reader.subgraph()
 
-    return mock_graph.query.call_args_list
-
-
-def test_isolated_scan_runs_when_under_threshold():
-    calls = _run_subgraph(total_entities=500, max_scan=100_000, graph_name="aryx_ws_test_under")
-    scan_calls = [c for c in calls if "NOT (e)-[:REL]-()" in c.args[0]]
-    assert len(scan_calls) == 1
+    return mock_graph.query.call_args_list, result
 
 
-def test_isolated_scan_skipped_when_over_threshold():
-    """The exact incident: a 344,961-entity graph must not attempt the
-    unindexed full scan — only the cheap COUNT query runs."""
-    calls = _run_subgraph(total_entities=344_961, max_scan=100_000, graph_name="aryx_ws_test_over")
-    scan_calls = [c for c in calls if "NOT (e)-[:REL]-()" in c.args[0]]
-    assert scan_calls == []
-    count_calls = [c for c in calls if "count(e)" in c.args[0]]
-    assert len(count_calls) == 1
+def test_isolated_lookup_uses_indexed_property_not_a_live_scan():
+    """The query issued for Step 6 must be the indexed {isolated: true}
+    lookup — never the old unindexed NOT (e)-[:REL]-() structural scan,
+    regardless of graph size (no size gate exists to skip it any more)."""
+    calls, _ = _run_subgraph(iso_rows=[], graph_name="aryx_ws_test_indexed")
+    live_scan_calls = [c for c in calls if "NOT (e)-[:REL]-()" in c.args[0]]
+    assert live_scan_calls == []
+    indexed_calls = [c for c in calls if "isolated: true" in c.args[0]]
+    assert len(indexed_calls) == 1
 
 
-def test_isolated_scan_threshold_is_configurable():
-    """A workspace just over a LOWER configured threshold is also skipped —
-    proves the gate reads the config value, not a hardcoded number."""
-    calls = _run_subgraph(total_entities=200, max_scan=100, graph_name="aryx_ws_test_configurable")
-    scan_calls = [c for c in calls if "NOT (e)-[:REL]-()" in c.args[0]]
-    assert scan_calls == []
+def test_isolated_entities_are_included_in_the_result():
+    iso_rows = [[99, "Widget", "Lonely Widget", {}]]
+    _, result = _run_subgraph(iso_rows=iso_rows, graph_name="aryx_ws_test_included")
+    ids = [e["id"] for e in result["entities"]]
+    assert 99 in ids
+
+
+def test_no_isolated_entities_is_not_an_error():
+    _, result = _run_subgraph(iso_rows=[], graph_name="aryx_ws_test_none")
+    assert result["entities"] == []
+    assert result["relationships"] == []
