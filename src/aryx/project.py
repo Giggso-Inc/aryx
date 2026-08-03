@@ -125,6 +125,8 @@ def project_graph(
         n_relationships = len(all_rels)
     _scaled(len(all_rels), len(all_rels) or 1, "relationships")
 
+    if hasattr(graph, "mark_isolated_entities"):
+        graph.mark_isolated_entities()
     if hasattr(graph, "ensure_indexes"):
         graph.ensure_indexes()
 
@@ -195,6 +197,8 @@ def project_incremental(
     tombstones = pstore.tombstones()
     for entity_id in tombstones:
         graph.remove_entity(entity_id)
+    if hasattr(graph, "mark_isolated_entities"):
+        graph.mark_isolated_entities()
     if hasattr(graph, "ensure_indexes"):
         graph.ensure_indexes()
     pstore.mark_projected(dirty_ids)

@@ -197,7 +197,7 @@ class FalkorStore:
         statements that succeeded.
         """
         created = 0
-        for prop in sorted({"type", "name"} | self._index_candidates):
+        for prop in sorted({"type", "name", "isolated"} | self._index_candidates):
             if not _LABEL_RE.match(prop):
                 continue
             try:
@@ -375,6 +375,39 @@ class FalkorStore:
             "MATCH (a:Entity {id: $src}), (b:Entity {id: $tgt}) "
             "MERGE (a)-[:REL {name: $name}]->(b)",
             {"src": source_id, "tgt": target_id, "name": name},
+        )
+
+    def mark_isolated_entities(self) -> None:
+        """Stamp every Entity with a maintained ``isolated`` boolean.
+
+        docs/graph_isolated_scan_gate — GraphReader.subgraph()'s Step 6 used
+        to compute "has zero edges in either direction" live, per request,
+        with `MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-()`
+        — a structural check no index can accelerate, confirmed to take
+        ~16.5s on a 344,961-entity workspace (~3.3x FalkorDB's query
+        timeout), causing GET /graph to 500. That forced a tradeoff: skip
+        the check (and the isolated nodes it surfaces) above a configurable
+        size, or risk the timeout.
+
+        Call this once here, at projection time (project_graph /
+        project_incremental, right after relationships are written), so the
+        expensive full-graph pass happens during ingest — which already
+        takes minutes — not inside an interactive request. Reads become a
+        cheap indexed `{isolated: true}` lookup (see ensure_indexes()'s
+        index on this property), so Step 6 no longer needs a size gate at
+        all: it's fast regardless of graph size.
+
+        Two full passes (true then false) rather than one combined
+        expression — FalkorDB does not support assigning a pattern-existence
+        check as a SET value directly.
+        """
+        self._graph.query(
+            "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+            "SET e.isolated = true"
+        )
+        self._graph.query(
+            "MATCH (e:Entity) WHERE (e)-[:REL]-() OR (e)<-[:REL]-() "
+            "SET e.isolated = false"
         )
 
     def add_relationships_batch(
