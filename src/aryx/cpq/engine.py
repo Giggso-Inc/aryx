@@ -384,10 +384,18 @@ _COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
 # negative few-shot re-asked country when user already said United States.
 # Capture group allows Title Case OR single-token ALLCAPS (US) after the
 # trigger; multi-word countries use Title Case words.
+# 2026-07-31 follow-up (docs/config_consistency_issues_2026-07-30.md item
+# 5): "...with destination country as United States" fell through every
+# existing trigger — "as" sits between "destination country" and the real
+# country name, and none of the prior alternatives account for that
+# preposition, so the country was silently dropped and re-asked despite
+# being stated. Added "destination country as"/"country as" alongside the
+# existing "is" variants.
 _COUNTRY_PREP = re.compile(
     r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|"
-    r"destination\s+country\s+is|destination\s+country|"
-    r"whose\s+destination\s+country\s+is|country\s+is)\s+)"
+    r"destination\s+country\s+is|destination\s+country\s+as|"
+    r"destination\s+country|"
+    r"whose\s+destination\s+country\s+is|country\s+is|country\s+as)\s+)"
     r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
 )
 
@@ -2670,6 +2678,65 @@ class CpqEngine:
                 skips.add(attr.variable_name)
         return skips
 
+    def resolve_primary_layout_section_vns(
+        self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
+    ) -> set[str] | None:
+        """Variable names genuinely shown on the native UI's own configuration
+        screen(s) — the country-anchor's own layout "section" (see
+        resolve_ui_layout_scope), scoped to a single, deterministically-
+        chosen flow when 2+ active flows exist.
+
+        docs/config_consistency_issues_2026-07-30.md items 1/2: a real
+        staging screenshot showed the native UI's Model Configuration panel
+        surfacing ~10 fields for one screen, while Aryx's payload/summary
+        carried 80-90 attributes total. This catalog's own ingested layout
+        data doesn't resolve to per-SCREEN granularity (the finest grouping
+        available is a ~35-attr "section" spanning several screens) — this
+        is the ceiling of what's derivable without guessing a finer split
+        the data doesn't contain.
+
+        Flow disambiguation (APX Next ships 2 simultaneously-active
+        rule_type=6 flows — resolve_ui_layout_scope's own docstring already
+        flags this as unresolved): prefers the flow whose name does NOT end
+        in "_sysConfig" (confirmed live: the two flows here are named
+        "Configuration Flow For Astro Devices (Portable)" and
+        "...Astro Devices (Portable)_sysConfig" — the suffixed one reads as
+        a secondary/system-config variant, not the primary customer-facing
+        flow). Falls back to the lowest flow_id for a stable, deterministic
+        choice when no name is unsuffixed either way — never a random pick.
+
+        Returns None (no narrowing — caller keeps existing full behavior)
+        when: no layout data at all (tier 3), or the chosen flow has no
+        resolvable country-anchor section. Never guesses a subset when the
+        catalog's own data doesn't support one.
+        """
+        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
+        if not scope or not scope["flows"]:
+            return None
+        flow_ids = list(scope["flows"].keys())
+        if len(flow_ids) == 1:
+            chosen_id = flow_ids[0]
+        else:
+            rdb = get_cpq_rdb()
+            names = {
+                src_id: (name or "")
+                for _eid, src_id, name, _fn
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
+                if src_id is not None
+            }
+            unsuffixed = [
+                fid for fid in flow_ids
+                if not names.get(fid, "").strip().lower().endswith("_sysconfig")
+            ]
+            chosen_id = min(unsuffixed) if unsuffixed else min(flow_ids)
+        section = scope["flows"][chosen_id].get("section")
+        if not section:
+            return None
+        by_entity_id = {a.entity_id: a.variable_name for a in attrs}
+        return {
+            by_entity_id[aid] for aid in section if aid in by_entity_id
+        }
+
     @staticmethod
     def model_context_mirror_vns(attrs: list["ConfigAttr"]) -> set[str]:
         """Variable names of model-context MIRROR attrs — pointer-default
@@ -4095,6 +4162,111 @@ class CpqEngine:
         }
 
     @staticmethod
+    def _normalized_label_stem(label: str) -> str:
+        """Lowercase, whitespace-collapsed, singular-ized display label —
+        used only to detect whether two attrs are labeled as the "same"
+        real-world concept (e.g. "Frequency Bands" and "Frequency Band"),
+        never to identify a specific attribute by name."""
+        s = re.sub(r"\s+", " ", label.strip().lower())
+        if s.endswith("s") and not s.endswith("ss"):
+            s = s[:-1]
+        return s
+
+    def exclusive_sibling_family_exclusions(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str],
+    ) -> tuple[set[str], list[ConfigAttr]]:
+        """Generic (no catalog/attribute names hardcoded) detector for a gap
+        this engine can hit on ANY catalog: two attrs sharing the same
+        real-world concept (near-identical display label, e.g. "Frequency
+        Bands" vs "Frequency Band"), one select_type=="multi" and the other
+        not, that BOTH ended up filled in the same turn — meaning no
+        catalog hiding rule actually excluded either one for the current
+        product (confirmed live on the APX Next catalog, docs/
+        config_consistency_issues_2026-07-30.md Issue 5: the active hiding
+        rule for this catalog's single-select sibling omits some product
+        values entirely, so it stays visible and gets an unconditional
+        default_value even when the multi-select sibling is the real
+        governing attribute for that product).
+
+        Only acts when the single-select sibling's value came from a
+        NON-customer-confirmed provenance — an unconditional XML
+        default_value, an engine-derived recommendation, or the
+        conservative auto/first-option fallback (filled_source in
+        {"default", "rule", "auto"}) — never "user"/"hint"/"cascade", so a
+        genuine customer-confirmed or customer-triggered value is never
+        second-guessed. Widened beyond a bare "default" check (confirmed
+        live: this catalog's single-select sibling is actually populated by
+        a shared-input RECOMMENDATION rule — tagged source "rule" — not a
+        bare XML default_value, so a "default"-only check never caught it).
+
+        Returns (vns_to_strip_from_filled, attrs_to_add_to_pending) — the
+        multi-select sibling is asked instead of silently guessing which
+        half applies. Empty on any catalog without this exact shape.
+        """
+        _WEAK_SOURCES = {"default", "rule", "auto"}
+        by_stem: dict[str, list[ConfigAttr]] = {}
+        for a in attrs:
+            by_stem.setdefault(self._normalized_label_stem(a.display_label), []).append(a)
+
+        to_strip: set[str] = set()
+        to_ask: list[ConfigAttr] = []
+        for group in by_stem.values():
+            if len(group) != 2:
+                continue
+            multi = [a for a in group if a.select_type == "multi"]
+            single = [a for a in group if a.select_type != "multi"]
+            if len(multi) != 1 or len(single) != 1:
+                continue
+            multi_attr, single_attr = multi[0], single[0]
+            single_has_value = single_attr.variable_name in filled
+            multi_has_value = bool(filled_multi.get(multi_attr.variable_name))
+            if (
+                single_has_value and not multi_has_value
+                and filled_source.get(single_attr.variable_name) in _WEAK_SOURCES
+            ):
+                to_strip.add(single_attr.variable_name)
+                to_ask.append(multi_attr)
+        return to_strip, to_ask
+
+    def enforce_exclusive_sibling_families(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str],
+        display_filled: dict[str, str],
+        pending: list[ConfigAttr],
+    ) -> list[ConfigAttr]:
+        """Apply `exclusive_sibling_family_exclusions`: strip the weakly-
+        sourced single-select sibling from `filled` (mutated in place) and
+        add its multi-select sibling to `pending` if nothing has already
+        filled or asked it. Returns the updated pending list."""
+        to_strip, to_ask = self.exclusive_sibling_family_exclusions(
+            attrs, filled, filled_multi, filled_source,
+        )
+        if not to_strip:
+            return pending
+        for vn in to_strip:
+            filled.pop(vn, None)
+            display_filled.pop(vn, None)
+            filled_source.pop(vn, None)
+        pending = [a for a in pending if a.variable_name not in to_strip]
+        pending_vns = {a.variable_name for a in pending}
+        for attr in to_ask:
+            if (
+                not filled.get(attr.variable_name)
+                and not filled_multi.get(attr.variable_name)
+                and attr.variable_name not in pending_vns
+            ):
+                pending.append(attr)
+                pending_vns.add(attr.variable_name)
+        return pending
+
+    @staticmethod
     def governed_target_ids(
         attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],
@@ -4595,6 +4767,29 @@ class CpqEngine:
                      if o.item_value == attr.default_value),
                     attr.default_value,
                 )
+                # Issue 5 root cause 3 (docs/config_consistency_issues_
+                # 2026-07-30.md): some menu attrs carry a legacy boolean-era
+                # option pair (item_value "YES"/"NO") alongside a
+                # differently-spelled current/canonical option that shares
+                # the SAME display_name (confirmed live: baselineReleaseSW_
+                # astro has both "YES"->"Baseline Release" and "BASELINE
+                # RELEASE"->"Baseline Release"). If the catalog's
+                # default_value happens to be the bare legacy "YES"/"NO"
+                # spelling, prefer a same-display-name sibling option whose
+                # item_value ISN'T a bare boolean literal — it's the same
+                # real-world choice, just the non-deprecated spelling.
+                # Generic (no attribute names hardcoded): only fires when
+                # such a sibling genuinely exists, never invents a value.
+                if value.strip().upper() in ("YES", "NO"):
+                    _canonical_sibling = next(
+                        (o for o in attr.options
+                         if o.display_name == display
+                         and o.item_value.strip().upper() not in ("YES", "NO")),
+                        None,
+                    )
+                    if _canonical_sibling is not None:
+                        value = _canonical_sibling.item_value
+                        display = _canonical_sibling.display_name
             elif (not value and attr.select_type == "boolean"
                     and attr.default_value.strip().lower() in ("true", "false")):
                 # _valid() treats the literal string "false" as a none-sentinel
@@ -7221,6 +7416,20 @@ class CpqEngine:
         if self._YEAR_VALUE_RE.search(value):
             return True
         if attr is not None and attr.select_type == "boolean":
+            return True
+        # Issue 5 items 1/2 (docs/config_consistency_issues_2026-07-30.md):
+        # build_payload() already excludes hide_in_trans==1 attrs (the
+        # source system's own "don't submit this at transaction time"
+        # marker) and set_type=="2" (transient UI/action-layer, non-auto-
+        # lock) attrs from the submitted BOM — but the conversational
+        # summary never applied the same two checks, so a sales rep could
+        # see a line in "Associated Options" for a field that will never
+        # actually appear in what gets submitted. Same checks, same attr
+        # object already available here — mirrors build_payload exactly,
+        # no separate exclusion set needed for these two.
+        if attr is not None and attr.hide_in_trans:
+            return True
+        if attr is not None and attr.set_type == "2" and not attr.auto_lock:
             return True
         if attr is not None and attr.hidden and source != "user":
             # hidden=1 in the raw XML means BigMachines' own UI renders this

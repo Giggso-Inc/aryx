@@ -41,6 +41,20 @@ def test_n1_destination_country_without_is():
     assert "United States" in m.group(1)
 
 
+def test_n1_destination_country_as_united_states():
+    """docs/config_consistency_issues_2026-07-30.md item 5: "...with
+    destination country as United States" fell through every prior
+    trigger — "as" sits between "destination country" and the real
+    country name, so the country was silently dropped and re-asked
+    despite being explicitly stated."""
+    m = _COUNTRY_PREP.search(
+        "I want to order APX Next radios 50 in qty for customer who is "
+        "Houston City of with destination country as United States"
+    )
+    assert m is not None
+    assert m.group(1) == "United States"
+
+
 def test_n1_extract_hints_country():
     pytest = __import__("pytest")
     try:
