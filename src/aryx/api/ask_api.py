@@ -676,7 +676,7 @@ def _build_attr_options_text(
         req.workspace_id, _qa_catalog_prefix)
     _qa_bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, _qa_catalog_prefix)
     _qa_constrained = _cpq_engine.apply_constraint_rules(
-        attrs, _qa_con_rules, session.filled, _qa_bml_eval)
+        attrs, _qa_con_rules, session.filled, _qa_bml_eval, filled_multi=session.filled_multi)
     _qa_allowed = _qa_constrained.get(attr_q.entity_id)
     if _qa_allowed is not None:
         _presentable = [o for o in _presentable if o.item_value in _qa_allowed]
@@ -1275,7 +1275,7 @@ def _build_no_value_response(
     clear_queue_vn(session, target_attr.variable_name)
 
     constrained = _cpq_engine.apply_constraint_rules(
-        attrs, con_rules, session.filled, bml_eval)
+        attrs, con_rules, session.filled, bml_eval, filled_multi=session.filled_multi)
     options_block = _cpq_engine.next_question_prompt(
         target_attr, constrained_item_values=constrained.get(target_attr.entity_id),
     )
@@ -1555,7 +1555,7 @@ def _handle_cascade(
     # never guessed — declarative condition_attr_id/value rules still
     # apply), so this only narrows scope when it can do so with certainty.
     _hc_constrained = _cpq_engine.apply_constraint_rules(
-        attrs, con_rules, session.filled, bml_eval=None,
+        attrs, con_rules, session.filled, bml_eval=None, filled_multi=session.filled_multi,
     )
     _hc_allowed = _hc_constrained.get(changed_attr.entity_id)
 
@@ -3998,7 +3998,7 @@ def _dispatch_intent_result(
         # BandMsl_astro on a Single-Band order) must never be offered as a
         # disambiguation candidate, no matter how well it scores.
         _hidden_vns = _cpq_engine.apply_hiding_rules(
-            attrs, session.filled, hiding_rules, bml_eval,
+            attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
         )[2]
         # Persist grounded pending_clarify so the next bare reply (e.g.
         # "Hardware Version") resolves instead of falling to the nudge.
@@ -5989,7 +5989,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             # §15: try/except so pure declines never crash on rule engine.
             try:
                 _pcnv_constrained = _cpq_engine.apply_constraint_rules(
-                    attrs, con_rules, session.filled, bml_eval,
+                    attrs, con_rules, session.filled, bml_eval, filled_multi=session.filled_multi,
                 ).get(_pcnv_attr.entity_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -6056,7 +6056,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # hiding_rules/bml_eval are already loaded and this turn's `filled`
     # doesn't change again until the next request.
     _hidden_for_payload = _cpq_engine.apply_hiding_rules(
-        attrs, session.filled, hiding_rules, bml_eval)[2]
+        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
     # Skipping the always-ask override (resolve_always_ask_skips) stops the
     # QUESTION, but auto_fill's normal fallback still assigns the attr some
     # value (first-by-order/default) since no rule governs it either — and
@@ -6085,7 +6085,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # is a separate, not-yet-built follow-up.
     _rule_issues = _cpq_engine.find_rule_inconsistencies(
         session.filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval,
-        filled_source=session.filled_source)
+        filled_source=session.filled_source, filled_multi=session.filled_multi)
     if _rule_issues:
         logger.info(
             "cpq: rule-consistency check found %d issue(s): %s",
@@ -6669,7 +6669,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # offer a currently-hidden-for-this-product attribute as a
                 # disambiguation candidate.
                 _hidden_vns = _cpq_engine.apply_hiding_rules(
-                    attrs, session.filled, hiding_rules, bml_eval,
+                    attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
                 )[2]
                 return _set_pending_clarify_and_answer(
                     req, session, attrs,
@@ -6697,6 +6697,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         # docs/config_consistency_issues_2026-07-30.md issue 1
                         _hidden_vns = _cpq_engine.apply_hiding_rules(
                             attrs, session.filled, hiding_rules, bml_eval,
+                            filled_multi=session.filled_multi,
                         )[2]
                         return _set_pending_clarify_and_answer(
                             req, session, attrs,
@@ -6992,7 +6993,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         # Hardware Version was set listed all 325 catalog codes instead of
         # the 2 the active constraint rule actually allows).
         _queried_constrained = _cpq_engine.apply_constraint_rules(
-            attrs, con_rules, session.filled, bml_eval)
+            attrs, con_rules, session.filled, bml_eval, filled_multi=session.filled_multi)
         options_block = _cpq_engine.next_question_prompt(
             queried_attr,
             constrained_item_values=_queried_constrained.get(queried_attr.entity_id),
@@ -7224,7 +7225,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             # is applied below), so recomputing now reflects exactly what
             # the user was shown (Phase I).
             pending_constrained = _cpq_engine.apply_constraint_rules(
-                attrs, con_rules, session.filled, bml_eval=bml_eval,
+                attrs, con_rules, session.filled, bml_eval=bml_eval, filled_multi=session.filled_multi,
             ).get(pending_attr.entity_id)
             # PROMPT 7: if we previously showed a durable scope for this
             # attr, force matching into that candidate set (never widen to
@@ -7782,7 +7783,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             # Recomputed against the CURRENT `filled` (post-cascade), not the
             # turn-start `_hidden_for_payload` — cascades earlier in this
             # same turn can change which hiding rules are active.
-            _hidden_now = _cpq_engine.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)[2]
+            _hidden_now = _cpq_engine.apply_hiding_rules(
+                attrs, filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
             _hidden_now = _hidden_now | _cpq_engine.payload_flow_exclusions(
                 req.workspace_id, catalog_prefix, attrs)
             preview_payload = _cpq_engine.build_payload(

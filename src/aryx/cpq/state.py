@@ -52,14 +52,18 @@ class HidingRule:
         their raw operator1 values: "4"="=" (74.5% of real rows, the
         previously-assumed default), "3"="<>" (18%, confirmed 31/31),
         "1"="<", "2"="<=", "5"=">" (all high-confidence, low-volume).
-        "7"/"8" are a still-unresolved membership/contains variant —
-        bml.evaluate_declarative_conditions falls back to "=" for these
-        two specifically (unchanged from pre-fix behavior, not a new
-        guess) until that follow-up investigation lands. Before this,
-        every operator was silently treated as "=" — e.g. a real rule
-        named "...For Non Federal" with operator "3" (<>) against
-        "FEDERAL" was being evaluated as customerType=="FEDERAL" instead
-        of customerType<>"FEDERAL", inverting its intent.
+        "7"="intersects"/"8"="disjoint from" (Phase 2, confirmed via
+        104/110 real rows targeting a select_type=="multi" attribute plus
+        4 independently-authored rule-name cross-checks with zero
+        contradictions — see bml._operator_hit's docstring for the
+        confirmed rule examples). For "7"/"8" the attribute's current
+        value is itself allowed to be a "~"-joined set (a multi-select
+        attr's current selections), checked via set intersection rather
+        than scalar equality. Before the Phase 1 fix, every operator was
+        silently treated as "=" — e.g. a real rule named "...For Non
+        Federal" with operator "3" (<>) against "FEDERAL" was being
+        evaluated as customerType=="FEDERAL" instead of
+        customerType<>"FEDERAL", inverting its intent.
     """
     rule_name: str
     condition_attr_id: int

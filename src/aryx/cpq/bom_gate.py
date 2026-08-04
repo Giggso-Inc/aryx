@@ -111,7 +111,7 @@ def recheck_constraints(
     if not con_rules:
         return []
     constrained = engine.apply_constraint_rules(
-        attrs, con_rules, session.filled, bml_eval=bml_eval,
+        attrs, con_rules, session.filled, bml_eval=bml_eval, filled_multi=session.filled_multi,
     )
     if not constrained:
         return []

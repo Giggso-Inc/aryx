@@ -775,10 +775,26 @@ def _first_matching_branch(
 
 _NUMERIC_OPERATORS = frozenset({"1", "2", "5"})  # <, <=, >
 _NOT_EQUAL_OPERATOR = "3"
-_UNRESOLVED_OPERATORS = frozenset({"7", "8"})  # membership/contains variant,
-# not yet distinguished (docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_
-# 2026_08_05.md) — deliberately falls back to "=" below rather than
-# guessing at an unconfirmed semantic.
+# "7"/"8" — multi-select ("~"-joined current-selection set) membership,
+# confirmed via docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md
+# Phase 2: 104/110 real op7/op8 rows target an attribute classify_select_type
+# already independently calls "multi" (checkbox); the remaining 6 are all
+# _BM_USER_GROUPS, a BM system membership pseudo-attribute — same set-
+# intersection semantic, just against the user's group membership set
+# instead of a menu attribute's current selections. "7" = the current
+# selection set intersects the rule's expected value(s) ("Do not allow
+# Smartlocate to be deselected when Smartvideo or SmartEvidence selected"
+# uses op7 as an OR across SMARTVIDEO/SMARTEVIDENCE). "8" = the current
+# selection set does NOT intersect the expected value(s) ("...only when
+# Enhancement Level is selected" uses op8 on both ENHANCEMENT LEVEL 1 and
+# LEVEL 2 as the rule's own failure condition -- fires, i.e. blocks, when
+# NEITHER is selected; "Hide Smartvideo help text if Smartvideo not
+# selected" uses op8 directly on SMARTVIDEO).
+_MULTI_SELECT_CONTAINS_OPERATOR = "7"
+_MULTI_SELECT_NOT_CONTAINS_OPERATOR = "8"
+_MULTI_SELECT_OPERATORS = frozenset(
+    {_MULTI_SELECT_CONTAINS_OPERATOR, _MULTI_SELECT_NOT_CONTAINS_OPERATOR}
+)
 
 
 def _operator_hit(actual: str, expected_values: list[str], operator: str) -> bool | None:
@@ -789,16 +805,24 @@ def _operator_hit(actual: str, expected_values: list[str], operator: str) -> boo
 
     expected_values may itself contain "~"-delimited OR-lists per value
     (same convention as ConstraintRule.allowed_values) — expanded into a
-    flat set for "=" and "<>" (membership / non-membership against the
-    whole set). Numeric operators (<, <=, >) compare against the single
-    expected value directly — real catalog data never carries a "~"-list
-    for a numeric bound (confirmed: docs/CPQ_DECLARATIVE_CONDITION_
-    OPERATOR_PLAN_2026_08_05.md's audit found no such case).
+    flat set for "=", "<>", "7" and "8" (membership / non-membership
+    against the whole set). Numeric operators (<, <=, >) compare against
+    the single expected value directly — real catalog data never carries a
+    "~"-list for a numeric bound (confirmed: docs/CPQ_DECLARATIVE_
+    CONDITION_OPERATOR_PLAN_2026_08_05.md's audit found no such case).
 
     Mapping confirmed via docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_
-    2026_08_05.md (31/31 independently-authored rule names cross-checked
-    for "3"): "4"="=" (default/majority), "3"="<>", "1"="<", "2"="<=",
-    "5"=">". "7"/"8" fall back to "=" (unresolved, not a new guess).
+    2026_08_05.md: "4"="=" (default/majority, 31/31 rule-name cross-check
+    for "3"), "3"="<>", "1"="<", "2"="<=", "5"=">", "7"="intersects"/
+    "8"="disjoint from" (Phase 2, 104/110 real rows target a
+    select_type=="multi" attr, cross-checked against 4 independently
+    -authored rule names — see the constants above for detail).
+
+    For "7"/"8", `actual` is itself allowed to be a "~"-joined SET (a
+    multi-select attr's current selections), not just a scalar — checked
+    via set intersection with `expected_values` rather than the scalar
+    membership check the other operators use. A plain scalar with no "~"
+    still works correctly here: it just becomes a one-element set.
     """
     actual_norm = actual.strip().lower()
     if operator in _NUMERIC_OPERATORS:
@@ -821,10 +845,16 @@ def _operator_hit(actual: str, expected_values: list[str], operator: str) -> boo
         for part in v.split("~")
         if part.strip()
     }
+
+    if operator in _MULTI_SELECT_OPERATORS:
+        actual_set = {part.strip().lower() for part in actual.split("~") if part.strip()}
+        intersects = bool(actual_set & expanded)
+        return intersects if operator == _MULTI_SELECT_CONTAINS_OPERATOR else not intersects
+
     hit = actual_norm in expanded
     if operator == _NOT_EQUAL_OPERATOR:
         return not hit
-    return hit  # "4", "7", "8" (unresolved variant, see _UNRESOLVED_OPERATORS)
+    return hit  # "4"
 
 
 def evaluate_declarative_conditions(

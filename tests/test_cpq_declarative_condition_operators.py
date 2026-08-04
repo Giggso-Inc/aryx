@@ -13,9 +13,17 @@ the checked attribute is virtually always something other than the exact
 excluded value.
 
 Confirmed operator mapping: "4"="=" (majority/default, unchanged),
-"3"="<>", "1"="<", "2"="<=", "5"=">". "7"/"8" are a still-unresolved
-membership/contains variant and deliberately fall back to "=" (unchanged,
-not a new guess) until a follow-up investigation resolves them.
+"3"="<>", "1"="<", "2"="<=", "5"=">" (Phase 1). "7"="intersects"/
+"8"="disjoint from" (Phase 2) — a multi-select ("~"-joined current-
+selection set) membership check, confirmed via 104/110 real op7/op8 rows
+targeting an attribute classify_select_type independently calls "multi"
+(the remaining 6 are all _BM_USER_GROUPS, a BM system membership
+pseudo-attribute) plus 4 independently-authored rule-name cross-checks
+with zero contradictions once accounting for the standard convention that
+a *validation* rule's own condition encodes the failure state, not its
+name's positive framing (e.g. "...only when Enhancement Level is
+selected" uses op8 on both candidate values as the BLOCK condition —
+fires when NEITHER is selected).
 """
 from __future__ import annotations
 
@@ -68,13 +76,37 @@ def test_numeric_operator_non_numeric_input_returns_none_never_guessed():
     assert _operator_hit("30", ["not a number"], "1") is None
 
 
-def test_operators_7_and_8_fall_back_to_equals_unchanged():
-    # Deliberately unresolved (see module docstring) -- must not silently
-    # invert or guess a membership semantic that hasn't been confirmed.
+def test_operator_7_scalar_behaves_like_equals():
+    # A scalar actual value (no "~") is just a one-element set -- op7's
+    # intersection check degrades to plain membership, same as op4.
     assert _operator_hit("FEDERAL", ["FEDERAL"], "7") is True
     assert _operator_hit("COMMERCIAL", ["FEDERAL"], "7") is False
-    assert _operator_hit("FEDERAL", ["FEDERAL"], "8") is True
-    assert _operator_hit("COMMERCIAL", ["FEDERAL"], "8") is False
+
+
+def test_operator_8_scalar_behaves_like_not_equal():
+    assert _operator_hit("FEDERAL", ["FEDERAL"], "8") is False
+    assert _operator_hit("COMMERCIAL", ["FEDERAL"], "8") is True
+
+
+def test_operator_7_multi_select_intersects():
+    # Real shape: "Do not allow Smartlocate to be deselected when
+    # Smartvideo or SmartEvidence selected" -- op7 on SMARTVIDEO and op7 on
+    # SMARTEVIDENCE, same attribute (an OR-group after grouping).
+    expected = ["SMARTVIDEO", "SMARTEVIDENCE"]
+    assert _operator_hit("SMARTLOCATE~SMARTEVIDENCE", expected, "7") is True
+    assert _operator_hit("SMARTLOCATE~SMARTMAPPING", expected, "7") is False
+    assert _operator_hit("", expected, "7") is False
+
+
+def test_operator_8_multi_select_disjoint():
+    # Real shape: "Allow Multi-Code Plug Programming only when Enhancement
+    # Level is selected" -- op8 on ENHANCEMENT LEVEL 1 and op8 on
+    # ENHANCEMENT LEVEL 2 is the rule's own BLOCK condition, firing when
+    # NEITHER is selected.
+    expected = ["ENHANCEMENT LEVEL 1", "ENHANCEMENT LEVEL 2"]
+    assert _operator_hit("MULTI-CODE PLUG PROGRAMMING", expected, "8") is True
+    assert _operator_hit("MULTI-CODE PLUG PROGRAMMING~ENHANCEMENT LEVEL 1", expected, "8") is False
+    assert _operator_hit("", expected, "8") is True
 
 
 # ---- evaluate_declarative_conditions: multi-row AND/OR + operators --------
@@ -189,3 +221,99 @@ def test_recommendation_rule_with_not_equal_condition():
     new_fills = eng.apply_recommendation_rules(
         attrs, {"customerType": "COMMERCIAL"}, rules, bml_eval=None)
     assert new_fills.get("target") == ("X", "X")
+
+
+# ---- _filled_by_rule_id: multi-select plumbing (Phase 2) -------------------
+#
+# select_type=="multi" attrs' current selections live in filled_multi, a
+# structure completely separate from the scalar filled dict -- before this
+# fix, apply_hiding_rules/apply_recommendation_rules/apply_constraint_rules
+# only ever read `filled`, so ANY declarative condition on a multi-select
+# attribute (which is exactly where every real op7/op8 row lives) always
+# saw that attribute as "missing" and could never resolve, regardless of
+# the operator mapping being correct.
+
+def test_filled_by_rule_id_reads_multi_select_current_value():
+    attrs = [_attr(1, "additionalApplicationServices_astro")]
+    out = CpqEngine._filled_by_rule_id(
+        attrs, {}, {"additionalApplicationServices_astro": ["SMARTVIDEO", "SMARTLOCATE"]})
+    assert out[1] == "SMARTVIDEO~SMARTLOCATE"
+
+
+def test_filled_by_rule_id_missing_when_absent_from_both():
+    attrs = [_attr(1, "additionalApplicationServices_astro")]
+    assert CpqEngine._filled_by_rule_id(attrs, {}, {}) == {}
+
+
+def test_filled_by_rule_id_explicit_empty_multi_is_known_not_missing():
+    # An explicitly-deselected multi-select (filled_multi[vn] == []) is a
+    # real "nothing selected" state, not "unfilled" -- must still resolve
+    # (as an empty set) rather than falling through to "missing".
+    attrs = [_attr(1, "additionalApplicationServices_astro")]
+    out = CpqEngine._filled_by_rule_id(
+        attrs, {}, {"additionalApplicationServices_astro": []})
+    assert out[1] == ""
+
+
+def test_hiding_rule_with_op8_condition_fires_when_multi_select_empty():
+    """Replays "Hide Smartvideo help text if Smartvideo not selected"
+    end-to-end: op8 on SMARTVIDEO, target is a different attr. Must fire
+    when the multi-select currently holds nothing (or nothing matching)."""
+    attrs = [
+        _attr(1, "additionalApplicationServices_astro"),
+        _attr(2, "smartvideoHelpText_astro"),
+    ]
+    rules = [
+        HidingRule(
+            rule_name="Hide Smartvideo help text if Smartvideo not selected",
+            condition_attr_id=0, condition_value="", target_attr_id=2,
+            conditions=[(1, "SMARTVIDEO", "8")],
+        ),
+    ]
+    eng = CpqEngine()
+    _visible, _msgs, hidden_vns = eng.apply_hiding_rules(
+        attrs, {}, rules, bml_eval=None,
+        filled_multi={"additionalApplicationServices_astro": ["SMARTLOCATE"]},
+    )
+    assert "smartvideoHelpText_astro" in hidden_vns
+
+
+def test_hiding_rule_with_op8_condition_does_not_fire_when_selected():
+    attrs = [
+        _attr(1, "additionalApplicationServices_astro"),
+        _attr(2, "smartvideoHelpText_astro"),
+    ]
+    rules = [
+        HidingRule(
+            rule_name="Hide Smartvideo help text if Smartvideo not selected",
+            condition_attr_id=0, condition_value="", target_attr_id=2,
+            conditions=[(1, "SMARTVIDEO", "8")],
+        ),
+    ]
+    eng = CpqEngine()
+    _visible, _msgs, hidden_vns = eng.apply_hiding_rules(
+        attrs, {}, rules, bml_eval=None,
+        filled_multi={"additionalApplicationServices_astro": ["SMARTVIDEO", "SMARTLOCATE"]},
+    )
+    assert "smartvideoHelpText_astro" not in hidden_vns
+
+
+def test_hiding_rule_with_op8_condition_never_fires_without_filled_multi():
+    """Without filled_multi threaded through at all (the pre-fix call
+    shape), the condition attribute is always "missing" -- the rule can
+    never resolve, regardless of what's actually selected. Guards the
+    plumbing gap itself, not just the operator mapping."""
+    attrs = [
+        _attr(1, "additionalApplicationServices_astro"),
+        _attr(2, "smartvideoHelpText_astro"),
+    ]
+    rules = [
+        HidingRule(
+            rule_name="Hide Smartvideo help text if Smartvideo not selected",
+            condition_attr_id=0, condition_value="", target_attr_id=2,
+            conditions=[(1, "SMARTVIDEO", "8")],
+        ),
+    ]
+    eng = CpqEngine()
+    _visible, _msgs, hidden_vns = eng.apply_hiding_rules(attrs, {}, rules, bml_eval=None)
+    assert "smartvideoHelpText_astro" not in hidden_vns

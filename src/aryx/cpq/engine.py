@@ -3050,15 +3050,33 @@ class CpqEngine:
     @staticmethod
     def _filled_by_rule_id(
         attrs: list[ConfigAttr], filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[int, str]:
-        """Map every id a rule may reference → the attr's filled value."""
+        """Map every id a rule may reference → the attr's filled value.
+
+        select_type=="multi" attrs' current selections live in filled_multi
+        (a separate structure from the scalar filled dict — see
+        evaluate_rules_loop's docstring), not in `filled`. Joined here into
+        a single "~"-delimited string so bml._operator_hit's set-
+        intersection check (operators "7"/"8" — docs/CPQ_DECLARATIVE_
+        CONDITION_OPERATOR_PLAN_2026_08_05.md Phase 2) sees the real
+        current selection set instead of always finding the condition
+        attribute missing. An explicitly-emptied multi-select (filled_multi
+        holding []) still maps to "" here rather than being omitted — that
+        is a known, real "nothing selected" state, not an unfilled one.
+        """
+        multi = filled_multi or {}
         out: dict[int, str] = {}
         for a in attrs:
-            if a.variable_name in filled:
+            if a.variable_name in multi:
+                val = "~".join(multi[a.variable_name])
+            elif a.variable_name in filled:
                 val = filled[a.variable_name]
-                out[a.entity_id] = val
-                if a.source_id is not None:
-                    out[a.source_id] = val
+            else:
+                continue
+            out[a.entity_id] = val
+            if a.source_id is not None:
+                out[a.source_id] = val
         return out
 
     def apply_hiding_rules(
@@ -3067,6 +3085,7 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[HidingRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> tuple[list[ConfigAttr], list[str], set[str]]:
         """Apply hiding rules against current filled values.
 
@@ -3080,6 +3099,11 @@ class CpqEngine:
         "unknown applies no constraint" rule, just inverted for hiding
         (unknown → don't hide, not → hide everything).
 
+        filled_multi — select_type=="multi" attrs' current selections (see
+        _filled_by_rule_id); only consulted for declarative conditions
+        (operators "7"/"8"). Script-backed rules are unaffected — they
+        already read `filled` directly via bml_eval, a separate contract.
+
         Returns:
           filtered_attrs — attrs still visible after rules are applied
           rule_messages  — human-readable list of rules that fired (for reporting)
@@ -3089,7 +3113,7 @@ class CpqEngine:
             return attrs, [], set()
 
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
 
         hidden_eids: set[int] = set()
         messages: list[str] = []
@@ -3443,6 +3467,7 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
@@ -3462,11 +3487,15 @@ class CpqEngine:
         same D2 "never guess" principle as the existing tilde-delimited
         ambiguous-recommendation skip below. bml_eval=None (caller opted
         out) silently skips script-backed rules, same as apply_constraint_rules.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute
+        (operators "7"/"8").
         """
         if not rules:
             return {}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
@@ -3526,6 +3555,7 @@ class CpqEngine:
         filled_source: dict[str, str] | None,
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Re-apply recommendation rules to attrs the ENGINE already filled
         (never a customer's own choice), correcting them when a driving
@@ -3548,9 +3578,12 @@ class CpqEngine:
         confirmed, not a value this method has any business overwriting.
 
         Only ever revisits attrs already in `filled` (single-select) — a
-        multi-select target's value lives in `filled_multi`, out of scope
+        multi-select TARGET's value lives in `filled_multi`, out of scope
         for this pass; `apply_recommendation_rules` (unfilled attrs) is
-        unaffected, this only ever touches already-filled ones.
+        unaffected, this only ever touches already-filled ones. filled_multi
+        is still accepted here for the separate purpose of reading a rule's
+        CONDITION attribute when that attribute (not the target) is
+        select_type=="multi" (operators "7"/"8" — see apply_hiding_rules).
 
         Returns {variable_name: (item_value, display)} for every attr whose
         value actually changed. The caller is expected to apply these
@@ -3562,7 +3595,7 @@ class CpqEngine:
             return {}
         _NEVER_OVERRIDE = {"user", "hint", "cascade"}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         corrections: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
@@ -3695,6 +3728,7 @@ class CpqEngine:
         rules: list[ConstraintRule],
         filled: dict[str, str],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[int, list[str]]:
         """Return {attr_entity_id: [allowed_item_values]} for attrs with active constraints.
 
@@ -3706,11 +3740,15 @@ class CpqEngine:
         variable_name — BML scripts compare variable names directly). An
         unknown script outcome (None) applies no constraint rather than
         allowing everything.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute
+        (operators "7"/"8").
         """
         if not rules:
             return {}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         constrained: dict[int, list[str]] = {}
 
         def _intersect(target: ConfigAttr, allowed: list[str]) -> None:
@@ -3786,6 +3824,7 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
         filled_source: dict[str, str] | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Cross-check `filled` against each rule type's OWN independently
         computed result — NOT a self-referential re-derivation of the same
@@ -3817,7 +3856,8 @@ class CpqEngine:
         issues: list[dict[str, Any]] = []
         by_vn = {a.variable_name: a for a in attrs}
 
-        _visible, _msgs, hidden_vns = self.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)
+        _visible, _msgs, hidden_vns = self.apply_hiding_rules(
+            attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi)
         for vn in hidden_vns:
             if filled.get(vn):
                 issues.append({
@@ -3825,7 +3865,8 @@ class CpqEngine:
                     "issue": "filled but an active hiding rule matches",
                 })
 
-        constrained_opts = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        constrained_opts = self.apply_constraint_rules(
+            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi)
         for vn, value in filled.items():
             attr = by_vn.get(vn)
             allowed = constrained_opts.get(attr.entity_id) if attr else None
@@ -3836,7 +3877,7 @@ class CpqEngine:
                 })
 
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         for rule in rec_rules:
             target = by_rule_id.get(rule.target_attr_id)
             if not target or target.variable_name not in filled:
@@ -3956,7 +3997,7 @@ class CpqEngine:
 
             # Apply hiding rules first so auto_fill only fills visible attrs
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
-                attrs, filled, hiding_rules, bml_eval=bml_eval)
+                attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=multi)
 
             # Strip values ONLY for attrs an explicit hiding rule removed from
             # view. Popping everything not currently visible (the old
@@ -3988,7 +4029,8 @@ class CpqEngine:
                 bml_eval.prefetch_tier2(self._bml_prefetch_requests(
                     attrs=attrs, rec=rec_rules, con=con_rules, filled=filled))
 
-            new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
+            new_fills = self.apply_recommendation_rules(
+                attrs, filled, rec_rules, bml_eval=bml_eval, filled_multi=multi)
             if new_fills:
                 # Route multi-select targets to `multi`, not `filled` — same
                 # reasoning as auto_fill's final assignment block: this is
@@ -4021,7 +4063,7 @@ class CpqEngine:
             # boundary is safe to cross where find_rule_inconsistencies
             # deliberately only logs.
             _resynced = self.resync_stale_recommendations(
-                attrs, filled, sources, rec_rules, bml_eval=bml_eval,
+                attrs, filled, sources, rec_rules, bml_eval=bml_eval, filled_multi=multi,
             )
             if _resynced:
                 for k, (iv, d) in _resynced.items():
@@ -4030,7 +4072,7 @@ class CpqEngine:
                     sources[k] = "rule"
 
             constrained_opts = self.apply_constraint_rules(
-                attrs, con_rules, filled, bml_eval=bml_eval,
+                attrs, con_rules, filled, bml_eval=bml_eval, filled_multi=multi,
             )
 
             if (not _resynced
@@ -5492,7 +5534,7 @@ class CpqEngine:
         if not self._ADD_VERB_RE.search(question):
             return None
         _visible_now, _msgs, hidden_now = self.apply_hiding_rules(
-            attrs, filled, hiding_rules, bml_eval=bml_eval)
+            attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=filled_multi)
         q_lower = question.lower()
         for attr in attrs:
             vn = attr.variable_name
