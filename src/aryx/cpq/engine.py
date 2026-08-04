@@ -26,6 +26,7 @@ from typing import Any
 from aryx.config import get_settings
 from aryx.cpq.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
+    _operator_hit,
 )
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
@@ -196,8 +197,13 @@ def _label_mentioned_strict(label_lower: str, q_lower: str) -> bool:
     return False
 
 
-def _condition_value_matches(current_val: str, condition_value: str) -> bool:
-    """True when current_val satisfies a single condition_attr/condition_value pair.
+def _condition_value_matches(
+    current_val: str, condition_value: str, operator: str = "4",
+) -> bool:
+    """True when current_val satisfies a single condition_attr/condition_value
+    pair, under the given BM-native operator (default "4" = "=" — the
+    majority code, and the only one every existing caller assumed before
+    docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md).
 
     condition_value is sometimes a "~"-delimited OR-list (same convention
     already handled for ConstraintRule.allowed_values, e.g. "PREMIER~ADVANCED
@@ -212,9 +218,16 @@ def _condition_value_matches(current_val: str, condition_value: str) -> bool:
     Single-value condition_value strings behave identically to a plain
     equality check (a 1-element split set), so this is a strict superset
     fix, not a behavior change for the common case.
+
+    A None result from the shared _operator_hit (a numeric operator that
+    couldn't parse either side) is treated as "does not match" here rather
+    than propagated as "unresolved" — every caller of this scalar path
+    already treats a plain False the same as "condition not met, skip,"
+    so collapsing None into False changes nothing observable for the
+    handful of real rows that would hit this edge case, while keeping this
+    function's simple bool return type callers already depend on.
     """
-    allowed = {v.strip().lower() for v in condition_value.split("~") if v.strip()}
-    return current_val.strip().lower() in allowed
+    return bool(_operator_hit(current_val, [condition_value], operator))
 
 
 # Ontology types ingested from an XML source are named '{SourceStem}Bm{Tag}'
@@ -2450,9 +2463,13 @@ class CpqEngine:
         for the AND/OR-grouping semantics applied to this list.
         """
         rdb = get_cpq_rdb()
-        inputs_by_rule: dict[int, list[tuple[int, str]]] = {}
-        for rid, aid, val in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
-            inputs_by_rule.setdefault(rid, []).append((aid, val))
+        # (attr_id, value, operator) — operator is the raw BM-native
+        # comparison code ("1"/"2"/.../"8"); see docs/CPQ_DECLARATIVE_
+        # CONDITION_OPERATOR_PLAN_2026_08_05.md for what each means and
+        # bml.evaluate_declarative_conditions for where it's interpreted.
+        inputs_by_rule: dict[int, list[tuple[int, str, str]]] = {}
+        for rid, aid, val, op in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
+            inputs_by_rule.setdefault(rid, []).append((aid, val, op))
         actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]] = {}
         for rid, aid, at, val, fn, st, comments in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
             actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st, comments))
@@ -2991,12 +3008,13 @@ class CpqEngine:
                 if not inp_list:
                     unresolved += 1
                     continue
-                cond_attr_id, cond_value = inp_list[-1]
+                cond_attr_id, cond_value, cond_operator = inp_list[-1]
                 for target_attr_id, action_type in targets:
                     rules.append(HidingRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         hide=(int(action_type or 2) == 2),
                         conditions=list(inp_list),
@@ -3101,7 +3119,9 @@ class CpqEngine:
                 current_val = filled_by_rule_id.get(rule.condition_attr_id)
                 if current_val is None:
                     continue  # condition attr not filled yet — rule doesn't fire
-                if not _condition_value_matches(current_val, rule.condition_value):
+                if not _condition_value_matches(
+                    current_val, rule.condition_value, rule.condition_operator
+                ):
                     continue
             if rule.hide:
                 hidden_eids.add(target.entity_id)
@@ -3240,11 +3260,11 @@ class CpqEngine:
                             "but no BmFunction script was found — not gated",
                             rule_name, fn_id)
                         continue
-                    cond_attr_id, cond_value = 0, ""
+                    cond_attr_id, cond_value, cond_operator = 0, "", "4"
                 else:
                     if not inp_list:
                         continue
-                    cond_attr_id, cond_value = inp_list[-1]
+                    cond_attr_id, cond_value, cond_operator = inp_list[-1]
 
                 # Amendment 12 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
                 # a message-only action (function_id=-1, empty value1, but
@@ -3351,6 +3371,7 @@ class CpqEngine:
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         allowed_values=allowed,
                         conditions=list(inp_list) if condition_script is None else None,
@@ -3361,6 +3382,7 @@ class CpqEngine:
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         recommended_value=rec_val,
                         conditions=list(inp_list) if condition_script is None else None,
@@ -3481,7 +3503,8 @@ class CpqEngine:
                     if rule.condition_attr_id not in filled_by_rule_id:
                         continue
                     if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                        rule.condition_operator,
                     ):
                         continue
                 recommended_value = rule.recommended_value
@@ -3575,7 +3598,8 @@ class CpqEngine:
                     if rule.condition_attr_id not in filled_by_rule_id:
                         continue
                     if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                        rule.condition_operator,
                     ):
                         continue
                 recommended_value = rule.recommended_value
@@ -3741,7 +3765,8 @@ class CpqEngine:
                 if rule.condition_attr_id not in filled_by_rule_id:
                     continue
                 if not _condition_value_matches(
-                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                    rule.condition_operator,
                 ):
                     continue
             _intersect(target, rule.allowed_values)
@@ -3844,7 +3869,9 @@ class CpqEngine:
                     current_val = filled_by_rule_id.get(rule.condition_attr_id)
                     condition_met = (
                         current_val is not None
-                        and _condition_value_matches(current_val, rule.condition_value)
+                        and _condition_value_matches(
+                            current_val, rule.condition_value, rule.condition_operator
+                        )
                     )
                 recommended = rule.recommended_value
             if condition_met and recommended is not None and filled[vn].lower() != recommended.lower():
@@ -4575,7 +4602,7 @@ class CpqEngine:
                             continue
                         cond_val = filled.get(cond_attr.variable_name)
                         if cond_val is None or not _condition_value_matches(
-                            cond_val, rrule.condition_value
+                            cond_val, rrule.condition_value, rrule.condition_operator
                         ):
                             continue
                         recommended_value = rrule.recommended_value
@@ -7358,7 +7385,7 @@ class CpqEngine:
                 continue
             conditions = getattr(r, "conditions", None)
             if conditions:
-                for cond_id, _val in conditions:
+                for cond_id, *_rest in conditions:
                     _add_edge(cond_id, target_id)
             else:
                 cond_id = getattr(r, "condition_attr_id", 0)
@@ -7497,7 +7524,7 @@ class CpqEngine:
             cond_ids: list[int] = []
             conditions = getattr(rule, "conditions", None)
             if conditions:
-                cond_ids = [cid for cid, _v in conditions]
+                cond_ids = [cid for cid, *_rest in conditions]
             else:
                 cid = getattr(rule, "condition_attr_id", 0)
                 if cid:

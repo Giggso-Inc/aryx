@@ -773,8 +773,62 @@ def _first_matching_branch(
     return None, False
 
 
+_NUMERIC_OPERATORS = frozenset({"1", "2", "5"})  # <, <=, >
+_NOT_EQUAL_OPERATOR = "3"
+_UNRESOLVED_OPERATORS = frozenset({"7", "8"})  # membership/contains variant,
+# not yet distinguished (docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_
+# 2026_08_05.md) — deliberately falls back to "=" below rather than
+# guessing at an unconfirmed semantic.
+
+
+def _operator_hit(actual: str, expected_values: list[str], operator: str) -> bool | None:
+    """Does `actual` satisfy `expected_values` under the given BM-native
+    operator code? Returns None when a numeric operator can't parse either
+    side — never guessed, same D2 discipline as every other unresolvable
+    case in this module.
+
+    expected_values may itself contain "~"-delimited OR-lists per value
+    (same convention as ConstraintRule.allowed_values) — expanded into a
+    flat set for "=" and "<>" (membership / non-membership against the
+    whole set). Numeric operators (<, <=, >) compare against the single
+    expected value directly — real catalog data never carries a "~"-list
+    for a numeric bound (confirmed: docs/CPQ_DECLARATIVE_CONDITION_
+    OPERATOR_PLAN_2026_08_05.md's audit found no such case).
+
+    Mapping confirmed via docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_
+    2026_08_05.md (31/31 independently-authored rule names cross-checked
+    for "3"): "4"="=" (default/majority), "3"="<>", "1"="<", "2"="<=",
+    "5"=">". "7"/"8" fall back to "=" (unresolved, not a new guess).
+    """
+    actual_norm = actual.strip().lower()
+    if operator in _NUMERIC_OPERATORS:
+        try:
+            actual_num = float(actual)
+            expected_num = float(expected_values[0]) if expected_values else None
+        except (TypeError, ValueError):
+            return None
+        if expected_num is None:
+            return None
+        if operator == "1":
+            return actual_num < expected_num
+        if operator == "2":
+            return actual_num <= expected_num
+        return actual_num > expected_num  # "5"
+
+    expanded = {
+        part.strip().lower()
+        for v in expected_values
+        for part in v.split("~")
+        if part.strip()
+    }
+    hit = actual_norm in expanded
+    if operator == _NOT_EQUAL_OPERATOR:
+        return not hit
+    return hit  # "4", "7", "8" (unresolved variant, see _UNRESOLVED_OPERATORS)
+
+
 def evaluate_declarative_conditions(
-    conditions: list[tuple[int, str]], variables_by_id: dict[int, str],
+    conditions: list[tuple[int, str, str]], variables_by_id: dict[int, str],
 ) -> tuple[bool | None, bool]:
     """Evaluate a rule's FULL set of bm_config_rule_input rows (not just the
     last one — see HidingRule.conditions / ConstraintRule.conditions /
@@ -782,18 +836,21 @@ def evaluate_declarative_conditions(
     single condition_attr_id/condition_value pair for multi-input rules).
 
     Grouping rule: the SAME attribute_id repeated across rows means OR (any
-    of that attribute's listed values matches); DIFFERENT attribute_ids are
-    ANDed together. Confirmed live this matches real data: a rule like
-    "Allow Multi-Code Plug Programming only when Enhancement Level is
-    selected" repeats one attribute 3x with different ENHANCEMENT LEVEL
-    values (an OR-list) alongside 2 other distinct attributes (ANDed in) —
-    a real boolean expression, not a simple range.
+    of that attribute's listed values matches, or none of them does for
+    "<>" — see _operator_hit); DIFFERENT attribute_ids are ANDed together.
+    Confirmed live this matches real data: a rule like "Allow Multi-Code
+    Plug Programming only when Enhancement Level is selected" repeats one
+    attribute 3x with different ENHANCEMENT LEVEL values (an OR-list)
+    alongside 2 other distinct attributes (ANDed in) — a real boolean
+    expression, not a simple range.
 
-    No operator1/operator2 distinction is made here (confirmed live: 0 of
-    1,694 real rule_input rows in this catalog populate operator2/value2 at
-    all, and operator1 is never consulted by the declarative evaluator this
-    replaces either — matching prior behavior exactly, just extended to ALL
-    inputs instead of only the last).
+    operator1 IS now consulted, via _operator_hit — see that function's
+    docstring and docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md
+    for the confirmed mapping and why the prior "always =" behavior was
+    wrong for 25.5% of real condition rows in one catalog. Every row for
+    the same attr_id is assumed to share one operator (mixing "=" and "<>"
+    within one OR-group was never observed in the confirmed audit); the
+    first row's operator is used for the whole group.
 
     Returns (result, blocked_by_missing_var):
       - (True, False)  — every attribute-group matched.
@@ -812,10 +869,12 @@ def evaluate_declarative_conditions(
     if not conditions:
         return None, False
     by_attr: dict[int, list[str]] = {}
+    op_by_attr: dict[int, str] = {}
     order: list[int] = []
-    for attr_id, value in conditions:
+    for attr_id, value, operator in conditions:
         if attr_id not in by_attr:
             order.append(attr_id)
+            op_by_attr[attr_id] = operator
         by_attr.setdefault(attr_id, []).append(value)
 
     saw_missing = False
@@ -824,7 +883,6 @@ def evaluate_declarative_conditions(
         if actual is None:
             saw_missing = True
             continue
-        expected_values = by_attr[attr_id]
         # Each row's own value can itself be a "~"-delimited OR-list (same
         # encoding as ConstraintRule.allowed_values, e.g. a single input row
         # storing "PREMIER~ADVANCED SOFTWARE ONLY~ESSENTIAL SOFTWARE ONLY")
@@ -835,13 +893,11 @@ def evaluate_declarative_conditions(
         # docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §3). Splitting each
         # row's value here is a strict superset of the old behavior — a
         # row with no "~" splits into a 1-element list, identical to before.
-        expanded = {
-            part.strip().lower()
-            for v in expected_values
-            for part in v.split("~")
-            if part.strip()
-        }
-        hit = actual.strip().lower() in expanded
+        # _operator_hit handles the "~"-expansion itself.
+        hit = _operator_hit(actual, by_attr[attr_id], op_by_attr[attr_id])
+        if hit is None:
+            saw_missing = True
+            continue
         if not hit:
             return False, False
     if saw_missing:

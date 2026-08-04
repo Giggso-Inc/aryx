@@ -28,18 +28,38 @@ class HidingRule:
 
     condition_attr_id  — entity_id of the BmConfigAttr whose value is checked (declarative only).
     condition_value    — the value that triggers this rule (declarative only).
+    condition_operator — the raw BM-native operator code for the
+        condition_attr_id/condition_value pair above ("4" = "=", the
+        default/majority code — see conditions' docstring below for the
+        full mapping). Only meaningful when conditions is None/empty.
     target_attr_id     — entity_id of the BmConfigAttr to hide/show.
     hide               — True = hide the target when condition is met; False = show (declarative only).
     rule_name          — human-readable rule name for reporting.
     conditions         — ALL of this rule's real bm_config_rule_input rows, as
-        [(attr_id, value), ...] — same attr_id repeated means OR (any of
-        those values matches for that attribute); different attr_ids are
-        ANDed together. None/empty falls back to the single
-        condition_attr_id/condition_value pair (backward compatible with
-        rules that only ever had one input). Confirmed live: 445/688 rules
-        in a real catalog carry 2+ input rows that the old single-pair
-        shape silently collapsed to just the last one — see
-        docs/CPQ_APX_NEXT_RULE_CATALOG.md "Gap Deep-Dive & Impact Analysis".
+        [(attr_id, value, operator), ...] — same attr_id repeated means OR
+        (any of those values matches for that attribute); different
+        attr_ids are ANDed together. None/empty falls back to the single
+        condition_attr_id/condition_value/condition_operator triple
+        (backward compatible with rules that only ever had one input).
+        Confirmed live: 445/688 rules in a real catalog carry 2+ input
+        rows that the old single-pair shape silently collapsed to just
+        the last one — see docs/CPQ_APX_NEXT_RULE_CATALOG.md "Gap
+        Deep-Dive & Impact Analysis".
+
+        operator is the raw BM-native comparison-operator code, confirmed
+        (docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md) via
+        cross-referencing 31 independently-authored rule names against
+        their raw operator1 values: "4"="=" (74.5% of real rows, the
+        previously-assumed default), "3"="<>" (18%, confirmed 31/31),
+        "1"="<", "2"="<=", "5"=">" (all high-confidence, low-volume).
+        "7"/"8" are a still-unresolved membership/contains variant —
+        bml.evaluate_declarative_conditions falls back to "=" for these
+        two specifically (unchanged from pre-fix behavior, not a new
+        guess) until that follow-up investigation lands. Before this,
+        every operator was silently treated as "=" — e.g. a real rule
+        named "...For Non Federal" with operator "3" (<>) against
+        "FEDERAL" was being evaluated as customerType=="FEDERAL" instead
+        of customerType<>"FEDERAL", inverting its intent.
     """
     rule_name: str
     condition_attr_id: int
@@ -47,7 +67,8 @@ class HidingRule:
     target_attr_id: int
     hide: bool = True
     script: str | None = None
-    conditions: list[tuple[int, str]] | None = None
+    conditions: list[tuple[int, str, str]] | None = None
+    condition_operator: str = "4"
 
 
 @dataclass
@@ -77,7 +98,7 @@ class RecommendationRule:
     ``script`` alone (see CpqEngine._load_value_rules).
 
     conditions — see HidingRule.conditions; same AND-of-OR-groups semantics
-    for declarative multi-input rules.
+    and same operator mapping for declarative multi-input rules.
     """
     rule_name: str
     condition_attr_id: int
@@ -85,8 +106,9 @@ class RecommendationRule:
     target_attr_id: int
     recommended_value: str = ""  # item_value to auto-select on the target attr
     script: str | None = None
-    conditions: list[tuple[int, str]] | None = None
+    conditions: list[tuple[int, str, str]] | None = None
     condition_script: str | None = None
+    condition_operator: str = "4"
 
 
 @dataclass
@@ -112,8 +134,9 @@ class ConstraintRule:
     target_attr_id: int
     allowed_values: list[str]  # item_values that remain valid when condition fires
     script: str | None = None  # raw BML — evaluated dynamically when set
-    conditions: list[tuple[int, str]] | None = None  # see HidingRule.conditions
+    conditions: list[tuple[int, str, str]] | None = None  # see HidingRule.conditions
     condition_script: str | None = None
+    condition_operator: str = "4"
 
 
 @dataclass
