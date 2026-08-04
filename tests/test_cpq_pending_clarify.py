@@ -128,18 +128,23 @@ def test_grounded_prompt_uses_catalog_labels_only():
 
 
 def test_match_reply_by_label():
+    """_match_pending_clarify_reply returns (status, variable_name) — the
+    3-way (resolved/decline/unclear) contract added alongside the LLM-first
+    clarify-decline classifier (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_
+    CLARIFY_ISSUE.md). A deterministic label/index/variable_name match
+    always resolves as ("resolved", vn)."""
     cands = [_hw_version(), _system_key()]
     session = _session()
     assert _match_pending_clarify_reply(
         "Hardware Version", cands, session, workspace_id=1,
-    ) == "hWVersion_astro"
+    ) == ("resolved", "hWVersion_astro")
 
 
 def test_match_reply_by_index():
     cands = [_hw_version(), _system_key()]
     session = _session()
-    assert _match_pending_clarify_reply("1", cands, session, 1) == "hWVersion_astro"
-    assert _match_pending_clarify_reply("2", cands, session, 1) == "systemKey_astro"
+    assert _match_pending_clarify_reply("1", cands, session, 1) == ("resolved", "hWVersion_astro")
+    assert _match_pending_clarify_reply("2", cands, session, 1) == ("resolved", "systemKey_astro")
 
 
 def test_match_reply_by_variable_name():
@@ -147,7 +152,7 @@ def test_match_reply_by_variable_name():
     session = _session()
     assert _match_pending_clarify_reply(
         "hWVersion_astro", cands, session, 1,
-    ) == "hWVersion_astro"
+    ) == ("resolved", "hWVersion_astro")
 
 
 def test_unrelated_reply_does_not_misbind():
@@ -157,9 +162,11 @@ def test_unrelated_reply_does_not_misbind():
         "aryx.api.ask_api._llm_resolve_label_collision",
         return_value=None,
     ):
-        assert _match_pending_clarify_reply(
+        status, vn = _match_pending_clarify_reply(
             "what's the weather in Houston", cands, session, 1,
-        ) is None
+        )
+        assert status in ("unclear", "decline")
+        assert vn is None
 
 
 def test_set_pending_clarify_stores_candidates_and_tokens():

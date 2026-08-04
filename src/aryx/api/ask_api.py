@@ -1479,6 +1479,26 @@ def _handle_cascade(
     constrained_item_values: list[str] | None = None,
 ) -> dict[str, Any]:
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
+    if _DECLINE_CHANGE_RE.search(new_value_hint):
+        # Customer declined the pending change (docs/CPQ_SESSION_2026_07_29_
+        # ISSUES_PLAN.md #2) — keep the current value, don't touch
+        # session.filled/pop/cascade at all, and don't attempt apply_answer
+        # against a phrase that was never meant as a value.
+        current_display = session.display_filled.get(changed_attr.variable_name, "")
+        label = _cpq_engine.disambiguated_label(changed_attr, attrs)
+        answer = (
+            f"No changes made — **{label}** stays as "
+            f"**{current_display}**." if current_display else
+            f"No changes made to **{label}**."
+        )
+        session.status = "configuring" if session.pending_variables else session.status
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_decline_change()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
     push_snapshot(session, reason="cascade")
     clear_clarify(session, getattr(changed_attr, "variable_name", None))
     by_eid = {a.entity_id: a for a in attrs}
@@ -1522,13 +1542,31 @@ def _handle_cascade(
             session.display_filled.pop(a.variable_name, None)
             session.filled_source.pop(a.variable_name, None)
 
+    # Constraint scope for changed_attr — computed ONCE and reused for the
+    # answer-match attempt, the rejected-option exclusion, and the retry
+    # prompt (docs/CPQ_SESSION_2026_07_29_ISSUES_PLAN.md #3/#10): previously
+    # this block called apply_answer/apply_multi_answer/next_question_prompt
+    # with NO constrained_item_values at all, so a mismatch's retry prompt
+    # fell back to the attr's full unconstrained option list (e.g. Product's
+    # entire ~328-model catalog instead of the active APX NEXT family) and
+    # a value shown as a valid option moments earlier could then fail to
+    # re-match. bml_eval=None here is the same opt-out convention used
+    # elsewhere in this file (script-backed constraint rules are skipped,
+    # never guessed — declarative condition_attr_id/value rules still
+    # apply), so this only narrows scope when it can do so with certainty.
+    _hc_constrained = _cpq_engine.apply_constraint_rules(
+        attrs, con_rules, session.filled, bml_eval=None,
+    )
+    _hc_allowed = _hc_constrained.get(changed_attr.entity_id)
+
     # Replacement extraction: only the WANTED value reaches apply_answer.
-    # Rejected option is excluded via constrained_item_values so fuzzy match
-    # cannot re-pick it even if residual text leaks through.
+    # Rejected option is excluded via the freshly recomputed _hc_allowed
+    # (not the possibly-stale/None constrained_item_values param) so fuzzy
+    # match cannot re-pick it even if residual text leaks through.
     wanted_clause, rejected_clause = _extract_replacement_clause(new_value_hint)
     apply_hint = wanted_clause if wanted_clause else new_value_hint
     apply_constrained = _constrain_excluding_rejected(
-        changed_attr, rejected_clause, constrained_item_values,
+        changed_attr, rejected_clause, _hc_allowed,
     )
     if wanted_clause or rejected_clause:
         logger.info(
@@ -1536,7 +1574,7 @@ def _handle_cascade(
             "constrained_excl=%s",
             getattr(changed_attr, "variable_name", None),
             wanted_clause, rejected_clause, apply_hint,
-            apply_constrained is not None and apply_constrained != constrained_item_values,
+            apply_constrained is not None and apply_constrained != _hc_allowed,
         )
 
     # Lock in the new value for the changed attr
@@ -1574,14 +1612,12 @@ def _handle_cascade(
             session.display_filled[changed_attr.variable_name] = result[1]
             session.filled_source[changed_attr.variable_name] = "user"
     if not result:
-        # Could not parse new value — ask for clarification. Re-passes the
-        # SAME constrained_item_values the original ask used (docs/
-        # CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §10, QA issue
-        # #3) — without this, a retry after a failed match fell back to
-        # attr.options unfiltered (the full cross-family catalog, e.g. 328
-        # legacy models) instead of the scoped list shown on the first ask.
+        # Could not parse new value — ask for clarification, using the SAME
+        # constrained scope just used to validate the answer (the fix for
+        # #3/#10 — these two calls must never diverge; also excludes the
+        # rejected option, same as the apply attempt above).
         opts_prompt = _cpq_engine.next_question_prompt(
-            changed_attr, constrained_item_values=constrained_item_values,
+            changed_attr, constrained_item_values=apply_constrained,
         )
         answer = (
             f"I couldn't match that to a valid option for "
@@ -2809,6 +2845,23 @@ _LLM_INTENT_ATTRS_CAP_HARD = 500  # safety bound on relevance-scoring work, not 
 _LLM_INTENT_RELEVANT_CAP = 10
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
+# Decline detector for a pending change-target prompt (docs/CPQ_SESSION_
+# 2026_07_29_ISSUES_PLAN.md #2): "change product" -> "which value?" ->
+# "I don't want to change product" was previously fed straight into
+# apply_answer as an attempted (and failed) VALUE for Product, producing
+# "I couldn't match that to a valid option" instead of recognizing the
+# reply as a cancel. Deliberately narrow (only cancel-shaped phrasing) —
+# never treat an ordinary short reply as a decline by accident.
+_DECLINE_CHANGE_RE = re.compile(
+    r"\b(?:"
+    r"don'?t want to change|do not want to change|"
+    r"don'?t want to|no change|never\s?mind|"
+    r"keep (?:it|the current|the same)|leave (?:it|the current)|"
+    r"cancel (?:that|this)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _relevant_intent_candidates(
     question: str, candidates: list, fallback_to_full: bool = True,
@@ -2986,7 +3039,11 @@ def _llm_classify_is_cpq_question(
     question: str, workspace_id: int, prior_context: str = "",
 ) -> bool:
     """Amendment 16 Layer 1 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
-    Tier-2 intent gate. Two call sites with structurally different needs:
+    Tier-2 intent gate, tried only when `CpqEngine.is_cpq_question`'s
+    Tier-1 regex-trigger/ingested-alias check already returned False.
+    Never replaces that check, only covers what it structurally can't (a
+    genuine request phrased without any trigger word or a recognizable
+    product name/alias). Two call sites with structurally different needs:
 
     1. `run_ask`'s fresh-turn router — deciding whether to enter CPQ mode
        at all, before any CPQ session/context exists. No `prior_context`
@@ -3022,7 +3079,13 @@ def _llm_classify_is_cpq_question(
         "Bias toward \"quote\" whenever the message plausibly could be "
         "about ordering or configuring something, even if phrased "
         "unusually or missing an obvious trigger word; only classify as "
-        "\"not_quote\" when you are confident it is NOT that at all."
+        "\"not_quote\" when you are confident it is NOT that at all. "
+        "If RECENT CONTEXT is given, judge the message as a likely "
+        "follow-up to it — e.g. a question asking to explain, clarify, "
+        "or elaborate on something the assistant just said (including an "
+        "error or gate message from THIS product-configuration system) "
+        "counts as \"quote\", even if the bare message alone would look "
+        "like an unrelated general question."
     )
     context_block = (
         f"\nRECENT CONVERSATION (for context only — classify the MESSAGE "
@@ -4086,6 +4149,19 @@ _CLARIFY_STOPWORDS = frozenset({
     # required...", "Is Quantity of X > 0", etc.) — none of them related
     # to carrier/product at all.
     "is", "are", "was", "were", "be", "being", "been",
+    # docs/config_consistency_issues_2026-07-30.md — "change the product to
+    # APX NEXT XE All Band" produced a bogus 8-attribute disambiguation
+    # (Accessories Help Text, ConfigProcessStep, MSI Releases, modelname,
+    # a HIDDEN internal rule attr, ...) — every one of them matched purely
+    # because "All" (from the product's own name, "...XE All Band")
+    # survived tokenization and word-overlapped the extremely common BM
+    # catalog variable-name suffix "_all" (msiReleases_All, modelname_all,
+    # accessoriesHelpText_all, ...), and each was already filled with
+    # internal/HTML boilerplate, satisfying the is_filled branch. As
+    # generic and collision-prone as "one"/"option" above once a catalog
+    # uses "_all" as a naming convention — never itself a meaningful
+    # signal for which attribute a customer means.
+    "all",
 })
 _WORD_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 
@@ -4134,10 +4210,27 @@ def _ground_clarify_candidates(
     for a in attrs:
         if a.variable_name in _hidden:
             continue
+        # Same noise/HTML/hide_in_trans/set_type checks build_payload() and
+        # _is_summary_excluded() already apply (docs/config_consistency_
+        # issues_2026-07-30.md items 1/2) — an internal help-text/HTML/
+        # transaction-excluded field must never be OFFERED as something a
+        # customer could mean to change, regardless of how well its
+        # variable_name happens to word-overlap the utterance (confirmed
+        # live: accessoriesHelpText_all, configProcessStepHTML_all, and a
+        # hidden internal rule attr all surfaced in a real disambiguation
+        # prompt this way).
+        if _cpq_engine._is_noise_var(a.variable_name):
+            continue
+        if a.hide_in_trans:
+            continue
+        if a.set_type == "2" and not a.auto_lock:
+            continue
         is_filled = (
             a.variable_name in session.filled
             or a.variable_name in session.filled_multi
         )
+        if a.hidden and not is_filled:
+            continue
         label_l = (a.display_label or "").lower()
         vn_words = set(_WORD_TOKEN_RE.findall(
             a.variable_name.lower().replace("_", " "),
@@ -7524,6 +7617,18 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
 
     visible_attrs, filled, display_filled, pending, constrained_opts, rule_ids = (
         _recompute_pending(hints))
+
+    # Issue 5 (docs/config_consistency_issues_2026-07-30.md): a generic,
+    # catalog-agnostic gap — two attrs sharing the same real-world concept
+    # (near-identical label, one single-select one multi-select) can both
+    # end up filled in the same turn when no catalog hiding rule actually
+    # excludes either for the current product. Strip the weakly-sourced
+    # (unconditional default) single-select sibling and ask for the
+    # multi-select one instead, rather than shipping the wrong half.
+    pending = _cpq_engine.enforce_exclusive_sibling_families(
+        visible_attrs, filled, session.filled_multi, session.filled_source,
+        display_filled, pending,
+    )
 
     # Amendment 17 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): Tier-1's
     # fragment matching can correctly, deliberately leave 2+ attrs

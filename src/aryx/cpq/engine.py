@@ -384,10 +384,18 @@ _COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
 # negative few-shot re-asked country when user already said United States.
 # Capture group allows Title Case OR single-token ALLCAPS (US) after the
 # trigger; multi-word countries use Title Case words.
+# 2026-07-31 follow-up (docs/config_consistency_issues_2026-07-30.md item
+# 5): "...with destination country as United States" fell through every
+# existing trigger — "as" sits between "destination country" and the real
+# country name, and none of the prior alternatives account for that
+# preposition, so the country was silently dropped and re-asked despite
+# being stated. Added "destination country as"/"country as" alongside the
+# existing "is" variants.
 _COUNTRY_PREP = re.compile(
     r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|"
-    r"destination\s+country\s+is|destination\s+country|"
-    r"whose\s+destination\s+country\s+is|country\s+is)\s+)"
+    r"destination\s+country\s+is|destination\s+country\s+as|"
+    r"destination\s+country|"
+    r"whose\s+destination\s+country\s+is|country\s+is|country\s+as)\s+)"
     r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
 )
 
@@ -2670,6 +2678,65 @@ class CpqEngine:
                 skips.add(attr.variable_name)
         return skips
 
+    def resolve_primary_layout_section_vns(
+        self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
+    ) -> set[str] | None:
+        """Variable names genuinely shown on the native UI's own configuration
+        screen(s) — the country-anchor's own layout "section" (see
+        resolve_ui_layout_scope), scoped to a single, deterministically-
+        chosen flow when 2+ active flows exist.
+
+        docs/config_consistency_issues_2026-07-30.md items 1/2: a real
+        staging screenshot showed the native UI's Model Configuration panel
+        surfacing ~10 fields for one screen, while Aryx's payload/summary
+        carried 80-90 attributes total. This catalog's own ingested layout
+        data doesn't resolve to per-SCREEN granularity (the finest grouping
+        available is a ~35-attr "section" spanning several screens) — this
+        is the ceiling of what's derivable without guessing a finer split
+        the data doesn't contain.
+
+        Flow disambiguation (APX Next ships 2 simultaneously-active
+        rule_type=6 flows — resolve_ui_layout_scope's own docstring already
+        flags this as unresolved): prefers the flow whose name does NOT end
+        in "_sysConfig" (confirmed live: the two flows here are named
+        "Configuration Flow For Astro Devices (Portable)" and
+        "...Astro Devices (Portable)_sysConfig" — the suffixed one reads as
+        a secondary/system-config variant, not the primary customer-facing
+        flow). Falls back to the lowest flow_id for a stable, deterministic
+        choice when no name is unsuffixed either way — never a random pick.
+
+        Returns None (no narrowing — caller keeps existing full behavior)
+        when: no layout data at all (tier 3), or the chosen flow has no
+        resolvable country-anchor section. Never guesses a subset when the
+        catalog's own data doesn't support one.
+        """
+        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
+        if not scope or not scope["flows"]:
+            return None
+        flow_ids = list(scope["flows"].keys())
+        if len(flow_ids) == 1:
+            chosen_id = flow_ids[0]
+        else:
+            rdb = get_cpq_rdb()
+            names = {
+                src_id: (name or "")
+                for _eid, src_id, name, _fn
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
+                if src_id is not None
+            }
+            unsuffixed = [
+                fid for fid in flow_ids
+                if not names.get(fid, "").strip().lower().endswith("_sysconfig")
+            ]
+            chosen_id = min(unsuffixed) if unsuffixed else min(flow_ids)
+        section = scope["flows"][chosen_id].get("section")
+        if not section:
+            return None
+        by_entity_id = {a.entity_id: a.variable_name for a in attrs}
+        return {
+            by_entity_id[aid] for aid in section if aid in by_entity_id
+        }
+
     @staticmethod
     def model_context_mirror_vns(attrs: list["ConfigAttr"]) -> set[str]:
         """Variable names of model-context MIRROR attrs — pointer-default
@@ -2879,7 +2946,21 @@ class CpqEngine:
             rdb, inputs, actions, marked, chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
             scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11", catalog_prefix):
+            # active_only=True (docs/config_consistency_issues_2026-07-30.md,
+            # Issue 5 follow-up): live-confirmed real harm from the
+            # previously-deliberate byte-for-byte-unaffected choice noted in
+            # fetch_rules' own docstring — a DISABLED (status=3) hiding rule,
+            # "Hide Frequency Band & Extend Range if Product is selected as
+            # APX Enhanced" (script condition reads modelSelectionFrequency
+            # BandMsl_astro's OWN just-set value and hides it right back),
+            # was still being loaded and evaluated, wiping a customer's
+            # Frequency Band answer on the very same turn it was recorded.
+            # rule_type="6" flow rules already opted into this exact filter
+            # for the identical reason (dead/superseded rules alongside live
+            # ones); hiding rules never had — this closes that gap.
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(
+                workspace_id, "11", catalog_prefix, active_only=True,
+            ):
                 key = self._rule_key(eid, src_id, inputs, actions)
                 targets = self._resolve_targets(key, actions, marked, chain)
                 if not targets:
@@ -3817,6 +3898,15 @@ class CpqEngine:
         multi = filled_multi if filled_multi is not None else {}
         dropped = dropped_multi if dropped_multi is not None else {}
 
+        # docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md —
+        # ranked ONCE here against the full, pre-loop `attrs` (never the
+        # loop-local `attrs` below, which apply_hiding_rules reassigns to a
+        # shrinking subset every pass) so same-target hiding/recommendation
+        # conflicts resolve via provable specificity instead of whatever
+        # order fetch_rules()/fetch_value_rules() happened to return.
+        hiding_rules, rec_rules, con_rules = self.rank_rules_by_specificity(
+            attrs, hiding_rules, rec_rules, con_rules)
+
         for _ in range(_MAX_LOOPS):
             prev_filled_keys = set(filled.keys())
             prev_visible_ids = {a.entity_id for a in attrs}
@@ -4093,6 +4183,142 @@ class CpqEngine:
             if a.display_label.strip().lower() == "product"
             and a.entity_id not in governed
         }
+
+    @staticmethod
+    def _normalized_label_stem(label: str) -> str:
+        """Lowercase, whitespace-collapsed, singular-ized display label —
+        used only to detect whether two attrs are labeled as the "same"
+        real-world concept (e.g. "Frequency Bands" and "Frequency Band"),
+        never to identify a specific attribute by name."""
+        s = re.sub(r"\s+", " ", label.strip().lower())
+        if s.endswith("s") and not s.endswith("ss"):
+            s = s[:-1]
+        return s
+
+    # Explicit, disclosed exception to the generic label-stem detector
+    # below — see exclusive_sibling_family_exclusions' docstring for why
+    # this pair specifically cannot be found by label similarity, and the
+    # live evidence establishing it belongs here anyway. Catalog-specific
+    # by necessity (this concept has no other derivable signal in the
+    # ingested data), NOT a general mechanism — kept to this one pair,
+    # added only after direct confirmation, not silently.
+    _KNOWN_SIBLING_PAIRS: tuple[tuple[str, str], ...] = (
+        ("wirelessCarrier_astro", "carrierSelectionMultiSelect_astro"),
+    )
+
+    def exclusive_sibling_family_exclusions(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str],
+    ) -> tuple[set[str], list[ConfigAttr]]:
+        """Generic (no catalog/attribute names hardcoded) detector for a gap
+        this engine can hit on ANY catalog: two attrs sharing the same
+        real-world concept (near-identical display label, e.g. "Frequency
+        Bands" vs "Frequency Band"), one select_type=="multi" and the other
+        not, that BOTH ended up filled in the same turn — meaning no
+        catalog hiding rule actually excluded either one for the current
+        product (confirmed live on the APX Next catalog, docs/
+        config_consistency_issues_2026-07-30.md Issue 5: the active hiding
+        rule for this catalog's single-select sibling omits some product
+        values entirely, so it stays visible and gets an unconditional
+        default_value even when the multi-select sibling is the real
+        governing attribute for that product).
+
+        Only acts when the single-select sibling's value came from a
+        NON-customer-confirmed provenance — an unconditional XML
+        default_value, an engine-derived recommendation, or the
+        conservative auto/first-option fallback (filled_source in
+        {"default", "rule", "auto"}) — never "user"/"hint"/"cascade", so a
+        genuine customer-confirmed or customer-triggered value is never
+        second-guessed. Widened beyond a bare "default" check (confirmed
+        live: this catalog's single-select sibling is actually populated by
+        a shared-input RECOMMENDATION rule — tagged source "rule" — not a
+        bare XML default_value, so a "default"-only check never caught it).
+
+        Returns (vns_to_strip_from_filled, attrs_to_add_to_pending) — the
+        multi-select sibling is asked instead of silently guessing which
+        half applies. Empty on any catalog without this exact shape.
+        """
+        _WEAK_SOURCES = {"default", "rule", "auto"}
+        by_vn = {a.variable_name: a for a in attrs}
+        by_stem: dict[str, list[ConfigAttr]] = {}
+        for a in attrs:
+            by_stem.setdefault(self._normalized_label_stem(a.display_label), []).append(a)
+        groups: list[list[ConfigAttr]] = list(by_stem.values())
+
+        # Explicit, disclosed exception — NOT a generic mechanism. The
+        # label-stem detector above provably cannot pair these two: live-
+        # confirmed the display labels are "Wireless Carrier" vs "Carrier
+        # Selection" (zero shared tokens), yet they exhibit the EXACT same
+        # wrong-sibling bug as the generic-detected Frequency Band pair —
+        # confirmed live: wirelessCarrier_astro ends up with a value
+        # (e.g. "ATT/FIRSTNET", itself a real, valid option on BOTH
+        # attributes' overlapping menus, so bom_gate's provenance check
+        # never flags it) while carrierSelectionMultiSelect_astro — the
+        # real governing multi-select for this concept — stays empty.
+        # Named explicitly here (per direct approval) rather than silently
+        # extending the generic label heuristic to something it can't
+        # actually detect.
+        for vn_a, vn_b in self._KNOWN_SIBLING_PAIRS:
+            attr_a, attr_b = by_vn.get(vn_a), by_vn.get(vn_b)
+            if attr_a is not None and attr_b is not None:
+                groups.append([attr_a, attr_b])
+
+        to_strip: set[str] = set()
+        to_ask: list[ConfigAttr] = []
+        for group in groups:
+            if len(group) != 2:
+                continue
+            multi = [a for a in group if a.select_type == "multi"]
+            single = [a for a in group if a.select_type != "multi"]
+            if len(multi) != 1 or len(single) != 1:
+                continue
+            multi_attr, single_attr = multi[0], single[0]
+            single_has_value = single_attr.variable_name in filled
+            multi_has_value = bool(filled_multi.get(multi_attr.variable_name))
+            if (
+                single_has_value and not multi_has_value
+                and filled_source.get(single_attr.variable_name) in _WEAK_SOURCES
+            ):
+                to_strip.add(single_attr.variable_name)
+                to_ask.append(multi_attr)
+        return to_strip, to_ask
+
+    def enforce_exclusive_sibling_families(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str],
+        display_filled: dict[str, str],
+        pending: list[ConfigAttr],
+    ) -> list[ConfigAttr]:
+        """Apply `exclusive_sibling_family_exclusions`: strip the weakly-
+        sourced single-select sibling from `filled` (mutated in place) and
+        add its multi-select sibling to `pending` if nothing has already
+        filled or asked it. Returns the updated pending list."""
+        to_strip, to_ask = self.exclusive_sibling_family_exclusions(
+            attrs, filled, filled_multi, filled_source,
+        )
+        if not to_strip:
+            return pending
+        for vn in to_strip:
+            filled.pop(vn, None)
+            display_filled.pop(vn, None)
+            filled_source.pop(vn, None)
+        pending = [a for a in pending if a.variable_name not in to_strip]
+        pending_vns = {a.variable_name for a in pending}
+        for attr in to_ask:
+            if (
+                not filled.get(attr.variable_name)
+                and not filled_multi.get(attr.variable_name)
+                and attr.variable_name not in pending_vns
+            ):
+                pending.append(attr)
+                pending_vns.add(attr.variable_name)
+        return pending
 
     @staticmethod
     def governed_target_ids(
@@ -4595,6 +4821,29 @@ class CpqEngine:
                      if o.item_value == attr.default_value),
                     attr.default_value,
                 )
+                # Issue 5 root cause 3 (docs/config_consistency_issues_
+                # 2026-07-30.md): some menu attrs carry a legacy boolean-era
+                # option pair (item_value "YES"/"NO") alongside a
+                # differently-spelled current/canonical option that shares
+                # the SAME display_name (confirmed live: baselineReleaseSW_
+                # astro has both "YES"->"Baseline Release" and "BASELINE
+                # RELEASE"->"Baseline Release"). If the catalog's
+                # default_value happens to be the bare legacy "YES"/"NO"
+                # spelling, prefer a same-display-name sibling option whose
+                # item_value ISN'T a bare boolean literal — it's the same
+                # real-world choice, just the non-deprecated spelling.
+                # Generic (no attribute names hardcoded): only fires when
+                # such a sibling genuinely exists, never invents a value.
+                if value.strip().upper() in ("YES", "NO"):
+                    _canonical_sibling = next(
+                        (o for o in attr.options
+                         if o.display_name == display
+                         and o.item_value.strip().upper() not in ("YES", "NO")),
+                        None,
+                    )
+                    if _canonical_sibling is not None:
+                        value = _canonical_sibling.item_value
+                        display = _canonical_sibling.display_name
             elif (not value and attr.select_type == "boolean"
                     and attr.default_value.strip().lower() in ("true", "false")):
                 # _valid() treats the literal string "false" as a none-sentinel
@@ -7065,6 +7314,214 @@ class CpqEngine:
         return {"configData": {k: out[k] for k in ordered_keys}}
 
     @staticmethod
+    def _rule_condition_edges(
+        attrs: list["ConfigAttr"],
+        rules: list[Any],
+    ) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[int, str]]:
+        """Shared, UNFILTERED rule-condition -> target edge extraction.
+
+        Returns (predecessors, successors, id_to_vn):
+          predecessors[target_vn] = set of condition_vn that gate it
+          successors[condition_vn] = set of target_vn it gates
+          id_to_vn = BM-native id -> variable_name (ConfigAttr.source_id
+            preferred, falls back to entity_id — same dual-id convention
+            _attr_index already uses)
+
+        Edges come from every rule with a real DECLARATIVE condition
+        (`conditions`, or a nonzero `condition_attr_id`) — one edge per
+        distinct attr_id referenced. Unlike a payload-key-ordering
+        consumer (_dependency_ordered_keys), this does NOT restrict edges
+        to any subset of attrs/keys: a rule's condition attribute may be
+        currently hidden or unfilled (and so absent from a given turn's
+        output) while still being a real, structural gate that rule-
+        specificity ranking (_attribute_depth_ranks) needs to see.
+        """
+        attr_by_vn = {a.variable_name: a for a in attrs}
+        id_to_vn: dict[int, str] = {}
+        for vn, a in attr_by_vn.items():
+            id_to_vn.setdefault(a.entity_id, vn)
+        for vn, a in attr_by_vn.items():
+            if a.source_id is not None:
+                id_to_vn[a.source_id] = vn
+
+        predecessors: dict[str, set[str]] = {}
+
+        def _add_edge(cond_id: int, target_id: int) -> None:
+            cond_vn = id_to_vn.get(cond_id)
+            target_vn = id_to_vn.get(target_id)
+            if cond_vn and target_vn and cond_vn != target_vn:
+                predecessors.setdefault(target_vn, set()).add(cond_vn)
+
+        for r in rules:
+            target_id = getattr(r, "target_attr_id", None)
+            if not target_id:
+                continue
+            conditions = getattr(r, "conditions", None)
+            if conditions:
+                for cond_id, _val in conditions:
+                    _add_edge(cond_id, target_id)
+            else:
+                cond_id = getattr(r, "condition_attr_id", 0)
+                if cond_id:
+                    _add_edge(cond_id, target_id)
+
+        successors: dict[str, set[str]] = {}
+        for target_vn, conds in predecessors.items():
+            for c in conds:
+                successors.setdefault(c, set()).add(target_vn)
+
+        return predecessors, successors, id_to_vn
+
+    @staticmethod
+    def _attribute_depth_ranks(
+        attrs: list["ConfigAttr"],
+        rules: list[Any],
+    ) -> dict[str, int]:
+        """Longest-path-from-root depth per variable_name in the rule
+        condition-gating graph (see _rule_condition_edges) — a generic,
+        catalog-agnostic stand-in for "how broad vs. specific is this
+        attribute" (docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_
+        2026_08_04.md): depth 0 = nothing gates this attribute (coarsest
+        anchor); each attribute's depth = 1 + the max depth of whatever
+        gates it (e.g. the confirmed Hardware Version -> Product
+        Selection constraint means Product Selection's depth is Hardware
+        Version's depth + 1).
+
+        Cycle-safe: a genuine cycle (or anything transitively downstream
+        of one) never reaches zero remaining in-degree during the
+        Kahn's-algorithm peel below. Those nodes get max(all resolved
+        depths) + 1 rather than depth 0 — an unverifiable/cyclic
+        dependency must never be treated as "most trusted," which depth
+        0 would imply.
+        """
+        predecessors, successors, _id_to_vn = CpqEngine._rule_condition_edges(attrs, rules)
+        all_vns = {a.variable_name for a in attrs}
+
+        remaining = {vn: len(predecessors.get(vn, ())) for vn in all_vns}
+        depth: dict[str, int] = {}
+        ready = [vn for vn, n in remaining.items() if n == 0]
+        for vn in ready:
+            depth[vn] = 0
+        visited: set[str] = set(ready)
+
+        while ready:
+            vn = ready.pop(0)
+            for succ in successors.get(vn, ()):
+                if succ not in all_vns:
+                    continue
+                depth[succ] = max(depth.get(succ, 0), depth[vn] + 1)
+                remaining[succ] -= 1
+                if remaining[succ] == 0 and succ not in visited:
+                    visited.add(succ)
+                    ready.append(succ)
+
+        resolved_depths = list(depth.values())
+        fallback_depth = (max(resolved_depths) + 1) if resolved_depths else 0
+        for vn in all_vns:
+            if vn not in depth:
+                depth[vn] = fallback_depth
+        return depth
+
+    def rank_rules_by_specificity(
+        self,
+        attrs: list["ConfigAttr"],
+        hiding_rules: list["HidingRule"],
+        rec_rules: list["RecommendationRule"],
+        con_rules: list["ConstraintRule"],
+    ) -> tuple[list["HidingRule"], list["RecommendationRule"], list["ConstraintRule"]]:
+        """Stable-sort hiding/recommendation rules coarsest-condition-first,
+        most-specific-condition-last, so the existing "last rule wins"
+        semantics in apply_hiding_rules/apply_recommendation_rules resolve
+        same-target conflicts via provable specificity instead of
+        whatever order fetch_rules()/fetch_value_rules() happened to
+        return (neither has an ORDER BY — confirmed in rdb.py). See
+        docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md.
+
+        con_rules is returned UNCHANGED — apply_constraint_rules' allowed-
+        value intersection (_intersect) is commutative, so reordering it
+        can never change its result; doing so would only reorder log
+        lines/BML prefetch scheduling for zero correctness benefit.
+
+        Three specificity TIERS, least to most specific (a rule's own
+        `condition_script` — a separate gating script — is structural
+        metadata we can see without parsing script CONTENT; the graph
+        depth from _attribute_depth_ranks only ever comes from real
+        declarative conditions, since that's the only thing it can
+        extract edges from):
+
+          0. No gating condition at all — no `conditions`, no
+             `condition_attr_id`, no `condition_script` (whether or not
+             it has a value-only `script`, e.g. a hiding/recommendation
+             rule that just always returns one fixed outcome/value with
+             no separate condition). Least specific — sorts first.
+          1. Gated by a `condition_script` but no declarative condition
+             info at all — a real, live example: workspace 39004's
+             "Default to Latest Release if not NA/fed customer" is
+             condition_script-gated with condition_attr_id=0/no
+             conditions, competing against "Set default to Baseline
+             Release" (tier 0, a bare value script, no condition_script)
+             on the same target. We can't measure exactly how deep the
+             condition_script's own logic sits, but its mere presence
+             proves the rule is MORE narrowly scoped than an
+             unconditional tier-0 rule, so it ranks after tier 0 and
+             wins ties against it — without ever parsing what the
+             script actually checks.
+          2. A real declarative condition (`conditions`/
+             `condition_attr_id`) — ranked by the MAX depth
+             (_attribute_depth_ranks) among the attribute(s) it
+             references. Most specific, provably ordered within this
+             tier; always sorts after tiers 0 and 1.
+
+        Within tiers 0/1 (where exact specificity isn't measurable),
+        ties are broken by the rule's own target's ConfigAttr.order —
+        never by "last unknown wins," matching apply_hiding_rules'/
+        apply_recommendation_rules' own "unknown -> don't act/don't
+        guess" convention for script outcomes elsewhere in this file.
+
+        attrs MUST be the full, pre-loop catalog as passed into
+        evaluate_rules_loop — never a loop-local `attrs` already shrunk
+        by apply_hiding_rules, which would wrongly zero out predecessors
+        for hidden attributes.
+        """
+        id_to_vn: dict[int, str] = {}
+        for a in attrs:
+            id_to_vn.setdefault(a.entity_id, a.variable_name)
+        for a in attrs:
+            if a.source_id is not None:
+                id_to_vn[a.source_id] = a.variable_name
+        order_by_vn = {a.variable_name: a.order for a in attrs}
+
+        depth_by_vn = self._attribute_depth_ranks(attrs, [*hiding_rules, *rec_rules])
+
+        def _rule_rank(rule: Any) -> tuple[int, int, int]:
+            cond_ids: list[int] = []
+            conditions = getattr(rule, "conditions", None)
+            if conditions:
+                cond_ids = [cid for cid, _v in conditions]
+            else:
+                cid = getattr(rule, "condition_attr_id", 0)
+                if cid:
+                    cond_ids = [cid]
+            depths = [
+                depth_by_vn[id_to_vn[cid]]
+                for cid in cond_ids
+                if cid in id_to_vn and id_to_vn[cid] in depth_by_vn
+            ]
+            if depths:
+                return (2, max(depths), 0)
+
+            target_id = getattr(rule, "target_attr_id", None)
+            target_vn = id_to_vn.get(target_id) if target_id else None
+            fallback_order = order_by_vn.get(target_vn, 10**9) if target_vn else 10**9
+            if getattr(rule, "condition_script", None):
+                return (1, 0, fallback_order)
+            return (0, 0, fallback_order)
+
+        sorted_hiding = sorted(hiding_rules, key=_rule_rank)
+        sorted_rec = sorted(rec_rules, key=_rule_rank)
+        return sorted_hiding, sorted_rec, con_rules
+
+    @staticmethod
     def _dependency_ordered_keys(
         keys: list[str],
         attr_by_vn: dict[str, "ConfigAttr"],
@@ -7083,37 +7540,22 @@ class CpqEngine:
 
         Rule ids reference attributes by their BM-native id — matches
         ConfigAttr.source_id first (falls back to entity_id), the same
-        dual-id convention _attr_index already uses.
+        dual-id convention _attr_index already uses. Edge extraction
+        itself is shared with _attribute_depth_ranks via
+        _rule_condition_edges; this method applies its own `keys`
+        restriction on top since only-what's-being-emitted is a payload-
+        key-ordering-specific constraint.
         """
-        id_to_vn: dict[int, str] = {}
-        for vn, a in attr_by_vn.items():
-            id_to_vn.setdefault(a.entity_id, vn)
-        for vn, a in attr_by_vn.items():
-            if a.source_id is not None:
-                id_to_vn[a.source_id] = vn
+        attrs = list(attr_by_vn.values())
+        predecessors_all, _successors_all, _id_to_vn = CpqEngine._rule_condition_edges(
+            attrs, rules)
 
         key_set = set(keys)
-        predecessors: dict[str, set[str]] = {}
-
-        def _add_edge(cond_id: int, target_id: int) -> None:
-            cond_vn = id_to_vn.get(cond_id)
-            target_vn = id_to_vn.get(target_id)
-            if (cond_vn and target_vn and cond_vn != target_vn
-                    and cond_vn in key_set and target_vn in key_set):
-                predecessors.setdefault(target_vn, set()).add(cond_vn)
-
-        for r in rules:
-            target_id = getattr(r, "target_attr_id", None)
-            if not target_id:
-                continue
-            conditions = getattr(r, "conditions", None)
-            if conditions:
-                for cond_id, _val in conditions:
-                    _add_edge(cond_id, target_id)
-            else:
-                cond_id = getattr(r, "condition_attr_id", 0)
-                if cond_id:
-                    _add_edge(cond_id, target_id)
+        predecessors: dict[str, set[str]] = {
+            target_vn: {c for c in conds if c in key_set}
+            for target_vn, conds in predecessors_all.items()
+            if target_vn in key_set
+        }
 
         successors: dict[str, set[str]] = {}
         for target_vn, conds in predecessors.items():
@@ -7221,6 +7663,20 @@ class CpqEngine:
         if self._YEAR_VALUE_RE.search(value):
             return True
         if attr is not None and attr.select_type == "boolean":
+            return True
+        # Issue 5 items 1/2 (docs/config_consistency_issues_2026-07-30.md):
+        # build_payload() already excludes hide_in_trans==1 attrs (the
+        # source system's own "don't submit this at transaction time"
+        # marker) and set_type=="2" (transient UI/action-layer, non-auto-
+        # lock) attrs from the submitted BOM — but the conversational
+        # summary never applied the same two checks, so a sales rep could
+        # see a line in "Associated Options" for a field that will never
+        # actually appear in what gets submitted. Same checks, same attr
+        # object already available here — mirrors build_payload exactly,
+        # no separate exclusion set needed for these two.
+        if attr is not None and attr.hide_in_trans:
+            return True
+        if attr is not None and attr.set_type == "2" and not attr.auto_lock:
             return True
         if attr is not None and attr.hidden and source != "user":
             # hidden=1 in the raw XML means BigMachines' own UI renders this

@@ -67,11 +67,42 @@ from app.schemas.datasource import (
     DatasourceBulkCreateInternal,
     DatasourceCreateInternal
 )
+from app.routes.aryx import (
+    _resolve_aryx_workspace_id as _resolve_aryx_workspace_id_for_datasources,
+    call_aryx_docs_read,
+    call_aryx_job_status,
+)
+from app.routes.workspaces import _get_workspace_or_404
+from app.utils.permissions import require_active_workspace_role
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _aryx_ingestion_status_for(datasource_metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Best-effort live Aryx job status for a datasource, additive only.
+
+    Returns None (never raises) unless datasource_metadata carries an
+    aryx.discovery_id — i.e. this datasource was created via a kind="aryx"
+    bulk upload. A datasource without that key is completely unaffected;
+    a transient Aryx-unreachable error degrades to None rather than failing
+    the caller's whole response.
+    """
+    if not datasource_metadata:
+        return None
+    aryx_meta = datasource_metadata.get("aryx")
+    if not isinstance(aryx_meta, dict):
+        return None
+    discovery_id = aryx_meta.get("discovery_id")
+    if not discovery_id:
+        return None
+    try:
+        return await call_aryx_job_status(discovery_id)
+    except Exception as exc:  # noqa: BLE001 — status enrichment must never break the caller
+        logger.warning("aryx_ingestion_status lookup failed for discovery_id=%s: %s", discovery_id, exc)
+        return {"error": "status temporarily unavailable"}
 
 
 @router.get("/supported-log-types", response_model=List[str])
@@ -1523,29 +1554,63 @@ async def upload_file(
 async def upload_files_bulk(
     files: List[UploadFile] = File(...),
     isValidationRequired: bool = Form(True),
+    kind: Optional[str] = Form(None),
+    workspace_id: Optional[str] = Form(None),
     request: Request = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """Upload multiple files to the system"""
+    """Upload multiple files to the system.
+
+    Additive Aryx integration: pass kind="aryx" together with workspace_id
+    (a Shay workspace UUID already bridged to Aryx) to ALSO start Aryx
+    knowledge-graph ingestion for each successfully-uploaded file, using the
+    same bytes already read for the storage upload — no re-read, no
+    duplicate network transfer of the file. This runs ALONGSIDE the existing
+    storage upload below, never instead of it: the storage-upload result is
+    always computed and appended first, exactly as before; the Aryx result
+    (or a per-file error) is then attached as an additional aryx_ingestion
+    key on that same entry.
+
+    Omitting kind (or any value other than "aryx") is byte-for-byte
+    identical to the endpoint's behavior before this change — no existing
+    caller is affected.
+    """
     user = await get_current_user_required(request)
-    
+
     # Get company information
     company_stmt = select(Company).where(Company.id == user.company_id)
     company_result = await db.execute(company_stmt)
     company = company_result.scalar_one_or_none()
-    
+
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Company not found"
         )
-    
+
+    # --- Additive Aryx setup — resolved once for the whole batch, only when
+    # kind="aryx" was actually requested. Any failure here becomes a per-file
+    # aryx_ingestion.error below rather than a hard failure of the upload
+    # (which must still succeed for callers not opting into this feature).
+    aryx_workspace_id: Optional[int] = None
+    aryx_setup_error: Optional[str] = None
+    if kind == "aryx":
+        if not workspace_id:
+            aryx_setup_error = "workspace_id is required when kind='aryx'"
+        else:
+            try:
+                target_workspace = await _get_workspace_or_404(db, workspace_id)
+                await require_active_workspace_role(db, user.id, uuid.UUID(str(target_workspace.id)))
+                aryx_workspace_id = await _resolve_aryx_workspace_id_for_datasources(workspace_id)
+            except HTTPException as exc:
+                aryx_setup_error = str(exc.detail)
+
     # Get file storage service
     storage_service = get_file_storage_service()
-    
+
     uploaded_files = []
     failed_files = []
-    
+
     for file in files:
         try:
             # Validate file
@@ -1555,10 +1620,10 @@ async def upload_files_bulk(
                     "error": "File name is required"
                 })
                 continue
-            
+
             # Read file content
             file_content = await file.read()
-            
+
             # Validate file content before uploading (if validation is required)
             if isValidationRequired and not validate_file_content(file_content, file.filename):
                 failed_files.append({
@@ -1566,12 +1631,12 @@ async def upload_files_bulk(
                     "error": "File validation failed - no valid section headers found"
                 })
                 continue
-            
+
             # Generate structured path
             file_extension = os.path.splitext(file.filename)[1]
             base_filename = os.path.splitext(file.filename)[0]
             current_date = datetime.now().strftime("%Y-%m-%d")
-            
+
             # Use structured path for datasource files
             structured_path = generate_structured_path(
                 company_name=company.name,
@@ -1582,29 +1647,50 @@ async def upload_files_bulk(
                 file_extension=file_extension,
                 current_date=current_date
             )
-            
+
             # Upload file with structured path
             upload_result = await storage_service.upload_file(
                 file_content=file_content,
                 destination_path=structured_path,
                 original_filename=file.filename
             )
-            
-            uploaded_files.append({
+
+            uploaded_entry = {
                 "filename": file.filename,
                 "storage_path": upload_result["storage_path"],
                 "file_url": upload_result["file_url"],
                 "file_size": len(file_content),
                 "file_type": file.content_type or "application/octet-stream",
                 "provider": upload_result["provider"]
-            })
-            
+            }
+
+            # --- Additive: start Aryx ingestion for this file using the
+            # bytes already read above. Never touches uploaded_entry's
+            # existing keys — only adds aryx_ingestion.
+            if kind == "aryx":
+                if aryx_setup_error:
+                    uploaded_entry["aryx_ingestion"] = {"error": aryx_setup_error}
+                else:
+                    try:
+                        aryx_result = await call_aryx_docs_read(
+                            aryx_workspace_id,
+                            [(file.filename, file_content, file.content_type)],
+                        )
+                        uploaded_entry["aryx_ingestion"] = {
+                            "discovery_id": aryx_result.get("discovery_id"),
+                            "status": "queued",
+                        }
+                    except HTTPException as exc:
+                        uploaded_entry["aryx_ingestion"] = {"error": str(exc.detail)}
+
+            uploaded_files.append(uploaded_entry)
+
         except Exception as e:
             failed_files.append({
                 "filename": file.filename,
                 "error": str(e)
             })
-    
+
     return FileUploadBulkResponse(
         uploaded_files=uploaded_files,
         failed_files=failed_files,
@@ -2442,18 +2528,21 @@ async def create_datasources_bulk(
                 "is_embedding_required": datasource.is_embedding_required,
                 "embedding_status": datasource.embedding_status,
                 "created_at": datasource.created_at,
-                "updated_at": datasource.updated_at
+                "updated_at": datasource.updated_at,
+                # Additive: None for every datasource without an aryx.discovery_id
+                # in its metadata — existing (non-Aryx) callers see no change.
+                "aryx_ingestion_status": await _aryx_ingestion_status_for(datasource.datasource_metadata),
             })
-            
+
         except Exception as e:
             failed_datasources.append({
                 "name": datasource_data.name,
                 "error": str(e)
             })
-    
+
     # Check if any datasources require embedding processing
     embedding_required_datasources = [
-        ds for ds in created_datasources 
+        ds for ds in created_datasources
         if ds.get("is_embedding_required", False)
     ]
     
@@ -4059,8 +4148,20 @@ async def get_datasource(
         last_processed_at=datasource.last_processed_at,
         processing_time=datasource.processing_time,
         record_count=datasource.record_count,
+        # Pre-existing bug, unrelated to the Aryx integration: these two
+        # fields are required (non-Optional) on DatasourceResponse but were
+        # never passed here, so this endpoint 500'd on every call before this
+        # fix — discovered only because it blocked testing aryx_ingestion_status
+        # below. Values match how every other endpoint in this file populates them.
+        is_embedding_required=datasource.is_embedding_required,
+        embedding_status=datasource.embedding_status,
         created_at=datasource.created_at,
-        updated_at=datasource.updated_at
+        updated_at=datasource.updated_at,
+        # Additive: None for every datasource without an aryx.discovery_id
+        # in its metadata — existing (non-Aryx) callers see no change. This
+        # is the real "poll by ID" endpoint, so it's the one that reflects
+        # LIVE status on every call, not just a snapshot at creation time.
+        aryx_ingestion_status=await _aryx_ingestion_status_for(datasource.datasource_metadata)
     )
 
 
