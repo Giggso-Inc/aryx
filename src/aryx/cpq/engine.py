@@ -2946,7 +2946,21 @@ class CpqEngine:
             rdb, inputs, actions, marked, chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
             scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11", catalog_prefix):
+            # active_only=True (docs/config_consistency_issues_2026-07-30.md,
+            # Issue 5 follow-up): live-confirmed real harm from the
+            # previously-deliberate byte-for-byte-unaffected choice noted in
+            # fetch_rules' own docstring — a DISABLED (status=3) hiding rule,
+            # "Hide Frequency Band & Extend Range if Product is selected as
+            # APX Enhanced" (script condition reads modelSelectionFrequency
+            # BandMsl_astro's OWN just-set value and hides it right back),
+            # was still being loaded and evaluated, wiping a customer's
+            # Frequency Band answer on the very same turn it was recorded.
+            # rule_type="6" flow rules already opted into this exact filter
+            # for the identical reason (dead/superseded rules alongside live
+            # ones); hiding rules never had — this closes that gap.
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(
+                workspace_id, "11", catalog_prefix, active_only=True,
+            ):
                 key = self._rule_key(eid, src_id, inputs, actions)
                 targets = self._resolve_targets(key, actions, marked, chain)
                 if not targets:
@@ -4172,6 +4186,17 @@ class CpqEngine:
             s = s[:-1]
         return s
 
+    # Explicit, disclosed exception to the generic label-stem detector
+    # below — see exclusive_sibling_family_exclusions' docstring for why
+    # this pair specifically cannot be found by label similarity, and the
+    # live evidence establishing it belongs here anyway. Catalog-specific
+    # by necessity (this concept has no other derivable signal in the
+    # ingested data), NOT a general mechanism — kept to this one pair,
+    # added only after direct confirmation, not silently.
+    _KNOWN_SIBLING_PAIRS: tuple[tuple[str, str], ...] = (
+        ("wirelessCarrier_astro", "carrierSelectionMultiSelect_astro"),
+    )
+
     def exclusive_sibling_family_exclusions(
         self,
         attrs: list[ConfigAttr],
@@ -4208,13 +4233,33 @@ class CpqEngine:
         half applies. Empty on any catalog without this exact shape.
         """
         _WEAK_SOURCES = {"default", "rule", "auto"}
+        by_vn = {a.variable_name: a for a in attrs}
         by_stem: dict[str, list[ConfigAttr]] = {}
         for a in attrs:
             by_stem.setdefault(self._normalized_label_stem(a.display_label), []).append(a)
+        groups: list[list[ConfigAttr]] = list(by_stem.values())
+
+        # Explicit, disclosed exception — NOT a generic mechanism. The
+        # label-stem detector above provably cannot pair these two: live-
+        # confirmed the display labels are "Wireless Carrier" vs "Carrier
+        # Selection" (zero shared tokens), yet they exhibit the EXACT same
+        # wrong-sibling bug as the generic-detected Frequency Band pair —
+        # confirmed live: wirelessCarrier_astro ends up with a value
+        # (e.g. "ATT/FIRSTNET", itself a real, valid option on BOTH
+        # attributes' overlapping menus, so bom_gate's provenance check
+        # never flags it) while carrierSelectionMultiSelect_astro — the
+        # real governing multi-select for this concept — stays empty.
+        # Named explicitly here (per direct approval) rather than silently
+        # extending the generic label heuristic to something it can't
+        # actually detect.
+        for vn_a, vn_b in self._KNOWN_SIBLING_PAIRS:
+            attr_a, attr_b = by_vn.get(vn_a), by_vn.get(vn_b)
+            if attr_a is not None and attr_b is not None:
+                groups.append([attr_a, attr_b])
 
         to_strip: set[str] = set()
         to_ask: list[ConfigAttr] = []
-        for group in by_stem.values():
+        for group in groups:
             if len(group) != 2:
                 continue
             multi = [a for a in group if a.select_type == "multi"]

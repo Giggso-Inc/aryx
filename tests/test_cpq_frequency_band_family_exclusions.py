@@ -98,17 +98,41 @@ def test_no_action_when_multi_sibling_already_has_a_value():
     assert to_ask == []
 
 
-def test_dissimilar_labels_are_never_paired():
-    """Wireless Carrier vs Carrier Selection — confirmed live these do NOT
-    share a label stem, so this generic detector correctly leaves them
-    alone rather than guessing they're the same concept."""
+def test_wireless_carrier_pair_is_an_explicit_named_exception():
+    """wirelessCarrier_astro/carrierSelectionMultiSelect_astro do NOT share
+    a label stem ("Wireless Carrier" vs "Carrier Selection") — the generic
+    detector alone could never pair them. Live-confirmed this exact pair
+    exhibits the identical wrong-sibling bug as the label-matched
+    Frequency Band pair (a real, valid-for-both-attrs value like
+    "ATT/FIRSTNET" lands in the single-select sibling while the multi-
+    select governing attribute stays empty), so it's handled via an
+    explicit, disclosed named exception (_KNOWN_SIBLING_PAIRS) rather than
+    silently widening the label heuristic to something it can't detect."""
     eng = CpqEngine()
     attrs = [
         _attr(1, "wirelessCarrier_astro", "Wireless Carrier", "single"),
         _attr(2, "carrierSelectionMultiSelect_astro", "Carrier Selection", "multi"),
     ]
-    filled = {"wirelessCarrier_astro": "LTE CAPABILITY NO SERVICE"}
-    filled_source = {"wirelessCarrier_astro": "default"}
+    filled = {"wirelessCarrier_astro": "ATT/FIRSTNET"}
+    filled_source = {"wirelessCarrier_astro": "rule"}
+
+    to_strip, to_ask = eng.exclusive_sibling_family_exclusions(
+        attrs, filled, {}, filled_source,
+    )
+    assert to_strip == {"wirelessCarrier_astro"}
+    assert [a.variable_name for a in to_ask] == ["carrierSelectionMultiSelect_astro"]
+
+
+def test_unrelated_dissimilar_labels_are_never_paired():
+    """A genuinely unrelated single/multi pair with dissimilar labels and
+    NOT in the explicit exception list must never be guessed as siblings."""
+    eng = CpqEngine()
+    attrs = [
+        _attr(1, "someUnrelatedSingle_astro", "Battery Type", "single"),
+        _attr(2, "someUnrelatedMulti_astro", "Accessory Options", "multi"),
+    ]
+    filled = {"someUnrelatedSingle_astro": "STANDARD"}
+    filled_source = {"someUnrelatedSingle_astro": "default"}
 
     to_strip, to_ask = eng.exclusive_sibling_family_exclusions(
         attrs, filled, {}, filled_source,

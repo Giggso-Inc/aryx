@@ -4,6 +4,11 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    # Default Docker shm (64MB) is too small once parallel workers kick in on
+    # multi-row aggregation queries (e.g. source_entity_type_counts) — they
+    # each grab a shared memory segment and 64MB fills up under concurrent
+    # requests, failing with psycopg.errors.DiskFull on /dev/shm.
+    shm_size: '256mb'
     environment:
       POSTGRES_USER: aryx
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
