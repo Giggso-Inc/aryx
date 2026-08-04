@@ -296,6 +296,9 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     return None
 
 
+_BARE_RETURN_RE = re.compile(r'\A\s*return\s+.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
+
+
 def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
     """Parse an if / else-if / else chain into [(condition, body)].
 
@@ -306,6 +309,31 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
     branches: list[tuple[list | None, str]] = []
     m = _IF_RE.search(script)
     if not m:
+        # No if/else at all — a common, genuinely trivial idiom: the WHOLE
+        # script is just one unconditional `return <value>;` (confirmed
+        # live: workspace 39004's "Set default to Baseline Release for
+        # Baseline Release SW" — `return "BASELINE RELEASE";`, no
+        # condition whatsoever). Before this, ANY script shaped this way
+        # reported "grammar unsupported" and needed Tier 2 — but
+        # settings.bml_use_llm is off by default (deliberately, to avoid
+        # a live request stalling on a slow/rate-limited LLM call), so in
+        # practice these scripts silently resolved to nothing at all,
+        # letting a rule-governed attribute's OWN unrelated "first
+        # eligible option by order" fallback (CpqEngine.auto_fill step 5)
+        # claim it instead — e.g. baselineReleaseSW_astro's real answer
+        # ("BASELINE RELEASE", the canonical spelling) was silently
+        # replaced by "YES" (a legacy same-display-label sibling option,
+        # just the first one by catalog order_number), even though the
+        # rule that was SUPPOSED to set it never got the chance to fire.
+        # A single unconditional return needs no branch/condition
+        # machinery at all — treat it as one universal branch (cond=None,
+        # always matches) and reuse the exact same _branch_values/
+        # _branch_bool body-parsing _first_matching_branch already trusts
+        # for every other branch body, so this idiom gets neither more
+        # nor less scrutiny than a real if/else chain's own bodies.
+        bare = script.strip()
+        if bare and _BARE_RETURN_RE.match(bare) and not _TIER1_BLOCKERS.search(bare):
+            return [(None, bare)]
         return None
     pos = m.start()
     text = script

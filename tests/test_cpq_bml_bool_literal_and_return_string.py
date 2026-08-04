@@ -24,7 +24,9 @@ recommendation onto a customer whose spare-battery flag was false.
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_tier1, _parse_branches, _parse_condition, _branch_values
+from aryx.cpq.bml import (
+    evaluate_tier1, evaluate_hide_tier1, _parse_branches, _parse_condition, _branch_values,
+)
 
 _RESTRICT_SERVICE_TYPE_SCRIPT = (
     'if(archeType_viSoln=="CAPEX PURCHASE"){\n\n'
@@ -182,3 +184,60 @@ def test_branch_values_still_rejects_a_real_variable_in_the_chain():
 
 def test_branch_values_rejects_a_function_call_in_the_chain():
     assert _branch_values('retVal = "A" + someFunc() + "B";') is None
+
+
+# docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md investigation
+# follow-up — a real live script, workspace 39004's "Set default to
+# Baseline Release for Baseline Release SW": `return "BASELINE RELEASE";`,
+# no `if`/`else` at all. Before this fix _parse_branches required at least
+# one `if` to even attempt parsing, so ANY unconditional-return-only script
+# reported "grammar unsupported" and needed Tier 2 — but settings.
+# bml_use_llm is off by default (deliberately, to avoid a live request
+# stalling on a slow/rate-limited LLM call), so in practice these scripts
+# silently resolved to nothing, letting an unrelated "first eligible
+# option by catalog order" fallback claim the attribute instead of the
+# rule's own real, intended value.
+
+def test_bare_unconditional_return_string_resolves_without_tier2():
+    script = 'return "BASELINE RELEASE";'
+    assert evaluate_tier1(script, {}) == (["BASELINE RELEASE"], False)
+
+
+def test_bare_unconditional_return_bool_resolves_without_tier2():
+    assert evaluate_hide_tier1("return true;", {}) == (True, False)
+    assert evaluate_hide_tier1("return false;", {}) == (False, False)
+
+
+def test_bare_return_ignores_leading_trailing_whitespace_and_comments():
+    script = '  // baseline default\n  return "BASELINE RELEASE";  \n'
+    assert evaluate_tier1(script, {}) == (["BASELINE RELEASE"], False)
+
+
+def test_bare_return_still_rejects_multi_statement_scripts():
+    # A real assignment/statement BEFORE the return means this isn't a
+    # trivial single-return idiom — must stay unparseable (Tier 2/unknown),
+    # never guessed.
+    assert _parse_branches('x = 1; return "A";') is None
+    assert evaluate_tier1('x = 1; return "A";', {}) == (None, False)
+
+
+def test_bare_return_still_rejects_blocked_constructs():
+    # Same _TIER1_BLOCKERS guard every other branch body already gets —
+    # a bare return containing a disallowed construct must not be treated
+    # as a safe, trivially-resolvable literal.
+    assert _parse_branches('return util.something();') is None
+
+
+def test_bare_return_concatenation_still_resolves_via_existing_guard():
+    # _branch_values' own literal-concatenation fallback already handles
+    # `return "A" + "|^|" + "B";` — confirm the new bare-return path feeds
+    # it correctly rather than bypassing that existing logic.
+    script = 'return "A" + "|^|" + "B" + "|^|" + "C";'
+    assert evaluate_tier1(script, {}) == (["A", "B", "C"], False)
+
+
+def test_empty_string_return_still_means_no_recommendation_not_inferred():
+    # Preserves the EXISTING, deliberate asymmetry from _branch_values'
+    # own docstring (bare "" return means "no recommendation", must stay
+    # an empty list, never treated as unparseable OR as a real value).
+    assert evaluate_tier1('return "";', {}) == ([], False)
