@@ -165,6 +165,7 @@ export interface ChatTurn {
   beautifyButtonFlag?: boolean;
   apiShareButtonFlag?: boolean;
   sessionData?: Record<string, unknown>;
+  fromHistory?: boolean;
 }
 
 export interface AskThreadSummary {
@@ -416,6 +417,9 @@ export interface AskHistoryTurn {
   question: string;
   answer: string;
   model?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  answer_model?: string;
   latency_ms?: number;
   ts: string;
 }

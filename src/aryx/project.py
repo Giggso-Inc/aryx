@@ -125,6 +125,8 @@ def project_graph(
         n_relationships = len(all_rels)
     _scaled(len(all_rels), len(all_rels) or 1, "relationships")
 
+    if hasattr(graph, "mark_isolated_entities"):
+        graph.mark_isolated_entities()
     if hasattr(graph, "ensure_indexes"):
         graph.ensure_indexes()
 
@@ -193,8 +195,21 @@ def project_incremental(
         for src, tgt, name in relationships:
             graph.add_relationship(src, tgt, name)
     tombstones = pstore.tombstones()
+    # Captured *before* DETACH DELETE below — a tombstone's neighbor can
+    # become newly isolated once its only edge is gone, and that neighbor
+    # is otherwise outside this batch's own dirty set (Raven review, PR
+    # #147 finding #2: mark_isolated_entities() must not re-scan the whole
+    # graph on every small incremental update).
+    tombstone_neighbor_ids = (
+        graph.neighbor_ids(tombstones)
+        if tombstones and hasattr(graph, "neighbor_ids") else []
+    )
     for entity_id in tombstones:
         graph.remove_entity(entity_id)
+    if hasattr(graph, "mark_isolated_entities"):
+        rel_endpoint_ids = {eid for src, tgt, _ in relationships for eid in (src, tgt)}
+        scope_ids = sorted(set(dirty_ids) | rel_endpoint_ids | set(tombstone_neighbor_ids))
+        graph.mark_isolated_entities(entity_ids=scope_ids)
     if hasattr(graph, "ensure_indexes"):
         graph.ensure_indexes()
     pstore.mark_projected(dirty_ids)

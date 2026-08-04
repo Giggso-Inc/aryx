@@ -23,6 +23,7 @@ from aryx.api.ask_api import (
     _ground_clarify_candidates,
     _grounded_clarify_prompt,
     _handle_pending_clarify_turn,
+    _is_global_change_decline,
     _match_pending_clarify_reply,
     _set_pending_clarify_and_answer,
 )
@@ -72,6 +73,20 @@ def _service() -> ConfigAttr:
         select_type="single",
         options=_menu("Advantage", "Essential"),
         catalog_prefix="aSTRO25",
+    )
+
+
+def _update_flag() -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=4,
+        variable_name="update",
+        display_label="Update",
+        required=False,
+        default_value="false",
+        select_type="boolean",
+        options=[],
+        catalog_prefix="aSTRO25",
+        set_type="2",
     )
 
 
@@ -231,6 +246,90 @@ def test_pending_clarify_miss_reprompts_without_binding():
     assert "cpq_pending_clarify_reprompt()" in resp["tools_called"]
 
 
+def test_global_change_decline_matches_reported_phrase_only_without_replacement():
+    assert _is_global_change_decline(
+        "i don't want to change any attributes for now",
+    )
+    assert _is_global_change_decline(
+        "I don’t want to change any settings right now",
+    )
+    assert not _is_global_change_decline(
+        "I don't want to change any attributes; use Hardware Version",
+    )
+    assert not _is_global_change_decline(
+        "I don't want to change Hardware Version",
+    )
+
+
+def test_pending_clarify_global_change_decline_is_noop():
+    update, hardware = _update_flag(), _hw_version()
+    attrs = [update, hardware]
+    session = _session()
+    session.filled[update.variable_name] = "false"
+    session.display_filled[update.variable_name] = "false"
+    session.pending_clarify_vns = [update.variable_name, hardware.variable_name]
+    session.pending_clarify_question = "What is my current Primary Frequency set to?"
+    original_filled = dict(session.filled)
+    req = AskRequest(
+        question="i don't want to change any attributes for now",
+        workspace_id=1,
+        history=[],
+        session_data=session.to_dict(),
+    )
+
+    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
+        "aryx.api.ask_api._match_pending_clarify_reply",
+        return_value=("resolved", "update"),
+    ) as match_reply:
+        resp = _handle_pending_clarify_turn(
+            req,
+            session,
+            attrs,
+            hiding_rules=[],
+            rec_rules=[],
+            con_rules=[],
+            bml_eval=None,
+        )
+
+    assert resp is not None
+    assert resp["tools_called"] == ["cpq_pending_clarify_decline()"]
+    assert resp["answer"] == "No problem — no attributes were changed."
+    assert session.filled == original_filled
+    assert session.pending_clarify_vns == []
+    assert session.pending_change_no_value_vn == ""
+    match_reply.assert_not_called()
+
+
+def test_pending_clarify_candidate_decline_keeps_existing_guidance():
+    attrs = [_hw_version(), _system_key()]
+    session = _session()
+    session.pending_clarify_vns = [a.variable_name for a in attrs]
+    req = AskRequest(
+        question="none of these",
+        workspace_id=1,
+        history=[],
+        session_data=session.to_dict(),
+    )
+
+    with patch("aryx.api.ask_api._persist_cpq_history"), patch(
+        "aryx.api.ask_api._match_pending_clarify_reply",
+        return_value=("decline", None),
+    ):
+        resp = _handle_pending_clarify_turn(
+            req,
+            session,
+            attrs,
+            hiding_rules=[],
+            rec_rules=[],
+            con_rules=[],
+            bml_eval=None,
+        )
+
+    assert resp is not None
+    assert "which attribute or setting" in resp["answer"]
+    assert session.pending_clarify_vns == []
+
+
 def test_clear_pending_clarify():
     session = _session()
     session.pending_clarify_vns = ["a"]
@@ -255,3 +354,104 @@ def test_session_roundtrip_preserves_pending_clarify():
     assert restored.pending_clarify_question == "change hardware"
     assert restored.pending_clarify_asked_turn == 4
     assert restored.pending_clarify_misses == 1
+
+
+# ── Issue 11 (docs/config_consistency_issues_2026-07-30.md): relevance ─────
+# must beat label length, and a stale/wrong candidate pool must never
+# force-match a fresh, well-formed request onto the wrong attribute.
+
+def _frequency_bands() -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=10, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        select_type="single", options=_menu("700/800 MHZ", "VHF", "UHF"),
+        catalog_prefix="aSTRO25",
+    )
+
+
+def _wireless_carrier() -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=11, variable_name="wirelessCarrier_astro",
+        display_label="Wireless Carrier", required=False, default_value="",
+        select_type="single",
+        options=_menu("ATT/FIRSTNET", "VERIZON", "LTE CAPABILITY NO SERVICE"),
+        catalog_prefix="aSTRO25",
+    )
+
+
+def _carrier_selection() -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=12, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier Selection", required=False, default_value="",
+        select_type="multi",
+        options=_menu("ATT/FIRSTNET", "T MOBILE", "VERIZON"),
+        catalog_prefix="aSTRO25",
+    )
+
+
+def _verbose_already_filled_decoy() -> ConfigAttr:
+    """A long-labeled, already-filled attr sharing only ONE incidental
+    word ("Motorola") with the query — the real-catalog shape that used
+    to win the old `-len(display_label)` sort."""
+    return ConfigAttr(
+        entity_id=13, variable_name="isProvisioningRequiredInCloudEnv_astro",
+        display_label=(
+            "Is provisioning required in the Motorola Solutions "
+            "Authorized Cloud environment?"
+        ),
+        required=False, default_value="", select_type="single",
+        options=_menu("YES", "NO"), catalog_prefix="aSTRO25",
+    )
+
+
+def test_relevance_beats_label_length_in_ground_candidates():
+    """Real incident: 'Frequency Bands -700/800 MHz Wireless Carrier-
+    ATT/FirstNet (provided by Motorola)' produced a candidate list
+    containing neither Frequency Bands nor Wireless Carrier — every slot
+    was taken by long-labeled, already-filled attrs matching on a single
+    incidental word ('Motorola'). Both real, 2-word-overlap targets must
+    now outrank a 1-word-overlap decoy regardless of label length."""
+    bands, carrier, decoy = _frequency_bands(), _wireless_carrier(), _verbose_already_filled_decoy()
+    attrs = [bands, carrier, decoy]
+    session = _session()
+    session.filled[decoy.variable_name] = "NO"
+    session.display_filled[decoy.variable_name] = "No"
+
+    question = "Frequency Bands -700/800 MHz Wireless Carrier- ATT/FirstNet (provided by Motorola)"
+    cands = _ground_clarify_candidates(question, attrs, session)
+    vns = [a.variable_name for a in cands]
+
+    assert bands.variable_name in vns
+    assert carrier.variable_name in vns
+    assert vns.index(carrier.variable_name) < vns.index(decoy.variable_name), (
+        "a 2-word-overlap real target must outrank a 1-word-overlap "
+        "already-filled decoy, regardless of the decoy's longer label"
+    )
+
+
+def test_stale_clarify_pool_does_not_misbind_a_fresh_named_request():
+    """Real incident: after the bogus candidate list above wrongly
+    omitted both real targets, the follow-up 'change Frequency Bands to
+    700/800 MHz and Wireless Carrier to ATT/FirstNet...' got force-matched
+    onto 'Carrier Selection' — a WRONG attribute that happened to be in
+    the stale pool and share the ATT/FIRSTNET option value, while the
+    correct Wireless Carrier was never even a candidate. A fresh,
+    well-formed request naming a real attr OUTSIDE the stale pool must
+    clear pending_clarify and fall through to normal dispatch instead."""
+    bands, carrier, selection = _frequency_bands(), _wireless_carrier(), _carrier_selection()
+    attrs = [bands, carrier, selection]
+    session = _session()
+    # The stale pool from the earlier bad clarify — deliberately does NOT
+    # include the correct wirelessCarrier_astro.
+    session.pending_clarify_vns = [selection.variable_name, "isProvisioningRequiredInCloudEnv_astro"]
+    session.pending_clarify_question = "Frequency Bands -700/800 MHz Wireless Carrier- ATT/FirstNet"
+
+    req = AskRequest(
+        question="change Frequency Bands to 700/800 MHz and Wireless Carrier to ATT/FirstNet (provided by Motorola)",
+        workspace_id=1, history=[], session_data=session.to_dict(),
+    )
+    resp = _handle_pending_clarify_turn(
+        req, session, attrs, hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+    )
+    assert resp is None, "must fall through to normal dispatch, not force-match the stale pool"
+    assert session.pending_clarify_vns == []

@@ -1,0 +1,32 @@
+-- Purge all data for one Oracle-backed workspace. Caller passes %(wid)s.
+-- Order: graph/projection children before ontology and run-scoped data.
+DELETE FROM aryx_graph_provenance WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_graph_edge WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_graph_source WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_graph_vertex WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_action_execution WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_action WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_adjudication WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_attribute_conflict WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ask_history WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_axiom_violation WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_datasource WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ingest_question WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_projected_entity WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_projection_state WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_relationship_type WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ontology_axiom WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ontology_change_log WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ontology_rule WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ontology_type WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_ontology_version WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_field_profile WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_field_tag WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_run_stage WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_match_edge WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_block_done WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_block_member WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_schema_mapping WHERE run_id IN (SELECT run_id FROM aryx_run WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_run WHERE workspace_id = %(wid)s;
+DELETE FROM aryx_job_event WHERE job_id IN (SELECT job_id FROM aryx_job WHERE workspace_id = %(wid)s);
+DELETE FROM aryx_job WHERE workspace_id = %(wid)s;

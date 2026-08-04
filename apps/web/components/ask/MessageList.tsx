@@ -119,12 +119,15 @@ function CpqActions({ turn, workspaceId, conversationId }: {
 }
 
 function UsageMeta({ turn }: { turn: ChatTurn }) {
-  if (!turn.usage) return null;
-  const totalTokens = (turn.usage.prompt_tokens ?? 0) + (turn.usage.completion_tokens ?? 0);
+  if (!turn.usage && !turn.fromHistory) return null;
+  const totalTokens = turn.usage
+    ? (turn.usage.prompt_tokens ?? 0) + (turn.usage.completion_tokens ?? 0)
+    : 0;
   const parts = [
-    turn.usage.answer_model,
-    `${(turn.usage.latency_ms / 1000).toFixed(1)}s`,
-    `${totalTokens.toLocaleString()} Tokens`,
+    turn.fromHistory ? "Recovered from history" : null,
+    turn.usage?.answer_model,
+    turn.usage ? `${(turn.usage.latency_ms / 1000).toFixed(1)}s` : null,
+    turn.usage ? `${totalTokens.toLocaleString()} Tokens` : null,
   ].filter(Boolean);
 
   if (!parts.length) return null;

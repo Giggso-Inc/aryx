@@ -38,23 +38,6 @@ class Settings(BaseSettings):
         default=2000,
         description="Max entity results returned by a single graph query (FalkorDB LIMIT).",
     )
-    graph_isolated_scan_max_entities: int = Field(
-        default=100_000,
-        description=(
-            "Max total Entity count in a workspace graph for which "
-            "GraphReader.subgraph()'s isolated-entity debug scan (Step 6) is "
-            "still attempted. That scan checks every Entity node for zero "
-            "edges in either direction — a structural check no index can "
-            "accelerate, unlike a property lookup. A real incident: this "
-            "query alone took ~16.5s on a 344,961-entity workspace, ~3.3x "
-            "over FalkorDB's default 5000ms timeout, causing GET /graph to "
-            "500 even after indexing REL.name fixed the OTHER slow queries "
-            "in the same endpoint. Above this threshold the scan is skipped "
-            "(after one cheap COUNT query, not the expensive scan itself) "
-            "rather than attempted unconditionally. "
-            "Override with ARYX_GRAPH_ISOLATED_SCAN_MAX_ENTITIES."
-        ),
-    )
     graph_query_timeout: int = Field(
         default=30_000,
         description=(

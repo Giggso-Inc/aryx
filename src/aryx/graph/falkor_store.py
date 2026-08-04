@@ -197,7 +197,7 @@ class FalkorStore:
         statements that succeeded.
         """
         created = 0
-        for prop in sorted({"type", "name"} | self._index_candidates):
+        for prop in sorted({"type", "name", "isolated"} | self._index_candidates):
             if not _LABEL_RE.match(prop):
                 continue
             try:
@@ -362,6 +362,24 @@ class FalkorStore:
             "MATCH (e:Entity {id: $id}) DETACH DELETE e", {"id": entity_id},
         )
 
+    def neighbor_ids(self, ids: list[int]) -> list[int]:
+        """Distinct ids of entities connected (either direction) to any of ``ids``.
+
+        Used by project_incremental to capture a tombstone's neighbors
+        *before* it's DETACH-DELETEd, so mark_isolated_entities() can be
+        scoped to include them — deleting an entity's only edge can newly
+        isolate the entity on the other end, and that entity is otherwise
+        outside the incremental batch's own dirty set.
+        """
+        if not ids:
+            return []
+        rows = self._graph.query(
+            "UNWIND $ids AS id MATCH (e:Entity {id: id})-[:REL]-(n:Entity) "
+            "RETURN DISTINCT n.id",
+            {"ids": ids},
+        ).result_set
+        return [r[0] for r in rows]
+
     def remove_entities_by_type(self, ontology_type: str) -> None:
         """Delete all entity nodes of a given type and their edges."""
         self._graph.query(
@@ -376,6 +394,68 @@ class FalkorStore:
             "MERGE (a)-[:REL {name: $name}]->(b)",
             {"src": source_id, "tgt": target_id, "name": name},
         )
+
+    def mark_isolated_entities(self, entity_ids: list[int] | None = None) -> None:
+        """Stamp Entity nodes with a maintained ``isolated`` boolean.
+
+        docs/graph_isolated_scan_gate — GraphReader.subgraph()'s Step 6 used
+        to compute "has zero edges in either direction" live, per request,
+        with `MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-()`
+        — a structural check no index can accelerate, confirmed to take
+        ~16.5s on a 344,961-entity workspace (~3.3x FalkorDB's query
+        timeout), causing GET /graph to 500. That forced a tradeoff: skip
+        the check (and the isolated nodes it surfaces) above a configurable
+        size, or risk the timeout.
+
+        Call this once here, at projection time (project_graph /
+        project_incremental, right after relationships are written), so the
+        expensive full-graph pass happens during ingest — which already
+        takes minutes — not inside an interactive request. Reads become a
+        cheap indexed `{isolated: true}` lookup (see ensure_indexes()'s
+        index on this property), so Step 6 no longer needs a size gate at
+        all: it's fast regardless of graph size.
+
+        Args:
+            entity_ids: When given, restricts both passes to just these
+                entities instead of scanning the whole graph — used by
+                project_incremental so a small dirty-set update doesn't pay
+                a full-graph-scan cost proportional to total graph size
+                (Raven review, PR #147 finding #2). project_graph passes
+                None (a full rebuild needs every entity re-evaluated
+                anyway, so a full scan there is already the right cost).
+
+        Two full passes (true then false) rather than one combined
+        expression — FalkorDB does not support assigning a pattern-existence
+        check as a SET value directly.
+
+        Best-effort: same structural scan Step 6 used to time out on for
+        very large graphs, just moved here to write-time where an ingest
+        job that already takes minutes can absorb it. Wrapped in try/except
+        (mirroring ensure_indexes() just above) so a slow/timed-out pass on
+        an exceptionally large graph degrades to a stale/missing `isolated`
+        flag — Step 6 just returns fewer isolated nodes — instead of
+        aborting the whole ingest job (Raven review, PR #147 finding #1).
+        """
+        if entity_ids is not None and not entity_ids:
+            return
+        scope = "WHERE e.id IN $ids AND " if entity_ids is not None else "WHERE "
+        params = {"ids": entity_ids} if entity_ids is not None else {}
+        try:
+            self._graph.query(
+                f"MATCH (e:Entity) {scope}NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+                "SET e.isolated = true",
+                params,
+            )
+            self._graph.query(
+                f"MATCH (e:Entity) {scope}((e)-[:REL]-() OR (e)<-[:REL]-()) "
+                "SET e.isolated = false",
+                params,
+            )
+        except Exception as exc:  # noqa: BLE001 — debug-visibility only, must not abort ingest
+            logger.warning(
+                "falkor: mark_isolated_entities failed, isolated-entity debug "
+                "view may be stale/incomplete for %s: %s", self._graph.name, exc,
+            )
 
     def add_relationships_batch(
         self,

@@ -1116,7 +1116,27 @@ class BmlEvaluator:
         self.stats = {
             "tier1": 0, "tier2": 0, "unknown": 0, "missing": 0, "cached": 0,
             "capped": 0, "durable_hit": 0,
+            # docs/CPQ_Usage_Reporting_Gap — real token usage from every
+            # Tier-2 LLM call this evaluator makes (hide/condition/values/
+            # ask_worthy), accumulated across its whole lifetime (one
+            # instance per turn, same scope as _tier2_count above). Every
+            # _evaluate_llm_* method adds into these via _record_llm_usage
+            # instead of discarding llm_runtime.chat's token counts —
+            # previously silently thrown away (indexed [0] for text only),
+            # so a turn with real Tier-2 activity still reported 0 tokens.
+            "prompt_tokens": 0, "completion_tokens": 0,
         }
+
+    def _record_llm_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        """Accumulate one Tier-2 LLM call's real token usage into self.stats.
+
+        Called from every _evaluate_llm_* method right after a successful
+        llm_runtime.chat call, regardless of whether the reply parsed to a
+        usable result — the call itself happened and cost real tokens/
+        latency either way, same as any other LLM call in this codebase.
+        """
+        self.stats["prompt_tokens"] += prompt_tokens
+        self.stats["completion_tokens"] += completion_tokens
 
     def script_for(self, function_id: int) -> str | None:
         return self._scripts.get(function_id)
@@ -1458,7 +1478,8 @@ class BmlEvaluator:
             # commit to true/false/allowed-values) — moved from "menial" to
             # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
             # lightweight term-extraction task "menial" is meant for.
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -1520,7 +1541,8 @@ class BmlEvaluator:
             # commit to true/false/allowed-values) — moved from "menial" to
             # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
             # lightweight term-extraction task "menial" is meant for.
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -1587,7 +1609,8 @@ class BmlEvaluator:
             # commit to true/false/allowed-values) — moved from "menial" to
             # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
             # lightweight term-extraction task "menial" is meant for.
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -1640,7 +1663,8 @@ class BmlEvaluator:
                 '{"ask_worthy": false} or {"unknown": true} if it cannot '
                 "be determined."
             )
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None

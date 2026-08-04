@@ -1074,6 +1074,84 @@ class CpqEngine:
             hints[vn] = literal_value
         return hints
 
+    def find_unresolvable_context_attrs(
+        self,
+        attrs: list["ConfigAttr"],
+        filled: dict[str, str],
+        workspace_id: int,
+        catalog_prefix: str,
+        rec_rules: list["RecommendationRule"],
+        con_rules: list["ConstraintRule"],
+    ) -> list[dict[str, Any]]:
+        """Surface every option-less, script-referenced, still-unfilled attr
+        that NO rule in this catalog can ever set (the customerType-class
+        gap — generalized from a single confirmed instance, docs/
+        APX_Next_RootCause_And_Fix_Report).
+
+        Never guesses a value (D2) — this only reports WHICH attrs are
+        structurally unresolvable and what literal values scripts elsewhere
+        compare them to, so a caller (a standalone payload-construction
+        workflow, or a live turn) can decide what to do, instead of the
+        gap being invisible the way it was for customerType. Distinct from
+        an attr a recommendation rule targets but simply hasn't been run
+        yet — call evaluate_recommendation_rules/evaluate_rules_loop
+        first; only what remains missing after that pass is a genuine gap
+        this method is meant to catch.
+
+        Catalog-agnostic: uses only the same generic option-less/script-
+        literal-comparison scan _build_flag_keyword_index already performs,
+        and the same rule-target check any catalog's rec/con rules go
+        through — no attribute or rule name is hardcoded.
+
+        Returns a list of {variable_name, literal_values_referenced,
+        num_referencing_scripts}, one entry per genuinely unresolvable,
+        still-missing attr — empty when nothing needs attention.
+        """
+        by_vn = {a.variable_name: a for a in attrs}
+        option_less = {
+            vn for vn, a in by_vn.items() if not a.options and not a.hidden
+        }
+        if not option_less:
+            return []
+
+        settable_by_rule: set[int] = set()
+        for r in (*rec_rules, *con_rules):
+            target_id = getattr(r, "target_attr_id", None)
+            if target_id:
+                settable_by_rule.add(target_id)
+
+        scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
+        referenced: dict[str, set[str]] = {}
+        referencing_count: dict[str, int] = {}
+        for script in scripts.values():
+            if not script:
+                continue
+            seen_this_script: set[str] = set()
+            for var, value in extract_literal_comparisons(script):
+                if var not in option_less:
+                    continue
+                referenced.setdefault(var, set()).add(value)
+                seen_this_script.add(var)
+            for var in seen_this_script:
+                referencing_count[var] = referencing_count.get(var, 0) + 1
+
+        result: list[dict[str, Any]] = []
+        for vn, values in referenced.items():
+            if filled.get(vn):
+                continue
+            attr = by_vn.get(vn)
+            eid = attr.entity_id if attr else None
+            sid = attr.source_id if attr else None
+            if eid in settable_by_rule or (sid is not None and sid in settable_by_rule):
+                continue  # a rule CAN fill this — not this method's concern
+            result.append({
+                "variable_name": vn,
+                "literal_values_referenced": sorted(v for v in values if v.strip()),
+                "num_referencing_scripts": referencing_count.get(vn, 0),
+            })
+        result.sort(key=lambda r: -r["num_referencing_scripts"])
+        return result
+
     def _ingested_product_names(self, reader: Any, workspace_id: int) -> list[str]:
         """Real product/family display names for every catalog currently
         ingested in this workspace — read live from the graph, no hardcoded
@@ -6527,6 +6605,74 @@ class CpqEngine:
     # and quantity "0" are legitimate API codes, not empty selections.
     _CONFIRMED_SOURCES: frozenset[str] = frozenset({"user", "hint", "cascade"})
 
+    def build_standalone_payload(
+        self,
+        reader: Any,
+        workspace_id: int,
+        product_hint: str,
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+        hints: dict[str, str] | None = None,
+        country: str | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """Assemble a correct BOM payload OUTSIDE a live conversational
+        turn, with the SAME defaulting and ordering guarantees a live turn
+        gets — the structural fix for docs/APX_Next_RootCause_And_Fix_
+        Report Issue 1 ("no path sets a rule-driven attr when a payload is
+        assembled directly") and Issue 2 (payload key ordering).
+
+        A live conversational turn (ask_api.py's per-turn handler) already
+        calls evaluate_rules_loop (hide -> recommend -> constrain -> auto-
+        fill until stable) before build_payload — that loop is what
+        actually populates rule-driven attrs like a recommendation-rule
+        target. A payload assembled directly by a script has historically
+        skipped straight to something payload-shaped without ever running
+        it, silently missing every attr only that loop can fill. This
+        method runs the identical loop (empty `hints={}` is a valid,
+        supported input — hints normally come from conversational text via
+        extract_flag_hints/extract_catalog_hints, but evaluate_rules_loop
+        itself has no dependency on conversation state) then calls
+        build_payload with `rules` populated for dependency-aware ordering,
+        so both issues are fixed by one call for any standalone caller.
+
+        Returns (payload, unresolved). `unresolved` is
+        find_unresolvable_context_attrs' output: every attr still missing
+        that NO rule could ever fill (the genuine customerType-class gap —
+        never guessed, always surfaced instead of silently omitted). An
+        empty `unresolved` list does not guarantee the payload is complete
+        against every catalog requirement — only that nothing MORE could
+        have been resolved automatically without guessing.
+
+        Catalog-agnostic: attrs/rules/scripts are all loaded fresh from
+        `reader`/`workspace_id` via the same generic loaders every other
+        catalog-facing method here uses — no attribute or rule name is
+        hardcoded, and this works identically for any ingested BM export.
+        """
+        attrs, resolved_product_name = self.load_product_config(
+            reader, workspace_id, product_hint)
+        catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+        hiding_rules = self.load_hiding_rules(workspace_id, catalog_prefix)
+        rec_rules, con_rules = self.load_recommendation_and_constraint_rules(
+            workspace_id, catalog_prefix)
+        bml_eval = self.build_bml_evaluator(workspace_id, catalog_prefix)
+
+        working_filled = dict(filled)
+        working_multi = dict(filled_multi or {})
+        visible_attrs, working_filled, _display_filled, _constrained_opts = self.evaluate_rules_loop(
+            attrs, hints or {}, working_filled, hiding_rules, rec_rules, con_rules,
+            bml_eval=bml_eval, filled_multi=working_multi, country=country,
+        )
+
+        payload = self.build_payload(
+            working_filled, None, working_multi, visible_attrs,
+            rules=[*hiding_rules, *rec_rules, *con_rules],
+        )
+        unresolved = self.find_unresolvable_context_attrs(
+            visible_attrs, working_filled, workspace_id, catalog_prefix,
+            rec_rules, con_rules,
+        )
+        return payload, unresolved
+
     def build_payload(
         self,
         filled: dict[str, str],
@@ -6534,6 +6680,7 @@ class CpqEngine:
         filled_multi: dict[str, list[str]] | None = None,
         attrs: list["ConfigAttr"] | None = None,
         hidden_vns: set[str] | None = None,
+        rules: list[Any] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
 
@@ -6596,6 +6743,30 @@ class CpqEngine:
         wrapped as ``{"value": v}``) for existing callers that don't pass
         it — the per-type behavior above only applies when a ConfigAttr for
         that variable_name is actually available.
+
+        rules — optional combined iterable of HidingRule/ConstraintRule/
+        RecommendationRule (any mix; each only needs condition_attr_id,
+        target_attr_id, and optionally conditions). When supplied, the
+        final key order is a dependency-aware topological sort — an attr
+        gated by another (e.g. Product's allowed values restricted by
+        Hardware Version, per a real declarative constraint rule) is
+        placed AFTER the attr that gates it, never before. bm_config_attr's
+        own order_number (ConfigAttr.order, used below when rules is
+        omitted) reflects catalog UI/display layout only — confirmed live
+        it can directly contradict a rule-proven dependency (a target
+        ranked far ahead of its own gating condition) — so it is used here
+        only as the tie-break between attrs with no dependency relation to
+        each other, not as the primary signal. Only DECLARATIVE conditions
+        (conditions/condition_attr_id) contribute edges; script-backed
+        rules (script/condition_script set, condition_attr_id==0) have no
+        single extractable condition attr and fall back to the
+        order_number tie-break for that edge, same as an attr with no
+        rule-derived ordering constraint at all — never guessed. A cycle
+        (rule data conflict) never drops or crashes on a key: anything left
+        after the topological pass is appended, sorted by order_number,
+        same fallback as no-`rules`-supplied behavior. Catalog-agnostic —
+        no attribute or rule name is hardcoded; works for any ingested BM
+        export.
         """
         sources = filled_source or {}
         attr_by_vn = {a.variable_name: a for a in (attrs or [])}
@@ -6873,18 +7044,111 @@ class CpqEngine:
                 # is_array_control heuristic above (single control + single
                 # multi-select) whenever a real array-set link exists.
                 out[driver.variable_name] = len(rows)
-        # Present in the same order the XML/graph itself defines
-        # (bm_config_attr.order_number, loaded into ConfigAttr.order) rather
-        # than insertion order from auto_fill's hint/default/rule/fallback
-        # passes — the two are unrelated, and callers cross-checking the
-        # payload against the raw catalog expect the catalog's own order.
-        # Keys with no matching ConfigAttr (e.g. hidddenRecordSeparator_allFamilly)
-        # keep their original relative position, sorted after every real attr.
-        ordered = sorted(
-            out.items(),
-            key=lambda kv: (attr_by_vn[kv[0]].order if kv[0] in attr_by_vn else 10**9),
-        )
-        return {"configData": dict(ordered)}
+        if rules:
+            ordered_keys = self._dependency_ordered_keys(list(out.keys()), attr_by_vn, rules)
+        else:
+            # Present in the same order the XML/graph itself defines
+            # (bm_config_attr.order_number, loaded into ConfigAttr.order)
+            # rather than insertion order from auto_fill's hint/default/
+            # rule/fallback passes — the two are unrelated, and callers
+            # cross-checking the payload against the raw catalog expect the
+            # catalog's own order. Keys with no matching ConfigAttr (e.g.
+            # hidddenRecordSeparator_allFamilly) keep their original
+            # relative position, sorted after every real attr. See
+            # _dependency_ordered_keys' docstring for why order_number
+            # alone is not a reliable proxy for true submission sequence —
+            # this branch only runs when the caller didn't supply `rules`.
+            ordered_keys = sorted(
+                out.keys(),
+                key=lambda k: (attr_by_vn[k].order if k in attr_by_vn else 10**9),
+            )
+        return {"configData": {k: out[k] for k in ordered_keys}}
+
+    @staticmethod
+    def _dependency_ordered_keys(
+        keys: list[str],
+        attr_by_vn: dict[str, "ConfigAttr"],
+        rules: list[Any],
+    ) -> list[str]:
+        """Topological sort of `keys` by rule-proven attribute dependency.
+
+        Builds a "must come before" edge condition_vn -> target_vn for
+        every rule with a real DECLARATIVE condition (conditions, or a
+        nonzero condition_attr_id) whose condition and target are both
+        present in `keys`. Kahn's algorithm, with ConfigAttr.order
+        (bm_config_attr.order_number) as the tie-break for which
+        zero-remaining-dependency key is emitted next, so output stays
+        deterministic and close to the catalog's own display order
+        whenever no dependency constrains it either way.
+
+        Rule ids reference attributes by their BM-native id — matches
+        ConfigAttr.source_id first (falls back to entity_id), the same
+        dual-id convention _attr_index already uses.
+        """
+        id_to_vn: dict[int, str] = {}
+        for vn, a in attr_by_vn.items():
+            id_to_vn.setdefault(a.entity_id, vn)
+        for vn, a in attr_by_vn.items():
+            if a.source_id is not None:
+                id_to_vn[a.source_id] = vn
+
+        key_set = set(keys)
+        predecessors: dict[str, set[str]] = {}
+
+        def _add_edge(cond_id: int, target_id: int) -> None:
+            cond_vn = id_to_vn.get(cond_id)
+            target_vn = id_to_vn.get(target_id)
+            if (cond_vn and target_vn and cond_vn != target_vn
+                    and cond_vn in key_set and target_vn in key_set):
+                predecessors.setdefault(target_vn, set()).add(cond_vn)
+
+        for r in rules:
+            target_id = getattr(r, "target_attr_id", None)
+            if not target_id:
+                continue
+            conditions = getattr(r, "conditions", None)
+            if conditions:
+                for cond_id, _val in conditions:
+                    _add_edge(cond_id, target_id)
+            else:
+                cond_id = getattr(r, "condition_attr_id", 0)
+                if cond_id:
+                    _add_edge(cond_id, target_id)
+
+        successors: dict[str, set[str]] = {}
+        for target_vn, conds in predecessors.items():
+            for c in conds:
+                successors.setdefault(c, set()).add(target_vn)
+
+        def _order_key(vn: str) -> int:
+            a = attr_by_vn.get(vn)
+            return a.order if a is not None else 10**9
+
+        remaining = {vn: len(predecessors.get(vn, ())) for vn in keys}
+        ready = sorted((vn for vn, n in remaining.items() if n == 0), key=_order_key)
+        result: list[str] = []
+        visited: set[str] = set()
+        while ready:
+            vn = ready.pop(0)
+            if vn in visited:
+                continue
+            visited.add(vn)
+            result.append(vn)
+            newly_ready = []
+            for succ in successors.get(vn, ()):
+                remaining[succ] -= 1
+                if remaining[succ] == 0 and succ not in visited:
+                    newly_ready.append(succ)
+            if newly_ready:
+                ready.extend(newly_ready)
+                ready.sort(key=_order_key)
+        # A cycle in rule data (never expected, but rule authoring can be
+        # messy) leaves some keys with remaining > 0 forever — append them
+        # by order_number rather than drop or crash, same "never lose a
+        # key" contract the no-rules branch already has.
+        leftover = sorted((vn for vn in keys if vn not in visited), key=_order_key)
+        result.extend(leftover)
+        return result
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 

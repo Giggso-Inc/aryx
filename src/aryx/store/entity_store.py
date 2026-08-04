@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -36,10 +37,7 @@ def _fetch_entity_ids(cur: Any, n: int) -> list[int]:
     """
     global _entity_seq_name
     if _entity_seq_name is None:
-        cur.execute(
-            "SELECT sequence_name FROM user_tab_identity_cols"
-            " WHERE table_name = 'ARYX_ENTITY'",
-        )
+        cur.execute(load("select_entity_identity_sequence"))
         row = cur.fetchone()
         if row:
             _entity_seq_name = row[0]
@@ -49,8 +47,12 @@ def _fetch_entity_ids(cur: Any, n: int) -> list[int]:
                 "user_tab_identity_cols returned no row for ARYX_ENTITY — "
                 "run migration 0032_entity_by_default_identity.sql"
             )
+    if not re.fullmatch(r"[A-Z][A-Z0-9_$#]*", _entity_seq_name):
+        raise RuntimeError("invalid ARYX_ENTITY identity sequence name")
     cur.execute(
-        f"SELECT {_entity_seq_name}.NEXTVAL FROM dual CONNECT BY LEVEL <= %s",
+        load("select_next_oracle_entity_ids").format(
+            sequence=_entity_seq_name,
+        ),
         (n,),
     )
     ids = [int(r[0]) for r in cur.fetchall()]
@@ -185,11 +187,7 @@ class EntityStore:
         total = len(results)
         logger.info("entities save batch start count=%d", total)
 
-        cur.execute(
-            "SELECT nextval(pg_get_serial_sequence('aryx_entity', 'id'))"
-            " FROM generate_series(1, %s)",
-            (total,),
-        )
+        cur.execute(load("select_next_entity_ids"), (total,))
         entity_ids = [row[0] for row in cur.fetchall()]
         logger.info("entities ids fetched count=%d", total)
 
@@ -297,10 +295,7 @@ class EntityStore:
         """Return the total number of entities in this workspace."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM aryx_entity WHERE workspace_id = %s",
-                    (self._ws,),
-                )
+                cur.execute(load("count_entities"), (self._ws,))
                 return int(cur.fetchone()[0])
 
     def list_entities(self) -> Iterator[tuple[int, str, dict]]:
