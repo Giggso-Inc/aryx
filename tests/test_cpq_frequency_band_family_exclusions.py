@@ -141,6 +141,54 @@ def test_unrelated_dissimilar_labels_are_never_paired():
     assert to_ask == []
 
 
+def test_four_way_label_collision_not_visible_this_turn_is_never_paired():
+    """docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_05.md
+    follow-up, live incident: a real catalog reuses the identical display
+    label "Service Type" across 4 semantically unrelated attributes.
+    Passing only the 2 currently-VISIBLE ones (as `attrs`) without
+    `all_attrs` would satisfy the size-2 check and wrongly pair them --
+    passing the full 4-attr catalog as `all_attrs` must correctly see the
+    real group size and refuse to pair any of them, exactly like any
+    other 3+-way label collision."""
+    eng = CpqEngine()
+    visible = [
+        _attr(2, "relatedServicesType_astro", "Service Type", "multi"),
+        _attr(3, "serviceTypeAdditionalDMSCoverage_astro", "Service Type", "single"),
+    ]
+    all_attrs = visible + [
+        _attr(1, "serviceType_astro", "Service Type", "single"),
+        _attr(4, "serviceTypeRSM_astro", "Service Type", "single"),
+    ]
+    filled = {"serviceTypeAdditionalDMSCoverage_astro": "PREMIER"}
+    filled_source = {"serviceTypeAdditionalDMSCoverage_astro": "default"}
+
+    to_strip, to_ask = eng.exclusive_sibling_family_exclusions(
+        visible, filled, {}, filled_source, all_attrs=all_attrs,
+    )
+    assert to_strip == set()
+    assert to_ask == []
+
+
+def test_four_way_label_collision_without_all_attrs_reproduces_the_bug():
+    """Sanity check proving the bug is real and the fix is the `all_attrs`
+    parameter specifically: the SAME 2-attr-visible scenario above, without
+    passing `all_attrs` at all (old call signature), DOES incorrectly pair
+    them -- confirms this is a genuine regression fix, not a no-op."""
+    eng = CpqEngine()
+    visible = [
+        _attr(2, "relatedServicesType_astro", "Service Type", "multi"),
+        _attr(3, "serviceTypeAdditionalDMSCoverage_astro", "Service Type", "single"),
+    ]
+    filled = {"serviceTypeAdditionalDMSCoverage_astro": "PREMIER"}
+    filled_source = {"serviceTypeAdditionalDMSCoverage_astro": "default"}
+
+    to_strip, to_ask = eng.exclusive_sibling_family_exclusions(
+        visible, filled, {}, filled_source,
+    )
+    assert to_strip == {"serviceTypeAdditionalDMSCoverage_astro"}
+    assert [a.variable_name for a in to_ask] == ["relatedServicesType_astro"]
+
+
 def test_enforce_mutates_filled_and_appends_to_pending():
     eng = CpqEngine()
     attrs = [

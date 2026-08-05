@@ -7637,7 +7637,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # multi-select one instead, rather than shipping the wrong half.
     pending = _cpq_engine.enforce_exclusive_sibling_families(
         visible_attrs, filled, session.filled_multi, session.filled_source,
-        display_filled, pending,
+        display_filled, pending, all_attrs=attrs,
     )
 
     # Amendment 17 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): Tier-1's

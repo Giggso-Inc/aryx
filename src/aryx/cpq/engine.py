@@ -4627,6 +4627,7 @@ class CpqEngine:
         filled: dict[str, str],
         filled_multi: dict[str, list[str]],
         filled_source: dict[str, str],
+        all_attrs: list[ConfigAttr] | None = None,
     ) -> tuple[set[str], list[ConfigAttr]]:
         """Generic (no catalog/attribute names hardcoded) detector for a gap
         this engine can hit on ANY catalog: two attrs sharing the same
@@ -4652,14 +4653,33 @@ class CpqEngine:
         a shared-input RECOMMENDATION rule — tagged source "rule" — not a
         bare XML default_value, so a "default"-only check never caught it).
 
+        `all_attrs` (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
+        2026_08_05.md follow-up) — the label-stem grouping below only
+        trusts a pair when EXACTLY 2 attrs share that stem, specifically
+        so a genuinely ambiguous 3+-way label collision is never guessed.
+        That size check is meaningless if it only sees `attrs` (the
+        DYNAMICALLY hiding-filtered, currently-visible set): confirmed
+        live, a real catalog reuses the identical display label "Service
+        Type" across 4 semantically UNRELATED attributes (general service
+        type, related-services type, DMS coverage plan, RSM warranty
+        type); when a hiding rule happens to leave only 2 of the 4
+        visible this turn, the size-2 check wrongly treated them as a
+        genuine near-duplicate pair — the same false-positive class this
+        check exists to prevent, just reached via visibility instead of
+        catalog authoring. Groups by stem over `all_attrs` (the full,
+        pre-hiding catalog list) when given; defaults to `attrs` (old
+        behavior, unchanged) when omitted, so every existing caller/test
+        is unaffected.
+
         Returns (vns_to_strip_from_filled, attrs_to_add_to_pending) — the
         multi-select sibling is asked instead of silently guessing which
         half applies. Empty on any catalog without this exact shape.
         """
         _WEAK_SOURCES = {"default", "rule", "auto"}
         by_vn = {a.variable_name: a for a in attrs}
+        stem_universe = all_attrs if all_attrs is not None else attrs
         by_stem: dict[str, list[ConfigAttr]] = {}
-        for a in attrs:
+        for a in stem_universe:
             by_stem.setdefault(self._normalized_label_stem(a.display_label), []).append(a)
         groups: list[list[ConfigAttr]] = list(by_stem.values())
 
@@ -4709,13 +4729,20 @@ class CpqEngine:
         filled_source: dict[str, str],
         display_filled: dict[str, str],
         pending: list[ConfigAttr],
+        all_attrs: list[ConfigAttr] | None = None,
     ) -> list[ConfigAttr]:
         """Apply `exclusive_sibling_family_exclusions`: strip the weakly-
         sourced single-select sibling from `filled` (mutated in place) and
         add its multi-select sibling to `pending` if nothing has already
-        filled or asked it. Returns the updated pending list."""
+        filled or asked it. Returns the updated pending list.
+
+        `all_attrs` — see exclusive_sibling_family_exclusions' docstring;
+        pass the full, pre-hiding catalog attr list so the label-stem
+        pairing check isn't fooled by a multi-way label collision that
+        happens to look like a 2-attr pair only because hiding rules left
+        just 2 of the real N visible this turn."""
         to_strip, to_ask = self.exclusive_sibling_family_exclusions(
-            attrs, filled, filled_multi, filled_source,
+            attrs, filled, filled_multi, filled_source, all_attrs=all_attrs,
         )
         if not to_strip:
             return pending
@@ -4726,6 +4753,17 @@ class CpqEngine:
         pending = [a for a in pending if a.variable_name not in to_strip]
         pending_vns = {a.variable_name for a in pending}
         for attr in to_ask:
+            # Truthiness check (not mere key presence) is deliberate here —
+            # see test_enforce_still_asks_when_multi_sibling_has_an_empty_
+            # placeholder: a governing multi-select sibling this mechanism
+            # just decided IS the real answer for this concept must still
+            # be asked even if auto_fill left an empty-list placeholder for
+            # it, because THIS mechanism's whole point is that nobody has
+            # actually confirmed the real concept yet. (A false-positive
+            # pairing that wrongly reached this point at all — e.g. two
+            # unrelated attrs coincidentally sharing a display label — is
+            # fixed at the pairing stage in exclusive_sibling_family_
+            # exclusions, not by weakening this check.)
             if (
                 not filled.get(attr.variable_name)
                 and not filled_multi.get(attr.variable_name)
@@ -5097,12 +5135,29 @@ class CpqEngine:
             if vn in filled_multi:
                 allowed_now = constrained_opts.get(attr.entity_id) if constrained_opts else None
                 if allowed_now is not None:
-                    allowed_set = set(allowed_now)
-                    kept = [v for v in filled_multi[vn] if v in allowed_set]
-                    lost = [v for v in filled_multi[vn] if v not in allowed_set]
-                    if lost:
-                        dropped[vn] = lost
-                        filled_multi[vn] = kept
+                    if sources.get(vn) == "default_first_available":
+                        # This value was picked with NOTHING to justify it
+                        # (no active constraint, no default_value) on some
+                        # earlier pass — a real constraint now exists for
+                        # this attr that didn't (or wasn't yet computed)
+                        # when the guess was made. Re-open unconditionally
+                        # rather than merely checking the guess is still
+                        # technically a member of the new allowed set —
+                        # "still happens to be valid" is not the same as
+                        # "is the answer Fix 3/4's own logic would now
+                        # produce", and re-deriving is idempotent (falls
+                        # through to the same branch below, which converges
+                        # to the same answer if run again with unchanged
+                        # inputs).
+                        filled_multi.pop(vn, None)
+                        sources.pop(vn, None)
+                    else:
+                        allowed_set = set(allowed_now)
+                        kept = [v for v in filled_multi[vn] if v in allowed_set]
+                        lost = [v for v in filled_multi[vn] if v not in allowed_set]
+                        if lost:
+                            dropped[vn] = lost
+                            filled_multi[vn] = kept
                 if not filled_multi.get(vn):
                     if sources.get(vn) == "user":
                         # An EMPTY selection the user explicitly confirmed
@@ -5535,61 +5590,113 @@ class CpqEngine:
             ):
                 # A multi-select that reached here (no single-remaining-
                 # option, not required=1 in the raw XML) has nothing
-                # unambiguous to justify picking a subset — real Oracle CPQ
-                # UI behavior for an optional checkbox-list field is an
-                # empty selection, not a forced question. Product decision
-                # (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_
-                # 05.md, "explicit product decision" addendum): prefer the
-                # XML default_value when it's still a currently-valid
-                # option (constraint-filtered `valid_opts`, not the raw
-                # menu — never select a value an active constraint has
-                # already excluded); otherwise default to empty rather than
-                # asking. Grid-linked selectors (vn in grid_selector_vns)
-                # are excluded from this branch — see grid_selector_vns
-                # comment above.
-                #
-                # KNOWN, ACCEPTED RISK (explicit product decision, not an
-                # oversight): a constrained-but-ambiguous multi-select
-                # (2+ options remain, no matching default_value) now
-                # defaults to [] the same as a genuinely unconstrained one.
-                # _filled_by_rule_id treats that [] as a real, known-empty
-                # value, so a sibling rule keyed on "does NOT contain value
-                # X" (operator "8", disjoint-from) can fire on it as if the
-                # customer had confirmed nothing — this is exactly the
-                # mechanism that collapsed Package Type live (see plan
-                # doc's "Known remaining issue" — a separate, pre-existing
-                # catalog rule contradiction independent of this). Traded
-                # deliberately for fewer conversational questions; revisit
-                # if a similar empty-question symptom resurfaces elsewhere.
+                # unambiguous to justify picking a subset on its own —
                 # `valid_opts` from the branch above is NOT reliably in
-                # scope here — it's only assigned inside the sibling
-                # `if not value and attr.options:` block, which this attr
-                # never entered if attr.options was empty (confirmed live:
-                # UnboundLocalError on "APX NEXT All Band", a multi-select
-                # attr this loop reaches with zero real menu options).
-                # Recomputed independently against the same constraint.
-                if attr.default_value and attr.options:
-                    current_allowed = (
-                        set(constrained_opts.get(attr.entity_id, []))
-                        if constrained_opts else None
-                    )
-                    default_opt = next(
-                        (
-                            o for o in attr.options
-                            if _valid(o.item_value) and o.item_value == attr.default_value
-                            and (current_allowed is None or o.item_value in current_allowed)
-                        ),
-                        None,
-                    )
-                else:
-                    default_opt = None
-                if default_opt:
+                # scope here (only assigned inside the sibling `if not
+                # value and attr.options:` block, which this attr never
+                # entered if attr.options was empty — confirmed live:
+                # UnboundLocalError on "APX NEXT All Band"). Recomputed
+                # independently against the same constraint. Grid-linked
+                # selectors (vn in grid_selector_vns) are excluded from
+                # this branch — see grid_selector_vns comment above.
+                #
+                # Two distinct cases (explicit product decisions,
+                # docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_
+                # 05.md):
+                #
+                # 1. Genuinely UNCONSTRAINED (no active constraint rule
+                #    ever targeted this attr this turn — real Oracle CPQ
+                #    UI behavior for e.g. Service Type/Carrier Selection):
+                #    prefer default_value; else first real menu option by
+                #    order — never leave it silently empty. Confirmed
+                #    live: relatedServicesType_astro ("Service Type") has
+                #    zero active constraints and no default_value; the
+                #    catalog's own first-listed real option is picked
+                #    instead of guessing nothing.
+                #
+                # 2. CONSTRAINED but ambiguous (a real rule narrowed this
+                #    attr to 2+ remaining options, just not exactly one):
+                #    prefer default_value if still valid under that
+                #    constraint; otherwise default to EMPTY, not first-
+                #    available — picking an arbitrary one of several
+                #    rule-narrowed options is exactly the guessing risk
+                #    Fix 1 exists to prevent (confirmed live:
+                #    additionalSystemEnhancementFeatureType_astro narrowed
+                #    to 9 of 11 by a real constraint — picking option #1
+                #    there would be exactly as arbitrary as picking all
+                #    9 was). KNOWN, ACCEPTED RISK: _filled_by_rule_id
+                #    treats that [] as a real, known-empty value, so a
+                #    sibling rule keyed on "does NOT contain value X"
+                #    (operator "8", disjoint-from) can fire on it as if
+                #    the customer had confirmed nothing — the same
+                #    mechanism that collapsed Package Type live via a
+                #    separate, pre-existing catalog rule contradiction
+                #    (see plan doc's "Known remaining issue").
+                is_unconstrained = attr.entity_id not in (constrained_opts or {})
+                current_allowed = (
+                    set(constrained_opts.get(attr.entity_id, []))
+                    if constrained_opts else None
+                )
+                candidate_opts = [
+                    o for o in attr.options
+                    if _valid(o.item_value)
+                    and (current_allowed is None or o.item_value in current_allowed)
+                ]
+                # Priority, highest first: (1) a targeted RecommendationRule
+                # already satisfied by the current filled state -- more
+                # specific than a generic default_value, same "rule beats
+                # default" priority _satisfied_recommendation's own
+                # docstring establishes for single-select; (2) the XML
+                # default_value; (3) first available (unconstrained case
+                # only, see above). Multi-select attrs never reach
+                # _satisfied_recommendation via the sibling "else" branch
+                # above (mutually exclusive if/elif with this one), so it
+                # must be checked here directly.
+                rec_match = (
+                    _satisfied_recommendation(attr, candidate_opts)
+                    if rec_by_target else None
+                )
+                default_opt = next(
+                    (o for o in candidate_opts if o.item_value == attr.default_value),
+                    None,
+                ) if attr.default_value else None
+                if rec_match:
+                    rec_value, rec_display = rec_match
+                    filled_multi[vn] = [rec_value]
+                    display_filled[vn] = rec_display
+                    sources.setdefault(vn, "rule")
+                elif default_opt:
                     filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
+                    sources.setdefault(vn, "default")
+                elif is_unconstrained and candidate_opts:
+                    # Tagged with a DISTINCT source (not "default") so the
+                    # re-validation step above (`if vn in filled_multi:`)
+                    # can tell "guessed with nothing to justify it" apart
+                    # from a genuine default_value match. Necessary because
+                    # evaluate_rules_loop's fixed-point iteration can call
+                    # auto_fill on an EARLY pass where this attr is
+                    # genuinely unconstrained (e.g. before
+                    # productSelectionProduct_all itself is filled), lock
+                    # this guess into filled_multi, and then a LATER pass
+                    # activates a real constraint on the same attr — the
+                    # re-validation step would otherwise just confirm the
+                    # guessed value is still technically a member of the
+                    # new allowed set and keep it unquestioned, never
+                    # re-deriving the correct Fix-3 default-or-empty
+                    # answer for the now-real constraint (confirmed live:
+                    # additionalSystemEnhancementFeatureType_astro got
+                    # guessed "DISABLE CLOUD SERVICES" before Product was
+                    # resolved, then kept it across every later pass even
+                    # after its real 9-of-11 constraint activated).
+                    first_opt = candidate_opts[0]
+                    filled_multi[vn] = [first_opt.item_value]
+                    display_filled[vn] = first_opt.display_name
+                    sources.setdefault(vn, "default_first_available")
                 else:
                     filled_multi[vn] = []
                     display_filled[vn] = "(none)"
-                sources.setdefault(vn, "default")
+                    sources.setdefault(vn, "default")
             elif self._is_noise_var(vn) and attr.options:
                 # Company-level/system attrs (_BM_USER_CURRENCY, _BM_USER_
                 # LANGUAGE, _BM_USER_NUMBER_FORMAT, ...) are already excluded

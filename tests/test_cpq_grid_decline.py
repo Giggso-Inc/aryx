@@ -24,6 +24,22 @@ def _multi(required: bool) -> ConfigAttr:
     )
 
 
+def _qty_attr() -> ConfigAttr:
+    """Hidden *Quantity*-named companion attr — resolve_array_grid_links'
+    real matching mechanism (a >=6-alnum-char, single-match substring of
+    an option's normalized text inside a hidden *Quantity* attr's
+    normalized variable_name) — makes `mountRows` a REAL grid selector
+    (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_05.md
+    follow-up: must be passed alongside `_multi()` in `attrs` for
+    grid_selector_vns to actually classify it as one)."""
+    return ConfigAttr(
+        entity_id=2, variable_name="shirtMagneticMountQuantity_astro",
+        display_label="Shirt Magnetic Mount Quantity",
+        required=False, default_value="", select_type="single",
+        options=[], hidden=True,
+    )
+
+
 def test_user_declined_empty_multi_stays_settled_in_auto_fill():
     engine = CpqEngine()
     attrs = [_multi(required=False)]
@@ -40,22 +56,30 @@ def test_user_declined_empty_multi_stays_settled_in_auto_fill():
 
 def test_constraint_dropped_empty_multi_still_reresolves():
     """Only USER-confirmed empties are settled — a constraint-drop that
-    empties a selection (source != user) falls through to re-resolution,
-    the pre-existing behavior."""
+    empties a selection (source != user) falls through to re-resolution.
+
+    A REAL grid-linked selector (grid_selector_vns, confirmed via the
+    hidden *Quantity* companion attr below) explicitly never gets
+    auto-filled at all — not empty, not first-available — HITL-confirmed
+    product decision (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
+    2026_08_05.md follow-up): picking an arbitrary accessory nobody asked
+    for is worse than asking, so it falls through to `pending` instead."""
     engine = CpqEngine()
-    attrs = [_multi(required=False)]
+    attrs = [_multi(required=False), _qty_attr()]
     filled_multi = {"mountRows": []}
     sources = {"mountRows": "rule"}
 
-    engine.auto_fill(
+    _filled, _display, pending = engine.auto_fill(
         attrs, hints={}, already_filled_multi=filled_multi, filled_source=sources)
 
     assert sources.get("mountRows") != "rule", (
-        "non-user empty selections keep the pre-existing pop-and-reresolve "
-        "path (here: popped, then re-assigned by the optional-multi "
-        "auto-empty with source 'default')"
+        "non-user empty selections keep the pre-existing pop-and-reresolve path"
     )
-    assert sources.get("mountRows") == "default"
+    assert "mountRows" not in filled_multi, (
+        "a real grid selector must never be auto-filled (empty or "
+        "first-available) -- it falls through to pending instead"
+    )
+    assert [a.variable_name for a in pending] == ["mountRows"]
 
 
 def test_declined_grid_ships_no_rows_in_payload():

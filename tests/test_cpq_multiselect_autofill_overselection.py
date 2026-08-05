@@ -28,6 +28,19 @@ accepting the disjoint-from risk Fix 2 had closed, as a deliberate
 trade for fewer conversational questions (see engine.py's
 auto_fill docstring and the plan doc's "explicit product decision"
 addendum for the full rationale and the accepted risk).
+
+Fix 4 (further HITL-confirmed refinement): "empty" was still not what the
+product wanted for a GENUINELY unconstrained optional multi-select (no
+active constraint rule ever targeted it at all this turn) -- live example
+relatedServicesType_astro ("Service Type", zero active constraints, no
+default_value). For that specific case, first real menu option by
+catalog order is now picked instead of empty, mirroring the existing
+single-select convention. The CONSTRAINED-but-ambiguous case (Feature
+Type-like: a real rule narrowed the menu to 2+ options, just not exactly
+one) explicitly keeps Fix 3's default-value-or-empty behavior --
+picking an arbitrary one of several rule-narrowed options would be
+exactly the guessing risk Fix 1 exists to prevent, just applied to a
+smaller set.
 """
 from __future__ import annotations
 
@@ -165,9 +178,71 @@ def test_multiselect_constrained_to_exactly_one_option_is_still_auto_selected():
     assert multi.get("packageTypeBundles_astro") == ["CORE BUNDLE"]
 
 
-def test_multiselect_with_no_active_constraint_stays_unselected():
-    """Regression: no constraint at all -- unaffected by this fix, still
-    defaults to empty (unchanged pre-existing behavior)."""
+def test_multiselect_first_available_guess_is_reopened_once_a_real_constraint_appears():
+    """Live incident: evaluate_rules_loop's fixed-point iteration calls
+    auto_fill repeatedly as state settles. On an EARLY pass (before
+    productSelectionProduct_all itself was filled),
+    additionalSystemEnhancementFeatureType_astro was genuinely
+    unconstrained -- Fix 4 correctly picked its first option ("DISABLE
+    CLOUD SERVICES"). On the NEXT pass, Product resolved and activated
+    this attr's real 9-of-11 constraint -- but the guess, still
+    technically a member of the new allowed set, got silently kept
+    instead of re-deriving Fix 3's real default-or-empty answer for the
+    now-ambiguous, constrained case. Simulates both passes directly
+    against the same mutable filled_multi/filled_source dicts, exactly
+    as evaluate_rules_loop does."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="additionalSystemEnhancementFeatureType_astro",
+        display_label="Additional System Enhancement Feature Type",
+        required=False, default_value="", select_type="multi",
+        options=_menu(
+            "DISABLE CLOUD SERVICES", "DELETE NARROWBANDING-WAIVER REQUIRED",
+            "ICE KIT", "OPTIONAL EMERGENCY TONE", "SEQUENTIAL SERIAL NUMBER",
+            "FRONT PANEL PROGRAMMING & CLONING", "FRONT PANEL PROGRAMMING & CLONING FED",
+            "PROGRAMMING OVER P25", "PSU CONV SCAN", "WEB BROWSER ENABLEMENT",
+        ),
+    )
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    source: dict[str, str] = {}
+
+    # Pass 1: genuinely unconstrained (Product not yet resolved).
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=None,
+        governed_ids={1}, rule_governed_ids={1},
+        already_filled_multi=multi, filled_source=source,
+    )
+    assert multi.get("additionalSystemEnhancementFeatureType_astro") == ["DISABLE CLOUD SERVICES"]
+    assert source.get("additionalSystemEnhancementFeatureType_astro") == "default_first_available"
+
+    # Pass 2: Product now resolved, real constraint narrows to 9 of 10 --
+    # "DISABLE CLOUD SERVICES" is still technically a member of the new
+    # allowed set, but must NOT be blindly kept; must re-derive to empty
+    # (no default_value, several remaining options -- Fix 3's own rule).
+    constrained_opts = {1: [
+        "DISABLE CLOUD SERVICES", "ICE KIT", "OPTIONAL EMERGENCY TONE",
+        "FRONT PANEL PROGRAMMING & CLONING", "FRONT PANEL PROGRAMMING & CLONING FED",
+        "PROGRAMMING OVER P25", "PSU CONV SCAN", "WEB BROWSER ENABLEMENT",
+        "DELETE NARROWBANDING-WAIVER REQUIRED",
+    ]}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=constrained_opts,
+        governed_ids={1}, rule_governed_ids={1},
+        already_filled_multi=multi, filled_source=source,
+    )
+    assert multi.get("additionalSystemEnhancementFeatureType_astro") == [], (
+        "a first-available guess from an earlier, unconstrained pass must "
+        "be re-opened once a real constraint activates -- not blindly kept "
+        "just because it happens to still be technically valid"
+    )
+
+
+def test_multiselect_with_no_active_constraint_and_no_default_picks_first_option():
+    """Fix 4 (live incident: "APX NEXT All Band" order, relatedServicesType_
+    astro "Service Type" -- zero active constraints, no default_value, kept
+    getting silently re-asked despite being defaulted). A genuinely
+    unconstrained optional multi-select with no default_value now picks the
+    catalog's first real menu option instead of staying empty."""
     attr = ConfigAttr(
         entity_id=3, variable_name="carrierSelectionMultiSelect_astro", display_label="Carrier Selection",
         required=False, default_value="", select_type="multi",
@@ -179,7 +254,25 @@ def test_multiselect_with_no_active_constraint_stays_unselected():
         [attr], hints={}, constrained_opts=None,
         governed_ids={3}, rule_governed_ids={3}, already_filled_multi=multi,
     )
-    assert multi.get("carrierSelectionMultiSelect_astro") == []
+    assert multi.get("carrierSelectionMultiSelect_astro") == ["ATT/FIRSTNET"]
+
+
+def test_multiselect_with_no_active_constraint_and_a_default_uses_the_default_not_first():
+    """A genuinely unconstrained multi-select with a real default_value
+    still prefers that default over blindly picking the first menu
+    option -- default_value always wins when it's actually available."""
+    attr = ConfigAttr(
+        entity_id=8, variable_name="someUnconstrainedMulti_astro", display_label="Some Unconstrained Multi",
+        required=False, default_value="OPTION TWO", select_type="multi",
+        options=_menu("OPTION ONE", "OPTION TWO", "OPTION THREE"),
+    )
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=None,
+        governed_ids={8}, rule_governed_ids={8}, already_filled_multi=multi,
+    )
+    assert multi.get("someUnconstrainedMulti_astro") == ["OPTION TWO"]
 
 
 def test_multiselect_trivial_single_real_option_total_is_auto_selected():
