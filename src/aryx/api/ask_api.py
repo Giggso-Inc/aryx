@@ -21,7 +21,7 @@ from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
-from aryx.cpq.bom_gate import validate_before_payload
+from aryx.cpq.bom_gate import recheck_constraints, validate_before_payload
 from aryx.cpq.intent_gateway import (
     AskRouteDecision,
     classify_ask_route,
@@ -1468,6 +1468,106 @@ def _constrain_excluding_rejected(
     return filtered
 
 
+def _reask_stale_constraint_violations(
+    session: Any, attrs: list, con_rules: list, bml_eval: Any,
+) -> str | None:
+    """Proactively runs the same stale-constraint recheck the confirm-time
+    BOM gate performs (bom_gate.recheck_constraints) at the exact point a
+    "Configuration complete" response is about to be shown, so a config is
+    never announced complete while holding a value a currently-active
+    constraint has already ruled out — the customer is asked to fix it one
+    turn EARLIER, instead of being told "complete" and only finding out at
+    confirm (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1 explicitly
+    deferred exactly this — "surfacing it to the user directly is a
+    separate, not-yet-built follow-up" — this is that follow-up, reusing
+    the exact same auto-clear-and-reask mechanism confirm's own gate
+    already trusts, rather than inventing a second one).
+
+    Mutates `session` (pops the stale value(s), sets pending_variables,
+    status="configuring", complete=False) exactly like the confirm-time
+    gate's own stale-violation handling, and returns the next-question
+    prompt text to show instead of "Configuration complete" — or None if
+    nothing is stale, in which case the caller proceeds with its normal
+    "show complete" branch unchanged. A recheck failure degrades to None
+    (never blocks a turn on this proactive, best-effort check — the
+    confirm-time gate is still the authoritative, hard backstop).
+    """
+    if not con_rules:
+        return None
+    try:
+        stale = recheck_constraints(_cpq_engine, attrs, session, con_rules, bml_eval)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cpq_proactive_stale_check: constraint recheck failed: %r", exc)
+        return None
+    if not stale:
+        return None
+    # A stale violation whose replacement set is ALSO empty is a genuine
+    # rule conflict (2+ active constraints intersect to nothing), not a
+    # stale-but-fixable value — same distinction confirm's own gate makes
+    # (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15). Asking
+    # a question with zero valid options would just reproduce the exact
+    # unanswerable "Please provide a value" dead-end this session's other
+    # fixes exist to prevent — report the conflict instead. Nothing is
+    # mutated here (no push_snapshot, no pops) since there's no productive
+    # value to clear toward.
+    conflicted = [v for v in stale if not v.allowed]
+    if conflicted:
+        conflict_labels = [
+            _cpq_engine.disambiguated_label(v.attr, attrs) for v in conflicted
+        ]
+        if len(conflict_labels) == 1:
+            return (
+                f"⚠️ **Rule conflict detected.** **{conflict_labels[0]}** has "
+                f"no valid options left, given your other selections — the "
+                f"active rules conflict with each other. Please change one "
+                f"of your earlier selections."
+            )
+        return (
+            "⚠️ **Rule conflict detected.** The following have no valid "
+            "options left, given your other selections: "
+            + ", ".join(f"**{l}**" for l in conflict_labels)
+            + " — the active rules conflict with each other. Please change "
+            "one of your earlier selections."
+        )
+    push_snapshot(session, reason="stale_constraint_reask")
+    stale_vns: list[str] = []
+    for v in stale:
+        vn = v.attr.variable_name
+        if v.attr.select_type == "multi":
+            kept = [iv for iv in session.filled_multi.get(vn, []) if iv in v.allowed]
+            if kept:
+                session.filled_multi[vn] = kept
+                session.display_filled[vn] = ", ".join(
+                    next((o.display_name for o in v.attr.options if o.item_value == iv), iv)
+                    for iv in kept
+                )
+            else:
+                session.filled_multi.pop(vn, None)
+                session.display_filled.pop(vn, None)
+        else:
+            session.filled.pop(vn, None)
+            session.display_filled.pop(vn, None)
+        session.filled_source.pop(vn, None)
+        stale_vns.append(vn)
+    session.pending_variables = stale_vns + [
+        v for v in session.pending_variables if v not in stale_vns
+    ]
+    session.status = "configuring"
+    session.complete = False
+    first = stale[0]
+    prompt = _cpq_engine.next_question_prompt(first.attr, constrained_item_values=first.allowed)
+    first_label = _cpq_engine.disambiguated_label(first.attr, attrs)
+    rest_labels = [_cpq_engine.disambiguated_label(v.attr, attrs) for v in stale[1:]]
+    also_note = (
+        f"\n\n*(I'll also ask about {', '.join(f'**{l}**' for l in rest_labels)} next.)*"
+        if rest_labels else ""
+    )
+    return (
+        f"Before finishing — **{first_label}** is no longer valid given "
+        f"your other selections.\n\n{prompt}{also_note}"
+    )
+
+
 def _handle_cascade(
     req: "AskRequest",
     session: Any,
@@ -1832,19 +1932,23 @@ def _handle_cascade(
             f"before this configuration can be completed."
         )
     else:
-        # All resolved → verbose summary, JSON only on request (§6/Phase K)
-        session.status = "awaiting_approval"
-        summary = _cpq_summary_text(
-            display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-        )
-        answer = (
-            cascade_note + "\n\n"
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
+        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        if _stale_reask is not None:
+            answer = cascade_note + "\n\n" + _stale_reask
+        else:
+            # All resolved → verbose summary, JSON only on request (§6/Phase K)
+            session.status = "awaiting_approval"
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id, sources=session.filled_source,
+            )
+            answer = (
+                cascade_note + "\n\n"
+                f"Configuration complete for **{session.product_name}**.\n\n"
+                + (f"{summary}\n\n" if summary else "")
+                + f"Click **JSON** below to see the full payload, "
+                  f"say **confirm** to submit, or describe any changes."
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     result = {
@@ -2024,18 +2128,22 @@ def _handle_multi_select_removal(
             f"before this configuration can be completed."
         )
     else:
-        session.status = "awaiting_approval"
-        summary = _cpq_summary_text(
-            display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-        )
-        answer = (
-            cascade_note + "\n\n"
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
+        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        if _stale_reask is not None:
+            answer = cascade_note + "\n\n" + _stale_reask
+        else:
+            session.status = "awaiting_approval"
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id, sources=session.filled_source,
+            )
+            answer = (
+                cascade_note + "\n\n"
+                f"Configuration complete for **{session.product_name}**.\n\n"
+                + (f"{summary}\n\n" if summary else "")
+                + f"Click **JSON** below to see the full payload, "
+                  f"say **confirm** to submit, or describe any changes."
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -2190,18 +2298,22 @@ def _handle_attr_activation(
             _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     else:
-        session.status = "post_approval"
-        summary = _cpq_summary_text(
-            display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-        )
-        answer = (
-            cascade_note + "\n\n"
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
+        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        if _stale_reask is not None:
+            answer = cascade_note + "\n\n" + _stale_reask
+        else:
+            session.status = "post_approval"
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id, sources=session.filled_source,
+            )
+            answer = (
+                cascade_note + "\n\n"
+                f"Configuration complete for **{session.product_name}**.\n\n"
+                + (f"{summary}\n\n" if summary else "")
+                + f"Click **JSON** below to see the full payload, "
+                  f"say **confirm** to submit, or describe any changes."
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -2334,18 +2446,22 @@ def _handle_attr_clear(
             _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     else:
-        session.status = "post_approval"
-        summary = _cpq_summary_text(
-            display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-        )
-        answer = (
-            cascade_note + "\n\n"
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
+        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        if _stale_reask is not None:
+            answer = cascade_note + "\n\n" + _stale_reask
+        else:
+            session.status = "post_approval"
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id, sources=session.filled_source,
+            )
+            answer = (
+                cascade_note + "\n\n"
+                f"Configuration complete for **{session.product_name}**.\n\n"
+                + (f"{summary}\n\n" if summary else "")
+                + f"Click **JSON** below to see the full payload, "
+                  f"say **confirm** to submit, or describe any changes."
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -2494,18 +2610,22 @@ def _handle_bulk_quantity_change(
             f"before this configuration can be completed."
         )
     else:
-        session.status = "awaiting_approval"
-        summary = _cpq_summary_text(
-            display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-        )
-        answer = (
-            cascade_note + "\n\n"
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
+        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        if _stale_reask is not None:
+            answer = cascade_note + "\n\n" + _stale_reask
+        else:
+            session.status = "awaiting_approval"
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id, sources=session.filled_source,
+            )
+            answer = (
+                cascade_note + "\n\n"
+                f"Configuration complete for **{session.product_name}**.\n\n"
+                + (f"{summary}\n\n" if summary else "")
+                + f"Click **JSON** below to see the full payload, "
+                  f"say **confirm** to submit, or describe any changes."
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -2820,18 +2940,22 @@ def _handle_cascade_multi(
             f"before this configuration can be completed."
         )
     else:
-        session.status = "awaiting_approval"
-        summary = _cpq_summary_text(
-            display_filled, visible_attrs, rule_ids,
-            session.product_name, req.workspace_id, sources=session.filled_source,
-        )
-        answer = (
-            cascade_note + "\n\n"
-            f"Configuration complete for **{session.product_name}**.\n\n"
-            + (f"{summary}\n\n" if summary else "")
-            + f"Click **JSON** below to see the full payload, "
-              f"say **confirm** to submit, or describe any changes."
-        )
+        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        if _stale_reask is not None:
+            answer = cascade_note + "\n\n" + _stale_reask
+        else:
+            session.status = "awaiting_approval"
+            summary = _cpq_summary_text(
+                display_filled, visible_attrs, rule_ids,
+                session.product_name, req.workspace_id, sources=session.filled_source,
+            )
+            answer = (
+                cascade_note + "\n\n"
+                f"Configuration complete for **{session.product_name}**.\n\n"
+                + (f"{summary}\n\n" if summary else "")
+                + f"Click **JSON** below to see the full payload, "
+                  f"say **confirm** to submit, or describe any changes."
+            )
 
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -7741,6 +7865,10 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
               f"catalog. Please remove it or choose a different option "
               f"before this configuration can be completed."
         )
+    elif not pending and (_stale_reask := _reask_stale_constraint_violations(
+        session, attrs, con_rules, bml_eval,
+    )) is not None:
+        answer = (f"{dropped_note.strip()}\n\n" if dropped_note else "") + _stale_reask
     elif not pending:
         # ── STEP 6: FORMAT B — verbose summary, JSON only on request ─────────
         # (§6/Phase K: JSON is never shown unasked, even at completion —
