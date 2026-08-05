@@ -3664,6 +3664,7 @@ class CpqEngine:
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        constrained_opts: dict[int, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
@@ -3687,6 +3688,29 @@ class CpqEngine:
         filled_multi — see apply_hiding_rules; only consulted for
         declarative conditions on a select_type=="multi" attribute
         (operators "7"/"8").
+
+        constrained_opts — this function runs BEFORE apply_constraint_rules
+        recomputes it for the CURRENT pass (evaluate_rules_loop's own
+        "hide -> auto_fill -> recommend -> constrain" order), so what's
+        passed in here is necessarily the PREVIOUS pass's result — still
+        the best available signal, and correct at the fixed point once the
+        loop converges. Live regression: without this, a recommendation
+        whose OWN condition never depends on the attribute a DIFFERENT,
+        active constraint just narrowed (e.g. "Default Service Type based
+        on Solution Type selected" vs. a Hardware-Version-keyed constraint
+        on the same target) kept unconditionally re-asserting its value
+        the instant auto_fill's own re-validation correctly dropped it —
+        every pass, forever, since this function only checks "is the
+        target currently filled at all", never "is this specific value
+        still valid". evaluate_rules_loop's fixed-point check compares KEY
+        sets, not values, so a target that's drop-then-immediately-refilled
+        to the SAME stale value every pass looked stable and converged
+        with the wrong answer, silently reporting a complete configuration
+        that a separate BOM-gate consistency check only caught one turn
+        later. None (caller opted out, e.g. the constraint pass hasn't run
+        even once yet) applies no filter, same "unknown -> don't guess a
+        restriction that isn't provably there" convention used everywhere
+        else a constraint is optional in this module.
         """
         if not rules:
             return {}
@@ -3738,13 +3762,24 @@ class CpqEngine:
                  if o.item_value.lower() == recommended_value.lower()),
                 recommended_value,
             )
-            if _valid(recommended_value):
-                new_fills[target.variable_name] = (recommended_value, matched_display)
-                rule_trace.record_fire(
-                    rule_type="recommendation", rule_id=rule.rule_name,
-                    attr=target.variable_name, outcome=f"set={recommended_value}",
-                    bml_tier="script" if rule.script is not None else None,
-                )
+            if not _valid(recommended_value):
+                continue
+            allowed_for_target = (
+                constrained_opts.get(target.entity_id) if constrained_opts else None
+            )
+            if allowed_for_target is not None and not any(
+                recommended_value.lower() == v.lower() for v in allowed_for_target
+            ):
+                # A DIFFERENT, already-active constraint has ruled this
+                # value out — never re-assert it just because this rule's
+                # own condition doesn't happen to mention that constraint.
+                continue
+            new_fills[target.variable_name] = (recommended_value, matched_display)
+            rule_trace.record_fire(
+                rule_type="recommendation", rule_id=rule.rule_name,
+                attr=target.variable_name, outcome=f"set={recommended_value}",
+                bml_tier="script" if rule.script is not None else None,
+            )
         if new_fills:
             logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
         return new_fills
@@ -3757,6 +3792,7 @@ class CpqEngine:
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        constrained_opts: dict[int, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Re-apply recommendation rules to attrs the ENGINE already filled
         (never a customer's own choice), correcting them when a driving
@@ -3791,6 +3827,10 @@ class CpqEngine:
         exactly like any other rule-sourced fill and treat them as a real
         change for cascade-dependent invalidation, same as an explicit
         customer edit would.
+
+        constrained_opts — see apply_recommendation_rules' identical
+        parameter; a "correction" back to a value a different, currently-
+        active constraint has already excluded is not a correction.
         """
         if not rules:
             return {}
@@ -3838,6 +3878,23 @@ class CpqEngine:
                         continue
                 recommended_value = rule.recommended_value
             if not _valid(recommended_value) or current.lower() == recommended_value.lower():
+                continue
+            # Same guard as apply_recommendation_rules: a "correction" back
+            # to a value a DIFFERENT, currently-active constraint has
+            # already excluded is not a correction — it's silently undoing
+            # auto_fill's own correct fallback. Live regression: auto_fill
+            # correctly fell back to "ESSENTIAL" once Hardware Version
+            # activated a constraint excluding "ADVANCED", but this method
+            # ran right after (same pass) and — seeing its own unrelated
+            # condition (Solution Type) still held, with no constraint
+            # awareness at all — "resynced" it straight back to the
+            # excluded value, every single pass.
+            allowed_for_target = (
+                constrained_opts.get(target.entity_id) if constrained_opts else None
+            )
+            if allowed_for_target is not None and not any(
+                recommended_value.lower() == v.lower() for v in allowed_for_target
+            ):
                 continue
             matched_display = next(
                 (o.display_name for o in target.options
@@ -4376,7 +4433,9 @@ class CpqEngine:
                     attrs=attrs, rec=rec_rules, con=con_rules, filled=filled))
 
             new_fills = self.apply_recommendation_rules(
-                attrs, filled, rec_rules, bml_eval=bml_eval, filled_multi=multi)
+                attrs, filled, rec_rules, bml_eval=bml_eval, filled_multi=multi,
+                constrained_opts=constrained_opts,
+            )
             if new_fills:
                 # Route multi-select targets to `multi`, not `filled` — same
                 # reasoning as auto_fill's final assignment block: this is
@@ -4410,6 +4469,7 @@ class CpqEngine:
             # deliberately only logs.
             _resynced = self.resync_stale_recommendations(
                 attrs, filled, sources, rec_rules, bml_eval=bml_eval, filled_multi=multi,
+                constrained_opts=constrained_opts,
             )
             if _resynced:
                 for k, (iv, d) in _resynced.items():
@@ -5282,8 +5342,39 @@ class CpqEngine:
             # 2. Recommendation rule already satisfied by the current filled
             # state — takes priority over the catalog's generic default_value
             # (see _satisfied_recommendation's docstring for the bug this closes).
+            #
+            # Constraint-filtered candidates, not the raw `attr.options` menu
+            # (live regression, docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_
+            # PLAN_2026_08_05.md follow-up): a script-backed recommendation
+            # rule with a condition unrelated to the attribute a DIFFERENT,
+            # ALREADY-ACTIVE constraint rule just narrowed can confidently
+            # reassert a value the constraint has already ruled out —
+            # confirmed live: "Default Service Type based on Solution Type
+            # selected" unconditionally returns "ADVANCED" (its own
+            # condition never depends on Hardware Version at all), while a
+            # separate constraint rule keyed on Hardware Version had
+            # already narrowed this same attr to 3 completely different
+            # options. Passing the full, unfiltered menu here let the
+            # recommendation win anyway — every turn, forever — because
+            # _satisfied_recommendation's own membership check
+            # (`candidate_opts`) only protects against a value that was
+            # NEVER a real menu option, not one merely excluded by an
+            # active constraint. This silently produced an internally
+            # inconsistent "Configuration complete" (the recommendation
+            # resolved the attribute so nothing was pending) that a
+            # separate BOM-gate consistency check caught one full turn
+            # later, only once the customer said "confirm".
             if not value and rec_by_target and attr.options:
-                rec_match = _satisfied_recommendation(attr, attr.options)
+                _allowed_for_rec = (
+                    set(constrained_opts.get(attr.entity_id, []))
+                    if constrained_opts else None
+                )
+                _rec_candidate_opts = [
+                    o for o in attr.options
+                    if _valid(o.item_value)
+                    and (_allowed_for_rec is None or o.item_value in _allowed_for_rec)
+                ]
+                rec_match = _satisfied_recommendation(attr, _rec_candidate_opts)
                 if rec_match:
                     value, display = rec_match
                     source = "rule"
