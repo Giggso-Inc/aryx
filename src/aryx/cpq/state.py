@@ -28,18 +28,42 @@ class HidingRule:
 
     condition_attr_id  — entity_id of the BmConfigAttr whose value is checked (declarative only).
     condition_value    — the value that triggers this rule (declarative only).
+    condition_operator — the raw BM-native operator code for the
+        condition_attr_id/condition_value pair above ("4" = "=", the
+        default/majority code — see conditions' docstring below for the
+        full mapping). Only meaningful when conditions is None/empty.
     target_attr_id     — entity_id of the BmConfigAttr to hide/show.
     hide               — True = hide the target when condition is met; False = show (declarative only).
     rule_name          — human-readable rule name for reporting.
     conditions         — ALL of this rule's real bm_config_rule_input rows, as
-        [(attr_id, value), ...] — same attr_id repeated means OR (any of
-        those values matches for that attribute); different attr_ids are
-        ANDed together. None/empty falls back to the single
-        condition_attr_id/condition_value pair (backward compatible with
-        rules that only ever had one input). Confirmed live: 445/688 rules
-        in a real catalog carry 2+ input rows that the old single-pair
-        shape silently collapsed to just the last one — see
-        docs/CPQ_APX_NEXT_RULE_CATALOG.md "Gap Deep-Dive & Impact Analysis".
+        [(attr_id, value, operator), ...] — same attr_id repeated means OR
+        (any of those values matches for that attribute); different
+        attr_ids are ANDed together. None/empty falls back to the single
+        condition_attr_id/condition_value/condition_operator triple
+        (backward compatible with rules that only ever had one input).
+        Confirmed live: 445/688 rules in a real catalog carry 2+ input
+        rows that the old single-pair shape silently collapsed to just
+        the last one — see docs/CPQ_APX_NEXT_RULE_CATALOG.md "Gap
+        Deep-Dive & Impact Analysis".
+
+        operator is the raw BM-native comparison-operator code, confirmed
+        (docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md) via
+        cross-referencing 31 independently-authored rule names against
+        their raw operator1 values: "4"="=" (74.5% of real rows, the
+        previously-assumed default), "3"="<>" (18%, confirmed 31/31),
+        "1"="<", "2"="<=", "5"=">" (all high-confidence, low-volume).
+        "7"="intersects"/"8"="disjoint from" (Phase 2, confirmed via
+        104/110 real rows targeting a select_type=="multi" attribute plus
+        4 independently-authored rule-name cross-checks with zero
+        contradictions — see bml._operator_hit's docstring for the
+        confirmed rule examples). For "7"/"8" the attribute's current
+        value is itself allowed to be a "~"-joined set (a multi-select
+        attr's current selections), checked via set intersection rather
+        than scalar equality. Before the Phase 1 fix, every operator was
+        silently treated as "=" — e.g. a real rule named "...For Non
+        Federal" with operator "3" (<>) against "FEDERAL" was being
+        evaluated as customerType=="FEDERAL" instead of
+        customerType<>"FEDERAL", inverting its intent.
     """
     rule_name: str
     condition_attr_id: int
@@ -47,7 +71,8 @@ class HidingRule:
     target_attr_id: int
     hide: bool = True
     script: str | None = None
-    conditions: list[tuple[int, str]] | None = None
+    conditions: list[tuple[int, str, str]] | None = None
+    condition_operator: str = "4"
 
 
 @dataclass
@@ -77,7 +102,7 @@ class RecommendationRule:
     ``script`` alone (see CpqEngine._load_value_rules).
 
     conditions — see HidingRule.conditions; same AND-of-OR-groups semantics
-    for declarative multi-input rules.
+    and same operator mapping for declarative multi-input rules.
     """
     rule_name: str
     condition_attr_id: int
@@ -85,8 +110,9 @@ class RecommendationRule:
     target_attr_id: int
     recommended_value: str = ""  # item_value to auto-select on the target attr
     script: str | None = None
-    conditions: list[tuple[int, str]] | None = None
+    conditions: list[tuple[int, str, str]] | None = None
     condition_script: str | None = None
+    condition_operator: str = "4"
 
 
 @dataclass
@@ -112,8 +138,9 @@ class ConstraintRule:
     target_attr_id: int
     allowed_values: list[str]  # item_values that remain valid when condition fires
     script: str | None = None  # raw BML — evaluated dynamically when set
-    conditions: list[tuple[int, str]] | None = None  # see HidingRule.conditions
+    conditions: list[tuple[int, str, str]] | None = None  # see HidingRule.conditions
     condition_script: str | None = None
+    condition_operator: str = "4"
 
 
 @dataclass
@@ -124,8 +151,8 @@ class ValidationRule:
     before this. Its BmConfigRuleAction has function_id=-1 (not
     script-backed) AND an empty value1 — it neither hides, sets, nor
     restricts anything; its only content is a human-readable `message`
-    attached to `target_attr_id`, to be shown when `condition_script`
-    (a BML boolean) evaluates True.
+    attached to `target_attr_id`, to be shown when its condition
+    (`condition_script` OR `conditions`) evaluates True.
 
     Confirmed live: CommandCentral Aware's "Constrain video devices" rule
     (target OfVideoStreamingDevices_3_swSoln) checks
@@ -138,13 +165,32 @@ class ValidationRule:
     neither), because none of them model "condition true -> show this
     message, no value change" at all.
 
-    Same D2 "never guess" discipline as every other script-backed rule
-    here: an unknown/unresolvable condition never fires.
+    docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md — the same
+    message-only shape also occurs with a purely DECLARATIVE condition
+    (no condition_function_id at all), e.g. "Restrict Number Of Seats
+    between 1 and 12" -> message "Number Of Seats must be between 1 and
+    12", gated on numberOfSeats_astro < 1 OR > 12 (operators "1"/"5",
+    confirmed docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md).
+    Confirmed via a 4-catalog audit: 138/150 real "set_type=-1, no value1"
+    action rows carry a genuine, non-boilerplate message — this was
+    explicitly anticipated but deferred in the loader (see
+    _load_value_rules's own historical comment) pending exactly this
+    confirmation. condition_attr_id/condition_value/condition_operator/
+    conditions mirror HidingRule's identically-named fields; exactly one
+    of condition_script / conditions is set per instance, same convention
+    as HidingRule/ConstraintRule/RecommendationRule.
+
+    Same D2 "never guess" discipline as every other rule here: an
+    unknown/unresolvable condition (script OR declarative) never fires.
     """
     rule_name: str
     target_attr_id: int
-    condition_script: str
     message: str
+    condition_script: str | None = None
+    condition_attr_id: int = 0
+    condition_value: str = ""
+    condition_operator: str = "4"
+    conditions: list[tuple[int, str, str]] | None = None
 
 
 @dataclass

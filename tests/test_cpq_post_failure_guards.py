@@ -116,7 +116,7 @@ def test_recheck_constraints_calls_engine_with_correct_argument_order():
     s.filled = {"hW": "H45"}
     seen_args = {}
 
-    def _fake_apply_constraint_rules(attrs, rules, filled, bml_eval=None):
+    def _fake_apply_constraint_rules(attrs, rules, filled, bml_eval=None, filled_multi=None):
         seen_args["attrs"] = attrs
         seen_args["rules"] = rules
         seen_args["filled"] = filled
@@ -144,7 +144,7 @@ def test_recheck_constraints_flags_value_outside_recomputed_allowed_set():
     s.filled = {"hW": "H45"}
     engine = type("E", (), {
         "apply_constraint_rules": staticmethod(
-            lambda attrs, rules, filled, bml_eval=None: {1: ["H1"]},
+            lambda attrs, rules, filled, bml_eval=None, filled_multi=None: {1: ["H1"]},
         ),
     })()
     violations = recheck_constraints(engine, [attr], s, ["some rule"], None)
@@ -160,7 +160,7 @@ def test_recheck_constraints_passes_when_filled_value_still_allowed():
     s.filled = {"hW": "H45"}
     engine = type("E", (), {
         "apply_constraint_rules": staticmethod(
-            lambda attrs, rules, filled, bml_eval=None: {1: ["H1", "H45"]},
+            lambda attrs, rules, filled, bml_eval=None, filled_multi=None: {1: ["H1", "H45"]},
         ),
     })()
     assert recheck_constraints(engine, [attr], s, ["some rule"], None) == []
@@ -177,7 +177,7 @@ def test_validate_before_payload_stale_constraint_does_not_hard_fail():
     s.filled_source = {"hW": "auto"}
     engine = type("E", (), {
         "apply_constraint_rules": staticmethod(
-            lambda attrs, rules, filled, bml_eval=None: {1: ["H1"]},
+            lambda attrs, rules, filled, bml_eval=None, filled_multi=None: {1: ["H1"]},
         ),
     })()
     result = validate_before_payload(engine, [attr], s, ["some rule"], None)
@@ -203,7 +203,7 @@ def test_validate_before_payload_hard_fails_on_unexpected_constraint_exception()
     s = CpqSession()
     s.filled = {"hW": "H45"}
 
-    def _raises(attrs, rules, filled, bml_eval=None):
+    def _raises(attrs, rules, filled, bml_eval=None, filled_multi=None):
         raise RuntimeError("boom")
 
     engine = type("E", (), {"apply_constraint_rules": staticmethod(_raises)})()
@@ -230,7 +230,7 @@ def test_recheck_constraints_detects_stale_multi_select_value():
     s.filled_multi = {"carrierSel": ["ATT", "VZW"]}
     engine = type("E", (), {
         "apply_constraint_rules": staticmethod(
-            lambda attrs, rules, filled, bml_eval=None: {1: ["VZW"]},
+            lambda attrs, rules, filled, bml_eval=None, filled_multi=None: {1: ["VZW"]},
         ),
     })()
     violations = recheck_constraints(engine, [attr], s, ["some rule"], None)
@@ -253,7 +253,7 @@ def test_recheck_constraints_multi_select_passes_when_all_values_still_allowed()
     s.filled_multi = {"carrierSel": ["ATT", "VZW"]}
     engine = type("E", (), {
         "apply_constraint_rules": staticmethod(
-            lambda attrs, rules, filled, bml_eval=None: {1: ["ATT", "VZW"]},
+            lambda attrs, rules, filled, bml_eval=None, filled_multi=None: {1: ["ATT", "VZW"]},
         ),
     })()
     assert recheck_constraints(engine, [attr], s, ["some rule"], None) == []

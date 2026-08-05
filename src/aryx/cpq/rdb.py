@@ -210,9 +210,19 @@ class PostgresCpqRdb:
 
     def fetch_rule_inputs(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> list[tuple[int, int, str]]:
-        """All BmConfigRuleInput rows: (rule_id, condition_attr_id, value1)."""
-        rows: list[tuple[int, int, str]] = []
+    ) -> list[tuple[int, int, str, str]]:
+        """All BmConfigRuleInput rows: (rule_id, condition_attr_id, value1,
+        operator1).
+
+        operator1 (docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md)
+        — the raw BM-native comparison-operator code ("1"/"2"/"3"/"4"/"5"/
+        "7"/"8"), returned verbatim as a string; interpretation (=, <>, <,
+        <=, >, ...) happens in bml.evaluate_declarative_conditions, not
+        here. Confirmed live: previously dropped entirely, silently
+        collapsing every condition to "=" regardless of the real operator
+        — 25.5% of real rows in one catalog use a non-"4" ("=") operator.
+        """
+        rows: list[tuple[int, int, str, str]] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigruleinput")
         try:
             with self._connection() as conn:
@@ -222,17 +232,18 @@ class PostgresCpqRdb:
                         SELECT COALESCE(attributes->>'bm_config_rule_id',
                                         attributes->>'rule_id'),
                                attributes->>'attribute_id',
-                               attributes->>'value1'
+                               attributes->>'value1',
+                               attributes->>'operator1'
                         FROM aryx_entity
                         WHERE workspace_id = %s
                           AND replace(lower(ontology_type), '_', '') LIKE %s
                         """,
                         (workspace_id, type_pattern),
                     )
-                    for rid, aid, val in cur.fetchall():
+                    for rid, aid, val, op in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
-                            rows.append((rid_i, aid_i, val or ""))
+                            rows.append((rid_i, aid_i, val or "", (op or "").strip()))
         except Exception:
             logger.debug("cpq rdb: rule-input fetch failed", exc_info=True)
         return rows
@@ -610,8 +621,10 @@ class OracleCpqRdb(PostgresCpqRdb):
 
     def fetch_rule_inputs(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> list[tuple[int, int, str]]:
-        rows: list[tuple[int, int, str]] = []
+    ) -> list[tuple[int, int, str, str]]:
+        """See the Postgres dialect's identical-contract docstring above for
+        operator1's meaning and why it's now returned alongside value1."""
+        rows: list[tuple[int, int, str, str]] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigruleinput")
         try:
             with self._connection() as conn:
@@ -621,17 +634,18 @@ class OracleCpqRdb(PostgresCpqRdb):
                         SELECT COALESCE(JSON_VALUE(attributes, '$.bm_config_rule_id'),
                                         JSON_VALUE(attributes, '$.rule_id')),
                                JSON_VALUE(attributes, '$.attribute_id'),
-                               JSON_VALUE(attributes, '$.value1')
+                               JSON_VALUE(attributes, '$.value1'),
+                               JSON_VALUE(attributes, '$.operator1')
                         FROM aryx_entity
                         WHERE workspace_id = :1
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                         """,
                         (workspace_id, type_pattern),
                     )
-                    for rid, aid, val in cur.fetchall():
+                    for rid, aid, val, op in cur.fetchall():
                         rid_i, aid_i = _as_int(rid), _as_int(aid)
                         if rid_i and aid_i:
-                            rows.append((rid_i, aid_i, val or ""))
+                            rows.append((rid_i, aid_i, val or "", (op or "").strip()))
         except Exception:
             logger.debug("cpq rdb(oracle): rule-input fetch failed", exc_info=True)
         return rows

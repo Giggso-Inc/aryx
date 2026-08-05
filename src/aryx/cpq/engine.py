@@ -26,6 +26,7 @@ from typing import Any
 from aryx.config import get_settings
 from aryx.cpq.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
+    _operator_hit,
 )
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
@@ -197,8 +198,13 @@ def _label_mentioned_strict(label_lower: str, q_lower: str) -> bool:
     return False
 
 
-def _condition_value_matches(current_val: str, condition_value: str) -> bool:
-    """True when current_val satisfies a single condition_attr/condition_value pair.
+def _condition_value_matches(
+    current_val: str, condition_value: str, operator: str = "4",
+) -> bool:
+    """True when current_val satisfies a single condition_attr/condition_value
+    pair, under the given BM-native operator (default "4" = "=" — the
+    majority code, and the only one every existing caller assumed before
+    docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md).
 
     condition_value is sometimes a "~"-delimited OR-list (same convention
     already handled for ConstraintRule.allowed_values, e.g. "PREMIER~ADVANCED
@@ -213,9 +219,16 @@ def _condition_value_matches(current_val: str, condition_value: str) -> bool:
     Single-value condition_value strings behave identically to a plain
     equality check (a 1-element split set), so this is a strict superset
     fix, not a behavior change for the common case.
+
+    A None result from the shared _operator_hit (a numeric operator that
+    couldn't parse either side) is treated as "does not match" here rather
+    than propagated as "unresolved" — every caller of this scalar path
+    already treats a plain False the same as "condition not met, skip,"
+    so collapsing None into False changes nothing observable for the
+    handful of real rows that would hit this edge case, while keeping this
+    function's simple bool return type callers already depend on.
     """
-    allowed = {v.strip().lower() for v in condition_value.split("~") if v.strip()}
-    return current_val.strip().lower() in allowed
+    return bool(_operator_hit(current_val, [condition_value], operator))
 
 
 # Ontology types ingested from an XML source are named '{SourceStem}Bm{Tag}'
@@ -2451,9 +2464,13 @@ class CpqEngine:
         for the AND/OR-grouping semantics applied to this list.
         """
         rdb = get_cpq_rdb()
-        inputs_by_rule: dict[int, list[tuple[int, str]]] = {}
-        for rid, aid, val in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
-            inputs_by_rule.setdefault(rid, []).append((aid, val))
+        # (attr_id, value, operator) — operator is the raw BM-native
+        # comparison code ("1"/"2"/.../"8"); see docs/CPQ_DECLARATIVE_
+        # CONDITION_OPERATOR_PLAN_2026_08_05.md for what each means and
+        # bml.evaluate_declarative_conditions for where it's interpreted.
+        inputs_by_rule: dict[int, list[tuple[int, str, str]]] = {}
+        for rid, aid, val, op in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
+            inputs_by_rule.setdefault(rid, []).append((aid, val, op))
         actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]] = {}
         for rid, aid, at, val, fn, st, comments in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
             actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st, comments))
@@ -2516,6 +2533,33 @@ class CpqEngine:
         if source_id is not None and (source_id in inputs or source_id in actions):
             return source_id
         return entity_id
+
+    @staticmethod
+    def _condition_has_operator_collision(conditions: list[tuple[int, str, str]]) -> bool:
+        """True if any single attribute in `conditions` is checked with 2+
+        DISTINCT operators — docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_
+        PLAN_2026_08_05.md.
+
+        evaluate_declarative_conditions groups same-attribute rows under a
+        single shared operator (the first row's); for rows that genuinely
+        share one operator (an OR-list of acceptable/excluded values) this
+        is correct, but for rows with DIFFERENT operators on the same
+        attribute it silently drops every row after the first — confirmed
+        live via "Restrict Number Of Seats between 1 and 12" (`< 1` and
+        `> 12` on the same attribute; only `< 1` would ever be checked).
+
+        Confirmed catalog-wide (80 real rules across 4 catalogs) that no
+        single combining rule fixes this correctly for every shape yet —
+        two patterns are confirmed for 76% of cases, but forcing them in
+        now would silently mis-evaluate the remaining ~24% (see the plan
+        doc). Used as a purely structural, never-guessed exclusion: a rule
+        hitting this collision is skipped entirely (same as if it were
+        never confirmed) rather than loaded with a guessed combining rule.
+        """
+        by_attr: dict[int, set[str]] = {}
+        for attr_id, _value, operator in conditions:
+            by_attr.setdefault(attr_id, set()).add(operator)
+        return any(len(ops) > 1 for ops in by_attr.values())
 
     def _detect_layout_tier(self, workspace_id: int, catalog_prefix: str = "") -> int:
         """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §2 — one cheap existence
@@ -2943,6 +2987,7 @@ class CpqEngine:
         rules: list[HidingRule] = []
         script_missing = 0
         unresolved = 0
+        operator_collisions = 0
         try:
             rdb, inputs, actions, marked, chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
@@ -2992,12 +3037,26 @@ class CpqEngine:
                 if not inp_list:
                     unresolved += 1
                     continue
-                cond_attr_id, cond_value = inp_list[-1]
+                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+                # — a declarative condition checking the SAME attribute
+                # with 2+ different operators cannot yet be evaluated
+                # correctly by evaluate_declarative_conditions (it
+                # collapses to the first row's operator+value, silently
+                # dropping the rest). No single combining rule is
+                # confirmed safe for every such shape yet — skip rather
+                # than load with a guessed combining rule, same treatment
+                # as the value-less-hide/constraint/recommendation/
+                # validation branches in _load_value_rules.
+                if self._condition_has_operator_collision(inp_list):
+                    operator_collisions += 1
+                    continue
+                cond_attr_id, cond_value, cond_operator = inp_list[-1]
                 for target_attr_id, action_type in targets:
                     rules.append(HidingRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         hide=(int(action_type or 2) == 2),
                         conditions=list(inp_list),
@@ -3008,10 +3067,32 @@ class CpqEngine:
         script_backed = sum(1 for r in rules if r.script is not None)
         logger.info(
             "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
-            "%d missing script, %d unresolved)",
+            "%d missing script, %d unresolved, %d skipped: same-attribute "
+            "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
+            "PLAN_2026_08_05.md)",
             len(rules), len(rules) - script_backed, script_backed,
-            script_missing, unresolved)
-        return rules
+            script_missing, unresolved, operator_collisions)
+
+        # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
+        # real, separate class of "hide" rule authored OUTSIDE rule_type=11
+        # (a declarative action with no literal value1, e.g. "Associated rec
+        # rule to Hide Frequency Band for Single Band") that _load_value_
+        # rules already classifies correctly but the rest of the codebase
+        # only ever asked for hiding rules from THIS method. Merged in here,
+        # not by changing load_recommendation_and_constraint_rules' return
+        # arity (that method is monkeypatched with a bare (rec, con) 2-tuple
+        # across the test suite) — every existing caller of load_hiding_
+        # rules() gets the complete set automatically, with zero call-site
+        # changes anywhere.
+        try:
+            _rec, _con, _val, extra_hiding = self._load_value_rules(workspace_id, catalog_prefix)
+        except Exception:
+            logger.debug("cpq: value-less hiding rule load failed", exc_info=True)
+            extra_hiding = []
+        if extra_hiding:
+            logger.info("cpq: loaded %d additional value-less-action hiding rules",
+                        len(extra_hiding))
+        return rules + extra_hiding
 
     @staticmethod
     def _attr_index(attrs: list[ConfigAttr]) -> dict[int, ConfigAttr]:
@@ -3033,15 +3114,33 @@ class CpqEngine:
     @staticmethod
     def _filled_by_rule_id(
         attrs: list[ConfigAttr], filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[int, str]:
-        """Map every id a rule may reference → the attr's filled value."""
+        """Map every id a rule may reference → the attr's filled value.
+
+        select_type=="multi" attrs' current selections live in filled_multi
+        (a separate structure from the scalar filled dict — see
+        evaluate_rules_loop's docstring), not in `filled`. Joined here into
+        a single "~"-delimited string so bml._operator_hit's set-
+        intersection check (operators "7"/"8" — docs/CPQ_DECLARATIVE_
+        CONDITION_OPERATOR_PLAN_2026_08_05.md Phase 2) sees the real
+        current selection set instead of always finding the condition
+        attribute missing. An explicitly-emptied multi-select (filled_multi
+        holding []) still maps to "" here rather than being omitted — that
+        is a known, real "nothing selected" state, not an unfilled one.
+        """
+        multi = filled_multi or {}
         out: dict[int, str] = {}
         for a in attrs:
-            if a.variable_name in filled:
+            if a.variable_name in multi:
+                val = "~".join(multi[a.variable_name])
+            elif a.variable_name in filled:
                 val = filled[a.variable_name]
-                out[a.entity_id] = val
-                if a.source_id is not None:
-                    out[a.source_id] = val
+            else:
+                continue
+            out[a.entity_id] = val
+            if a.source_id is not None:
+                out[a.source_id] = val
         return out
 
     def apply_hiding_rules(
@@ -3050,6 +3149,7 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[HidingRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> tuple[list[ConfigAttr], list[str], set[str]]:
         """Apply hiding rules against current filled values.
 
@@ -3063,6 +3163,11 @@ class CpqEngine:
         "unknown applies no constraint" rule, just inverted for hiding
         (unknown → don't hide, not → hide everything).
 
+        filled_multi — select_type=="multi" attrs' current selections (see
+        _filled_by_rule_id); only consulted for declarative conditions
+        (operators "7"/"8"). Script-backed rules are unaffected — they
+        already read `filled` directly via bml_eval, a separate contract.
+
         Returns:
           filtered_attrs — attrs still visible after rules are applied
           rule_messages  — human-readable list of rules that fired (for reporting)
@@ -3072,7 +3177,7 @@ class CpqEngine:
             return attrs, [], set()
 
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
 
         hidden_eids: set[int] = set()
         messages: list[str] = []
@@ -3110,7 +3215,9 @@ class CpqEngine:
                 current_val = filled_by_rule_id.get(rule.condition_attr_id)
                 if current_val is None:
                     continue  # condition attr not filled yet — rule doesn't fire
-                if not _condition_value_matches(current_val, rule.condition_value):
+                if not _condition_value_matches(
+                    current_val, rule.condition_value, rule.condition_operator
+                ):
                     continue
             if rule.hide:
                 hidden_eids.add(target.entity_id)
@@ -3136,9 +3243,12 @@ class CpqEngine:
 
     def _load_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> tuple[list[RecommendationRule], list[ConstraintRule], list[ValidationRule]]:
-        """Load recommendation + constraint + validation rules together in
-        one pass.
+    ) -> tuple[
+        list[RecommendationRule], list[ConstraintRule], list[ValidationRule],
+        list[HidingRule],
+    ]:
+        """Load recommendation + constraint + validation + (a subset of)
+        hiding rules together in one pass.
 
         Historical note: this originally filtered by a hardcoded rule_type
         ("10" for recommendation, "5" for constraint) and action_type ("3"
@@ -3155,12 +3265,22 @@ class CpqEngine:
         set_type on each declarative rule action: set_type == -1 always
         means "remove this value from the allowed set" (constraint); any
         other set_type means "assign this specific value" (recommendation/
-        default). This classifies every non-hiding rule by inspecting its
-        own actions instead of trusting rule_type/action_type.
+        default) EXCEPT when the action carries no value1 at all and
+        set_type is 1 or 3 — confirmed (docs/CPQ_VALUELESS_HIDE_ACTION_
+        LOADING_GAP_PLAN_2026_08_05.md) via cross-catalog rule-name sampling
+        to be a genuine "hide" action authored outside rule_type=11 (hiding
+        needs no value to assign). This classifies every non-rule_type=11
+        rule by inspecting its own actions instead of trusting rule_type/
+        action_type.
 
-        Hiding rules (rule_type=11) are unaffected by any of this — that
-        code has proven reliable across both catalogs and is loaded
-        separately by load_hiding_rules().
+        The BULK of hiding rules (rule_type=11) are unaffected by any of
+        this — that code has proven reliable across both catalogs and is
+        loaded separately by load_hiding_rules(). The 4th return value here
+        is a SEPARATE, ADDITIONAL subset of hiding rules this codebase used
+        to silently drop (see the plan doc above for the 1,096-action,
+        421-rule, 4-catalog audit) — callers needing the complete hiding
+        rule set must merge both (see load_recommendation_and_constraint_
+        rules' return type).
 
         catalog_prefix — scopes to one ingested catalog (see
         _load_rule_join_data) when the workspace holds more than one
@@ -3169,11 +3289,16 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] = []
         con_rules: list[ConstraintRule] = []
         validation_rules: list[ValidationRule] = []
+        hiding_rules: list[HidingRule] = []
         script_constraints = 0
         script_recommendations_wired = 0
         cond_script_skipped = 0
         script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
+        validation_collisions_skipped = 0
+        constraint_collisions_skipped = 0
+        recommendation_collisions_skipped = 0
+        hiding_collisions_skipped = 0
         # Ambiguous multi-value recommendations are never guessed (D2) — instead
         # routed through the same HITL ingest-question queue used elsewhere for
         # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
@@ -3257,37 +3382,78 @@ class CpqEngine:
                             "but no BmFunction script was found — not gated",
                             rule_name, fn_id)
                         continue
-                    cond_attr_id, cond_value = 0, ""
+                    cond_attr_id, cond_value, cond_operator = 0, "", "4"
                 else:
                     if not inp_list:
                         continue
-                    cond_attr_id, cond_value = inp_list[-1]
+                    cond_attr_id, cond_value, cond_operator = inp_list[-1]
 
                 # Amendment 12 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
                 # a message-only action (function_id=-1, empty value1, but
                 # a real human-authored `comments` string) is neither a
                 # hide, a set, nor a restrict — its only content is a
-                # warning to show when this rule's own condition_script
-                # fires. Every confirmed real case gates on a script
-                # condition (e.g. "Constrain video devices"), so scoped to
-                # that for now — a declarative-condition version would need
-                # separate confirmation before being added here.
-                if condition_script is not None:
-                    for aid, _at, val, act_fn, _set_type, comments in acts:
-                        # "System recommendation" is BigMachines' own
-                        # generic boilerplate default comment (confirmed:
-                        # 365 occurrences across this one catalog alone) —
-                        # not a real, customer-facing message a rule
-                        # author actually wrote. Excluded so a meaningless
-                        # "⚠️ System recommendation" is never shown.
-                        if (act_fn == -1 and not val and comments
-                                and comments.strip().lower() != "system recommendation"):
-                            validation_rules.append(ValidationRule(
-                                rule_name=rule_name or str(eid),
-                                target_attr_id=aid,
-                                condition_script=condition_script,
-                                message=comments,
-                            ))
+                # warning to show when this rule's own condition (script OR
+                # declarative) fires. Originally scoped to condition_script
+                # only ("a declarative-condition version would need
+                # separate confirmation before being added here" — this
+                # comment's own prior text); docs/CPQ_CONDITIONAL_REQUIRED_
+                # RULE_PLAN_2026_08_05.md provides that confirmation via a
+                # 4-catalog audit (138/150 real declarative "set_type=-1,
+                # no value1" rows carry a genuine message). By this point
+                # either condition_script is set or inp_list was non-empty
+                # (the `if not inp_list: continue` above already filtered
+                # out rules with neither), so no extra guard is needed here.
+                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+                # — a declarative (non-script) condition where the SAME
+                # attribute is checked with 2+ different operators cannot
+                # yet be evaluated correctly (evaluate_declarative_
+                # conditions collapses to the first row's operator+value,
+                # silently dropping the rest). Confirmed catalog-wide that
+                # no single combining rule is safe for every such shape
+                # yet (80 real rules across 4 catalogs, only 76% resolved
+                # with confidence) — applies uniformly to EVERY rule type
+                # built from this same inp_list (constraint, recommend,
+                # value-less-hide, validation-message below), not just the
+                # newest one: a HidingRule/ConstraintRule/RecommendationRule
+                # with this exact same-attribute/multi-operator shape would
+                # evaluate its condition just as incorrectly (e.g.
+                # collapsing "< 1 OR > 12" to only ever check "< 1", or
+                # merging a CONTAINS/NOT-CONTAINS pair into a single
+                # over-broad OR) as an unguarded declarative ValidationRule
+                # would. Skip all four entirely rather than load any of
+                # them with a guessed combining rule. Does not apply to
+                # script-gated rules (condition_script is not None) —
+                # those are unaffected, evaluated by the BML engine, not
+                # evaluate_declarative_conditions.
+                declarative_condition_collision = (
+                    condition_script is None
+                    and inp_list is not None
+                    and self._condition_has_operator_collision(inp_list)
+                )
+                for aid, _at, val, act_fn, _set_type, comments in acts:
+                    # "System recommendation" is BigMachines' own generic
+                    # boilerplate default comment (confirmed: 365
+                    # occurrences across this one catalog alone) — not a
+                    # real, customer-facing message a rule author actually
+                    # wrote. Excluded so a meaningless "⚠️ System
+                    # recommendation" is never shown. Re-confirmed as the
+                    # only such placeholder across all 138 declarative
+                    # candidates too (see the plan doc's boilerplate scan).
+                    if (act_fn == -1 and not val and comments
+                            and comments.strip().lower() != "system recommendation"):
+                        if declarative_condition_collision:
+                            validation_collisions_skipped += 1
+                            continue
+                        validation_rules.append(ValidationRule(
+                            rule_name=rule_name or str(eid),
+                            target_attr_id=aid,
+                            message=comments,
+                            condition_script=condition_script,
+                            condition_attr_id=cond_attr_id,
+                            condition_value=cond_value,
+                            condition_operator=cond_operator,
+                            conditions=list(inp_list) if condition_script is None else None,
+                        ))
 
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
@@ -3298,8 +3464,26 @@ class CpqEngine:
                 # the target with zero real valid values.
                 restrict_by_target: dict[int, list[str]] = {}
                 recommend_by_target: dict[int, str] = {}
+                # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md
+                # — a declarative action with NO literal value1 (function_id
+                # =-1) is a genuine "hide" for set_type in (1, 3): confirmed
+                # via cross-catalog rule-name sampling (1,096 such actions
+                # across 4 ingested catalogs), e.g. "Associated rec rule to
+                # Hide Frequency Band for Single Band" — hiding needs no
+                # value to assign, unlike a recommendation/constraint. Scoped
+                # to (1, 3) specifically: set_type=2's real names are
+                # genuinely mixed (some "Show...", some "Set X to blank" —
+                # a third, distinct semantic), and set_type=-1's real names
+                # are mostly unrelated format/range validation ("Restrict
+                # value of Astro System Id to 4 hexadecimal chars") — never
+                # guessed without separate confirmation (D2).
+                hide_targets: set[int] = set()
                 for aid, _at, val, act_fn, set_type, _comments in acts:
-                    if act_fn != -1 or not val:
+                    if act_fn != -1:
+                        continue
+                    if not val:
+                        if set_type in (1, 3):
+                            hide_targets.add(aid)
                         continue
                     parts = [p.strip() for p in val.split("~") if p.strip()]
                     if set_type == -1:
@@ -3364,38 +3548,69 @@ class CpqEngine:
                             "(condition_function_id=%d) but no declarative "
                             "action — nothing to gate", rule_name, fn_id)
                 for target_attr_id, allowed in restrict_by_target.items():
+                    if declarative_condition_collision:
+                        constraint_collisions_skipped += 1
+                        continue
                     con_rules.append(ConstraintRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         allowed_values=allowed,
                         conditions=list(inp_list) if condition_script is None else None,
                         condition_script=condition_script,
                     ))
                 for target_attr_id, rec_val in recommend_by_target.items():
+                    if declarative_condition_collision:
+                        recommendation_collisions_skipped += 1
+                        continue
                     rec_rules.append(RecommendationRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         recommended_value=rec_val,
                         conditions=list(inp_list) if condition_script is None else None,
                         condition_script=condition_script,
                     ))
+                for target_attr_id in hide_targets:
+                    if declarative_condition_collision:
+                        hiding_collisions_skipped += 1
+                        continue
+                    hiding_rules.append(HidingRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        condition_operator=cond_operator,
+                        target_attr_id=target_attr_id,
+                        hide=True,
+                        script=condition_script,
+                        conditions=list(inp_list) if condition_script is None else None,
+                    ))
         except Exception:
             logger.debug("cpq: value-rule load failed", exc_info=True)
         logger.info(
-            "cpq: loaded %d recommendation rules, %d constraint rules "
+            "cpq: loaded %d recommendation rules, %d constraint rules, "
+            "%d value-less hide rules "
             "(%d script-backed constraints, %d script-backed recommendations "
             "wired, %d script-condition rules gating a declarative action, "
             "%d script-condition rules skipped, %d ambiguous "
-            "multi-value recommendations skipped)",
-            len(rec_rules), len(con_rules), script_constraints,
+            "multi-value recommendations skipped, %d/%d/%d recommendation/"
+            "constraint/hide skipped: same-attribute operator collision, "
+            "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
+            len(rec_rules), len(con_rules), len(hiding_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
-            cond_script_skipped, ambiguous_recommendations_skipped)
-        logger.info("cpq: loaded %d validation (warning-message) rules", len(validation_rules))
-        return rec_rules, con_rules, validation_rules
+            cond_script_skipped, ambiguous_recommendations_skipped,
+            recommendation_collisions_skipped, constraint_collisions_skipped,
+            hiding_collisions_skipped)
+        logger.info(
+            "cpq: loaded %d validation (warning-message) rules "
+            "(%d skipped: same-attribute operator collision, "
+            "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
+            len(validation_rules), validation_collisions_skipped)
+        return rec_rules, con_rules, validation_rules, hiding_rules
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -3405,8 +3620,16 @@ class CpqEngine:
         independently call _load_value_rules(), which repeats the same 4
         join-table queries plus a full function-script scan; calling both
         back-to-back (as every CPQ turn does) doubles that DB work for no
-        reason. Prefer this method whenever both lists are needed."""
-        rec_rules, con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        reason. Prefer this method whenever both lists are needed.
+
+        Return arity deliberately unchanged (still a 2-tuple) — widely
+        monkeypatched across the test suite with a bare `(rec, con)` stub;
+        the value-less-action hiding rule subset (docs/CPQ_VALUELESS_HIDE_
+        ACTION_LOADING_GAP_PLAN_2026_08_05.md) is folded into
+        load_hiding_rules() instead, so every existing caller/mock of
+        EITHER method keeps working unchanged."""
+        rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return rec_rules, con_rules
 
     def load_validation_rules(
@@ -3418,7 +3641,8 @@ class CpqEngine:
         Shares _load_value_rules' fetch with load_recommendation_and_
         constraint_rules — call both only when genuinely needed, same
         double-fetch caveat as load_recommendation_rules."""
-        _rec_rules, _con_rules, validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        _rec_rules, _con_rules, validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return validation_rules
 
     def load_recommendation_rules(
@@ -3429,7 +3653,8 @@ class CpqEngine:
         If you also need constraint rules, call
         load_recommendation_and_constraint_rules() instead to avoid fetching
         the same rule data twice."""
-        rec_rules, _con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        rec_rules, _con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return rec_rules
 
     def apply_recommendation_rules(
@@ -3438,6 +3663,7 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
@@ -3457,11 +3683,15 @@ class CpqEngine:
         same D2 "never guess" principle as the existing tilde-delimited
         ambiguous-recommendation skip below. bml_eval=None (caller opted
         out) silently skips script-backed rules, same as apply_constraint_rules.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute
+        (operators "7"/"8").
         """
         if not rules:
             return {}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
@@ -3498,7 +3728,8 @@ class CpqEngine:
                     if rule.condition_attr_id not in filled_by_rule_id:
                         continue
                     if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                        rule.condition_operator,
                     ):
                         continue
                 recommended_value = rule.recommended_value
@@ -3525,6 +3756,7 @@ class CpqEngine:
         filled_source: dict[str, str] | None,
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Re-apply recommendation rules to attrs the ENGINE already filled
         (never a customer's own choice), correcting them when a driving
@@ -3547,9 +3779,12 @@ class CpqEngine:
         confirmed, not a value this method has any business overwriting.
 
         Only ever revisits attrs already in `filled` (single-select) — a
-        multi-select target's value lives in `filled_multi`, out of scope
+        multi-select TARGET's value lives in `filled_multi`, out of scope
         for this pass; `apply_recommendation_rules` (unfilled attrs) is
-        unaffected, this only ever touches already-filled ones.
+        unaffected, this only ever touches already-filled ones. filled_multi
+        is still accepted here for the separate purpose of reading a rule's
+        CONDITION attribute when that attribute (not the target) is
+        select_type=="multi" (operators "7"/"8" — see apply_hiding_rules).
 
         Returns {variable_name: (item_value, display)} for every attr whose
         value actually changed. The caller is expected to apply these
@@ -3561,7 +3796,7 @@ class CpqEngine:
             return {}
         _NEVER_OVERRIDE = {"user", "hint", "cascade"}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         corrections: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
@@ -3597,7 +3832,8 @@ class CpqEngine:
                     if rule.condition_attr_id not in filled_by_rule_id:
                         continue
                     if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                        rule.condition_operator,
                     ):
                         continue
                 recommended_value = rule.recommended_value
@@ -3622,27 +3858,44 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[ValidationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, str]:
-        """Evaluate every ValidationRule's condition_script against the
-        current filled state (Amendment 12). Returns {variable_name:
-        message} for every rule whose condition currently, definitely
-        holds — never on False or unknown (D2 "never guess": an
-        unresolvable script never fires a warning it can't actually back).
+        """Evaluate every ValidationRule's condition (script OR
+        declarative — docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md)
+        against the current filled state (Amendment 12). Returns
+        {variable_name: message} for every rule whose condition currently,
+        definitely holds — never on False or unknown (D2 "never guess": an
+        unresolvable condition never fires a warning it can't actually
+        back).
 
-        bml_eval=None (caller opted out) silently skips all validation
-        rules, same convention as apply_recommendation_rules/
-        apply_constraint_rules.
+        Script-backed rules need bml_eval; bml_eval=None skips those only
+        (same convention as apply_recommendation_rules/
+        apply_constraint_rules) — declarative rules need no BML evaluator
+        at all and are unaffected by bml_eval=None, same as
+        apply_hiding_rules' own declarative branch.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute.
         """
-        if not rules or bml_eval is None:
+        if not rules:
             return {}
         by_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         warnings: dict[str, str] = {}
         for rule in rules:
             target = by_id.get(rule.target_attr_id)
             if not target:
                 continue
-            if bml_eval.condition_holds(rule.condition_script, filled) is True:
-                warnings[target.variable_name] = rule.message
+            if rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                if bml_eval.condition_holds(rule.condition_script, filled) is True:
+                    warnings[target.variable_name] = rule.message
+            elif rule.conditions:
+                matched, _blocked = evaluate_declarative_conditions(
+                    rule.conditions, filled_by_rule_id)
+                if matched is True:
+                    warnings[target.variable_name] = rule.message
         return warnings
 
     # ── Constraint rule loader ────────────────────────────────────────────────
@@ -3661,7 +3914,8 @@ class CpqEngine:
         load_recommendation_and_constraint_rules() instead to avoid
         fetching the same rule data twice.
         """
-        _rec_rules, con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        _rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return con_rules
 
     def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
@@ -3693,6 +3947,7 @@ class CpqEngine:
         rules: list[ConstraintRule],
         filled: dict[str, str],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[int, list[str]]:
         """Return {attr_entity_id: [allowed_item_values]} for attrs with active constraints.
 
@@ -3704,11 +3959,15 @@ class CpqEngine:
         variable_name — BML scripts compare variable names directly). An
         unknown script outcome (None) applies no constraint rather than
         allowing everything.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute
+        (operators "7"/"8").
         """
         if not rules:
             return {}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         constrained: dict[int, list[str]] = {}
 
         def _intersect(target: ConfigAttr, allowed: list[str]) -> None:
@@ -3773,7 +4032,8 @@ class CpqEngine:
                 if rule.condition_attr_id not in filled_by_rule_id:
                     continue
                 if not _condition_value_matches(
-                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                    rule.condition_operator,
                 ):
                     continue
             _intersect(target, rule.allowed_values)
@@ -3797,6 +4057,7 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
         filled_source: dict[str, str] | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Cross-check `filled` against each rule type's OWN independently
         computed result — NOT a self-referential re-derivation of the same
@@ -3828,7 +4089,8 @@ class CpqEngine:
         issues: list[dict[str, Any]] = []
         by_vn = {a.variable_name: a for a in attrs}
 
-        _visible, _msgs, hidden_vns = self.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)
+        _visible, _msgs, hidden_vns = self.apply_hiding_rules(
+            attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi)
         for vn in hidden_vns:
             if filled.get(vn):
                 issues.append({
@@ -3836,7 +4098,8 @@ class CpqEngine:
                     "issue": "filled but an active hiding rule matches",
                 })
 
-        constrained_opts = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        constrained_opts = self.apply_constraint_rules(
+            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi)
         for vn, value in filled.items():
             attr = by_vn.get(vn)
             allowed = constrained_opts.get(attr.entity_id) if attr else None
@@ -3847,7 +4110,7 @@ class CpqEngine:
                 })
 
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         for rule in rec_rules:
             target = by_rule_id.get(rule.target_attr_id)
             if not target or target.variable_name not in filled:
@@ -3880,7 +4143,9 @@ class CpqEngine:
                     current_val = filled_by_rule_id.get(rule.condition_attr_id)
                     condition_met = (
                         current_val is not None
-                        and _condition_value_matches(current_val, rule.condition_value)
+                        and _condition_value_matches(
+                            current_val, rule.condition_value, rule.condition_operator
+                        )
                     )
                 recommended = rule.recommended_value
             if condition_met and recommended is not None and filled[vn].lower() != recommended.lower():
@@ -3966,7 +4231,7 @@ class CpqEngine:
 
             # Apply hiding rules first so auto_fill only fills visible attrs
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
-                attrs, filled, hiding_rules, bml_eval=bml_eval)
+                attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=multi)
 
             # Strip values ONLY for attrs an explicit hiding rule removed from
             # view. Popping everything not currently visible (the old
@@ -3998,7 +4263,8 @@ class CpqEngine:
                 bml_eval.prefetch_tier2(self._bml_prefetch_requests(
                     attrs=attrs, rec=rec_rules, con=con_rules, filled=filled))
 
-            new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
+            new_fills = self.apply_recommendation_rules(
+                attrs, filled, rec_rules, bml_eval=bml_eval, filled_multi=multi)
             if new_fills:
                 # Route multi-select targets to `multi`, not `filled` — same
                 # reasoning as auto_fill's final assignment block: this is
@@ -4031,7 +4297,7 @@ class CpqEngine:
             # boundary is safe to cross where find_rule_inconsistencies
             # deliberately only logs.
             _resynced = self.resync_stale_recommendations(
-                attrs, filled, sources, rec_rules, bml_eval=bml_eval,
+                attrs, filled, sources, rec_rules, bml_eval=bml_eval, filled_multi=multi,
             )
             if _resynced:
                 for k, (iv, d) in _resynced.items():
@@ -4040,7 +4306,7 @@ class CpqEngine:
                     sources[k] = "rule"
 
             constrained_opts = self.apply_constraint_rules(
-                attrs, con_rules, filled, bml_eval=bml_eval,
+                attrs, con_rules, filled, bml_eval=bml_eval, filled_multi=multi,
             )
 
             if (not _resynced
@@ -4612,7 +4878,7 @@ class CpqEngine:
                             continue
                         cond_val = filled.get(cond_attr.variable_name)
                         if cond_val is None or not _condition_value_matches(
-                            cond_val, rrule.condition_value
+                            cond_val, rrule.condition_value, rrule.condition_operator
                         ):
                             continue
                         recommended_value = rrule.recommended_value
@@ -5521,7 +5787,7 @@ class CpqEngine:
         if not self._ADD_VERB_RE.search(question):
             return None
         _visible_now, _msgs, hidden_now = self.apply_hiding_rules(
-            attrs, filled, hiding_rules, bml_eval=bml_eval)
+            attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=filled_multi)
         q_lower = question.lower()
         for attr in attrs:
             vn = attr.variable_name
@@ -7414,7 +7680,7 @@ class CpqEngine:
                 continue
             conditions = getattr(r, "conditions", None)
             if conditions:
-                for cond_id, _val in conditions:
+                for cond_id, *_rest in conditions:
                     _add_edge(cond_id, target_id)
             else:
                 cond_id = getattr(r, "condition_attr_id", 0)
@@ -7553,7 +7819,7 @@ class CpqEngine:
             cond_ids: list[int] = []
             conditions = getattr(rule, "conditions", None)
             if conditions:
-                cond_ids = [cid for cid, _v in conditions]
+                cond_ids = [cid for cid, *_rest in conditions]
             else:
                 cid = getattr(rule, "condition_attr_id", 0)
                 if cid:
