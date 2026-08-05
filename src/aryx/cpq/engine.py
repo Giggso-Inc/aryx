@@ -2986,6 +2986,7 @@ class CpqEngine:
         rules: list[HidingRule] = []
         script_missing = 0
         unresolved = 0
+        operator_collisions = 0
         try:
             rdb, inputs, actions, marked, chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
@@ -3035,6 +3036,19 @@ class CpqEngine:
                 if not inp_list:
                     unresolved += 1
                     continue
+                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+                # — a declarative condition checking the SAME attribute
+                # with 2+ different operators cannot yet be evaluated
+                # correctly by evaluate_declarative_conditions (it
+                # collapses to the first row's operator+value, silently
+                # dropping the rest). No single combining rule is
+                # confirmed safe for every such shape yet — skip rather
+                # than load with a guessed combining rule, same treatment
+                # as the value-less-hide/constraint/recommendation/
+                # validation branches in _load_value_rules.
+                if self._condition_has_operator_collision(inp_list):
+                    operator_collisions += 1
+                    continue
                 cond_attr_id, cond_value, cond_operator = inp_list[-1]
                 for target_attr_id, action_type in targets:
                     rules.append(HidingRule(
@@ -3052,9 +3066,11 @@ class CpqEngine:
         script_backed = sum(1 for r in rules if r.script is not None)
         logger.info(
             "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
-            "%d missing script, %d unresolved)",
+            "%d missing script, %d unresolved, %d skipped: same-attribute "
+            "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
+            "PLAN_2026_08_05.md)",
             len(rules), len(rules) - script_backed, script_backed,
-            script_missing, unresolved)
+            script_missing, unresolved, operator_collisions)
 
         # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
         # real, separate class of "hide" rule authored OUTSIDE rule_type=11
@@ -3263,6 +3279,9 @@ class CpqEngine:
         script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
         validation_collisions_skipped = 0
+        constraint_collisions_skipped = 0
+        recommendation_collisions_skipped = 0
+        hiding_collisions_skipped = 0
         # Ambiguous multi-value recommendations are never guessed (D2) — instead
         # routed through the same HITL ingest-question queue used elsewhere for
         # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
@@ -3374,12 +3393,22 @@ class CpqEngine:
                 # conditions collapses to the first row's operator+value,
                 # silently dropping the rest). Confirmed catalog-wide that
                 # no single combining rule is safe for every such shape
-                # yet — skip these declarative candidates entirely rather
-                # than load them with a guessed combining rule. Does not
-                # apply to script-gated rules (condition_script is not
-                # None) — those are unaffected, evaluated by the BML
-                # engine, not evaluate_declarative_conditions.
-                validation_blocked_by_collision = (
+                # yet (80 real rules across 4 catalogs, only 76% resolved
+                # with confidence) — applies uniformly to EVERY rule type
+                # built from this same inp_list (constraint, recommend,
+                # value-less-hide, validation-message below), not just the
+                # newest one: a HidingRule/ConstraintRule/RecommendationRule
+                # with this exact same-attribute/multi-operator shape would
+                # evaluate its condition just as incorrectly (e.g.
+                # collapsing "< 1 OR > 12" to only ever check "< 1", or
+                # merging a CONTAINS/NOT-CONTAINS pair into a single
+                # over-broad OR) as an unguarded declarative ValidationRule
+                # would. Skip all four entirely rather than load any of
+                # them with a guessed combining rule. Does not apply to
+                # script-gated rules (condition_script is not None) —
+                # those are unaffected, evaluated by the BML engine, not
+                # evaluate_declarative_conditions.
+                declarative_condition_collision = (
                     condition_script is None
                     and inp_list is not None
                     and self._condition_has_operator_collision(inp_list)
@@ -3395,7 +3424,7 @@ class CpqEngine:
                     # candidates too (see the plan doc's boilerplate scan).
                     if (act_fn == -1 and not val and comments
                             and comments.strip().lower() != "system recommendation"):
-                        if validation_blocked_by_collision:
+                        if declarative_condition_collision:
                             validation_collisions_skipped += 1
                             continue
                         validation_rules.append(ValidationRule(
@@ -3502,6 +3531,9 @@ class CpqEngine:
                             "(condition_function_id=%d) but no declarative "
                             "action — nothing to gate", rule_name, fn_id)
                 for target_attr_id, allowed in restrict_by_target.items():
+                    if declarative_condition_collision:
+                        constraint_collisions_skipped += 1
+                        continue
                     con_rules.append(ConstraintRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
@@ -3513,6 +3545,9 @@ class CpqEngine:
                         condition_script=condition_script,
                     ))
                 for target_attr_id, rec_val in recommend_by_target.items():
+                    if declarative_condition_collision:
+                        recommendation_collisions_skipped += 1
+                        continue
                     rec_rules.append(RecommendationRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
@@ -3524,6 +3559,9 @@ class CpqEngine:
                         condition_script=condition_script,
                     ))
                 for target_attr_id in hide_targets:
+                    if declarative_condition_collision:
+                        hiding_collisions_skipped += 1
+                        continue
                     hiding_rules.append(HidingRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
@@ -3542,10 +3580,14 @@ class CpqEngine:
             "(%d script-backed constraints, %d script-backed recommendations "
             "wired, %d script-condition rules gating a declarative action, "
             "%d script-condition rules skipped, %d ambiguous "
-            "multi-value recommendations skipped)",
+            "multi-value recommendations skipped, %d/%d/%d recommendation/"
+            "constraint/hide skipped: same-attribute operator collision, "
+            "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
             len(rec_rules), len(con_rules), len(hiding_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
-            cond_script_skipped, ambiguous_recommendations_skipped)
+            cond_script_skipped, ambiguous_recommendations_skipped,
+            recommendation_collisions_skipped, constraint_collisions_skipped,
+            hiding_collisions_skipped)
         logger.info(
             "cpq: loaded %d validation (warning-message) rules "
             "(%d skipped: same-attribute operator collision, "

@@ -1,10 +1,38 @@
 # CPQ Same-Attribute Multi-Operator Condition Collision — Investigation (2026-08-05)
 
-**Status: Investigation in progress — not yet scoped, not implemented.**
+**Status: Safety net applied everywhere (2026-08-05); the underlying
+combining-rule fix is still NOT implemented.**
+
+Following a code-review finding, `_condition_has_operator_collision` (built
+for the declarative `ValidationRule` fix) is now applied consistently at
+**every** declarative rule-construction site — `load_hiding_rules`'s
+`rule_type=11` path, and `_load_value_rules`'s `ConstraintRule`/
+`RecommendationRule`/value-less-`HidingRule`/`ValidationRule` branches. A
+rule hitting this collision is skipped and logged the same way everywhere,
+rather than silently mis-evaluated in some rule types and guarded in
+others. This closes the inconsistency the review flagged; it does **not**
+implement the actual combining-rule fix below — that remains open.
+
+**Correction to an earlier claim in this doc/PR**: the two rules used
+earlier as illustrative examples of "already-shipped rules that might be
+mis-evaluating right now" — `"Do not allow Smartlocate to be deselected
+when Smartvideo or SmartEvidence selected"` and `"Allow Multi-Code Plug
+Programming only when Enhancement Level is selected"` — were re-checked
+after applying the guard everywhere and turned out to be **script-backed**
+`ConstraintRule`s in this catalog (their allowed-values come from a BML
+script attached to the action, not from `evaluate_declarative_conditions`;
+`condition_script`/`conditions` are both unset on these instances). They
+were never actually at risk from this specific bug. The underlying
+collision is still real and still confirmed at 80 rules catalog-wide
+(e.g. `"Restrict Number Of Seats between 1 and 12"`, a genuinely
+declarative rule) — only the choice of illustrative example was wrong,
+not the finding itself.
 
 **Standing rule for this doc, same as every other plan this session: do
-not implement anything against this finding until the semantics are
-confirmed against real data with no remaining ambiguity.**
+not implement the combining-rule fix below until the semantics are
+confirmed against real data with no remaining ambiguity.** The exclusion
+guard above is a safety net, not a fix — excluded rules still don't
+evaluate their real condition; they just no longer do so incorrectly.
 
 ## Discovery context
 

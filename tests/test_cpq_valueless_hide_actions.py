@@ -26,11 +26,12 @@ class _FakeRdb:
     need -- (rule_id, attr_id, action_type, value1, function_id, set_type,
     comments) action rows plus the matching condition/value-rule fetches."""
 
-    def __init__(self, value_rules, inputs=(), actions=(), scripts=None):
+    def __init__(self, value_rules, inputs=(), actions=(), scripts=None, hiding_rules=()):
         self._value_rules = value_rules
         self._inputs = list(inputs)
         self._actions = list(actions)
         self._scripts = scripts or {}
+        self._hiding_rules = list(hiding_rules)
 
     def fetch_value_rules(self, workspace_id, catalog_prefix=""):
         return self._value_rules
@@ -57,7 +58,7 @@ class _FakeRdb:
         return self._scripts
 
     def fetch_rules(self, workspace_id, rule_type, catalog_prefix="", active_only=False):
-        return []
+        return self._hiding_rules if rule_type == "11" else []
 
 
 def _load(fake_rdb):
@@ -328,3 +329,73 @@ def test_full_pipeline_load_then_apply_hides_the_target():
     _visible, _msgs, hidden_vns = eng.apply_hiding_rules(
         attrs, {"productSelectionProduct_all": "APX NEXT SINGLE BAND"}, hiding_rules, bml_eval=None)
     assert "modelSelectionFrequencyBandMsl_astro" in hidden_vns
+
+
+# ---- docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md --------
+#
+# The same-attribute/multi-operator collision guard used for the new
+# declarative ValidationRule path must ALSO apply to every other rule type
+# built from the identical inp_list shape -- HidingRule (both the
+# rule_type=11 path here and the value-less-hide path above),
+# ConstraintRule, and RecommendationRule. evaluate_declarative_conditions
+# would mis-evaluate any of these exactly the same way (collapsing to the
+# first row's operator, silently dropping the rest) if left unguarded.
+
+def test_rule_type_11_hiding_rule_excluded_on_operator_collision():
+    """The rule_type=11 path (load_hiding_rules' own primary loop, not the
+    value-less-hide extension) must also skip a same-attribute/multi-
+    operator collision rather than load it with a wrong condition."""
+    fake_rdb = _FakeRdb(
+        value_rules=[],
+        hiding_rules=[(700, 700, "Hide X between 1 and 12", -1)],
+        inputs=[(700, 1, "1", "1"), (700, 1, "12", "5")],
+    )
+    with patch("aryx.cpq.engine.get_cpq_rdb", return_value=fake_rdb), \
+         patch("aryx.cpq.engine.IngestQuestionStore", side_effect=RuntimeError("no db")):
+        hiding_rules = CpqEngine().load_hiding_rules(1, "")
+    assert hiding_rules == []
+
+
+def test_rule_type_11_hiding_rule_unaffected_when_no_collision():
+    fake_rdb = _FakeRdb(
+        value_rules=[],
+        hiding_rules=[(710, 710, "Hide X for Y", -1)],
+        inputs=[(710, 1, "Y")],
+        actions=[(710, 2, 2, None, -1, -1, None)],
+    )
+    with patch("aryx.cpq.engine.get_cpq_rdb", return_value=fake_rdb), \
+         patch("aryx.cpq.engine.IngestQuestionStore", side_effect=RuntimeError("no db")):
+        hiding_rules = CpqEngine().load_hiding_rules(1, "")
+    assert len(hiding_rules) == 1
+
+
+def test_constraint_rule_excluded_on_operator_collision():
+    fake_rdb = _FakeRdb(
+        value_rules=[(800, 800, "Constrain X between 1 and 12", "2", -1)],
+        inputs=[(800, 1, "1", "1"), (800, 1, "12", "5")],
+        actions=[(800, 2, 1, "A~B", -1, -1, "System recommendation")],
+    )
+    _rec, con_rules, _val, _hide = _load(fake_rdb)
+    assert con_rules == []
+
+
+def test_recommendation_rule_excluded_on_operator_collision():
+    fake_rdb = _FakeRdb(
+        value_rules=[(900, 900, "Recommend X between 1 and 12", "2", -1)],
+        inputs=[(900, 1, "1", "1"), (900, 1, "12", "5")],
+        actions=[(900, 2, 1, "SOME VALUE", -1, 3, "System recommendation")],
+    )
+    rec_rules, _con, _val, _hide = _load(fake_rdb)
+    assert rec_rules == []
+
+
+def test_valueless_hide_action_excluded_on_operator_collision():
+    """The value-less-hide path (docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_
+    GAP_PLAN_2026_08_05.md) must also respect the collision guard."""
+    fake_rdb = _FakeRdb(
+        value_rules=[(1000, 1000, "Hide X between 1 and 12", "1", -1)],
+        inputs=[(1000, 1, "1", "1"), (1000, 1, "12", "5")],
+        actions=[(1000, 2, 1, None, -1, 3, "System recommendation")],
+    )
+    _rec, _con, _val, hiding_rules = _load(fake_rdb)
+    assert hiding_rules == []
