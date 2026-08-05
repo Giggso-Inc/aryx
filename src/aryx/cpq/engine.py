@@ -3028,7 +3028,27 @@ class CpqEngine:
             "%d missing script, %d unresolved)",
             len(rules), len(rules) - script_backed, script_backed,
             script_missing, unresolved)
-        return rules
+
+        # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
+        # real, separate class of "hide" rule authored OUTSIDE rule_type=11
+        # (a declarative action with no literal value1, e.g. "Associated rec
+        # rule to Hide Frequency Band for Single Band") that _load_value_
+        # rules already classifies correctly but the rest of the codebase
+        # only ever asked for hiding rules from THIS method. Merged in here,
+        # not by changing load_recommendation_and_constraint_rules' return
+        # arity (that method is monkeypatched with a bare (rec, con) 2-tuple
+        # across the test suite) — every existing caller of load_hiding_
+        # rules() gets the complete set automatically, with zero call-site
+        # changes anywhere.
+        try:
+            _rec, _con, _val, extra_hiding = self._load_value_rules(workspace_id, catalog_prefix)
+        except Exception:
+            logger.debug("cpq: value-less hiding rule load failed", exc_info=True)
+            extra_hiding = []
+        if extra_hiding:
+            logger.info("cpq: loaded %d additional value-less-action hiding rules",
+                        len(extra_hiding))
+        return rules + extra_hiding
 
     @staticmethod
     def _attr_index(attrs: list[ConfigAttr]) -> dict[int, ConfigAttr]:
@@ -3163,9 +3183,12 @@ class CpqEngine:
 
     def _load_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> tuple[list[RecommendationRule], list[ConstraintRule], list[ValidationRule]]:
-        """Load recommendation + constraint + validation rules together in
-        one pass.
+    ) -> tuple[
+        list[RecommendationRule], list[ConstraintRule], list[ValidationRule],
+        list[HidingRule],
+    ]:
+        """Load recommendation + constraint + validation + (a subset of)
+        hiding rules together in one pass.
 
         Historical note: this originally filtered by a hardcoded rule_type
         ("10" for recommendation, "5" for constraint) and action_type ("3"
@@ -3182,12 +3205,22 @@ class CpqEngine:
         set_type on each declarative rule action: set_type == -1 always
         means "remove this value from the allowed set" (constraint); any
         other set_type means "assign this specific value" (recommendation/
-        default). This classifies every non-hiding rule by inspecting its
-        own actions instead of trusting rule_type/action_type.
+        default) EXCEPT when the action carries no value1 at all and
+        set_type is 1 or 3 — confirmed (docs/CPQ_VALUELESS_HIDE_ACTION_
+        LOADING_GAP_PLAN_2026_08_05.md) via cross-catalog rule-name sampling
+        to be a genuine "hide" action authored outside rule_type=11 (hiding
+        needs no value to assign). This classifies every non-rule_type=11
+        rule by inspecting its own actions instead of trusting rule_type/
+        action_type.
 
-        Hiding rules (rule_type=11) are unaffected by any of this — that
-        code has proven reliable across both catalogs and is loaded
-        separately by load_hiding_rules().
+        The BULK of hiding rules (rule_type=11) are unaffected by any of
+        this — that code has proven reliable across both catalogs and is
+        loaded separately by load_hiding_rules(). The 4th return value here
+        is a SEPARATE, ADDITIONAL subset of hiding rules this codebase used
+        to silently drop (see the plan doc above for the 1,096-action,
+        421-rule, 4-catalog audit) — callers needing the complete hiding
+        rule set must merge both (see load_recommendation_and_constraint_
+        rules' return type).
 
         catalog_prefix — scopes to one ingested catalog (see
         _load_rule_join_data) when the workspace holds more than one
@@ -3196,6 +3229,7 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] = []
         con_rules: list[ConstraintRule] = []
         validation_rules: list[ValidationRule] = []
+        hiding_rules: list[HidingRule] = []
         script_constraints = 0
         script_recommendations_wired = 0
         cond_script_skipped = 0
@@ -3325,8 +3359,26 @@ class CpqEngine:
                 # the target with zero real valid values.
                 restrict_by_target: dict[int, list[str]] = {}
                 recommend_by_target: dict[int, str] = {}
+                # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md
+                # — a declarative action with NO literal value1 (function_id
+                # =-1) is a genuine "hide" for set_type in (1, 3): confirmed
+                # via cross-catalog rule-name sampling (1,096 such actions
+                # across 4 ingested catalogs), e.g. "Associated rec rule to
+                # Hide Frequency Band for Single Band" — hiding needs no
+                # value to assign, unlike a recommendation/constraint. Scoped
+                # to (1, 3) specifically: set_type=2's real names are
+                # genuinely mixed (some "Show...", some "Set X to blank" —
+                # a third, distinct semantic), and set_type=-1's real names
+                # are mostly unrelated format/range validation ("Restrict
+                # value of Astro System Id to 4 hexadecimal chars") — never
+                # guessed without separate confirmation (D2).
+                hide_targets: set[int] = set()
                 for aid, _at, val, act_fn, set_type, _comments in acts:
-                    if act_fn != -1 or not val:
+                    if act_fn != -1:
+                        continue
+                    if not val:
+                        if set_type in (1, 3):
+                            hide_targets.add(aid)
                         continue
                     parts = [p.strip() for p in val.split("~") if p.strip()]
                     if set_type == -1:
@@ -3412,19 +3464,30 @@ class CpqEngine:
                         conditions=list(inp_list) if condition_script is None else None,
                         condition_script=condition_script,
                     ))
+                for target_attr_id in hide_targets:
+                    hiding_rules.append(HidingRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        target_attr_id=target_attr_id,
+                        hide=True,
+                        script=condition_script,
+                        conditions=list(inp_list) if condition_script is None else None,
+                    ))
         except Exception:
             logger.debug("cpq: value-rule load failed", exc_info=True)
         logger.info(
-            "cpq: loaded %d recommendation rules, %d constraint rules "
+            "cpq: loaded %d recommendation rules, %d constraint rules, "
+            "%d value-less hide rules "
             "(%d script-backed constraints, %d script-backed recommendations "
             "wired, %d script-condition rules gating a declarative action, "
             "%d script-condition rules skipped, %d ambiguous "
             "multi-value recommendations skipped)",
-            len(rec_rules), len(con_rules), script_constraints,
+            len(rec_rules), len(con_rules), len(hiding_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
             cond_script_skipped, ambiguous_recommendations_skipped)
         logger.info("cpq: loaded %d validation (warning-message) rules", len(validation_rules))
-        return rec_rules, con_rules, validation_rules
+        return rec_rules, con_rules, validation_rules, hiding_rules
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -3434,8 +3497,16 @@ class CpqEngine:
         independently call _load_value_rules(), which repeats the same 4
         join-table queries plus a full function-script scan; calling both
         back-to-back (as every CPQ turn does) doubles that DB work for no
-        reason. Prefer this method whenever both lists are needed."""
-        rec_rules, con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        reason. Prefer this method whenever both lists are needed.
+
+        Return arity deliberately unchanged (still a 2-tuple) — widely
+        monkeypatched across the test suite with a bare `(rec, con)` stub;
+        the value-less-action hiding rule subset (docs/CPQ_VALUELESS_HIDE_
+        ACTION_LOADING_GAP_PLAN_2026_08_05.md) is folded into
+        load_hiding_rules() instead, so every existing caller/mock of
+        EITHER method keeps working unchanged."""
+        rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return rec_rules, con_rules
 
     def load_validation_rules(
@@ -3447,7 +3518,8 @@ class CpqEngine:
         Shares _load_value_rules' fetch with load_recommendation_and_
         constraint_rules — call both only when genuinely needed, same
         double-fetch caveat as load_recommendation_rules."""
-        _rec_rules, _con_rules, validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        _rec_rules, _con_rules, validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return validation_rules
 
     def load_recommendation_rules(
@@ -3458,7 +3530,8 @@ class CpqEngine:
         If you also need constraint rules, call
         load_recommendation_and_constraint_rules() instead to avoid fetching
         the same rule data twice."""
-        rec_rules, _con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        rec_rules, _con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return rec_rules
 
     def apply_recommendation_rules(
@@ -3696,7 +3769,8 @@ class CpqEngine:
         load_recommendation_and_constraint_rules() instead to avoid
         fetching the same rule data twice.
         """
-        _rec_rules, con_rules, _validation_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        _rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return con_rules
 
     def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
