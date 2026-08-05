@@ -20,6 +20,7 @@ def _reset_module_state(tmp_path, monkeypatch):
     """Every test gets a clean _open_sessions dict, a tmp trace dir, and a
     mocked durable store -- module-level state must not leak between tests."""
     rule_trace._open_sessions.clear()
+    rule_trace._sealed_run_ids.clear()
     set_run_id("")
     rule_trace._ctx_var.set(None)
     rule_trace._pass_var.set(0)
@@ -33,6 +34,7 @@ def _reset_module_state(tmp_path, monkeypatch):
     monkeypatch.setattr(rule_trace, "_store", lambda: mock_store)
     yield mock_store
     rule_trace._open_sessions.clear()
+    rule_trace._sealed_run_ids.clear()
     set_run_id("")
     rule_trace._ctx_var.set(None)
     rule_trace._pass_var.set(0)
