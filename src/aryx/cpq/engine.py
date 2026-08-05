@@ -3469,6 +3469,7 @@ class CpqEngine:
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         hide=True,
                         script=condition_script,

@@ -18,7 +18,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from aryx.cpq.engine import CpqEngine
-from aryx.cpq.state import ConstraintRule, HidingRule, RecommendationRule
+from aryx.cpq.state import ConfigAttr, ConstraintRule, HidingRule, MenuOption, RecommendationRule
 
 
 class _FakeRdb:
@@ -36,7 +36,13 @@ class _FakeRdb:
         return self._value_rules
 
     def fetch_rule_inputs(self, workspace_id, catalog_prefix=""):
-        return self._inputs
+        # (rule_id, attr_id, value1, operator1) -- 3-tuple inputs default to
+        # operator "4" ("="), same convention as
+        # test_cpq_declarative_condition_operators.py.
+        return [
+            row if len(row) == 4 else (*row, "4")
+            for row in self._inputs
+        ]
 
     def fetch_rule_actions(self, workspace_id, catalog_prefix=""):
         return self._actions
@@ -82,6 +88,21 @@ def test_valueless_declarative_action_becomes_hiding_rule_set_type_3():
     assert rule.condition_value == "APX NEXT SINGLE"
     assert rule.hide is True
     assert rule.script is None
+
+
+def test_valueless_hiding_rule_carries_real_condition_operator():
+    """The new HidingRule must thread condition_operator through like its
+    ConstraintRule/RecommendationRule siblings -- not silently default to
+    "=" when the real condition uses e.g. "<>" (docs/CPQ_DECLARATIVE_
+    CONDITION_OPERATOR_PLAN_2026_08_05.md)."""
+    fake_rdb = _FakeRdb(
+        value_rules=[(150, 150, "Hide X for non-Federal", "1", -1)],
+        inputs=[(150, 1, "FEDERAL", "3")],
+        actions=[(150, 2, 1, None, -1, 3, "System recommendation")],
+    )
+    _rec, _con, _val, hiding_rules = _load(fake_rdb)
+    assert len(hiding_rules) == 1
+    assert hiding_rules[0].condition_operator == "3"
 
 
 def test_valueless_declarative_action_becomes_hiding_rule_set_type_1():
@@ -229,3 +250,81 @@ def test_load_hiding_rules_merges_in_the_valueless_subset():
     assert len(hiding_rules) == 1
     assert hiding_rules[0].target_attr_id == 11
     assert hiding_rules[0].rule_name == "Hide W"
+
+
+# ---- End-to-end: a loaded value-less-action rule actually hides ----------
+#
+# The tests above only prove the LOADING shape is right (HidingRule
+# objects with the right fields). None of them prove a rule loaded this
+# way actually hides its target when run through apply_hiding_rules --
+# closing that gap here, replaying the real "Associated rec rule to Hide
+# Frequency Band for Single Band" shape end-to-end.
+
+def _attr(entity_id: int, vn: str) -> ConfigAttr:
+    return ConfigAttr(
+        entity_id=entity_id, source_id=entity_id, variable_name=vn,
+        display_label=vn, required=False, default_value="",
+        options=[MenuOption(item_value="X", display_name="X", order=1)],
+    )
+
+
+def test_loaded_valueless_hiding_rule_actually_hides_its_target():
+    attrs = [
+        _attr(1, "productSelectionProduct_all"),
+        _attr(2, "modelSelectionFrequencyBandMsl_astro"),
+    ]
+    rules = [
+        HidingRule(
+            rule_name="Associated rec rule to Hide Frequency Band for Single Band",
+            condition_attr_id=1, condition_value="APX NEXT SINGLE BAND",
+            target_attr_id=2, hide=True,
+            conditions=[(1, "APX NEXT SINGLE BAND", "4")],
+        ),
+    ]
+    eng = CpqEngine()
+    _visible, _msgs, hidden_vns = eng.apply_hiding_rules(
+        attrs, {"productSelectionProduct_all": "APX NEXT SINGLE BAND"}, rules, bml_eval=None)
+    assert "modelSelectionFrequencyBandMsl_astro" in hidden_vns
+
+
+def test_loaded_valueless_hiding_rule_does_not_fire_for_a_different_product():
+    attrs = [
+        _attr(1, "productSelectionProduct_all"),
+        _attr(2, "modelSelectionFrequencyBandMsl_astro"),
+    ]
+    rules = [
+        HidingRule(
+            rule_name="Associated rec rule to Hide Frequency Band for Single Band",
+            condition_attr_id=1, condition_value="APX NEXT SINGLE BAND",
+            target_attr_id=2, hide=True,
+            conditions=[(1, "APX NEXT SINGLE BAND", "4")],
+        ),
+    ]
+    eng = CpqEngine()
+    _visible, _msgs, hidden_vns = eng.apply_hiding_rules(
+        attrs, {"productSelectionProduct_all": "APX NEXT ALL BAND"}, rules, bml_eval=None)
+    assert "modelSelectionFrequencyBandMsl_astro" not in hidden_vns
+
+
+def test_full_pipeline_load_then_apply_hides_the_target():
+    """The most faithful proof: build the HidingRule via the ACTUAL
+    _load_value_rules classification path (not hand-constructed), then feed
+    that real output into apply_hiding_rules -- covers the full load ->
+    apply pipeline for this new code path in one test."""
+    fake_rdb = _FakeRdb(
+        value_rules=[(100, 100, "Hide Frequency Band for Single Band", "1", -1)],
+        inputs=[(100, 1, "APX NEXT SINGLE BAND")],
+        actions=[(100, 2, 1, None, -1, 3, "System recommendation")],
+    )
+    with patch("aryx.cpq.engine.get_cpq_rdb", return_value=fake_rdb), \
+         patch("aryx.cpq.engine.IngestQuestionStore", side_effect=RuntimeError("no db")):
+        hiding_rules = CpqEngine().load_hiding_rules(1, "")
+
+    attrs = [
+        _attr(1, "productSelectionProduct_all"),
+        _attr(2, "modelSelectionFrequencyBandMsl_astro"),
+    ]
+    eng = CpqEngine()
+    _visible, _msgs, hidden_vns = eng.apply_hiding_rules(
+        attrs, {"productSelectionProduct_all": "APX NEXT SINGLE BAND"}, hiding_rules, bml_eval=None)
+    assert "modelSelectionFrequencyBandMsl_astro" in hidden_vns
