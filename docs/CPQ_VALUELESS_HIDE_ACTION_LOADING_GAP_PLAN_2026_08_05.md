@@ -1,6 +1,11 @@
 # CPQ Valueless-Action Rule Loading Gap — Plan (2026-08-05)
 
-**Status: Phase 1 shipped (2026-08-05).**
+**Status: Phase 1 shipped and live-verified (2026-08-05).** Deployed to the
+running container and re-checked against the real Astro-APX catalog:
+`load_hiding_rules(39004, "AstroApx")` went from 396 → 527 rules (+131,
+matching the audit), and rules targeting Frequency Band specifically went
+from 4 → 7, now including `"Associated rec rule to Hide Frequency Band for
+Single Band"` — the rule this investigation started from.
 
 **Correction during implementation:** the live verification used to trace
 the original Frequency Band symptom used the wrong `catalog_prefix`
