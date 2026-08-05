@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from aryx.cpq import rule_trace
+from aryx.cpq.engine import CpqEngine
 from aryx.cpq.logging_context import set_run_id
+from aryx.cpq.state import ConfigAttr, MenuOption
 
 
 @pytest.fixture(autouse=True)
@@ -141,3 +143,58 @@ class TestOrphanSweep:
     def test_sweep_orphans_accepts_explicit_override(self, _reset_module_state):
         rule_trace.sweep_orphans(timeout_hours=1)
         _reset_module_state.sweep_orphans.assert_called_once_with(timeout_hours=1)
+
+    def test_sweep_orphans_degrades_gracefully_when_store_raises(self, _reset_module_state):
+        """Raven review, PR #156: unlike open_session/append_entry/seal_session,
+        sweep_orphans() had no try/except -- an Oracle-backed deployment (no
+        migrations_oracle/0037 variant) would raise on every scheduled sweep
+        instead of degrading gracefully like its siblings."""
+        _reset_module_state.sweep_orphans.side_effect = RuntimeError("relation does not exist")
+        result = rule_trace.sweep_orphans()
+        assert result == []
+
+
+class TestAutoFillIsTraced:
+    """Raven review, PR #156: evaluate_rules_loop's own docstring lists
+    hide -> recommend -> constrain -> auto-fill as all four stages, but the
+    original wiring only traced the first three. auto_fill's own docstring
+    documents two real production bugs (solutionTypeDevices_astro,
+    hWVersion_astro) from exactly this fill-ordering class of issue."""
+
+    def _governed_attr(self) -> ConfigAttr:
+        return ConfigAttr(
+            entity_id=1, variable_name="testAttr_astro", display_label="Test",
+            required=False, default_value="",
+            options=[
+                MenuOption(item_value="A", display_name="Option A", order=1),
+                MenuOption(item_value="B", display_name="Option B", order=2),
+            ],
+        )
+
+    def test_rule_governed_default_or_first_fill_is_traced(self, tmp_path):
+        set_run_id("run-af-1")
+        rule_trace.bind_context(1, "ApxNextConfig")
+        attr = self._governed_attr()
+        engine = CpqEngine()
+        engine.auto_fill(
+            [attr], hints={}, already_filled={},
+            governed_ids={attr.entity_id}, rule_governed_ids={attr.entity_id},
+        )
+        files = list(tmp_path.glob("*.jsonl"))
+        assert len(files) == 1
+        entries = _read_jsonl(files[0])
+        assert any(e["rule_type"] == "auto_fill" for e in entries)
+
+    def test_optional_tier_fill_is_not_traced_as_rule_governed(self, tmp_path):
+        """Only RULE-governed fills (governed_source == "rule") are traced --
+        an "optional"-tier auto-fill has no real rule backing the value, so
+        tracing it as a rule fire would be misleading."""
+        set_run_id("run-af-2")
+        rule_trace.bind_context(1, "ApxNextConfig")
+        attr = self._governed_attr()
+        engine = CpqEngine()
+        engine.auto_fill(
+            [attr], hints={}, already_filled={},
+            governed_ids={attr.entity_id}, rule_governed_ids=set(),
+        )
+        assert list(tmp_path.glob("*.jsonl")) == []

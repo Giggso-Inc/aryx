@@ -149,6 +149,19 @@ class TestClassifyRuleScope:
         assert set(scope["covers_models"]) == {"700/800 MHZ", "900 MHZ"}
 
 
+def _unique_placed_rule_count(result: dict) -> int:
+    """Count DISTINCT rules placed in `families`, not total placements --
+    a rule matched at a family/line node is deliberately placed once per
+    covered model, so summing bucket lengths double-counts fan-out."""
+    seen: set[tuple] = set()
+    for fam in result["families"].values():
+        for models in fam.values():
+            for rules in models.values():
+                for rd in rules:
+                    seen.add((rd["rule_type"], rd["rule_name"]))
+    return len(seen)
+
+
 class TestExportRulesJsonNeverDropsARule:
     def test_every_loaded_rule_appears_somewhere(self):
         entities = [_cat_ent(1, "FAM", "-1", "Family")]
@@ -163,10 +176,39 @@ class TestExportRulesJsonNeverDropsARule:
         con: list[ConstraintRule] = []
         with _patch_fetch_entity_attributes(entities):
             result = export_rules_json(reader, 1, "Test", hiding, rec, con)
-        total_exported = len(result["unscoped_or_unresolved"]) + sum(
-            len(rules)
-            for fam in result["families"].values()
-            for models in fam.values()
-            for rules in models.values()
-        )
+        total_exported = len(result["unscoped_or_unresolved"]) + _unique_placed_rule_count(result)
         assert total_exported == result["total_rules_loaded"] == 3
+
+    def test_fan_out_rule_does_not_inflate_count_or_trigger_false_warning(self, caplog):
+        """Raven review, PR #156: a rule matched at a family/line node with
+        2+ covered models used to inflate total_exported by N-1, making the
+        anti-drop warning fire on the NORMAL case (multi-model fan-out),
+        not just genuine drops."""
+        entities = [
+            _cat_ent(1, "FAM", "-1", "Family"),
+            _cat_ent(2, "LINE", "FAM", "Line"),
+            _cat_ent(3, "MODEL_A", "LINE", "Model A"),
+            _cat_ent(4, "MODEL_B", "LINE", "Model B"),
+            _cat_ent(5, "MODEL_C", "LINE", "Model C"),
+        ]
+        reader = _FakeReader(entities)
+        # One rule scoped at the LINE level -> fans out to 3 models.
+        hiding = [
+            HidingRule(rule_name="H1", condition_attr_id=1, condition_value="Line", target_attr_id=9),
+        ]
+        rec: list[RecommendationRule] = []
+        con: list[ConstraintRule] = []
+        with _patch_fetch_entity_attributes(entities):
+            with caplog.at_level("WARNING"):
+                result = export_rules_json(reader, 1, "Test", hiding, rec, con)
+        assert result["total_rules_loaded"] == 1
+        assert _unique_placed_rule_count(result) == 1  # not 3
+        # The one rule really IS placed under all 3 models (fan-out is
+        # correct behavior, just not double-counted).
+        placed_models = {
+            model_name
+            for fam in result["families"].values()
+            for model_name in fam["models"]
+        }
+        assert placed_models == {"Model A", "Model B", "Model C"}
+        assert "count mismatch" not in caplog.text

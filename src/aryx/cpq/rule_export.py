@@ -191,9 +191,14 @@ def export_rules_json(
     this module performs no rule loading of its own, only tree-building and
     classification.
 
-    Every rule in hiding_rules + rec_rules + con_rules appears EXACTLY once
-    in the output, either nested under families/lines/models or in
-    unscoped_or_unresolved -- never both, never dropped.
+    Every rule in hiding_rules + rec_rules + con_rules is accounted for by
+    identity -- either in unscoped_or_unresolved, or nested under at least
+    one family/line/model. A rule matched at a family/line node is
+    deliberately PLACED once per model it covers (that's the point of the
+    grouping), so it can appear multiple times in `families` -- but is
+    still only counted once in the total_rules_loaded/total_exported
+    comparison, so a genuine silent drop stays distinguishable from normal
+    multi-model fan-out.
     """
     tree = build_product_tree(reader, workspace_id, catalog_prefix)
     name_index = _name_index(tree)
@@ -203,12 +208,21 @@ def export_rules_json(
     unscoped: list[dict[str, Any]] = []
 
     all_rules: list[Any] = [*hiding_rules, *rec_rules, *con_rules]
+    exported_rule_ids: set[int] = set()  # id(rule) -- ONE entry per rule,
+    # regardless of how many models it fans out to below. A family/line-
+    # level rule is deliberately PLACED once per covered model (that's the
+    # whole point of covers_models -- the rule really does apply to each
+    # of those models), so counting placements would inflate this set's
+    # complement by N-1 for every such rule and make the anti-drop check
+    # misfire on the normal case, not just genuine drops.
     for rule in all_rules:
         scope = classify_rule_scope(rule, name_index)
         rd = _rule_dict(rule)
         if scope.get("scope") == UNSCOPED:
             unscoped.append(rd)
+            exported_rule_ids.add(id(rule))
             continue
+        exported_rule_ids.add(id(rule))
         for model_name in scope["covers_models"]:
             # Walk the tree upward from the matched node's own family/line
             # ancestry is not tracked separately here -- the matched node's
@@ -219,12 +233,7 @@ def export_rules_json(
                 model_name, []).append(rd)
 
     total_loaded = len(all_rules)
-    total_exported = len(unscoped) + sum(
-        len(rules)
-        for fam in grouped.values()
-        for models in fam.values()
-        for rules in models.values()
-    )
+    total_exported = len(exported_rule_ids)
     if total_exported != total_loaded:
         logger.warning(
             "rule_export: count mismatch loaded=%d exported=%d catalog=%s",

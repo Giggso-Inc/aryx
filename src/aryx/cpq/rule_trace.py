@@ -205,9 +205,18 @@ def sweep_orphans(timeout_hours: int | None = None) -> list[str]:
     """Seal every durable session still 'open' past the orphan timeout.
 
     Intended to run on a schedule (cron/background task), not per-request.
-    Returns the run_ids sealed as 'orphaned_timeout'.
+    Returns the run_ids sealed as 'orphaned_timeout', or [] if the durable
+    store is unreachable (e.g. no Oracle-variant migration exists yet for
+    aryx_rule_trace_session/entry -- Raven review, PR #156: unlike
+    open_session/append_entry/seal_session above, this had no try/except,
+    so a scheduled sweep would raise instead of degrading gracefully like
+    its siblings on an Oracle-backed deployment).
     """
     if timeout_hours is None:
         from aryx.config import get_settings
         timeout_hours = get_settings().cpq_rule_trace_orphan_timeout_hours
-    return _store().sweep_orphans(timeout_hours=timeout_hours)
+    try:
+        return _store().sweep_orphans(timeout_hours=timeout_hours)
+    except Exception:
+        logger.exception("rule_trace: durable sweep_orphans failed")
+        return []

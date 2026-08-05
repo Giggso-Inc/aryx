@@ -5032,6 +5032,11 @@ class CpqEngine:
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
                             sources.setdefault(vn, governed_source)
                             filled_multi_now = True
+                            if governed_source == "rule":
+                                rule_trace.record_fire(
+                                    rule_type="auto_fill", rule_id="auto_fill:rule_governed_multi",
+                                    attr=vn, outcome=f"set={filled_multi[vn]}",
+                                )
                     elif governed_source == "optional" and attr.entity_id in conflicted_optional_ids:
                         # This attr shares a real option value with another
                         # "optional"-tier attr — first-by-order would silently
@@ -5105,6 +5110,20 @@ class CpqEngine:
                     filled[vn] = value
                 display_filled[vn] = display or value
                 sources.setdefault(vn, source)
+                # Trace step 3 ("already-satisfied recommendation", source
+                # == "rule") and step 5 ("rule-governed default-or-first",
+                # source == governed_source == "rule") -- the two auto_fill
+                # paths this method's own docstring documents as having
+                # previously shipped real fill-ordering bugs
+                # (solutionTypeDevices_astro, hWVersion_astro). Raven review
+                # on PR #156: these were the only evaluate_rules_loop stage
+                # ("hide -> recommend -> constrain -> auto-fill") left
+                # untraced by the original rule_trace wiring.
+                if source == "rule" or (is_governed and source == governed_source == "rule"):
+                    rule_trace.record_fire(
+                        rule_type="auto_fill", rule_id=f"auto_fill:{source}",
+                        attr=vn, outcome=f"set={value}",
+                    )
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
