@@ -4758,11 +4758,16 @@ class CpqEngine:
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
             order (boolean's "first option" is well-defined — only two states).
-          - multi: the allowed set from an active constraint rule IS the
-            selected set (written to the returned filled_multi); with no
-            active constraint and no default, left unselected — auto-picking
-            several options with nothing to justify the choice is the same
-            guessing risk D2 exists to prevent.
+          - multi: an active constraint narrowing to EXACTLY ONE remaining
+            option is auto-filled (written to filled_multi), same
+            certainty threshold as single-select's "exactly one choice"
+            case. Narrowing to several remaining options, or no active
+            constraint at all, is left unselected — auto-picking several
+            options with nothing to justify the choice is the same
+            guessing risk D2 exists to prevent (confirmed live,
+            docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_05.md:
+            a near-universally-true constraint narrowing a menu to 9 of 11
+            options is not a recommendation to select all 9).
 
         Returns:
           filled         — {variable_name: item_value} for API payload
@@ -5288,12 +5293,27 @@ class CpqEngine:
                     and attr.entity_id not in user_answered_dropped_ids
                 ):
                     if attr.select_type == "multi":
-                        # The allowed set from an active constraint IS the
-                        # selected set — never guess a subset with nothing
-                        # to justify it (allowed_for_attr is None → no
-                        # active constraint narrowed this attr → leave
-                        # unselected, ask the user).
-                        if allowed_for_attr is not None:
+                        # docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
+                        # 2026_08_05.md — an active constraint narrowing to
+                        # exactly ONE remaining option is exactly as
+                        # unambiguous here as it already is for single-
+                        # select (the `len(valid_opts) == 1` branch above);
+                        # narrowing to SEVERAL remaining options is not the
+                        # same signal and must not be auto-selected in
+                        # full. Confirmed live: "Constrain Additional
+                        # feature Type" (condition: any product selected —
+                        # true for virtually every order) narrows
+                        # additionalSystemEnhancementFeatureType_astro to 9
+                        # of 11 options; that 9-item list is the catalog's
+                        # MENU of available choices, not a recommendation
+                        # to select all 9 — auto-selecting all 9
+                        # (including "ICE KIT") silently triggered an
+                        # unrelated constraint that collapsed a real
+                        # question (Package Type) to zero valid options.
+                        # allowed_for_attr is None → no active constraint
+                        # narrowed this attr → leave unselected, ask the
+                        # user (unchanged).
+                        if allowed_for_attr is not None and len(valid_opts) == 1:
                             filled_multi[vn] = [o.item_value for o in valid_opts]
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
                             sources.setdefault(vn, governed_source)
@@ -5393,6 +5413,7 @@ class CpqEngine:
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
+                and attr.entity_id not in (constrained_opts or {})
             ):
                 # An unconstrained multi-select (no active constraint narrowed
                 # it, no single-remaining-option, not marked required=1 in
@@ -5407,6 +5428,26 @@ class CpqEngine:
                 # through to the pending branch below instead. Grid-linked
                 # selectors (vn in grid_selector_vns) are excluded from this
                 # branch — see grid_selector_vns comment above.
+                #
+                # `attr.entity_id not in constrained_opts` (added
+                # docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
+                # 2026_08_05.md, second finding): an attr an active
+                # constraint DID narrow (to 2+ options — exactly 1 is
+                # already consumed by the branch above) is not
+                # "unconstrained" just because it fell through here — it
+                # is a real, unresolved choice and must be asked, not
+                # silently defaulted to "(none)". Confirmed live: auto-
+                # assigning "(none)" to additionalSystemEnhancementFeature
+                # Type_astro (constrained to 9 of 11 options, not 1) made
+                # filled_multi report [] — a CONFIRMED "nothing selected"
+                # state per _filled_by_rule_id's own contract — which then
+                # satisfied an unrelated rule's "does NOT contain ICE KIT"
+                # (operator "8", disjoint-from) condition with false
+                # certainty, collapsing Package Type to zero valid options
+                # via a different rule than the one Fix 1 addressed, same
+                # symptom. An attribute nobody has actually confirmed
+                # empty must never assert "confirmed empty" to a sibling
+                # rule's condition.
                 filled_multi[vn] = []
                 display_filled[vn] = "(none)"
                 sources.setdefault(vn, "default")
