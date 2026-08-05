@@ -1,9 +1,11 @@
 # CPQ Multi-Select Auto-Fill Over-Selection — Plan (2026-08-05)
 
-**Status: Fix 1 + Fix 2 shipped and live-verified (2026-08-05). A separate,
-pre-existing catalog rule contradiction was discovered during live
-verification — see "Known remaining issue" at the end; it is NOT caused by,
-or fixable within, this change.**
+**Status: Fix 1 + Fix 3 shipped and live-verified (2026-08-05). Fix 2 was
+an interim step, superseded by Fix 3 (an explicit, HITL-confirmed product
+decision) before this branch merged — see "Fix 2 (superseded)" below. A
+separate, pre-existing catalog rule contradiction was discovered during
+live verification — see "Known remaining issue" at the end; it is NOT
+caused by, or fixable within, this change.**
 
 ## Context
 
@@ -85,17 +87,17 @@ is the only one this fix changes for the tested scenario. The 2 other
 non-empty cases (`provisioningAssistance_astro`, `packageTypeBundles_astro`)
 already satisfy `len(valid_opts) == 1` and are unaffected.
 
-## Fix 2 — a second finding surfaced by fixing Fix 1
+## Fix 2 (superseded) — a second finding surfaced by fixing Fix 1
 
-Live-verifying Fix 1 alone (before Fix 2 below) against the real APX NEXT
-XE Single Band scenario showed the fix wasn't enough: `additionalSystem
-EnhancementFeatureType_astro` correctly stopped force-selecting 9 options,
-but it then fell through to a **separate, pre-existing** branch (engine.py
-~line 5413, "an unconstrained multi-select with nothing to justify a
-subset → auto-assign empty") which never actually checked whether a
-constraint was active — only `select_type`/`required`/grid-selector
-membership. It silently turned "ambiguous, still-unresolved" into
-"confirmed nothing selected," written to `filled_multi` as `[]`.
+Live-verifying Fix 1 alone against the real APX NEXT XE Single Band
+scenario showed the fix wasn't enough: `additionalSystemEnhancementFeature
+Type_astro` correctly stopped force-selecting 9 options, but it then fell
+through to a **separate, pre-existing** branch (engine.py ~line 5413, "an
+unconstrained multi-select with nothing to justify a subset → auto-assign
+empty") which never actually checked whether a constraint was active —
+only `select_type`/`required`/grid-selector membership. It silently turned
+"ambiguous, still-unresolved" into "confirmed nothing selected," written
+to `filled_multi` as `[]`.
 
 `_filled_by_rule_id` treats an explicit `[]` as a real, known-empty value
 (`"~".join([]) == ""`, and the attribute IS present in the map) — so any
@@ -108,44 +110,79 @@ when...is not selected as feature type"` (condition: feature-type attr is
 disjoint from `{ICE KIT}`) — fired on the false "confirmed empty," same
 empty-question symptom via a different path.
 
-**Fix**: the "auto-assign empty" branch (engine.py ~line 5413) now also
-requires the attribute to have **no active constraint at all**
-(`attr.entity_id not in constrained_opts`), not merely "not exactly one
-remaining option." An attribute a constraint narrowed to 2+ options is a
-real, unresolved choice — it falls through to `pending` (asked) instead,
-exactly matching this doc's own original "Fix" section above, which this
-branch had silently defeated.
+**Interim fix (Fix 2, later superseded)**: the "auto-assign empty" branch
+required the attribute to have no active constraint at all, so an
+ambiguous constrained attribute fell through to `pending` (asked) instead.
+Correct on its own terms, but live-verifying it end-to-end surfaced a new
+conversational question ("Feature Type") that the product owner did not
+want asked here — see Fix 3.
+
+## Fix 3 — explicit product decision: default over ask
+
+HITL-confirmed (2026-08-05, live conversation): asking about every
+catalog-unresolved optional multi-select trades correctness for a worse
+conversational experience than the product wants. Explicit decision:
+prefer the XML `default_value` when it's still a currently-valid option
+under any active constraint (never select a value a constraint has
+already excluded); with no matching default, default to empty and do not
+ask — reverting to Fix 2's simpler, unconditional "auto-assign empty"
+branch, plus a default_value preference layered on top.
+
+**This is a deliberate trade, not a correctness fix** — it knowingly
+reopens the exact risk Fix 2 closed: a constrained-but-ambiguous
+multi-select can again resolve to a false "confirmed empty" that a
+sibling disjoint-from rule (operator `"8"`) may treat as ground truth
+(`test_confirmed_empty_multiselect_can_satisfy_a_sibling_disjoint_from_
+rule` documents the mechanism directly). Accepted explicitly in exchange
+for fewer conversational questions; revisit if a similar empty-question
+symptom resurfaces for a different attribute.
 
 ## Testing plan
 
 1. Unit test replaying the real shape: a governed multi-select attribute
-   whose constraint allows 9 of 11 options — must NOT auto-fill (falls to
-   pending), where it previously did. ✅ `test_multiselect_with_several_
-   constrained_options_is_not_auto_selected`
-2. Regression: a governed multi-select attribute whose constraint narrows
+   whose constraint allows 9 of 11 options, no matching default_value —
+   must NOT auto-select all 9; must default to empty (Fix 3). ✅
+   `test_multiselect_with_several_constrained_options_and_no_default_
+   defaults_to_empty`
+2. A constrained, ambiguous multi-select whose default_value IS still
+   valid — must auto-select just that default. ✅
+   `test_multiselect_with_several_constrained_options_and_a_default_uses_
+   the_default`
+3. A default_value the constraint has excluded must never be selected
+   anyway — falls back to empty. ✅
+   `test_multiselect_default_value_excluded_by_constraint_falls_back_to_
+   empty`
+4. Regression: a governed multi-select attribute whose constraint narrows
    to exactly 1 option — must still auto-fill (unchanged from today). ✅
    `test_multiselect_constrained_to_exactly_one_option_is_still_auto_selected`
-3. Regression: a multi-select attribute with an explicit `RecommendationRule`
-   setting specific values — completely unaffected (different code path).
-   Not directly re-tested here — `apply_recommendation_rules` runs in a
-   separate stage of `evaluate_rules_loop`, entirely upstream of `auto_fill`;
-   unmodified by this change; covered by the existing recommendation-rule
-   test files.
-4. End-to-end: replay the real "Package Type" symptom — confirm
-   `additionalSystemEnhancementFeatureType_astro` stays unfilled (not `[]`,
-   not force-selected) and Package Type's real allowed set intersection no
-   longer incorporates a false "confirmed empty" fact. ✅ live-verified
-   (see below) — turn 2 now correctly asks "Feature Type" with a skip
-   option, instead of silently guessing.
-   `test_ambiguous_multiselect_left_unresolved_does_not_falsely_satisfy_
-   sibling_disjoint_from_rule` proves the mechanism at the
-   `apply_constraint_rules` level directly (Case A reproduces the bug,
-   Case B proves the fix).
-5. Full CPQ suite green (675 passed, 47 skipped — 3 pre-existing unrelated
-   failures confirmed via stash-and-rerun to predate this branch entirely);
-   live re-verification against the real container (workspace 3, `Apx
-   Next` catalog, APX NEXT XE Single Band scenario) — confirmed via
-   rebuild + `--force-recreate` + md5sum byte-identity check.
+5. Regression: no active constraint at all — still defaults to empty
+   (unchanged). ✅ `test_multiselect_with_no_active_constraint_stays_
+   unselected`
+6. Regression: a multi-select attribute with an explicit `RecommendationRule`
+   setting specific values — completely unaffected (different code path,
+   upstream of `auto_fill` in `evaluate_rules_loop`, unmodified by this
+   change; covered by the existing recommendation-rule test files).
+7. `test_confirmed_empty_multiselect_can_satisfy_a_sibling_disjoint_from_
+   rule` documents Fix 3's accepted risk directly at the
+   `apply_constraint_rules` level (not a regression test to keep green
+   forever — a record of the known, accepted trade).
+8. End-to-end live verification: replayed the real "Package Type" symptom
+   against the real container (workspace 3, `Apx Next` catalog, rebuilt +
+   `--force-recreate` + md5sum byte-identity check). Turn 2 now correctly
+   defaults `additionalSystemEnhancementFeatureType_astro` to empty and
+   proceeds without asking about it — confirming Fix 3's intended UX.
+9. Full CPQ suite green (676 passed, 47 skipped — 3 pre-existing unrelated
+   failures confirmed via stash-and-rerun to predate this branch entirely).
+   A 4th, separately-investigated flaky failure
+   (`test_cpq_rule_trace.py::TestSealing::test_record_fire_after_seal_is_
+   noop`) was traced to a genuine, PRE-EXISTING bug in `rule_trace.seal()`
+   (pops the session from `_open_sessions` before `record_fire` can check
+   `sealed`, so a post-seal call incorrectly reopens a new session/file
+   instead of no-op'ing — confirmed via `git diff --stat
+   src/aryx/cpq/rule_trace.py` showing zero changes on this branch, and
+   via ~1-in-3 non-deterministic reproduction rate purely from `glob()`
+   file-ordering when 2+ trace files exist in the same directory).
+   Unrelated to this change and out of scope for this PR — not fixed here.
 
 ## Known remaining issue (discovered during live verification, OUT OF SCOPE)
 

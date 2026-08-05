@@ -4758,16 +4758,23 @@ class CpqEngine:
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
             order (boolean's "first option" is well-defined — only two states).
-          - multi: an active constraint narrowing to EXACTLY ONE remaining
-            option is auto-filled (written to filled_multi), same
-            certainty threshold as single-select's "exactly one choice"
-            case. Narrowing to several remaining options, or no active
-            constraint at all, is left unselected — auto-picking several
-            options with nothing to justify the choice is the same
-            guessing risk D2 exists to prevent (confirmed live,
-            docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_05.md:
-            a near-universally-true constraint narrowing a menu to 9 of 11
-            options is not a recommendation to select all 9).
+          - multi, non-required: an active constraint narrowing to EXACTLY
+            ONE remaining option is auto-filled (written to filled_multi),
+            same certainty threshold as single-select's "exactly one
+            choice" case (confirmed live, docs/CPQ_MULTISELECT_AUTOFILL_
+            OVERSELECTION_PLAN_2026_08_05.md: a near-universally-true
+            constraint narrowing a menu to 9 of 11 options is not a
+            recommendation to select all 9 — auto-selecting all 9 there
+            was the original bug). Narrowing to SEVERAL remaining options
+            (still ambiguous) prefers the XML default_value when it's
+            still one of the currently-valid options; with no matching
+            default, defaults to empty rather than asking — an explicit
+            product decision (same plan doc's "explicit product decision"
+            addendum) to favor fewer conversational questions over asking
+            about every unresolved optional multi-select, accepting the
+            known, documented risk that a sibling rule keyed on "does NOT
+            contain value X" may treat that default-empty as a genuine
+            confirmed answer.
 
         Returns:
           filled         — {variable_name: item_value} for API payload
@@ -5413,43 +5420,45 @@ class CpqEngine:
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
-                and attr.entity_id not in (constrained_opts or {})
             ):
-                # An unconstrained multi-select (no active constraint narrowed
-                # it, no single-remaining-option, not marked required=1 in
-                # the raw XML) reaches here with nothing that justifies
-                # picking any subset — but real Oracle CPQ UI behavior for an
-                # optional checkbox-list field is an empty selection, not a
-                # forced choice (confirmed against raw XML: every attr this
-                # applies to in practice has required="0", and their BML
-                # scripts only narrow/disallow values under OTHER conditions,
-                # never enforce a minimum-selection count). Auto-assign empty
-                # rather than asking — a required=1 multi-select still falls
-                # through to the pending branch below instead. Grid-linked
-                # selectors (vn in grid_selector_vns) are excluded from this
-                # branch — see grid_selector_vns comment above.
+                # A multi-select that reached here (no single-remaining-
+                # option, not required=1 in the raw XML) has nothing
+                # unambiguous to justify picking a subset — real Oracle CPQ
+                # UI behavior for an optional checkbox-list field is an
+                # empty selection, not a forced question. Product decision
+                # (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_
+                # 05.md, "explicit product decision" addendum): prefer the
+                # XML default_value when it's still a currently-valid
+                # option (constraint-filtered `valid_opts`, not the raw
+                # menu — never select a value an active constraint has
+                # already excluded); otherwise default to empty rather than
+                # asking. Grid-linked selectors (vn in grid_selector_vns)
+                # are excluded from this branch — see grid_selector_vns
+                # comment above.
                 #
-                # `attr.entity_id not in constrained_opts` (added
-                # docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
-                # 2026_08_05.md, second finding): an attr an active
-                # constraint DID narrow (to 2+ options — exactly 1 is
-                # already consumed by the branch above) is not
-                # "unconstrained" just because it fell through here — it
-                # is a real, unresolved choice and must be asked, not
-                # silently defaulted to "(none)". Confirmed live: auto-
-                # assigning "(none)" to additionalSystemEnhancementFeature
-                # Type_astro (constrained to 9 of 11 options, not 1) made
-                # filled_multi report [] — a CONFIRMED "nothing selected"
-                # state per _filled_by_rule_id's own contract — which then
-                # satisfied an unrelated rule's "does NOT contain ICE KIT"
-                # (operator "8", disjoint-from) condition with false
-                # certainty, collapsing Package Type to zero valid options
-                # via a different rule than the one Fix 1 addressed, same
-                # symptom. An attribute nobody has actually confirmed
-                # empty must never assert "confirmed empty" to a sibling
-                # rule's condition.
-                filled_multi[vn] = []
-                display_filled[vn] = "(none)"
+                # KNOWN, ACCEPTED RISK (explicit product decision, not an
+                # oversight): a constrained-but-ambiguous multi-select
+                # (2+ options remain, no matching default_value) now
+                # defaults to [] the same as a genuinely unconstrained one.
+                # _filled_by_rule_id treats that [] as a real, known-empty
+                # value, so a sibling rule keyed on "does NOT contain value
+                # X" (operator "8", disjoint-from) can fire on it as if the
+                # customer had confirmed nothing — this is exactly the
+                # mechanism that collapsed Package Type live (see plan
+                # doc's "Known remaining issue" — a separate, pre-existing
+                # catalog rule contradiction independent of this). Traded
+                # deliberately for fewer conversational questions; revisit
+                # if a similar empty-question symptom resurfaces elsewhere.
+                default_opt = next(
+                    (o for o in valid_opts if o.item_value == attr.default_value),
+                    None,
+                ) if attr.default_value else None
+                if default_opt:
+                    filled_multi[vn] = [default_opt.item_value]
+                    display_filled[vn] = default_opt.display_name
+                else:
+                    filled_multi[vn] = []
+                    display_filled[vn] = "(none)"
                 sources.setdefault(vn, "default")
             elif self._is_noise_var(vn) and attr.options:
                 # Company-level/system attrs (_BM_USER_CURRENCY, _BM_USER_

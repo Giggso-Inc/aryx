@@ -14,23 +14,20 @@ Fix 1: require len(valid_opts) == 1 for the multi-select auto-select-via-
 constraint path, exactly mirroring the single-select safeguard directly
 above it in the same function.
 
-Fix 2 (second finding, same investigation): the fall-through path for an
-attr Fix 1 now declines to auto-select landed in the SEPARATE, pre-existing
-"genuinely unconstrained optional multi-select -> auto-assign empty"
-branch, which never actually checked whether a constraint was active --
-only select_type/required/grid-selector. That silently turned "ambiguous,
-still-unresolved" into "confirmed nothing selected", written to
-filled_multi as []. _filled_by_rule_id treats an explicit [] as a real,
-known-empty value ("~".join([]) == "") -- so any sibling rule keyed on
-"does NOT contain value X" (operator "8", disjoint-from) sees that "" and
-fires as if the customer had confirmed nothing, restricting some other
-attr's allowed values based on a fact nobody actually confirmed. Live:
-this collapsed Package Type via a *different* rule than Fix 1's ICE-KIT
-one ("Hide Single Pack Calmshell when...is not selected as feature type"),
-same empty-question symptom. Fix: the empty-assign branch now also
-requires the attr to have NO active constraint at all (not merely "not
-exactly one remaining option") -- an attr a constraint narrowed to several
-options is a real unresolved choice and must be asked, not defaulted.
+Fix 2 (superseded by an explicit product decision below): an interim fix
+made an ambiguous (2+ remaining options), constrained multi-select fall
+through to `pending` (asked) instead of a false "confirmed empty" --
+because _filled_by_rule_id treats an explicit [] as a real, known-empty
+value, which let a sibling rule keyed on "does NOT contain value X"
+(operator "8", disjoint-from) fire on it as if the customer had confirmed
+nothing. Live-verifying that interim fix surfaced a real new question
+("Feature Type") the product owner did not want asked. Explicit decision
+(HITL-confirmed): prefer the XML default_value when it's still a
+currently-valid option; otherwise default to empty and do not ask --
+accepting the disjoint-from risk Fix 2 had closed, as a deliberate
+trade for fewer conversational questions (see engine.py's
+auto_fill docstring and the plan doc's "explicit product decision"
+addendum for the full rationale and the accepted risk).
 """
 from __future__ import annotations
 
@@ -42,10 +39,12 @@ def _menu(*values: str) -> list[MenuOption]:
     return [MenuOption(item_value=v, display_name=v, order=i) for i, v in enumerate(values, start=1)]
 
 
-def test_multiselect_with_several_constrained_options_is_not_auto_selected():
+def test_multiselect_with_several_constrained_options_and_no_default_defaults_to_empty():
     """Replays the real "additionalSystemEnhancementFeatureType_astro"
-    shape: a near-universal constraint narrows 11 real options down to 9
-    -- must NOT auto-select all 9; must fall through to pending instead."""
+    shape: a near-universal constraint narrows 11 real options down to 9,
+    and the attribute has no default_value in the raw XML -- must NOT
+    auto-select all 9, and (per the explicit product decision) must
+    default to empty rather than asking."""
     attr = ConfigAttr(
         entity_id=1, variable_name="additionalSystemEnhancementFeatureType_astro",
         display_label="Additional System Enhancement Feature Type",
@@ -70,19 +69,53 @@ def test_multiselect_with_several_constrained_options_is_not_auto_selected():
         governed_ids={1}, rule_governed_ids={1}, already_filled_multi=multi,
     )
 
-    # Must NOT fall into the separate "optional multi-select, nothing to
-    # justify a subset -> explicit empty selection" fallback either
-    # (engine.py ~line 5430) -- that fallback is for attrs with NO active
-    # constraint at all; this attr DOES have one (just an ambiguous one),
-    # so a false "confirmed empty" would feed a wrong-but-certain answer
-    # to any sibling rule keyed on "does this attr contain/not contain
-    # value X" (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
-    # 2026_08_05.md's second finding). Must be left absent -> asked.
-    assert "additionalSystemEnhancementFeatureType_astro" not in multi, (
-        "narrowing to SEVERAL remaining options is a real, unresolved "
-        "choice -- must never be auto-selected in full, same guessing "
-        "risk D2 exists to prevent"
+    assert multi.get("additionalSystemEnhancementFeatureType_astro") == [], (
+        "no matching default_value and several remaining options -- must "
+        "not auto-select all of them, and per the explicit product "
+        "decision must default to empty rather than asking"
     )
+
+
+def test_multiselect_with_several_constrained_options_and_a_default_uses_the_default():
+    """A constrained, ambiguous multi-select whose XML default_value IS
+    still one of the currently-valid options must auto-select just that
+    default -- not all remaining options, not empty."""
+    attr = ConfigAttr(
+        entity_id=5, variable_name="someOptionalMulti_astro", display_label="Some Optional Multi",
+        required=False, default_value="OPTION B", select_type="multi",
+        options=_menu("OPTION A", "OPTION B", "OPTION C", "OPTION D"),
+    )
+    constrained_opts = {5: ["OPTION A", "OPTION B", "OPTION C"]}  # 3 remain, default among them
+
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=constrained_opts,
+        governed_ids={5}, rule_governed_ids={5}, already_filled_multi=multi,
+    )
+
+    assert multi.get("someOptionalMulti_astro") == ["OPTION B"]
+
+
+def test_multiselect_default_value_excluded_by_constraint_falls_back_to_empty():
+    """If the constraint has excluded the raw default_value from the
+    currently-valid set, it must never be selected anyway (that would
+    violate the active constraint) -- falls back to empty instead."""
+    attr = ConfigAttr(
+        entity_id=6, variable_name="anotherOptionalMulti_astro", display_label="Another Optional Multi",
+        required=False, default_value="OPTION Z", select_type="multi",
+        options=_menu("OPTION X", "OPTION Y", "OPTION Z"),
+    )
+    constrained_opts = {6: ["OPTION X", "OPTION Y"]}  # OPTION Z (the default) is excluded
+
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=constrained_opts,
+        governed_ids={6}, rule_governed_ids={6}, already_filled_multi=multi,
+    )
+
+    assert multi.get("anotherOptionalMulti_astro") == []
 
 
 def test_multiselect_constrained_to_exactly_one_option_is_still_auto_selected():
@@ -108,7 +141,7 @@ def test_multiselect_constrained_to_exactly_one_option_is_still_auto_selected():
 
 def test_multiselect_with_no_active_constraint_stays_unselected():
     """Regression: no constraint at all -- unaffected by this fix, still
-    left unselected (unchanged pre-existing behavior)."""
+    defaults to empty (unchanged pre-existing behavior)."""
     attr = ConfigAttr(
         entity_id=3, variable_name="carrierSelectionMultiSelect_astro", display_label="Carrier Selection",
         required=False, default_value="", select_type="multi",
@@ -120,8 +153,6 @@ def test_multiselect_with_no_active_constraint_stays_unselected():
         [attr], hints={}, constrained_opts=None,
         governed_ids={3}, rule_governed_ids={3}, already_filled_multi=multi,
     )
-    # Same pre-existing "optional multi-select, nothing to justify a
-    # subset -> explicit empty selection" fallback as above.
     assert multi.get("carrierSelectionMultiSelect_astro") == []
 
 
@@ -145,14 +176,19 @@ def test_multiselect_trivial_single_real_option_total_is_auto_selected():
     assert multi.get("provisioningAssistance_astro") == ["YES"]
 
 
-def test_ambiguous_multiselect_left_unresolved_does_not_falsely_satisfy_sibling_disjoint_from_rule():
-    """End-to-end replay of the real "Package Type" symptom's actual
-    mechanism (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_05.md
-    second finding): a sibling ConstraintRule's "does NOT contain ICE KIT"
-    (operator "8", disjoint-from) condition must NOT be satisfied by an
-    ambiguous multi-select nobody has actually resolved yet -- it must only
-    fire once the attribute is genuinely confirmed empty (or confirmed to
-    not contain ICE KIT), not merely absent/unfilled."""
+def test_confirmed_empty_multiselect_can_satisfy_a_sibling_disjoint_from_rule():
+    """Documents the KNOWN, ACCEPTED risk of the explicit product decision
+    above (not a bug to fix): once an ambiguous multi-select defaults to
+    [], _filled_by_rule_id reports that as a real, known-empty value, so a
+    sibling ConstraintRule keyed on "does NOT contain value X" (operator
+    "8", disjoint-from) can fire on it exactly as if the customer had
+    confirmed nothing. This is the same mechanism that collapsed Package
+    Type live via a rule unrelated to the ICE-KIT one Fix 1 addressed
+    (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_05.md's
+    "Known remaining issue" section) -- kept here as a regression/
+    documentation test of the mechanism itself, at the
+    apply_constraint_rules level, independent of what auto_fill currently
+    chooses to do with it."""
     feature_attr = ConfigAttr(
         entity_id=10, variable_name="additionalSystemEnhancementFeatureType_astro",
         display_label="Additional System Enhancement Feature Type",
@@ -201,27 +237,21 @@ def test_ambiguous_multiselect_left_unresolved_does_not_falsely_satisfy_sibling_
 
     eng = CpqEngine()
 
-    # Case A (the bug): feature attr force-resolved to a confirmed-empty
-    # selection (what the old auto_fill fallback used to produce).
+    # A confirmed/defaulted-empty feature attr satisfies disjoint-from and
+    # collapses the intersection to empty -- the accepted, documented risk.
     constrained_confirmed_empty = eng.apply_constraint_rules(
         attrs, [disjoint_from_rule, product_based_rule], filled=filled,
         filled_multi={"additionalSystemEnhancementFeatureType_astro": []},
     )
-    assert constrained_confirmed_empty.get(package_type_attr.entity_id) == [], (
-        "sanity check: a REAL confirmed-empty selection correctly satisfies "
-        "disjoint-from and collapses the intersection -- proves the "
-        "mechanism, not the fix"
-    )
+    assert constrained_confirmed_empty.get(package_type_attr.entity_id) == []
 
-    # Case B (the fix): feature attr genuinely unresolved -- absent from
-    # filled_multi entirely, exactly what the corrected auto_fill now
-    # leaves behind for an ambiguous (2+ remaining options) multi-select.
+    # A genuinely unresolved (absent from filled_multi entirely) attr must
+    # NOT satisfy disjoint-from -- Package Type keeps its real allowed set.
+    # This is what auto_fill would leave behind for a REQUIRED multi-select
+    # (never defaulted, always falls through to pending) -- contrast with
+    # the non-required case above, which auto_fill now defaults to [].
     constrained_unresolved = eng.apply_constraint_rules(
         attrs, [disjoint_from_rule, product_based_rule], filled=filled,
         filled_multi={},
     )
-    assert constrained_unresolved.get(package_type_attr.entity_id) == ["BULK XE", "SINGLE XE"], (
-        "an unresolved (never-answered) multi-select must not satisfy a "
-        "sibling rule's disjoint-from condition -- Package Type must keep "
-        "its real, product-based allowed set, not collapse to empty"
-    )
+    assert constrained_unresolved.get(package_type_attr.entity_id) == ["BULK XE", "SINGLE XE"]
