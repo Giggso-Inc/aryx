@@ -118,6 +118,32 @@ def test_multiselect_default_value_excluded_by_constraint_falls_back_to_empty():
     assert multi.get("anotherOptionalMulti_astro") == []
 
 
+def test_multiselect_with_no_menu_options_and_a_default_value_does_not_crash():
+    """Regression (live incident, "APX NEXT All Band" order): a multi-
+    select attr reaching the ambiguous-default fallback with an EMPTY
+    options list never enters the sibling `if not value and attr.options:`
+    block above, so `valid_opts` from that block is never assigned this
+    iteration. This attr's own default_value is valid on its own terms
+    but an active constraint excludes it (the generic default_value step
+    a few lines above this one correctly declines to auto-lock it in),
+    so `value` stays empty and falls all the way through to this branch
+    -- where referencing `valid_opts` directly threw UnboundLocalError in
+    production. Must default to empty without crashing."""
+    attr = ConfigAttr(
+        entity_id=7, variable_name="noOptionsMulti_astro", display_label="No Options Multi",
+        required=False, default_value="SOME DEFAULT", select_type="multi",
+        options=[],
+    )
+    constrained_opts = {7: ["SOMETHING ELSE ENTIRELY"]}  # excludes the default_value
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=constrained_opts,
+        governed_ids={7}, rule_governed_ids={7}, already_filled_multi=multi,
+    )
+    assert multi.get("noOptionsMulti_astro") == []
+
+
 def test_multiselect_constrained_to_exactly_one_option_is_still_auto_selected():
     """Regression: narrowing to exactly ONE remaining option is exactly as
     unambiguous for multi-select as it already is for single-select --

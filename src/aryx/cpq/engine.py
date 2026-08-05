@@ -5561,10 +5561,28 @@ class CpqEngine:
                 # catalog rule contradiction independent of this). Traded
                 # deliberately for fewer conversational questions; revisit
                 # if a similar empty-question symptom resurfaces elsewhere.
-                default_opt = next(
-                    (o for o in valid_opts if o.item_value == attr.default_value),
-                    None,
-                ) if attr.default_value else None
+                # `valid_opts` from the branch above is NOT reliably in
+                # scope here — it's only assigned inside the sibling
+                # `if not value and attr.options:` block, which this attr
+                # never entered if attr.options was empty (confirmed live:
+                # UnboundLocalError on "APX NEXT All Band", a multi-select
+                # attr this loop reaches with zero real menu options).
+                # Recomputed independently against the same constraint.
+                if attr.default_value and attr.options:
+                    current_allowed = (
+                        set(constrained_opts.get(attr.entity_id, []))
+                        if constrained_opts else None
+                    )
+                    default_opt = next(
+                        (
+                            o for o in attr.options
+                            if _valid(o.item_value) and o.item_value == attr.default_value
+                            and (current_allowed is None or o.item_value in current_allowed)
+                        ),
+                        None,
+                    )
+                else:
+                    default_opt = None
                 if default_opt:
                     filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
