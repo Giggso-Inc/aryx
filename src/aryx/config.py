@@ -322,6 +322,27 @@ class Settings(BaseSettings):
             "ARYX_DISCOVERY_MAX_PAYLOAD_MB."
         ),
     )
+    cpq_rule_trace_dir: str = Field(
+        default="var/cpq_rule_traces",
+        description=(
+            "Local directory for per-configuration-session rule-execution "
+            "trace .jsonl files (docs/CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md). "
+            "One file per session, keyed '{catalog_prefix}_{session_start_ts}."
+            "jsonl', opened on first rule-fire and sealed on confirm. The "
+            "same events are also written durably to Postgres (migration "
+            "0037_rule_trace.sql) -- this directory is a convenience mirror, "
+            "not the sole copy. Override with ARYX_CPQ_RULE_TRACE_DIR."
+        ),
+    )
+    cpq_rule_trace_orphan_timeout_hours: int = Field(
+        default=24,
+        description=(
+            "Hours an open rule-trace session may sit without reaching "
+            "confirm (session.complete=True) before the sweep seals it as "
+            "'orphaned_timeout' rather than leaving it open indefinitely. "
+            "Override with ARYX_CPQ_RULE_TRACE_ORPHAN_TIMEOUT_HOURS."
+        ),
+    )
     xml_max_rows_per_type: int = Field(
         default=500,
         description=(
