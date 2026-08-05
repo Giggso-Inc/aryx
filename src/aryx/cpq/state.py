@@ -151,8 +151,8 @@ class ValidationRule:
     before this. Its BmConfigRuleAction has function_id=-1 (not
     script-backed) AND an empty value1 — it neither hides, sets, nor
     restricts anything; its only content is a human-readable `message`
-    attached to `target_attr_id`, to be shown when `condition_script`
-    (a BML boolean) evaluates True.
+    attached to `target_attr_id`, to be shown when its condition
+    (`condition_script` OR `conditions`) evaluates True.
 
     Confirmed live: CommandCentral Aware's "Constrain video devices" rule
     (target OfVideoStreamingDevices_3_swSoln) checks
@@ -165,13 +165,32 @@ class ValidationRule:
     neither), because none of them model "condition true -> show this
     message, no value change" at all.
 
-    Same D2 "never guess" discipline as every other script-backed rule
-    here: an unknown/unresolvable condition never fires.
+    docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md — the same
+    message-only shape also occurs with a purely DECLARATIVE condition
+    (no condition_function_id at all), e.g. "Restrict Number Of Seats
+    between 1 and 12" -> message "Number Of Seats must be between 1 and
+    12", gated on numberOfSeats_astro < 1 OR > 12 (operators "1"/"5",
+    confirmed docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md).
+    Confirmed via a 4-catalog audit: 138/150 real "set_type=-1, no value1"
+    action rows carry a genuine, non-boilerplate message — this was
+    explicitly anticipated but deferred in the loader (see
+    _load_value_rules's own historical comment) pending exactly this
+    confirmation. condition_attr_id/condition_value/condition_operator/
+    conditions mirror HidingRule's identically-named fields; exactly one
+    of condition_script / conditions is set per instance, same convention
+    as HidingRule/ConstraintRule/RecommendationRule.
+
+    Same D2 "never guess" discipline as every other rule here: an
+    unknown/unresolvable condition (script OR declarative) never fires.
     """
     rule_name: str
     target_attr_id: int
-    condition_script: str
     message: str
+    condition_script: str | None = None
+    condition_attr_id: int = 0
+    condition_value: str = ""
+    condition_operator: str = "4"
+    conditions: list[tuple[int, str, str]] | None = None
 
 
 @dataclass

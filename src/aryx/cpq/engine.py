@@ -2533,6 +2533,33 @@ class CpqEngine:
             return source_id
         return entity_id
 
+    @staticmethod
+    def _condition_has_operator_collision(conditions: list[tuple[int, str, str]]) -> bool:
+        """True if any single attribute in `conditions` is checked with 2+
+        DISTINCT operators — docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_
+        PLAN_2026_08_05.md.
+
+        evaluate_declarative_conditions groups same-attribute rows under a
+        single shared operator (the first row's); for rows that genuinely
+        share one operator (an OR-list of acceptable/excluded values) this
+        is correct, but for rows with DIFFERENT operators on the same
+        attribute it silently drops every row after the first — confirmed
+        live via "Restrict Number Of Seats between 1 and 12" (`< 1` and
+        `> 12` on the same attribute; only `< 1` would ever be checked).
+
+        Confirmed catalog-wide (80 real rules across 4 catalogs) that no
+        single combining rule fixes this correctly for every shape yet —
+        two patterns are confirmed for 76% of cases, but forcing them in
+        now would silently mis-evaluate the remaining ~24% (see the plan
+        doc). Used as a purely structural, never-guessed exclusion: a rule
+        hitting this collision is skipped entirely (same as if it were
+        never confirmed) rather than loaded with a guessed combining rule.
+        """
+        by_attr: dict[int, set[str]] = {}
+        for attr_id, _value, operator in conditions:
+            by_attr.setdefault(attr_id, set()).add(operator)
+        return any(len(ops) > 1 for ops in by_attr.values())
+
     def _detect_layout_tier(self, workspace_id: int, catalog_prefix: str = "") -> int:
         """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §2 — one cheap existence
         check per catalog, cached process-wide (same lifetime/reasoning as
@@ -3235,6 +3262,7 @@ class CpqEngine:
         cond_script_skipped = 0
         script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
+        validation_collisions_skipped = 0
         # Ambiguous multi-value recommendations are never guessed (D2) — instead
         # routed through the same HITL ingest-question queue used elsewhere for
         # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
@@ -3328,27 +3356,58 @@ class CpqEngine:
                 # a message-only action (function_id=-1, empty value1, but
                 # a real human-authored `comments` string) is neither a
                 # hide, a set, nor a restrict — its only content is a
-                # warning to show when this rule's own condition_script
-                # fires. Every confirmed real case gates on a script
-                # condition (e.g. "Constrain video devices"), so scoped to
-                # that for now — a declarative-condition version would need
-                # separate confirmation before being added here.
-                if condition_script is not None:
-                    for aid, _at, val, act_fn, _set_type, comments in acts:
-                        # "System recommendation" is BigMachines' own
-                        # generic boilerplate default comment (confirmed:
-                        # 365 occurrences across this one catalog alone) —
-                        # not a real, customer-facing message a rule
-                        # author actually wrote. Excluded so a meaningless
-                        # "⚠️ System recommendation" is never shown.
-                        if (act_fn == -1 and not val and comments
-                                and comments.strip().lower() != "system recommendation"):
-                            validation_rules.append(ValidationRule(
-                                rule_name=rule_name or str(eid),
-                                target_attr_id=aid,
-                                condition_script=condition_script,
-                                message=comments,
-                            ))
+                # warning to show when this rule's own condition (script OR
+                # declarative) fires. Originally scoped to condition_script
+                # only ("a declarative-condition version would need
+                # separate confirmation before being added here" — this
+                # comment's own prior text); docs/CPQ_CONDITIONAL_REQUIRED_
+                # RULE_PLAN_2026_08_05.md provides that confirmation via a
+                # 4-catalog audit (138/150 real declarative "set_type=-1,
+                # no value1" rows carry a genuine message). By this point
+                # either condition_script is set or inp_list was non-empty
+                # (the `if not inp_list: continue` above already filtered
+                # out rules with neither), so no extra guard is needed here.
+                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+                # — a declarative (non-script) condition where the SAME
+                # attribute is checked with 2+ different operators cannot
+                # yet be evaluated correctly (evaluate_declarative_
+                # conditions collapses to the first row's operator+value,
+                # silently dropping the rest). Confirmed catalog-wide that
+                # no single combining rule is safe for every such shape
+                # yet — skip these declarative candidates entirely rather
+                # than load them with a guessed combining rule. Does not
+                # apply to script-gated rules (condition_script is not
+                # None) — those are unaffected, evaluated by the BML
+                # engine, not evaluate_declarative_conditions.
+                validation_blocked_by_collision = (
+                    condition_script is None
+                    and inp_list is not None
+                    and self._condition_has_operator_collision(inp_list)
+                )
+                for aid, _at, val, act_fn, _set_type, comments in acts:
+                    # "System recommendation" is BigMachines' own generic
+                    # boilerplate default comment (confirmed: 365
+                    # occurrences across this one catalog alone) — not a
+                    # real, customer-facing message a rule author actually
+                    # wrote. Excluded so a meaningless "⚠️ System
+                    # recommendation" is never shown. Re-confirmed as the
+                    # only such placeholder across all 138 declarative
+                    # candidates too (see the plan doc's boilerplate scan).
+                    if (act_fn == -1 and not val and comments
+                            and comments.strip().lower() != "system recommendation"):
+                        if validation_blocked_by_collision:
+                            validation_collisions_skipped += 1
+                            continue
+                        validation_rules.append(ValidationRule(
+                            rule_name=rule_name or str(eid),
+                            target_attr_id=aid,
+                            message=comments,
+                            condition_script=condition_script,
+                            condition_attr_id=cond_attr_id,
+                            condition_value=cond_value,
+                            condition_operator=cond_operator,
+                            conditions=list(inp_list) if condition_script is None else None,
+                        ))
 
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
@@ -3487,7 +3546,11 @@ class CpqEngine:
             len(rec_rules), len(con_rules), len(hiding_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
             cond_script_skipped, ambiguous_recommendations_skipped)
-        logger.info("cpq: loaded %d validation (warning-message) rules", len(validation_rules))
+        logger.info(
+            "cpq: loaded %d validation (warning-message) rules "
+            "(%d skipped: same-attribute operator collision, "
+            "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
+            len(validation_rules), validation_collisions_skipped)
         return rec_rules, con_rules, validation_rules, hiding_rules
 
     def load_recommendation_and_constraint_rules(
@@ -3731,27 +3794,44 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[ValidationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[str, str]:
-        """Evaluate every ValidationRule's condition_script against the
-        current filled state (Amendment 12). Returns {variable_name:
-        message} for every rule whose condition currently, definitely
-        holds — never on False or unknown (D2 "never guess": an
-        unresolvable script never fires a warning it can't actually back).
+        """Evaluate every ValidationRule's condition (script OR
+        declarative — docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md)
+        against the current filled state (Amendment 12). Returns
+        {variable_name: message} for every rule whose condition currently,
+        definitely holds — never on False or unknown (D2 "never guess": an
+        unresolvable condition never fires a warning it can't actually
+        back).
 
-        bml_eval=None (caller opted out) silently skips all validation
-        rules, same convention as apply_recommendation_rules/
-        apply_constraint_rules.
+        Script-backed rules need bml_eval; bml_eval=None skips those only
+        (same convention as apply_recommendation_rules/
+        apply_constraint_rules) — declarative rules need no BML evaluator
+        at all and are unaffected by bml_eval=None, same as
+        apply_hiding_rules' own declarative branch.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute.
         """
-        if not rules or bml_eval is None:
+        if not rules:
             return {}
         by_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         warnings: dict[str, str] = {}
         for rule in rules:
             target = by_id.get(rule.target_attr_id)
             if not target:
                 continue
-            if bml_eval.condition_holds(rule.condition_script, filled) is True:
-                warnings[target.variable_name] = rule.message
+            if rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                if bml_eval.condition_holds(rule.condition_script, filled) is True:
+                    warnings[target.variable_name] = rule.message
+            elif rule.conditions:
+                matched, _blocked = evaluate_declarative_conditions(
+                    rule.conditions, filled_by_rule_id)
+                if matched is True:
+                    warnings[target.variable_name] = rule.message
         return warnings
 
     # ── Constraint rule loader ────────────────────────────────────────────────

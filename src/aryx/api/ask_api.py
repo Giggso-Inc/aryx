@@ -7370,7 +7370,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     # else in this engine. Checked against the FULL
                     # filled state including this new answer.
                     _validation_warnings = _cpq_engine.apply_validation_rules(
-                        attrs, session.filled, validation_rules, bml_eval=bml_eval)
+                        attrs, session.filled, validation_rules, bml_eval=bml_eval,
+                        filled_multi=session.filled_multi)
                     _warning_msg = _validation_warnings.get(pending_var)
                     if _warning_msg:
                         del session.filled[pending_var]
