@@ -3963,14 +3963,39 @@ class CpqEngine:
         filled_multi — see apply_hiding_rules; only consulted for
         declarative conditions on a select_type=="multi" attribute
         (operators "7"/"8").
+
+        Empty-intersection fallback (docs/CPQ_MULTISELECT_AUTOFILL_
+        OVERSELECTION_PLAN_2026_08_05.md's "Known remaining issue",
+        explicit product decision 2026-08-05): confirmed live that some
+        catalogs carry a genuine authoring gap — a constraint rule never
+        given a counterpart for a newer product variant, unconditionally
+        colliding with that variant's own (correct) constraint and zeroing
+        the intersection. When that happens, rules that fired are grouped
+        by their condition attribute set; each candidate group is scored
+        by how many rules catalog-wide (the full `rules` list, not just
+        those active this turn) reference that same condition attribute —
+        confirmed live this cleanly separates a catalog's backbone
+        discriminator (productSelectionProduct_all, 478 references in one
+        real catalog) from an incidentally-referenced peripheral one
+        (additionalSystemEnhancementFeatureType_astro, 3 references).
+        Dropping the single group with the strictly lowest score resolves
+        the conflict; a tie for lowest, or 2+ groups whose removal would
+        each independently resolve it, is genuinely ambiguous and left
+        empty rather than guessed. Never applied to script-backed rules
+        (their conditions aren't a declarative attr set to group or score).
         """
         if not rules:
             return {}
         by_rule_id = self._attr_index(attrs)
         filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         constrained: dict[int, list[str]] = {}
+        # target.entity_id -> [(condition_key, normalized_allowed_values, rule_name)]
+        # for every rule that actually fired -- condition_key groups rules
+        # sharing the same declarative condition attribute set; script-backed
+        # rules get a per-rule-unique key so they're never grouped/dropped.
+        contributions: dict[int, list[tuple[frozenset, list[str], str]]] = {}
 
-        def _intersect(target: ConfigAttr, allowed: list[str]) -> None:
+        def _normalize(target: ConfigAttr, allowed: list[str]) -> list[str]:
             # docs/config_consistency_issues_2026-07-30.md — a raw catalog
             # rule's own authored allowed-value list can carry different
             # letter-casing than the attribute's real menu item_value
@@ -3988,7 +4013,12 @@ class CpqEngine:
             # intersecting, so a same-value-different-case rule entry
             # behaves exactly like the correctly-cased one would.
             by_lower_item_value = {o.item_value.lower(): o.item_value for o in target.options}
-            normalized = [by_lower_item_value.get(v.lower(), v) for v in allowed]
+            return [by_lower_item_value.get(v.lower(), v) for v in allowed]
+
+        def _intersect(target: ConfigAttr, allowed: list[str], condition_key: frozenset) -> None:
+            normalized = _normalize(target, allowed)
+            contributions.setdefault(target.entity_id, []).append(
+                (condition_key, normalized, rule.rule_name))
             if target.entity_id in constrained:
                 existing = set(constrained[target.entity_id])
                 constrained[target.entity_id] = [v for v in normalized if v in existing]
@@ -4004,7 +4034,7 @@ class CpqEngine:
                     continue
                 allowed = bml_eval.allowed_values_for_script(rule.script, filled)
                 if allowed:
-                    _intersect(target, allowed)
+                    _intersect(target, allowed, frozenset({f"script:{rule.rule_name}"}))
                     rule_trace.record_fire(
                         rule_type="constraint", rule_id=rule.rule_name,
                         attr=target.variable_name, outcome=f"allowed={allowed}",
@@ -4016,7 +4046,10 @@ class CpqEngine:
                     continue
                 fires = bml_eval.condition_holds(rule.condition_script, filled)
                 if fires is True:
-                    _intersect(target, rule.allowed_values)
+                    _intersect(
+                        target, rule.allowed_values,
+                        frozenset({f"condition_script:{rule.rule_name}"}),
+                    )
                     rule_trace.record_fire(
                         rule_type="constraint", rule_id=rule.rule_name,
                         attr=target.variable_name,
@@ -4028,6 +4061,7 @@ class CpqEngine:
                     rule.conditions, filled_by_rule_id)
                 if matched is not True:
                     continue
+                condition_key = frozenset(attr_id for attr_id, _value, _op in rule.conditions)
             else:
                 if rule.condition_attr_id not in filled_by_rule_id:
                     continue
@@ -4036,11 +4070,89 @@ class CpqEngine:
                     rule.condition_operator,
                 ):
                     continue
-            _intersect(target, rule.allowed_values)
+                condition_key = frozenset({rule.condition_attr_id})
+            _intersect(target, rule.allowed_values, condition_key)
             rule_trace.record_fire(
                 rule_type="constraint", rule_id=rule.rule_name,
                 attr=target.variable_name, outcome=f"allowed={rule.allowed_values}",
             )
+
+        # How catalog-wide "central" each condition attribute is to THIS
+        # constraint ruleset — counted from the full `rules` list (every
+        # declarative condition attr this ConstraintRule set ever
+        # references), not just the ones that fired this turn. Purely
+        # structural, derived from the real loaded rules, no hardcoded
+        # attribute names: confirmed live this reliably separates a
+        # catalog's backbone discriminator (e.g. the product-line
+        # attribute nearly every "Constrain X for product Y" rule keys
+        # off — 478 references in one real catalog) from an incidentally-
+        # referenced peripheral one (an unrelated feature-option
+        # attribute two old rules happened to key off — 3 references,
+        # same catalog). Only actually consulted below when an empty
+        # intersection needs resolving; computed unconditionally here
+        # (cheap, one pass over `rules`) to avoid conditional-definition
+        # scoping hazards.
+        attr_ref_count: dict[int, int] = {}
+        for r in rules:
+            ids = (
+                {a for a, _v, _op in r.conditions} if r.conditions
+                else ({r.condition_attr_id} if r.condition_script is None and r.script is None else set())
+            )
+            for attr_id in ids:
+                attr_ref_count[attr_id] = attr_ref_count.get(attr_id, 0) + 1
+
+        def _centrality(condition_key: frozenset) -> int:
+            return max((attr_ref_count.get(a, 0) for a in condition_key), default=0)
+
+        for entity_id, rows in contributions.items():
+            if constrained.get(entity_id) or len(rows) < 2:
+                continue
+            groups: dict[frozenset, list[tuple[list[str], str]]] = {}
+            for condition_key, normalized, rule_name in rows:
+                groups.setdefault(condition_key, []).append((normalized, rule_name))
+            if len(groups) < 2:
+                continue  # everything shares one condition -- genuinely all-or-nothing
+            resolved_by_dropping: list[tuple[frozenset, list[str]]] = []
+            for dropped_key in groups:
+                kept_sets = [
+                    set(normalized)
+                    for key, entries in groups.items() if key != dropped_key
+                    for normalized, _rule_name in entries
+                ]
+                candidate = set.intersection(*kept_sets) if kept_sets else set()
+                if candidate:
+                    resolved_by_dropping.append((dropped_key, sorted(candidate)))
+            if not resolved_by_dropping:
+                continue
+            # Prefer dropping whichever candidate group's condition
+            # attribute is LEAST central catalog-wide — only when that
+            # minimum is unambiguous (a strict minimum, not tied with
+            # another candidate group). A tie means two structurally
+            # equally-plausible resolutions exist; never guess between them.
+            scored = sorted(
+                ((_centrality(key), key, candidate) for key, candidate in resolved_by_dropping),
+            )
+            target_name = by_rule_id[entity_id].variable_name if entity_id in by_rule_id else entity_id
+            if len(scored) > 1 and scored[0][0] == scored[1][0]:
+                logger.warning(
+                    "cpq: constraint intersection for %s is empty and 2+ "
+                    "equally-central rule-groups could each resolve it — "
+                    "ambiguous, left empty rather than guessing which one wins",
+                    target_name,
+                )
+                continue
+            _score, dropped_key, candidate = scored[0]
+            dropped_names = sorted({rule_name for _normalized, rule_name in groups[dropped_key]})
+            logger.warning(
+                "cpq: constraint intersection for %s was empty across all "
+                "active rules; dropped least catalog-central conflicting "
+                "rule(s) %s (condition attrs %s, %d catalog-wide reference(s)) "
+                "to resolve to %s — docs/CPQ_MULTISELECT_AUTOFILL_"
+                "OVERSELECTION_PLAN_2026_08_05.md empty-intersection fallback",
+                target_name, dropped_names, sorted(dropped_key), _score, candidate,
+            )
+            constrained[entity_id] = candidate
+
         if constrained:
             names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
             logger.info("cpq: constraint rules active for %s", names)
