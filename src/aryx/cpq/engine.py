@@ -29,6 +29,7 @@ from aryx.cpq.bml import (
 )
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq import rule_trace
 from aryx.resolution.classical import string_score
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
@@ -3089,8 +3090,16 @@ class CpqEngine:
                     messages.append(
                         f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
                     )
+                    rule_trace.record_fire(
+                        rule_type="hiding", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome="hide", bml_tier="script",
+                    )
                 elif hide is False:
                     hidden_eids.discard(target.entity_id)
+                    rule_trace.record_fire(
+                        rule_type="hiding", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome="show", bml_tier="script",
+                    )
                 continue
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
@@ -3108,8 +3117,16 @@ class CpqEngine:
                 messages.append(
                     f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
                 )
+                rule_trace.record_fire(
+                    rule_type="hiding", rule_id=rule.rule_name,
+                    attr=target.variable_name, outcome="hide",
+                )
             else:
                 hidden_eids.discard(target.entity_id)
+                rule_trace.record_fire(
+                    rule_type="hiding", rule_id=rule.rule_name,
+                    attr=target.variable_name, outcome="show",
+                )
 
         hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}
         filtered = [a for a in attrs if a.entity_id not in hidden_eids]
@@ -3492,6 +3509,11 @@ class CpqEngine:
             )
             if _valid(recommended_value):
                 new_fills[target.variable_name] = (recommended_value, matched_display)
+                rule_trace.record_fire(
+                    rule_type="recommendation", rule_id=rule.rule_name,
+                    attr=target.variable_name, outcome=f"set={recommended_value}",
+                    bml_tier="script" if rule.script is not None else None,
+                )
         if new_fills:
             logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
         return new_fills
@@ -3724,6 +3746,11 @@ class CpqEngine:
                 allowed = bml_eval.allowed_values_for_script(rule.script, filled)
                 if allowed:
                     _intersect(target, allowed)
+                    rule_trace.record_fire(
+                        rule_type="constraint", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome=f"allowed={allowed}",
+                        bml_tier="script",
+                    )
                 continue
             if rule.condition_script is not None:
                 if bml_eval is None:
@@ -3731,6 +3758,11 @@ class CpqEngine:
                 fires = bml_eval.condition_holds(rule.condition_script, filled)
                 if fires is True:
                     _intersect(target, rule.allowed_values)
+                    rule_trace.record_fire(
+                        rule_type="constraint", rule_id=rule.rule_name,
+                        attr=target.variable_name,
+                        outcome=f"allowed={rule.allowed_values}", bml_tier="condition_script",
+                    )
                 continue  # False or unknown — never guess, no constraint applied
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
@@ -3745,6 +3777,10 @@ class CpqEngine:
                 ):
                     continue
             _intersect(target, rule.allowed_values)
+            rule_trace.record_fire(
+                rule_type="constraint", rule_id=rule.rule_name,
+                attr=target.variable_name, outcome=f"allowed={rule.allowed_values}",
+            )
         if constrained:
             names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
             logger.info("cpq: constraint rules active for %s", names)
@@ -3907,7 +3943,8 @@ class CpqEngine:
         hiding_rules, rec_rules, con_rules = self.rank_rules_by_specificity(
             attrs, hiding_rules, rec_rules, con_rules)
 
-        for _ in range(_MAX_LOOPS):
+        for pass_num in range(_MAX_LOOPS):
+            rule_trace.bind_pass(pass_num)
             prev_filled_keys = set(filled.keys())
             prev_visible_ids = {a.entity_id for a in attrs}
 

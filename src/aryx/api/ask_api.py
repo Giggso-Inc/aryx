@@ -40,6 +40,7 @@ from aryx.cpq.intent_schema import (
     parse_intent_result,
 )
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
+from aryx.cpq import rule_trace
 from aryx.cpq.session_guard import (
     audit_intent_conservation,
     clear_clarify,
@@ -5784,6 +5785,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # product's XML export never lets one catalog's rules act on another's
     # attributes (see CpqEngine._scope_to_catalog).
     catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    rule_trace.bind_context(req.workspace_id, catalog_prefix)
     catalog_hints, negated_now = _cpq_engine.extract_catalog_hints(req.question, attrs)
     for vn, iv in catalog_hints.items():
         hints.setdefault(vn, iv)
@@ -6306,6 +6308,12 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 }
             session.status = "post_approval"
             session.complete = True
+            # Real confirm signal for the rule-execution trace (docs/
+            # CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md) -- session.status is
+            # never actually set to the legacy "approved" value anywhere in
+            # this codebase; session.complete becoming True here, at BOM
+            # payload generation, is the true one-time confirm event.
+            rule_trace.seal(session.run_id, status="post_approval")
             payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
                 hidden_vns=_hidden_for_payload,
