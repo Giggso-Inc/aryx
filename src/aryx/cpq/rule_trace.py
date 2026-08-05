@@ -60,6 +60,17 @@ _pass_var: contextvars.ContextVar[int] = contextvars.ContextVar(
 )
 
 _open_sessions: dict[str, "_OpenTrace"] = {}
+# run_ids sealed at least once, kept forever (unlike _open_sessions, which
+# sheds the full _OpenTrace -- file_path, seq_no -- once sealed). Without
+# this, seal() popping the entry from _open_sessions let a later record_fire()
+# for the same run_id find no existing entry and treat it as brand new,
+# silently reopening a fresh session/file instead of staying a no-op (Raven
+# review: test_record_fire_after_seal_is_noop flaked on glob() file-ordering
+# once 2+ trace files existed in the same directory). A bare set of run_id
+# strings is far lighter than the _OpenTrace objects it replaces; unbounded
+# growth over a long-lived process's full session history is the same class
+# of growth this system already accepts for the durable session log itself.
+_sealed_run_ids: set[str] = set()
 _lock = threading.Lock()
 
 
@@ -108,6 +119,8 @@ def _store() -> RuleTraceStore:
 
 def _get_or_open(run_id: str, workspace_id: int, catalog_prefix: str) -> _OpenTrace | None:
     with _lock:
+        if run_id in _sealed_run_ids:
+            return None
         existing = _open_sessions.get(run_id)
         if existing is not None:
             return None if existing.sealed else existing
@@ -188,8 +201,10 @@ def seal(run_id: str | None = None, status: str = "post_approval") -> None:
     if not run_id:
         return
     with _lock:
+        if run_id in _sealed_run_ids:
+            return
         trace = _open_sessions.get(run_id)
-        if trace is None or trace.sealed:
+        if trace is None:
             return
         trace.sealed = True
     try:
@@ -198,6 +213,7 @@ def seal(run_id: str | None = None, status: str = "post_approval") -> None:
         logger.exception("rule_trace: durable seal_session failed run_id=%s", run_id)
     logger.info("cpq: rule trace sealed run_id=%s status=%s", run_id, status)
     with _lock:
+        _sealed_run_ids.add(run_id)
         _open_sessions.pop(run_id, None)
 
 
