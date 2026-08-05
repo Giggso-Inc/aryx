@@ -189,6 +189,49 @@ def test_four_way_label_collision_without_all_attrs_reproduces_the_bug():
     assert [a.variable_name for a in to_ask] == ["relatedServicesType_astro"]
 
 
+def test_hidden_multi_sibling_is_never_pulled_back_from_all_attrs():
+    """Live regression from the all_attrs fix itself: modelSelectionFrequency
+    BandMsl_astro is correctly hidden for "APX NEXT All Band" by a real,
+    named hiding rule ("Hide Frequency Band Model Selection Attribute for
+    APX NEXT All Band model") and correctly excluded from the visible
+    `attrs` this turn -- but its single-select sibling still got a weak
+    default. `all_attrs` (needed for the 4-way-collision fix above) must
+    NOT let a hidden sibling be pulled back in as the "real" answer to
+    defer to: neither stripping the single's weak value nor asking the
+    hidden multi-select at all. A customer answering the (correctly
+    re-asked, per the OLD bug) multi-select question then had their real
+    answer silently discarded every subsequent turn -- since the multi-
+    select is hidden, evaluate_rules_loop's own hidden-attr cleanup pops
+    it right back out, and the pairing logic kept re-adding it to
+    `pending`, producing an infinite repeat of the same question."""
+    eng = CpqEngine()
+    visible = [
+        _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands", "single"),
+        # modelSelectionFrequencyBandMsl_astro deliberately NOT in `visible`
+        # -- this turn's hiding rule excluded it.
+    ]
+    all_attrs = visible + [
+        _attr(2, "modelSelectionFrequencyBandMsl_astro", "Frequency Band", "multi"),
+    ]
+    filled = {"modelSelectionFrequencyBands_astro": "700/800 MHZ"}
+    filled_source = {"modelSelectionFrequencyBands_astro": "default"}
+
+    to_strip, to_ask = eng.exclusive_sibling_family_exclusions(
+        visible, filled, {}, filled_source, all_attrs=all_attrs,
+    )
+    assert to_strip == set(), (
+        "no more-specific (visible) answer to defer to -- the weak "
+        "single-select default must be left alone, not stripped for nothing"
+    )
+    assert to_ask == []
+
+    pending = eng.enforce_exclusive_sibling_families(
+        visible, filled, {}, filled_source, {}, [], all_attrs=all_attrs,
+    )
+    assert pending == [], "a hidden sibling must never be resurrected into pending"
+    assert filled.get("modelSelectionFrequencyBands_astro") == "700/800 MHZ"
+
+
 def test_enforce_mutates_filled_and_appends_to_pending():
     eng = CpqEngine()
     attrs = [

@@ -4711,6 +4711,19 @@ class CpqEngine:
             if len(multi) != 1 or len(single) != 1:
                 continue
             multi_attr, single_attr = multi[0], single[0]
+            if multi_attr.variable_name not in by_vn:
+                # The multi-select sibling only exists in `all_attrs` (the
+                # full, pre-hiding catalog list) — a real hiding rule has
+                # decided it does NOT apply this turn (confirmed live: "Hide
+                # Frequency Band Model Selection Attribute for APX NEXT All
+                # Band model" correctly hides modelSelectionFrequencyBandMsl_
+                # astro for that product). There is no more-specific answer
+                # to defer to, so the single-select's value — weak-sourced
+                # or not — is left alone rather than stripped for nothing;
+                # stripping it here previously resurrected a question the
+                # engine's own hiding-rule evaluation had already, correctly,
+                # decided to never ask.
+                continue
             single_has_value = single_attr.variable_name in filled
             multi_has_value = bool(filled_multi.get(multi_attr.variable_name))
             if (
@@ -4753,7 +4766,12 @@ class CpqEngine:
         pending = [a for a in pending if a.variable_name not in to_strip]
         pending_vns = {a.variable_name for a in pending}
         for attr in to_ask:
-            # Truthiness check (not mere key presence) is deliberate here —
+            # `to_ask` is already guaranteed visible-this-turn by
+            # exclusive_sibling_family_exclusions (it only pairs a multi-
+            # select sibling that's present in `attrs`, the visible list —
+            # see that function's docstring for the hidden-sibling
+            # regression this closes). Truthiness check (not mere key
+            # presence) is deliberate here —
             # see test_enforce_still_asks_when_multi_sibling_has_an_empty_
             # placeholder: a governing multi-select sibling this mechanism
             # just decided IS the real answer for this concept must still
