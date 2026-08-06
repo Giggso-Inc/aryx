@@ -15,7 +15,7 @@ from aryx.broker import Broker
 from aryx.connectors.base import Connector
 from aryx.discover import discover
 from aryx.graph import FalkorStore
-from aryx.pipeline.enrich import _build_type_ancestors, _relate
+from aryx.pipeline.enrich import _build_type_ancestors, _relate, _relate_isolated
 from aryx.pipeline.fk_edges import link_by_attribute
 from aryx.pipeline.stages import StageRunner
 from aryx.store.checkpoint_store import StageTracker
@@ -162,4 +162,28 @@ def link_entities(
     finally:
         estore.close()
     logger.info("link_entities workspace=%s relationships=%d", workspace_id, relationships)
+    return {"relationships": relationships, **counts}
+
+
+def relate_isolated(dsn: str, graph_url: str, workspace_id: int,
+                    broker: Broker) -> dict[str, int]:
+    """Final safety-net pass: guarantee no entity in the workspace is left
+    with zero relationships, then re-project.
+
+    Deliberately unconditional — call this once a batch's files/types have
+    all landed and any FK-linking has run, regardless of whether the
+    best-effort relate/FK stages found anything. A workspace with no
+    isolated entities is a cheap no-op.
+    """
+    estore = EntityStore(dsn, workspace_id)
+    try:
+        relationships = _relate_isolated(estore, broker)
+        type_ancestors = _build_type_ancestors(dsn)
+        counts = project_graph(
+            estore, FalkorStore(graph_url, ws_graph(workspace_id)),
+            type_ancestors=type_ancestors, workspace_id=workspace_id,
+        )
+    finally:
+        estore.close()
+    logger.info("relate_isolated workspace=%s relationships=%d", workspace_id, relationships)
     return {"relationships": relationships, **counts}
