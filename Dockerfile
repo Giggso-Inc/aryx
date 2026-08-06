@@ -15,6 +15,13 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 
 COPY src/ ./src/
 
+# Per-catalog CPQ native-UI layout exports (docs/CPQ_LAYOUT_TXT_VISIBILITY_
+# ORDER_PLAN.md) — one file per catalog, matched by catalog name substring
+# in the filename (e.g. "Config Layout APX Next.txt" for "Apx Next").
+# ARYX_CPQ_LAYOUT_DIR (docker-compose.yml) points CpqEngine's
+# LocalDirLayoutFileSource at this directory.
+COPY config_layouts/ ./config_layouts/
+
 # Streamlit theme config — must live at /app/.streamlit so the UI process
 # (started from WORKDIR=/app) picks it up instead of falling back to the
 # browser's prefers-color-scheme (which renders dark and kills sidebar

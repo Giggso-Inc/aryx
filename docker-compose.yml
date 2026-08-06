@@ -120,6 +120,16 @@ services:
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
       - ARYX_INTERNAL_API_KEY=${ARYX_INTERNAL_API_KEY}
+      # docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md — per-catalog native-UI
+      # layout exports. Dockerfile COPYs a baked-in default (so the image
+      # alone is enough in a real deployment with no host to bind-mount
+      # from); the bind mount below overrides it for local dev so editing
+      # a file in ./config_layouts is picked up on next request — no
+      # rebuild needed, only a container restart (see load_layout_display_
+      # order's process-lifetime cache — this doesn't hot-reload mid-run).
+      - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
+    volumes:
+      - ./config_layouts:/app/config_layouts:ro
     ports:
       - "127.0.0.1:8088:8000"
     depends_on:

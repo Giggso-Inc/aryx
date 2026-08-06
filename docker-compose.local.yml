@@ -55,6 +55,15 @@ services:
       - ARYX_ONTOLOGY_ENABLED=${ARYX_ONTOLOGY_ENABLED:-true}
       - ARYX_ONTOLOGY_FORMATS=${ARYX_ONTOLOGY_FORMATS:-turtle,json-ld,xml,n-triples}
       - ARYX_DISCOVERY_MAX_PAYLOAD_MB=${ARYX_DISCOVERY_MAX_PAYLOAD_MB:-512}
+      # docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md — per-catalog native-UI
+      # layout exports. Dockerfile COPYs a baked-in default; the bind mount
+      # below overrides it for local dev so editing a file in
+      # ./config_layouts is picked up on next container restart — no
+      # rebuild needed (the loader still caches per-process, so a restart,
+      # not just the file edit, is what makes it visible).
+      - ARYX_CPQ_LAYOUT_DIR=/app/config_layouts
+    volumes:
+      - ./config_layouts:/app/config_layouts:ro
     ports:
       - "127.0.0.1:8088:8000"
     depends_on:
