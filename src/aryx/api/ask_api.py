@@ -5481,6 +5481,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             return _handle_cpq_qa(req, session, [], reader, resume_review=False)
         # PROMPT 7: reply to a prior "did you mean" / family list first
         detected = ""
+        _fresh_detection_tried = False
         if session.pending_scope_candidates and session.pending_scope_kind in (
             "product_suggestions", "family_disambiguation", "",
         ):
@@ -5506,9 +5507,17 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 # detect_product_mention ever got a chance to run on the
                 # new text. Only fall back to the stale-scope reask when
                 # this fresh, full-catalog detection ALSO finds nothing.
+                # _fresh_detection_tried guards the identical call below
+                # (Raven review M1) — detect_product_mention self-fetches
+                # ingested_product_alias_map via the reader when no
+                # alias_map is passed, the exact double graph+RDB fetch its
+                # own docstring already documents as a previously-fixed
+                # review finding; skip re-running it when this branch
+                # already tried and it came back empty.
                 detected = _cpq_engine.detect_product_mention(
                     req.question, hints, reader, req.workspace_id,
                 )
+                _fresh_detection_tried = True
                 if detected:
                     clear_pending_scope(session)
                 elif _sres0.suggestions:
@@ -5517,7 +5526,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         scope_label="product family",
                         tools_called="cpq_product_did_you_mean()",
                     )
-        if not detected:
+        if not detected and not _fresh_detection_tried:
             detected = _cpq_engine.detect_product_mention(
                 req.question, hints, reader, req.workspace_id,
             )

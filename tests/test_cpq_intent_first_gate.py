@@ -223,3 +223,41 @@ def test_stale_scope_reask_still_fires_when_the_new_message_also_has_no_signal()
 
     assert resp["tools_called"] == ["cpq_product_did_you_mean()"]
     assert "videoSolutions_BOM" in resp["answer"]
+
+
+# ── Regression (Raven review M1): the escape-hatch detection must not
+# double-fetch the ingested product catalog ───────────────────────────────
+# When the stale-scope check's own fresh detect_product_mention() call ALSO
+# finds nothing AND resolve_against_scope's suggestions come back empty (a
+# real, if narrow, path — e.g. a stale candidate list that normalizes to
+# nothing), execution used to fall through to the pre-existing
+# "if not detected:" block below and call detect_product_mention() again
+# with IDENTICAL arguments — the exact "loaded the same inventory twice
+# through graph+RDB queries" cost detect_product_mention's own docstring
+# already documents as a previously-fixed finding. _fresh_detection_tried
+# now guards that second call once the first one already ran.
+
+def test_escape_hatch_detection_is_not_fetched_twice_on_the_double_miss_path():
+    session = CpqSession()
+    session.pending_anchor = "product"
+    session.pending_scope_kind = "product_suggestions"
+    # Normalizes to "" in resolve_against_scope, so its own fuzzy ladder
+    # produces matched=None, suggestions=[] — the exact path that used to
+    # fall through to a second, redundant detect_product_mention() call.
+    session.pending_scope_candidates = ["---"]
+    session.turn = 1
+    req = AskRequest(
+        question="xyz totally unrelated gibberish",
+        workspace_id=1, history=[], session_data=session.to_dict(),
+    )
+    with patch("aryx.api.ask_api._cpq_engine.detect_product_mention",
+               return_value="") as mock_detect, \
+         patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
+         patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=[]), \
+         patch("aryx.api.ask_api._persist_cpq_history"):
+        _run_cpq_turn(req, _reader())
+
+    assert mock_detect.call_count == 1, (
+        "detect_product_mention must be called at most once per turn on "
+        "the double-miss path, not re-fetched with identical arguments"
+    )
