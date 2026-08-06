@@ -50,9 +50,19 @@ class McpPrincipal:
         """Return whether this principal may invoke the named MCP tool."""
         if self.expired:
             return False
-        if not self.is_sales_cpq:
-            return True
-        return tool_name in self.allowed_tools and tool_name in SALES_CPQ_TOOLS
+        if tool_name in SALES_CPQ_TOOLS:
+            # sales_chat_* reads/writes real sales conversation data — it
+            # must never fall through to the general-purpose "unrestricted"
+            # branch below, even for the default/anonymous principal that
+            # ARYX_MCP_AUTH_OPTIONAL=1 (the default) hands out when no
+            # bearer token is presented at all. That default-open behavior
+            # is a pre-existing, separately tracked gap (G4) for the
+            # general-purpose tools it was designed around; it must not
+            # silently extend to this newer, more sensitive tool class.
+            return self.is_sales_cpq and tool_name in self.allowed_tools
+        if self.is_sales_cpq:
+            return False
+        return True
 
 
 _current_principal: ContextVar[McpPrincipal] = ContextVar(
