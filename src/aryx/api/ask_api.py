@@ -190,7 +190,7 @@ def _mine_history_for_cpq_context(
     # Newest country mention wins (scan history newest-first).
     for text in reversed(texts):
         country = engine.extract_hints(text).get("country")
-        if country:
+        if country and engine.is_recognized_country(country):
             session.country = country
             logger.info(
                 "cpq: mined country=%r from Ask history (pre-CPQ turn)",
@@ -517,8 +517,11 @@ def _cpq_summary_text(
     `render_filled_summary` — the CPQ flow must never block on, or silently
     mis-format via, the narrator.
     """
+    _catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    display_order = _cpq_engine.load_layout_display_order(workspace_id, _catalog_prefix)
     groups = _cpq_engine.categorized_summary_groups(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
+        display_order=display_order)
     if not groups:
         return ""
     # The narrator and its bullet fallback are only ever asked to cover
@@ -1760,6 +1763,8 @@ def _handle_cascade(
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
         skip_always_ask=skip_always_ask,
+        rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -1771,6 +1776,7 @@ def _handle_cascade(
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2059,6 +2065,8 @@ def _handle_multi_select_removal(
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
         skip_always_ask=skip_always_ask,
+        rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2070,6 +2078,7 @@ def _handle_multi_select_removal(
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2213,6 +2222,8 @@ def _handle_attr_activation(
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
         skip_always_ask=skip_always_ask,
+        rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2224,6 +2235,7 @@ def _handle_attr_activation(
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2387,6 +2399,8 @@ def _handle_attr_clear(
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
         skip_always_ask=skip_always_ask,
+        rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2398,6 +2412,7 @@ def _handle_attr_clear(
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2541,6 +2556,8 @@ def _handle_bulk_quantity_change(
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
         skip_always_ask=skip_always_ask,
+        rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2552,6 +2569,7 @@ def _handle_bulk_quantity_change(
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2801,6 +2819,8 @@ def _handle_cascade_multi(
         filled_multi=session.filled_multi, dropped_multi=dropped_multi,
         country=session.country, negated_vns=negated_vns,
         skip_always_ask=skip_always_ask,
+        rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2812,6 +2832,7 @@ def _handle_cascade_multi(
         negated_vns=negated_vns, filled_source=session.filled_source,
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -5049,7 +5070,19 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # answer (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
     if session.pending_anchor == "country" and "country" not in hints:
         hints["country"] = req.question.strip()
-    if "country" in hints and not session.country:
+    if (
+        "country" in hints and not session.country
+        # Real, confirmed live bug: extract_hints' generic preposition
+        # extractor can match a bare prefix of an unrelated word ("for
+        # APX Next" -> "AP") — session.country is "first hint wins,
+        # never re-derived" (see below), so a bad match here would
+        # permanently block derive_region for the rest of the session
+        # with no way to self-correct. Only session.country's own
+        # assignment is guarded — hints["country"] itself is untouched,
+        # so filling the real country attribute via menu-option matching
+        # is unaffected either way.
+        and _cpq_engine.is_recognized_country(hints["country"])
+    ):
         session.country = hints["country"]
     elif (session.country and "country" not in hints
           and session.pending_anchor != "switch_country"):
@@ -5215,6 +5248,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             new_attrs, {"country": country_value}, {},
             new_hiding, new_rec_rules, new_con_rules,
             bml_eval=new_bml_eval, country=country_value,
+            rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, new_prefix),
+            display_order=_cpq_engine.load_layout_display_order(req.workspace_id, new_prefix),
         )
         return _cpq_engine.check_country_availability(
             new_attrs, new_con_rules, sim_filled, new_bml_eval,
@@ -5871,7 +5906,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             if not _country_src:
                 continue
             _ch = _cpq_engine.extract_hints(_country_src)
-            if _ch.get("country"):
+            if _ch.get("country") and _cpq_engine.is_recognized_country(_ch["country"]):
                 session.country = _ch["country"]
                 hints.setdefault("country", _ch["country"])
                 logger.info(
@@ -6248,7 +6283,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             preview_payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
                 hidden_vns=_hidden_for_payload,
-                rules=[*hiding_rules, *rec_rules, *con_rules])
+                rules=[*hiding_rules, *rec_rules, *con_rules],
+                display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
             rule_ids_preview = _cpq_engine.rule_governed_ids(
                 attrs, hiding_rules, rec_rules, con_rules)
             summary = _cpq_summary_text(
@@ -6441,7 +6477,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             payload = _cpq_engine.build_payload(
                 session.filled, session.filled_source, session.filled_multi, attrs,
                 hidden_vns=_hidden_for_payload,
-                rules=[*hiding_rules, *rec_rules, *con_rules])
+                rules=[*hiding_rules, *rec_rules, *con_rules],
+                display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
             answer = (
                 f"```json\n{json.dumps(payload, indent=2)}\n```"
             )
@@ -7717,6 +7754,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             filled_multi=session.filled_multi, dropped_multi=dropped_multi,
             country=session.country, negated_vns=negated_vns,
             skip_always_ask=skip_always_ask,
+            rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
+            display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         )
         g_ids = _cpq_engine.governed_target_ids(v_attrs, hiding_rules, rec_rules, con_rules)
         r_ids = _cpq_engine.rule_governed_ids(v_attrs, hiding_rules, rec_rules, con_rules)
@@ -7727,6 +7766,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             negated_vns=negated_vns, filled_source=session.filled_source,
             skip_always_ask=skip_always_ask, bml_eval=bml_eval,
             validation_rules=validation_rules,
+            display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
             )
         if session.model_leaf_resolved:
             # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -7927,7 +7967,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             preview_payload = _cpq_engine.build_payload(
                 filled, session.filled_source, session.filled_multi, visible_attrs,
                 hidden_vns=_hidden_now,
-                rules=[*hiding_rules, *rec_rules, *con_rules])
+                rules=[*hiding_rules, *rec_rules, *con_rules],
+                display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
@@ -8057,7 +8098,8 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
     payload = _cpq_engine.build_payload(
         session.filled, session.filled_source, session.filled_multi, attrs,
         hidden_vns=flow_exclusions,
-        rules=[*hiding_rules_preview, *rec_rules_preview, *con_rules_preview])
+        rules=[*hiding_rules_preview, *rec_rules_preview, *con_rules_preview],
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)

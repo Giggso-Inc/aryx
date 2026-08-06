@@ -28,6 +28,7 @@ from aryx.cpq.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
     _operator_hit,
 )
+from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
 from aryx.cpq import rule_trace
@@ -470,6 +471,15 @@ _FLAG_KEYWORD_INDEX_CACHE: dict[tuple[int, str], dict[str, tuple[str, str]]] = {
 # ingested data, safe to compute once per catalog per process lifetime.
 _LAYOUT_TIER_CACHE: dict[tuple[int, str], int] = {}
 _LAYOUT_SCOPE_CACHE: dict[tuple[int, str], dict[str, Any] | None] = {}
+
+# docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md — {variable_name: rank} for a
+# catalog's decoded native-UI layout export (distinct from the above: this
+# carries the `hide` bit and document order the raw relational layout
+# tables never decoded). Same process-lifetime caching rationale.
+_LAYOUT_COMPONENTS_CACHE: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
+_LAYOUT_DISPLAY_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
+_LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
+_DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = LocalDirLayoutFileSource()
 
 
 def _normalize_for_hint(text: str) -> str:
@@ -2695,6 +2705,140 @@ class CpqEngine:
         _LAYOUT_SCOPE_CACHE[key] = result
         return result
 
+    @staticmethod
+    def _walk_layout_components(node: Any) -> list[dict[str, Any]]:
+        """Depth-first, document-order list of every leaf component object
+        carrying a `resourceAttributeVarName` — the exact flattened order
+        the native UI renders in, no `parent_id`/`order_number` tree walk
+        needed (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §1: the raw
+        relational `order_number` is sibling-scoped, not a flat rank; this
+        nested JSON's own array order already is one)."""
+        out: list[dict[str, Any]] = []
+
+        def _walk(n: Any) -> None:
+            if isinstance(n, dict):
+                if "resourceAttributeVarName" in n:
+                    out.append(n)
+                for v in n.values():
+                    _walk(v)
+            elif isinstance(n, list):
+                for item in n:
+                    _walk(item)
+
+        _walk(node)
+        return out
+
+    @classmethod
+    def _load_layout_components(
+        cls, workspace_id: int, catalog_prefix: str,
+        layout_source: LayoutFileSource | None,
+    ) -> list[dict[str, Any]] | None:
+        """Parsed, `status=="Active"`-validated, flattened (document-order)
+        component list for a catalog's layout export, or None if no
+        currently-Active file exists. Cached process-lifetime — the shared
+        parse step both `load_layout_display_order` (§2, visible-only) and
+        `_load_layout_full_order` (§2b, ALL entries — rule conditions are
+        frequently layout-*hidden*, e.g. a derived attr like Base Model,
+        so the ranking those need can't come from the visible-only map)
+        build on."""
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_COMPONENTS_CACHE:
+            return _LAYOUT_COMPONENTS_CACHE[key]
+        source = layout_source or _DEFAULT_LAYOUT_FILE_SOURCE
+        text = source.get(catalog_prefix)
+        if not text:
+            _LAYOUT_COMPONENTS_CACHE[key] = None
+            return None
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            logger.warning(
+                "cpq layout: malformed layout JSON for catalog_prefix=%r",
+                catalog_prefix, exc_info=True,
+            )
+            _LAYOUT_COMPONENTS_CACHE[key] = None
+            return None
+        if not isinstance(data, dict) or data.get("status") != "Active":
+            logger.info(
+                "cpq layout: layout file for %r has status=%r, not "
+                "'Active' — ignoring (stale/deprecated export guard)",
+                catalog_prefix,
+                data.get("status") if isinstance(data, dict) else None,
+            )
+            _LAYOUT_COMPONENTS_CACHE[key] = None
+            return None
+        components = cls._walk_layout_components(data)
+        _LAYOUT_COMPONENTS_CACHE[key] = components
+        return components
+
+    def load_layout_display_order(
+        self, workspace_id: int, catalog_prefix: str = "",
+        layout_source: LayoutFileSource | None = None,
+    ) -> dict[str, int] | None:
+        """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2 — {variable_name:
+        rank} for exactly the attributes a catalog's decoded native-UI
+        layout export marks `hide: false` and non-`HTML`-typed, ranked by
+        the file's own document order (§1: the authoritative flat order —
+        `bm_layout_model.order_number` is only sibling-scoped).
+
+        Returns None when no matching, currently-Active layout file exists
+        for this catalog — callers must treat that as "no layout signal",
+        never as "empty visible set" (every §2/§2b/§2c mechanism built on
+        this falls back to today's unchanged behavior in that case).
+
+        layout_source — injected for tests / a future non-local backend
+        (see LayoutFileSource); defaults to the process-wide local
+        directory source (`ARYX_CPQ_LAYOUT_DIR`, else cwd).
+        """
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_DISPLAY_ORDER_CACHE:
+            return _LAYOUT_DISPLAY_ORDER_CACHE[key]
+        components = self._load_layout_components(workspace_id, catalog_prefix, layout_source)
+        if components is None:
+            _LAYOUT_DISPLAY_ORDER_CACHE[key] = None
+            return None
+        order: dict[str, int] = {}
+        for comp in components:
+            vn = comp.get("resourceAttributeVarName")
+            if (
+                vn and comp.get("hide") is False
+                and comp.get("resourceAttrType") != "HTML"
+                and vn not in order
+            ):
+                order[vn] = len(order)
+        result = order or None
+        _LAYOUT_DISPLAY_ORDER_CACHE[key] = result
+        return result
+
+    def _load_layout_full_order(
+        self, workspace_id: int, catalog_prefix: str = "",
+        layout_source: LayoutFileSource | None = None,
+    ) -> dict[str, int] | None:
+        """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b — {variable_name:
+        rank} over EVERY component in the layout file's document order,
+        regardless of `hide`/`resourceAttrType` — used for rule-conflict
+        ranking, where a rule's condition attribute is very often itself
+        layout-hidden (a derived/computed attr, e.g. Base Model, is never
+        shown to the customer but still gates other rules). Distinct from
+        `load_layout_display_order`, which intentionally excludes exactly
+        those hidden attrs for the summary/payload visible-set use case.
+        """
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_FULL_ORDER_CACHE:
+            return _LAYOUT_FULL_ORDER_CACHE[key]
+        components = self._load_layout_components(workspace_id, catalog_prefix, layout_source)
+        if components is None:
+            _LAYOUT_FULL_ORDER_CACHE[key] = None
+            return None
+        order: dict[str, int] = {}
+        for comp in components:
+            vn = comp.get("resourceAttributeVarName")
+            if vn and vn not in order:
+                order[vn] = len(order)
+        result = order or None
+        _LAYOUT_FULL_ORDER_CACHE[key] = result
+        return result
+
     def resolve_always_ask_skips(
         self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
     ) -> set[str]:
@@ -4342,8 +4486,28 @@ class CpqEngine:
         country: str | None = None,
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
+        rule_conflict_order: dict[str, int] | None = None,
+        display_order: dict[str, int] | None = None,
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
+
+        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2d:
+        passed straight through to every internal `auto_fill` call so the
+        default-value/first-available skip gate applies on EVERY pass, not
+        just the caller's own separate, final `auto_fill` call in
+        ask_api.py. Without this, an attr could get a "default"-sourced
+        value locked in during this loop's own early passes (before the
+        caller's final call ever runs) — that value then looks like
+        "already filled in a prior turn" to every later pass (including
+        the final one), which only re-validates against constraints, never
+        re-derives from scratch, so the §2d skip never gets a chance to
+        apply. Confirmed live: exactly this happened for 8 real attrs
+        before this fix. `None` keeps today's behavior unchanged.
+        rule_conflict_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md
+        §2b: the catalog's FULL layout document order
+        (`_load_layout_full_order`), passed straight through to
+        `rank_rules_by_specificity`. `None` keeps today's dependency-
+        graph-depth ranking unchanged.
 
         Each pass:
           1. Auto-fill (hints + defaults + first-option, with active constraints)
@@ -4375,7 +4539,7 @@ class CpqEngine:
         # conflicts resolve via provable specificity instead of whatever
         # order fetch_rules()/fetch_value_rules() happened to return.
         hiding_rules, rec_rules, con_rules = self.rank_rules_by_specificity(
-            attrs, hiding_rules, rec_rules, con_rules)
+            attrs, hiding_rules, rec_rules, con_rules, display_order=rule_conflict_order)
 
         for pass_num in range(_MAX_LOOPS):
             rule_trace.bind_pass(pass_num)
@@ -4420,7 +4584,7 @@ class CpqEngine:
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
-                bml_eval=bml_eval,
+                bml_eval=bml_eval, display_order=display_order,
             )
 
             # Same prefetch, now for recommendation/constraint rule scripts
@@ -4882,6 +5046,30 @@ class CpqEngine:
         return governed
 
     @staticmethod
+    def is_recognized_country(value: str) -> bool:
+        """True when `value` is a real country name/abbreviation this
+        engine can resolve a region for (a key in `_COUNTRY_TO_REGION`).
+
+        Guards `session.country`'s own assignment (ask_api.py) against a
+        real, confirmed live bug: `extract_hints`' generic
+        preposition-based country extractor's 2-letter-code alternative
+        has no trailing word-boundary check, so "for APX Next" matched
+        "for " + "AP" (the first two letters of "APX") and produced
+        `hints["country"] = "Ap"`. session.country is a "first hint wins,
+        never re-derived" field (ask_api.py) — once set, it's reused
+        verbatim on every later turn regardless of whether a real answer
+        ever fills the actual country attribute, so a single bad match
+        this early permanently blocks `derive_region` for the rest of the
+        session with no way to self-correct. Since `session.country`'s
+        only consumer is `derive_region`, and `derive_region` itself
+        already returns None for anything not in `_COUNTRY_TO_REGION`,
+        rejecting an unrecognized candidate BEFORE it's stored costs
+        nothing today and stops it from calcifying into a wrong value
+        that can never be replaced by a later, correct hint.
+        """
+        return value.strip().lower() in _COUNTRY_TO_REGION
+
+    @staticmethod
     def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
         """Resolve a region attr's value from a known country, without
         inventing a code the catalog doesn't actually offer.
@@ -4923,8 +5111,24 @@ class CpqEngine:
         skip_always_ask: set[str] | None = None,
         bml_eval: BmlEvaluator | None = None,
         validation_rules: list["ValidationRule"] | None = None,
+        display_order: dict[str, int] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
+
+        display_order — optional {variable_name: rank} from
+        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+        PLAN.md §2c). When supplied: (a) the returned `pending` list is
+        sorted by rank instead of catalog/discovery order, so questions
+        get asked in the same sequence the real native UI shows them; (b)
+        only `is_decision_attr` anchors (Country/Region/Hardware
+        Version/Product) and grid-linked selectors reach `pending` at all
+        — every other attr the final ask-branch would otherwise have
+        asked about is instead SKIPPED (left entirely unfilled, not
+        defaulted-empty) when nothing upstream (hint/recommendation/
+        default) resolved it. Sibling-forced re-asks
+        (`enforce_exclusive_sibling_families`) are a separate code path
+        and are unaffected either way. `None` (the default) keeps today's
+        "ask everything with options" behavior completely unchanged.
 
         Priority order (first match wins):
           1. Already filled in a prior turn.
@@ -5074,7 +5278,7 @@ class CpqEngine:
 
         def _satisfied_recommendation(
             attr: "ConfigAttr", candidate_opts: list["MenuOption"],
-        ) -> tuple[str, str] | None:
+        ) -> tuple[str, str, str] | None:
             """A targeted recommendation whose condition is ALREADY true
             in the current `filled` state — more specific than a generic
             XML default_value and must win over it (confirmed live:
@@ -5093,6 +5297,13 @@ class CpqEngine:
             resolve an attr that would otherwise stay unfilled/pending).
             bml_eval=None (caller opted out) falls back to skipping script
             rules entirely, same as apply_recommendation_rules.
+
+            Returns (item_value, display_name, rule_name) — the rule_name
+            (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2e) is the
+            specific rule that fired, for the rule-trace attribution call
+            sites use it for instead of the old generic "auto_fill:rule"
+            tag. Every return path below already has `rrule` in scope, so
+            this is free — no separate lookup.
             """
             for aid_key in (attr.entity_id, attr.source_id):
                 if aid_key is None:
@@ -5128,7 +5339,7 @@ class CpqEngine:
                         None,
                     )
                     if match:
-                        return match.item_value, match.display_name
+                        return match.item_value, match.display_name, rrule.rule_name
             return None
 
         # Selectors resolve_array_grid_links() confirmed drive a real
@@ -5170,6 +5381,11 @@ class CpqEngine:
 
         for attr in attrs:
             vn = attr.variable_name
+            # §2e (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): set by
+            # _satisfied_recommendation's call sites below when it returns
+            # a match, so the trace call downstream can attribute the fill
+            # to the specific rule that fired instead of a generic tag.
+            fired_rule_name: str | None = None
 
             if vn in filled:
                 # Deliberately cleared by the user (D4,
@@ -5376,7 +5592,7 @@ class CpqEngine:
                 ]
                 rec_match = _satisfied_recommendation(attr, _rec_candidate_opts)
                 if rec_match:
-                    value, display = rec_match
+                    value, display, fired_rule_name = rec_match
                     source = "rule"
 
             # 3. Default value (pointer-defaults excluded — see
@@ -5404,6 +5620,12 @@ class CpqEngine:
                 not value and _valid(attr.default_value)
                 and not _is_pointer_default(attr)
                 and not _default_excluded_by_constraint
+                # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): once a
+                # layout map is loaded, a bare catalog default_value no
+                # longer fills the attribute on its own — falls through to
+                # the final ask-branch, which §2c then skips (not asks)
+                # since this isn't a decision-anchor or grid selector.
+                and display_order is None
             ):
                 value = attr.default_value
                 source = "default"
@@ -5436,7 +5658,16 @@ class CpqEngine:
                         value = _canonical_sibling.item_value
                         display = _canonical_sibling.display_name
             elif (not value and attr.select_type == "boolean"
-                    and attr.default_value.strip().lower() in ("true", "false")):
+                    and attr.default_value.strip().lower() in ("true", "false")
+                    # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): a
+                    # second, separate default_value branch I missed on the
+                    # first pass — same bare-catalog-default shape as the
+                    # sibling branch above, gated the same way. Found live:
+                    # a boolean attr's "true"/"false" default_value slipped
+                    # through with a "default"-tagged value even after §2d
+                    # shipped, because this branch has its own independent
+                    # default_value check instead of sharing the one above.
+                    and display_order is None):
                 # _valid() treats the literal string "false" as a none-sentinel
                 # (_NONE_VALUES) — correct for single-select dropdowns where
                 # "FALSE" can mean "no selection", but wrong for a genuinely
@@ -5632,7 +5863,7 @@ class CpqEngine:
                             if rec_by_target else None
                         )
                         if rec_match:
-                            value, display = rec_match
+                            value, display, fired_rule_name = rec_match
                             source = "rule"
                         elif vn in _NEVER_GUESS_SCRIPT_GOVERNED:
                             # This attr's only governing rule is script-based
@@ -5641,6 +5872,56 @@ class CpqEngine:
                             # recommendation applies" for this specific attr,
                             # not "unknown, guess anyway". Falls through to
                             # pending/ungoverned handling instead of guessing.
+                            pass
+                        elif (
+                            display_order is not None
+                            and allowed_for_attr is not None
+                            and _valid(attr.default_value)
+                        ):
+                            # §2g (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                            # narrow carve-out to §2f's skip below — an active
+                            # constraint (allowed_for_attr is not None) means
+                            # this attr's default_value has been CONFIRMED
+                            # valid for this exact product/configuration right
+                            # now, not just present in the catalog in the
+                            # abstract (the bare-default case §2d/§2f still
+                            # skip). Live-verified: APX NEXT Single Band's
+                            # Frequency Bands (UHF/VHF/700/800 MHz, catalog
+                            # default "700/800 MHZ") and Antenna Type
+                            # (Whip/No Antenna, catalog default "WHIP APX
+                            # NEXT") both survive their own active constraint.
+                            # Case-insensitive match: the constraint rule's own
+                            # `allowed_values` list and the menu's real
+                            # item_value casing aren't guaranteed to agree
+                            # character-for-character (confirmed live — same
+                            # "700/800 MHz" concept, different case) even
+                            # though every other exact-string comparison in
+                            # this file assumes they do; only this new
+                            # cross-source comparison needs the normalization.
+                            _default_norm = attr.default_value.strip().upper()
+                            match = next(
+                                (o for o in valid_opts
+                                 if o.item_value.strip().upper() == _default_norm),
+                                None,
+                            )
+                            if match:
+                                value = match.item_value
+                                display = match.display_name
+                                source = "default"
+                        elif display_order is not None:
+                            # §2f (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                            # once a layout map is loaded, "governed" (some
+                            # rule targets this attr) is no longer enough on
+                            # its own to justify a value — confirmed live
+                            # that "a rule REQUIRES this resolved" (below)
+                            # really only ever meant "some rule cares about
+                            # this attr," not "a rule decided its value":
+                            # checked all real attrs landing here in a live
+                            # run and found zero backed by an actual hiding
+                            # rule either. Skip entirely (never asked, never
+                            # defaulted) rather than blind-fill — UNLESS the
+                            # §2g carve-out above already filled it from a
+                            # constraint-surviving default_value.
                             pass
                         else:
                             # single/boolean, 2+ options, no default: first by
@@ -5651,10 +5932,15 @@ class CpqEngine:
                             display = valid_opts[0].display_name
                             source = governed_source
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
-            elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
+            elif (
+                not value and is_governed and not is_decision_attr
+                and attr.select_type == "boolean" and display_order is None
+            ):
                 # Governed boolean with no menu options at all: default to
                 # "false" (unchecked) rather than leaving it perpetually
                 # pending — a boolean's absent-default state is well-defined.
+                # §2f: gated the same way as the sibling branch above — once
+                # a layout map is loaded, this blind default is skipped too.
                 value = "false"
                 display = "No"
                 source = governed_source
@@ -5689,10 +5975,25 @@ class CpqEngine:
                 # ("hide -> recommend -> constrain -> auto-fill") left
                 # untraced by the original rule_trace wiring.
                 if source == "rule" or (is_governed and source == governed_source == "rule"):
-                    rule_trace.record_fire(
-                        rule_type="auto_fill", rule_id=f"auto_fill:{source}",
-                        attr=vn, outcome=f"set={value}",
-                    )
+                    # §2e (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                    # attribute to the specific rule _satisfied_recommendation
+                    # matched when we have one — lands in the same
+                    # rule_type="recommendation" bucket apply_recommendation_
+                    # rules' own trace entries use, so one query answers
+                    # "which rule fired this attribute" either way. Falls
+                    # back to the old generic tag only for step 5's
+                    # governed_source path, which isn't _satisfied_
+                    # recommendation-backed and has no single rule to name.
+                    if fired_rule_name:
+                        rule_trace.record_fire(
+                            rule_type="recommendation", rule_id=fired_rule_name,
+                            attr=vn, outcome=f"set={value}",
+                        )
+                    else:
+                        rule_trace.record_fire(
+                            rule_type="auto_fill", rule_id=f"auto_fill:{source}",
+                            attr=vn, outcome=f"set={value}",
+                        )
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
@@ -5770,10 +6071,25 @@ class CpqEngine:
                     None,
                 ) if attr.default_value else None
                 if rec_match:
-                    rec_value, rec_display = rec_match
+                    rec_value, rec_display, fired_rule_name = rec_match
                     filled_multi[vn] = [rec_value]
                     display_filled[vn] = rec_display
                     sources.setdefault(vn, "rule")
+                    # §2e: this multi-select path never traced its fill at
+                    # all before — a real, separate gap from the
+                    # single-select trace call above, closed the same way.
+                    rule_trace.record_fire(
+                        rule_type="recommendation", rule_id=fired_rule_name,
+                        attr=vn, outcome=f"set={rec_value}",
+                    )
+                elif display_order is not None:
+                    # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                    # once a layout map is loaded, nothing satisfying a
+                    # recommendation rule means skip entirely — never fall
+                    # to default_value, never guess first-available, never
+                    # even the explicit-empty placeholder below. Leaves
+                    # filled_multi/display_filled/sources untouched for vn.
+                    pass
                 elif default_opt:
                     filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
@@ -5862,7 +6178,20 @@ class CpqEngine:
                 # answer was collected then silently discarded. Same predicate
                 # the payload exclusion trusts; zero rule impact (no BML
                 # script in either catalog reads CRM_BILL_*/CRM_SHIP_*).
-                pending.append(attr)
+                #
+                # §2c (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): when a
+                # layout map is loaded, only the anchors (is_decision_attr —
+                # Country/Region/Hardware Version/Product) and grid-linked
+                # selectors (never auto-fillable, explicit product decision)
+                # actually get asked. Everything else that reaches this
+                # branch has nothing resolving it via hint/recommendation/
+                # default — skip it (leave unfilled, not defaulted-empty)
+                # rather than asking, per your explicit call. Sibling-forced
+                # re-asks (enforce_exclusive_sibling_families) are a
+                # separate code path, unaffected either way. No layout map
+                # loaded → today's unchanged "ask everything with options".
+                if display_order is None or is_decision_attr or vn in grid_selector_vns:
+                    pending.append(attr)
 
         # Pointer-default resolution post-pass (Issue 11): an unfilled
         # pointer attr inherits its REFERENCED attribute's value once that
@@ -5932,7 +6261,7 @@ class CpqEngine:
         # Hardware-based catalogs: country/region → Hardware (mandatory) →
         # other attrs → Product last; Product deferred until Hardware filled.
         pending = self._order_pending_hardware_before_product(
-            pending, filled, attrs,
+            pending, filled, attrs, display_order=display_order,
         )
 
         return filled, display_filled, pending
@@ -5971,6 +6300,7 @@ class CpqEngine:
         pending: list["ConfigAttr"],
         filled: dict[str, str],
         attrs: list["ConfigAttr"],
+        display_order: dict[str, int] | None = None,
     ) -> list["ConfigAttr"]:
         """Defer Product until Hardware is filled; sort pending by dependency.
 
@@ -5979,9 +6309,36 @@ class CpqEngine:
         always-ask and catalog order listed it before Hardware. On
         hardware-based catalogs Hardware is mandatory and constrains Product
         — never ask the unconstrained product portfolio first.
+
+        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b:
+        when supplied, the real native UI's own sequence wins over the
+        catalog-agnostic heuristic below (confirmed live to already agree
+        with it on APX Next: Country → Hardware Version → Product). The
+        Hardware-before-Product deferral itself is a correctness
+        constraint (Product's options are genuinely unconstrained without
+        it), not just an ordering preference, so it still applies first;
+        display_order only changes the final sort key.
         """
         if not pending:
             return pending
+        if display_order is not None:
+            # Deferral still applies (see docstring); ranking is layout
+            # position, with anything absent from the map (shouldn't
+            # happen once display_order-gated §2c is active, since
+            # pending would only ever hold decision attrs/grid selectors —
+            # both real layout members) sorted after everything ranked.
+            catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
+            if catalog_has_hw:
+                hw_vns = {
+                    a.variable_name for a in attrs if self._is_hardware_version_attr(a)
+                }
+                hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
+                if not hw_filled:
+                    pending = [a for a in pending if not self._is_product_line_selector(a)]
+            return sorted(
+                pending,
+                key=lambda a: display_order.get(a.variable_name, 10**9),
+            )
 
         catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
         if not catalog_has_hw:
@@ -7648,8 +8005,20 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         hidden_vns: set[str] | None = None,
         rules: list[Any] | None = None,
+        display_order: dict[str, int] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
+
+        display_order — optional {variable_name: rank} from
+        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+        PLAN.md §2). When supplied, applied as a FINAL filter+resort after
+        every other rule below — restricts the payload to exactly the
+        attrs present in the map (the catalog's real native-UI visible
+        set) and orders them by rank, winning over the dependency-topo-
+        sort/order_number tie-break described for `rules` below (every
+        attr that survives this filter is, by construction, a real layout
+        member with a real rank). `None` (the default) keeps today's
+        behavior — every other exclusion/ordering rule below unchanged.
 
         Root key is ``configData`` per the actual integration contract —
         previously ``configAttributes``, an internal assumption never
@@ -8029,6 +8398,11 @@ class CpqEngine:
                 out.keys(),
                 key=lambda k: (attr_by_vn[k].order if k in attr_by_vn else 10**9),
             )
+        if display_order is not None:
+            ordered_keys = sorted(
+                (k for k in ordered_keys if k in display_order),
+                key=lambda k: display_order[k],
+            )
         return {"configData": {k: out[k] for k in ordered_keys}}
 
     @staticmethod
@@ -8146,6 +8520,7 @@ class CpqEngine:
         hiding_rules: list["HidingRule"],
         rec_rules: list["RecommendationRule"],
         con_rules: list["ConstraintRule"],
+        display_order: dict[str, int] | None = None,
     ) -> tuple[list["HidingRule"], list["RecommendationRule"], list["ConstraintRule"]]:
         """Stable-sort hiding/recommendation rules coarsest-condition-first,
         most-specific-condition-last, so the existing "last rule wins"
@@ -8154,6 +8529,26 @@ class CpqEngine:
         whatever order fetch_rules()/fetch_value_rules() happened to
         return (neither has an ORDER BY — confirmed in rdb.py). See
         docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md.
+
+        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b:
+        the catalog's FULL layout document order (`_load_layout_full_
+        order` — includes layout-hidden attrs like a derived Base Model,
+        unlike `load_layout_display_order`'s visible-only map, since a
+        rule's condition attribute is very often itself hidden). When
+        supplied, tier 2 below (a real declarative condition) ranks by the
+        MAX layout position among the condition's attribute(s) instead of
+        _attribute_depth_ranks' graph depth — confirmed live to matter:
+        `hWVersion_astro` sits at a shallow depth in the dependency graph
+        but gates real downstream decisions, while depth alone doesn't
+        reflect the real native UI's own notion of "how far into the
+        configuration flow" a condition sits. A condition attribute absent
+        from the layout (shouldn't normally happen — every real condition
+        attribute is a real catalog attribute — but the layout file may
+        simply not mention it) ranks at position -1 within tier 2, i.e.
+        least specific among real declarative conditions, never treated as
+        equal-or-better than a measured position (this codebase's
+        "unknown never outranks known" convention). `None` (the default)
+        keeps today's depth-based ranking completely unchanged.
 
         con_rules is returned UNCHANGED — apply_constraint_rules' allowed-
         value intersection (_intersect) is commutative, so reordering it
@@ -8220,13 +8615,14 @@ class CpqEngine:
                 cid = getattr(rule, "condition_attr_id", 0)
                 if cid:
                     cond_ids = [cid]
-            depths = [
-                depth_by_vn[id_to_vn[cid]]
-                for cid in cond_ids
+            cond_vns = [
+                id_to_vn[cid] for cid in cond_ids
                 if cid in id_to_vn and id_to_vn[cid] in depth_by_vn
             ]
-            if depths:
-                return (2, max(depths), 0)
+            if cond_vns:
+                if display_order is not None:
+                    return (2, max(display_order.get(vn, -1) for vn in cond_vns), 0)
+                return (2, max(depth_by_vn[vn] for vn in cond_vns), 0)
 
             target_id = getattr(rule, "target_attr_id", None)
             target_vn = id_to_vn.get(target_id) if target_id else None
@@ -8435,12 +8831,21 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        display_order: dict[str, int] | None = None,
     ) -> list[tuple[str, str, str]]:
         """Filtered (variable_name, display_label, value) triples worth
         summarising — same filtering as filled_summary_pairs, but keeps
         variable_name so callers (render_filled_summary's category
         grouping) can pattern-match on it. See filled_summary_pairs for the
         filtering rules this applies.
+
+        display_order — optional {variable_name: rank} from
+        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+        PLAN.md §2). When supplied, restricts to exactly the attrs present
+        in the map and sorts by rank instead of `display_filled`'s
+        fill-order — the same catalog layout the real native UI shows,
+        instead of an incidental artifact of resolution order. `None`
+        (the default) keeps today's behavior unchanged.
         """
         if not display_filled:
             return []
@@ -8501,6 +8906,11 @@ class CpqEngine:
                 if self._summary_category(var) != _SUMMARY_FALLBACK_CATEGORY
                 or any(frag in var.lower().replace("_", "") for frag in _ASSOCIATED_OPTIONS_KEY_FRAGMENTS)
             ]
+        if display_order is not None:
+            items = sorted(
+                (item for item in items if item[0] in display_order),
+                key=lambda item: display_order[item[0]],
+            )
         return [(var, label_map.get(var, var), label) for var, label in items]
 
     def filled_summary_pairs(
@@ -8509,6 +8919,7 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        display_order: dict[str, int] | None = None,
     ) -> list[tuple[str, str]]:
         """Filtered (display_label, value) pairs worth summarising.
 
@@ -8527,7 +8938,7 @@ class CpqEngine:
         return [
             (label, value)
             for _var, label, value in self._filled_summary_triples(
-                display_filled, attrs, rule_governed_ids, sources)
+                display_filled, attrs, rule_governed_ids, sources, display_order)
         ]
 
     @staticmethod
@@ -8620,6 +9031,7 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        display_order: dict[str, int] | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
         """(category, [(label, value), ...]) groups, non-empty categories
         only, in the fixed display order (Product Name, Service Plan,
@@ -8629,8 +9041,13 @@ class CpqEngine:
         separately so callers that build their own presentation (e.g.
         ask_api's LLM-narrated summary) can group the same facts the same
         way instead of inventing their own grouping.
+
+        display_order — see `_filled_summary_triples`; restricts to and
+        orders WITHIN each of the fixed categories above by layout rank
+        when supplied. Does not replace the 4-category grouping itself.
         """
-        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids, sources)
+        triples = self._filled_summary_triples(
+            display_filled, attrs, rule_governed_ids, sources, display_order)
         if not triples:
             return []
         by_category: dict[str, list[tuple[str, str]]] = {}
