@@ -12,12 +12,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.llm import complete_json
 from aryx.models import DocumentChunk, RawRecord, SourceRef
 
 logger = logging.getLogger(__name__)
+
+# (completed_chunks, total_chunks, newly_extracted_records_since_last_call)
+OnProgress = Callable[[int, int, list[RawRecord]], None]
 
 _SYSTEM_BASE = (
     "You extract entity mentions from document text for a domain-specific "
@@ -80,9 +86,53 @@ def _verbatim_ok(name: str, span: str) -> bool:
     return name.lower() in span.lower()
 
 
+def _extract_chunk(chunk: DocumentChunk, broker: Broker,
+                   system_prompt: str) -> tuple[DocumentChunk, list[RawRecord], int]:
+    """Extract one chunk's mentions. Never raises — a failed chunk yields
+    nothing rather than sinking the whole (possibly large) document."""
+    user = json.dumps({"chunk_index": chunk.chunk_index, "text": chunk.text})
+    try:
+        result = complete_json(broker, "cheap", system_prompt, user, _SCHEMA)
+    except Exception as exc:
+        logger.warning("extraction failed chunk=%d doc=%s error=%s",
+                       chunk.chunk_index, chunk.doc_id[:8], exc)
+        return chunk, [], 0
+
+    records: list[RawRecord] = []
+    rejected = 0
+    for i, mention in enumerate(result.get("mentions", [])):
+        name = mention.get("name", "")
+        span = mention.get("span", "") or name
+        if not name or not mention.get("type") or not _verbatim_ok(name, span):
+            rejected += 1
+            continue
+        mention_id = f"{chunk.doc_id}:{chunk.chunk_index}:{i}"
+        records.append(RawRecord(
+            source=SourceRef(
+                system=chunk.source.system,
+                dataset=chunk.source.dataset,
+                record_id=mention_id,
+            ),
+            payload={
+                "type": mention["type"],
+                "name": name,
+                "chunk_index": chunk.chunk_index,
+                "span": span,
+                **(mention.get("attributes") or {}),
+            },
+        ))
+    return chunk, records, rejected
+
+
 def extract_mentions(chunks: list[DocumentChunk], broker: Broker,
-                     context: str = "") -> list[RawRecord]:
+                     context: str = "",
+                     on_progress: OnProgress | None = None) -> list[RawRecord]:
     """Extract entity mentions from document chunks via the cheap LLM tier.
+
+    Chunks are processed concurrently (bounded by ``ARYX_EXTRACT_MENTION_WORKERS``,
+    default 4) — each chunk keeps its own independent failure handling, so one
+    permanently-failing chunk never blocks the others. On a large document this
+    is the difference between minutes and tens of minutes.
 
     Args:
         chunks: PII-screened chunks from clean_text.chunk_pages().
@@ -90,47 +140,48 @@ def extract_mentions(chunks: list[DocumentChunk], broker: Broker,
         context: Workspace business context — folded into the system prompt
             so the LLM extracts domain-specific entity types instead of
             generic NER categories.
+        on_progress: Optional callback fired every
+            ``ARYX_EXTRACT_MENTION_PROGRESS_FLUSH_CHUNKS`` completed chunks
+            (and once more at the end) with (completed, total, new_records) —
+            lets a caller persist/report progress incrementally instead of
+            only after the entire document finishes.
 
     Returns:
         RawRecord list where each record is one entity mention that passed the
         verbatim-span gate. Mentions whose name is absent from their cited span
         are silently dropped (logged at DEBUG).
     """
-    records: list[RawRecord] = []
-    rejected = 0
+    if not chunks:
+        return []
+    settings = get_settings()
+    workers = max(1, settings.extract_mention_workers)
+    flush_every = max(1, settings.extract_mention_progress_flush_chunks)
     system_prompt = _system_prompt(context)
 
-    for chunk in chunks:
-        user = json.dumps({"chunk_index": chunk.chunk_index, "text": chunk.text})
-        try:
-            result = complete_json(broker, "cheap", system_prompt, user, _SCHEMA)
-        except Exception as exc:
-            logger.warning("extraction failed chunk=%d doc=%s error=%s",
-                           chunk.chunk_index, chunk.doc_id[:8], exc)
-            continue
+    records: list[RawRecord] = []
+    rejected = 0
+    completed = 0
+    total = len(chunks)
+    pending_flush: list[RawRecord] = []
 
-        for i, mention in enumerate(result.get("mentions", [])):
-            name = mention.get("name", "")
-            span = mention.get("span", "") or name
-            if not name or not mention.get("type") or not _verbatim_ok(name, span):
-                rejected += 1
-                continue
-            mention_id = f"{chunk.doc_id}:{chunk.chunk_index}:{i}"
-            records.append(RawRecord(
-                source=SourceRef(
-                    system=chunk.source.system,
-                    dataset=chunk.source.dataset,
-                    record_id=mention_id,
-                ),
-                payload={
-                    "type": mention["type"],
-                    "name": name,
-                    "chunk_index": chunk.chunk_index,
-                    "span": span,
-                    **(mention.get("attributes") or {}),
-                },
-            ))
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {
+            pool.submit(_extract_chunk, chunk, broker, system_prompt): chunk
+            for chunk in chunks
+        }
+        for fut in as_completed(futures):
+            _chunk, new_records, new_rejected = fut.result()
+            completed += 1
+            records.extend(new_records)
+            pending_flush.extend(new_records)
+            rejected += new_rejected
+            if on_progress and (completed % flush_every == 0 or completed == total):
+                on_progress(completed, total, pending_flush)
+                pending_flush = []
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
-    logger.info("extract_mentions chunks=%d mentions=%d rejected=%d",
-                len(chunks), len(records), rejected)
+    logger.info("extract_mentions chunks=%d mentions=%d rejected=%d workers=%d",
+                len(chunks), len(records), rejected, workers)
     return records

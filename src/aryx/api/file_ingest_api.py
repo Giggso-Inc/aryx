@@ -129,10 +129,17 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
             chunk_store = ChunkStore(settings.rdb_dsn)
+            # Real chunk-based progress instead of a static 50% for however
+            # long extraction takes on a large document.
+            def _on_extract_progress(completed: int, total: int, _new: list) -> None:
+                pct = 50 + int(min(completed / max(total, 1), 1.0) * 40)
+                jobs.update_stage(job_id, "Documents", min(pct, 90),
+                                  f"Extracted {completed}/{total} chunk(s)…")
             connector = DocumentRouterConnector(
                 paths=paths, system="document", broker=broker,
                 chunk_store=chunk_store, chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
+                on_progress=_on_extract_progress,
             )
             run_pipeline(
                 connector=connector, dsn=settings.rdb_dsn,
