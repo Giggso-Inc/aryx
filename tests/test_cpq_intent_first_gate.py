@@ -161,3 +161,65 @@ def test_question_about_family_relationships_routes_to_qa_not_anchor():
         _run_cpq_turn(req, _reader())
 
     mock_qa.assert_called_once()
+
+
+# ── Regression: a session poisoned by an earlier WRONG "did you mean"
+# suggestion must not stay trapped repeating it forever ──────────────────
+# Live-traced (screenshots): "Give me quote of APX with 10 qty" got the
+# wrong "did you mean videoSolutions_BOM?" reply, which set
+# session.pending_scope_candidates = ["videoSolutions_BOM"]. The user's
+# VERY NEXT message — "Give me quote of APXNEXT with 10 qty", a full,
+# unambiguous product name — got the SAME wrong "did you mean
+# videoSolutions_BOM?" reply again, even though that exact question
+# resolved correctly in a brand-new session. Root cause: the PROMPT 7
+# "reply to a prior did-you-mean list" block always ran
+# resolve_against_scope() against the STALE candidate list FIRST, and its
+# own "miss"-tier suggestion short-circuited the return before
+# detect_product_mention() ever ran fresh on the new text. Fix: a
+# confident fresh detection now wins over a weak/stale scope match.
+
+def test_confident_new_mention_escapes_a_session_poisoned_by_a_prior_wrong_suggestion():
+    session = CpqSession()
+    session.pending_anchor = "product"
+    session.pending_scope_kind = "product_suggestions"
+    session.pending_scope_candidates = ["videoSolutions_BOM"]
+    session.turn = 1
+    req = AskRequest(
+        question="Give me quote of APXNEXT with 10 qty",
+        workspace_id=1, history=[], session_data=session.to_dict(),
+    )
+    with patch("aryx.api.ask_api._cpq_engine.detect_product_mention",
+               return_value="APX NEXT"), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
+         patch("aryx.api.ask_api._cpq_engine.load_product_config",
+               return_value=([], "APX NEXT")), \
+         patch("aryx.api.ask_api._persist_cpq_history"):
+        resp = _run_cpq_turn(req, _reader())
+
+    assert resp["tools_called"] != ["cpq_product_did_you_mean()"], (
+        "must not repeat the stale wrong suggestion once a confident, "
+        "different detection is available on the new message"
+    )
+    assert resp["session_data"]["product_name"] == "APX NEXT"
+
+
+def test_stale_scope_reask_still_fires_when_the_new_message_also_has_no_signal():
+    """The escape hatch above must not swallow the legitimate case: if the
+    new message ALSO fails to resolve to anything, the stale-scope reask
+    must still fire (never silently drop the pending disambiguation)."""
+    session = CpqSession()
+    session.pending_anchor = "product"
+    session.pending_scope_kind = "product_suggestions"
+    session.pending_scope_candidates = ["videoSolutions_BOM"]
+    session.turn = 1
+    req = AskRequest(
+        question="xyz totally unrelated gibberish",
+        workspace_id=1, history=[], session_data=session.to_dict(),
+    )
+    with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=""), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
+         patch("aryx.api.ask_api._persist_cpq_history"):
+        resp = _run_cpq_turn(req, _reader())
+
+    assert resp["tools_called"] == ["cpq_product_did_you_mean()"]
+    assert "videoSolutions_BOM" in resp["answer"]

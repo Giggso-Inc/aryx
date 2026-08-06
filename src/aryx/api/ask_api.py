@@ -5490,12 +5490,33 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             if _sres0.matched:
                 detected = _sres0.matched
                 clear_pending_scope(session)
-            elif _sres0.suggestions:
-                return _scoped_reask_response(
-                    req, session, req.question,
-                    scope_label="product family",
-                    tools_called="cpq_product_did_you_mean()",
+            else:
+                # A weak/"miss"-tier match against the STALE candidate list
+                # (set by an earlier, possibly WRONG suggestion) must never
+                # outrank a confident, independent detection on this new
+                # message — otherwise a session poisoned by one bad "did
+                # you mean" reply stays trapped repeating it forever, even
+                # once the customer sends a completely clear, different
+                # product name. Confirmed live: "Give me quote of APXNEXT
+                # with 10 qty" resolved correctly in a brand-new session but
+                # kept re-triggering the earlier turn's wrong "did you mean
+                # videoSolutions_BOM?" in the SAME session, purely because
+                # resolve_against_scope always ran first and its own
+                # "miss"-tier suggestion short-circuited the return before
+                # detect_product_mention ever got a chance to run on the
+                # new text. Only fall back to the stale-scope reask when
+                # this fresh, full-catalog detection ALSO finds nothing.
+                detected = _cpq_engine.detect_product_mention(
+                    req.question, hints, reader, req.workspace_id,
                 )
+                if detected:
+                    clear_pending_scope(session)
+                elif _sres0.suggestions:
+                    return _scoped_reask_response(
+                        req, session, req.question,
+                        scope_label="product family",
+                        tools_called="cpq_product_did_you_mean()",
+                    )
         if not detected:
             detected = _cpq_engine.detect_product_mention(
                 req.question, hints, reader, req.workspace_id,
