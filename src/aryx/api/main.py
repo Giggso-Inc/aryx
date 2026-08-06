@@ -56,23 +56,18 @@ if not _aryx_logger.handlers:
 logger = logging.getLogger(__name__)
 
 
+def _authenticate_mcp(request):
+    """Return the bearer principal, or ``None`` on missing/invalid auth."""
+    from aryx.mcp.http_auth import authenticate_authorization_header
+
+    return authenticate_authorization_header(
+        request.headers.get("authorization") or ""
+    )
+
+
 def _bearer_ok(request) -> bool:
-    """Verify Authorization: Bearer <token>. Allow-all if no tokens issued."""
-    auth = (request.headers.get("authorization") or "").strip()
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    if not token:
-        return os.environ.get("ARYX_MCP_AUTH_OPTIONAL", "1") == "1"
-    try:
-        from aryx.config import get_settings
-        from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().effective_dsn())
-        tokens = store.list_()
-        if not any(not t.get("revoked_at") for t in tokens):
-            return True
-        return store.verify(token)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("mcp auth check failed — failing closed: %s", exc)
-        return False
+    """Compatibility wrapper returning whether MCP authentication succeeded."""
+    return _authenticate_mcp(request) is not None
 
 
 def _mount_mcp(app: FastAPI) -> None:
@@ -81,18 +76,27 @@ def _mount_mcp(app: FastAPI) -> None:
         from mcp.server.sse import SseServerTransport
         from starlette.routing import Mount, Route
 
+        from aryx.mcp.auth import bind_principal, reset_principal
         from aryx.mcp.server import server
 
         sse = SseServerTransport("/mcp/messages/")
 
         async def handle_sse(request):
-            if not _bearer_ok(request):
+            principal = _authenticate_mcp(request)
+            if principal is None:
                 raise HTTPException(401, "missing or invalid bearer token")
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send,
-            ) as streams:
-                await server.run(streams[0], streams[1],
-                                 server.create_initialization_options())
+            principal_token = bind_principal(principal)
+            try:
+                async with sse.connect_sse(
+                    request.scope, request.receive, request._send,
+                ) as streams:
+                    await server.run(
+                        streams[0],
+                        streams[1],
+                        server.create_initialization_options(),
+                    )
+            finally:
+                reset_principal(principal_token)
 
         app.router.routes.append(Route("/mcp", endpoint=handle_sse))
         app.router.routes.append(Mount("/mcp/messages/",
