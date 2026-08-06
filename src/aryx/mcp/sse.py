@@ -11,9 +11,12 @@ import logging
 import uvicorn
 from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.routing import Mount, Route
 
+from aryx.mcp.auth import bind_principal, reset_principal
+from aryx.mcp.http_auth import authenticate_authorization_header
 from aryx.mcp.server import server
 
 logger = logging.getLogger(__name__)
@@ -22,12 +25,23 @@ sse = SseServerTransport("/messages/")
 
 
 async def handle_sse(request: Request) -> None:
-    async with sse.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
-        await server.run(
-            streams[0], streams[1], server.create_initialization_options()
-        )
+    principal = authenticate_authorization_header(
+        request.headers.get("authorization") or ""
+    )
+    if principal is None:
+        raise HTTPException(401, "missing or invalid bearer token")
+    principal_token = bind_principal(principal)
+    try:
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await server.run(
+                streams[0],
+                streams[1],
+                server.create_initialization_options(),
+            )
+    finally:
+        reset_principal(principal_token)
 
 
 app = Starlette(routes=[

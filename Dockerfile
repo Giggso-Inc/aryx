@@ -5,7 +5,7 @@ FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app/src
+    PYTHONPATH=/app/src:/app
 
 WORKDIR /app
 
@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     python -m spacy download en_core_web_lg
 
 COPY src/ ./src/
+COPY sales_streamlit/ ./sales_streamlit/
 
 # Streamlit theme config — must live at /app/.streamlit so the UI process
 # (started from WORKDIR=/app) picks it up instead of falling back to the
