@@ -22,7 +22,7 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
-from aryx.pipeline.doc_discovery import _infer_type, infer_fk_links
+from aryx.pipeline.doc_discovery import _infer_type, expand_xlsx, infer_fk_links
 from aryx.pipeline.orchestrate import link_entities, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
@@ -30,7 +30,7 @@ from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
-_DATA_EXTS = {".json", ".csv"}
+_DATA_EXTS = {".json", ".csv", ".xlsx"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
@@ -69,6 +69,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     jobs = JobStore(settings.rdb_dsn)
     broker = _local_broker()
     try:
+        # Every .xlsx sheet becomes its own CSV "file" — the rest of the
+        # pipeline (type inference, cross-file FK linking, run_pipeline)
+        # doesn't need to know a workbook was ever involved.
+        items = expand_xlsx(items)
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
         # Per-file plans feed cross-file FK inference once everything has landed.
