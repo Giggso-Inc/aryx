@@ -5490,12 +5490,33 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             if _sres0.matched:
                 detected = _sres0.matched
                 clear_pending_scope(session)
-            elif _sres0.suggestions:
-                return _scoped_reask_response(
-                    req, session, req.question,
-                    scope_label="product family",
-                    tools_called="cpq_product_did_you_mean()",
+            else:
+                # A weak/"miss"-tier match against the STALE candidate list
+                # (set by an earlier, possibly WRONG suggestion) must never
+                # outrank a confident, independent detection on this new
+                # message — otherwise a session poisoned by one bad "did
+                # you mean" reply stays trapped repeating it forever, even
+                # once the customer sends a completely clear, different
+                # product name. Confirmed live: "Give me quote of APXNEXT
+                # with 10 qty" resolved correctly in a brand-new session but
+                # kept re-triggering the earlier turn's wrong "did you mean
+                # videoSolutions_BOM?" in the SAME session, purely because
+                # resolve_against_scope always ran first and its own
+                # "miss"-tier suggestion short-circuited the return before
+                # detect_product_mention ever got a chance to run on the
+                # new text. Only fall back to the stale-scope reask when
+                # this fresh, full-catalog detection ALSO finds nothing.
+                detected = _cpq_engine.detect_product_mention(
+                    req.question, hints, reader, req.workspace_id,
                 )
+                if detected:
+                    clear_pending_scope(session)
+                elif _sres0.suggestions:
+                    return _scoped_reask_response(
+                        req, session, req.question,
+                        scope_label="product family",
+                        tools_called="cpq_product_did_you_mean()",
+                    )
         if not detected:
             detected = _cpq_engine.detect_product_mention(
                 req.question, hints, reader, req.workspace_id,
@@ -5525,7 +5546,6 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             if match:
                 detected = match[1]
         if not detected:
-            already_asked = session.pending_anchor == "product"
             session.pending_anchor = "product"
             families = _cpq_engine.list_ingested_families(reader, req.workspace_id)
             # PROMPT 7: pet names / typos ("Asr"/"asty") → did you mean,
@@ -5535,8 +5555,21 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 req.question, reader, req.workspace_id, limit=5, alias_map=_alias,
             )
             # Also allow prefix / in-scope fuzzy against family names for
-            # short nicknames that fall below the mid-band threshold.
-            if not suggestions and families:
+            # short nicknames that fall below the mid-band threshold — but
+            # ONLY for a short, nickname-shaped reply (the documented
+            # intent above). resolve_against_scope's own fuzzy tier has no
+            # sliding window for a candidate SHORTER than the query (it
+            # falls straight to a raw whole-string ratio), so running it
+            # against a full, ordinary sentence ("I need a quote for some
+            # radios") scores an unrelated short family name via pure
+            # character-overlap coincidence, the same class of bug fixed in
+            # engine.py's _fuzzy_score_candidates — confirmed live: that
+            # exact sentence "matched" MOTOTRBO with zero real signal.
+            # Gating on word count keeps the genuine nickname case (a bare
+            # "APX" or "aPXNext_BOM" reply) working while a long, clearly
+            # generic message falls through to the all-families "did you
+            # mean...?" prompt below instead of a fabricated guess.
+            if not suggestions and families and len(req.question.strip().split()) <= 4:
                 _sres = resolve_against_scope(req.question, list(families))
                 if _sres.matched:
                     detected = _sres.matched
@@ -5564,10 +5597,17 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
             else:
-                fam_list = (
-                    ", ".join(f"*{f}*" for f in families)
-                    if families else "*APX Next*, *MOTOTRBO*, *SL3500e*"
-                )
+                # No fuzzy/mid-band signal at all (a truly generic message,
+                # e.g. "I need a quote for some radios") — rather than a
+                # soft "please provide the product family" instruction that
+                # names the options only as an aside, ask the SAME direct
+                # "did you mean A, or B?" question used everywhere else a
+                # choice needs disambiguating (format_did_you_mean), so a
+                # small (e.g. two-product) workspace always reads as an
+                # explicit choice between the real ingested names, never a
+                # generic ask-again prompt. Falls back to the old
+                # instructive phrasing only when NOTHING is ingested yet —
+                # format_did_you_mean requires at least one real candidate.
                 if families:
                     set_pending_scope(
                         session,
@@ -5577,16 +5617,13 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         attr_vn="",
                         asked_turn=session.turn,
                     )
-                if already_asked:
-                    answer = (
-                        f"I still couldn't match **{req.question.strip()}** to a "
-                        f"product family ingested in this workspace. Available "
-                        f"families: {fam_list}. Could you pick one of those?"
+                    answer = format_did_you_mean(
+                        req.question, list(families), scope_label="product family",
                     )
                 else:
                     answer = (
                         f"To start the configuration I need the **product family** "
-                        f"(e.g., {fam_list}). Could you provide that?"
+                        f"(e.g., *APX Next*, *MOTOTRBO*, *SL3500e*). Could you provide that?"
                     )
                 _persist_cpq_history(req.workspace_id, req.question, answer)
                 return {
