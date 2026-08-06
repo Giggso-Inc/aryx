@@ -490,6 +490,60 @@ def test_detect_product_mention_recognises_a_brand_new_product_with_no_code_chan
     assert result == "Zorbax Ultra 9000"
 
 
+# ── Regression: vague/abbreviated product mention ("APX") ────────────────
+# Bug: "Give me quote of APX with 10 qty" suggested an unrelated family
+# (videoSolutions_BOM) because neither detect_product_mention's exact
+# substring check (candidate-in-question, backwards for a mention SHORTER
+# than every real candidate) nor the whole-sentence fuzzy fallback (noisy
+# for a short abbreviation buried in filler words) had any signal for it.
+# Fix: score individual question-word tokens as prefixes of candidate
+# names too — dynamic, no product list hardcoded.
+
+def test_vague_abbreviation_suggests_the_real_matching_family_not_an_unrelated_one(
+    monkeypatch,
+):
+    reader = _fake_reader_with_batch_fetch(monkeypatch, {
+        "ApxNextConfig": "APX NEXT",
+        "Apx6500Config": "APX6500",
+        "VideoSolutionsConfig": "videoSolutions_BOM",
+    })
+    from aryx.cpq.engine import CpqEngine
+    engine = CpqEngine()
+
+    # Bare abbreviation must not resolve outright (ambiguous among two
+    # real APX families) — it should land in the suggestion band.
+    detected = engine.detect_product_mention(
+        "Give me quote of APX with 10 qty", hints={},
+        reader=reader, workspace_id=1,
+    )
+    assert detected == ""
+
+    suggestions = engine.suggest_product_candidates(
+        "Give me quote of APX with 10 qty", reader, workspace_id=1,
+    )
+    assert suggestions, "a genuine brand abbreviation must surface suggestions"
+    assert "videoSolutions_BOM" not in suggestions
+    assert {"APX NEXT", "APX6500"} & set(suggestions)
+
+
+def test_vague_abbreviation_with_no_matching_family_gets_no_suggestions(
+    monkeypatch,
+):
+    """An abbreviation-shaped token that isn't a prefix of anything ingested
+    must not manufacture a suggestion out of thin air."""
+    reader = _fake_reader_with_batch_fetch(monkeypatch, {
+        "VideoSolutionsConfig": "videoSolutions_BOM",
+        "MototrboConfig": "MOTOTRBO",
+    })
+    from aryx.cpq.engine import CpqEngine
+    engine = CpqEngine()
+
+    suggestions = engine.suggest_product_candidates(
+        "Give me quote of APX with 10 qty", reader, workspace_id=1,
+    )
+    assert "videoSolutions_BOM" not in suggestions
+
+
 # ── Scenario 7: fuzzy substring fallback catches a PARTIAL/misspelled ──────
 # product mention that Tier 1's exact-substring match alone would miss —
 # deterministic (SequenceMatcher via aryx.resolution.classical.string_score),

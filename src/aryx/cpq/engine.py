@@ -449,6 +449,27 @@ _PRODUCT_FUZZY_MATCH_THRESHOLD = 0.82
 # hint) while still well below the confirm-worthy threshold.
 _PRODUCT_FUZZY_SUGGEST_THRESHOLD = 0.65
 
+# The sliding-window score above compares a candidate against the WHOLE
+# normalized question (filler words, quantities, country names and all),
+# which is the right shape for "does some run of this sentence spell out
+# the product" but has no signal for the opposite, equally common case: a
+# short brand abbreviation ("APX", "SL", "MOTO") that IS a genuine leading
+# fragment of a real ingested name ("APXNEXT", "SL3500E", "MOTOTRBO") but
+# is far too short for name_norm-in-q_norm containment to ever fire, and
+# too short relative to a long candidate for the sliding window to carry
+# any real signal (window > len(q_norm) collapses to one whole-string
+# comparison, so short/vague mentions were scored on coincidental overlap
+# with unrelated filler text — confirmed live: "APX" alone matched
+# "videoSolutions_BOM" over any real APX-family name). This bonus scores
+# any individual WORD token from the question that is a genuine prefix of
+# a candidate's normalized name — dynamic, no product list involved, works
+# for whatever is actually ingested. Sits inside the "suggest" band, never
+# the "confirm" band: a bare abbreviation is real signal that the customer
+# means SOME member of a family, never enough on its own to silently pick
+# WHICH one (this engine's documented "never guess" discipline).
+_ABBR_PREFIX_MIN_LEN = 3
+_ABBR_PREFIX_SCORE = 0.75
+
 # next_question_prompt: an attr whose effective option list exceeds this is
 # asked as "type the exact name" (with a few examples) instead of a numbered
 # menu — confirmed live that unconstrained master lists (product selector:
@@ -1455,14 +1476,31 @@ class CpqEngine:
             for name, name_norm in ordered:
                 if name_norm and name_norm in q_norm:
                     return alias_map[name]
-            scored = self._fuzzy_score_candidates(q_norm, ordered)
+            scored = self._fuzzy_score_candidates(
+                q_norm, ordered, question_tokens=self._question_tokens(question),
+            )
             if scored and scored[0][1] >= _PRODUCT_FUZZY_MATCH_THRESHOLD:
                 return alias_map[scored[0][0]]
         return next((v for k, v in hints.items() if "product" in k), "")
 
     @staticmethod
+    def _question_tokens(question: str) -> frozenset[str]:
+        """Individual normalized word tokens from `question`, filtered to
+        those long enough to carry brand-abbreviation signal (see
+        `_ABBR_PREFIX_MIN_LEN`). Distinct from q_norm, which glues the
+        whole question into one string for substring/sliding-window
+        checks — this stays word-separated so a short mention ("APX")
+        isn't diluted by neighboring filler ("quote", "qty", "10").
+        """
+        return frozenset(
+            t for t in re.findall(r"[a-z0-9]+", (question or "").lower())
+            if len(t) >= _ABBR_PREFIX_MIN_LEN
+        )
+
+    @staticmethod
     def _fuzzy_score_candidates(
         q_norm: str, ordered: list[tuple[str, str]],
+        question_tokens: frozenset[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Best deterministic fuzzy score of each (name, name_norm) pair
         against q_norm — a sliding window the length of the candidate's
@@ -1473,6 +1511,14 @@ class CpqEngine:
         names shorter than _HINT_MIN_PHRASE_LEN are never scored (same
         guard used elsewhere to stop short names from spuriously matching
         unrelated text).
+
+        `question_tokens` (see `_question_tokens`) adds a second, word-level
+        signal on top of the whole-string sliding window: any token that is
+        a genuine prefix of a candidate's normalized name bumps that
+        candidate's score into the "suggest" band via `_ABBR_PREFIX_SCORE`,
+        even when the whole-sentence window carries no useful signal for a
+        short/vague mention. Purely additive (`max`) — never lowers a score
+        the sliding window already found on its own.
         """
         scored: list[tuple[str, float]] = []
         for name, name_norm in ordered:
@@ -1483,6 +1529,10 @@ class CpqEngine:
             best = 0.0
             for i in range(span):
                 best = max(best, string_score(name_norm, q_norm[i:i + window]))
+            if question_tokens and any(
+                name_norm.startswith(tok) for tok in question_tokens
+            ):
+                best = max(best, _ABBR_PREFIX_SCORE)
             scored.append((name, best))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored
@@ -1536,7 +1586,9 @@ class CpqEngine:
             for name, family in alias_map.items()
             if family.strip().lower() != exclude_norm
         ]
-        scored = self._fuzzy_score_candidates(q_norm, ordered)
+        scored = self._fuzzy_score_candidates(
+            q_norm, ordered, question_tokens=self._question_tokens(question),
+        )
         suggestions: list[str] = []
         for name, score in scored:
             if not (_PRODUCT_FUZZY_SUGGEST_THRESHOLD <= score < _PRODUCT_FUZZY_MATCH_THRESHOLD):
