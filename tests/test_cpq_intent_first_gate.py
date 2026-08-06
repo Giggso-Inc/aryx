@@ -75,3 +75,37 @@ def test_plain_family_reply_still_anchors_normally():
         _run_cpq_turn(req, _reader())
 
     mock_qa.assert_not_called()
+
+
+# ── Regression: vague first message with exactly two ingested products ───
+# Bug (found live, follow-up to the "APX" abbreviation fix): a fully
+# generic first message ("I need a quote for some radios") with zero real
+# product signal still produced a single, coincidental-looking "did you
+# mean MOTOTRBO?" guess out of a two-product workspace — resolve_against_
+# scope's own fuzzy fallback (pending_scope.py) has no sliding window for a
+# candidate shorter than the query, so it fell back to a raw whole-string
+# ratio between the entire sentence and each short family name, the same
+# class of bug already fixed in engine.py's suggest_product_candidates.
+# Fix: that secondary fallback now only runs for a short, nickname-shaped
+# reply (its own documented intent); an ordinary full sentence instead
+# falls through to a "did you mean A, or B?" prompt naming BOTH real
+# ingested families, never a fabricated single guess.
+
+def test_generic_first_message_with_two_products_asks_which_one_not_a_guess():
+    session = CpqSession()
+    req = AskRequest(
+        question="I need a quote for some radios",
+        workspace_id=1, history=[], session_data=session.to_dict(),
+    )
+    with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=""), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
+         patch("aryx.api.ask_api._cpq_engine.list_ingested_families",
+               return_value=["APX NEXT", "MOTOTRBO"]), \
+         patch("aryx.api.ask_api._cpq_engine.ingested_product_alias_map", return_value={}), \
+         patch("aryx.api.ask_api._cpq_engine.suggest_product_candidates", return_value=[]), \
+         patch("aryx.api.ask_api._persist_cpq_history"):
+        resp = _run_cpq_turn(req, _reader())
+
+    assert resp["tools_called"] == ["cpq_anchor_validation()"]
+    assert "APX NEXT" in resp["answer"]
+    assert "MOTOTRBO" in resp["answer"]
