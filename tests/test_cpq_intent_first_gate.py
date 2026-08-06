@@ -109,3 +109,55 @@ def test_generic_first_message_with_two_products_asks_which_one_not_a_guess():
     assert resp["tools_called"] == ["cpq_anchor_validation()"]
     assert "APX NEXT" in resp["answer"]
     assert "MOTOTRBO" in resp["answer"]
+
+
+def test_generic_radio_quote_request_asks_which_product_with_three_variants():
+    """"I need 10 radios quote to US" — same shape as above, but against a
+    three-real-variant + one-unrelated-family workspace: must list the real
+    ingested names, never invent or coincidentally guess one."""
+    session = CpqSession()
+    req = AskRequest(
+        question="I need 10 radios quote to US",
+        workspace_id=1, history=[], session_data=session.to_dict(),
+    )
+    families = ["APX NEXT", "APX NEXT XE", "APX NEXT XN", "MOTOTRBO"]
+    with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=""), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
+         patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=families), \
+         patch("aryx.api.ask_api._cpq_engine.ingested_product_alias_map", return_value={}), \
+         patch("aryx.api.ask_api._cpq_engine.suggest_product_candidates", return_value=[]), \
+         patch("aryx.api.ask_api._persist_cpq_history"):
+        resp = _run_cpq_turn(req, _reader())
+
+    assert resp["tools_called"] == ["cpq_anchor_validation()"]
+    for family in families:
+        assert family in resp["answer"]
+
+
+# ── Regression: an actual question about product relationships must
+# route to Q&A, not be swallowed as the pending product-family answer ────
+# "What other products are in the same family as the APX NEXT XE?" is a
+# genuine question (ends in "?", asks about a relationship) sent while the
+# engine is awaiting a product-family anchor reply — must hit the same
+# intent-first gate as the original live-traced bug, not get treated as a
+# (garbled) attempt to name a product.
+
+def test_question_about_family_relationships_routes_to_qa_not_anchor():
+    session = _session_awaiting_product_anchor()
+    req = AskRequest(
+        question="What other products are in the same family as the APX NEXT XE?",
+        workspace_id=21, history=[], session_data=session.to_dict(),
+    )
+    with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=None), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
+         patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "stub")), \
+         patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        mock_qa.return_value = {
+            "answer": "stub", "terms": [], "tools_called": ["cpq_qa()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-qa", "answer_model": "cpq-qa"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        _run_cpq_turn(req, _reader())
+
+    mock_qa.assert_called_once()

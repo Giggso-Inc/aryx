@@ -544,6 +544,104 @@ def test_vague_abbreviation_with_no_matching_family_gets_no_suggestions(
     assert "videoSolutions_BOM" not in suggestions
 
 
+# ── Regression batch: real-world vague/specific order phrasings ──────────
+# A user-supplied set of live phrasings to pin down, covering the full
+# spectrum from bare abbreviation to fully-qualified multi-line order, all
+# against the SAME ingested workspace (three real APX NEXT variants as
+# separate catalogs + one unrelated family) — proves the abbreviation fix
+# doesn't regress specific-mention detection, and specific mentions still
+# never fall into the ambiguous/suggestion path.
+
+_APX_VARIANT_CATALOGS = {
+    "ApxNextConfig": "APX NEXT",
+    "ApxNextXeConfig": "APX NEXT XE",
+    "ApxNextXnConfig": "APX NEXT XN",
+    "MototrboConfig": "MOTOTRBO",
+}
+
+
+def _apx_variant_engine(monkeypatch):
+    reader = _fake_reader_with_batch_fetch(monkeypatch, _APX_VARIANT_CATALOGS)
+    from aryx.cpq.engine import CpqEngine
+    return CpqEngine(), reader
+
+
+def test_bare_apx_is_ambiguous_among_three_real_variants_never_mototrbo(monkeypatch):
+    """"Give me a quote for the APX" — too vague to auto-pick ANY of the
+    three real APX NEXT variants; must offer them as suggestions and must
+    never surface the unrelated MOTOTRBO family."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Give me a quote for the APX"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == ""
+
+    suggestions = engine.suggest_product_candidates(question, reader, workspace_id=1)
+    assert suggestions, "a genuine brand mention must surface suggestions"
+    assert "MOTOTRBO" not in suggestions
+    assert set(suggestions) <= {"APX NEXT", "APX NEXT XE", "APX NEXT XN"}
+
+
+def test_fully_qualified_variant_in_a_structured_order_resolves_directly(monkeypatch):
+    """"Generate a quote: APX NEXT XN All Band, Qty 1, United States" names
+    a specific variant in full — must resolve directly, no disambiguation."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Generate a quote: APX NEXT XN All Band, Qty 1, United States"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == "APX NEXT XN"
+
+
+def test_two_variants_named_in_one_multi_line_order_picks_a_real_one(monkeypatch):
+    """"Give me a quote for 10 APX NEXT XE Single Band radios and 5 APX
+    NEXT XN All Band radios for the United Kingdom." names two real
+    variants in the same message — detection must resolve to one of the
+    two ACTUAL variants named, never an unrelated or invented value."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = (
+        "Give me a quote for 10 APX NEXT XE Single Band radios and 5 APX "
+        "NEXT XN All Band radios for the United Kingdom."
+    )
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected in {"APX NEXT XE", "APX NEXT XN"}
+
+
+def test_variant_plus_trailing_qualifier_still_resolves_directly(monkeypatch):
+    """"Quote 12 APX NEXT XE devices for US Federal tier discount." — the
+    trailing qualifier ("US Federal tier discount") must not distract
+    detection away from the clearly-named variant."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Quote 12 APX NEXT XE devices for US Federal tier discount."
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == "APX NEXT XE"
+
+
+def test_fully_generic_radio_quote_request_has_no_product_signal(monkeypatch):
+    """"I need 10 radios quote to US" — no product name at all; must not
+    fuzzy-match ANY ingested family (this is the raw engine-level half of
+    the ask_api "did you mean A, or B?" behavior asserted elsewhere)."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "I need 10 radios quote to US"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == ""
+    suggestions = engine.suggest_product_candidates(question, reader, workspace_id=1)
+    assert suggestions == []
+
+
+def test_quoted_spelled_out_quantity_does_not_break_variant_detection(monkeypatch):
+    """"Give me a quote for 'ten' APX NEXT XE radios for Canada" — quote
+    marks around a spelled-out quantity must not interfere with matching
+    the variant name itself (normalization strips punctuation anyway)."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Give me a quote for 'ten' APX NEXT XE radios for Canada"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == "APX NEXT XE"
+
+
 # ── Scenario 7: fuzzy substring fallback catches a PARTIAL/misspelled ──────
 # product mention that Tier 1's exact-substring match alone would miss —
 # deterministic (SequenceMatcher via aryx.resolution.classical.string_score),
