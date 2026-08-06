@@ -16,7 +16,14 @@ def _actor_property() -> dict[str, str]:
 
 
 def sales_tool_specs() -> list[types.Tool]:
-    """Return the five Aryx-only tools available to sales integration tokens."""
+    """Return the five discoverable Aryx-only sales integration tools.
+
+    SALES_CPQ_TOOLS has a sixth member, sales_chat_resolve_route — it is
+    auth-gated and dispatchable like the rest, but deliberately absent
+    here so it stays invisible to list_tools(). It's an internal route
+    used by sales_streamlit's own direct call path, not meant to be
+    discovered/advertised to a generic MCP client.
+    """
     return [
         types.Tool(
             name="sales_chat_start",

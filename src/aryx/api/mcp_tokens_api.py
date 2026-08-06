@@ -5,9 +5,10 @@ import logging
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from aryx.api.security import require_api_key
 from aryx.config import get_settings
 from aryx.mcp.auth import SALES_CPQ_PURPOSE, SALES_CPQ_TOOLS
 from aryx.store.mcp_token_store import McpTokenStore
@@ -47,7 +48,10 @@ class TokenRequest(BaseModel):
 
 def mcp_tokens_router() -> APIRouter:
     """Build the /admin/mcp/tokens router."""
-    router = APIRouter(prefix="/admin/mcp/tokens")
+    router = APIRouter(
+        prefix="/admin/mcp/tokens",
+        dependencies=[Depends(require_api_key)],
+    )
 
     @router.get("")
     def list_tokens() -> list[dict[str, Any]]:

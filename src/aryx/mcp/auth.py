@@ -8,6 +8,10 @@ from datetime import UTC, datetime
 from typing import Iterable
 
 SALES_CPQ_PURPOSE = "sales_cpq"
+# sales_chat_resolve_route is auth-gated and dispatchable here like every
+# other member, but sales_tool_specs() deliberately omits it from
+# list_tools() — it's an internal route for sales_streamlit's own direct
+# call path, not meant to be discovered/advertised to a generic MCP client.
 SALES_CPQ_TOOLS = frozenset(
     {
         "sales_chat_start",
