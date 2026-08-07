@@ -23,6 +23,7 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
+from aryx.ontology.extract import OnProgress
 from aryx.pipeline.orchestrate import relate_isolated, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 
@@ -206,8 +207,15 @@ def infer_fk_links(files: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
-               broker: Broker, context: str) -> dict[str, Any]:
-    """Read everything; return {mentions, tabular, summary} without committing."""
+               broker: Broker, context: str,
+               on_progress: OnProgress | None = None) -> dict[str, Any]:
+    """Read everything; return {mentions, tabular, summary} without committing.
+
+    on_progress: optional (completed, total, new_records) callback fired as
+    document chunks finish extracting, so a caller (e.g. a job store) can
+    report/persist progress incrementally on large documents instead of only
+    once reading finishes.
+    """
     settings = get_settings()
     tabular = expand_xlsx(tabular)
     mentions = []
@@ -216,7 +224,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             paths=doc_paths, system="document", broker=broker,
             chunk_store=ChunkStore(settings.rdb_dsn), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
-            context=context)
+            context=context, on_progress=on_progress)
         mentions = list(connector.extract())
 
     tab_plans = [{"filename": n, "data": d,

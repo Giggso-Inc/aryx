@@ -17,7 +17,7 @@ from aryx.connectors.markup import MarkupConnector
 from aryx.connectors.pdf import PdfConnector
 from aryx.connectors.pptx import PptxConnector
 from aryx.models import RawRecord, SourceRef
-from aryx.ontology.extract import extract_mentions
+from aryx.ontology.extract import OnProgress, extract_mentions
 from aryx.pipeline.clean_text import chunk_pages
 from aryx.pipeline.embed import embed_chunks
 from aryx.pipeline.pii import screen_chunks
@@ -53,13 +53,14 @@ _PER_DOC_TIMEOUT = float(os.environ.get("ARYX_PER_DOC_TIMEOUT", "300"))
 def _ingest_with_timeout(
     path: Path, system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int, chunk_overlap: int, expected_embed_dim: int,
-    run_pii: bool, context: str,
+    run_pii: bool, context: str, on_progress: OnProgress | None = None,
 ) -> list[RawRecord]:
     """ingest_document under a hard timeout; raises FuturesTimeout on hang."""
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             ingest_document, path, system, broker, chunk_store,
             chunk_size, chunk_overlap, expected_embed_dim, run_pii, context,
+            on_progress,
         )
         return future.result(timeout=_PER_DOC_TIMEOUT)
 
@@ -68,6 +69,7 @@ def ingest_document(
     path: Path, system: str, broker: Broker, chunk_store: ChunkStore,
     chunk_size: int, chunk_overlap: int, expected_embed_dim: int,
     run_pii: bool = True, context: str = "",
+    on_progress: OnProgress | None = None,
 ) -> list[RawRecord]:
     doc_id = _content_hash(path)
     source = SourceRef(system=system, dataset=path.stem, record_id=doc_id)
@@ -84,7 +86,7 @@ def ingest_document(
     chunk_db_ids = chunk_store.save_chunks(doc_db_id, chunks)
     embeddings = embed_chunks(chunks, broker, expected_dim=expected_embed_dim)
     chunk_store.save_embeddings(chunk_db_ids, embeddings)
-    records = extract_mentions(chunks, broker, context=context)
+    records = extract_mentions(chunks, broker, context=context, on_progress=on_progress)
     logger.info("ingest_document path=%s doc_id=%s chunks=%d mentions=%d",
                 path.name, doc_id[:8], len(chunks), len(records))
     return records
@@ -98,6 +100,7 @@ class DocumentRouterConnector(Connector):
         chunk_store: ChunkStore, chunk_size: int = 1000,
         chunk_overlap: int = 100, expected_embed_dim: int = 768,
         run_pii: bool = True, context: str = "",
+        on_progress: OnProgress | None = None,
     ) -> None:
         self._paths = paths
         self._system = system
@@ -108,6 +111,7 @@ class DocumentRouterConnector(Connector):
         self._expected_embed_dim = expected_embed_dim
         self._run_pii = run_pii
         self._context = context
+        self._on_progress = on_progress
 
     def extract(self) -> Iterator[RawRecord]:
         for path in self._paths:
@@ -116,6 +120,7 @@ class DocumentRouterConnector(Connector):
                     path, self._system, self._broker, self._chunk_store,
                     self._chunk_size, self._chunk_overlap,
                     self._expected_embed_dim, self._run_pii, self._context,
+                    self._on_progress,
                 )
             except FuturesTimeout:
                 logger.error("ingest TIMED OUT path=%s after %ss — skipping; "

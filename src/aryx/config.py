@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     embed_dim: int = Field(default=768, description="Expected embedding dim; startup check fails on mismatch.")
     chunk_size: int = Field(default=1000, description="Target chunk size in characters.")
     chunk_overlap: int = Field(default=100, description="Overlap in characters between adjacent chunks.")
+    extract_mention_workers: int = Field(
+        default=4, description="Thread-pool width for concurrent chunk extraction.")
+    extract_mention_progress_flush_chunks: int = Field(
+        default=20, description="How often (in completed chunks) extract_mentions "
+        "reports incremental progress via its on_progress callback.")
 
 
 @lru_cache(maxsize=1)

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, isHttpStatusError } from "@/lib/api";
 import type { IngestQuestion } from "@/lib/types";
 import { StepShell, ExampleBox } from "./StepShell";
 import { Pipeline, PIPELINE_STEPS } from "./Pipeline";
@@ -59,6 +59,8 @@ export function Running({ workspaceId, jobId, onDone, onSkip }: Props) {
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const tick = async () => {
       try {
         const j = await api.getJob(jobId);
@@ -69,13 +71,38 @@ export function Running({ workspaceId, jobId, onDone, onSkip }: Props) {
         setJobStatus(j.status);
         setError(j.error);
         if (j.status === "complete" || j.status === "failed") return;
-        setTimeout(tick, JOB_POLL_MS);
-      } catch {
-        if (!cancelled) setTimeout(tick, JOB_POLL_MS);
+        timer = setTimeout(tick, JOB_POLL_MS);
+      } catch (err) {
+        if (cancelled) return;
+        if (isHttpStatusError(err, 404)) {
+          // The job is permanently gone (aged out / never existed) —
+          // retrying forever just spins; stop and say so.
+          setJobStatus("failed");
+          setError("Job not found — it may have expired.");
+          return;
+        }
+        timer = setTimeout(tick, JOB_POLL_MS);
       }
     };
+
+    // Browsers throttle/suspend setTimeout in background tabs, which is
+    // what made this loop appear to silently die on long-running jobs —
+    // re-poll immediately whenever the tab becomes visible again instead
+    // of waiting on a timer that may not have fired for minutes.
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && !cancelled) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     tick();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [jobId]);
 
   // Poll HITL queue independently.
