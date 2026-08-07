@@ -1,8 +1,11 @@
 import type {
   AbResult, AskResponse, Axiom, Brief, DataEntitiesPage, DataSummary,
-  Datasource, EntityDetail, EntityGraphView, GraphView, IngestQuestion,
-  LlmConfig, LlmConfigUpdate, OntologyDoc, QuizSpec, ReasonerCheck, Rule,
-  SurvivorshipPolicy, Workspace,
+  Datasource, DiscoverySummary, EntityDetail, EntityGraphView, GraphNeighbor,
+  GraphPathStep, GraphView,
+  IngestQuestion, LlmConfig, LlmConfigUpdate, OntologyChange, OntologyConfig,
+  OntologyDoc, OntologyFormat, OntologyImportResult, OntologyVersion, QuizSpec,
+  ReasonerCheck, Rule, RuleEvaluationResult, SupportedFileTypes,
+  SurvivorshipPolicy, Workspace, WorkspaceRule,
 } from "./types";
 
 // Same-origin relative path. Next.js rewrites /api/* → FastAPI internally
@@ -94,6 +97,29 @@ export const api = {
   dataEntityDetail: (workspaceId: number, entityId: number) =>
     fetchJSON<EntityDetail & { error?: string }>(
       `/data/entity/${entityId}?workspace_id=${workspaceId}`,
+    ),
+
+  // ── Graph explorer (/graph) ──────────────────────────────────────────
+  // Overview reuses the existing type-level `/data/graph` shape (no
+  // separate aggregation endpoint needed — same store query as dataGraph).
+  getGraphOverview: (workspaceId: number) =>
+    fetchJSON<GraphView & { error?: string }>(
+      `/data/graph?workspace_id=${workspaceId}&level=type`,
+    ),
+
+  // Neighbors/path are served by the FalkorDB-backed graph_api.py, which
+  // shares the exact same entity-id space as the Postgres EntityStore
+  // (project_graph mints Falkor node ids straight from EntityStore ids).
+  getEntityNeighbors: (workspaceId: number, entityId: number) =>
+    fetchJSON<GraphNeighbor[]>(
+      `/entities/${entityId}/neighbors?workspace_id=${workspaceId}`,
+    ),
+
+  getEntityPath: (workspaceId: number, sourceId: number, targetId: number,
+                  maxHops = 6) =>
+    fetchJSON<GraphPathStep[]>(
+      `/entities/${sourceId}/path/${targetId}` +
+        `?workspace_id=${workspaceId}&max_hops=${maxHops}`,
     ),
 
   // ── Ontology / modelling ──────────────────────────────────────────────
@@ -291,4 +317,125 @@ export const api = {
       method: "POST",
       body: JSON.stringify(cfg),
     }),
+
+  // ── Document self-discovery (read → summary → confirm) ───────────────
+  getSupportedFileTypes: () =>
+    fetchJSON<SupportedFileTypes>("/admin/ingest/supported"),
+
+  /** Multipart upload → kicks the read/discovery job. The returned
+   *  discovery_id doubles as a job id (see JobStore.create in
+   *  doc_discover_api.py), so callers can track "reading" progress via
+   *  api.getJob(discoveryId) exactly like any other job. */
+  readDocs: async (files: File[], context: string, workspaceId: number) => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    form.append("context", context);
+    form.append("workspace_id", String(workspaceId));
+    const res = await fetch(`${BASE}/admin/docs/read`,
+                            { method: "POST", body: form });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new HttpStatusError(res.status, res.statusText, detail);
+    }
+    return res.json() as Promise<{ discovery_id: string }>;
+  },
+
+  /** Returns `{}` while the read job is still running. */
+  getDiscoverySummary: (discoveryId: string) =>
+    fetchJSON<DiscoverySummary>(`/admin/docs/summary/${discoveryId}`),
+
+  confirmDiscovery: (discoveryId: string, approvedTypes: string[] = [],
+                     approvedFiles: string[] = []) =>
+    fetchJSON<{ status: string; job_id: string }>("/admin/docs/confirm", {
+      method: "POST",
+      body: JSON.stringify({
+        discovery_id: discoveryId,
+        approved_types: approvedTypes,
+        approved_files: approvedFiles,
+      }),
+    }),
+
+  // ── Ontology interchange (import / export / config) — Model tabs ─────
+  getOntologyConfig: () => fetchJSON<OntologyConfig>("/ontology/config"),
+
+  setOntologyConfig: (cfg: { enabled?: boolean; formats?: string[];
+                             base_uri?: string; include_provenance?: boolean }) =>
+    fetchJSON<OntologyConfig>("/ontology/config", {
+      method: "POST",
+      body: JSON.stringify(cfg),
+    }),
+
+  getOntologyFormats: () => fetchJSON<OntologyFormat[]>("/ontology/formats"),
+
+  /** format="" lets the backend guess from the filename extension. */
+  importOntology: (workspaceId: number, content: string, format: string,
+                    filename: string) =>
+    fetchJSON<OntologyImportResult>("/ontology/import", {
+      method: "POST",
+      body: JSON.stringify({ content, format, filename, workspace_id: workspaceId }),
+    }),
+
+  /** Returns the raw exported document as text (caller triggers download). */
+  exportOntology: async (workspaceId: number, format: string) => {
+    const res = await fetch(
+      `${BASE}/ontology/export?workspace_id=${workspaceId}&format=${encodeURIComponent(format)}`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new HttpStatusError(res.status, res.statusText, detail);
+    }
+    const disposition = res.headers.get("content-disposition") || "";
+    const match = /filename="?([^"]+)"?/.exec(disposition);
+    const filename = match?.[1] || `aryx_ws${workspaceId}.${format}`;
+    const blob = await res.blob();
+    return { blob, filename };
+  },
+
+  // ── Inference rules (workspace-level, /rules) — Rules tab ────────────
+  listWorkspaceRules: (workspaceId: number) =>
+    fetchJSON<WorkspaceRule[]>(`/rules?workspace_id=${workspaceId}`),
+
+  upsertWorkspaceRule: (workspaceId: number, name: string,
+                        when: Record<string, unknown>,
+                        then: Record<string, unknown>, enabled = true) =>
+    fetchJSON<WorkspaceRule>("/rules", {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: workspaceId, name, when, then, enabled }),
+    }),
+
+  setWorkspaceRuleEnabled: (workspaceId: number, name: string, enabled: boolean) =>
+    fetchJSON<WorkspaceRule>(
+      `/rules/${encodeURIComponent(name)}/enabled?workspace_id=${workspaceId}&enabled=${enabled}`,
+      { method: "PATCH", body: "{}" },
+    ),
+
+  deleteWorkspaceRule: (workspaceId: number, name: string) =>
+    fetchJSON<{ status: string; id: number }>(
+      `/rules/${encodeURIComponent(name)}?workspace_id=${workspaceId}`,
+      { method: "DELETE" },
+    ),
+
+  evaluateWorkspaceRules: (workspaceId: number) =>
+    fetchJSON<RuleEvaluationResult>(
+      `/rules/evaluate?workspace_id=${workspaceId}`,
+      { method: "POST", body: "{}" },
+    ),
+
+  // ── Ontology versions + change log — Versions tab ─────────────────────
+  createOntologySnapshot: (workspaceId: number, label: string, actor = "user") =>
+    fetchJSON<OntologyVersion>("/ontology-versions", {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: workspaceId, label, actor }),
+    }),
+
+  listOntologyVersions: (workspaceId: number, limit = 25) =>
+    fetchJSON<OntologyVersion[]>(
+      `/ontology-versions?workspace_id=${workspaceId}&limit=${limit}`,
+    ),
+
+  getOntologyChanges: (workspaceId: number, limit = 50) =>
+    fetchJSON<OntologyChange[]>(
+      `/ontology-versions/changes?workspace_id=${workspaceId}&limit=${limit}`,
+    ),
 };

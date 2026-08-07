@@ -29,11 +29,12 @@ from aryx.store.chunk_store import ChunkStore
 
 logger = logging.getLogger(__name__)
 
-DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
+DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf", ".html", ".htm",
             ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-DATA_EXTS = {".json", ".csv", ".xlsx"}
+DATA_EXTS = {".json", ".csv", ".xlsx", ".xml"}
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9]+")
+_TAG_RE = re.compile(r"\{[^}]*\}")  # strip XML namespace braces from tag names
 
 
 def _sheet_slug(title: str) -> str:
@@ -93,6 +94,147 @@ def expand_xlsx(items: list[tuple[bytes, str]]) -> list[tuple[bytes, str]]:
             out.extend(sheets)
         else:
             out.append((data, name))
+    return out
+
+
+def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
+    """Split CSV bytes into chunks of at most ``chunk_rows`` data rows, repeating the header.
+
+    Streams rows via ``itertools.islice`` so the full file is never
+    materialised into a list — only one batch is held in memory at a time.
+    Returns ``[data]`` unchanged when chunking is disabled or the file has no
+    parseable header row.
+    """
+    import itertools
+
+    if chunk_rows <= 0:
+        return [data]
+    reader = csv.reader(io.StringIO(data.decode("utf-8", "ignore")))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return [data]
+    chunks: list[bytes] = []
+    while True:
+        batch = list(itertools.islice(reader, chunk_rows))
+        if not batch:
+            break
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(header)
+        writer.writerows(batch)
+        chunks.append(buf.getvalue().encode("utf-8"))
+    return chunks or [data]
+
+
+def expand_data_files(items: list[tuple[bytes, str]]) -> list[tuple[bytes, str]]:
+    """Replace .xlsx/.xml entries with their derived per-sheet/per-type CSVs.
+
+    Everything downstream (type inference, cross-file FK linking,
+    ``run_pipeline``) only ever sees flat CSV/JSON "files" — it never needs to
+    know a workbook or an XML document was involved.
+    """
+    out: list[tuple[bytes, str]] = []
+    for data, name in items:
+        suffix = Path(name).suffix.lower()
+        if suffix == ".xlsx":
+            sheets = xlsx_to_csvs(data, Path(name).stem)
+            if not sheets:
+                logger.warning("xlsx %s had no usable sheets — skipping", name)
+                continue
+            out.extend(sheets)
+        elif suffix == ".xml":
+            tables = _xml_to_csvs(data, Path(name).stem)
+            if not tables:
+                logger.warning("xml %s had no detectable entity rows — skipping", name)
+                continue
+            out.extend(tables)
+        else:
+            out.append((data, name))
+    return out
+
+
+def _xml_element_tag(el) -> str:
+    return _TAG_RE.sub("", el.tag)
+
+
+def _xml_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
+    """Extract repeating XML elements into one CSV per detected entity type.
+
+    An element tag is treated as an "entity type" when it repeats 2+ times
+    under the same parent — each occurrence becomes one row, its child
+    elements/attributes become columns, and a ``{parent_tag}_id`` column is
+    injected using the parent's own identifying attribute/child (falling back
+    to a synthetic running index) so cross-type foreign keys survive into the
+    flat CSV world the rest of the pipeline understands.
+
+    Bounded by ``settings.xml_max_entity_types``/``xml_max_rows_per_type`` so
+    a pathological or deeply-nested document can't blow up the batch.
+    """
+    from xml.etree import ElementTree as ET
+
+    settings = get_settings()
+    try:
+        root = ET.fromstring(data)
+    except Exception:  # noqa: BLE001
+        logger.warning("xml %s failed to parse — skipping structured extraction", stem)
+        return []
+
+    # tag -> list of (element, parent_key) rows
+    groups: dict[str, list[tuple[Any, str]]] = {}
+
+    def _row_key(el, fallback: str) -> str:
+        for attr in ("id", "Id", "ID", "code", "Code", "name", "Name"):
+            if attr in el.attrib:
+                return el.attrib[attr]
+        for child in list(el):
+            if not len(child) and (child.text or "").strip():
+                return child.text.strip()
+        return fallback
+
+    def _walk(el, parent_key: str) -> None:
+        children_by_tag: dict[str, list] = {}
+        for child in list(el):
+            children_by_tag.setdefault(_xml_element_tag(child), []).append(child)
+        for tag, kids in children_by_tag.items():
+            if len(kids) >= 2:
+                for i, kid in enumerate(kids):
+                    row_key = _row_key(kid, f"{parent_key}:{tag}:{i}")
+                    groups.setdefault(tag, []).append((kid, parent_key))
+                    _walk(kid, row_key)
+            else:
+                _walk(kids[0], parent_key)
+
+    _walk(root, _row_key(root, "root"))
+
+    # Keep the biggest groups first — those are the real repeating entities.
+    ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))[: settings.xml_max_entity_types]
+    out: list[tuple[bytes, str]] = []
+    for tag, rows in ranked:
+        rows = rows[: settings.xml_max_rows_per_type]
+        fieldnames: list[str] = []
+        records: list[dict[str, str]] = []
+        for el, parent_key in rows:
+            record: dict[str, str] = {}
+            for k, v in el.attrib.items():
+                record[k] = v
+            for child in list(el):
+                if not len(child):
+                    record[_xml_element_tag(child)] = (child.text or "").strip()
+            if (el.text or "").strip() and not len(el):
+                record["value"] = el.text.strip()
+            record["parent_id"] = parent_key
+            for k in record:
+                if k not in fieldnames:
+                    fieldnames.append(k)
+            records.append(record)
+        if not records:
+            continue
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, restval="")
+        writer.writeheader()
+        writer.writerows(records)
+        out.append((buf.getvalue().encode("utf-8"), f"{stem}_{_sheet_slug(tag)}.csv"))
     return out
 
 

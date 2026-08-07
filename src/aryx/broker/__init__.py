@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 from pathlib import Path
 
@@ -22,6 +23,15 @@ from aryx.broker.secrets import EnvSecretProvider, SecretProvider
 from aryx.broker.specs import TIER_LADDER, ModelSpec, Tier
 
 logger = logging.getLogger(__name__)
+
+# A single /api/embed call carries every chunk of a document's batch — for a
+# large document (hundreds of chunks) on local CPU Ollama that can genuinely
+# take minutes. The old fixed 60s timeout raised socket.timeout, which is the
+# SAME class as concurrent.futures.TimeoutError since Python 3.11 — so
+# doc_router.py's per-document guard silently mis-caught it and reported a
+# misleading "TIMED OUT after {ARYX_PER_DOC_TIMEOUT}s", masking that the real
+# limit hit was this 60s socket read. Override ARYX_EMBED_TIMEOUT.
+_EMBED_TIMEOUT = float(os.environ.get("ARYX_EMBED_TIMEOUT", "300"))
 
 _CATALOG = Path(__file__).parent / "catalog.json"
 
@@ -94,21 +104,70 @@ class Broker:
         return self._registry.all()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts on the configured local model (Ollama /api/embed).
+        """Embed texts on the configured backend (Ollama /api/embed by default).
 
         Returns an empty list if no embed model is configured, so callers can
         gracefully fall back to string-only similarity.
         """
-        if not self._embed.get("model") or not self._embed.get("endpoint"):
+        if not self._embed.get("model"):
+            return []
+        backend = self._embed.get("backend", "ollama")
+        if backend in ("gemini", "google"):
+            return self._embed_gemini(texts)
+        if not self._embed.get("endpoint"):
             return []
         body = json.dumps({"model": self._embed["model"], "input": texts}).encode("utf-8")
         req = urllib.request.Request(
             self._embed["endpoint"].rstrip("/") + "/api/embed",
             data=body, headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_EMBED_TIMEOUT) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("embeddings", [])
+
+    # Gemini rejects a batchEmbedContents call over this size:
+    # "at most 100 requests can be in one batch" — a 300+ chunk document
+    # blew straight through the old one-shot-call approach with a bare
+    # HTTP 400 that doc_router.py's generic exception handler then silently
+    # swallowed as "ingest failed", discarding every chunk's embedding.
+    _GEMINI_BATCH_LIMIT = 100
+
+    def _embed_gemini(self, texts: list[str]) -> list[list[float]]:
+        """Embed via Gemini's native batchEmbedContents (not the OpenAI shim —
+        that path historically doesn't cover embeddings the same way chat does).
+
+        gemini-embedding-001 outputs 3072-dim vectors by default; the rest of
+        the pipeline (pgvector columns, ARYX_EMBED_DIM) is fixed at 768 to
+        match the original local nomic-embed-text default, so every request
+        asks for a truncated 768-dim output via outputDimensionality —
+        Gemini's Matryoshka embeddings support this natively without
+        retraining or a schema migration.
+        """
+        model = self._embed["model"]
+        dim = self._embed.get("dim", 768)
+        key = self.secrets.get(self._embed.get("api_key_ref") or "") if self._embed.get("api_key_ref") else ""
+        if not key:
+            logger.warning("gemini embed requested but no api key configured")
+            return []
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{model}:batchEmbedContents?key={key}")
+        out: list[list[float]] = []
+        for i in range(0, len(texts), self._GEMINI_BATCH_LIMIT):
+            batch = texts[i:i + self._GEMINI_BATCH_LIMIT]
+            body = json.dumps({
+                "requests": [
+                    {"model": f"models/{model}", "content": {"parts": [{"text": t}]},
+                     "outputDimensionality": dim}
+                    for t in batch
+                ],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=_EMBED_TIMEOUT) as resp:  # noqa: S310
+                payload = json.loads(resp.read().decode("utf-8"))
+            out.extend(e.get("values", []) for e in payload.get("embeddings", []))
+        return out
 
 
 def default_broker() -> Broker:

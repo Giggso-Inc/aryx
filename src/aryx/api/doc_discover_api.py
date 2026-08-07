@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from aryx import discoveries
@@ -23,13 +23,35 @@ from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
-_MAX_FILE = 20 * 1024 * 1024
+
+# Shared with file_ingest_api.py's ingest route (same limits — read from
+# Settings, not a locally-duplicated constant — and same executor) so a
+# 1000+-page PDF or a batch of large workbooks isn't rejected here just
+# because this route historically had its own, smaller, stale constant.
+from aryx.api.file_ingest_api import _get_executor  # noqa: E402
 
 
 class ConfirmRequest(BaseModel):
     discovery_id: str
     approved_types: list[str] = []
     approved_files: list[str] = []
+
+
+def _log_unhandled(job_id: str, label: str):
+    """Build a done-callback that logs a Future's exception, if any.
+
+    Without this, an exception that escapes _read_job/_confirm_job (i.e. one
+    not already caught by their own try/except) is only ever raised inside
+    the ThreadPoolExecutor worker thread — nothing retrieves it, so it's
+    silently dropped instead of surfacing anywhere. Matches the pattern
+    already used by file_ingest_api.py's /ingest/file route.
+    """
+    def _on_done(fut) -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.error("%s %s crashed outside its own handler: %s",
+                        label, job_id, exc, exc_info=exc)
+    return _on_done
 
 
 def _save_tmp(data: bytes, suffix: str) -> Path:
@@ -99,16 +121,23 @@ def doc_discover_router() -> APIRouter:
     router = APIRouter(prefix="/admin/docs")
 
     @router.post("/read")
-    async def read(background_tasks: BackgroundTasks,
-                   files: list[UploadFile] = File(...), context: str = Form(""),
+    async def read(files: list[UploadFile] = File(...), context: str = Form(""),
                    workspace_id: int = Form(1)) -> dict[str, Any]:
         settings = get_settings()
+        max_file = settings.max_upload_file_mb * 1024 * 1024
+        max_total = settings.max_upload_total_mb * 1024 * 1024
+        if len(files) > settings.max_upload_files:
+            raise HTTPException(400, f"Max {settings.max_upload_files} files per upload")
         apply_migrations(settings.rdb_dsn)
         items: list[tuple[bytes, str]] = []
+        total = 0
         for f in files:
             data = await f.read()
-            if len(data) > _MAX_FILE:
-                raise HTTPException(400, f"{f.filename}: exceeds 20 MB")
+            if len(data) > max_file:
+                raise HTTPException(400, f"{f.filename}: exceeds {settings.max_upload_file_mb} MB limit")
+            total += len(data)
+            if total > max_total:
+                raise HTTPException(400, f"Total upload exceeds {settings.max_upload_total_mb} MB limit")
             items.append((data, f.filename or "upload"))
         did = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)
@@ -116,7 +145,8 @@ def doc_discover_router() -> APIRouter:
             jobs.create(did, "discovery", f"{len(items)} file(s)", workspace_id)
         finally:
             jobs.close()
-        background_tasks.add_task(_read_job, items, context, did, workspace_id)
+        future = _get_executor().submit(_read_job, items, context, did, workspace_id)
+        future.add_done_callback(_log_unhandled(did, "doc read job"))
         return {"discovery_id": did}
 
     @router.get("/summary/{did}")
@@ -125,7 +155,7 @@ def doc_discover_router() -> APIRouter:
         return data["summary"] if data else {}
 
     @router.post("/confirm")
-    def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    def confirm(req: ConfirmRequest) -> dict[str, Any]:
         data = discoveries.get(req.discovery_id)
         if not data:
             raise HTTPException(404, "unknown or expired discovery")
@@ -135,8 +165,9 @@ def doc_discover_router() -> APIRouter:
             jobs.create(job_id, "documents", "confirmed entities", data.get("workspace_id", 1))
         finally:
             jobs.close()
-        background_tasks.add_task(_confirm_job, req.discovery_id,
-                                 req.approved_types, req.approved_files, job_id)
+        future = _get_executor().submit(_confirm_job, req.discovery_id,
+                                        req.approved_types, req.approved_files, job_id)
+        future.add_done_callback(_log_unhandled(job_id, "doc confirm job"))
         return {"status": "queued", "job_id": job_id}
 
     return router

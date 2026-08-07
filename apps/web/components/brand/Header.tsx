@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import {
   ChevronDown, Database, FlaskConical, MessageCircle, Network, Plus,
-  Settings, Sparkles, Loader2,
+  Settings, Sparkles, Loader2, UploadCloud, Waypoints,
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { api } from "@/lib/api";
@@ -53,8 +53,12 @@ export function Header(props: HeaderProps) {
                       active={pathname?.startsWith("/model") || false} />
             <NavLink href="/data" icon={<Database size={14} />} label="Data"
                       active={pathname?.startsWith("/data") || false} />
+            <NavLink href="/graph" icon={<Waypoints size={14} />} label="Graph"
+                      active={pathname?.startsWith("/graph") || false} />
             <NavLink href="/lab" icon={<FlaskConical size={14} />} label="Lab"
                       active={pathname?.startsWith("/lab") || false} />
+            <NavLink href="/ingest" icon={<UploadCloud size={14} />} label="Ingest"
+                      active={pathname?.startsWith("/ingest") || false} />
             <NavLink href="/start" icon={<Sparkles size={14} />} label="Onboard"
                       active={pathname?.startsWith("/start") || false} />
             <NavLink href="/settings" icon={<Settings size={14} />} label="Settings"

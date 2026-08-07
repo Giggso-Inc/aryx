@@ -171,6 +171,26 @@ export interface EntityDetail {
   relationships: EntityRelationship[];
 }
 
+// ── Graph explorer (/graph page) — FalkorDB-backed neighbor/path reads ──────
+// Same entity-id space as the Postgres EntityStore (project_graph mints
+// FalkorDB node ids directly from EntityStore ids), so these compose with
+// EntityGraphView/EntityDetail above without any id translation.
+
+export interface GraphNeighbor {
+  id: number;
+  type: string;
+  name: string;
+  relationship: string;
+  direction: "in" | "out";
+}
+
+export interface GraphPathStep {
+  id: number;
+  type: string;
+  name: string;
+  relationship: string | null;
+}
+
 export interface Workspace {
   id: number;
   name: string;
@@ -287,4 +307,101 @@ export interface Datasource {
   config: Record<string, unknown>;
   mask: string;
   ready: boolean;
+}
+
+// ─── Ontology interchange (import / export / config) ─────────────────────
+
+export interface OntologyFormat {
+  name: string;
+  media_type: string;
+  extension: string;
+}
+
+export interface OntologyConfig {
+  enabled: boolean;
+  formats: string[];
+  base_uri: string;
+  include_provenance: boolean;
+  available: string[];
+}
+
+export interface OntologyImportResult {
+  imported: number;
+  types: string[];
+  format: string;
+  message: string;
+  hierarchy_edges?: number;
+  axioms_persisted?: number;
+  entities_imported?: number;
+  relationships_imported?: number;
+}
+
+// ─── Inference rules (workspace-level, /rules) ────────────────────────────
+
+export interface WorkspaceRule {
+  id?: number;
+  workspace_id?: number;
+  name: string;
+  when: Record<string, unknown>;
+  then: Record<string, unknown>;
+  enabled: boolean;
+}
+
+export interface RuleEvaluationResult {
+  [key: string]: unknown;
+}
+
+// ─── Ontology versions + change log ───────────────────────────────────────
+
+/** Row shape from VersionStore.list_() (GET /ontology-versions). The POST
+ *  response (VersionStore.snapshot) only returns {id, version_no, created_at}
+ *  — label/created_by aren't echoed back, so re-list to see them. */
+export interface OntologyVersion {
+  id: number;
+  workspace_id?: number;
+  version_no: number;
+  label?: string;
+  created_by?: string;
+  created_at: string;
+  types_json?: unknown;
+  rules_json?: unknown;
+}
+
+/** Row shape from VersionStore.changes() (GET /ontology-versions/changes). */
+export interface OntologyChange {
+  id: number;
+  workspace_id: number;
+  actor: string;
+  op: string;
+  target_kind: string;
+  target_name: string;
+  before?: unknown;
+  after?: unknown;
+  changed_at: string;
+}
+
+// ── Document self-discovery (read → summary → confirm) ──────────────────
+export interface SupportedFileTypes {
+  file_types: string[];
+  max_files: number;
+  max_file_mb: number;
+  max_total_mb: number;
+}
+
+export interface DiscoveryTypeSummary {
+  type: string;
+  count: number;
+  examples: string[];
+}
+
+export interface DiscoveryFileSummary {
+  filename: string;
+  ontology_type: string;
+}
+
+/** GET /admin/docs/summary/{discovery_id} — `{}` while the read job is
+ *  still running (poll via the discovery id's job status, not this shape). */
+export interface DiscoverySummary {
+  types?: DiscoveryTypeSummary[];
+  files?: DiscoveryFileSummary[];
 }
