@@ -40,6 +40,12 @@ class Settings(BaseSettings):
         "CSVs per uploaded XML file.")
     xml_max_rows_per_type: int = Field(
         default=500, description="Max rows kept per XML entity type after extraction.")
+    max_upload_file_mb: int = Field(
+        default=50, description="Max size (MB) of a single uploaded file.")
+    max_upload_total_mb: int = Field(
+        default=500, description="Max combined size (MB) of one upload batch.")
+    max_upload_files: int = Field(
+        default=50, description="Max number of files accepted in one upload batch.")
 
 
 @lru_cache(maxsize=1)

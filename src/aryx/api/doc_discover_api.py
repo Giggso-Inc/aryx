@@ -24,10 +24,11 @@ from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
-# Shared with file_ingest_api.py's ingest route (same limits, same executor)
-# so a 1000+-page PDF or a batch of large workbooks isn't rejected here just
+# Shared with file_ingest_api.py's ingest route (same limits — read from
+# Settings, not a locally-duplicated constant — and same executor) so a
+# 1000+-page PDF or a batch of large workbooks isn't rejected here just
 # because this route historically had its own, smaller, stale constant.
-from aryx.api.file_ingest_api import _MAX_FILE, _MAX_FILES, _MAX_TOTAL, _get_executor  # noqa: E402
+from aryx.api.file_ingest_api import _get_executor  # noqa: E402
 
 
 class ConfirmRequest(BaseModel):
@@ -105,19 +106,21 @@ def doc_discover_router() -> APIRouter:
     @router.post("/read")
     async def read(files: list[UploadFile] = File(...), context: str = Form(""),
                    workspace_id: int = Form(1)) -> dict[str, Any]:
-        if len(files) > _MAX_FILES:
-            raise HTTPException(400, f"Max {_MAX_FILES} files per upload")
         settings = get_settings()
+        max_file = settings.max_upload_file_mb * 1024 * 1024
+        max_total = settings.max_upload_total_mb * 1024 * 1024
+        if len(files) > settings.max_upload_files:
+            raise HTTPException(400, f"Max {settings.max_upload_files} files per upload")
         apply_migrations(settings.rdb_dsn)
         items: list[tuple[bytes, str]] = []
         total = 0
         for f in files:
             data = await f.read()
-            if len(data) > _MAX_FILE:
-                raise HTTPException(400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit")
+            if len(data) > max_file:
+                raise HTTPException(400, f"{f.filename}: exceeds {settings.max_upload_file_mb} MB limit")
             total += len(data)
-            if total > _MAX_TOTAL:
-                raise HTTPException(400, f"Total upload exceeds {_MAX_TOTAL // (1024 * 1024)} MB limit")
+            if total > max_total:
+                raise HTTPException(400, f"Total upload exceeds {settings.max_upload_total_mb} MB limit")
             items.append((data, f.filename or "upload"))
         did = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)

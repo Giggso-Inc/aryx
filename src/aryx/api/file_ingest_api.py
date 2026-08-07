@@ -1,6 +1,8 @@
-"""File ingest API: upload up to 50 files (JSON/CSV/XML/XLSX/PDF/DOCX/PPTX/HTML/images).
+"""File ingest API: upload files (JSON/CSV/XML/XLSX/PDF/DOCX/PPTX/HTML/images).
 
-Limits: 50 MB per file, 500 MB total per request, max 50 files.
+Limits are runtime-configurable — see Settings.max_upload_file_mb /
+max_upload_total_mb / max_upload_files (ARYX_MAX_UPLOAD_* env vars) — not
+hardcoded, so a deployment can raise them without a code change or rebuild.
 JSON/CSV/XML/XLSX go through the standard entity pipeline.
 Documents (PDF/DOCX/PPTX/HTML/images) go through chunk→PII→embed→extract→entity.
 
@@ -43,9 +45,6 @@ _DATA_EXTS = {".json", ".csv", ".xlsx", ".xml"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf", ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
-_MAX_FILE = 50 * 1024 * 1024
-_MAX_TOTAL = 500 * 1024 * 1024
-_MAX_FILES = 50
 
 _executor: ThreadPoolExecutor | None = None
 _executor_lock = threading.Lock()
@@ -232,22 +231,24 @@ def file_ingest_router() -> APIRouter:
         fk_links: str = Form("[]"),
         workspace_id: int = Form(1),
     ) -> dict[str, Any]:
-        if len(files) > _MAX_FILES:
-            raise HTTPException(400, f"Max {_MAX_FILES} files per upload")
+        settings = get_settings()
+        max_file = settings.max_upload_file_mb * 1024 * 1024
+        max_total = settings.max_upload_total_mb * 1024 * 1024
+        if len(files) > settings.max_upload_files:
+            raise HTTPException(400, f"Max {settings.max_upload_files} files per upload")
         items: list[tuple[bytes, str]] = []
         total = 0
         for f in files:
             data = await f.read()
-            if len(data) > _MAX_FILE:
-                raise HTTPException(400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit")
+            if len(data) > max_file:
+                raise HTTPException(400, f"{f.filename}: exceeds {settings.max_upload_file_mb} MB limit")
             total += len(data)
-            if total > _MAX_TOTAL:
-                raise HTTPException(400, f"Total upload exceeds {_MAX_TOTAL // (1024 * 1024)} MB limit")
+            if total > max_total:
+                raise HTTPException(400, f"Total upload exceeds {settings.max_upload_total_mb} MB limit")
             suffix = Path(f.filename or "").suffix.lower()
             if suffix not in _ALL:
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
             items.append((data, f.filename or f"upload{suffix}"))
-        settings = get_settings()
         apply_migrations(settings.rdb_dsn)
         job_id = uuid.uuid4().hex
         jobs = JobStore(settings.rdb_dsn)
@@ -270,11 +271,12 @@ def file_ingest_router() -> APIRouter:
 
     @router.get("/ingest/supported")
     def supported_types() -> dict[str, Any]:
+        settings = get_settings()
         return {
             "file_types": sorted(_ALL),
-            "max_files": _MAX_FILES,
-            "max_file_mb": _MAX_FILE // (1024 * 1024),
-            "max_total_mb": _MAX_TOTAL // (1024 * 1024),
+            "max_files": settings.max_upload_files,
+            "max_file_mb": settings.max_upload_file_mb,
+            "max_total_mb": settings.max_upload_total_mb,
         }
 
     return router
