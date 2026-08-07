@@ -35,11 +35,21 @@ def _local_broker() -> Broker:
     answer = str(cfg.get("answer_model") or "lfm2.5-thinking:latest")
     is_ollama = provider == "ollama"
     api_key_ref = None if is_ollama else llm_runtime._KEY_REF
-    embed_model = os.environ.get("ARYX_EMBED_MODEL", "nomic-embed-text")
-    embed_endpoint = os.environ.get(
-        "ARYX_EMBED_ENDPOINT",
-        endpoint if is_ollama else "http://ollama:11434",
-    )
+    embed_backend = os.environ.get("ARYX_EMBED_BACKEND", "ollama")
+    if embed_backend in ("gemini", "google"):
+        embed_config = {
+            "backend": embed_backend,
+            "model": os.environ.get("ARYX_GEMINI_EMBED_MODEL", "gemini-embedding-001"),
+            "api_key_ref": llm_runtime._KEY_REF,
+            "dim": get_settings().embed_dim,
+        }
+    else:
+        embed_model = os.environ.get("ARYX_EMBED_MODEL", "nomic-embed-text")
+        embed_endpoint = os.environ.get(
+            "ARYX_EMBED_ENDPOINT",
+            endpoint if is_ollama else "http://ollama:11434",
+        )
+        embed_config = {"backend": "ollama", "model": embed_model, "endpoint": embed_endpoint}
     registry = Registry()
     for name, tier in ((menial, "cheap"), (answer, "frontier")):
         registry.add(ModelSpec(name=name, provider=provider, tier=tier,
@@ -48,7 +58,7 @@ def _local_broker() -> Broker:
     return Broker(
         registry, TokenGovernor({}),
         secrets=llm_runtime._RuntimeSecrets(),
-        embed_config={"model": embed_model, "endpoint": embed_endpoint},
+        embed_config=embed_config,
     )
 
 logger = logging.getLogger(__name__)
