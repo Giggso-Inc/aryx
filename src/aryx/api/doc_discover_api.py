@@ -37,6 +37,23 @@ class ConfirmRequest(BaseModel):
     approved_files: list[str] = []
 
 
+def _log_unhandled(job_id: str, label: str):
+    """Build a done-callback that logs a Future's exception, if any.
+
+    Without this, an exception that escapes _read_job/_confirm_job (i.e. one
+    not already caught by their own try/except) is only ever raised inside
+    the ThreadPoolExecutor worker thread — nothing retrieves it, so it's
+    silently dropped instead of surfacing anywhere. Matches the pattern
+    already used by file_ingest_api.py's /ingest/file route.
+    """
+    def _on_done(fut) -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.error("%s %s crashed outside its own handler: %s",
+                        label, job_id, exc, exc_info=exc)
+    return _on_done
+
+
 def _save_tmp(data: bytes, suffix: str) -> Path:
     tmp = NamedTemporaryFile(suffix=suffix, delete=False)
     tmp.write(data)
@@ -128,7 +145,8 @@ def doc_discover_router() -> APIRouter:
             jobs.create(did, "discovery", f"{len(items)} file(s)", workspace_id)
         finally:
             jobs.close()
-        _get_executor().submit(_read_job, items, context, did, workspace_id)
+        future = _get_executor().submit(_read_job, items, context, did, workspace_id)
+        future.add_done_callback(_log_unhandled(did, "doc read job"))
         return {"discovery_id": did}
 
     @router.get("/summary/{did}")
@@ -147,8 +165,9 @@ def doc_discover_router() -> APIRouter:
             jobs.create(job_id, "documents", "confirmed entities", data.get("workspace_id", 1))
         finally:
             jobs.close()
-        _get_executor().submit(_confirm_job, req.discovery_id,
-                               req.approved_types, req.approved_files, job_id)
+        future = _get_executor().submit(_confirm_job, req.discovery_id,
+                                        req.approved_types, req.approved_files, job_id)
+        future.add_done_callback(_log_unhandled(job_id, "doc confirm job"))
         return {"status": "queued", "job_id": job_id}
 
     return router

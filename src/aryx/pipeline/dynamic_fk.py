@@ -36,19 +36,34 @@ def detect_dynamic_fk_links(files: list[dict[str, Any]]) -> list[dict[str, str]]
     """
     if len(files) < 2:
         return []
+
+    # Precompute each file's per-column value-set (and candidate-key flag)
+    # ONCE, up front. The naive triple-nested loop below previously rebuilt
+    # a column's value-set from scratch for every OTHER file it was compared
+    # against — for a fixed (file, column) pair that set never changes, so
+    # at 20-35+ files/sheets (real multi-file batches this pipeline already
+    # sees) that's O(files) redundant rebuilds per column instead of one.
+    col_cache: list[dict[str, tuple[set[str], bool]]] = []
+    for f in files:
+        cols: dict[str, tuple[set[str], bool]] = {}
+        for col, vals in (f.get("colvals") or {}).items():
+            nonempty = [v for v in vals if v]
+            vset = set(nonempty)
+            is_key = len(vset) >= _MIN_DISTINCT and len(vset) == len(nonempty)
+            cols[col] = (vset, is_key)
+        col_cache.append(cols)
+
     out: list[dict[str, str]] = []
     seen: set[tuple[str, str, str, str]] = set()
-    for src in files:
-        for tgt in files:
+    for src_idx, src in enumerate(files):
+        for tgt_idx, tgt in enumerate(files):
             if src is tgt or src["ontology_type"] == tgt["ontology_type"]:
                 continue
-            for tcol, tvals in (tgt.get("colvals") or {}).items():
-                tset = {v for v in tvals if v}
+            for tcol, (tset, is_key) in col_cache[tgt_idx].items():
                 # Target column must be a candidate key: distinct, non-trivial.
-                if len(tset) < _MIN_DISTINCT or len(tset) != len([v for v in tvals if v]):
+                if not is_key:
                     continue
-                for scol, svals in (src.get("colvals") or {}).items():
-                    sset = {v for v in svals if v}
+                for scol, (sset, _) in col_cache[src_idx].items():
                     if len(sset) < _MIN_DISTINCT:
                         continue
                     overlap = len(sset & tset) / len(sset)
