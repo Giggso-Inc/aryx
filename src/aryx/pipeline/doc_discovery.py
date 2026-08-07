@@ -7,8 +7,11 @@ user confirms which types to keep.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
+import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -20,14 +23,77 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
-from aryx.pipeline.orchestrate import run_pipeline
+from aryx.ontology.extract import OnProgress
+from aryx.pipeline.orchestrate import relate_isolated, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 
 logger = logging.getLogger(__name__)
 
 DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
             ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-DATA_EXTS = {".json", ".csv"}
+DATA_EXTS = {".json", ".csv", ".xlsx"}
+
+_SLUG_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _sheet_slug(title: str) -> str:
+    """Collapse a sheet title into a filename-safe slug (Order Items! -> Order_Items)."""
+    return _SLUG_RE.sub("_", title).strip("_") or "Sheet"
+
+
+def xlsx_to_csvs(data: bytes, stem: str) -> list[tuple[bytes, str]]:
+    """Split an .xlsx workbook into one CSV per visible, non-empty sheet.
+
+    Each sheet becomes its own ``{stem}__{sheet_slug}.csv`` — from there it's
+    just another tabular "file" to the rest of the pipeline (type inference,
+    cross-file FK linking, run_pipeline), same as any uploaded .csv.
+    """
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        out: list[tuple[bytes, str]] = []
+        for ws in wb.worksheets:
+            if ws.sheet_state != "visible":
+                continue
+            rows_iter = ws.iter_rows(values_only=True)
+            try:
+                header_row = next(rows_iter)
+            except StopIteration:
+                continue  # empty sheet
+            header = [str(h).strip() if h is not None else "" for h in header_row]
+            if not any(header):
+                continue  # no real header row
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(header)
+            row_count = 0
+            for row in rows_iter:
+                if row is None or all(v is None for v in row):
+                    continue
+                writer.writerow(["" if v is None else v for v in row])
+                row_count += 1
+            if row_count == 0:
+                continue  # header-only / template sheet
+            csv_name = f"{stem}__{_sheet_slug(ws.title)}.csv"
+            out.append((buf.getvalue().encode("utf-8"), csv_name))
+        return out
+    finally:
+        wb.close()
+
+
+def expand_xlsx(items: list[tuple[bytes, str]]) -> list[tuple[bytes, str]]:
+    """Replace each .xlsx entry with its per-sheet CSVs; pass everything else through."""
+    out: list[tuple[bytes, str]] = []
+    for data, name in items:
+        if Path(name).suffix.lower() == ".xlsx":
+            sheets = xlsx_to_csvs(data, Path(name).stem)
+            if not sheets:
+                logger.warning("xlsx %s had no usable sheets — skipping", name)
+                continue
+            out.extend(sheets)
+        else:
+            out.append((data, name))
+    return out
 
 
 _GENERIC = {"table", "row", "record", "data", "file", "entity", "item", "object", "dataset"}
@@ -141,16 +207,24 @@ def infer_fk_links(files: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
-               broker: Broker, context: str) -> dict[str, Any]:
-    """Read everything; return {mentions, tabular, summary} without committing."""
+               broker: Broker, context: str,
+               on_progress: OnProgress | None = None) -> dict[str, Any]:
+    """Read everything; return {mentions, tabular, summary} without committing.
+
+    on_progress: optional (completed, total, new_records) callback fired as
+    document chunks finish extracting, so a caller (e.g. a job store) can
+    report/persist progress incrementally on large documents instead of only
+    once reading finishes.
+    """
     settings = get_settings()
+    tabular = expand_xlsx(tabular)
     mentions = []
     if doc_paths:
         connector = DocumentRouterConnector(
             paths=doc_paths, system="document", broker=broker,
             chunk_store=ChunkStore(settings.rdb_dsn), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
-            context=context)
+            context=context, on_progress=on_progress)
         mentions = list(connector.extract())
 
     tab_plans = [{"filename": n, "data": d,
@@ -200,3 +274,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                      ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                      graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id)
+    # Deliberately unconditional — guarantees no entity from this confirm
+    # batch is left with zero relationships.
+    if approved_types or approved_files:
+        jobs.update_stage(job_id, "Link", 95, "Checking for isolated entities")
+        relate_isolated(settings.rdb_dsn, settings.graph_url, workspace_id, broker)

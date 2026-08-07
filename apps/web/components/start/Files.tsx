@@ -13,7 +13,7 @@ interface Props {
   onSkip: () => void;
 }
 
-const ACCEPT = ".pdf,.docx,.doc,.pptx,.ppt,.txt,.md,.csv,.json,.png,.jpg,.jpeg";
+const ACCEPT = ".pdf,.docx,.doc,.pptx,.ppt,.txt,.md,.csv,.json,.xlsx,.png,.jpg,.jpeg";
 const MAX_PER = 20 * 1024 * 1024;
 const MAX_TOTAL = 50 * 1024 * 1024;
 const MAX_FILES = 50;
@@ -61,8 +61,8 @@ export function Files({ workspaceId, onUploaded, onBack, onSkip }: Props) {
         Drop the files you want Aryx to read.
       </h1>
       <p className="mt-3 max-w-lg text-center text-[14px] text-subtle">
-        PDFs, Word docs, slides, CSVs, JSON, images. Up to 50 files, 20&nbsp;MB
-        each, 50&nbsp;MB total — for now.
+        PDFs, Word docs, slides, CSVs, JSON, Excel workbooks, images. Up to 50
+        files, 20&nbsp;MB each, 50&nbsp;MB total — for now.
       </p>
 
       <div
@@ -87,7 +87,7 @@ export function Files({ workspaceId, onUploaded, onBack, onSkip }: Props) {
         </div>
         <div className="mt-1 text-[12px] text-subtle">
           {files.length === 0
-            ? "PDF · DOCX · PPTX · CSV · JSON · images"
+            ? "PDF · DOCX · PPTX · CSV · JSON · XLSX · images"
             : `${files.length} file${files.length === 1 ? "" : "s"} ready · ${(totalBytes / 1024 / 1024).toFixed(1)} MB`}
         </div>
         <input

@@ -48,7 +48,26 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
         doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in items
                      if Path(n).suffix.lower() in DOC_EXTS]
         tabular = [(d, n) for d, n in items if Path(n).suffix.lower() in DATA_EXTS]
-        result = read_files(doc_paths, tabular, _local_broker(), context)
+
+        # Real chunk-based progress instead of a static 30% for however long
+        # extraction takes — and a growing partial snapshot, so a UI that
+        # reconnects mid-read (see useJobPoller resilience below) has
+        # something to show rather than nothing.
+        accumulated: list[Any] = []
+
+        def _on_progress(completed: int, total: int, new_records: list) -> None:
+            accumulated.extend(new_records)
+            pct = 30 + int(min(completed / max(total, 1), 1.0) * 60)
+            jobs.update_stage(did, "Reading", min(pct, 90),
+                              f"Extracted {completed}/{total} chunk(s)…")
+            discoveries.put(did, {
+                "mentions": list(accumulated), "tabular": [],
+                "summary": {"types": [], "files": []},
+                "workspace_id": workspace_id, "partial": True,
+            })
+
+        result = read_files(doc_paths, tabular, _local_broker(), context,
+                            on_progress=_on_progress)
         result["workspace_id"] = workspace_id
         discoveries.put(did, result)
         jobs.finish(did, run_id=None, status="complete")

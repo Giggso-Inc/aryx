@@ -10,6 +10,21 @@ import type {
 // production (proxies to api:8000) without any client-side knowledge.
 const BASE = "/api";
 
+/** A failed request's HTTP status is attached so callers can tell a
+ *  permanent failure (404 — job gone) from a transient one (network blip,
+ *  5xx) instead of treating every error the same way. */
+export class HttpStatusError extends Error {
+  status: number;
+  constructor(status: number, statusText: string, detail: string) {
+    super(`${status} ${statusText}: ${detail}`);
+    this.status = status;
+  }
+}
+
+export function isHttpStatusError(err: unknown, status: number): boolean {
+  return err instanceof HttpStatusError && err.status === status;
+}
+
 /** Throw on non-2xx; return parsed JSON otherwise. */
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -19,7 +34,7 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+    throw new HttpStatusError(res.status, res.statusText, detail);
   }
   return res.json() as Promise<T>;
 }

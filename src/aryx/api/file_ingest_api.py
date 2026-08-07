@@ -22,15 +22,15 @@ from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
-from aryx.pipeline.doc_discovery import _infer_type, infer_fk_links
-from aryx.pipeline.orchestrate import link_entities, run_pipeline
+from aryx.pipeline.doc_discovery import _infer_type, expand_xlsx, infer_fk_links
+from aryx.pipeline.orchestrate import link_entities, relate_isolated, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
-_DATA_EXTS = {".json", ".csv"}
+_DATA_EXTS = {".json", ".csv", ".xlsx"}
 _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
@@ -69,6 +69,10 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     jobs = JobStore(settings.rdb_dsn)
     broker = _local_broker()
     try:
+        # Every .xlsx sheet becomes its own CSV "file" — the rest of the
+        # pipeline (type inference, cross-file FK linking, run_pipeline)
+        # doesn't need to know a workbook was ever involved.
+        items = expand_xlsx(items)
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
         # Per-file plans feed cross-file FK inference once everything has landed.
@@ -129,10 +133,17 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
             chunk_store = ChunkStore(settings.rdb_dsn)
+            # Real chunk-based progress instead of a static 50% for however
+            # long extraction takes on a large document.
+            def _on_extract_progress(completed: int, total: int, _new: list) -> None:
+                pct = 50 + int(min(completed / max(total, 1), 1.0) * 40)
+                jobs.update_stage(job_id, "Documents", min(pct, 90),
+                                  f"Extracted {completed}/{total} chunk(s)…")
             connector = DocumentRouterConnector(
                 paths=paths, system="document", broker=broker,
                 chunk_store=chunk_store, chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
+                on_progress=_on_extract_progress,
             )
             run_pipeline(
                 connector=connector, dsn=settings.rdb_dsn,
@@ -142,6 +153,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
                 fk_links=fk_links, workspace_id=workspace_id,
             )
+        # Deliberately unconditional — guarantees no entity from this batch
+        # (tabular or document-extracted) is left with zero relationships,
+        # regardless of whether relate/FK-linking above found anything.
+        if data_files or doc_files:
+            jobs.update_stage(job_id, "Link", 95, "Checking for isolated entities")
+            relate_isolated(settings.rdb_dsn, settings.graph_url, workspace_id, broker)
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc, exc_info=True)
