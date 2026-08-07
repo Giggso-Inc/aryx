@@ -53,6 +53,9 @@ def _relate(store: EntityStore, broker: Broker, max_pairs: int) -> int:
     return len(rels)
 
 
+_FLUSH_EVERY = 20
+
+
 def _relate_isolated(store: EntityStore, broker: Broker,
                      max_candidates: int = 3) -> int:
     """Guarantee every entity in the workspace has at least one relationship.
@@ -64,6 +67,15 @@ def _relate_isolated(store: EntityStore, broker: Broker,
     few of the most-connected other entities in the workspace; if none of
     them yield a relationship, falls back to a generic ``related_to`` edge
     against the best candidate so no entity is ever left disconnected.
+
+    Persists in batches of ``_FLUSH_EVERY`` as it goes, rather than one
+    ``save_relationships`` call after the whole loop. A large document
+    ingest (hundreds of isolated entities) means hundreds of sequential LLM
+    calls here; any interruption partway through (a job timeout, a transient
+    API error, an exception in whatever runs right after this call in the
+    caller's pipeline) used to discard every relationship already computed,
+    silently degrading a partially-successful run into "0 relationships" —
+    exactly the isolated-node symptom this function exists to prevent.
     """
     entities = store.list_entities()
     if len(entities) < 2:
@@ -85,7 +97,8 @@ def _relate_isolated(store: EntityStore, broker: Broker,
     # links into the existing graph rather than to another orphan.
     ranked = sorted(entities, key=lambda e: -degree.get(e[0], 0))
     newly_connected: set[int] = set()
-    rels: list[Relationship] = []
+    pending: list[Relationship] = []
+    total_saved = 0
     for eid, _etype, payload in isolated:
         if eid in connected or eid in newly_connected:
             continue  # already picked up as someone else's anchor this pass
@@ -103,17 +116,23 @@ def _relate_isolated(store: EntityStore, broker: Broker,
                                "for entity=%s: %s", eid, exc)
                 continue
             if name:
-                rels.append(Relationship(source_entity_id=eid, target_entity_id=cid,
-                                         name=name, confidence=conf))
+                pending.append(Relationship(source_entity_id=eid, target_entity_id=cid,
+                                            name=name, confidence=conf))
                 linked = True
                 newly_connected.add(eid)
                 newly_connected.add(cid)
                 break
         if not linked:
             cid = candidates[0][0]
-            rels.append(Relationship(source_entity_id=eid, target_entity_id=cid,
-                                     name="related_to", confidence=0.1))
+            pending.append(Relationship(source_entity_id=eid, target_entity_id=cid,
+                                        name="related_to", confidence=0.1))
             newly_connected.add(eid)
             newly_connected.add(cid)
-    store.save_relationships(rels)
-    return len(rels)
+        if len(pending) >= _FLUSH_EVERY:
+            store.save_relationships(pending)
+            total_saved += len(pending)
+            pending = []
+    if pending:
+        store.save_relationships(pending)
+        total_saved += len(pending)
+    return total_saved

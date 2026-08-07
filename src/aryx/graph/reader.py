@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 
 from falkordb import FalkorDB
 
+from aryx.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +32,57 @@ class GraphReader:
         self._db = FalkorDB(host=parsed.hostname or "localhost",
                             port=parsed.port or 6379)
         self._graph = self._db.select_graph(graph)
+
+    def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
+        """Execute a Cypher query with the configured timeout and return its rows.
+
+        Used only by find_entity_by_attribute_value() below — every other
+        method on this class still calls self._graph.query() directly,
+        unchanged. That method's unindexed any(k IN keys(e)...) scan is the
+        one query here with real cost risk on a large workspace, so it's the
+        one that gets a timeout: ARYX_GRAPH_QUERY_TIMEOUT caps how long
+        FalkorDB will run it before aborting, instead of hanging the request.
+        """
+        timeout_ms = get_settings().graph_query_timeout or None
+        return self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
+
+    def find_entity_by_attribute_value(self, value: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Find entities where ANY property holds this exact value.
+
+        Dynamic and schema-agnostic on purpose: no property/column name is
+        ever named here, only the value being searched for. This closes a
+        real bug class — an entity's `name` is chosen from a single
+        hardcoded priority list (aryx.explore._NAME_KEYS), so a row with two
+        equally-real identifiers (e.g. an FSC and an NSN column on the same
+        report row) can only ever be found by whichever field won that list;
+        the other is permanently unfindable by name search, no matter how
+        well it was extracted. Matching ANY property instead means a new
+        report's own identifier column is findable with zero code changes.
+
+        Deliberately a LAST-RESORT fallback (see retrieve.py's `_lookup`):
+        an unindexed per-node property scan is real cost on large workspaces,
+        so callers should only reach for this after cheaper name/id lookups
+        have already missed. Bounded by ARYX_GRAPH_QUERY_TIMEOUT via
+        `_query()` above, so a slow scan on a huge workspace fails fast
+        instead of hanging the request.
+
+        Args:
+            value: Exact value to match (case-insensitive), e.g. an NSN.
+            limit: Maximum entities to return.
+
+        Returns:
+            A list of {id, type, name} dicts.
+        """
+        capped = max(1, min(int(limit), get_settings().graph_query_limit))
+        rows = self._query(
+            "MATCH (e:Entity) "
+            "WHERE any(k IN keys(e) WHERE k <> 'id' AND toLower(toString(e[k])) = toLower($value)) "
+            "RETURN e.id, e.type, e.name "
+            "ORDER BY e.id "
+            f"LIMIT {capped}",
+            {"value": value},
+        )
+        return [_entity(r) for r in rows]
 
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name, or None if absent."""

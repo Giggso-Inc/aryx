@@ -46,6 +46,51 @@ class Settings(BaseSettings):
         default=500, description="Max combined size (MB) of one upload batch.")
     max_upload_files: int = Field(
         default=50, description="Max number of files accepted in one upload batch.")
+    graph_query_timeout: int = Field(
+        default=30_000,
+        description=(
+            "Per-query timeout in milliseconds passed to GraphReader._query(). "
+            "FalkorDB's own built-in default is 5000ms, which can be too short "
+            "for relationship-traversal queries on large, heavily-linked "
+            "workspaces. Set to 0 to disable the override and fall back to "
+            "FalkorDB's own default (passed as None, not a literal 0ms, which "
+            "would fail every query instantly). "
+            "Override with ARYX_GRAPH_QUERY_TIMEOUT."
+        ),
+    )
+    graph_query_limit: int = Field(
+        default=2000,
+        description="Max entity results returned by a single graph query (FalkorDB LIMIT). "
+        "Override with ARYX_GRAPH_QUERY_LIMIT.",
+    )
+    identifier_lookup_enabled: bool = Field(
+        default=True,
+        description=(
+            "Kill switch for GraphReader.find_entity_by_attribute_value(), the "
+            "last-resort fallback in retrieve.py's _lookup() that matches a "
+            "search term against ANY entity property, not just e.name. An "
+            "entity's e.name is chosen from a single hardcoded priority list "
+            "(aryx.explore._NAME_KEYS) — a row with two equally-real "
+            "identifiers (e.g. an FSC and an NSN column) can only ever be "
+            "found by whichever field won that list, even though both "
+            "identify the same row. Override with ARYX_IDENTIFIER_LOOKUP_ENABLED."
+        ),
+    )
+    identifier_min_length: int = Field(
+        default=6,
+        description=(
+            "Minimum length for a search term to be treated as "
+            "'identifier-shaped' and trigger the attribute-value lookup "
+            "fallback above. Purely a cost gate — short/common words never "
+            "reach the property scan — never a restriction on which fields "
+            "are searchable. Override with ARYX_IDENTIFIER_MIN_LENGTH."
+        ),
+    )
+    identifier_lookup_limit: int = Field(
+        default=10,
+        description="Max entities returned by find_entity_by_attribute_value(). "
+        "Override with ARYX_IDENTIFIER_LOOKUP_LIMIT.",
+    )
 
 
 @lru_cache(maxsize=1)
