@@ -72,7 +72,18 @@ class EntityStore:
 
         Returns the number of entities written.
         """
-        count = 0
+        return len(self.save_returning_ids(results))
+
+    def save_returning_ids(
+        self, results: list[tuple[ResolvedEntity, list[EntityMember]]],
+    ) -> list[int]:
+        """Persist resolved entities; return their new ids in input order.
+
+        Same as ``save()``, but for callers that need to reference the new
+        entities afterward (e.g. building relationships from a caller-side
+        identity map, as the RDF instance importer does).
+        """
+        ids: list[int] = []
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 for entity, members in results:
@@ -97,9 +108,9 @@ class EntityStore:
                              Json(conflict["losing_values"], dumps=_dumps),
                              conflict["strategy"]),
                         )
-                    count += 1
-        logger.info("entities saved count=%d", count)
-        return count
+                    ids.append(entity_id)
+        logger.info("entities saved count=%d", len(ids))
+        return ids
 
     def save_relationships(self, relationships: list[Relationship]) -> None:
         """Persist inferred relationships between entities (stage 8)."""
