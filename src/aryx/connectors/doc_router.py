@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
@@ -115,6 +116,7 @@ class DocumentRouterConnector(Connector):
 
     def extract(self) -> Iterator[RawRecord]:
         for path in self._paths:
+            started = time.monotonic()
             try:
                 yield from _ingest_with_timeout(
                     path, self._system, self._broker, self._chunk_store,
@@ -123,8 +125,17 @@ class DocumentRouterConnector(Connector):
                     self._on_progress,
                 )
             except FuturesTimeout:
-                logger.error("ingest TIMED OUT path=%s after %ss — skipping; "
-                             "batch continues", path.name, _PER_DOC_TIMEOUT)
+                # NOTE: socket.timeout (e.g. a slow embed/LLM HTTP call) is
+                # the SAME class as concurrent.futures.TimeoutError since
+                # Python 3.11 — this except also catches those, not just a
+                # genuine ARYX_PER_DOC_TIMEOUT budget exhaustion. Report the
+                # real measured elapsed time so a short-lived inner timeout
+                # (e.g. a slow embedding call) isn't misreported as having
+                # run for the full per-document budget.
+                elapsed = time.monotonic() - started
+                logger.error(
+                    "ingest TIMED OUT path=%s after %.1fs (budget=%ss) — "
+                    "skipping; batch continues", path.name, elapsed, _PER_DOC_TIMEOUT)
             except Exception as exc:
                 logger.error("ingest failed path=%s error=%s", path.name, exc)
 

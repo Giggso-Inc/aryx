@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 from pathlib import Path
 
@@ -22,6 +23,15 @@ from aryx.broker.secrets import EnvSecretProvider, SecretProvider
 from aryx.broker.specs import TIER_LADDER, ModelSpec, Tier
 
 logger = logging.getLogger(__name__)
+
+# A single /api/embed call carries every chunk of a document's batch — for a
+# large document (hundreds of chunks) on local CPU Ollama that can genuinely
+# take minutes. The old fixed 60s timeout raised socket.timeout, which is the
+# SAME class as concurrent.futures.TimeoutError since Python 3.11 — so
+# doc_router.py's per-document guard silently mis-caught it and reported a
+# misleading "TIMED OUT after {ARYX_PER_DOC_TIMEOUT}s", masking that the real
+# limit hit was this 60s socket read. Override ARYX_EMBED_TIMEOUT.
+_EMBED_TIMEOUT = float(os.environ.get("ARYX_EMBED_TIMEOUT", "300"))
 
 _CATALOG = Path(__file__).parent / "catalog.json"
 
@@ -106,7 +116,7 @@ class Broker:
             self._embed["endpoint"].rstrip("/") + "/api/embed",
             data=body, headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_EMBED_TIMEOUT) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("embeddings", [])
 

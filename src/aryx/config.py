@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     extract_mention_progress_flush_chunks: int = Field(
         default=20, description="How often (in completed chunks) extract_mentions "
         "reports incremental progress via its on_progress callback.")
+    worker_threads: int = Field(
+        default=4, description="Concurrent file-ingest workers (ThreadPoolExecutor width).")
+    csv_chunk_rows: int = Field(
+        default=0, description="Split CSV/xlsx-derived files into chunks of this many data "
+        "rows before ingesting (0 = no chunking).")
+    xml_max_entity_types: int = Field(
+        default=20, description="Max distinct XML element types extracted into separate "
+        "CSVs per uploaded XML file.")
+    xml_max_rows_per_type: int = Field(
+        default=500, description="Max rows kept per XML entity type after extraction.")
 
 
 @lru_cache(maxsize=1)

@@ -1,8 +1,14 @@
-"""File ingest API: upload up to 50 files (JSON/CSV/PDF/DOCX/PPTX/images).
+"""File ingest API: upload up to 50 files (JSON/CSV/XML/XLSX/PDF/DOCX/PPTX/HTML/images).
 
-Limits: 20 MB per file, 50 MB total per request, max 50 files.
-JSON/CSV go through the standard entity pipeline.
-Documents (PDF/DOCX/PPTX/images) go through chunk→PII→embed→extract→entity.
+Limits: 50 MB per file, 500 MB total per request, max 50 files.
+JSON/CSV/XML/XLSX go through the standard entity pipeline.
+Documents (PDF/DOCX/PPTX/HTML/images) go through chunk→PII→embed→extract→entity.
+
+Ingest jobs run on a bounded ``ThreadPoolExecutor`` (sized by
+``settings.worker_threads``) rather than FastAPI's single-shot
+``BackgroundTasks`` runner, so multiple large uploads (e.g. several big
+workbooks or a 1000+-page PDF) can make progress concurrently instead of
+queuing behind each other.
 """
 from __future__ import annotations
 
@@ -10,19 +16,22 @@ import csv
 import io
 import json
 import logging
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from aryx.api.admin_api import _local_broker
 from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
-from aryx.pipeline.doc_discovery import _infer_type, expand_xlsx, infer_fk_links
+from aryx.pipeline.doc_discovery import _chunk_csv_bytes, _infer_type, expand_data_files, infer_fk_links
+from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import link_entities, relate_isolated, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
@@ -30,13 +39,38 @@ from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
-_DATA_EXTS = {".json", ".csv", ".xlsx"}
-_DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf",
+_DATA_EXTS = {".json", ".csv", ".xlsx", ".xml"}
+_DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf", ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
-_MAX_FILE = 20 * 1024 * 1024
-_MAX_TOTAL = 50 * 1024 * 1024
+_MAX_FILE = 50 * 1024 * 1024
+_MAX_TOTAL = 500 * 1024 * 1024
 _MAX_FILES = 50
+
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Return the module-level ingest executor, creating it on first call."""
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
+    return _executor
+
+
+def shutdown_executor() -> None:
+    """Drain the ingest executor — call from the app lifespan on shutdown.
+
+    Waits for all in-flight ingest jobs to complete before the process exits
+    so job records are never left in a partial state.
+    """
+    global _executor
+    with _executor_lock:
+        if _executor is not None:
+            _executor.shutdown(wait=True)
+            _executor = None
 
 
 def _save_tmp(data: bytes, suffix: str) -> Path:
@@ -69,20 +103,21 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     jobs = JobStore(settings.rdb_dsn)
     broker = _local_broker()
     try:
-        # Every .xlsx sheet becomes its own CSV "file" — the rest of the
-        # pipeline (type inference, cross-file FK linking, run_pipeline)
-        # doesn't need to know a workbook was ever involved.
-        items = expand_xlsx(items)
+        # Every .xlsx sheet / .xml entity type becomes its own CSV "file" —
+        # the rest of the pipeline (type inference, cross-file FK linking,
+        # run_pipeline) doesn't need to know a workbook or XML doc was
+        # involved. This flattening happens across ALL uploaded files up
+        # front, so the FK-inference pass below already sees every sheet
+        # from every workbook (and every XML-derived table) together — links
+        # between two separately-uploaded files are found, not just within
+        # one workbook.
+        items = expand_data_files(items)
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
         # Per-file plans feed cross-file FK inference once everything has landed.
         plans: list[dict[str, Any]] = []
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
-            if suffix == ".json":
-                connector = JsonConnector(_save_tmp(data, ".json"), system="json")
-            else:
-                connector = CsvConnector(data, system="csv", dataset=Path(name).stem)
             # Per-file type/key inference. A single (type, match_keys) pair
             # cannot fit a heterogeneous batch of files, and the UI default
             # ("Document" / "name") matches no real CSV column — which yields
@@ -112,20 +147,39 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 keys = [best]
             plans.append({"ontology_type": otype, **cv})
             jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
-            run_pipeline(
-                connector=connector, dsn=settings.rdb_dsn,
-                system=suffix.lstrip("."), dataset=Path(name).stem,
-                ontology_type=otype, match_keys=keys,
-                graph_url=settings.graph_url, broker=broker,
-                on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
-                fk_links=fk_links, workspace_id=workspace_id,
-            )
+            # Large sheets/files are split into row-bounded chunks so a
+            # single huge workbook sheet doesn't hold the whole pipeline run
+            # (and its memory) in one shot. Disabled by default
+            # (ARYX_CSV_CHUNK_ROWS=0); each chunk shares the same inferred
+            # type/keys so they land as one logical dataset.
+            for chunk in _chunk_csv_bytes(data, settings.csv_chunk_rows) if suffix == ".csv" else [data]:
+                if suffix == ".json":
+                    connector = JsonConnector(_save_tmp(chunk, ".json"), system="json")
+                else:
+                    connector = CsvConnector(chunk, system="csv", dataset=Path(name).stem)
+                run_pipeline(
+                    connector=connector, dsn=settings.rdb_dsn,
+                    system=suffix.lstrip("."), dataset=Path(name).stem,
+                    ontology_type=otype, match_keys=keys,
+                    graph_url=settings.graph_url, broker=broker,
+                    on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
+                    fk_links=fk_links, workspace_id=workspace_id,
+                )
         # Cross-file relationships. The UI sends no fk_links, so with every
         # entity now landed, infer foreign-key edges from the files' columns
         # and materialize the ones whose values actually match, then re-project.
         if not fk_links and len(plans) >= 2:
             jobs.update_stage(job_id, "Link", 92, "Inferring relationships")
             inferred = infer_fk_links(plans)
+            # Column-name matching (above) only catches FK-shaped names like
+            # `CustomerID`. Value-overlap detection catches the rest — two
+            # columns with different names whose *values* line up (common
+            # across independently-authored Excel workbooks).
+            already = {(l["source_type"], l["source_attr"], l["target_type"], l["target_attr"]) for l in inferred}
+            inferred += [
+                l for l in detect_dynamic_fk_links(plans)
+                if (l["source_type"], l["source_attr"], l["target_type"], l["target_attr"]) not in already
+            ]
             if inferred:
                 link_entities(settings.rdb_dsn, settings.graph_url,
                               workspace_id, inferred)
@@ -172,7 +226,6 @@ def file_ingest_router() -> APIRouter:
 
     @router.post("/ingest/file")
     async def ingest_file(
-        background_tasks: BackgroundTasks,
         files: list[UploadFile] = File(...),
         ontology_type: str = Form(...),
         match_keys: str = Form(...),
@@ -186,10 +239,10 @@ def file_ingest_router() -> APIRouter:
         for f in files:
             data = await f.read()
             if len(data) > _MAX_FILE:
-                raise HTTPException(400, f"{f.filename}: exceeds 20 MB limit")
+                raise HTTPException(400, f"{f.filename}: exceeds {_MAX_FILE // (1024 * 1024)} MB limit")
             total += len(data)
             if total > _MAX_TOTAL:
-                raise HTTPException(400, f"Total upload exceeds 50 MB limit")
+                raise HTTPException(400, f"Total upload exceeds {_MAX_TOTAL // (1024 * 1024)} MB limit")
             suffix = Path(f.filename or "").suffix.lower()
             if suffix not in _ALL:
                 raise HTTPException(400, f"{f.filename}: unsupported type {suffix}")
@@ -204,7 +257,14 @@ def file_ingest_router() -> APIRouter:
             jobs.close()
         keys = [k.strip() for k in match_keys.split(",") if k.strip()]
         links = json.loads(fk_links) if fk_links else []
-        background_tasks.add_task(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+
+        def _on_done(fut) -> None:
+            exc = fut.exception()
+            if exc is not None:
+                logger.error("ingest job %s crashed outside its own handler: %s", job_id, exc, exc_info=exc)
+
+        future = _get_executor().submit(_run_files, items, ontology_type, keys, links, job_id, workspace_id)
+        future.add_done_callback(_on_done)
         names = [n for _, n in items]
         return {"status": "queued", "job_id": job_id, "files": names, "count": len(items)}
 

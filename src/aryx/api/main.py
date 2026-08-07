@@ -90,6 +90,8 @@ def _mount_mcp(app: FastAPI) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     yield
+    from aryx.api.file_ingest_api import shutdown_executor
+    shutdown_executor()
     from aryx.store.pool import close_all
     close_all()
 
