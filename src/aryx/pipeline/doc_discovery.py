@@ -23,7 +23,7 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
-from aryx.pipeline.orchestrate import run_pipeline
+from aryx.pipeline.orchestrate import relate_isolated, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 
 logger = logging.getLogger(__name__)
@@ -266,3 +266,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                      ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
                      graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id)
+    # Deliberately unconditional — guarantees no entity from this confirm
+    # batch is left with zero relationships.
+    if approved_types or approved_files:
+        jobs.update_stage(job_id, "Link", 95, "Checking for isolated entities")
+        relate_isolated(settings.rdb_dsn, settings.graph_url, workspace_id, broker)

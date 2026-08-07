@@ -23,7 +23,7 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.doc_discovery import _infer_type, expand_xlsx, infer_fk_links
-from aryx.pipeline.orchestrate import link_entities, run_pipeline
+from aryx.pipeline.orchestrate import link_entities, relate_isolated, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.job_store import JobStore
 from aryx.store.migrate import apply_migrations
@@ -146,6 +146,12 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 on_progress=lambda s, p, d: jobs.update_stage(job_id, s, p, d),
                 fk_links=fk_links, workspace_id=workspace_id,
             )
+        # Deliberately unconditional — guarantees no entity from this batch
+        # (tabular or document-extracted) is left with zero relationships,
+        # regardless of whether relate/FK-linking above found anything.
+        if data_files or doc_files:
+            jobs.update_stage(job_id, "Link", 95, "Checking for isolated entities")
+            relate_isolated(settings.rdb_dsn, settings.graph_url, workspace_id, broker)
         jobs.finish(job_id, run_id=None, status="complete")
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc, exc_info=True)
