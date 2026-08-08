@@ -70,7 +70,8 @@ export function Running({ workspaceId, jobId, onDone, onSkip }: Props) {
         setDetail(j.detail);
         setJobStatus(j.status);
         setError(j.error);
-        if (j.status === "complete" || j.status === "failed") return;
+        if (j.status === "complete" || j.status === "failed"
+          || j.status === "cancelled") return;
         timer = setTimeout(tick, JOB_POLL_MS);
       } catch (err) {
         if (cancelled) return;

@@ -41,7 +41,7 @@ export function useJobPoller(
           onDoneRef.current(true);
           return;
         }
-        if (j.status === "failed") {
+        if (j.status === "failed" || j.status === "cancelled") {
           onDoneRef.current(false);
           return;
         }
