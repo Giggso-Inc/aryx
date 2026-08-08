@@ -82,33 +82,50 @@ class EntityStore:
         Same as ``save()``, but for callers that need to reference the new
         entities afterward (e.g. building relationships from a caller-side
         identity map, as the RDF instance importer does).
+
+        Batched: one round trip to pre-fetch N sequence values, then one
+        executemany() per table (entities, members, conflicts) — a constant
+        number of round trips regardless of batch size, instead of the
+        previous one execute() per entity/member/conflict (N x (1+M+C) round
+        trips), which was the dominant cost on any file with more than a few
+        hundred resolved records.
         """
-        ids: list[int] = []
+        if not results:
+            return []
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                for entity, members in results:
-                    cur.execute(
-                        load("insert_entity"),
-                        (self._ws, entity.ontology_type,
-                         Json(entity.attributes, dumps=_dumps), entity.confidence),
-                    )
-                    row = cur.fetchone()
-                    entity_id = int(row[0]) if row else 0
-                    for member in members:
-                        cur.execute(
-                            load("insert_entity_member"),
-                            (self._ws, entity_id, member.landed_record_id,
-                             member.confidence),
-                        )
-                    for conflict in entity.conflicts or []:
-                        cur.execute(
-                            load("insert_attribute_conflict"),
-                            (self._ws, entity_id, conflict["attribute"],
-                             Json(conflict["winning_value"], dumps=_dumps),
-                             Json(conflict["losing_values"], dumps=_dumps),
-                             conflict["strategy"]),
-                        )
-                    ids.append(entity_id)
+                cur.execute(
+                    "SELECT nextval(pg_get_serial_sequence('aryx_entity', 'id'))"
+                    " FROM generate_series(1, %s)",
+                    (len(results),),
+                )
+                ids = [int(row[0]) for row in cur.fetchall()]
+
+                entity_rows = [
+                    (entity_id, self._ws, entity.ontology_type,
+                     Json(entity.attributes, dumps=_dumps), entity.confidence)
+                    for entity_id, (entity, _members) in zip(ids, results)
+                ]
+                cur.executemany(load("insert_entity_with_id"), entity_rows)
+
+                member_rows = [
+                    (self._ws, entity_id, member.landed_record_id, member.confidence)
+                    for entity_id, (_entity, members) in zip(ids, results)
+                    for member in members
+                ]
+                if member_rows:
+                    cur.executemany(load("insert_entity_member"), member_rows)
+
+                conflict_rows = [
+                    (self._ws, entity_id, conflict["attribute"],
+                     Json(conflict["winning_value"], dumps=_dumps),
+                     Json(conflict["losing_values"], dumps=_dumps),
+                     conflict["strategy"])
+                    for entity_id, (entity, _members) in zip(ids, results)
+                    for conflict in (entity.conflicts or [])
+                ]
+                if conflict_rows:
+                    cur.executemany(load("insert_attribute_conflict"), conflict_rows)
         logger.info("entities saved count=%d", len(ids))
         return ids
 

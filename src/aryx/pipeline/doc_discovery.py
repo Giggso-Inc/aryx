@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -383,10 +384,41 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             "summary": {"types": types, "files": files}}
 
 
+def _connector_for_tabular_file(fname: str, plan: dict[str, Any]):
+    """Build the right connector for one approved tabular file's plan."""
+    if Path(fname).suffix.lower() == ".json":
+        tmp = NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.write(plan["data"])
+        tmp.close()
+        return JsonConnector(Path(tmp.name), system="json")
+    return CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
+
+
+def _run_one_tabular_file(fname: str, plan: dict[str, Any], settings, broker: Broker,
+                          workspace_id: int, skip_graph: bool) -> None:
+    conn = _connector_for_tabular_file(fname, plan)
+    run_pipeline(connector=conn, dsn=settings.rdb_dsn,
+                 system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
+                 ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
+                 graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
+                 skip_graph=skip_graph)
+
+
 def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      approved_files: list[str], broker: Broker, jobs, job_id: str,
                      workspace_id: int = 1) -> None:
-    """Resolve + project the approved discovered types and tabular files."""
+    """Resolve + project the approved discovered types and tabular files.
+
+    Tabular files run land+resolve concurrently (ARYX_INGEST_WORKERS worker
+    threads) — all but the last file skip the FalkorDB projection stage
+    (skip_graph=True) since project_graph() rebuilds the ENTIRE workspace
+    graph and two concurrent calls would race and corrupt each other. The
+    last file runs afterward, once every concurrent file has finished
+    landing its entities in Postgres, and does the single graph projection
+    that picks up everyone's data (EntityStore.list_entities() is
+    workspace-scoped, not run-scoped, so one projection after the fact is
+    correct regardless of how many files fed into it).
+    """
     settings = get_settings()
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
@@ -399,23 +431,35 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
                          workspace_id=workspace_id)
+
+    valid_files: list[tuple[str, dict[str, Any]]] = []
     for fname in approved_files:
         step += 1
         plan = next((p for p in data["tabular"] if p["filename"] == fname), None)
-        if not plan:
-            continue
-        jobs.update_stage(job_id, f"{step}/{total}", int(step * 90 / total), f"Adding {fname}")
-        if Path(fname).suffix.lower() == ".json":
-            tmp = NamedTemporaryFile(suffix=".json", delete=False)
-            tmp.write(plan["data"])
-            tmp.close()
-            conn = JsonConnector(Path(tmp.name), system="json")
-        else:
-            conn = CsvConnector(plan["data"], system="csv", dataset=Path(fname).stem)
-        run_pipeline(connector=conn, dsn=settings.rdb_dsn,
-                     system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
-                     ontology_type=plan["ontology_type"], match_keys=plan["match_keys"],
-                     graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id)
+        if plan is not None:
+            valid_files.append((fname, plan))
+
+    if valid_files:
+        non_last, last = valid_files[:-1], valid_files[-1]
+        if non_last:
+            jobs.update_stage(job_id, f"{total}/{total}", int((total - 1) * 90 / total),
+                              f"Adding {len(non_last)} file(s) in parallel")
+            with ThreadPoolExecutor(max_workers=settings.ingest_workers) as pool:
+                futures = {
+                    pool.submit(_run_one_tabular_file, fname, plan, settings, broker,
+                               workspace_id, True): fname
+                    for fname, plan in non_last
+                }
+                for fut in as_completed(futures):
+                    fname = futures[fut]
+                    try:
+                        fut.result()
+                    except Exception as exc:  # noqa: BLE001 — isolate one bad file, don't sink the batch
+                        logger.warning("ingest_confirmed: file %s failed: %s", fname, exc)
+        last_fname, last_plan = last
+        jobs.update_stage(job_id, f"{total}/{total}", 90, f"Adding {last_fname}")
+        _run_one_tabular_file(last_fname, last_plan, settings, broker, workspace_id, False)
+
     # Deliberately unconditional — guarantees no entity from this confirm
     # batch is left with zero relationships.
     if approved_types or approved_files:

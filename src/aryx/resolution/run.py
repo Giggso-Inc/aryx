@@ -16,6 +16,7 @@ import logging
 import os
 
 from aryx.broker import Broker
+from aryx.config import get_settings
 from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
 from aryx.resolution.adjudicate import adjudicate
 from aryx.resolution.classical import block, score_pair
@@ -163,7 +164,7 @@ def resolve(
     # data). Set ARYX_ER_MAX_ADJUDICATIONS>0 when a fast model is configured.
     adj_budget = [max(0, int(_threshold("ARYX_ER_MAX_ADJUDICATIONS", 0)))]
 
-    for group in block(records).values():
+    for group in block(records, max_block_size=get_settings().max_block_size).values():
         embeddings = _block_embeddings(group, broker)
         for i in range(len(group)):
             for j in range(i + 1, len(group)):
