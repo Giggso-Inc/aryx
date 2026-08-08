@@ -24,17 +24,21 @@ DROP INDEX IF EXISTS aryx_ontology_type_name_key;
 
 -- Postgres has no ADD CONSTRAINT IF NOT EXISTS, and apply_migrations() has
 -- no applied-migrations ledger — it re-runs every file on every startup and
--- relies on each statement being idempotent. Guard explicitly so re-runs
--- are silent instead of logging a swallowed "already exists" warning.
+-- relies on each statement being idempotent. A check-then-act on conname
+-- alone would be wrong twice over: conname is only unique per-table, not
+-- database-wide, so a same-named constraint on another table would falsely
+-- read as "already exists" here; and two processes racing this migration
+-- concurrently could both pass the check before either commits the ADD,
+-- so the second ADD CONSTRAINT would still raise duplicate_object. Instead,
+-- just attempt the ADD and swallow that one specific, expected error.
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'aryx_ontology_type_ws_name_key'
-    ) THEN
-        ALTER TABLE aryx_ontology_type
-            ADD CONSTRAINT aryx_ontology_type_ws_name_key
-                UNIQUE (workspace_id, name);
-    END IF;
+    ALTER TABLE aryx_ontology_type
+        ADD CONSTRAINT aryx_ontology_type_ws_name_key
+            UNIQUE (workspace_id, name);
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_ontology_type_ws
