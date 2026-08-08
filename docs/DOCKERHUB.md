@@ -65,6 +65,7 @@ Prefer Compose from the source repo (Postgres, FalkorDB, Ollama, API, worker, MC
 ```bash
 git clone https://github.com/giggsoinc/aryx.git
 cd aryx
+docker network create aryx-shared   # one-time — compose attaches to this external network
 cp .env.example .env
 docker compose pull    # public Hub images — no docker login required
 docker compose up -d
