@@ -7,7 +7,9 @@ ingesting both run as durable jobs so the UI can show live progress.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -24,11 +26,37 @@ from aryx.store.migrate import apply_migrations
 
 logger = logging.getLogger(__name__)
 
-# Shared with file_ingest_api.py's ingest route (same limits — read from
-# Settings, not a locally-duplicated constant — and same executor) so a
-# 1000+-page PDF or a batch of large workbooks isn't rejected here just
-# because this route historically had its own, smaller, stale constant.
-from aryx.api.file_ingest_api import _get_executor  # noqa: E402
+# This route's own executor — deliberately NOT shared with file_ingest_api's
+# ProcessPoolExecutor. The read -> summary -> confirm flow hands results
+# between requests via aryx.discoveries, an in-process dict (see its
+# docstring: "Process memory only"). A worker running in a separate process
+# would write to its own private copy of that dict, so a later
+# GET /admin/docs/summary/{did} in the API process would never see it —
+# the job would report "complete" (JobStore goes through Postgres, which is
+# cross-process) while the discovered types/files silently vanish. Threads
+# share this process's memory, which is what the discoveries handoff needs;
+# this route's own work (LLM/embedding calls) is I/O-bound anyway and gets
+# no benefit from separate processes.
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Return this route's own thread-pool executor, creating it on first call."""
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
+    return _executor
+
+
+def shutdown_executor() -> None:
+    """Drain this route's executor — call from the app lifespan on shutdown."""
+    global _executor
+    with _executor_lock:
+        if _executor is not None:
+            _executor.shutdown(wait=True)
+            _executor = None
 
 
 class ConfirmRequest(BaseModel):

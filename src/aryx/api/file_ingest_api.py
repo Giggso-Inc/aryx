@@ -18,6 +18,7 @@ import csv
 import io
 import json
 import logging
+import multiprocessing
 import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor
@@ -55,7 +56,10 @@ def _get_executor() -> ProcessPoolExecutor:
     global _executor
     with _executor_lock:
         if _executor is None:
-            _executor = ProcessPoolExecutor(max_workers=get_settings().worker_threads)
+            _executor = ProcessPoolExecutor(
+                max_workers=get_settings().worker_threads,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
     return _executor
 
 
