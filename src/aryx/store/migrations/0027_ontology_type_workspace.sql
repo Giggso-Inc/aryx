@@ -22,9 +22,20 @@ ALTER TABLE aryx_ontology_type
 
 DROP INDEX IF EXISTS aryx_ontology_type_name_key;
 
-ALTER TABLE aryx_ontology_type
-    ADD CONSTRAINT aryx_ontology_type_ws_name_key
-        UNIQUE (workspace_id, name);
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS, and apply_migrations() has
+-- no applied-migrations ledger — it re-runs every file on every startup and
+-- relies on each statement being idempotent. Guard explicitly so re-runs
+-- are silent instead of logging a swallowed "already exists" warning.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'aryx_ontology_type_ws_name_key'
+    ) THEN
+        ALTER TABLE aryx_ontology_type
+            ADD CONSTRAINT aryx_ontology_type_ws_name_key
+                UNIQUE (workspace_id, name);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_ontology_type_ws
     ON aryx_ontology_type (workspace_id);
