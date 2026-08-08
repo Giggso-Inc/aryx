@@ -37,15 +37,21 @@ class JobStore:
                 cur.execute(load("insert_job"), (workspace_id, job_id, system, dataset))
 
     def update_stage(self, job_id: str, stage: str, pct: int, detail: str) -> None:
-        """Record the current stage and append it to the event log."""
+        """Record progress unless the job is already terminal.
+
+        A cancelled/failed/completed job must stay terminal even if a
+        background worker thread is still alive and tries to report more
+        progress afterward.
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("update_job_stage"), (stage, pct, detail, job_id))
-                cur.execute(load("insert_job_event"), (job_id, stage, pct, detail))
+                if cur.rowcount > 0:
+                    cur.execute(load("insert_job_event"), (job_id, stage, pct, detail))
 
     def finish(self, job_id: str, run_id: int | None, status: str,
                error: str | None = None) -> None:
-        """Mark a job complete or failed."""
+        """Mark a job complete or failed unless it is already terminal."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("finish_job"), (status, run_id, error, job_id))
