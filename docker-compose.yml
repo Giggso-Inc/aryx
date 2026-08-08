@@ -2,7 +2,7 @@
 # rebuildable graph projection. Production orchestrator (ECS/EKS/OCI) is
 # decided at rollout — these containers are 12-factor and portable.
 services:
-  postgres:
+  oss-postgres:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: aryx
@@ -33,7 +33,7 @@ services:
     build: .
     env_file: .env
     depends_on:
-      postgres:
+      oss-postgres:
         condition: service_healthy
       falkordb:
         condition: service_started
@@ -85,8 +85,11 @@ services:
       - ARYX_LOG_LEVEL=DEBUG
     ports:
       - "8088:8000"
+    mem_limit: 16g
+    mem_reservation: 8g
+    cpus: "6.0"
     depends_on:
-      postgres:
+      oss-postgres:
         condition: service_healthy
       falkordb:
         condition: service_started
@@ -138,3 +141,8 @@ volumes:
   pgdata:
   graphdata:
   ollama_models:
+
+networks:
+  default:
+    external: true
+    name: aryx-shared
