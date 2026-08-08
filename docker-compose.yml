@@ -9,7 +9,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aryx}
       POSTGRES_DB: aryx
     # Host port 55432 avoids colliding with other stacks already on 5432.
-    # In-network clients still reach this as postgres:5432.
+    # In-network clients still reach this as postgres:5432 — the "postgres"
+    # alias below keeps .env.example / docs (ARYX_RDB_DSN=...@postgres:5432/...)
+    # working unchanged after the oss-postgres rename.
     ports:
       - "55432:5432"
     volumes:
@@ -19,6 +21,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      default:
+        aliases:
+          - postgres
 
   falkordb:
     image: falkordb/falkordb:latest

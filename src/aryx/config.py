@@ -31,7 +31,7 @@ class Settings(BaseSettings):
         default=20, description="How often (in completed chunks) extract_mentions "
         "reports incremental progress via its on_progress callback.")
     worker_threads: int = Field(
-        default=4, description="Concurrent file-ingest workers (ThreadPoolExecutor width).")
+        default=4, ge=1, description="Concurrent file-ingest workers (ProcessPoolExecutor width).")
     csv_chunk_rows: int = Field(
         default=0, description="Split CSV/xlsx-derived files into chunks of this many data "
         "rows before ingesting (0 = no chunking).")
