@@ -11,7 +11,7 @@ import type {
 // Same-origin relative path. Next.js rewrites /api/* → FastAPI internally
 // (see next.config.mjs). Works in dev (proxies to localhost:8088) and in
 // production (proxies to api:8000) without any client-side knowledge.
-const BASE = "/api";
+const BASE = "/aryx/api";
 
 /** A failed request's HTTP status is attached so callers can tell a
  *  permanent failure (404 — job gone) from a transient one (network blip,

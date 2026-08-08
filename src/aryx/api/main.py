@@ -99,7 +99,12 @@ async def _lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Build the Aryx FastAPI app with every router + MCP mounted."""
     from aryx.api.security import ApiKeyMiddleware
-    app = FastAPI(title="Aryx API", version="1.0", lifespan=_lifespan)
+    app = FastAPI(
+        title="Aryx API",
+        version="1.0",
+        lifespan=_lifespan,
+        root_path="/aryx/api",
+    )
     app.add_middleware(ApiKeyMiddleware)
     app.include_router(graph_router())
     app.include_router(admin_router())
