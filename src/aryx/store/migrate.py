@@ -10,6 +10,50 @@ logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
+# Constraints later migrations depend on for correctness (not just
+# "nice to have"), checked by _verify_critical_constraints() after every
+# migration file has run. apply_migrations()'s per-statement loop below
+# deliberately swallows psycopg.Error on every statement — that's correct
+# for genuinely optional statements (e.g. a missing extension), but it means
+# a RAISE from inside a migration's own DO block (e.g. to reject schema
+# drift) is caught and logged as a warning like anything else, not enforced.
+# Verifying these here, outside that per-statement try/except, is what
+# actually makes "fail startup on drift" true instead of aspirational.
+# (table, constraint_name, expected `pg_get_constraintdef(oid)` text)
+_CRITICAL_CONSTRAINTS: list[tuple[str, str, str]] = [
+    ("aryx_ontology_type", "aryx_ontology_type_ws_name_key",
+     "UNIQUE (workspace_id, name)"),
+    ("aryx_ontology_type", "aryx_ontology_type_parent_ws_fkey",
+     "FOREIGN KEY (workspace_id, parent_type) REFERENCES aryx_ontology_type"
+     "(workspace_id, name) ON UPDATE CASCADE ON DELETE SET NULL"),
+]
+
+
+def _verify_critical_constraints(conn: psycopg.Connection) -> None:
+    """Hard-fail if a constraint a migration depends on is missing or wrong.
+
+    Raises RuntimeError (not psycopg.Error) so it is never caught by
+    apply_migrations()'s per-statement handler and always propagates to the
+    caller — the one enforcement path in this module that isn't swallowed.
+    """
+    with conn.cursor() as cur:
+        for table, conname, expected_def in _CRITICAL_CONSTRAINTS:
+            cur.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = %s AND conrelid = %s::regclass",
+                (conname, table),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(
+                    f"critical constraint {conname!r} missing on {table!r} "
+                    "after migrations — refusing to start")
+            if row[0] != expected_def:
+                raise RuntimeError(
+                    f"critical constraint {conname!r} on {table!r} has "
+                    f"definition {row[0]!r}, expected {expected_def!r} — "
+                    "schema drift, refusing to start")
+
 
 def _split_statements(sql: str) -> list[str]:
     """Split on ';' but never inside a $tag$...$tag$ dollar-quoted block.
@@ -81,3 +125,4 @@ def apply_migrations(dsn: str) -> None:
                         logger.warning("migration statement skipped file=%s error=%s",
                                        path.name, exc)
             logger.info("migration applied file=%s statements=%d", path.name, len(statements))
+        _verify_critical_constraints(conn)
