@@ -95,6 +95,23 @@ class Broker:
         self._governor.charge(tier, tokens)
 
     @property
+    def governor(self) -> TokenGovernor:
+        """This broker's token governor (for callers that need to share its
+        budget state across processes — see with_governor())."""
+        return self._governor
+
+    def with_governor(self, governor: TokenGovernor) -> "Broker":
+        """Return a new Broker sharing this one's registry/secrets/embed
+        config but backed by a different TokenGovernor.
+
+        Used to swap in a cross-process-safe governor (a Manager-backed
+        TokenGovernor — see doc_discovery.ingest_confirmed) when the same
+        budget must be shared by workers running in separate processes,
+        instead of each worker getting an independent copy via pickling.
+        """
+        return Broker(self._registry, governor, self.secrets, self._embed)
+
+    @property
     def embed_model_id(self) -> str | None:
         """Return the configured local embed model name, or None if unset."""
         return self._embed.get("model") or None
