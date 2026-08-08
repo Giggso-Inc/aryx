@@ -62,3 +62,35 @@ def test_update_stage_ignores_progress_for_terminal_job():
     assert cur.execute.call_args_list[0].args == (
         "sql:update_job_stage", ("Reading", 30, "Reading 1 file", "job1"),
     )
+
+
+def test_finish_updates_active_job():
+    cur = _mock_cursor(rowcount=1)
+    pool = _mock_pool(cur)
+
+    with patch("aryx.store.job_store.get_pool", return_value=pool), \
+         patch("aryx.store.job_store.load",
+               side_effect=lambda name: f"sql:{name}"):
+        store = JobStore("dsn")
+        store.finish("job1", 42, "complete")
+
+    assert cur.execute.call_count == 1
+    assert cur.execute.call_args_list[0].args == (
+        "sql:finish_job", ("complete", 42, None, "job1"),
+    )
+
+
+def test_finish_ignores_terminal_job():
+    cur = _mock_cursor(rowcount=0)
+    pool = _mock_pool(cur)
+
+    with patch("aryx.store.job_store.get_pool", return_value=pool), \
+         patch("aryx.store.job_store.load",
+               side_effect=lambda name: f"sql:{name}"):
+        store = JobStore("dsn")
+        store.finish("job1", 42, "failed", "cancelled elsewhere")
+
+    assert cur.execute.call_count == 1
+    assert cur.execute.call_args_list[0].args == (
+        "sql:finish_job", ("failed", 42, "cancelled elsewhere", "job1"),
+    )

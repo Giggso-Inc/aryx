@@ -51,7 +51,7 @@ class JobStore:
 
     def finish(self, job_id: str, run_id: int | None, status: str,
                error: str | None = None) -> None:
-        """Mark a job complete or failed."""
+        """Mark a job complete or failed unless it is already terminal."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(load("finish_job"), (status, run_id, error, job_id))
