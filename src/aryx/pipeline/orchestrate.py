@@ -52,6 +52,7 @@ def run_pipeline(
     fk_links: list[dict] | None = None,
     workspace_id: int = 1,
     resume_run_id: int | None = None,
+    skip_graph: bool = False,
 ) -> dict[str, int]:
     """Run a source from extraction through to the FalkorDB projection.
 
@@ -69,9 +70,19 @@ def run_pipeline(
         max_pairs: Cap on candidate pairs when relate is enabled.
         resume_run_id: Resume a crashed run — done stages skip, the landed
             data of that run is reused (no re-extract).
+        skip_graph: Skip the FalkorDB projection stage entirely. Set this
+            when calling run_pipeline() concurrently for multiple
+            files/plans in the same workspace — project_graph() does
+            graph.clear() then rebuilds the ENTIRE workspace graph, so two
+            concurrent calls would race and corrupt each other. Land+resolve
+            still happens normally; the caller is responsible for running
+            one un-skipped call afterward (once every concurrent call has
+            finished landing its entities in Postgres) to project everyone's
+            data in a single pass.
 
     Returns:
-        Summary of {run_id, entities, relationships} plus graph projection counts.
+        Summary of {run_id, entities, relationships} plus graph projection
+        counts (empty dict for the counts when skip_graph=True).
     """
     if resume_run_id is not None:
         run_id = resume_run_id
@@ -110,13 +121,15 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], spec["name"],
                     )
-        _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
-        with runner.stage("project"):
-            type_ancestors = _build_type_ancestors(dsn)
-            counts = project_graph(
-                estore, FalkorStore(graph_url, ws_graph(workspace_id)),
-                type_ancestors=type_ancestors, workspace_id=workspace_id,
-            )
+        counts: dict[str, int] = {}
+        if not skip_graph:
+            _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
+            with runner.stage("project"):
+                type_ancestors = _build_type_ancestors(dsn)
+                counts = project_graph(
+                    estore, FalkorStore(graph_url, ws_graph(workspace_id)),
+                    type_ancestors=type_ancestors, workspace_id=workspace_id,
+                )
     finally:
         estore.close()
 

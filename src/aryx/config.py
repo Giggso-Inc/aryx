@@ -91,6 +91,26 @@ class Settings(BaseSettings):
         description="Max entities returned by find_entity_by_attribute_value(). "
         "Override with ARYX_IDENTIFIER_LOOKUP_LIMIT.",
     )
+    ingest_workers: int = Field(
+        default=3,
+        description=(
+            "Thread-pool width for concurrent non-last-plan processing in "
+            "ingest_confirmed() (doc_discovery.py) — the Docs-tab confirm "
+            "flow. All but the last approved file/plan run concurrently "
+            "(land+resolve only, no graph write); the last plan alone runs "
+            "afterward and does the single graph projection. "
+            "Override with ARYX_INGEST_WORKERS."
+        ),
+    )
+    max_block_size: int = Field(
+        default=5000,
+        description=(
+            "Max records per blocking group in entity resolution "
+            "(resolution/classical.py's block()). Groups over this size are "
+            "skipped with a WARNING to prevent O(n^2) pairwise-scoring "
+            "blowup on degenerate data. Override with ARYX_MAX_BLOCK_SIZE."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)
