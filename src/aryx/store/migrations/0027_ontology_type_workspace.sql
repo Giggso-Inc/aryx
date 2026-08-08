@@ -28,17 +28,38 @@ DROP INDEX IF EXISTS aryx_ontology_type_name_key;
 -- alone would be wrong twice over: conname is only unique per-table, not
 -- database-wide, so a same-named constraint on another table would falsely
 -- read as "already exists" here; and two processes racing this migration
--- concurrently could both pass the check before either commits the ADD,
--- so the second ADD CONSTRAINT would still raise duplicate_object. Instead,
--- just attempt the ADD and swallow that one specific, expected error.
+-- concurrently could both pass the check before either commits the ADD.
+--
+-- So: attempt the ADD directly (correct by construction — it targets this
+-- exact table, no name lookup involved) and only catch a race against
+-- ourselves. UNIQUE also creates a backing index, so the losing side of a
+-- concurrent race can fail as either duplicate_object (42710, constraint
+-- name collision) or duplicate_table (42P07, the implicit index name
+-- collision) depending on timing — both must be caught. And catching either
+-- must not silently paper over real drift: if a constraint by this name
+-- already exists but isn't UNIQUE (workspace_id, name) — e.g. a prior
+-- partial/manual rollout — that is a schema mismatch, not success, so it's
+-- raised loudly instead of swallowed.
 DO $$
 BEGIN
     ALTER TABLE aryx_ontology_type
         ADD CONSTRAINT aryx_ontology_type_ws_name_key
             UNIQUE (workspace_id, name);
 EXCEPTION
-    WHEN duplicate_object THEN
-        NULL;
+    WHEN duplicate_object OR duplicate_table THEN
+        IF NOT EXISTS (
+            SELECT 1
+              FROM pg_constraint
+             WHERE conname = 'aryx_ontology_type_ws_name_key'
+               AND conrelid = 'aryx_ontology_type'::regclass
+               AND contype = 'u'
+               AND pg_get_constraintdef(oid) = 'UNIQUE (workspace_id, name)'
+        ) THEN
+            RAISE EXCEPTION
+                'aryx_ontology_type_ws_name_key exists on aryx_ontology_type '
+                'but is not UNIQUE (workspace_id, name) — schema drift from a '
+                'prior partial/manual rollout, needs manual reconciliation';
+        END IF;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_ontology_type_ws
