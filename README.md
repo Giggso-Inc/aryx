@@ -63,6 +63,7 @@ Built for a **single team’s** outcome mapping on a laptop or small server — 
 ```bash
 git clone https://github.com/giggsoinc/aryx.git
 cd aryx
+docker network create aryx-shared   # one-time — compose attaches to this external network
 cp .env.example .env          # edit passwords / LLM keys as needed
 docker compose pull           # pulls public Hub images (no docker login)
 docker compose up -d          # builds from source only if pull/build policy requires it

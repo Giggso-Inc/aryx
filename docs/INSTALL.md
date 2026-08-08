@@ -32,6 +32,16 @@ git clone https://github.com/giggsoinc/aryx.git
 cd aryx
 ```
 
+Compose attaches every service to an **external** network named `aryx-shared`
+(so it can be shared with other local stacks). Create it once before the
+first `docker compose up` — Compose does not create external networks for
+you and will error out (`network aryx-shared declared as external, but could
+not be found`) if it's missing:
+
+```bash
+docker network create aryx-shared
+```
+
 ---
 
 ## 2. Configure environment

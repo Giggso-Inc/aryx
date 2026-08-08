@@ -439,6 +439,13 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         if plan is not None:
             valid_files.append((fname, plan))
 
+    # Collected, not raised immediately: one bad file must not sink the rest
+    # of a concurrent batch, and relate_isolated below still needs to run for
+    # whatever DID land. But the job must not silently report "complete" if
+    # an approved file was dropped — see the raise at the end of this
+    # function, which surfaces every failure to the caller so the job is
+    # correctly marked failed instead of a false-positive success.
+    failures: list[str] = []
     if valid_files:
         non_last, last = valid_files[:-1], valid_files[-1]
         if non_last:
@@ -456,12 +463,23 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                         fut.result()
                     except Exception as exc:  # noqa: BLE001 — isolate one bad file, don't sink the batch
                         logger.warning("ingest_confirmed: file %s failed: %s", fname, exc)
+                        failures.append(f"{fname}: {exc}")
         last_fname, last_plan = last
         jobs.update_stage(job_id, f"{total}/{total}", 90, f"Adding {last_fname}")
-        _run_one_tabular_file(last_fname, last_plan, settings, broker, workspace_id, False)
+        try:
+            _run_one_tabular_file(last_fname, last_plan, settings, broker, workspace_id, False)
+        except Exception as exc:  # noqa: BLE001 — still run relate_isolated for whatever landed
+            logger.warning("ingest_confirmed: file %s failed: %s", last_fname, exc)
+            failures.append(f"{last_fname}: {exc}")
 
     # Deliberately unconditional — guarantees no entity from this confirm
     # batch is left with zero relationships.
     if approved_types or approved_files:
         jobs.update_stage(job_id, "Link", 95, "Checking for isolated entities")
         relate_isolated(settings.rdb_dsn, settings.graph_url, workspace_id, broker)
+
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} of {len(valid_files)} approved file(s) failed to ingest: "
+            + "; ".join(failures)
+        )

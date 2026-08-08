@@ -6,7 +6,7 @@ hardcoded, so a deployment can raise them without a code change or rebuild.
 JSON/CSV/XML/XLSX go through the standard entity pipeline.
 Documents (PDF/DOCX/PPTX/HTML/images) go through chunk→PII→embed→extract→entity.
 
-Ingest jobs run on a bounded ``ThreadPoolExecutor`` (sized by
+Ingest jobs run on a bounded ``ProcessPoolExecutor`` (sized by
 ``settings.worker_threads``) rather than FastAPI's single-shot
 ``BackgroundTasks`` runner, so multiple large uploads (e.g. several big
 workbooks or a 1000+-page PDF) can make progress concurrently instead of
@@ -20,7 +20,7 @@ import json
 import logging
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -46,16 +46,16 @@ _DOC_EXTS = {".pdf", ".pptx", ".ppt", ".docx", ".doc", ".rtf", ".html", ".htm",
              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
 _ALL = _DATA_EXTS | _DOC_EXTS
 
-_executor: ThreadPoolExecutor | None = None
+_executor: ProcessPoolExecutor | None = None
 _executor_lock = threading.Lock()
 
 
-def _get_executor() -> ThreadPoolExecutor:
+def _get_executor() -> ProcessPoolExecutor:
     """Return the module-level ingest executor, creating it on first call."""
     global _executor
     with _executor_lock:
         if _executor is None:
-            _executor = ThreadPoolExecutor(max_workers=get_settings().worker_threads)
+            _executor = ProcessPoolExecutor(max_workers=get_settings().worker_threads)
     return _executor
 
 

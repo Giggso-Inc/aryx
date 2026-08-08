@@ -31,7 +31,7 @@ class Settings(BaseSettings):
         default=20, description="How often (in completed chunks) extract_mentions "
         "reports incremental progress via its on_progress callback.")
     worker_threads: int = Field(
-        default=4, description="Concurrent file-ingest workers (ThreadPoolExecutor width).")
+        default=4, ge=1, description="Concurrent file-ingest workers (ProcessPoolExecutor width).")
     csv_chunk_rows: int = Field(
         default=0, description="Split CSV/xlsx-derived files into chunks of this many data "
         "rows before ingesting (0 = no chunking).")
@@ -92,23 +92,26 @@ class Settings(BaseSettings):
         "Override with ARYX_IDENTIFIER_LOOKUP_LIMIT.",
     )
     ingest_workers: int = Field(
-        default=3,
+        default=3, ge=1,
         description=(
             "Thread-pool width for concurrent non-last-plan processing in "
             "ingest_confirmed() (doc_discovery.py) — the Docs-tab confirm "
             "flow. All but the last approved file/plan run concurrently "
             "(land+resolve only, no graph write); the last plan alone runs "
-            "afterward and does the single graph projection. "
-            "Override with ARYX_INGEST_WORKERS."
+            "afterward and does the single graph projection. Must be >= 1 — "
+            "ThreadPoolExecutor(max_workers=0) raises ValueError at "
+            "construction time. Override with ARYX_INGEST_WORKERS."
         ),
     )
     max_block_size: int = Field(
-        default=5000,
+        default=5000, ge=1,
         description=(
             "Max records per blocking group in entity resolution "
             "(resolution/classical.py's block()). Groups over this size are "
             "skipped with a WARNING to prevent O(n^2) pairwise-scoring "
-            "blowup on degenerate data. Override with ARYX_MAX_BLOCK_SIZE."
+            "blowup on degenerate data. Must be >= 1 — a value of 0 would "
+            "cause every non-empty block to be skipped, silently dropping "
+            "all resolution. Override with ARYX_MAX_BLOCK_SIZE."
         ),
     )
 
