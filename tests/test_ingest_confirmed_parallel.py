@@ -12,6 +12,7 @@ run-scoped).
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from aryx.pipeline.doc_discovery import ingest_confirmed
@@ -23,9 +24,32 @@ def _make_jobs():
     return jobs
 
 
+def _thread_pool_factory(max_workers):
+    """Test double for ingest_confirmed's _pool_factory.
+
+    ingest_confirmed's default pool is a real ProcessPoolExecutor, which
+    requires every submitted arg to be picklable and runs the target in a
+    fresh interpreter that never sees these tests' unittest.mock.patch()
+    substitutions (run_pipeline, relate_isolated, get_settings) — those
+    only exist in this test process's memory. A ThreadPoolExecutor shares
+    this process's memory, so the same MagicMock-based mocking this file
+    already used keeps working, while still exercising the real
+    orchestration logic (ordering, skip_graph flags, failure isolation)."""
+    return ThreadPoolExecutor(max_workers=max_workers)
+
+
 def _tabular_plan(fname, ontology_type="Widget"):
     return {"filename": fname, "data": b"a,b\n1,2\n",
             "ontology_type": ontology_type, "match_keys": ["a"]}
+
+
+def _charge_only(fname, plan, settings, broker, workspace_id, skip_graph):
+    """Module-level (picklable) stand-in for _run_one_tabular_file — a real
+    ProcessPoolExecutor needs an importable-by-name target, and the real
+    target reaches Postgres/FalkorDB. Used only to exercise the
+    cross-process budget-sharing plumbing itself, in isolation from the
+    actual land+resolve pipeline."""
+    broker.charge("cheap", 100)
 
 
 class TestParallelFileProcessing:
@@ -45,7 +69,8 @@ class TestParallelFileProcessing:
             mock_cfg.return_value.rdb_dsn = "dsn"
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 3
-            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=_thread_pool_factory)
 
         assert len(calls) == 4
         skip_graph_flags = dict(calls)
@@ -81,7 +106,8 @@ class TestParallelFileProcessing:
             mock_cfg.return_value.rdb_dsn = "dsn"
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 3
-            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=_thread_pool_factory)
 
         assert len(completed_non_last) == 2
         assert last_started_after_all_non_last == [2]
@@ -101,7 +127,8 @@ class TestParallelFileProcessing:
             mock_cfg.return_value.rdb_dsn = "dsn"
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 3
-            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=_thread_pool_factory)
 
         assert calls == [False]
 
@@ -129,7 +156,8 @@ class TestParallelFileProcessing:
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 3
             try:
-                ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+                ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=_thread_pool_factory)
                 raised = False
             except RuntimeError as exc:
                 raised = True
@@ -157,7 +185,8 @@ class TestParallelFileProcessing:
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 3
             # Must not raise when every file succeeds.
-            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=_thread_pool_factory)
 
     def test_last_file_failure_is_also_surfaced(self):
         """A failure in the (unskipped) last file — not just the concurrent
@@ -177,26 +206,72 @@ class TestParallelFileProcessing:
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 3
             try:
-                ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+                ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=_thread_pool_factory)
                 assert False, "expected a RuntimeError"
             except RuntimeError as exc:
                 assert "bad_last.csv" in str(exc)
                 assert "last file exploded" in str(exc)
 
     def test_ingest_workers_setting_controls_pool_size(self):
-        from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
+        """ingest_confirmed's real (non-test-double) pool factory."""
+        from concurrent.futures import ProcessPoolExecutor
 
+        from aryx.pipeline.doc_discovery import _build_pool
+
+        with _build_pool(7) as pool:
+            assert isinstance(pool, ProcessPoolExecutor)
+            assert pool._max_workers == 7
+
+    def test_custom_pool_factory_receives_ingest_workers_setting(self):
+        """ingest_confirmed() must call its pool factory with
+        settings.ingest_workers, whatever factory is in play."""
         fnames = [f"f{i}.csv" for i in range(5)]
         data = {"mentions": [], "tabular": [_tabular_plan(f) for f in fnames]}
+        seen_max_workers = []
+
+        def spy_factory(max_workers):
+            seen_max_workers.append(max_workers)
+            return _thread_pool_factory(max_workers)
 
         with patch("aryx.pipeline.doc_discovery.run_pipeline", return_value={}), \
              patch("aryx.pipeline.doc_discovery.relate_isolated"), \
-             patch("aryx.pipeline.doc_discovery.get_settings") as mock_cfg, \
-             patch("aryx.pipeline.doc_discovery.ThreadPoolExecutor",
-                   wraps=RealThreadPoolExecutor) as spy_pool_cls:
+             patch("aryx.pipeline.doc_discovery.get_settings") as mock_cfg:
             mock_cfg.return_value.rdb_dsn = "dsn"
             mock_cfg.return_value.graph_url = "graph"
             mock_cfg.return_value.ingest_workers = 7
-            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1")
+            ingest_confirmed(data, [], fnames, MagicMock(), _make_jobs(), "job1",
+                             _pool_factory=spy_factory)
 
-        spy_pool_cls.assert_called_once_with(max_workers=7)
+        assert seen_max_workers == [7]
+
+
+class TestCrossProcessBudgetSharing:
+    """Exercises _run_non_last_batch against a REAL ProcessPoolExecutor (via
+    the real _build_pool default), not the ThreadPoolExecutor test double
+    used above — this is the one code path (broker.governor.budgets /
+    spend_snapshot / with_governor / replace_spend, wired together inside
+    doc_discovery itself) that the ThreadPoolExecutor-injected tests above
+    never touch, since they only ever hit the same-process `else` branch."""
+
+    def test_charges_from_real_worker_processes_land_in_shared_budget(self):
+        from aryx.broker import Broker
+        from aryx.broker.governor import TokenGovernor
+        from aryx.broker.registry import Registry
+        from aryx.broker.secrets import EnvSecretProvider
+        from aryx.pipeline.doc_discovery import _build_pool, _run_non_last_batch
+
+        broker = Broker(Registry(), TokenGovernor({"cheap": 1_000_000}),
+                        EnvSecretProvider(), {})
+        non_last = [(f"f{i}.csv", _tabular_plan(f"f{i}.csv")) for i in range(6)]
+        failures: list[str] = []
+
+        with _build_pool(3) as pool:
+            _run_non_last_batch(pool, non_last, None, broker, 1, failures,
+                                _target=_charge_only)
+
+        assert failures == []
+        # If each worker had its own unshared copy of the governor (the bug
+        # this fix closes), this would read {} or a partial total — every
+        # charge landed in a private copy that vanished with its process.
+        assert broker.governor.spend_snapshot() == {"cheap": 600}

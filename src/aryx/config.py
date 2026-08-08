@@ -97,12 +97,15 @@ class Settings(BaseSettings):
     ingest_workers: int = Field(
         default=3, ge=1,
         description=(
-            "Thread-pool width for concurrent non-last-plan processing in "
+            "Process-pool width for concurrent non-last-plan processing in "
             "ingest_confirmed() (doc_discovery.py) — the Docs-tab confirm "
             "flow. All but the last approved file/plan run concurrently "
             "(land+resolve only, no graph write); the last plan alone runs "
-            "afterward and does the single graph projection. Must be >= 1 — "
-            "ThreadPoolExecutor(max_workers=0) raises ValueError at "
+            "afterward and does the single graph projection. A "
+            "ProcessPoolExecutor, not threads — land+resolve is CPU-bound "
+            "(blocking, scoring, clustering), so threads would just serialize "
+            "on the GIL instead of parallelizing. Must be >= 1 — "
+            "ProcessPoolExecutor(max_workers=0) raises ValueError at "
             "construction time. Override with ARYX_INGEST_WORKERS."
         ),
     )

@@ -11,14 +11,16 @@ import csv
 import io
 import json
 import logging
+import multiprocessing as mp
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
 from aryx import llm_runtime
 from aryx.broker import Broker
+from aryx.broker.governor import TokenGovernor
 from aryx.config import get_settings
 from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
@@ -404,13 +406,85 @@ def _run_one_tabular_file(fname: str, plan: dict[str, Any], settings, broker: Br
                  skip_graph=skip_graph)
 
 
+def _build_pool(max_workers: int) -> ProcessPoolExecutor:
+    """Default pool factory for ingest_confirmed()'s concurrent tabular-file
+    batch. Pinned to the "spawn" start method explicitly rather than relying
+    on the platform default. Overridable via ingest_confirmed's private
+    _pool_factory param — tests inject a ThreadPoolExecutor instead, since a
+    real ProcessPoolExecutor requires every submitted arg to be picklable
+    and runs in a fresh interpreter that never sees unittest.mock.patch()
+    substitutions made in the test process."""
+    return ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn"))
+
+
+def _submit_batch(pool: ThreadPoolExecutor | ProcessPoolExecutor,
+                  non_last: list[tuple[str, dict[str, Any]]], settings, broker: Broker,
+                  workspace_id: int, failures: list[str],
+                  _target=_run_one_tabular_file) -> None:
+    """Submit every non-last file to `pool` and collect (not raise) failures.
+
+    _target is overridable for testing: a real ProcessPoolExecutor requires
+    a picklable, importable-by-name callable, and _run_one_tabular_file
+    reaches real Postgres/FalkorDB — a test exercising only the cross-process
+    budget-sharing plumbing (see _run_non_last_batch) substitutes a trivial
+    module-level stand-in instead.
+    """
+    futures = {
+        pool.submit(_target, fname, plan, settings, broker,
+                   workspace_id, True): fname
+        for fname, plan in non_last
+    }
+    for fut in as_completed(futures):
+        fname = futures[fut]
+        try:
+            fut.result()
+        except Exception as exc:  # noqa: BLE001 — isolate one bad file, don't sink the batch
+            logger.warning("ingest_confirmed: file %s failed: %s", fname, exc)
+            failures.append(f"{fname}: {exc}")
+
+
+def _run_non_last_batch(pool: ThreadPoolExecutor | ProcessPoolExecutor,
+                        non_last: list[tuple[str, dict[str, Any]]], settings, broker: Broker,
+                        workspace_id: int, failures: list[str],
+                        _target=_run_one_tabular_file) -> None:
+    """Run the non-last-file batch against `pool`.
+
+    If `pool` is a real ProcessPoolExecutor, `broker` gets pickled into each
+    worker — including its own copy of broker._governor, whose _spent
+    counter would then silently stop being shared, letting the per-job
+    token budget be exceeded by up to `ingest_workers`x (each worker starts
+    unspent). So the broker handed to the batch is rebuilt with a
+    multiprocessing.Manager()-backed governor first: a Manager dict/lock
+    pickles as a proxy back to the one manager process, so charge() from
+    any worker still lands in a single real shared counter. The batch's
+    final spend is folded back into the original (real, in-process)
+    governor once every future has resolved, so a caller using the
+    original broker afterward (e.g. ingest_confirmed's last file) sees it.
+
+    A same-process pool (e.g. a test double) skips all of this — broker
+    already shares memory, no governor rebuild needed.
+    """
+    if isinstance(pool, ProcessPoolExecutor):
+        with mp.Manager() as manager:
+            shared_governor = TokenGovernor(
+                broker.governor.budgets,
+                spent=manager.dict(broker.governor.spend_snapshot()),
+                lock=manager.Lock(),
+            )
+            batch_broker = broker.with_governor(shared_governor)
+            _submit_batch(pool, non_last, settings, batch_broker, workspace_id, failures, _target)
+            broker.governor.replace_spend(dict(shared_governor.spend_snapshot()))
+    else:
+        _submit_batch(pool, non_last, settings, broker, workspace_id, failures, _target)
+
+
 def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                      approved_files: list[str], broker: Broker, jobs, job_id: str,
-                     workspace_id: int = 1) -> None:
+                     workspace_id: int = 1, _pool_factory=_build_pool) -> None:
     """Resolve + project the approved discovered types and tabular files.
 
     Tabular files run land+resolve concurrently (ARYX_INGEST_WORKERS worker
-    threads) — all but the last file skip the FalkorDB projection stage
+    processes) — all but the last file skip the FalkorDB projection stage
     (skip_graph=True) since project_graph() rebuilds the ENTIRE workspace
     graph and two concurrent calls would race and corrupt each other. The
     last file runs afterward, once every concurrent file has finished
@@ -418,6 +492,21 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     that picks up everyone's data (EntityStore.list_entities() is
     workspace-scoped, not run-scoped, so one projection after the fact is
     correct regardless of how many files fed into it).
+
+    The concurrent batch runs in a ProcessPoolExecutor, not threads: land+
+    resolve (blocking, pairwise scoring, clustering, survivorship) is
+    CPU-bound Python, which under a ThreadPoolExecutor just pegs one core on
+    GIL contention instead of actually parallelizing. Passing `broker`
+    across a process boundary means each worker gets its own pickled copy —
+    including its own copy of broker._governor, whose _spent counter would
+    then silently stop being shared, letting the per-job token budget be
+    exceeded by up to `ingest_workers`x (each worker starts unspent). So the
+    broker handed to the concurrent batch is rebuilt with a
+    multiprocessing.Manager()-backed governor first: a Manager dict/lock
+    pickles as a proxy back to the one manager process, so charge() from any
+    worker still lands in a single real shared counter. The batch's final
+    spend is folded back into the original (real, in-process) governor
+    before the last file runs, so it sees the combined total.
     """
     settings = get_settings()
     total = max(len(approved_types) + len(approved_files), 1)
@@ -451,19 +540,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         if non_last:
             jobs.update_stage(job_id, f"{total}/{total}", int((total - 1) * 90 / total),
                               f"Adding {len(non_last)} file(s) in parallel")
-            with ThreadPoolExecutor(max_workers=settings.ingest_workers) as pool:
-                futures = {
-                    pool.submit(_run_one_tabular_file, fname, plan, settings, broker,
-                               workspace_id, True): fname
-                    for fname, plan in non_last
-                }
-                for fut in as_completed(futures):
-                    fname = futures[fut]
-                    try:
-                        fut.result()
-                    except Exception as exc:  # noqa: BLE001 — isolate one bad file, don't sink the batch
-                        logger.warning("ingest_confirmed: file %s failed: %s", fname, exc)
-                        failures.append(f"{fname}: {exc}")
+            with _pool_factory(settings.ingest_workers) as pool:
+                _run_non_last_batch(pool, non_last, settings, broker, workspace_id, failures)
         last_fname, last_plan = last
         jobs.update_stage(job_id, f"{total}/{total}", 90, f"Adding {last_fname}")
         try:
