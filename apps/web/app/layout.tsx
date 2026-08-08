@@ -26,7 +26,7 @@ export const metadata: Metadata = {
   title: "Aryx — A Fortress of Structured Knowledge",
   description:
     "Ask questions over your organisation's knowledge graph. Aryx ingests heterogeneous sources, resolves entities, and answers with citations.",
-  icons: { icon: "/aryx-logo.png" },
+  icons: { icon: "/aryx/aryx-logo.png" },
 };
 
 export default function RootLayout({

@@ -12,7 +12,7 @@ export function Logo({ size = 40, withWordmark = false, className }: LogoProps) 
   return (
     <div className={cn("flex items-center gap-3", className)}>
       <Image
-        src="/aryx-logo.png"
+        src="/aryx/aryx-logo.png"
         alt="Aryx"
         width={size}
         height={size}

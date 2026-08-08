@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  basePath: "/aryx",
   // Server-side proxy: the browser hits /api/... on the Next.js host; the
   // Next server rewrites that to the FastAPI URL (api:8000 inside docker,
   // localhost:8088 in dev). The browser never needs to know the API host —
