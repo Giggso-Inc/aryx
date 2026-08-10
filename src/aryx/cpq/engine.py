@@ -4798,13 +4798,39 @@ class CpqEngine:
             # -- populate the one shared variable dozens of hiding-rule
             # scripts check membership in, via the real ingested
             # attrSequence Data Table, before apply_hiding_rules runs those
-            # scripts below. Never overwrites an already-present value.
-            if "hiddenMasterStringForAstroPortable_astro" not in filled:
+            # scripts below.
+            #
+            # docs/CPQ_HIDDEN_MASTER_STRING_STALE_AFTER_CASCADE_PLAN_2026_08_
+            # 10.md -- recompute whenever the two real inputs this value is
+            # derived from (product, base model) have changed since the
+            # cached value was computed, not just when the key is merely
+            # absent. Confirmed live: a mid-conversation Hardware Version
+            # change cascades productSelectionProduct_all to a new value,
+            # but the master string cached for the OLD product persisted --
+            # every hiding rule keyed on it (e.g. "Hide Carrier Selection if
+            # no values available (portables)") then evaluated against the
+            # wrong product's data, incorrectly hid carrierSelectionMulti
+            # Select_astro, and its real value got cleared along with the
+            # hide. Tracking key kept as a plain string (not a tuple) --
+            # `filled`/session.filled round-trips through JSON as
+            # session_data between turns, and a tuple would silently become
+            # a list on deserialization, breaking the equality check on the
+            # very next turn.
+            _hidden_ms_key = (
+                filled.get("productSelectionProduct_all", "") + "\x1f"
+                + filled.get("modelSelectionbaseModel_astro", "")
+            )
+            if (
+                "hiddenMasterStringForAstroPortable_astro" not in filled
+                or filled.get("_hiddenMasterStringForAstroPortable_astro_computed_for")
+                != _hidden_ms_key
+            ):
                 _hidden_ms = self._compute_hidden_master_string(
                     filled, workspace_id, catalog_prefix, dt_cache, attrs=attrs,
                 )
                 if _hidden_ms is not None:
                     filled["hiddenMasterStringForAstroPortable_astro"] = _hidden_ms
+                    filled["_hiddenMasterStringForAstroPortable_astro_computed_for"] = _hidden_ms_key
 
             # Apply hiding rules first so auto_fill only fills visible attrs
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
@@ -5724,6 +5750,37 @@ class CpqEngine:
             if len(values) != 1:
                 return None
             return next((o for o in valid_opts if o.item_value == values[0]), None)
+        return None
+
+    @staticmethod
+    def _resolve_narrowed_legal_values(
+        vn: str, filled: dict[str, str], workspace_id: int, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> list[str] | None:
+        """Real ingested Data Table whitelist for `vn`, however many values
+        it narrows to -- unlike `_resolve_via_data_tables` (which only ever
+        returns when exactly one value is confidently correct), this
+        returns the full narrowed set so a blind-pick fallback can choose
+        from real, data-proven-legal options instead of the unfiltered raw
+        catalog menu (docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_
+        PLAN_2026_08_10.md). `None` -- no ingested table has any row for
+        this attr in this context (genuinely unknown, not zero); `[]` --
+        real rows exist but none match the current filled state (a
+        confirmed, real "nothing is legal right now" answer); `[v1, v2,
+        ...]` -- the real, catalog-sourced legal set, however many members.
+        """
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return None
+        product = filled.get("productSelectionProduct_all", "")
+        for cpq_model in _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        ):
+            values = dt_resolve_whitelist_values(
+                cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
+            )
+            if values is not None:
+                return values
         return None
 
     def auto_fill(
@@ -6685,9 +6742,8 @@ class CpqEngine:
                             # branch below, applied here too since
                             # carrierSelectionMultiSelect_astro-shaped attrs
                             # are multi-select (docs proof §11-§12). Only
-                            # ever fills when exactly one real value
-                            # resolves — 2+ legal values still falls
-                            # through to "ask the user" (unchanged).
+                            # ever fills confidently when exactly one real
+                            # value resolves.
                             dt_match = self._resolve_via_data_tables(
                                 vn, filled, valid_opts, workspace_id, catalog_prefix, dt_cache,
                             )
@@ -6696,6 +6752,23 @@ class CpqEngine:
                                 display_filled[vn] = dt_match.display_name
                                 sources.setdefault(vn, "data_table")
                                 filled_multi_now = True
+                            # No confident single match (2+ legal values,
+                            # or none): NOT handled here -- falls through
+                            # (filled_multi_now stays False) to the second
+                            # multi-select branch below, whose own
+                            # `is_unconstrained and candidate_opts` case
+                            # already correctly blind-picks the first real
+                            # option (tagged "default_first_available") for
+                            # this exact genuinely-unconstrained shape. An
+                            # earlier version of this fix duplicated that
+                            # logic here with a different tag, which broke
+                            # the existing re-validation contract keyed on
+                            # "default_first_available" (docs/CPQ_
+                            # MULTISELECT_GOVERNED_NO_MATCH_ASK_PLAN_2026_08_
+                            # 10.md) -- see that plan's real gap instead:
+                            # `elif display_order is not None: pass` further
+                            # below intercepts this case BEFORE it ever
+                            # reaches the working is_unconstrained logic.
                     elif governed_source == "optional" and attr.entity_id in conflicted_optional_ids:
                         # This attr shares a real option value with another
                         # "optional"-tier attr — first-by-order would silently
@@ -6992,13 +7065,43 @@ class CpqEngine:
                         rule_type="recommendation", rule_id=fired_rule_name,
                         attr=vn, outcome=f"set={rec_value}",
                     )
-                elif display_order is not None:
+                elif display_order is not None and not (
+                    is_unconstrained and candidate_opts
+                    and (attr.entity_id in rule_governed or vn in _dt_governed_vns)
+                ):
                     # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
                     # once a layout map is loaded, nothing satisfying a
                     # recommendation rule means skip entirely — never fall
                     # to default_value, never guess first-available, never
                     # even the explicit-empty placeholder below. Leaves
                     # filled_multi/display_filled/sources untouched for vn.
+                    # `test_multiselect_first_available_skipped_when_layout_
+                    # loaded` locks this in for a genuinely UNGOVERNED
+                    # multi-select -- still correctly skipped, unchanged.
+                    #
+                    # Narrowed (docs/CPQ_MULTISELECT_GOVERNED_NO_MATCH_ASK_
+                    # PLAN_2026_08_10.md): excludes the `is_unconstrained
+                    # and candidate_opts` shape ONLY when the attr is also
+                    # genuinely governed (rule_governed or _dt_governed_vns,
+                    # the exact same distinction Group 1/Group 2 already
+                    # established today for the single-select final chain)
+                    # so THAT case falls through to its own, already-
+                    # correct, already-tested handler a few lines below
+                    # instead of being silently dropped here first.
+                    # Confirmed live: carrierSelectionMultiSelect_astro
+                    # (governed via real attrSequence Data Table coverage,
+                    # no active constraint at all, 6 real options, nothing
+                    # else resolves it) was reaching this `pass` and
+                    # vanishing -- neither filled nor asked -- purely
+                    # because a layout map happened to be loaded, which
+                    # this branch was never meant to block for an attr the
+                    # catalog's own data proves is governed. The
+                    # CONSTRAINED-but-ambiguous case (is_unconstrained=
+                    # False) still lands here and correctly stays
+                    # untouched -- unchanged, matching the explicit HITL
+                    # "default-or-empty, never guess among rule-narrowed
+                    # options" decision this file's own multiselect
+                    # over-selection tests already lock in.
                     pass
                 elif default_opt:
                     filled_multi[vn] = [default_opt.item_value]
@@ -7024,10 +7127,45 @@ class CpqEngine:
                     # guessed "DISABLE CLOUD SERVICES" before Product was
                     # resolved, then kept it across every later pass even
                     # after its real 9-of-11 constraint activated).
-                    first_opt = candidate_opts[0]
-                    filled_multi[vn] = [first_opt.item_value]
-                    display_filled[vn] = first_opt.display_name
-                    sources.setdefault(vn, "default_first_available")
+                    # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_
+                    # PLAN_2026_08_10.md -- confirmed live (carrierSelection
+                    # MultiSelect_astro): the raw catalog menu order can
+                    # include real, data-proven-ILLEGAL options for the
+                    # current context (e.g. a carrier only legal for a
+                    # different destination country). When the real
+                    # ingested Data Table has ANY coverage for this attr
+                    # here -- even narrowed to 2+ values, not just the
+                    # single-confident-match case _resolve_via_data_tables
+                    # already handles above -- pick from that real,
+                    # narrowed set instead of the unfiltered raw menu.
+                    # `None` (no table coverage at all) falls back to
+                    # today's original raw-order pick, unchanged.
+                    _dt_legal = (
+                        self._resolve_narrowed_legal_values(
+                            vn, filled, workspace_id, catalog_prefix, dt_cache,
+                        )
+                        if workspace_id is not None else None
+                    )
+                    _narrowed_opts = (
+                        [o for o in candidate_opts if o.item_value in _dt_legal]
+                        if _dt_legal is not None else candidate_opts
+                    )
+                    if _narrowed_opts:
+                        first_opt = _narrowed_opts[0]
+                        filled_multi[vn] = [first_opt.item_value]
+                        display_filled[vn] = first_opt.display_name
+                        sources.setdefault(vn, "default_first_available")
+                    else:
+                        # Real Data Table confirms ZERO legal values for
+                        # this exact context (`_dt_legal == []`) -- a
+                        # genuine, data-proven answer, not something to
+                        # guess past. Same empty outcome as the sibling
+                        # `else` below, reached here instead since
+                        # `is_unconstrained and candidate_opts` already
+                        # matched on the raw (pre-whitelist) option list.
+                        filled_multi[vn] = []
+                        display_filled[vn] = "(none)"
+                        sources.setdefault(vn, "default")
                 else:
                     filled_multi[vn] = []
                     display_filled[vn] = "(none)"
