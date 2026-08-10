@@ -1811,6 +1811,7 @@ def _handle_cascade(
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        hiding_rules=hiding_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2115,6 +2116,7 @@ def _handle_multi_select_removal(
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        hiding_rules=hiding_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2274,6 +2276,7 @@ def _handle_attr_activation(
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        hiding_rules=hiding_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2453,6 +2456,7 @@ def _handle_attr_clear(
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        hiding_rules=hiding_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2612,6 +2616,7 @@ def _handle_bulk_quantity_change(
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        hiding_rules=hiding_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2877,6 +2882,7 @@ def _handle_cascade_multi(
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        hiding_rules=hiding_rules,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -7902,6 +7908,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             validation_rules=validation_rules,
             display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
             workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+            hiding_rules=hiding_rules,
             )
         if session.model_leaf_resolved:
             # skip_always_ask only suppresses the always-ask OVERRIDE — it

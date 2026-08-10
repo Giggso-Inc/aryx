@@ -535,6 +535,30 @@ def _clear_rule_join_data_cache() -> None:
     _RULE_JOIN_DATA_CACHE.clear()
 
 
+# docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_10.md -- a
+# small, explicit registry of data tables CONFIRMED absent from every
+# ingested catalog (not attribute names -- a hiding rule anywhere, for any
+# attribute, that structurally depends on one of these tables can never
+# resolve, so auto_fill warns and skips rather than asking forever). Extend
+# this tuple if another confirmed-missing table surfaces; never hardcode
+# which attributes are affected -- that's derived generically from which
+# hiding rules reference the table.
+_KNOWN_MISSING_DATA_TABLES = ("UserGroupMapping",)
+
+
+def _hiding_rule_needs_missing_data_table(rule: "HidingRule") -> bool:
+    """True if `rule`'s script (declarative or condition-script form)
+    references a data table confirmed absent from every ingested catalog --
+    see `_KNOWN_MISSING_DATA_TABLES`. Such a rule can never resolve to a
+    real hide/show outcome, so its target should never be silently asked
+    about forever."""
+    script = (rule.script or "") + (getattr(rule, "condition_script", None) or "")
+    if not script:
+        return False
+    script_lower = script.lower()
+    return any(table.lower() in script_lower for table in _KNOWN_MISSING_DATA_TABLES)
+
+
 def _normalize_for_hint(text: str) -> str:
     return _HINT_STRIP_RE.sub("", text.lower())
 
@@ -4848,7 +4872,7 @@ class CpqEngine:
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
                 bml_eval=bml_eval, display_order=display_order,
                 workspace_id=workspace_id, catalog_prefix=catalog_prefix,
-                _dt_cache=dt_cache,
+                _dt_cache=dt_cache, hiding_rules=hiding_rules,
             )
             logger.info(
                 "cpq_perf: auto_fill took %.3fs pass=%d", time.monotonic() - _t0, pass_num,
@@ -5712,8 +5736,16 @@ class CpqEngine:
         workspace_id: int | None = None,
         catalog_prefix: str = "",
         _dt_cache: dict[tuple[int, str], tuple] | None = None,
+        hiding_rules: list["HidingRule"] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
+
+        hiding_rules — docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_
+        PLAN_2026_08_10.md: optional; when supplied, a pending-bound attr
+        whose ONLY hiding rule structurally depends on a confirmed-absent
+        data table (`_KNOWN_MISSING_DATA_TABLES`) is warned-and-skipped
+        instead of asked forever. `None` (the default) is a complete no-op,
+        identical to every caller that doesn't pass it.
 
         workspace_id — optional; when supplied, an attribute whose only
         governing rule is script-based and failed to resolve
@@ -6060,6 +6092,18 @@ class CpqEngine:
                 )
                 for cm in _dt_candidates
             )
+
+        # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_
+        # 10.md -- attrs whose ONLY hiding rule structurally depends on a
+        # confirmed-absent data table (_KNOWN_MISSING_DATA_TABLES) can never
+        # have that rule resolve. Precomputed once, same pattern as
+        # _dt_governed_vns above. hiding_rules=None (no caller passes it)
+        # keeps this empty -- a complete no-op, identical to today's
+        # behavior for every existing call site.
+        _missing_data_target_ids: set[int] = {
+            rule.target_attr_id for rule in (hiding_rules or [])
+            if _hiding_rule_needs_missing_data_table(rule)
+        }
 
         # Two "optional"-tier attrs (no rule, no default — eligible only via
         # the widened Phase N fallback) that share a real option value are
@@ -7079,12 +7123,70 @@ class CpqEngine:
                 # -- only a layout-hidden attr's outcome changes, falling
                 # through to the sibling `elif` instead (which correctly
                 # skips it, matching every other layout-hidden attr).
-                if vn in _dt_governed_vns and (
+                if is_decision_attr or vn in grid_selector_vns:
+                    # Forced-ask anchors (Country/Region/Hardware Version/
+                    # Product) and grid-linked selectors are never auto-
+                    # fillable -- always ask regardless of rule governance
+                    # or data gaps below. Unchanged from before this fix.
+                    # Checked FIRST, ahead of _dt_governed_vns below, same
+                    # priority order the pre-existing final `elif` used to
+                    # enforce before this restructuring.
+                    pending.append(attr)
+                elif (
+                    attr.entity_id in _missing_data_target_ids
+                    or attr.source_id in _missing_data_target_ids
+                ):
+                    # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_
+                    # PLAN_2026_08_10.md Group 1 -- checked BEFORE
+                    # _dt_governed_vns below: confirmed live the real Group
+                    # 1 attrs (cBPQRCode_astro/fedQRCode_astro/
+                    # dHSAssetTagLabel_astro) ARE ALSO attrSequence-Data-
+                    # Table-governed, so without this ordering they'd hit
+                    # that branch's own blind-pick/pending decision first
+                    # and never reach this check at all. `attr.source_id`
+                    # checked too, not just `attr.entity_id` -- confirmed
+                    # live the real hiding rule's `target_attr_id` (e.g.
+                    # 18302531462 for cBPQRCode_astro) is the BM-native
+                    # source id, not the FalkorDB graph entity_id (292414);
+                    # same entity_id-vs-source_id duplicate-id convention
+                    # `_satisfied_recommendation` already accounts for
+                    # elsewhere in this file. This attr's only real
+                    # governance is a hiding rule that can never resolve
+                    # (depends on a data table confirmed absent from every
+                    # ingested catalog, see _KNOWN_MISSING_DATA_TABLES).
+                    # Asking about it forever would never converge -- warn
+                    # (traceable, auditable) and skip: no fill, no pending,
+                    # leave it genuinely unresolved until the real data gap
+                    # (CPQ_USER_GROUP_MAPPING_HIDING_RULE_PLAN_2026_08_10.md)
+                    # is actually closed.
+                    logger.warning(
+                        "cpq: %r skipped -- its only hiding rule depends on "
+                        "a data table confirmed absent from this catalog "
+                        "(%s); will never resolve until that data is "
+                        "ingested", vn, ", ".join(_KNOWN_MISSING_DATA_TABLES),
+                    )
+                elif vn in _dt_governed_vns and (
                     display_order is None or vn in display_order
                 ):
+                    # Deliberately checks key PRESENCE, not the whole dict's
+                    # truthiness (docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_
+                    # BLIND_PICK_PLAN_2026_08_10.md) -- confirmed live this
+                    # attr-absent-from-constrained_opts case is the DOMINANT
+                    # real shape: apply_constraint_rules only adds an entry
+                    # for attrs an active constraint actually fired against;
+                    # an attr with no active constraint firing has no entry
+                    # at all, meaning every real catalog option remains
+                    # legal, not zero. The original `.get(id, [])` pattern
+                    # treated "not a key" identically to "constrained to
+                    # nothing", silently sending real, blind-pickable attrs
+                    # (wirelessCarrier_astro, subscriptionBillingAddDMS
+                    # Coverage_astro, ...) straight to `pending` below with
+                    # an artificially-empty `_blind_opts` instead of ever
+                    # offering them a real option to pick from.
                     _blind_allowed = (
-                        set(constrained_opts.get(attr.entity_id, []))
-                        if constrained_opts else None
+                        set(constrained_opts[attr.entity_id])
+                        if constrained_opts and attr.entity_id in constrained_opts
+                        else None
                     )
                     _blind_opts = [
                         o for o in attr.options
@@ -7099,8 +7201,80 @@ class CpqEngine:
                     else:
                         pending.append(attr)
                 elif (
-                    display_order is None or is_decision_attr
-                    or vn in grid_selector_vns
+                    attr.entity_id in rule_governed
+                    and attr.select_type != "multi"
+                    and vn not in _NEVER_GUESS_SCRIPT_GOVERNED
+                    and attr.entity_id not in user_answered_dropped_ids
+                    and not _valid(attr.default_value)
+                ):
+                    # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_
+                    # PLAN_2026_08_10.md Group 2 -- real recommendation/
+                    # constraint/hiding rules target this attr, but none
+                    # fired for this exact product/region/bundle and the
+                    # catalog has NO default_value at all (an attr WITH a
+                    # default_value that simply didn't survive an active
+                    # constraint is a structurally different, already-
+                    # correct case -- stays unfilled, not force-picked --
+                    # see test_default_value_not_used_when_it_does_not_
+                    # survive_the_constraint). HITL-confirmed generic
+                    # policy: blind-pick the first rule-valid option rather
+                    # than ask forever -- same tradeoff already accepted
+                    # for Data-Table-sequence-governed attrs a few lines
+                    # above, extended here to the ordinary-rule-governed
+                    # case. Three existing safety nets still apply
+                    # unconditionally: `_NEVER_GUESS_SCRIPT_GOVERNED` (a
+                    # curated allowlist of attrs already confirmed broken by
+                    # blind-picking, see that constant's own docstring/
+                    # history), `user_answered_dropped_ids` (a cascade just
+                    # invalidated the customer's own prior answer this pass
+                    # -- must be RE-ASKED, never silently reguessed, same
+                    # guard the exactly-one-remaining-option shortcut above
+                    # already uses), and falling through to the unchanged
+                    # safety net below if there's nothing valid to pick from
+                    # at all (never silently drop the attr). select_type !=
+                    # "multi" excluded here -- this branch only ever writes
+                    # a scalar into `filled`; a multi-select target needs
+                    # `filled_multi`'s list form instead (confirmed live
+                    # elsewhere in this file: writing a scalar for a
+                    # multi-select attr silently defeats build_payload's
+                    # array serialization for it). Multi-select rule-
+                    # governed attrs in this exact shape still fall through
+                    # to the unchanged safety net below (ask), not covered
+                    # by this pass.
+                    #
+                    # Deliberately checks key PRESENCE, not the whole dict's
+                    # truthiness (unlike the `allowed_for_attr` computed
+                    # earlier in this same function, ~line 6583) --
+                    # apply_constraint_rules' own docstring confirms
+                    # constrained_opts only holds entries for attrs with an
+                    # ACTIVE firing constraint; an attr absent from it has no
+                    # active constraint at all, so every real catalog option
+                    # is genuinely legal to pick from -- not zero. Using
+                    # `.get(id, [])` here (empty-list default whenever this
+                    # attr merely isn't a key, e.g. some OTHER unrelated
+                    # attr's constraint fired this turn) would make this
+                    # branch pick from nothing for the exact real-world shape
+                    # (Wireless Carrier, Include Accidental Damage, ...) this
+                    # fix exists for.
+                    _rg_allowed = (
+                        set(constrained_opts[attr.entity_id])
+                        if constrained_opts and attr.entity_id in constrained_opts
+                        else None
+                    )
+                    _rg_opts = [
+                        o for o in attr.options
+                        if _valid(o.item_value)
+                        and (_rg_allowed is None or o.item_value in _rg_allowed)
+                    ]
+                    if _rg_opts:
+                        _rg_first = _rg_opts[0]
+                        filled[vn] = _rg_first.item_value
+                        display_filled[vn] = _rg_first.display_name
+                        sources.setdefault(vn, "blind_pick_rule_governed")
+                    else:
+                        pending.append(attr)
+                elif (
+                    display_order is None
                     # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_
                     # PLAN_2026_08_10.md: `vn in display_order and` added --
                     # this was the THIRD, dominant instance of the same gap
@@ -7115,7 +7289,10 @@ class CpqEngine:
                     # instruction, and it must win over an "unknown, ask to
                     # be safe" fallback the same way it wins everywhere
                     # else. No behavior change when no layout map is loaded
-                    # or the attr is layout-visible.
+                    # or the attr is layout-visible. This branch is now only
+                    # reached by attrs with ZERO rule governance at all
+                    # (Group 2's blind-pick above already claims every
+                    # rule-governed case with a real option to pick).
                     or (vn in display_order and _dt_never_governed_anywhere(vn))
                 ):
                     pending.append(attr)
