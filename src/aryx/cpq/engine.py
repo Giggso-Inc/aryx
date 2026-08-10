@@ -512,6 +512,28 @@ _LAYOUT_DISPLAY_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
 _LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
 _DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = LocalDirLayoutFileSource()
 
+# docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md — module-
+# level, short-TTL cache for CpqEngine._load_rule_join_data, keyed by
+# (workspace_id, catalog_prefix). Mirrors data_table_resolver._TABLES_CACHE
+# exactly (same problem, same fix): confirmed live a single /ask HTTP
+# request calls load_hiding_rules() + load_recommendation_and_constraint_
+# rules() + load_validation_rules() back to back, each independently
+# re-running the same 4 join-table queries from scratch -- 3+ full re-fetches
+# of ~1,300 rules' worth of join data from ONE block of code, in every turn,
+# with 14 total call sites across ask_api.py. A short TTL (rather than pure
+# process-lifetime) keeps this safe against rule data being re-ingested
+# mid-session.
+_RULE_JOIN_DATA_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
+_RULE_JOIN_DATA_CACHE_TTL_SECONDS = 30.0
+
+
+def _clear_rule_join_data_cache() -> None:
+    """Test-isolation hook -- call from an autouse fixture to prevent this
+    process-lifetime cache from leaking fake/monkeypatched rule data
+    between tests that reuse the same (workspace_id, catalog_prefix) key.
+    Mirrors data_table_resolver._clear_tables_cache."""
+    _RULE_JOIN_DATA_CACHE.clear()
+
 
 def _normalize_for_hint(text: str) -> str:
     return _HINT_STRIP_RE.sub("", text.lower())
@@ -2192,10 +2214,24 @@ class CpqEngine:
         # options. Two-pass approach eliminates both the cap and the N+1 pattern.
         neighbor_map: dict[int, list[int]] = {}  # attr_entity_id → [menu_entity_ids]
         all_menu_ids: list[int] = []
+        # docs/CPQ_LOAD_PRODUCT_CONFIG_NEIGHBORS_N_PLUS_1_PERFORMANCE_PLAN_
+        # 2026_08_10.md -- one FalkorDB round trip for every attr's neighbors
+        # instead of one per attr (confirmed live: 498 calls, 6.85s, run
+        # fresh from 4 uncached call sites every turn). AttributeError
+        # fallback keeps OracleGraphReader and every test double lacking
+        # neighbors_batch working unchanged, same pattern as distinct_types
+        # above.
+        try:
+            _neighbors_batch = reader.neighbors_batch([e["id"] for e in attr_ents])
+        except AttributeError:
+            _neighbors_batch = None
         for ent in attr_ents:
             eid = ent["id"]
             try:
-                neighbors = reader.neighbors(eid)
+                neighbors = (
+                    _neighbors_batch.get(eid, []) if _neighbors_batch is not None
+                    else reader.neighbors(eid)
+                )
                 # reader.neighbors() has no catalog awareness — for attrs whose
                 # native id is reused across catalogs (e.g. productSelectionProduct_all,
                 # confirmed live to have separate BmMenuItem sets per catalog under
@@ -2612,7 +2648,22 @@ class CpqEngine:
         second condition dropped). See docs/CPQ_APX_NEXT_RULE_CATALOG.md
         "Gap Deep-Dive & Impact Analysis" and bml.evaluate_declarative_conditions
         for the AND/OR-grouping semantics applied to this list.
+
+        docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md —
+        module-level, short-TTL cached (see _RULE_JOIN_DATA_CACHE above):
+        this is the shared fetch every rule loader (load_hiding_rules,
+        _load_value_rules, and everything built on top of them) calls
+        independently, with zero caching previously — confirmed live 3+
+        redundant full re-fetches of the same join data from one turn's
+        single top-level rule-loading block.
         """
+        _key = (workspace_id, catalog_prefix)
+        _hit = _RULE_JOIN_DATA_CACHE.get(_key)
+        if _hit is not None:
+            _ts, _result = _hit
+            if time.monotonic() - _ts < _RULE_JOIN_DATA_CACHE_TTL_SECONDS:
+                return _result
+
         rdb = get_cpq_rdb()
         # (attr_id, value, operator) — operator is the raw BM-native
         # comparison code ("1"/"2"/.../"8"); see docs/CPQ_DECLARATIVE_
@@ -2635,7 +2686,9 @@ class CpqEngine:
         chain_by_rule: dict[int, int] = {}
         for rid, cid in rdb.fetch_rule_chain_links(workspace_id, catalog_prefix):
             chain_by_rule[rid] = cid
-        return rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule
+        _result = (rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule)
+        _RULE_JOIN_DATA_CACHE[_key] = (time.monotonic(), _result)
+        return _result
 
     @staticmethod
     def _resolve_targets(
@@ -4717,6 +4770,18 @@ class CpqEngine:
                 bml_eval.prefetch_tier2(
                     self._bml_prefetch_requests(hiding=hiding_rules, filled=filled))
 
+            # docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_GAP_PLAN_2026_08_10.md
+            # -- populate the one shared variable dozens of hiding-rule
+            # scripts check membership in, via the real ingested
+            # attrSequence Data Table, before apply_hiding_rules runs those
+            # scripts below. Never overwrites an already-present value.
+            if "hiddenMasterStringForAstroPortable_astro" not in filled:
+                _hidden_ms = self._compute_hidden_master_string(
+                    filled, workspace_id, catalog_prefix, dt_cache, attrs=attrs,
+                )
+                if _hidden_ms is not None:
+                    filled["hiddenMasterStringForAstroPortable_astro"] = _hidden_ms
+
             # Apply hiding rules first so auto_fill only fills visible attrs
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
                 attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=multi)
@@ -4753,6 +4818,27 @@ class CpqEngine:
 
             governed_ids = self.governed_target_ids(attrs, hiding_rules, rec_rules, con_rules)
             rule_ids = self.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+
+            # docs/CPQ_AUTO_FILL_TIER2_PREFETCH_GAP_PLAN_2026_08_10.md --
+            # auto_fill's own _satisfied_recommendation helper calls
+            # bml_eval.allowed_values_for_script/condition_holds per
+            # (unfilled attr, targeting recommendation rule) pair -- the
+            # same Tier-1/Tier-2 machinery apply_recommendation_rules uses,
+            # but BEFORE the prefetch below (which only warms the cache for
+            # apply_recommendation_rules/apply_constraint_rules' own later
+            # calls). Confirmed live: on pass 0, when the most attrs are
+            # still unfilled, this uncovered gap made auto_fill itself take
+            # 20-21s of serial Tier-2 network round-trips. Warming against
+            # the PRE-auto_fill filled state here is safe and non-wasteful
+            # even though the same rules get prefetched again below against
+            # the POST-auto_fill state -- prefetch_tier2 dedupes and caches
+            # by (script, variables), so a script whose referenced variables
+            # didn't change between the two prefetches is simply a cache
+            # hit the second time.
+            if bml_eval is not None:
+                bml_eval.prefetch_tier2(self._bml_prefetch_requests(
+                    attrs=attrs, rec=rec_rules, filled=filled))
+
             _t0 = time.monotonic()
             filled, display_filled, _ = self.auto_fill(
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
@@ -5449,6 +5535,92 @@ class CpqEngine:
             else:
                 suppressed.add(vn)
         return visible, suppressed
+
+    @staticmethod
+    def _compute_hidden_master_string(
+        filled: dict[str, str],
+        workspace_id: int | None,
+        catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+        attrs: list[ConfigAttr] | None = None,
+        var_name: str = "hiddenMasterStringForAstroPortable_astro",
+        separator_var_name: str = "hidddenRecordSeparator_allFamilly",
+    ) -> str | None:
+        """Real, generic replacement for a real BM script this catalog can't
+        execute ("Set Hidden Master String For Astro Portable" and its
+        siblings): the delimited list of attribute names the ingested
+        attrSequence Data Table says apply to the current product's
+        CPQModel/BaseModel pair -- exactly what dozens of "hide if no
+        values available" hiding-rule scripts check membership in via
+        SPLIT()/findinarray() (docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_
+        GAP_PLAN_2026_08_10.md). Reuses the SAME governed-name computation
+        `_suppress_ungoverned_attrs` already runs -- the gap here was
+        never the data, it was that nothing exposed this specific
+        variable to the hiding-rule evaluator.
+
+        `var_name` is accepted (not hardcoded into the body) so a sibling
+        master-string variable following the identical attrSequence-
+        lookup shape could reuse this same method later -- but the
+        result is only ever written into `filled` under this parameter's
+        actual value by the caller, never assumed here.
+
+        Returns `None` (leave the caller's `filled` untouched) when:
+          - `workspace_id` is `None`, or Product/Base Model aren't filled
+            yet -- the real script needs both too, same guard as
+            `_suppress_ungoverned_attrs`.
+          - no CPQModel candidate has ANY attrSequence coverage at all for
+            this base model -- an unresolvable "unknown", never
+            fabricated as an empty string. An empty string would make
+            every downstream script's `findinarray(...) == -1` branch
+            fire and hide everything, which is worse than leaving the
+            script "unknown" (matches `apply_hiding_rules`' own
+            "unknown -> don't hide" default for every OTHER unresolvable
+            script).
+
+        The join separator is read from `filled` first (in case a real
+        turn already resolved it the same way BigMachines' own runtime
+        would), else from the separator attribute's own real, ingested
+        `default_value` when `attrs` is supplied -- never a bare
+        hardcoded literal, so this stays correct for any catalog whose
+        export uses a different separator string.
+        """
+        if workspace_id is None:
+            return None
+        product = filled.get("productSelectionProduct_all", "")
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not product or not base_model:
+            return None
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        if not cands:
+            return None
+        scoped_name_sets = [
+            dt_governed_attr_names_for_base_model(
+                cm, base_model, workspace_id, catalog_prefix, cache,
+            )
+            for cm in cands
+        ]
+        if not any(s is not None for s in scoped_name_sets):
+            return None
+        governed_names: set[str] = set()
+        for s in scoped_name_sets:
+            if s:
+                governed_names |= s
+
+        sep = filled.get(separator_var_name, "")
+        if not sep and attrs:
+            sep_attr = next(
+                (a for a in attrs if a.variable_name == separator_var_name), None,
+            )
+            if sep_attr and sep_attr.default_value:
+                sep = sep_attr.default_value
+        if not sep:
+            sep = "@@@"
+
+        if not governed_names:
+            return ""
+        return "".join(f"{name}{sep}" for name in sorted(governed_names))
 
     @staticmethod
     def _invalidate_inconsistent_paired_values(
@@ -6562,7 +6734,7 @@ class CpqEngine:
                                 value = match.item_value
                                 display = match.display_name
                                 source = "default"
-                        elif display_order is not None:
+                        elif display_order is not None and vn in display_order:
                             # §2f, superseded by explicit instruction
                             # (2026-08-09): governed (some rule targets this
                             # attr) but nothing -- no active constraint, no
@@ -6581,9 +6753,31 @@ class CpqEngine:
                             # default_value match -- same convention the
                             # multi-select "is_unconstrained" branch already
                             # uses (`source="default_first_available"`).
+                            #
+                            # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_
+                            # GAP_PLAN_2026_08_10.md: `and vn in display_order`
+                            # added -- this was the DOMINANT source of the
+                            # layout-visibility-baseline gap (26 real
+                            # attributes confirmed live), bigger than the
+                            # sibling _dt_governed_vns fix in this same file.
+                            # `display_order is not None` alone only proves a
+                            # layout map exists, not that THIS attr is in its
+                            # visible set -- a layout-hidden but rule-governed
+                            # attr with no other resolution signal was still
+                            # blind-picked unconditionally. See the `elif`
+                            # immediately below for the new layout-hidden case.
                             value = valid_opts[0].item_value
                             display = valid_opts[0].display_name
                             source = "default_first_available"
+                        elif display_order is not None:
+                            # Layout map loaded, but this attr isn't in its
+                            # visible set -- the layout explicitly says never
+                            # show it. Falls through with no value set, same
+                            # as any other layout-hidden, unresolved attr
+                            # (the final ask/skip decision below correctly
+                            # skips it, since it's neither a decision attr
+                            # nor a grid selector).
+                            pass
                         else:
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
@@ -6872,7 +7066,22 @@ class CpqEngine:
                 # anywhere` is untouched -- that's a different, unrelated
                 # safety net (never silently drop an attr no table ever
                 # mentions) and still forces `pending` as before.
-                if vn in _dt_governed_vns:
+                #
+                # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_PLAN_
+                # 2026_08_10.md: `and (display_order is None or vn in
+                # display_order)` added below -- confirmed live an
+                # attrSequence-governed attr the LAYOUT explicitly hides
+                # (hide:true) was still reaching this branch and landing in
+                # `pending` when it had no blind-pickable option, bypassing
+                # the layout-visibility baseline the sibling `elif` right
+                # below already enforces. No behavior change when no layout
+                # map is loaded, or for any attr the layout actually allows
+                # -- only a layout-hidden attr's outcome changes, falling
+                # through to the sibling `elif` instead (which correctly
+                # skips it, matching every other layout-hidden attr).
+                if vn in _dt_governed_vns and (
+                    display_order is None or vn in display_order
+                ):
                     _blind_allowed = (
                         set(constrained_opts.get(attr.entity_id, []))
                         if constrained_opts else None
@@ -6892,7 +7101,22 @@ class CpqEngine:
                 elif (
                     display_order is None or is_decision_attr
                     or vn in grid_selector_vns
-                    or _dt_never_governed_anywhere(vn)
+                    # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_
+                    # PLAN_2026_08_10.md: `vn in display_order and` added --
+                    # this was the THIRD, dominant instance of the same gap
+                    # (confirmed live: backupPTT_astro/rFIDRFIDEquipped_
+                    # astro/cableDataCable_astro have zero real attrSequence
+                    # coverage for ANY base model, so _dt_never_governed_
+                    # anywhere is True for them regardless of layout). That
+                    # safety net exists to never silently drop an attr the
+                    # catalog tracks nowhere AND the layout gives no
+                    # guidance on either -- but when the layout EXPLICITLY
+                    # hides an attr, that is not silence, it is a real
+                    # instruction, and it must win over an "unknown, ask to
+                    # be safe" fallback the same way it wins everywhere
+                    # else. No behavior change when no layout map is loaded
+                    # or the attr is layout-visible.
+                    or (vn in display_order and _dt_never_governed_anywhere(vn))
                 ):
                     pending.append(attr)
 

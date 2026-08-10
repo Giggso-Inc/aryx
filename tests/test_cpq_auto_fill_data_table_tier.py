@@ -595,7 +595,10 @@ def test_auto_fill_asks_an_attr_never_governed_anywhere_even_with_layout_loaded(
     mentions it for this CPQModel) but was still silently dropped by
     auto_fill's OWN separate §2c "not a decision attr -> skip" gate when a
     layout map is loaded -- the same silent-drop bug one layer deeper.
-    Must reach `pending` instead of vanishing."""
+    Must reach `pending` instead of vanishing -- when the layout ALSO
+    marks it visible (docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_
+    PLAN_2026_08_10.md narrowed this to layout-visible attrs only; see the
+    sibling test below for the layout-hidden case)."""
     _patch_rdb(monkeypatch, {
         "AttrSeqTest": [
             {"CPQModel": "APXNEXTSINGLE", "BaseModel": _BASE_MODEL,
@@ -619,10 +622,54 @@ def test_auto_fill_asks_an_attr_never_governed_anywhere_even_with_layout_loaded(
     }
     _, _, pending = eng.auto_fill(
         attrs, hints={}, already_filled=filled,
-        display_order={"modelSelectionbaseModel_astro": 0, "productSelectionProduct_all": 1},
+        display_order={
+            "modelSelectionbaseModel_astro": 0,
+            "productSelectionProduct_all": 1,
+            "modelSelectionFrequencyBandMsl_astro": 2,
+        },
         workspace_id=7,
     )
     assert "modelSelectionFrequencyBandMsl_astro" in {a.variable_name for a in pending}
+
+
+def test_auto_fill_skips_never_governed_attr_the_layout_explicitly_hides(monkeypatch):
+    """The new, narrower case: same never-governed-anywhere attr, but the
+    layout does NOT list it as visible. The layout's explicit hide is a
+    real instruction, not silence -- it must win over the "unknown, ask to
+    be safe" safety net, same as every other layout-hidden attr."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    eng = CpqEngine()
+    freq_band = ConfigAttr(
+        entity_id=20, variable_name="modelSelectionFrequencyBandMsl_astro",
+        display_label="Additional Frequency Bands", required=False, default_value="",
+        select_type="single",
+        options=[
+            MenuOption(item_value="UHF", display_name="UHF"),
+            MenuOption(item_value="VHF", display_name="VHF"),
+        ],
+    )
+    attrs = [_base_model_attr(), _product_attr(), freq_band]
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result_filled, _, pending = eng.auto_fill(
+        attrs, hints={}, already_filled=filled,
+        display_order={
+            "modelSelectionbaseModel_astro": 0,
+            "productSelectionProduct_all": 1,
+            # modelSelectionFrequencyBandMsl_astro deliberately absent --
+            # layout hides it.
+        },
+        workspace_id=7,
+    )
+    assert "modelSelectionFrequencyBandMsl_astro" not in result_filled
+    assert "modelSelectionFrequencyBandMsl_astro" not in {a.variable_name for a in pending}
 
 
 def test_auto_fill_still_skips_an_attr_confidently_excluded_from_this_base_model(monkeypatch):
@@ -783,3 +830,293 @@ def test_auto_fill_still_asks_base_model_when_no_region_allow_value_resolves(mon
     )
     assert "modelSelectionbaseModel_astro" not in result_filled
     assert "modelSelectionbaseModel_astro" in {a.variable_name for a in pending}
+
+
+# --- _compute_hidden_master_string (2026-08-10) --------------------------
+# docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_GAP_PLAN_2026_08_10.md -- 31
+# real hiding-rule scripts across the catalog check membership in
+# hiddenMasterStringForAstroPortable_astro, a variable the real BM script
+# meant to compute it is too complex for BmlEvaluator to resolve. This
+# reuses the SAME governed-name lookup _suppress_ungoverned_attrs already
+# runs to build that string generically instead.
+
+def _separator_attr(default_value="@@@"):
+    return ConfigAttr(
+        entity_id=99, variable_name="hidddenRecordSeparator_allFamilly",
+        display_label="", required=False, default_value=default_value,
+        select_type="single", options=[],
+    )
+
+
+def test_compute_hidden_master_string_builds_the_real_separator_joined_list(monkeypatch):
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "antennasType_astro", "Seq": "356", "optionOrReqFlag": "O"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result = CpqEngine._compute_hidden_master_string(filled, workspace_id=7)
+    assert result is not None
+    parts = [p for p in result.split("@@@") if p]
+    assert set(parts) == {"wirelessCarrier_astro", "antennasType_astro"}
+    # Real script's own construction appends the separator after EVERY
+    # entry, including the last -- not just between entries.
+    assert result.endswith("@@@")
+
+
+def test_compute_hidden_master_string_none_when_no_coverage_for_any_candidate(monkeypatch):
+    """No attrSequence row anywhere mentions this CPQModel at all -- an
+    unresolvable unknown, never fabricated as an empty string (which
+    would make every downstream script's findinarray()==-1 branch hide
+    everything)."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "SOME-OTHER-MODEL-ENTIRELY", "BaseModel": "SOME-OTHER-BASE",
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result = CpqEngine._compute_hidden_master_string(filled, workspace_id=7)
+    assert result is None
+
+
+def test_compute_hidden_master_string_none_without_workspace_id(monkeypatch):
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    assert CpqEngine._compute_hidden_master_string(filled, workspace_id=None) is None
+
+
+def test_compute_hidden_master_string_none_before_product_and_base_model_are_filled(monkeypatch):
+    """The real script needs both too -- same guard as
+    _suppress_ungoverned_attrs's own no-op condition."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    assert CpqEngine._compute_hidden_master_string(
+        {"productSelectionProduct_all": _PRODUCT}, workspace_id=7,
+    ) is None
+    assert CpqEngine._compute_hidden_master_string(
+        {"modelSelectionbaseModel_astro": _BASE_MODEL}, workspace_id=7,
+    ) is None
+    assert CpqEngine._compute_hidden_master_string({}, workspace_id=7) is None
+
+
+def test_compute_hidden_master_string_separator_prefers_filled_value(monkeypatch):
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+        "hidddenRecordSeparator_allFamilly": "###",
+    }
+    result = CpqEngine._compute_hidden_master_string(
+        filled, workspace_id=7, attrs=[_separator_attr(default_value="@@@")],
+    )
+    assert result == "wirelessCarrier_astro###"
+
+
+def test_compute_hidden_master_string_separator_falls_back_to_real_default_value(monkeypatch):
+    """No separator in `filled` yet -- falls back to the separator
+    attribute's own real, ingested default_value, never a bare hardcoded
+    literal, so a catalog using a different separator string still works."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result = CpqEngine._compute_hidden_master_string(
+        filled, workspace_id=7, attrs=[_separator_attr(default_value="~~~")],
+    )
+    assert result == "wirelessCarrier_astro~~~"
+
+
+def test_compute_hidden_master_string_separator_final_fallback_without_attrs(monkeypatch):
+    """Neither `filled` nor an `attrs` list supplies the separator --
+    falls back to '@@@', the real catalog's own convention, rather than
+    erroring or joining with an empty string."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result = CpqEngine._compute_hidden_master_string(filled, workspace_id=7)
+    assert result == "wirelessCarrier_astro@@@"
+
+
+def test_evaluate_rules_loop_populates_master_string_before_hiding_rules_run(monkeypatch):
+    """End-to-end: evaluate_rules_loop injects the computed master string
+    into `filled` before apply_hiding_rules runs, so a real BM hiding-rule
+    script checking membership via SPLIT()/findinarray() can now resolve
+    instead of returning "unknown" forever."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "wirelessCarrier_astro", "Seq": "355", "optionOrReqFlag": "R"},
+        ],
+    })
+    eng = CpqEngine()
+    attrs = [_wireless_carrier_attr2()]
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    eng.evaluate_rules_loop(
+        attrs, hints={}, filled=filled, hiding_rules=[], rec_rules=[], con_rules=[],
+        workspace_id=7,
+    )
+    assert "hiddenMasterStringForAstroPortable_astro" in filled
+    assert "wirelessCarrier_astro" in filled["hiddenMasterStringForAstroPortable_astro"]
+
+
+def test_evaluate_rules_loop_never_overwrites_an_already_present_master_string(monkeypatch):
+    _patch_rdb(monkeypatch, {"AttrSeqTest": []})
+    eng = CpqEngine()
+    attrs = [_wireless_carrier_attr2()]
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+        "hiddenMasterStringForAstroPortable_astro": "sentinelValue@@@",
+    }
+    eng.evaluate_rules_loop(
+        attrs, hints={}, filled=filled, hiding_rules=[], rec_rules=[], con_rules=[],
+        workspace_id=7,
+    )
+    assert filled["hiddenMasterStringForAstroPortable_astro"] == "sentinelValue@@@"
+
+
+# --- _dt_governed_vns respects layout visibility (2026-08-10) -------------
+# docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_PLAN_2026_08_10.md --
+# an attrSequence-governed attr the LAYOUT explicitly hides (hide:true, so
+# absent from display_order) must be skipped, not blind-filled or asked --
+# same baseline every other layout-hidden attr already gets, confirmed live
+# 26 real attrs were leaking through this one branch.
+
+def _configuration_type_attr():
+    return ConfigAttr(
+        entity_id=5, variable_name="softwareBundlesBundleType_astro",
+        display_label="Configuration Type", required=False, default_value="",
+        select_type="single",
+        options=[
+            MenuOption(item_value="STANDARD BUNDLE", display_name="Software Bundles"),
+            MenuOption(item_value="CUSTOM", display_name="Custom Configuration"),
+        ],
+    )
+
+
+def test_data_table_governed_attr_skipped_when_layout_hides_it(monkeypatch):
+    """The real bug: layout-hidden (absent from display_order) + real
+    attrSequence coverage + a blind-pickable option used to still get
+    blind-filled. Must now be skipped entirely -- neither filled nor
+    pending."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "softwareBundlesBundleType_astro", "Seq": "10", "optionOrReqFlag": "O"},
+        ],
+    })
+    eng = CpqEngine()
+    attrs = [_base_model_attr(), _product_attr(), _configuration_type_attr()]
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result_filled, _, pending = eng.auto_fill(
+        attrs, hints={}, already_filled=filled,
+        governed_ids={5}, rule_governed_ids=set(),
+        display_order={
+            "modelSelectionbaseModel_astro": 0,
+            "productSelectionProduct_all": 1,
+            # softwareBundlesBundleType_astro deliberately absent -- layout
+            # hides it.
+        },
+        workspace_id=7,
+    )
+    assert "softwareBundlesBundleType_astro" not in result_filled
+    assert "softwareBundlesBundleType_astro" not in {a.variable_name for a in pending}
+
+
+def test_data_table_governed_attr_still_blind_picks_when_layout_shows_it(monkeypatch):
+    """Regression: the exact same setup, but layout-visible -- unchanged
+    blind-pick behavior, the explicit 2026-08-10 HITL-approved tradeoff."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "softwareBundlesBundleType_astro", "Seq": "10", "optionOrReqFlag": "O"},
+        ],
+    })
+    eng = CpqEngine()
+    attrs = [_base_model_attr(), _product_attr(), _configuration_type_attr()]
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result_filled, _, pending = eng.auto_fill(
+        attrs, hints={}, already_filled=filled,
+        governed_ids={5}, rule_governed_ids=set(),
+        display_order={
+            "modelSelectionbaseModel_astro": 0,
+            "productSelectionProduct_all": 1,
+            "softwareBundlesBundleType_astro": 2,
+        },
+        workspace_id=7,
+    )
+    assert result_filled.get("softwareBundlesBundleType_astro") == "STANDARD BUNDLE"
+    assert "softwareBundlesBundleType_astro" not in {a.variable_name for a in pending}
+
+
+def test_data_table_governed_attr_unaffected_without_a_layout_map(monkeypatch):
+    """display_order is None (no layout loaded at all) -- completely
+    unchanged behavior, additive-only guard."""
+    _patch_rdb(monkeypatch, {
+        "AttrSeqTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": _BASE_MODEL,
+             "AttrName": "softwareBundlesBundleType_astro", "Seq": "10", "optionOrReqFlag": "O"},
+        ],
+    })
+    eng = CpqEngine()
+    attrs = [_base_model_attr(), _product_attr(), _configuration_type_attr()]
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+    }
+    result_filled, _, pending = eng.auto_fill(
+        attrs, hints={}, already_filled=filled,
+        governed_ids={5}, rule_governed_ids=set(),
+        workspace_id=7,
+    )
+    assert result_filled.get("softwareBundlesBundleType_astro") == "STANDARD BUNDLE"
+    assert "softwareBundlesBundleType_astro" not in {a.variable_name for a in pending}
