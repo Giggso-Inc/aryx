@@ -46,12 +46,18 @@ def jobs_router() -> APIRouter:
 
     @router.post("/jobs/{job_id}/cancel")
     def cancel_job(job_id: str) -> dict[str, Any]:
-        """Mark a job cancelled so the UI frees up.
+        """Mark a job cancelled so the UI frees up, AND actually stop it.
 
-        Note: a background ingest thread blocked on an LLM call can't be
-        force-killed; this stops the row from showing as running and lets
-        the user retry. Any later progress write from a still-alive thread
-        is ignored because the row is terminal.
+        The running worker thread polls this row via `should_stop()`
+        (see file_ingest_api._make_should_stop) at every pipeline stage
+        boundary and inside the dimension-linking loop specifically — the
+        stage previously observed running for 20+ minutes after a
+        "cancel" that only ever updated this row. A thread genuinely
+        blocked inside a single synchronous LLM call still can't be
+        force-killed mid-call (that limitation is real and unchanged) —
+        but it stops at the next check afterward instead of running the
+        rest of the pipeline to completion. Any later progress write from
+        a still-stopping thread is ignored because this row is terminal.
         """
         jobs = _store()
         try:

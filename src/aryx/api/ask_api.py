@@ -21,7 +21,9 @@ from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
-from aryx.cpq.bom_gate import recheck_constraints, validate_before_payload
+from aryx.cpq.bom_gate import (
+    find_missing_required_fields, recheck_constraints, validate_before_payload,
+)
 from aryx.cpq.intent_gateway import (
     AskRouteDecision,
     classify_ask_route,
@@ -67,6 +69,7 @@ from aryx.cpq.pending_scope import (
     candidates_from_attr_options,
     clear_pending_scope,
     format_did_you_mean,
+    is_confident_scope_suggestion,
     log_scope_lost,
     log_scope_retained,
     resolve_against_scope,
@@ -1427,10 +1430,19 @@ def _scoped_reask_response(
     )
     numbered = session.pending_scope_misses >= scope_loop_exit_threshold()
     sug = res.suggestions or cands[:3]
+    confident_single = len(sug) == 1 and is_confident_scope_suggestion(res)
     if numbered:
         sug = cands  # full same-scope list, never catalog-wide
+    elif len(sug) == 1 and not confident_single:
+        # A single suggestion that only cleared the bare fuzzy-suggest
+        # floor is coincidental overlap, not a real near-miss (confirmed
+        # live 2026-08-08 -- see is_confident_scope_suggestion's own
+        # docstring). Show the real full list instead of framing that one
+        # weak guess as "did you mean X?".
+        sug = cands
     answer = format_did_you_mean(
         reply, sug, numbered=numbered, scope_label=scope_label,
+        confident_single=confident_single,
     )
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -1494,7 +1506,27 @@ def _reask_stale_constraint_violations(
     "show complete" branch unchanged. A recheck failure degrades to None
     (never blocks a turn on this proactive, best-effort check — the
     confirm-time gate is still the authoritative, hard backstop).
+
+    Also checks (2026-08-08) for currently-visible `required` attrs with
+    no value at all — bom_gate.find_missing_required_fields's own
+    docstring has the full story (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+    PLAN.md §2c can deliberately leave a non-decision required attr
+    unfilled). Checked FIRST, before the stale-constraint recheck: a
+    config that's missing required data outright is a more basic problem
+    than one whose filled data has gone stale. No session mutation for
+    this case (unlike the stale-value clear-and-reask below) — these
+    attrs typically have no menu to re-ask from, so this only reports
+    what's missing rather than inventing a question.
     """
+    missing_required = find_missing_required_fields(attrs, session)
+    if missing_required:
+        labels = [
+            f"**{a.display_label}**" for a in missing_required
+        ]
+        return (
+            "This configuration is missing required data: " + ", ".join(labels)
+            + ". It can't be marked complete until these resolve."
+        )
     if not con_rules:
         return None
     try:
@@ -1765,6 +1797,7 @@ def _handle_cascade(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -1777,6 +1810,7 @@ def _handle_cascade(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2067,6 +2101,7 @@ def _handle_multi_select_removal(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2079,6 +2114,7 @@ def _handle_multi_select_removal(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2224,6 +2260,7 @@ def _handle_attr_activation(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2236,6 +2273,7 @@ def _handle_attr_activation(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2401,6 +2439,7 @@ def _handle_attr_clear(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2413,6 +2452,7 @@ def _handle_attr_clear(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2558,6 +2598,7 @@ def _handle_bulk_quantity_change(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2570,6 +2611,7 @@ def _handle_bulk_quantity_change(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -2821,6 +2863,7 @@ def _handle_cascade_multi(
         skip_always_ask=skip_always_ask,
         rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
@@ -2833,6 +2876,7 @@ def _handle_cascade_multi(
         skip_always_ask=skip_always_ask, bml_eval=bml_eval,
         validation_rules=validation_rules,
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
     )
     if session.model_leaf_resolved:
         # skip_always_ask only suppresses the always-ask OVERRIDE — it
@@ -5250,6 +5294,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             bml_eval=new_bml_eval, country=country_value,
             rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, new_prefix),
             display_order=_cpq_engine.load_layout_display_order(req.workspace_id, new_prefix),
+            workspace_id=req.workspace_id, catalog_prefix=new_prefix,
         )
         return _cpq_engine.check_country_availability(
             new_attrs, new_con_rules, sim_filled, new_bml_eval,
@@ -7439,9 +7484,26 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             # session.filled hasn't changed since then (this turn's answer
             # is applied below), so recomputing now reflects exactly what
             # the user was shown (Phase I).
-            pending_constrained = _cpq_engine.apply_constraint_rules(
+            _pending_co: dict[int, list[str]] = {}
+            _pc = _cpq_engine.apply_constraint_rules(
                 attrs, con_rules, session.filled, bml_eval=bml_eval, filled_multi=session.filled_multi,
             ).get(pending_attr.entity_id)
+            if _pc is not None:
+                _pending_co[pending_attr.entity_id] = _pc
+            # Same real Data Table narrowing evaluate_rules_loop applies
+            # when the option list was first rendered (docs/CPQ_CARRIER_
+            # WIRELESS_FREQBAND_DATA_GAP_PROOF_2026_08_07.md §13) -- without
+            # this, re-deriving `pending_constrained` here from
+            # apply_constraint_rules alone can re-widen a since-narrowed
+            # scope back to the full catalog whenever a later branch
+            # re-remembers scope from THIS value (confirmed live
+            # 2026-08-08: "APX NEXT International (Federal)" reappeared in
+            # a "did you mean" re-ask even though the option list actually
+            # shown to the customer had already excluded it).
+            _cpq_engine._apply_series_mapping_exclusions(
+                attrs, _pending_co, session.filled, req.workspace_id, catalog_prefix,
+            )
+            pending_constrained = _pending_co.get(pending_attr.entity_id, _pc)
             # PROMPT 7: if we previously showed a durable scope for this
             # attr, force matching into that candidate set (never widen to
             # the full 325-option Product list on a typo/mismatch).
@@ -7531,10 +7593,13 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 if _llm_pick and _llm_pick["confidence"] == "high":
                     # Only accept LLM pick if it stays inside active scope
                     _iv = _llm_pick["iv"]
-                    if (
-                        pending_constrained is None
-                        or _iv in pending_constrained
-                    ):
+                    _in_constrained = pending_constrained is None or _iv in pending_constrained
+                    _in_remembered_scope = (
+                        not _scope_for_attr
+                        or _iv in _scope_cands
+                        or _llm_pick["disp"] in _scope_cands
+                    )
+                    if _in_constrained and _in_remembered_scope:
                         result = (_llm_pick["iv"], _llm_pick["disp"])
                 elif _llm_pick and _llm_pick["confidence"] == "low":
                     _cands = _llm_pick["candidates"]
@@ -7544,6 +7609,28 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                             if o.item_value in pending_constrained
                         }
                         _cands = [c for c in _cands if c in _allowed_disp]
+                    if _scope_for_attr:
+                        # A durable remembered scope (PROMPT 7,
+                        # session.pending_scope_candidates) is the proven
+                        # source of truth for what's actually still valid
+                        # here. Reconstructing `pending_constrained` from
+                        # it just above can silently stay None whenever
+                        # none of its stored strings happen to string-
+                        # match an option's raw display_name/item_value --
+                        # and when that happens, the filter above is
+                        # skipped entirely, letting a "did you mean" widen
+                        # back out to the full, unconstrained catalog.
+                        # Confirmed live (2026-08-08): "APX NEXT
+                        # International (Federal)" reappeared as a
+                        # suggestion here even though the remembered scope
+                        # (and the numbered list actually shown to the
+                        # customer) had already excluded it via the
+                        # Seriesmodelsmapping Data Table exclusion (docs/
+                        # CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_
+                        # 2026_08_07.md §13) -- this second, independent
+                        # filter closes that gap regardless of why the
+                        # first one didn't narrow.
+                        _cands = [c for c in _cands if c in _scope_cands]
                     _llm_low_confidence_candidates = _cands or None
             if result:
                 clear_pending_scope(session)
@@ -7802,6 +7889,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             skip_always_ask=skip_always_ask,
             rule_conflict_order=_cpq_engine._load_layout_full_order(req.workspace_id, catalog_prefix),
             display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+            workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
         )
         g_ids = _cpq_engine.governed_target_ids(v_attrs, hiding_rules, rec_rules, con_rules)
         r_ids = _cpq_engine.rule_governed_ids(v_attrs, hiding_rules, rec_rules, con_rules)
@@ -7813,6 +7901,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             skip_always_ask=skip_always_ask, bml_eval=bml_eval,
             validation_rules=validation_rules,
             display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
+            workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
             )
         if session.model_leaf_resolved:
             # skip_always_ask only suppresses the always-ask OVERRIDE — it

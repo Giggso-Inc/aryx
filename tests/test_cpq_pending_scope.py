@@ -7,6 +7,7 @@ from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.pending_scope import (
     clear_pending_scope,
     format_did_you_mean,
+    is_confident_scope_suggestion,
     resolve_against_scope,
     set_pending_scope,
 )
@@ -87,6 +88,55 @@ def test_format_did_you_mean_stays_scoped():
     assert "325" not in msg
     assert "R7EX" in msg
     assert "did you mean" in msg.lower() or "Didn't get" in msg or "didn't get" in msg
+
+
+# ── "did you mean" confidence gating (2026-08-08) ───────────────────────────
+# Live bug: resending an entire unrelated sentence as a reply to a pending
+# Product question scored just over the bare fuzzy-suggest floor against
+# ONE real option purely by coincidental character overlap (both strings
+# happen to contain "APX NEXT") -- framing that single weak suggestion as
+# a confident "did you mean X?" overstated the actual match quality.
+
+def test_resending_the_original_question_is_not_a_confident_suggestion():
+    """A long, unrelated sentence coincidentally overlapping one real
+    candidate must land in "miss" tier with a low score -- not confident."""
+    cands = [
+        "APX NEXT All Band", "APX NEXT XE All Band", "APX NEXT Single Band",
+        "APX NEXT XE Single Band", "APX NEXT (International)",
+        "APX NEXT XN All Band", "APX NEXT XN Single Band",
+    ]
+    r = resolve_against_scope("Give me quote of APXNEXT with 10 qty for US", cands)
+    assert r.matched is None
+    assert r.tier == "miss"
+    assert not is_confident_scope_suggestion(r)
+
+
+def test_ambiguous_substring_tie_is_a_confident_suggestion():
+    """Real substring hits, equally specific (so the tie-break can't pick a
+    unique winner), are still genuine signal, not coincidental overlap --
+    score=1.0, confident."""
+    cands = ["APX NEXT Bandone", "APX NEXT Bandtwo"]
+    r = resolve_against_scope("APX NEXT Band", cands)
+    assert r.tier == "miss"
+    assert is_confident_scope_suggestion(r)
+
+
+def test_format_did_you_mean_low_confidence_single_suggestion_is_not_phrased_as_a_guess():
+    msg = format_did_you_mean(
+        "Give me quote of APXNEXT with 10 qty for US",
+        ["APX NEXT (International)"],
+        confident_single=False,
+    )
+    assert "did you mean" not in msg.lower()
+    assert "APX NEXT (International)" in msg
+
+
+def test_format_did_you_mean_confident_single_suggestion_keeps_the_guess_phrasing():
+    msg = format_did_you_mean(
+        "Fedral", ["APX NEXT International (Federal)"], confident_single=True,
+    )
+    assert "did you mean" in msg.lower()
+    assert "APX NEXT International (Federal)" in msg
 
 
 def test_set_clear_scope_on_session():

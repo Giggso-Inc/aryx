@@ -1128,6 +1128,81 @@ def evaluate_hide_master_list(
     return m.group("literal") not in master.split(sep), False
 
 
+# Idiom D — the ungated sibling of Idiom C: no outer `if(MASTER<>"")` guard
+# at all, and an extra nested base-model check inside the else branch.
+# Confirmed live shape of Carrier Selection / Wireless Carrier's real
+# hiding-rule scripts (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_
+# 2026_08_07.md §1.3/§2.3):
+#
+#   ARR = SPLIT(MASTER, SEP);
+#   IDX = findinarray(ARR, "LITERAL");
+#   if (IDX == -1) {
+#       return true;
+#   }
+#   else {
+#       if (BASEMODEL == "") {
+#           return true;
+#       }
+#   }
+#   return false;
+#
+# Neither Idiom C's regex (requires the outer guard) nor
+# _first_matching_branch's if/else-if/else chain parser (built for
+# branch-vs-branch comparisons, not a nested nullary SPLIT/findinarray)
+# recognize this shape — it previously fell through both to Tier 2 (LLM),
+# which has no reason to know an empty MASTER here means "Oracle's runtime
+# master-string sync was never captured for this catalog" rather than "no
+# entry, confidently hide". Reporting a confident hide silently dropped the
+# attribute before it ever reached the real ingested Data Table fallback
+# (data_table_resolver.py) that DOES have rows for it in this catalog.
+_HIDE_MASTER_LIST_UNGUARDED_RE = re.compile(
+    r'(?P<arr>\w+)\s*=\s*SPLIT\s*\(\s*(?P<master>\w+)\s*,\s*(?P<sep>\w+)\s*\)\s*;\s*'
+    r'(?P<idx>\w+)\s*=\s*findinarray\s*\(\s*(?P=arr)\s*,\s*"(?P<literal>[^"]*)"\s*\)\s*;\s*'
+    r'if\s*\(\s*(?P=idx)\s*==\s*-1\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'else\s*\{\s*'
+    r'if\s*\(\s*(?P<basemodel>\w+)\s*==\s*""\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'\}\s*'
+    r'return\s+false\s*;\s*',
+    re.IGNORECASE,
+)
+
+
+def evaluate_hide_master_list_unguarded(
+    script: str, variables: dict[str, str],
+) -> tuple[bool | None, bool]:
+    """Tier 1.5 (Idiom D). Returns (hide, blocked_by_missing_var) — same
+    contract as the other Tier-1 evaluators. (None, False) means the
+    script isn't this idiom (try the next tier). An empty/unset MASTER
+    reports (None, True) — blocked/unknown — NOT a confident hide, since
+    (unlike Idiom C) there is no outer guard making that the script's own
+    deterministic answer; here it's genuinely missing runtime data. An
+    empty BASEMODEL, by contrast, is a real "nothing selected yet" state
+    (same convention used everywhere else in this codebase) and DOES
+    report a confident hide.
+    """
+    m = _HIDE_MASTER_LIST_UNGUARDED_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    if not m:
+        return None, False
+    master = variables.get(m.group("master"))
+    sep = variables.get(m.group("sep"))
+    if master is None or sep is None:
+        return None, True
+    if master == "":
+        return None, True
+    if m.group("literal") not in master.split(sep):
+        return True, False
+    base_model = variables.get(m.group("basemodel"))
+    if base_model is None:
+        return None, True
+    if base_model == "":
+        return True, False
+    return False, False
+
+
 def evaluate_tier1(
     script: str, variables: dict[str, str],
 ) -> tuple[list[str] | None, bool]:
@@ -1155,12 +1230,16 @@ def evaluate_hide_tier1(
     the exact semantics of each case; True means the target attr should be
     hidden, False means it should stay visible.
 
-    Tries Idiom C (evaluate_hide_master_list) first — a different grammar
-    shape _first_matching_branch's if/else-if/else chain parser was never
-    meant to recognize — and falls through to the chain parser only when
-    Idiom C reports "not this shape" ((None, False)).
+    Tries Idiom C (evaluate_hide_master_list), then Idiom D
+    (evaluate_hide_master_list_unguarded) — two different grammar shapes
+    _first_matching_branch's if/else-if/else chain parser was never meant
+    to recognize — and falls through to the chain parser only when neither
+    idiom matches ((None, False) from both).
     """
     result, blocked = evaluate_hide_master_list(script, variables)
+    if blocked or result is not None:
+        return result, blocked
+    result, blocked = evaluate_hide_master_list_unguarded(script, variables)
     if blocked or result is not None:
         return result, blocked
     body, blocked = _first_matching_branch(script, variables)

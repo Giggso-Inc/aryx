@@ -186,6 +186,59 @@ def test_detect_and_link_dimensions_noop_when_no_shared_dimension_exists():
     store.create_entity.assert_not_called()
 
 
+def test_detect_and_link_dimensions_stops_when_should_stop_reports_cancelled():
+    """A cancelled job (should_stop() -> True) must stop creating hub
+    entities partway through, not run the whole dimension group to
+    completion -- the real bug this fixes: a job kept creating Dimension:*
+    entities for 20+ minutes after being marked "cancelled" because nothing
+    in this loop ever re-checked the job's status."""
+    entities = [(i, "Surplus", {"State": "PA" if i % 2 else "CA"}) for i in range(1, 21)]
+    entities += [(100 + i, "WashPost", {"State": "PA" if i % 2 else "CA"}) for i in range(1, 21)]
+    store = _store(entities)
+
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 2  # let a couple of hub creations through, then cancel
+
+    with patch("aryx.pipeline.dimension_link.get_settings", return_value=_settings()):
+        edges = detect_and_link_dimensions(store, should_stop=should_stop)
+
+    # Must have stopped well short of the full ~40-entity linking pass.
+    assert store.create_entity.call_count <= 2
+    # Partial edges collected before cancellation are still saved, not discarded.
+    assert edges >= 0
+    if edges:
+        store.save_relationships.assert_called()
+
+
+def test_detect_and_link_dimensions_should_stop_none_behaves_as_before():
+    """Omitting should_stop (every existing caller before this fix) must be
+    a complete no-op for this new parameter -- identical behavior to before
+    it existed. Same fixture as the surplus-style case above, just called
+    without should_stop at all."""
+    entities = [
+        (1, "Surplus", {"State": "PA", "id_col": "s1"}),
+        (2, "Surplus", {"State": "CA", "id_col": "s2"}),
+        (3, "Surplus", {"State": "PA", "id_col": "s3"}),
+        (4, "Surplus", {"State": "PA", "id_col": "s4"}),
+        (5, "Surplus", {"State": "CA", "id_col": "s5"}),
+        (6, "WashPost", {"State": "PA", "id_col": "w1"}),
+        (7, "WashPost", {"State": "CA", "id_col": "w2"}),
+        (8, "WashPost", {"State": "PA", "id_col": "w3"}),
+        (9, "WashPost", {"State": "PA", "id_col": "w4"}),
+        (10, "Scrap", {"State": "CA", "id_col": "c1"}),
+        (11, "Scrap", {"State": "PA", "id_col": "c2"}),
+        (12, "Scrap", {"State": "CA", "id_col": "c3"}),
+        (13, "Scrap", {"State": "CA", "id_col": "c4"}),
+    ]
+    store = _store(entities)
+    with patch("aryx.pipeline.dimension_link.get_settings", return_value=_settings()):
+        edges = detect_and_link_dimensions(store)
+    assert edges > 0
+
+
 def test_detect_and_link_dimensions_caps_edges_per_dimension_group():
     """dimension_max_edges_per_group is a distinct, much larger cap than
     fk_edges.py's max_relationships_per_fk_spec — but weak/best-effort:

@@ -115,6 +115,58 @@ class PostgresCpqRdb:
             logger.debug("cpq rdb: type fetch failed for %s", type_suffix, exc_info=True)
         return rows
 
+    def fetch_entities_by_exact_type(
+        self, workspace_id: int, ontology_type: str,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        """All entities whose ontology_type EQUALS `ontology_type` exactly
+        (case-insensitive) -- unlike fetch_entities_by_type's suffix LIKE
+        match, which is the right tool for finding "any source's
+        BmConfigRule" but the wrong one for looking up a single, already-
+        known-exact ingested Data Table type: two real ingested types can
+        share a suffix (confirmed live: "Whitelist" and "Advancedwhitelist"
+        both end in "whitelist" — the LIKE pattern for one silently pulled
+        in the other's differently-shaped rows too). Callers that already
+        have the exact type string (e.g. from list_ontology_types) should
+        use this, not fetch_entities_by_type.
+        """
+        rows: list[tuple[int, dict[str, Any]]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, attributes FROM aryx_entity "
+                        "WHERE workspace_id = %s AND lower(ontology_type) = lower(%s)",
+                        (workspace_id, ontology_type),
+                    )
+                    for eid, attrs in cur.fetchall():
+                        rows.append((int(eid), _as_attrs(attrs)))
+        except Exception:
+            logger.debug("cpq rdb: exact type fetch failed for %s", ontology_type, exc_info=True)
+        return rows
+
+    def list_ontology_types(self, workspace_id: int) -> list[str]:
+        """Every distinct ontology_type ingested into this workspace.
+
+        Used to discover ingested Data Table CSVs by CONTENT (column shape)
+        rather than by a hardcoded name — a CSV's ontology_type is whatever
+        the ingestion pipeline derived from its filename (see
+        aryx.pipeline.doc_discovery._stem_type), which varies per upload and
+        is never assumed here.
+        """
+        types: list[str] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT DISTINCT ontology_type FROM aryx_entity "
+                        "WHERE workspace_id = %s",
+                        (workspace_id,),
+                    )
+                    types = [row[0] for row in cur.fetchall() if row[0]]
+        except Exception:
+            logger.debug("cpq rdb: ontology type listing failed", exc_info=True)
+        return types
+
     def fetch_rules(
         self, workspace_id: int, rule_type: str, catalog_prefix: str = "",
         active_only: bool = False,
@@ -556,6 +608,39 @@ class OracleCpqRdb(PostgresCpqRdb):
         except Exception:
             logger.debug("cpq rdb(oracle): type fetch failed", exc_info=True)
         return rows
+
+    def fetch_entities_by_exact_type(
+        self, workspace_id: int, ontology_type: str,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        rows: list[tuple[int, dict[str, Any]]] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, attributes FROM aryx_entity "
+                        "WHERE workspace_id = :1 AND LOWER(ontology_type) = LOWER(:2)",
+                        (workspace_id, ontology_type),
+                    )
+                    for eid, attrs in cur.fetchall():
+                        rows.append((int(eid), _as_attrs(attrs)))
+        except Exception:
+            logger.debug("cpq rdb(oracle): exact type fetch failed", exc_info=True)
+        return rows
+
+    def list_ontology_types(self, workspace_id: int) -> list[str]:
+        types: list[str] = []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT DISTINCT ontology_type FROM aryx_entity "
+                        "WHERE workspace_id = :1",
+                        (workspace_id,),
+                    )
+                    types = [row[0] for row in cur.fetchall() if row[0]]
+        except Exception:
+            logger.debug("cpq rdb(oracle): ontology type listing failed", exc_info=True)
+        return types
 
     def fetch_rules(
         self, workspace_id: int, rule_type: str, catalog_prefix: str = "",

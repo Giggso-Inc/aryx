@@ -33,14 +33,35 @@ from aryx.store.postgres_store import PostgresStore
 logger = logging.getLogger(__name__)
 
 Progress = Callable[[str, int, str], None]
+ShouldStop = Callable[[], bool]
 
 _FK_REQUIRED: frozenset[str] = frozenset({"source_type", "source_attr", "target_type", "target_attr"})
+
+
+class PipelineCancelled(Exception):
+    """Raised internally when `should_stop()` reports a cancelled job.
+
+    Caught by the caller (file_ingest_api.py's _run_files) to end the
+    worker thread cleanly instead of running the remaining stages to
+    completion -- see _make_should_stop's docstring for the bug this fixes.
+    """
 
 
 def _emit(cb: Progress | None, stage: str, pct: int, detail: str) -> None:
     """Report a pipeline stage to an optional progress callback."""
     if cb is not None:
         cb(stage, pct, detail)
+
+
+def _check_cancelled(should_stop: ShouldStop | None, stage: str) -> None:
+    """Raise PipelineCancelled if the job was cancelled mid-run.
+
+    Called at every stage boundary (cheap: should_stop() itself throttles
+    the underlying DB read, see _make_should_stop) so a cancel takes effect
+    within one stage instead of running the whole remaining pipeline.
+    """
+    if should_stop is not None and should_stop():
+        raise PipelineCancelled(f"job cancelled before stage={stage}")
 
 
 def run_pipeline(
@@ -60,6 +81,7 @@ def run_pipeline(
     workspace_id: int = 1,
     resume_run_id: int | None = None,
     skip_graph: bool = False,
+    should_stop: ShouldStop | None = None,
 ) -> dict[str, int]:
     """Run a source from extraction through to the FalkorDB projection.
 
@@ -125,10 +147,12 @@ def run_pipeline(
                 onto.close()
         except Exception:  # noqa: BLE001 — non-critical, don't fail the pipeline
             logger.warning("ontology type seed failed for %s", ontology_type, exc_info=True)
+        _check_cancelled(should_stop, "relate")
         if relate and not runner.skip("relate"):
             _emit(on_progress, "Relate", 70, "Inferring relationships between entities")
             with runner.stage("relate"):
                 relationships = _relate(estore, broker, _max_pairs)
+        _check_cancelled(should_stop, "schema_fk")
         if relate and not runner.skip("schema_fk"):
             # Schema-level LLM FK inference: ONE call across ALL type schemas.
             # Finds shared-value joins that have no _id/_name suffix pattern
@@ -150,6 +174,7 @@ def run_pipeline(
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
             _emit(on_progress, "Relate", 78, f"{relationships} relationships inferred")
+        _check_cancelled(should_stop, "fk_link")
         if fk_links and not runner.skip("fk_link"):
             _emit(on_progress, "Link", 80, f"Linking entities via {len(fk_links)} FK spec(s)")
             with runner.stage("fk_link"):
@@ -165,6 +190,7 @@ def run_pipeline(
                         estore, spec["source_type"], spec["source_attr"],
                         spec["target_type"], spec["target_attr"], rel_name,
                     )
+        _check_cancelled(should_stop, "cooccurrence_link")
         if not skip_graph and not runner.skip("cooccurrence_link"):
             # Tier-0 deterministic linking, document sources only: connects
             # entities extracted from the SAME chunk of text — a real,
@@ -176,6 +202,7 @@ def run_pipeline(
             _emit(on_progress, "Link", 87, "Linking entities mentioned in the same passage")
             with runner.stage("cooccurrence_link"):
                 relationships += detect_and_link_cooccurrence(estore)
+        _check_cancelled(should_stop, "relate_isolated")
         if not skip_graph and not runner.skip("relate_isolated"):
             # Final safety net: any entity still isolated after FK linking and
             # sampled-pair inference gets one LLM call against the nearest anchor.
@@ -199,6 +226,7 @@ def run_pipeline(
             _emit(on_progress, "Link", 88, "Connecting remaining isolated entities")
             with runner.stage("relate_isolated"):
                 relationships += _relate_isolated(estore, broker)
+        _check_cancelled(should_stop, "dimension_link")
         if not skip_graph and not runner.skip("dimension_link"):
             # Tier-2 deterministic linking: connect entity types that share a
             # low-cardinality dimension (state, fiscal period, category code)
@@ -207,9 +235,16 @@ def run_pipeline(
             # by that point every entity that COULD be linked to a specific
             # other entity already is; this only ever adds coverage for
             # entities still isolated, so it must run last, before projection.
+            #
+            # should_stop is threaded all the way into the inner value/entity
+            # loop (not just checked at this stage boundary) -- this was the
+            # actual runaway stage observed live: a cancelled job kept
+            # creating Dimension:* entities for 20+ minutes, since nothing
+            # inside the loop itself ever re-checked cancellation.
             _emit(on_progress, "Link", 89, "Linking shared dimensions (state, period, category)")
             with runner.stage("dimension_link"):
-                relationships += detect_and_link_dimensions(estore)
+                relationships += detect_and_link_dimensions(estore, should_stop=should_stop)
+        _check_cancelled(should_stop, "project")
         if not skip_graph:
             _emit(on_progress, "Project", 90, "Projecting entities and edges to the graph")
             with runner.stage("project"):
