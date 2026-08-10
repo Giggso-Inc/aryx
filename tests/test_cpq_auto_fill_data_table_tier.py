@@ -589,6 +589,47 @@ def test_invalidate_inconsistent_paired_values_never_clears_a_user_answer(monkey
     assert invalid == {"modelSelectionFrequencyBandPlus_astro"}
 
 
+def test_invalidate_inconsistent_paired_values_never_clears_a_hint_or_cascade_value(
+    monkeypatch,
+):
+    """Live bug (2026-08-10): a value mined from the customer's own turn-1
+    free text (filled_source="hint", e.g. ultimateDestinationCountry from
+    "destination country as United States") or carried over by an earlier
+    cascade (filled_source="cascade") is just as customer-confirmed as
+    filled_source="user" -- see CpqEngine._CONFIRMED_SOURCES and
+    apply_recommendation_rules' own _NEVER_OVERRIDE, which both already
+    treat "user"/"hint"/"cascade" as one boundary. This method previously
+    only excluded "user", so a later, unrelated cascade (e.g. a Hardware
+    Version change recalculating base_model/product) could flag a
+    hint-sourced value as "inconsistent" against a sibling that hadn't
+    caught up yet and silently clear it, re-asking a question the customer
+    had already answered."""
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ANY",
+             "attr1": "productSelectionProduct_all", "val1": _PRODUCT},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "VHF",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "700/800 MHZ +"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+        "modelSelectionFrequencyBands_astro": "700/800 MHZ",
+        "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+    }
+    for confirmed_source in ("hint", "cascade"):
+        sources = {
+            "modelSelectionFrequencyBands_astro": confirmed_source,
+            "modelSelectionFrequencyBandPlus_astro": "data_table",
+        }
+        invalid = CpqEngine._invalidate_inconsistent_paired_values(
+            filled, sources, workspace_id=7,
+        )
+        assert invalid == {"modelSelectionFrequencyBandPlus_astro"}
+
+
 def test_auto_fill_asks_an_attr_never_governed_anywhere_even_with_layout_loaded(monkeypatch):
     """Confirmed live 2026-08-09: modelSelectionFrequencyBandMsl_astro
     survives `_suppress_ungoverned_attrs` (no attrSequence row anywhere

@@ -5660,9 +5660,20 @@ class CpqEngine:
         next evaluate_rules_loop pass re-resolve them together instead of
         leaving a structurally-invalid combination locked in.
 
-        Never clears a variable a real customer explicitly answered
-        (filled_source == "user") -- this check second-guesses two
-        independent auto-fill guesses, never an actual answer.
+        Never clears a variable whose value traces back to something the
+        customer said or confirmed -- filled_source in
+        `CpqEngine._CONFIRMED_SOURCES` ("user", "hint", "cascade"), the same
+        boundary `apply_recommendation_rules`' `_NEVER_OVERRIDE` and
+        `build_standalone_payload`'s own none-sentinel handling already use
+        -- this check second-guesses two independent auto-fill guesses,
+        never a real answer. Live-confirmed bug (2026-08-10): this
+        previously only excluded "user", so a "hint"-sourced value (e.g.
+        `ultimateDestinationCountry` mined from turn 1's free-text order)
+        got silently cleared and re-asked mid-conversation the moment a
+        LATER, unrelated cascade (Hardware Version) changed `base_model`/
+        `productSelectionProduct_all` enough for this pass's Data-Table-
+        scoped pairing to flag it -- even though the customer had already
+        given it.
         `None`/no workspace_id is a complete no-op.
         """
         if workspace_id is None:
@@ -5679,7 +5690,7 @@ class CpqEngine:
             invalid |= dt_find_inconsistent_filled_pairs(
                 cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
             )
-        return {vn for vn in invalid if sources.get(vn) != "user"}
+        return {vn for vn in invalid if sources.get(vn) not in CpqEngine._CONFIRMED_SOURCES}
 
     @staticmethod
     def _resolve_via_data_tables(

@@ -296,14 +296,166 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     return None
 
 
+# docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md -- a small,
+# separate recursive parser for conditions that MIX AND and OR (e.g. `(A OR B
+# OR C) AND D`), which _parse_condition above deliberately doesn't handle (it
+# requires a UNIFORM chain). Tried only as a fallback when _parse_condition
+# already failed -- every condition _parse_condition already resolves keeps
+# using that exact code path, unchanged. Confirmed live (real catalog survey,
+# workspace 39005): 13 real hiding/recommendation rules fail to parse for
+# exactly this reason, including the rule that hides Frequency Bands for
+# APX NEXT MULTI/XE MULTI/XN ALL -- `_BoolExpr` is a distinct shape from
+# _parse_condition's flat list specifically so this stays purely additive.
+@dataclasses.dataclass
+class _BoolExpr:
+    """A parsed boolean expression node: "cmp" (leaf, a single comparison)
+    or "and"/"or" (internal, `parts` are child _BoolExpr nodes)."""
+
+    kind: str
+    parts: list["_BoolExpr"] | None = None
+    var: str | None = None
+    op: str | None = None
+    value: str | None = None
+
+
+_TOP_LEVEL_OR_RE = re.compile(r'\bOR\b|\|\|', re.IGNORECASE)
+_TOP_LEVEL_AND_RE = re.compile(r'\bAND\b|&&', re.IGNORECASE)
+
+
+def _split_top_level(text: str, keyword_re: re.Pattern) -> list[str] | None:
+    """Split `text` at occurrences of `keyword_re` sitting at paren-depth 0
+    and outside any "..." quoted string. Returns None when no such
+    occurrence exists (there may still be matches nested inside parens or a
+    quoted value, which must NOT trigger a split)."""
+    depth = 0
+    in_quotes = False
+    parts: list[str] = []
+    last = 0
+    i = 0
+    n = len(text)
+    found = False
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if in_quotes:
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0:
+            m = keyword_re.match(text, i)
+            if m:
+                parts.append(text[last:i])
+                last = m.end()
+                i = m.end()
+                found = True
+                continue
+        i += 1
+    if not found:
+        return None
+    parts.append(text[last:])
+    return parts
+
+
+def _parse_boolean_expr(cond: str) -> "_BoolExpr | None":
+    """Recursive-descent parser for a mixed AND/OR condition, standard
+    precedence (AND binds tighter than OR — matches how every real mixed
+    script found in the live catalog survey is actually written). Returns
+    None if any part doesn't reduce to a single comparison or a further
+    AND/OR split — never guesses a shape it can't fully account for."""
+    cond = cond.strip()
+    while True:
+        # _strip_wrapping_parens only removes ONE layer per call — the real
+        # "Hide Frequency Bands..." script's second AND-part is DOUBLE-
+        # wrapped (`((modelSelectionbaseModel_astro<>""))`), confirmed live.
+        # Loop to stability so a leftover single layer doesn't make the
+        # final _CMP_RE match fail (it anchors on a leading word character,
+        # not "(").
+        stripped = _strip_wrapping_parens(cond)
+        if stripped == cond:
+            break
+        cond = stripped
+    or_parts = _split_top_level(cond, _TOP_LEVEL_OR_RE)
+    if or_parts is not None:
+        parsed = [_parse_boolean_expr(p) for p in or_parts]
+        if any(p is None for p in parsed):
+            return None
+        return _BoolExpr(kind="or", parts=parsed)
+    and_parts = _split_top_level(cond, _TOP_LEVEL_AND_RE)
+    if and_parts is not None:
+        parsed = [_parse_boolean_expr(p) for p in and_parts]
+        if any(p is None for p in parsed):
+            return None
+        return _BoolExpr(kind="and", parts=parsed)
+    m = _CMP_RE.match(cond)
+    if not m:
+        return None
+    return _BoolExpr(
+        kind="cmp", var=m.group(1), op=m.group(2),
+        value=m.group(3) if m.group(3) is not None else m.group(4),
+    )
+
+
+def _eval_boolean_expr(expr: "_BoolExpr", variables: dict[str, str]) -> tuple[bool | None, bool]:
+    """Recursively evaluate a _BoolExpr. Returns (result, blocked_by_missing_
+    var) — same per-condition contract _first_matching_branch's flat-chain
+    evaluation already uses, generalized to nesting. Short-circuits the same
+    way: an "or" node with any confirmed-True child is True regardless of a
+    sibling's missing variable; symmetrically an "and" node with any
+    confirmed-False child is False regardless of a sibling's missing
+    variable. Only genuinely undetermined when nothing short-circuits AND
+    something is missing."""
+    if expr.kind == "cmp":
+        actual = variables.get(expr.var)
+        if actual is None:
+            return None, True
+        hit = actual.strip().lower() == (expr.value or "").strip().lower()
+        if expr.op in ("<>", "!="):
+            hit = not hit
+        return hit, False
+
+    child_results: list[bool | None] = []
+    any_missing = False
+    for part in expr.parts or []:
+        result, missing = _eval_boolean_expr(part, variables)
+        if missing:
+            any_missing = True
+        child_results.append(result)
+
+    if expr.kind == "or":
+        if any(r is True for r in child_results):
+            return True, False
+        if any_missing:
+            return None, True
+        return False, False
+    # "and"
+    if any(r is False for r in child_results):
+        return False, False
+    if any_missing:
+        return None, True
+    return True, False
+
+
 _BARE_RETURN_RE = re.compile(r'\A\s*return\s+.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
 
 
-def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
+def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] | None:
     """Parse an if / else-if / else chain into [(condition, body)].
 
-    condition is the _parse_condition output, or None for the else branch.
-    Returns None when the script doesn't fit the Tier-1 idiom.
+    condition is _parse_condition's flat-list output, a _BoolExpr (only for
+    a condition that mixed AND/OR and needed the separate recursive parser —
+    docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md), or None
+    for the else branch. Returns None when the script doesn't fit the Tier-1
+    idiom at all.
     """
     script = _strip_block_comments(_strip_line_comments(script))
     branches: list[tuple[list | None, str]] = []
@@ -357,6 +509,13 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
         if _TIER1_BLOCKERS.search(cond_text):
             return None
         cond = _parse_condition(cond_text)
+        if cond is None:
+            # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
+            # -- fallback only: _parse_condition requires a UNIFORM AND-only
+            # or OR-only chain and returns None for a mixed condition (e.g.
+            # `(A OR B OR C) AND D`). Every condition _parse_condition
+            # already resolves never reaches this line.
+            cond = _parse_boolean_expr(cond_text)
         if cond is None:
             return None
         brace = text.find("{", cond_end)
@@ -740,6 +899,17 @@ def _first_matching_branch(
     for cond, body in branches:
         if cond is None:
             return body, False
+        if isinstance(cond, _BoolExpr):
+            # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
+            # -- this branch's condition mixed AND and OR and needed the
+            # separate recursive parser/evaluator; every condition
+            # _parse_condition itself resolves never takes this path.
+            result, blocked = _eval_boolean_expr(cond, variables)
+            if result is None:
+                return None, blocked
+            if result:
+                return body, False
+            continue
         # The whole chain is uniformly AND or OR (_parse_condition's own
         # contract) — only the first tuple's joiner is "" (a placeholder,
         # not "no chain"), so read the chain's real kind from any other
