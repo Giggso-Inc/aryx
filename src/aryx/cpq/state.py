@@ -305,6 +305,14 @@ class CpqSession:
     run_id: str = ""
     product_name: str = ""
     product_entity_id: int = 0
+    # How many units of the product the customer wants -- a session-level
+    # concept, deliberately separate from any catalog attribute (docs/
+    # CPQ_QUANTITY_SLOTFILLING_AND_UI_ISSUES_PLAN_2026_08_11.md). Kept
+    # OUTSIDE `filled`/`filled_multi` on purpose: build_payload only ever
+    # iterates those two dicts, so this can never leak into the final
+    # configData JSON without any special-case exclusion code. Defaults to
+    # 1 (one unit) until the customer says otherwise.
+    product_quantity: int = 1
     # variable_name → item_value (API code stored, never display label)
     filled: dict[str, str] = field(default_factory=dict)
     # variable_name → list of item_values, for select_type=="multi" attrs.

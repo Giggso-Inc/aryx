@@ -71,6 +71,8 @@ def test_plain_family_reply_still_anchors_normally():
     with patch("aryx.api.ask_api._cpq_engine.detect_product_mention", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.resolve_product_hint", return_value=None), \
          patch("aryx.api.ask_api._cpq_engine.load_product_config", return_value=([], "aSTRO25_bom")), \
+         patch("aryx.api.ask_api._cpq_engine.list_ingested_families", return_value=["aSTRO25_bom"]), \
+         patch("aryx.api.ask_api._persist_cpq_history"), \
          patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
         _run_cpq_turn(req, _reader())
 
