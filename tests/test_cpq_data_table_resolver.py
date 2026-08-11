@@ -524,3 +524,52 @@ def test_find_inconsistent_filled_pairs_ignores_unlinked_attrs(monkeypatch):
         workspace_id=1,
     )
     assert invalid == set()
+
+
+def test_find_inconsistent_filled_pairs_detailed_returns_the_actual_pair(monkeypatch):
+    """docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_REASK_PLAN_2026_08_10.md --
+    the flat find_inconsistent_filled_pairs can't name which attr conflicts
+    with which; the _detailed variant returns the real (attr_a, attr_b)
+    pair so a caller can build a re-ask naming both sides."""
+    tables = {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "VHF",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "700/800 MHZ +"},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "700/800 MHZ",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "VHF +"},
+        ],
+    }
+    _patch_rdb(monkeypatch, tables)
+    invalid_pairs = data_table_resolver.find_inconsistent_filled_pairs_detailed(
+        "APXNEXTSINGLE", "H45TGU9PW8AN",
+        {
+            "modelSelectionFrequencyBands_astro": "700/800 MHZ",
+            "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+        },
+        workspace_id=1,
+    )
+    assert invalid_pairs == {
+        ("modelSelectionFrequencyBands_astro", "modelSelectionFrequencyBandPlus_astro"),
+    }
+
+
+def test_find_inconsistent_filled_pairs_detailed_matches_flat_version_when_valid(monkeypatch):
+    tables = {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "VHF",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "700/800 MHZ +"},
+        ],
+    }
+    _patch_rdb(monkeypatch, tables)
+    invalid_pairs = data_table_resolver.find_inconsistent_filled_pairs_detailed(
+        "APXNEXTSINGLE", "H45TGU9PW8AN",
+        {
+            "modelSelectionFrequencyBands_astro": "VHF",
+            "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+        },
+        workspace_id=1,
+    )
+    assert invalid_pairs == set()

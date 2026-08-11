@@ -37,6 +37,9 @@ from aryx.cpq.data_table_resolver import resolve_invalid_product_variant as dt_r
 from aryx.cpq.data_table_resolver import discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model
 from aryx.cpq.data_table_resolver import governed_attr_names_for_base_model as dt_governed_attr_names_for_base_model
 from aryx.cpq.data_table_resolver import find_inconsistent_filled_pairs as dt_find_inconsistent_filled_pairs
+from aryx.cpq.data_table_resolver import (
+    find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
+)
 from aryx.cpq.data_table_resolver import attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model
 from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
 from aryx.cpq.logging_context import install_run_id_logging
@@ -5717,6 +5720,47 @@ class CpqEngine:
                 cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
             )
         return {vn for vn in invalid if sources.get(vn) not in CpqEngine._CONFIRMED_SOURCES}
+
+    @staticmethod
+    def find_confirmed_data_table_conflicts(
+        filled: dict[str, str], sources: dict[str, str],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> set[tuple[str, str]]:
+        """The specific edge case `_invalidate_inconsistent_paired_values`
+        deliberately leaves untouched: a real, data-proven-invalid pair
+        where BOTH sides are customer-confirmed (`CpqEngine.
+        _CONFIRMED_SOURCES` -- "user", "hint", "cascade"). Neither side can
+        be silently self-corrected (both are real facts the customer gave),
+        so this is surfaced for an explicit re-ask instead -- same
+        discipline `_reask_stale_constraint_violations` already applies to
+        constraint-rule violations
+        (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1), extended to
+        Data-Table-proven conflicts
+        (docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_REASK_PLAN_2026_08_10.md).
+
+        `None`/no workspace_id, or no base model resolved yet, is a
+        complete no-op -- same convention as
+        `_invalidate_inconsistent_paired_values`.
+        """
+        if workspace_id is None:
+            return set()
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return set()
+        product = filled.get("productSelectionProduct_all", "")
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        confirmed_conflicts: set[tuple[str, str]] = set()
+        for cpq_model in cands:
+            for attr_a, attr_b in dt_find_inconsistent_filled_pairs_detailed(
+                cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
+            ):
+                if (sources.get(attr_a) in CpqEngine._CONFIRMED_SOURCES
+                        and sources.get(attr_b) in CpqEngine._CONFIRMED_SOURCES):
+                    confirmed_conflicts.add((attr_a, attr_b))
+        return confirmed_conflicts
 
     @staticmethod
     def _resolve_via_data_tables(

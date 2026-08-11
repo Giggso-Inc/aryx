@@ -630,6 +630,102 @@ def test_invalidate_inconsistent_paired_values_never_clears_a_hint_or_cascade_va
         assert invalid == {"modelSelectionFrequencyBandPlus_astro"}
 
 
+def test_find_confirmed_data_table_conflicts_flags_when_both_sides_confirmed(monkeypatch):
+    """docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_REASK_PLAN_2026_08_10.md
+    -- the specific edge case _invalidate_inconsistent_paired_values
+    deliberately leaves untouched: BOTH sides of a real, data-proven-
+    invalid pair are customer-confirmed (hint/user/cascade), so neither can
+    be silently self-corrected. Must be surfaced, not silently dropped."""
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ANY",
+             "attr1": "productSelectionProduct_all", "val1": _PRODUCT},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "VHF",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "700/800 MHZ +"},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "700/800 MHZ",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "VHF +"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+        "modelSelectionFrequencyBands_astro": "700/800 MHZ",
+        "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+    }
+    sources = {
+        "modelSelectionFrequencyBands_astro": "hint",
+        "modelSelectionFrequencyBandPlus_astro": "user",
+    }
+    conflicts = CpqEngine.find_confirmed_data_table_conflicts(
+        filled, sources, workspace_id=7,
+    )
+    assert conflicts == {
+        ("modelSelectionFrequencyBands_astro", "modelSelectionFrequencyBandPlus_astro"),
+    }
+
+
+def test_find_confirmed_data_table_conflicts_empty_when_only_one_side_confirmed(monkeypatch):
+    """The mixed case stays _invalidate_inconsistent_paired_values' job --
+    this method only ever fires when NEITHER side can be auto-corrected."""
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ANY",
+             "attr1": "productSelectionProduct_all", "val1": _PRODUCT},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "VHF",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "700/800 MHZ +"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+        "modelSelectionFrequencyBands_astro": "700/800 MHZ",
+        "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+    }
+    sources = {
+        "modelSelectionFrequencyBands_astro": "user",
+        "modelSelectionFrequencyBandPlus_astro": "data_table",
+    }
+    conflicts = CpqEngine.find_confirmed_data_table_conflicts(
+        filled, sources, workspace_id=7,
+    )
+    assert conflicts == set()
+
+
+def test_find_confirmed_data_table_conflicts_empty_when_pair_is_valid(monkeypatch):
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ANY",
+             "attr1": "productSelectionProduct_all", "val1": _PRODUCT},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "modelSelectionFrequencyBands_astro", "val1": "VHF",
+             "attr2": "modelSelectionFrequencyBandPlus_astro", "val2": "700/800 MHZ +"},
+        ],
+    })
+    filled = {
+        "modelSelectionbaseModel_astro": _BASE_MODEL,
+        "productSelectionProduct_all": _PRODUCT,
+        "modelSelectionFrequencyBands_astro": "VHF",
+        "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+    }
+    sources = {
+        "modelSelectionFrequencyBands_astro": "hint",
+        "modelSelectionFrequencyBandPlus_astro": "user",
+    }
+    conflicts = CpqEngine.find_confirmed_data_table_conflicts(
+        filled, sources, workspace_id=7,
+    )
+    assert conflicts == set()
+
+
+def test_find_confirmed_data_table_conflicts_no_workspace_is_noop():
+    assert CpqEngine.find_confirmed_data_table_conflicts(
+        {"modelSelectionbaseModel_astro": _BASE_MODEL}, {}, workspace_id=None,
+    ) == set()
+
+
 def test_auto_fill_asks_an_attr_never_governed_anywhere_even_with_layout_loaded(monkeypatch):
     """Confirmed live 2026-08-09: modelSelectionFrequencyBandMsl_astro
     survives `_suppress_ungoverned_attrs` (no attrSequence row anywhere

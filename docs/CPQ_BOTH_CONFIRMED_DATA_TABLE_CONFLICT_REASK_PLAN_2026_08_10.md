@@ -59,6 +59,36 @@ This mirrors, rather than duplicates, the already-accepted pattern: a per-pass a
 the easy case, plus a pre-completion gate that surfaces the case auto-correction can't resolve on
 its own — exactly how constraint-rule staleness is already handled.
 
+## Verification results (live, 2026-08-11)
+
+Implemented as planned, with one placement fix found during implementation: the original draft
+would have wired the new check only inside `_reask_stale_constraint_violations`'s `if not stale:`
+branch, which sits AFTER `if not con_rules: return None` — meaning the data-table-conflict check
+would never run at all for the very common case of zero active constraint rules. Fixed by
+extracting the check into its own `_reask_confirmed_data_table_conflict` helper, called both when
+`con_rules` is empty and when the constraint recheck finds nothing stale — so it now runs
+independently of constraint-rule presence, as the plan actually intended (data-table conflicts are
+a separate mechanism from constraint rules).
+
+`data_table_resolver.find_inconsistent_filled_pairs` only ever returned a flattened `set[str]` of
+variable names, not the actual pairs — insufficient for a re-ask that must name both sides. Added
+`find_inconsistent_filled_pairs_detailed` (returns `set[tuple[str, str]]`) alongside it; the
+existing flat function now delegates to the new one, so its own return contract and all of its
+existing tests are byte-for-byte unchanged.
+
+Unit tests: 6 new tests (`find_inconsistent_filled_pairs_detailed` — 2, `CpqEngine.
+find_confirmed_data_table_conflicts` — 4) plus 2 new `ask_api`-level tests (`_reask_stale_
+constraint_violations` now fires on a both-confirmed conflict even with zero constraint rules;
+stays a no-op when the engine reports no conflict). Full `-k cpq` regression: 884 passed (up from
+876), same 3 pre-existing unrelated failures, same 13 pre-existing collection errors.
+
+Live verification: replayed both the plain "APX NEXT All Band" flow and the Hardware-Version-
+cascade-to-Enhanced flow from today's earlier investigations — both still complete normally with no
+spurious conflict re-ask, confirming the new check only fires on a genuine, data-proven conflict
+(neither real reproduction today happened to hit one — `modelSelectionFrequencyBands_astro`/
+`modelSelectionFrequencyBandMsl_astro` are not linked by any real ingested row in this catalog, per
+the earlier constraint-rule audit) and does not regress the common completion path.
+
 ## Critical files
 
 - `src/aryx/cpq/engine.py` — new `find_confirmed_data_table_conflicts` method.

@@ -739,6 +739,43 @@ def discover_cpq_models_for_base_model(
     return sorted(found)
 
 
+def find_inconsistent_filled_pairs_detailed(
+    cpq_model: str, base_model: str, filled: dict[str, str],
+    workspace_id: int, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None,
+) -> set[tuple[str, str]]:
+    """Same real-data-proven-contradiction detection as
+    `find_inconsistent_filled_pairs`, but returns the actual invalid
+    `(attr_a, attr_b)` pairs instead of a flattened set of variable names --
+    needed by callers that must name BOTH sides of a conflict (e.g. a re-ask
+    message), not just know which variables are involved.
+    """
+    constraint_rows, _, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
+    scoped = [
+        r for r in constraint_rows
+        if r.get("CPQModel") == cpq_model and r.get("BaseModel") in (base_model, "ALL")
+    ]
+    linked_pairs: set[tuple[str, str]] = set()
+    for row in scoped:
+        a1, a2 = row.get("attr1"), row.get("attr2")
+        if a1 and a2 and a1 in filled and a2 in filled:
+            linked_pairs.add((a1, a2))
+
+    invalid_pairs: set[tuple[str, str]] = set()
+    for attr_a, attr_b in linked_pairs:
+        val_a, val_b = filled.get(attr_a), filled.get(attr_b)
+        matches = any(
+            (row.get("attr1") == attr_a and row.get("val1") == val_a
+             and row.get("attr2") == attr_b and row.get("val2") == val_b)
+            or (row.get("attr1") == attr_b and row.get("val1") == val_b
+                and row.get("attr2") == attr_a and row.get("val2") == val_a)
+            for row in scoped
+        )
+        if not matches:
+            invalid_pairs.add((attr_a, attr_b))
+    return invalid_pairs
+
+
 def find_inconsistent_filled_pairs(
     cpq_model: str, base_model: str, filled: dict[str, str],
     workspace_id: int, catalog_prefix: str = "",
@@ -763,28 +800,11 @@ def find_inconsistent_filled_pairs(
     combination -- a confident contradiction, not a guess from missing
     data. A pair with no real row linking them at all is left alone.
     """
-    constraint_rows, _, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
-    scoped = [
-        r for r in constraint_rows
-        if r.get("CPQModel") == cpq_model and r.get("BaseModel") in (base_model, "ALL")
-    ]
-    linked_pairs: set[tuple[str, str]] = set()
-    for row in scoped:
-        a1, a2 = row.get("attr1"), row.get("attr2")
-        if a1 and a2 and a1 in filled and a2 in filled:
-            linked_pairs.add((a1, a2))
-
+    invalid_pairs = find_inconsistent_filled_pairs_detailed(
+        cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
+    )
     invalid: set[str] = set()
-    for attr_a, attr_b in linked_pairs:
-        val_a, val_b = filled.get(attr_a), filled.get(attr_b)
-        matches = any(
-            (row.get("attr1") == attr_a and row.get("val1") == val_a
-             and row.get("attr2") == attr_b and row.get("val2") == val_b)
-            or (row.get("attr1") == attr_b and row.get("val1") == val_b
-                and row.get("attr2") == attr_a and row.get("val2") == val_a)
-            for row in scoped
-        )
-        if not matches:
-            invalid.add(attr_a)
-            invalid.add(attr_b)
+    for attr_a, attr_b in invalid_pairs:
+        invalid.add(attr_a)
+        invalid.add(attr_b)
     return invalid

@@ -1483,8 +1483,59 @@ def _constrain_excluding_rejected(
     return filtered
 
 
+def _reask_confirmed_data_table_conflict(
+    session: Any, attrs: list, workspace_id: int | None, catalog_prefix: str,
+) -> str | None:
+    """The specific edge case `CpqEngine._invalidate_inconsistent_paired_
+    values` deliberately can't self-correct: a real, Data-Table-proven
+    conflict where BOTH sides of a linked pair are customer-confirmed
+    (`CpqEngine._CONFIRMED_SOURCES`), so neither can be silently cleared.
+    Surfaces an explicit re-ask instead of letting the invalid combination
+    reach the final BOM (docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_
+    REASK_PLAN_2026_08_10.md). Best-effort — a lookup failure never blocks
+    "Configuration complete" on this proactive check; returns None.
+    """
+    try:
+        confirmed_conflicts = _cpq_engine.find_confirmed_data_table_conflicts(
+            session.filled, session.filled_source, workspace_id, catalog_prefix,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "cpq_proactive_stale_check: data-table conflict check failed: %r", exc,
+        )
+        return None
+    if not confirmed_conflicts:
+        return None
+    attr_a_vn, attr_b_vn = next(iter(confirmed_conflicts))
+    by_vn = {a.variable_name: a for a in attrs}
+    attr_a, attr_b = by_vn.get(attr_a_vn), by_vn.get(attr_b_vn)
+    if attr_a is None or attr_b is None:
+        return None
+    push_snapshot(session, reason="confirmed_data_table_conflict_reask")
+    for vn in (attr_a_vn, attr_b_vn):
+        session.filled.pop(vn, None)
+        session.display_filled.pop(vn, None)
+        session.filled_source.pop(vn, None)
+    session.pending_variables = [attr_a_vn, attr_b_vn] + [
+        v for v in session.pending_variables if v not in (attr_a_vn, attr_b_vn)
+    ]
+    session.status = "configuring"
+    session.complete = False
+    label_a = _cpq_engine.disambiguated_label(attr_a, attrs)
+    label_b = _cpq_engine.disambiguated_label(attr_b, attrs)
+    prompt = _cpq_engine.next_question_prompt(attr_a)
+    return (
+        f"⚠️ **Rule conflict detected.** Your selections for **{label_a}** "
+        f"and **{label_b}** are incompatible — the catalog's own data "
+        f"proves these two values can't be combined. Please change one "
+        f"of them.\n\n{prompt}\n\n"
+        f"*(I'll also ask about **{label_b}** next.)*"
+    )
+
+
 def _reask_stale_constraint_violations(
     session: Any, attrs: list, con_rules: list, bml_eval: Any,
+    workspace_id: int | None = None, catalog_prefix: str = "",
 ) -> str | None:
     """Proactively runs the same stale-constraint recheck the confirm-time
     BOM gate performs (bom_gate.recheck_constraints) at the exact point a
@@ -1528,14 +1579,24 @@ def _reask_stale_constraint_violations(
             + ". It can't be marked complete until these resolve."
         )
     if not con_rules:
-        return None
+        return _reask_confirmed_data_table_conflict(
+            session, attrs, workspace_id, catalog_prefix,
+        )
     try:
         stale = recheck_constraints(_cpq_engine, attrs, session, con_rules, bml_eval)
     except Exception as exc:  # noqa: BLE001
         logger.warning("cpq_proactive_stale_check: constraint recheck failed: %r", exc)
         return None
     if not stale:
-        return None
+        # No stale-but-fixable constraint violation — check for the other
+        # class of proven-invalid state _invalidate_inconsistent_paired_
+        # values deliberately can't self-correct: a real, Data-Table-proven
+        # conflict where BOTH sides are customer-confirmed, so neither can
+        # be silently cleared (docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_
+        # REASK_PLAN_2026_08_10.md).
+        return _reask_confirmed_data_table_conflict(
+            session, attrs, workspace_id, catalog_prefix,
+        )
     # A stale violation whose replacement set is ALSO empty is a genuine
     # rule conflict (2+ active constraints intersect to nothing), not a
     # stale-but-fixable value — same distinction confirm's own gate makes
@@ -1973,7 +2034,9 @@ def _handle_cascade(
             f"before this configuration can be completed."
         )
     else:
-        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        _stale_reask = _reask_stale_constraint_violations(
+            session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
+        )
         if _stale_reask is not None:
             answer = cascade_note + "\n\n" + _stale_reask
         else:
@@ -2175,7 +2238,9 @@ def _handle_multi_select_removal(
             f"before this configuration can be completed."
         )
     else:
-        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        _stale_reask = _reask_stale_constraint_violations(
+            session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
+        )
         if _stale_reask is not None:
             answer = cascade_note + "\n\n" + _stale_reask
         else:
@@ -2351,7 +2416,9 @@ def _handle_attr_activation(
             _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     else:
-        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        _stale_reask = _reask_stale_constraint_violations(
+            session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
+        )
         if _stale_reask is not None:
             answer = cascade_note + "\n\n" + _stale_reask
         else:
@@ -2505,7 +2572,9 @@ def _handle_attr_clear(
             _remember_attr_scope(session, next_attr, _cvals_nqp, req.question)
         answer = cascade_note + "\n\n" + q_block
     else:
-        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        _stale_reask = _reask_stale_constraint_violations(
+            session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
+        )
         if _stale_reask is not None:
             answer = cascade_note + "\n\n" + _stale_reask
         else:
@@ -2675,7 +2744,9 @@ def _handle_bulk_quantity_change(
             f"before this configuration can be completed."
         )
     else:
-        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        _stale_reask = _reask_stale_constraint_violations(
+            session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
+        )
         if _stale_reask is not None:
             answer = cascade_note + "\n\n" + _stale_reask
         else:
@@ -3011,7 +3082,9 @@ def _handle_cascade_multi(
             f"before this configuration can be completed."
         )
     else:
-        _stale_reask = _reask_stale_constraint_violations(session, attrs, con_rules, bml_eval)
+        _stale_reask = _reask_stale_constraint_violations(
+            session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
+        )
         if _stale_reask is not None:
             answer = cascade_note + "\n\n" + _stale_reask
         else:
@@ -8048,7 +8121,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
               f"before this configuration can be completed."
         )
     elif not pending and (_stale_reask := _reask_stale_constraint_violations(
-        session, attrs, con_rules, bml_eval,
+        session, attrs, con_rules, bml_eval, req.workspace_id, catalog_prefix,
     )) is not None:
         answer = (f"{dropped_note.strip()}\n\n" if dropped_note else "") + _stale_reask
     elif not pending:
