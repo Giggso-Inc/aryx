@@ -19,18 +19,23 @@ WITH source_map AS (
       ON entity.id = member.entity_id
      AND entity.workspace_id = member.workspace_id
 ), relationship_links AS (
-    SELECT DISTINCT
-           entity_links.source_key,
+    SELECT entity_links.source_key,
            relationship.source_entity_id,
            relationship.target_entity_id,
            relationship.name
     FROM entity_links
     JOIN aryx_relationship relationship
       ON relationship.workspace_id = %(workspace_id)s
-     AND (
-         relationship.source_entity_id = entity_links.id
-         OR relationship.target_entity_id = entity_links.id
-     )
+     AND relationship.source_entity_id = entity_links.id
+    UNION
+    SELECT entity_links.source_key,
+           relationship.source_entity_id,
+           relationship.target_entity_id,
+           relationship.name
+    FROM entity_links
+    JOIN aryx_relationship relationship
+      ON relationship.workspace_id = %(workspace_id)s
+     AND relationship.target_entity_id = entity_links.id
 )
 SELECT source_key, COUNT(*)
 FROM relationship_links

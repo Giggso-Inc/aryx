@@ -64,22 +64,22 @@ def datasource_router() -> APIRouter:
             raise HTTPException(400, f"add failed: {exc}") from exc
 
     @router.post("/{datasource_id}/test")
-    def test_datasource(datasource_id: int) -> dict[str, Any]:
+    def test_datasource(datasource_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Decrypt → open → ping. Always-pending failure is never silent."""
         store = DatasourceStore(get_settings().rdb_dsn)
-        row = store.get(datasource_id)
+        row = store.get(datasource_id, workspace_id)
         if not row:
             raise HTTPException(404, "datasource not found")
         try:
-            secret = store.secret_of(datasource_id, actor="api:test")
+            secret = store.secret_of(datasource_id, workspace_id, actor="api:test")
             return _ping(row["kind"], row["config"], secret)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
     @router.delete("/{datasource_id}")
-    def delete_datasource(datasource_id: int) -> dict[str, Any]:
+    def delete_datasource(datasource_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Hard-delete a datasource and cascade its audit trail."""
-        DatasourceStore(get_settings().rdb_dsn).delete(datasource_id)
+        DatasourceStore(get_settings().rdb_dsn).delete(datasource_id, workspace_id)
         return {"status": "deleted", "datasource_id": datasource_id}
 
     return router

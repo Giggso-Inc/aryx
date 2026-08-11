@@ -121,6 +121,23 @@ class DiscoveryStore:
                 row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    def get_summary(self, discovery_id: str, workspace_id: int) -> dict[str, Any] | None:
+        """Return just the summary for a discovery, scoped to the calling workspace.
+
+        Deliberately avoids fetching/deserializing data_json — that column holds
+        every raw file's bytes (base64-encoded) for the whole discovery and can
+        reach hundreds of MB for a multi-file tabular ingest (confirmed live: a
+        30-file discovery's data_json was 257MB), making the full get() effectively
+        hang for the review-step UI, which only ever needs the small summary.
+        """
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(load("select_discovery_summary"), (discovery_id, workspace_id))
+                row = cur.fetchone()
+        if not row:
+            return None
+        return json.loads(row[0] or "{}")
+
     def drop(self, discovery_id: str) -> None:
         """Delete a discovery row (no workspace guard — internal cleanup only)."""
         with self._pool.connection() as conn:

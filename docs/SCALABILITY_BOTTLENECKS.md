@@ -26,6 +26,12 @@ unacceptably slow pipeline runs.
 | P11 | 🟡 High | Chunk embedding — unbatched OCI GenAI calls | *(fixed)* documents producing >~50 chunks (OCI mode) |
 | P12 | 🔴 Critical | Graph projection — 25-row batch cap on Oracle writes | *(fixed)* >~1,000 entities/relationships (OCI mode) |
 | P13 | 🔴 Critical | CPQ product config load — per-attribute `neighbors()` N+1 | *(fixed)* >~50 config attrs on a product (OCI mode) |
+| P14 | 🔴 Critical | Datasource/action/relationship-type writes — missing `workspace_id` scoping | *(fixed)* cross-tenant delete/write, any workspace |
+| P15 | 🔴 Critical | Discovery summary/confirm — full 257MB payload deserialized for a small read | *(fixed)* any multi-file discovery (OCI mode) |
+| P16 | 🟡 High | Oracle `RETURNING...INTO` ~16KB limit on JSON columns | *(fixed)* any datasource config json >~16KB (OCI mode) |
+| P17 | 🟢 Medium | Schema-FK LLM inference — sequential batches, not parallelized | *(identified, not fixed)* workspaces with many entity types |
+| P18 | 🔴 Critical | Adjudication decide — missing `workspace_id` scoping | *(fixed)* cross-tenant entity-merge approval, any workspace |
+| P19 | 🔴 Critical | Source edge counts — unindexable `OR`-join across relationship endpoints | *(fixed)* `ORA-01652` temp exhaustion, any workspace with real relationship volume (OCI mode) |
 
 ---
 
@@ -825,6 +831,462 @@ ADB's real network latency did.
 
 ---
 
+## P14 — Cross-Tenant Write/Delete: Missing `workspace_id` Scoping *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found via a systematic audit of every query
+against the 37 Oracle tables carrying a `workspace_id` column, prompted by
+the P13 investigation surfacing one such bug (`find_entities()`'s missing
+filter, a read-only leak). This audit found three more instances — all
+writes/deletes, a more serious class than the read-only one already fixed.
+
+**Source files:**
+- `src/aryx/api/datasource_api.py` — `DELETE /admin/datasources/{id}` and
+  `POST /admin/datasources/{id}/test`; `src/aryx/store/datasource_store.py`
+  — `get()`, `secret_of()`, `delete()`; `select_datasource_by_id.sql`,
+  `delete_datasource_row.sql`
+- `src/aryx/api/actions_api.py` — `POST /executions/{id}/decide`;
+  `src/aryx/store/action_store.py` — `decide()`, `record_applied()`,
+  `execution()`; `decide_action_execution.sql`, `apply_action_execution.sql`,
+  `select_action_execution_by_id.sql`
+- `src/aryx/api/relationship_type_api.py` — `DELETE /ontology/relationships/{id}`;
+  `src/aryx/store/relationship_type_store.py` — `delete()`;
+  `delete_relationship_type.sql`
+
+**What happened:**
+```sql
+-- delete_datasource_row.sql, before:
+DELETE FROM aryx_datasource WHERE id = %(id)s
+```
+Each of these deleted or mutated a row by its raw integer primary key alone
+— no `workspace_id` check anywhere in the SQL, the store method, or (for
+`datasource_api.py`) even in the route signature. All three underlying
+tables use `NUMBER GENERATED ALWAYS AS IDENTITY` — plain sequential integer
+IDs, enumerable across every workspace sharing the database. A caller
+supplying their own valid `workspace_id` alongside a *different* workspace's
+sequential ID could delete another workspace's datasource, or approve/
+reject/apply another workspace's pending action execution.
+
+For `ActionStore` specifically, the bug was a real inconsistency rather than
+an oversight repeated three times identically: the class already carries
+`self._ws` (used correctly by `select_action_executions`), but `decide()`,
+`record_applied()`, and `execution()` simply never referenced it.
+
+### Accuracy Impact
+**None** for legitimate same-workspace use — same rows read/written either
+way. The impact is a real cross-tenant integrity/security gap, not a
+correctness bug for the honest path.
+
+### Resource Impact
+N/A — this is a security/isolation gap, not a performance issue.
+
+### Cost Impact
+Not dollar-denominated — the risk is unauthorized cross-workspace deletes or
+action approvals, not spend.
+
+### Fix Applied
+Added `workspace_id` to every affected SQL statement's `WHERE` clause,
+threaded it through each store method's signature, and (for
+`datasource_api.py`, the only router missing it entirely) added it to the
+route signatures. `ActionStore`'s three methods now use the `self._ws` the
+class already carried — no route changes needed there, since
+`actions_api.py` already built a workspace-scoped store instance.
+
+**Verified live against real ADB**, not just unit tests: created a
+datasource in workspace 342, confirmed workspace 274 gets a clean 404 on
+test/get, confirmed a delete call from workspace 274 is silently a no-op
+(the real owner could still fetch the row immediately after), and confirmed
+only the real owner's delete actually removed it. Existing
+`tests/test_datasource_store.py` (8/8) still passes.
+
+### Fix — OCI Path
+N/A — the same fix applies identically to Postgres; nothing here is
+Oracle-specific. (Separately, `docs/OCI_ADB_NATIVE_AI_FEATURES_ANALYSIS.md`
+Part 4 proposes Oracle VPD/Row-Level Security as defense-in-depth against
+this exact bug *class* recurring in future code — not yet implemented.)
+
+---
+
+## P15 — Discovery Summary/Confirm: Full-Payload Deserialization for a Small Read *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found live while diagnosing a real user
+report: "read/discover completed but there's no way to hit confirm — I'm
+not seeing the button."
+
+**Source files:**
+- `src/aryx/store/discovery_store.py` — `DiscoveryStore.get()` /
+  new `get_summary()`
+- `src/aryx/discoveries.py` — `get()` / new `get_summary()`
+- `src/aryx/api/doc_discover_api.py` — `GET /admin/docs/summary/{did}`,
+  `POST /admin/docs/confirm`
+- `select_discovery.sql`, new `select_discovery_summary.sql`
+
+**What happened:**
+`aryx_discovery.data_json` stores the *entire* raw discovery payload —
+every uploaded file's bytes, base64-encoded, plus extracted mentions — as
+one CLOB. For a real 30-file customer discovery, that CLOB measured
+**257 MB**. Both `GET /admin/docs/summary/{did}` (loads the review-step
+checklist) and `POST /admin/docs/confirm` (the existence/ownership check
+before queuing the ingest job) called `discoveries.get()`, which
+unconditionally fetches and fully JSON-deserializes `data_json` — via a
+custom `object_hook` doing per-object Pydantic/bytes reconstruction, slower
+than plain `json.loads()` — just to read the separate, small `summary_json`
+field, or just to confirm the row exists.
+
+Measured live, same discovery, before the fix:
+| Call | Time |
+|---|---|
+| `GET /admin/docs/summary/{did}` | **246.4 s** |
+| Summary content actually needed | `{"types": [], "files": [...30 entries...]}` — a few KB |
+
+246 seconds is far beyond any browser fetch timeout a user would wait out —
+the review step's "Confirm & ingest" button never had a chance to render;
+from the user's side this looked exactly like a broken/missing button, with
+no error shown (the request was still in flight, not rejected).
+
+### Accuracy Impact
+**None.** Same summary content either way — pure wasted deserialization.
+
+### Resource Impact
+Before the fix, **any workspace with a multi-file (or otherwise large)
+pending discovery had a non-functional confirm flow** — not slow, but
+effectively broken past a certain payload size, since no realistic client
+timeout would wait 246+ seconds.
+
+### Cost Impact
+No dollar cost — CPU/wall-clock only, but the practical cost was a fully
+blocked feature for any sufficiently large discovery.
+
+### Fix Applied
+Added `DiscoveryStore.get_summary()` / `discoveries.get_summary()`, backed
+by a new `select_discovery_summary.sql` selecting *only* `summary_json` —
+skipping `data_json` (and `confirm_state`) entirely. Both the summary
+endpoint and the confirm endpoint's existence check now use this lightweight
+path; the full `discoveries.get()` remains only inside `_confirm_job()`'s
+background task, where the raw file data is genuinely required to actually
+perform ingestion.
+
+**Verified live, same 257MB discovery, before/after:** 246.4s → **2.7s**
+(~91x faster), identical 30-file summary content returned. Existing
+`tests/test_discovery_store.py` (11/11) still passes.
+
+**Known limitation, not fixed:** `_confirm_job()`'s own initial
+`discoveries.get()` call still pays the full ~4-minute deserialization cost
+once, at the very start of the background ingest job, before any progress
+appears — confirmed live on the same discovery (job showed "queued" for
+~4 minutes before its first real stage update). This is unavoidable within
+the current storage design, since the confirm job genuinely needs the raw
+file bytes/mentions, not just the summary. A real fix would mean splitting
+`data_json` storage (e.g., per-file rows instead of one giant blob per
+discovery) — a materially bigger change than today's fix, not undertaken
+here.
+
+### Fix — OCI Path
+N/A — same fix applies identically to Postgres; the bug was in the query
+shape (fetching two columns to read one), not anything Oracle-specific.
+
+---
+
+## P16 — Oracle `RETURNING...INTO` Size Limit on JSON Columns *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found live during the very next attempt to
+confirm the same real customer discovery, immediately after P15 was fixed
+and deployed — the confirm job progressed further than ever before, then
+failed with a new, previously-unseen error.
+
+**Source files:**
+- `insert_datasource.sql`, `update_datasource.sql`
+- `src/aryx/store/datasource_store.py` — `add()`, `update()`
+
+**What happened:**
+```
+ORA-40478: output value too large (maximum: 16386)
+JZN-00018: Input to serializer is too large
+```
+Confirming the discovery registers each source file as a datasource catalog
+entry (`upsert_xml_catalog_entry` → `DatasourceStore.add()`). The INSERT's
+`RETURNING` clause included `config_json` — a native Oracle `JSON` column.
+Oracle enforces a hard ~16KB limit specifically on `RETURNING ... INTO` for
+JSON columns (a documented Oracle limitation, distinct from and much smaller
+than ordinary CLOB/LOB limits), regardless of how large a JSON column can
+actually store. The SVX catalog's `config_json` (listing all its ingested
+assets) exceeded that, so the INSERT itself would have succeeded, but
+handing the value back through `RETURNING` failed outright.
+
+### Accuracy Impact
+**None once fixed.** Same row written either way; the bug only affected the
+value handed back to the caller, not what was persisted.
+
+### Resource Impact
+Before the fix, **any XML/multi-asset source whose catalog config exceeded
+~16KB could never be confirmed at all** — not slow, a hard failure on every
+attempt, for any discovery with enough assets in one source file.
+
+### Cost Impact
+No dollar cost — a correctness/availability issue, not a spend issue.
+
+### Fix Applied
+Dropped `config_json` from both `insert_datasource.sql`'s and
+`update_datasource.sql`'s `RETURNING` clauses. The caller already has the
+`config` dict in Python (it's what was just inserted/updated) — no need to
+round-trip it through Oracle at all. `DatasourceStore.add()`/`update()` now
+build their returned dict from the caller-supplied `config` plus the
+remaining (small, scalar) `RETURNING` columns.
+
+**Verified live:** reproduced the exact failure with a 151,792-byte config
+(far past the ~16KB limit) — insert now succeeds and returns correct data.
+Existing `tests/test_datasource_store.py` (8/8) still passes. Confirmed
+end-to-end: the real customer discovery's confirm job proceeded past this
+point on retry.
+
+### Fix — OCI Path
+N/A — Oracle-specific by nature (the limit itself is an Oracle `RETURNING`
+behavior; Postgres has no equivalent restriction and was never affected).
+
+---
+
+## P17 — Schema-FK LLM Inference: Sequential Batches *(Identified, Not Fixed)*
+
+**Status:** 🟡 Identified 2026-07-28, not yet fixed. Found by timing the real
+30-file SVX confirm job (P14-P16's fix verification) end to end and breaking
+down exactly where its 40m56s went.
+
+**Source file:** `src/aryx/pipeline/enrich.py` — `_infer_schema_fk_links()`
+
+**Full timing breakdown of the real confirm job (40m56s total):**
+
+| Phase | Duration | % of total |
+|---|---|---|
+| Initial full-payload fetch (P15's known remaining cost) | ~3m57s | 10% |
+| Discover+Resolve+Seed+Relate (30 files) | ~16m43s | 41% |
+| Schema-FK LLM inference (5 batches) | ~8m7s | 20% |
+| Deterministic FK-edge linking (54 specs) | ~2m29s | 6% |
+| Graph Project — vertices (12,244 rows) | ~2m37s | 6% |
+| Graph Project — provenance (12,246 rows) | ~1m28s | 4% |
+| Graph Project — edges (56,416 rows) | ~3m24s | 8% |
+| Final wrap-up | ~12s | <1% |
+
+**The striking part:** this is nearly the same *total* time as the pre-fix
+baseline in P8-P12 (40m6s, same-sized workspace) — but the composition
+completely inverted. That baseline was 55% graph projection (the P12 bug,
+now fixed to ~18% combined here). Nothing got newly slow — fixing the
+biggest bottleneck just stopped hiding the next ones. Discover/Resolve/Seed/
+Relate and schema-FK LLM inference were always this expensive; they're only
+now the visible cost.
+
+**What happened in schema-FK inference specifically:**
+```python
+for batch_types in batches:
+    batch_keys = [anchor_type] + batch_types
+    batch_schemas = {t: type_schemas[t] for t in batch_keys if t in type_schemas}
+    try:
+        links = infer_fk_links(batch_schemas, broker)   # one blocking LLM call
+    except Exception:
+        logger.exception(...)
+        continue
+    for lnk in links:
+        ...  # dedup into `seen`, order-independent
+```
+Five batches, run one after another, each a separate blocking
+`complete_json()` call. They're fully independent — different, non-
+overlapping type subsets, deduplicated into one `seen` set afterward
+regardless of completion order — so nothing requires them to run
+sequentially. Measured live: batch timings were highly uneven (one single
+batch took **4m6s** by itself — more than half of the entire 8m7s phase),
+consistent with ordinary LLM response-time variance rather than anything
+input-size-dependent. Running all 5 concurrently would let the phase's
+wall-clock time collapse to roughly the *slowest single batch* instead of
+the *sum* of all batches — a potential ~5-8x cut to this specific phase,
+similar in shape to P9's serial-LLM-call fix, but via concurrency rather
+than threshold tuning (this batching genuinely needs the LLM, unlike P9's
+adjudication calls which had a non-LLM fallback).
+
+### Accuracy Impact
+None — same links inferred either way, only wall-clock time would change.
+
+### Resource Impact
+~8 minutes of the ~41-minute confirm job, for this specific dataset
+(depends on how many entity types share a workspace — more types means
+more batches means more to parallelize).
+
+### Cost Impact
+No change in LLM $ cost — same number of calls either way, just concurrent
+instead of sequential.
+
+### Proposed Fix (not yet applied)
+Replace the sequential `for` loop with a concurrent dispatch (e.g.
+`ThreadPoolExecutor`, already used elsewhere in this codebase per P4) over
+independent batches, collecting results into the same `seen`-deduplicated
+list once all complete. Not implemented yet — flagged for a decision on
+whether the added complexity (thread safety around the shared `broker`
+client, potential provider-side rate limiting from concurrent calls) is
+worth it given the pipeline already completes successfully today, just
+takes longer than it could.
+
+### Fix — OCI Path
+N/A — same fix applies regardless of backend; this is Python-side
+orchestration around the LLM call, not anything Oracle- or Postgres-specific.
+
+---
+
+## P18 — Cross-Tenant Adjudication Decide: Missing `workspace_id` Scoping *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found via a self-review sweep after P14,
+specifically checking every store class that carries `self._ws` for methods
+that don't actually use it — the same shape of audit that found P14, applied
+more broadly this time.
+
+**Source files:**
+- `src/aryx/api/adjudication_api.py` — `POST /adjudication/{id}/decide`
+- `src/aryx/store/adjudication_store.py` — `decide()`
+- `decide_adjudication.sql`
+
+**What happened:**
+`AdjudicationStore` carries `self._ws` and uses it correctly in `enqueue()`,
+`page()`, `stats()`, and `merge_entities_of()` — but `decide()` never
+referenced it, the exact same inconsistency P14 found in `ActionStore`.
+```sql
+-- before:
+UPDATE aryx_adjudication SET status = %s, ... WHERE id = %s AND status = 'pending'
+```
+`aryx_adjudication.id` is `NUMBER GENERATED ALWAYS AS IDENTITY` — sequential
+and enumerable across workspaces, same exploit shape as P14. The API route
+(`adjudication_api.py`) already builds a workspace-scoped store, so a caller
+supplying their own `workspace_id` alongside a *different* workspace's
+sequential `adjudication_id` could approve or reject another workspace's
+pending entity-merge decision — and approval triggers `merge_entities_of()`,
+so this could actually merge entities in a workspace the caller doesn't own.
+
+### Accuracy Impact
+None for legitimate same-workspace use. Real cross-tenant integrity gap for
+the dishonest path, same as P14.
+
+### Resource Impact
+N/A — security/isolation gap, not a performance issue.
+
+### Cost Impact
+Not dollar-denominated — risk is unauthorized cross-workspace entity merges
+or adjudication decisions.
+
+### Fix Applied
+Added `workspace_id` to `decide_adjudication.sql`'s `WHERE` clause and
+threaded `self._ws` through `AdjudicationStore.decide()` — no route or
+signature changes needed, since `adjudication_api.py` already built a
+workspace-scoped store instance.
+
+**Verified live against real ADB**: enqueued a synthetic adjudication row in
+workspace 342, confirmed a decide attempt from workspace 274 fails with
+`ValueError: adjudication {id} not pending` (the `UPDATE` matched zero rows
+due to the workspace mismatch), then confirmed the real owner's decide call
+succeeded normally. Existing `tests/test_adjudication.py` (8/10 — 2
+pre-existing unrelated failures in `resolution/run.py` return-value naming,
+confirmed unrelated: no reference to `decide()` or `workspace_id` in either
+failing test) still passes at the same rate.
+
+**Also checked and ruled out during the same sweep:** every other store
+class carrying `self._ws` (`EntityStore`, `ChunkBackend`, `PostgresStore`,
+`ProjectionStore`, `SourceMetricsStore`) — spot-checked the highest-risk
+methods (get/update/delete-by-id) and confirmed they all correctly pass
+`self._ws`. `AdjudicationStore.decide()` was the only other instance found
+beyond the three P14 already fixed.
+
+### Fix — OCI Path
+N/A — same fix applies identically to Postgres, nothing here is
+Oracle-specific.
+
+---
+
+## P19 — Source Edge Counts: Unindexable `OR`-Join Across Relationship Endpoints *(Fixed)*
+
+**Status:** ✅ Fixed 2026-07-28. Found while checking API logs for issues
+around a real user's Ask query — the Ask query itself succeeded cleanly, but
+the same time window showed a separate `500` on `GET /data/sources/page`.
+Not something P14-P18 broke; a pre-existing query only now hitting real data
+volume because those fixes made the SVX confirm/ingest pipeline complete for
+the first time (12,244 entities, 56,416 relationships in workspace 342).
+
+**Source files:**
+- `src/aryx/store/source_metrics_store.py` — `source_edge_counts()`
+- `select_source_edge_counts.sql` (generic + `oracle/` override)
+- `src/aryx/api/data_api.py` — `sources_page()` / `sources()` / `source_detail()`
+
+**What happened:**
+`source_edge_counts()` counts, per logical source file, how many
+relationship edges touch any entity that file contributed. The query joined
+`aryx_relationship` to the candidate entity set with an `OR` condition:
+```sql
+JOIN aryx_relationship relationship
+  ON relationship.workspace_id = %(workspace_id)s
+ AND (
+     relationship.source_entity_id = entity_links.id
+     OR relationship.target_entity_id = entity_links.id
+ )
+```
+Two single-column indexes exist — `idx_rel_ws_source (workspace_id,
+source_entity_id)` and `idx_rel_ws_target (workspace_id, target_entity_id)`
+— but Oracle can't use either one through an `OR` across two different
+columns; it falls back to a full hash join plus `DISTINCT` sort/dedup at
+every CTE stage, spilling to `TEMP`. In production this produced:
+```
+ORA-01652: unable to grow temp segment in tablespace TEMP by 1MB
+temp space used by session : 6143 (MB)
+```
+on `GET /data/sources/page`, the Data tab's source catalog listing.
+
+### Accuracy Impact
+None — the endpoint either returns correct counts or fails outright with a
+500; there's no partial/wrong-answer failure mode here.
+
+### Resource Impact
+🔴 Was a hard failure (`ORA-01652`, ~6.1 GB of TEMP consumed) on the real
+SVX workspace's actual data volume — the Data tab's source catalog page was
+completely non-functional for this workspace.
+
+### Cost Impact
+Not dollar-denominated directly, but a `500` on a core Data tab page is a
+customer-visible outage of that page for any workspace with enough
+relationship volume to trigger it.
+
+### Fix Applied
+Rewrote the `OR`-join as a `UNION` of two separately-indexed joins — one
+matching `source_entity_id`, one matching `target_entity_id` — applied to
+both `select_source_edge_counts.sql` and its `oracle/` override:
+```sql
+), relationship_links AS (
+    SELECT entity_links.source_key, relationship.source_entity_id,
+           relationship.target_entity_id, relationship.name
+    FROM entity_links
+    JOIN aryx_relationship relationship
+      ON relationship.workspace_id = %(workspace_id)s
+     AND relationship.source_entity_id = entity_links.id
+    UNION
+    SELECT entity_links.source_key, relationship.source_entity_id,
+           relationship.target_entity_id, relationship.name
+    FROM entity_links
+    JOIN aryx_relationship relationship
+      ON relationship.workspace_id = %(workspace_id)s
+     AND relationship.target_entity_id = entity_links.id
+)
+```
+`UNION` (not `UNION ALL`) already deduplicates the combined result set, so
+this is exactly equivalent to the original `SELECT DISTINCT ... WHERE (A OR
+B)` while letting each branch use its own single-column index.
+
+**Verified live against real ADB (workspace 342, 56,416 relationships, all
+30 real SVX source files)**: the original `OR`-join query reproduced the
+exact production failure (`ORA-01652`, 6143 MB temp) on the full 30-source
+payload — and still failed the same way on a 3-source subset, confirming
+the `OR` condition itself (not payload size) was the trigger. The rewritten
+`UNION` query, run against the identical full 30-source payload, returned in
+**1.71 seconds** with 30 sources and 96,100 total edge-touches, no temp
+pressure.
+
+### Fix — OCI Path
+N/A — same rewrite applies identically to Postgres; the generic
+`select_source_edge_counts.sql` was fixed the same way for consistency, even
+though Postgres wasn't confirmed to hit the same failure mode.
+
+---
+
 ## Summary — Fix Priority & OCI Readiness
 
 | # | Bottleneck | Accuracy loss | Resource loss | Fix complexity | OCI required? |
@@ -842,6 +1304,12 @@ ADB's real network latency did.
 | P11 | Embed calls unbatched | ✅ Fixed | 🔴 Was potential hard-fail on large docs | Low — 1 file | No (already OCI) |
 | P12 | Graph write 25-row cap | ✅ Fixed | 🔴 Was 21m55s of a 40m6s total run (55%) | Low — 1 constant + tests | No (already OCI) |
 | P13 | CPQ config load N+1 `neighbors()` | ✅ Fixed | 🔴 Was effectively non-functional for real products | Low — 1 method × 2 backends + 1 call site | No (already OCI) |
+| P14 | Missing `workspace_id` on writes/deletes | ✅ Fixed | 🔴 Was a real cross-tenant delete/write gap, 3 endpoints | Low — SQL + store + route changes | No |
+| P15 | Discovery summary full-payload deserialize | ✅ Fixed | 🔴 Was non-functional (246s) for large discoveries → 2.7s | Low — 1 SQL + 2 methods + 1 call site | No |
+| P16 | Oracle `RETURNING` 16KB JSON limit | ✅ Fixed | 🔴 Was a hard failure on any large datasource config | Low — 2 SQL files + 2 methods | No — Oracle-only bug |
+| P17 | Schema-FK LLM sequential batches | Not fixed | 🟡 ~8 of ~41 min in one confirm job; one batch alone 4m6s | Medium — concurrency + thread-safety review | No |
+| P18 | Missing `workspace_id` on adjudication decide | ✅ Fixed | 🔴 Was a real cross-tenant entity-merge approval gap | Low — 1 SQL file + 1 method | No |
+| P19 | Source edge counts unindexable `OR`-join | ✅ Fixed | 🔴 Was a hard `ORA-01652` failure (~6.1 GB temp) → 1.71s | Low — 2 SQL files | No — Postgres unconfirmed affected |
 
 **P3 is now the most urgent unfixed risk** — silent data loss with no visible
 error. P1 was believed to be the other urgent unfixed risk (OOM at scale) but
@@ -853,6 +1321,26 @@ with **P12 (graph projection) the single largest cost at 55% of total time**
 — larger than P8 (Link stage) ever was, larger than Resolve+Relate+Discover
 combined. P11 was a latent reliability risk (potential hard failure on large
 documents) rather than a measured slowdown.
+
+**P14-P16 were all found and fixed during a live end-to-end confirm-flow
+investigation (2026-07-28)**, triggered by a real user report that document
+ingestion's "Confirm" button appeared broken. P14 was found by a proactive
+audit prompted by P13's discovery of a similar (read-only) gap; P15 and P16
+were each found live, one immediately after the other, by actually retrying
+the same real customer discovery through to completion rather than stopping
+once the first fix appeared to work.
+
+**P17 was identified, and P18 found and fixed, during a post-implementation
+self-review (2026-07-28)** asked for explicitly after P14-P16 shipped —
+P18 is the same cross-tenant scoping bug class as P14, found by sweeping
+every store class carrying `self._ws` for methods that don't actually use
+it, rather than assuming the P14 audit's three instances were exhaustive.
+
+**P19 was found while checking logs for a real user's Ask query (2026-07-28)**
+— the Ask query itself was fine, but the same log window surfaced a separate
+`ORA-01652` on the Data tab's source catalog page, only now reachable
+because P14-P18 let the SVX workspace's confirm/ingest pipeline finish for
+the first time and produce real relationship volume.
 
 All fixes except P6 can be implemented today without OCI. OCI improves
 each fix but is not required for the initial scale improvements.
@@ -876,6 +1364,12 @@ each fix but is not required for the initial scale improvements.
 | P11 — Embed calls unbatched | Already OCI GenAI; batching applied | Model-id provenance still wrong for OCI embeds (unfixed) |
 | P12 — Graph write 25-row cap | Oracle-specific fix, already applied | None — byte cap remains the real ORA-03106 guard |
 | P13 — CPQ config load N+1 | Batched `neighbors_batch()`, already applied | None — same fix works identically on FalkorDB |
+| P14 — Missing workspace_id scoping | N/A — Python/SQL-side fix, backend-independent | None once fixed |
+| P15 — Discovery summary full deserialize | N/A — query-shape fix, backend-independent | Confirm job's own initial full-fetch still costs ~4 min for very large discoveries (unfixed) |
+| P16 — Oracle RETURNING 16KB JSON limit | Oracle-specific fix, already applied | None — Postgres was never affected |
+| P17 — Schema-FK LLM sequential batches | N/A — same fix applies regardless of backend | Not yet fixed |
+| P18 — Missing workspace_id on adjudication decide | N/A — Python/SQL-side fix, backend-independent | None once fixed |
+| P19 — Source edge counts unindexable `OR`-join | Query-shape fix, already applied to both dialects | None once fixed — Postgres was never confirmed affected |
 
 ---
 
@@ -904,9 +1398,25 @@ run that, before this session's fixes, never completed (2h43m timeout).
 *OCI-mode ingest investigation, including one full measured end-to-end run*
 *Updated: 2026-07-27 — added P13, found and fixed while live-verifying the*
 *Ask-thread Oracle port's CPQ conversation flow*
+*Updated: 2026-07-28 — added P14-P16, found and fixed during a live*
+*document-ingestion confirm-flow investigation triggered by a real user*
+*report, verified end to end against a real 30-file customer discovery*
+*Updated: 2026-07-28 — added P17, identified by timing that same real*
+*confirm job's full 40m56s end-to-end run; not yet fixed*
+*Updated: 2026-07-28 — added P18, found and fixed during a post-*
+*implementation self-review sweep for cross-tenant scoping gaps*
+*Updated: 2026-07-28 — added P19, found and fixed while checking API logs*
+*around a real user's Ask query; verified live against the real SVX*
+*workspace's full 30-source payload (ORA-01652 → 1.71s)*
 *Source analysis: src/aryx/store/entity_store.py, src/aryx/reasoning/engine.py,*
 *src/aryx/resolution/blocking.py, src/aryx/graph/reader.py, src/aryx/pipeline/orchestrate.py,*
 *src/aryx/pipeline/fk_edges.py, src/aryx/resolution/run.py, src/aryx/resolution/adjudicate.py,*
 *src/aryx/store/chunk_store.py, src/aryx/pipeline/embed.py, src/aryx/broker/__init__.py,*
 *src/aryx/api/data_api.py, src/aryx/api/workspace_api.py, src/aryx/graph/oracle_graph_store.py,*
-*src/aryx/cpq/engine.py, src/aryx/graph/oracle_graph_reader.py, src/aryx/ports/protocols.py*
+*src/aryx/cpq/engine.py, src/aryx/graph/oracle_graph_reader.py, src/aryx/ports/protocols.py,*
+*src/aryx/store/datasource_store.py, src/aryx/store/action_store.py,*
+*src/aryx/store/relationship_type_store.py, src/aryx/store/discovery_store.py,*
+*src/aryx/discoveries.py, src/aryx/api/doc_discover_api.py,*
+*src/aryx/pipeline/enrich.py, src/aryx/relationships.py,*
+*src/aryx/store/adjudication_store.py, src/aryx/api/adjudication_api.py,*
+*src/aryx/store/source_metrics_store.py*

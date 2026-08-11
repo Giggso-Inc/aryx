@@ -42,12 +42,12 @@ class RelationshipTypeStore:
                         {"workspace_id": int(workspace_id)})
             return [self._row(r) for r in cur.fetchall()]
 
-    def delete(self, rel_id: int) -> None:
-        """Hard-delete a declared relationship type."""
+    def delete(self, rel_id: int, workspace_id: int) -> None:
+        """Hard-delete a declared relationship type, scoped to workspace_id."""
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(load("delete_relationship_type"),
-                        {"id": int(rel_id)})
-        logger.info("relationship type deleted id=%s", rel_id)
+                        {"id": int(rel_id), "workspace_id": int(workspace_id)})
+        logger.info("relationship type deleted id=%s ws=%s", rel_id, workspace_id)
 
     @staticmethod
     def _row(row: tuple) -> dict[str, Any]:

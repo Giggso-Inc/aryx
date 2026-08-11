@@ -131,8 +131,8 @@ def doc_discover_router() -> APIRouter:
 
     @router.get("/summary/{did}")
     def summary(did: str, workspace_id: int = 1) -> dict[str, Any]:
-        data = discoveries.get(did, workspace_id)
-        return data["summary"] if data else {}
+        result = discoveries.get_summary(did, workspace_id)
+        return result if result is not None else {}
 
     @router.get("/history")
     def history(workspace_id: int = 1) -> list[dict[str, Any]]:
@@ -145,8 +145,12 @@ def doc_discover_router() -> APIRouter:
 
     @router.post("/confirm")
     def confirm(req: ConfirmRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-        data = discoveries.get(req.discovery_id, req.workspace_id)
-        if not data:
+        # Existence/workspace-ownership check only needs the summary, not the
+        # full discovery payload — discoveries.get() would deserialize every
+        # raw file's bytes just to answer "does this exist" (confirmed live:
+        # 246s for a 257MB discovery). The full get() still happens, just
+        # inside _confirm_job()'s background task where it's actually needed.
+        if discoveries.get_summary(req.discovery_id, req.workspace_id) is None:
             logger.warning("doc confirm rejected discovery_id=%s: unknown or expired",
                             req.discovery_id)
             raise HTTPException(404, "unknown discovery or workspace mismatch")
@@ -163,7 +167,7 @@ def doc_discover_router() -> APIRouter:
             disc_store.close()
         logger.info("doc confirm queued did=%s job=%s types=%d files=%d workspace_id=%d",
                     req.discovery_id, job_id, len(req.approved_types), len(req.approved_files),
-                    data.get("workspace_id", 1))
+                    req.workspace_id)
         background_tasks.add_task(_confirm_job, req.discovery_id,
                                   req.approved_types, req.approved_files,
                                   job_id, req.workspace_id, req.restart)
