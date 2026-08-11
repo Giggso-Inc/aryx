@@ -17,7 +17,10 @@ response would be shown, so the correction happens immediately instead.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from aryx.api.ask_api import _reask_stale_constraint_violations
+from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
 
 
@@ -162,3 +165,77 @@ def test_genuine_conflict_reports_instead_of_asking_an_unanswerable_question():
         "productive replacement to ask for"
     )
     assert session.pending_variables == [], "must not mutate pending on a genuine conflict"
+
+
+def test_both_confirmed_data_table_conflict_reasks_naming_both_attrs():
+    """docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_REASK_PLAN_2026_08_10.md
+    -- two hint-mined, real-Data-Table-proven-incompatible values must be
+    surfaced with an explicit re-ask naming both sides, not silently
+    stand (the gap _invalidate_inconsistent_paired_values leaves open
+    when NEITHER side can be auto-corrected). This runs even with NO
+    active constraint rules at all -- data-table conflicts are
+    independent of constraint rules."""
+    bands_attr = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionFrequencyBands_astro",
+        display_label="Frequency Bands", required=False, default_value="",
+        select_type="single", options=[
+            MenuOption(item_value="700/800 MHZ", display_name="700/800 MHz", order=1),
+        ],
+    )
+    band_plus_attr = ConfigAttr(
+        entity_id=2, variable_name="modelSelectionFrequencyBandPlus_astro",
+        display_label="Frequency Band Plus", required=False, default_value="",
+        select_type="single", options=[
+            MenuOption(item_value="700/800 MHZ +", display_name="700/800 MHz +", order=1),
+        ],
+    )
+    attrs = [bands_attr, band_plus_attr]
+    session = CpqSession()
+    session.filled = {
+        "modelSelectionFrequencyBands_astro": "700/800 MHZ",
+        "modelSelectionFrequencyBandPlus_astro": "700/800 MHZ +",
+    }
+    session.display_filled = {
+        "modelSelectionFrequencyBands_astro": "700/800 MHz",
+        "modelSelectionFrequencyBandPlus_astro": "700/800 MHz +",
+    }
+    session.filled_source = {
+        "modelSelectionFrequencyBands_astro": "hint",
+        "modelSelectionFrequencyBandPlus_astro": "user",
+    }
+    session.pending_variables = []
+
+    conflict_pair = {
+        ("modelSelectionFrequencyBands_astro", "modelSelectionFrequencyBandPlus_astro"),
+    }
+    with patch.object(
+        CpqEngine, "find_confirmed_data_table_conflicts", return_value=conflict_pair,
+    ):
+        result = _reask_stale_constraint_violations(
+            session, attrs, con_rules=[], bml_eval=None, workspace_id=7,
+        )
+
+    assert result is not None
+    assert "Rule conflict detected" in result
+    assert "Frequency Bands" in result and "Frequency Band Plus" in result
+    assert "modelSelectionFrequencyBands_astro" not in session.filled
+    assert "modelSelectionFrequencyBandPlus_astro" not in session.filled
+    assert session.pending_variables[:2] == [
+        "modelSelectionFrequencyBands_astro", "modelSelectionFrequencyBandPlus_astro",
+    ]
+    assert session.status == "configuring"
+    assert session.complete is False
+
+
+def test_no_confirmed_data_table_conflict_is_a_noop_with_no_constraint_rules():
+    session = CpqSession()
+    session.filled = {"foo": "bar"}
+    session.filled_source = {"foo": "user"}
+    with patch.object(
+        CpqEngine, "find_confirmed_data_table_conflicts", return_value=set(),
+    ):
+        result = _reask_stale_constraint_violations(
+            session, attrs=[], con_rules=[], bml_eval=None, workspace_id=7,
+        )
+    assert result is None
+    assert session.filled == {"foo": "bar"}

@@ -159,6 +159,37 @@ def test_local_dir_source_no_match_returns_none(tmp_path):
     assert source.get("Anything") is None
 
 
+def test_local_dir_source_matches_the_real_filename_derived_catalog_prefix(tmp_path):
+    """Live bug (2026-08-08): the real ingested catalog_prefix is whatever
+    aryx.pipeline.doc_discovery._stem_type derived from the source XML's
+    OWN filename ("ApxnextCnofigdata", from "APXNext_CnofigData.xml",
+    typo included) -- a completely different naming scheme than the
+    human-authored layout export's filename ("Config Layout APX Next.
+    txt"). Neither is a raw substring of the other; only stripping the
+    filename's own "config"/"layout" boilerplate surfaces the shared
+    "apxnext" core both sides agree on. The file, the env var, and
+    load_layout_display_order's own wiring were all already correct --
+    only this match ever silently failed."""
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "Config Layout APX Next.txt").write_text(_layout_json([_leaf("a", False)]))
+    source = LocalDirLayoutFileSource(tmp_path)
+    assert source.get("ApxnextCnofigdata") is not None
+
+
+def test_local_dir_source_boilerplate_stripping_does_not_create_false_positives(tmp_path):
+    """A catalog_prefix that doesn't genuinely share a core with a given
+    layout filename must still correctly NOT match it, even after
+    boilerplate stripping -- e.g. "ApxnextCnofigdata" must not spuriously
+    match an unrelated "AstroApx" layout file."""
+    from aryx.cpq.layout_source import LocalDirLayoutFileSource
+
+    (tmp_path / "Config Layout AstroApx.txt").write_text(_layout_json([_leaf("a", False)]))
+    source = LocalDirLayoutFileSource(tmp_path)
+    assert source.get("ApxnextCnofigdata") is None
+    assert source.get("AstroApx") is not None
+
+
 # ── §2: summary/payload filtering + ordering ────────────────────────────────
 
 def _attrs_for_filter_test() -> list[ConfigAttr]:
@@ -243,6 +274,52 @@ def test_auto_fill_skips_unresolvable_non_anchor_attr_when_layout_loaded():
     )
     assert pending == []
     assert "someOptionalChoice_astro" not in filled
+
+
+def test_auto_fill_asks_an_ungoverned_base_model_attr_even_when_layout_loaded():
+    """Live bug (2026-08-08): modelSelectionbaseModel_astro -- a real,
+    16-real-option, ZERO-governing-rule menu attr -- was identically
+    shaped to test_auto_fill_skips_unresolvable_non_anchor_attr_when_
+    layout_loaded's "someOptionalChoice_astro" fixture above, and got
+    silently skipped once §2c's display_order-gated behavior activated,
+    dropping a genuine, structurally load-bearing customer decision.
+    "basemodel" is carved out via the same fragment-match convention
+    _DECISION_REQUIRED_KEYS already uses for country/region -- a
+    structural naming convention, not a literal per-catalog name."""
+    base_model = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionbaseModel_astro",
+        display_label="Base Model", required=False, default_value="",
+        select_type="single", options=_menu("H45TGU9PW8AN", "H55TGT9PW8AN"),
+    )
+    eng = CpqEngine()
+    _, _, pending = eng.auto_fill(
+        [base_model], {}, display_order={"modelSelectionbaseModel_astro": 0},
+    )
+    assert [a.variable_name for a in pending] == ["modelSelectionbaseModel_astro"]
+
+
+def test_auto_fill_asks_base_model_even_when_it_is_governed():
+    """Live bug (2026-08-08): a "basemodel"-named attr CAN be `governed`
+    (some hiding rule references it as a condition variable) while still
+    never having its value resolved by anything -- §2f's own comment
+    already establishes "governed" only means "some rule cares about this
+    attr," not "a rule decided its value." An earlier version of this
+    carve-out required `not in governed`, based on an incomplete manual
+    trace that missed this; confirmed live the real attr WAS governed and
+    still got silently skipped. Unconditional on governed status now,
+    matching every other decision-key fragment/anchor in the same
+    expression (none of them check governed status either)."""
+    base_model = ConfigAttr(
+        entity_id=1, variable_name="modelSelectionbaseModel_astro",
+        display_label="Base Model", required=False, default_value="",
+        select_type="single", options=_menu("H45TGU9PW8AN", "H55TGT9PW8AN"),
+    )
+    eng = CpqEngine()
+    _, _, pending = eng.auto_fill(
+        [base_model], {}, display_order={"modelSelectionbaseModel_astro": 0},
+        governed_ids={1}, rule_governed_ids={1},
+    )
+    assert [a.variable_name for a in pending] == ["modelSelectionbaseModel_astro"]
 
 
 def test_auto_fill_asks_same_unresolvable_attr_without_layout_map():
@@ -569,19 +646,24 @@ def test_unattributed_fill_still_uses_generic_tag(monkeypatch):
         assert rec_fires[-1]["rule_type"] in ("auto_fill", "recommendation")
 
 
-# ── §2f: eliminate the governed default-or-first blind-fill ────────────────
+# ── §2f (superseded 2026-08-09): governed default-or-first blind-fill ──────
+# now applies WITH a layout map loaded too, per explicit instruction --
+# an attr with no rule-resolved default gets the first real eligible
+# option instead of falling through to `pending`, same as without a
+# layout map, just tagged with a distinct traceable source.
 
-def test_governed_single_select_blind_fill_skipped_when_layout_loaded():
-    """No recommendation satisfied, no default_value -- today blind-fills
-    the first option because the attr is merely 'governed' (some rule
-    targets it). Under §2f (layout loaded), must skip instead."""
+def test_governed_single_select_blind_fills_first_option_when_layout_loaded():
+    """No recommendation satisfied, no default_value -- picks the first
+    real eligible option (source="default_first_available") instead of
+    skipping to `pending`, same as the no-layout-map case below."""
     attr = ConfigAttr(entity_id=1, variable_name="a", display_label="A",
                        required=False, default_value="", select_type="single", options=_menu("V1", "V2"))
     eng = CpqEngine()
     filled, _display, _pending = eng.auto_fill(
         [attr], {}, governed_ids={1}, rule_governed_ids={1}, display_order={"a": 0},
     )
-    assert "a" not in filled
+    assert filled.get("a") == "V1"
+    assert _pending == []
 
 
 def test_governed_single_select_still_blind_fills_without_layout_map():
@@ -650,8 +732,13 @@ def test_default_value_used_when_it_survives_an_active_constraint():
 
 
 def test_default_value_not_used_when_it_does_not_survive_the_constraint():
-    """The default_value exists but was excluded by the active
-    constraint -- still skipped, per §2f, not force-filled anyway."""
+    """The default_value exists but was excluded by the active constraint
+    -- structurally distinct from "no default value at all" (this
+    session's new instruction only covers the latter): §2g's own elif
+    condition (`_valid(attr.default_value)` is True for "X") still claims
+    this branch even though its internal match fails, so §2f's sibling
+    elif never gets a chance to run here -- stays unfilled, not
+    force-picked from the surviving constrained options."""
     attr = ConfigAttr(entity_id=1, variable_name="a", display_label="A",
                        required=False, default_value="X", select_type="single",
                        options=_menu("UHF", "VHF", "X"))
@@ -681,9 +768,10 @@ def test_default_value_matches_constrained_option_case_insensitively():
     assert filled.get("a") == "700/800 MHz"
 
 
-def test_no_default_value_with_active_constraint_still_skipped():
-    """Constraint active, no default_value at all -- §2f's plain skip,
-    no §2g carve-out applies (nothing to survive the constraint)."""
+def test_no_default_value_with_active_constraint_picks_first_constrained_option():
+    """Constraint active, no default_value at all -- no §2g carve-out
+    applies (nothing to survive the constraint), so §2f's first-eligible
+    pick uses the first of the CONSTRAINED options, not the full menu."""
     attr = ConfigAttr(entity_id=1, variable_name="a", display_label="A",
                        required=False, default_value="", select_type="single",
                        options=_menu("UHF", "VHF", "700/800 MHz"))
@@ -692,7 +780,7 @@ def test_no_default_value_with_active_constraint_still_skipped():
         [attr], {}, constrained_opts={1: ["UHF", "VHF", "700/800 MHz"]},
         display_order={"a": 0}, governed_ids={1},
     )
-    assert "a" not in filled
+    assert filled.get("a") == "UHF"
 
 
 def test_constraint_surviving_default_reaches_via_step3_without_layout_map():

@@ -296,14 +296,166 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     return None
 
 
+# docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md -- a small,
+# separate recursive parser for conditions that MIX AND and OR (e.g. `(A OR B
+# OR C) AND D`), which _parse_condition above deliberately doesn't handle (it
+# requires a UNIFORM chain). Tried only as a fallback when _parse_condition
+# already failed -- every condition _parse_condition already resolves keeps
+# using that exact code path, unchanged. Confirmed live (real catalog survey,
+# workspace 39005): 13 real hiding/recommendation rules fail to parse for
+# exactly this reason, including the rule that hides Frequency Bands for
+# APX NEXT MULTI/XE MULTI/XN ALL -- `_BoolExpr` is a distinct shape from
+# _parse_condition's flat list specifically so this stays purely additive.
+@dataclasses.dataclass
+class _BoolExpr:
+    """A parsed boolean expression node: "cmp" (leaf, a single comparison)
+    or "and"/"or" (internal, `parts` are child _BoolExpr nodes)."""
+
+    kind: str
+    parts: list["_BoolExpr"] | None = None
+    var: str | None = None
+    op: str | None = None
+    value: str | None = None
+
+
+_TOP_LEVEL_OR_RE = re.compile(r'\bOR\b|\|\|', re.IGNORECASE)
+_TOP_LEVEL_AND_RE = re.compile(r'\bAND\b|&&', re.IGNORECASE)
+
+
+def _split_top_level(text: str, keyword_re: re.Pattern) -> list[str] | None:
+    """Split `text` at occurrences of `keyword_re` sitting at paren-depth 0
+    and outside any "..." quoted string. Returns None when no such
+    occurrence exists (there may still be matches nested inside parens or a
+    quoted value, which must NOT trigger a split)."""
+    depth = 0
+    in_quotes = False
+    parts: list[str] = []
+    last = 0
+    i = 0
+    n = len(text)
+    found = False
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if in_quotes:
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0:
+            m = keyword_re.match(text, i)
+            if m:
+                parts.append(text[last:i])
+                last = m.end()
+                i = m.end()
+                found = True
+                continue
+        i += 1
+    if not found:
+        return None
+    parts.append(text[last:])
+    return parts
+
+
+def _parse_boolean_expr(cond: str) -> "_BoolExpr | None":
+    """Recursive-descent parser for a mixed AND/OR condition, standard
+    precedence (AND binds tighter than OR — matches how every real mixed
+    script found in the live catalog survey is actually written). Returns
+    None if any part doesn't reduce to a single comparison or a further
+    AND/OR split — never guesses a shape it can't fully account for."""
+    cond = cond.strip()
+    while True:
+        # _strip_wrapping_parens only removes ONE layer per call — the real
+        # "Hide Frequency Bands..." script's second AND-part is DOUBLE-
+        # wrapped (`((modelSelectionbaseModel_astro<>""))`), confirmed live.
+        # Loop to stability so a leftover single layer doesn't make the
+        # final _CMP_RE match fail (it anchors on a leading word character,
+        # not "(").
+        stripped = _strip_wrapping_parens(cond)
+        if stripped == cond:
+            break
+        cond = stripped
+    or_parts = _split_top_level(cond, _TOP_LEVEL_OR_RE)
+    if or_parts is not None:
+        parsed = [_parse_boolean_expr(p) for p in or_parts]
+        if any(p is None for p in parsed):
+            return None
+        return _BoolExpr(kind="or", parts=parsed)
+    and_parts = _split_top_level(cond, _TOP_LEVEL_AND_RE)
+    if and_parts is not None:
+        parsed = [_parse_boolean_expr(p) for p in and_parts]
+        if any(p is None for p in parsed):
+            return None
+        return _BoolExpr(kind="and", parts=parsed)
+    m = _CMP_RE.match(cond)
+    if not m:
+        return None
+    return _BoolExpr(
+        kind="cmp", var=m.group(1), op=m.group(2),
+        value=m.group(3) if m.group(3) is not None else m.group(4),
+    )
+
+
+def _eval_boolean_expr(expr: "_BoolExpr", variables: dict[str, str]) -> tuple[bool | None, bool]:
+    """Recursively evaluate a _BoolExpr. Returns (result, blocked_by_missing_
+    var) — same per-condition contract _first_matching_branch's flat-chain
+    evaluation already uses, generalized to nesting. Short-circuits the same
+    way: an "or" node with any confirmed-True child is True regardless of a
+    sibling's missing variable; symmetrically an "and" node with any
+    confirmed-False child is False regardless of a sibling's missing
+    variable. Only genuinely undetermined when nothing short-circuits AND
+    something is missing."""
+    if expr.kind == "cmp":
+        actual = variables.get(expr.var)
+        if actual is None:
+            return None, True
+        hit = actual.strip().lower() == (expr.value or "").strip().lower()
+        if expr.op in ("<>", "!="):
+            hit = not hit
+        return hit, False
+
+    child_results: list[bool | None] = []
+    any_missing = False
+    for part in expr.parts or []:
+        result, missing = _eval_boolean_expr(part, variables)
+        if missing:
+            any_missing = True
+        child_results.append(result)
+
+    if expr.kind == "or":
+        if any(r is True for r in child_results):
+            return True, False
+        if any_missing:
+            return None, True
+        return False, False
+    # "and"
+    if any(r is False for r in child_results):
+        return False, False
+    if any_missing:
+        return None, True
+    return True, False
+
+
 _BARE_RETURN_RE = re.compile(r'\A\s*return\s+.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
 
 
-def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
+def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] | None:
     """Parse an if / else-if / else chain into [(condition, body)].
 
-    condition is the _parse_condition output, or None for the else branch.
-    Returns None when the script doesn't fit the Tier-1 idiom.
+    condition is _parse_condition's flat-list output, a _BoolExpr (only for
+    a condition that mixed AND/OR and needed the separate recursive parser —
+    docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md), or None
+    for the else branch. Returns None when the script doesn't fit the Tier-1
+    idiom at all.
     """
     script = _strip_block_comments(_strip_line_comments(script))
     branches: list[tuple[list | None, str]] = []
@@ -357,6 +509,13 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
         if _TIER1_BLOCKERS.search(cond_text):
             return None
         cond = _parse_condition(cond_text)
+        if cond is None:
+            # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
+            # -- fallback only: _parse_condition requires a UNIFORM AND-only
+            # or OR-only chain and returns None for a mixed condition (e.g.
+            # `(A OR B OR C) AND D`). Every condition _parse_condition
+            # already resolves never reaches this line.
+            cond = _parse_boolean_expr(cond_text)
         if cond is None:
             return None
         brace = text.find("{", cond_end)
@@ -740,6 +899,17 @@ def _first_matching_branch(
     for cond, body in branches:
         if cond is None:
             return body, False
+        if isinstance(cond, _BoolExpr):
+            # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
+            # -- this branch's condition mixed AND and OR and needed the
+            # separate recursive parser/evaluator; every condition
+            # _parse_condition itself resolves never takes this path.
+            result, blocked = _eval_boolean_expr(cond, variables)
+            if result is None:
+                return None, blocked
+            if result:
+                return body, False
+            continue
         # The whole chain is uniformly AND or OR (_parse_condition's own
         # contract) — only the first tuple's joiner is "" (a placeholder,
         # not "no chain"), so read the chain's real kind from any other
@@ -1128,6 +1298,81 @@ def evaluate_hide_master_list(
     return m.group("literal") not in master.split(sep), False
 
 
+# Idiom D — the ungated sibling of Idiom C: no outer `if(MASTER<>"")` guard
+# at all, and an extra nested base-model check inside the else branch.
+# Confirmed live shape of Carrier Selection / Wireless Carrier's real
+# hiding-rule scripts (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_
+# 2026_08_07.md §1.3/§2.3):
+#
+#   ARR = SPLIT(MASTER, SEP);
+#   IDX = findinarray(ARR, "LITERAL");
+#   if (IDX == -1) {
+#       return true;
+#   }
+#   else {
+#       if (BASEMODEL == "") {
+#           return true;
+#       }
+#   }
+#   return false;
+#
+# Neither Idiom C's regex (requires the outer guard) nor
+# _first_matching_branch's if/else-if/else chain parser (built for
+# branch-vs-branch comparisons, not a nested nullary SPLIT/findinarray)
+# recognize this shape — it previously fell through both to Tier 2 (LLM),
+# which has no reason to know an empty MASTER here means "Oracle's runtime
+# master-string sync was never captured for this catalog" rather than "no
+# entry, confidently hide". Reporting a confident hide silently dropped the
+# attribute before it ever reached the real ingested Data Table fallback
+# (data_table_resolver.py) that DOES have rows for it in this catalog.
+_HIDE_MASTER_LIST_UNGUARDED_RE = re.compile(
+    r'(?P<arr>\w+)\s*=\s*SPLIT\s*\(\s*(?P<master>\w+)\s*,\s*(?P<sep>\w+)\s*\)\s*;\s*'
+    r'(?P<idx>\w+)\s*=\s*findinarray\s*\(\s*(?P=arr)\s*,\s*"(?P<literal>[^"]*)"\s*\)\s*;\s*'
+    r'if\s*\(\s*(?P=idx)\s*==\s*-1\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'else\s*\{\s*'
+    r'if\s*\(\s*(?P<basemodel>\w+)\s*==\s*""\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'\}\s*'
+    r'return\s+false\s*;\s*',
+    re.IGNORECASE,
+)
+
+
+def evaluate_hide_master_list_unguarded(
+    script: str, variables: dict[str, str],
+) -> tuple[bool | None, bool]:
+    """Tier 1.5 (Idiom D). Returns (hide, blocked_by_missing_var) — same
+    contract as the other Tier-1 evaluators. (None, False) means the
+    script isn't this idiom (try the next tier). An empty/unset MASTER
+    reports (None, True) — blocked/unknown — NOT a confident hide, since
+    (unlike Idiom C) there is no outer guard making that the script's own
+    deterministic answer; here it's genuinely missing runtime data. An
+    empty BASEMODEL, by contrast, is a real "nothing selected yet" state
+    (same convention used everywhere else in this codebase) and DOES
+    report a confident hide.
+    """
+    m = _HIDE_MASTER_LIST_UNGUARDED_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    if not m:
+        return None, False
+    master = variables.get(m.group("master"))
+    sep = variables.get(m.group("sep"))
+    if master is None or sep is None:
+        return None, True
+    if master == "":
+        return None, True
+    if m.group("literal") not in master.split(sep):
+        return True, False
+    base_model = variables.get(m.group("basemodel"))
+    if base_model is None:
+        return None, True
+    if base_model == "":
+        return True, False
+    return False, False
+
+
 def evaluate_tier1(
     script: str, variables: dict[str, str],
 ) -> tuple[list[str] | None, bool]:
@@ -1155,12 +1400,16 @@ def evaluate_hide_tier1(
     the exact semantics of each case; True means the target attr should be
     hidden, False means it should stay visible.
 
-    Tries Idiom C (evaluate_hide_master_list) first — a different grammar
-    shape _first_matching_branch's if/else-if/else chain parser was never
-    meant to recognize — and falls through to the chain parser only when
-    Idiom C reports "not this shape" ((None, False)).
+    Tries Idiom C (evaluate_hide_master_list), then Idiom D
+    (evaluate_hide_master_list_unguarded) — two different grammar shapes
+    _first_matching_branch's if/else-if/else chain parser was never meant
+    to recognize — and falls through to the chain parser only when neither
+    idiom matches ((None, False) from both).
     """
     result, blocked = evaluate_hide_master_list(script, variables)
+    if blocked or result is not None:
+        return result, blocked
+    result, blocked = evaluate_hide_master_list_unguarded(script, variables)
     if blocked or result is not None:
         return result, blocked
     body, blocked = _first_matching_branch(script, variables)

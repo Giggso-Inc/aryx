@@ -34,6 +34,18 @@ _SCOPE_FUZZY_SUGGEST = 0.55
 _SCOPE_FUZZY_TOP_N = 3
 _SCOPE_MISS_LOOP_EXIT = 2
 
+# Below this, a single "miss"-tier suggestion is coincidental character
+# overlap, not a real near-miss -- confirmed live (2026-08-08): resending
+# an entire unrelated sentence ("Give me quote of APXNEXT with 10 qty for
+# US") as the reply to a pending Product question scored just over
+# _SCOPE_FUZZY_SUGGEST (0.55) against "APX NEXT (International)" purely
+# because both strings happen to share "APX NEXT" — nowhere near a genuine
+# typo/abbreviation match. Framing that as a confident "did you mean X?"
+# misrepresents the actual signal. Sits above the bare suggest floor but
+# below the real accept threshold, the same "wide middle band is noise"
+# shape as _PRODUCT_FUZZY_SUGGEST_THRESHOLD in engine.py.
+_DID_YOU_MEAN_CONFIDENT_FLOOR = 0.65
+
 _SCOPE_KINDS = frozenset({
     "family_disambiguation",
     "product_options",
@@ -59,6 +71,11 @@ class ScopeResolve:
     matched: str | None
     suggestions: list[str]
     tier: str  # exact | partial | fuzzy | miss | empty
+    # Top candidate's match strength when tier == "miss" (0.0 otherwise /
+    # not meaningful for exact|partial|fuzzy, which already resolved).
+    # Lets a caller distinguish a near-miss suggestion from coincidental
+    # character overlap on a long, unrelated reply.
+    score: float = 0.0
 
 
 def clear_pending_scope(session: Any) -> None:
@@ -193,7 +210,10 @@ def resolve_against_scope(
             longest = tops[0]
             if sum(1 for t in tops if len(_norm(t)) == len(_norm(longest))) == 1:
                 return ScopeResolve(longest, [], "partial")
-        return ScopeResolve(None, tops[:top_n], "miss")
+        # Ambiguous, but every one of these is a genuine substring hit
+        # (not coincidental fuzzy overlap) -- score=1.0 keeps "did you
+        # mean" phrasing meaningful when this collapses to a single item.
+        return ScopeResolve(None, tops[:top_n], "miss", 1.0)
 
     # (iii) Fuzzy edit-distance / ratio against each candidate
     scored: list[tuple[str, float]] = []
@@ -218,14 +238,14 @@ def resolve_against_scope(
         # Unique clear winner
         if len(scored) == 1 or scored[0][1] - scored[1][1] >= 0.05:
             return ScopeResolve(scored[0][0], [], "fuzzy")
-        # Near-ties → suggestions
+        # Near-ties → suggestions (top score already cleared fuzzy_accept)
         top = [c for c, sc in scored if sc >= fuzzy_suggest][:top_n]
-        return ScopeResolve(None, top or [scored[0][0]], "miss")
+        return ScopeResolve(None, top or [scored[0][0]], "miss", scored[0][1])
 
     suggestions = [c for c, sc in scored if sc >= fuzzy_suggest][:top_n]
     if not suggestions and scored:
         suggestions = [scored[0][0]]
-    return ScopeResolve(None, suggestions, "miss")
+    return ScopeResolve(None, suggestions, "miss", scored[0][1] if scored else 0.0)
 
 
 def format_did_you_mean(
@@ -234,8 +254,21 @@ def format_did_you_mean(
     *,
     numbered: bool = False,
     scope_label: str = "",
+    confident_single: bool = False,
 ) -> str:
-    """Scoped re-ask — never mentions the full catalog."""
+    """Scoped re-ask — never mentions the full catalog.
+
+    confident_single — only meaningful when exactly one suggestion is
+    passed. True keeps the "did you mean **X**?" phrasing (a genuine
+    near-miss: a real substring hit, or a fuzzy score close to the accept
+    threshold). False renders the same single suggestion as a plain
+    numbered pick instead — confirmed live (2026-08-08): resending an
+    entire unrelated sentence as a reply scored just over the bare
+    fuzzy-suggest floor against one real option purely by coincidental
+    character overlap, and phrasing that as a confident guess overstated
+    the actual match quality. The caller (_scoped_reask_response) decides
+    this from the underlying ScopeResolve.score/tier, not this function.
+    """
     reply_s = (reply or "").strip() or "that"
     label_bit = f" for **{scope_label}**" if scope_label else ""
     if numbered or len(suggestions) > 3:
@@ -250,10 +283,16 @@ def format_did_you_mean(
             f"Please reply with one of the options I listed."
         )
     if len(suggestions) == 1:
+        if confident_single:
+            return (
+                f"I didn't get **{reply_s}**{label_bit} — did you mean "
+                f"**{suggestions[0]}**? Reply with the name, or something "
+                f"else from the same list."
+            )
         return (
-            f"I didn't get **{reply_s}**{label_bit} — did you mean "
-            f"**{suggestions[0]}**? Reply with the name, or something else "
-            f"from the same list."
+            f"I didn't get **{reply_s}**{label_bit} as a match. "
+            f"Please pick one of these (same list as before):\n\n"
+            f"1. **{suggestions[0]}**"
         )
     sug = ", ".join(f"**{s}**" for s in suggestions)
     return (
@@ -294,3 +333,11 @@ def log_scope_lost(
 
 def scope_loop_exit_threshold() -> int:
     return _SCOPE_MISS_LOOP_EXIT
+
+
+def is_confident_scope_suggestion(res: ScopeResolve) -> bool:
+    """True when a single "miss"-tier suggestion is a genuine near-miss
+    (real substring hit, or a fuzzy score near the accept threshold) --
+    False when it only cleared the bare suggestion floor, the shape a long,
+    unrelated reply's coincidental character overlap produces."""
+    return res.tier == "miss" and res.score >= _DID_YOU_MEAN_CONFIDENT_FLOOR

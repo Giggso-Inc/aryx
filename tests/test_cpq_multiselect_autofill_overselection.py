@@ -44,8 +44,38 @@ smaller set.
 """
 from __future__ import annotations
 
+import pytest
+
+from aryx.cpq import data_table_resolver
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption
+
+
+@pytest.fixture(autouse=True)
+def _clear_tables_cache():
+    data_table_resolver._clear_tables_cache()
+    yield
+    data_table_resolver._clear_tables_cache()
+
+
+class _FakeRdb:
+    def __init__(self, tables: dict[str, list[dict]]):
+        self._tables = tables
+
+    def list_ontology_types(self, workspace_id):
+        return list(self._tables.keys())
+
+    def fetch_entities_by_type(self, workspace_id, type_suffix, catalog_prefix=""):
+        rows = self._tables.get(type_suffix, [])
+        return [(i, r) for i, r in enumerate(rows, start=1)]
+
+    def fetch_entities_by_exact_type(self, workspace_id, ontology_type):
+        rows = self._tables.get(ontology_type, [])
+        return [(i, r) for i, r in enumerate(rows, start=1)]
+
+
+def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
+    monkeypatch.setattr(data_table_resolver, "get_cpq_rdb", lambda: _FakeRdb(tables))
 
 
 def _menu(*values: str) -> list[MenuOption]:
@@ -374,3 +404,189 @@ def test_confirmed_empty_multiselect_can_satisfy_a_sibling_disjoint_from_rule():
         filled_multi={},
     )
     assert constrained_unresolved.get(package_type_attr.entity_id) == ["BULK XE", "SINGLE XE"]
+
+
+def test_unconstrained_governed_multiselect_blind_picks_even_with_layout_loaded():
+    """docs/CPQ_MULTISELECT_GOVERNED_NO_MATCH_ASK_PLAN_2026_08_10.md.
+
+    Live bug: carrierSelectionMultiSelect_astro (real attrSequence Data
+    Table coverage, 6 real carrier options, no active constraint, no
+    recommendation fires, no default_value) was missing entirely from a
+    real BOM payload -- not filled, not asked. Root cause: `elif
+    display_order is not None: pass` intercepted the genuinely-unconstrained
+    case BEFORE it could ever reach the existing, already-correct
+    `is_unconstrained and candidate_opts` blind-pick a few lines below,
+    purely because a layout map happened to be loaded (the normal,
+    always-true production case). Every existing test in this file omits
+    display_order entirely, which is exactly why this gap was invisible
+    until a real container replay surfaced it."""
+    attr = ConfigAttr(
+        entity_id=20, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier Selection", required=False, default_value="",
+        select_type="multi",
+        options=_menu("ATT/FIRSTNET", "T MOBILE", "VERIZON"),
+    )
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    source: dict[str, str] = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=None,
+        governed_ids={20}, rule_governed_ids={20},
+        already_filled_multi=multi, filled_source=source,
+        display_order={"carrierSelectionMultiSelect_astro": 5},
+    )
+    assert multi.get("carrierSelectionMultiSelect_astro") == ["ATT/FIRSTNET"]
+    assert source.get("carrierSelectionMultiSelect_astro") == "default_first_available"
+
+
+def test_constrained_ambiguous_multiselect_still_stays_empty_with_layout_loaded():
+    """Regression lock: the narrowed `pass` condition must not accidentally
+    let the CONSTRAINED-but-ambiguous case (a real rule narrowed the menu
+    to 2+ options, just not exactly one) fall through to a blind pick.
+    Confirmed identical to this exact scenario's pre-fix behavior (verified
+    via `git stash` comparison): with a layout map loaded, this case was
+    already left absent from filled_multi entirely (not explicitly `[]` --
+    that only happens without a layout map, via a different, later `else`
+    this scenario never reaches either way) -- this fix must not touch that
+    at all, only the genuinely-unconstrained shape below it."""
+    attr = ConfigAttr(
+        entity_id=21, variable_name="additionalSystemEnhancementFeatureType_astro",
+        display_label="Additional System Enhancement Feature Type",
+        required=False, default_value="", select_type="multi",
+        options=_menu(
+            "DISABLE CLOUD SERVICES", "DELETE NARROWBANDING-WAIVER REQUIRED",
+            "ICE KIT", "OPTIONAL EMERGENCY TONE", "SEQUENTIAL SERIAL NUMBER",
+        ),
+    )
+    constrained_opts = {21: [
+        "DISABLE CLOUD SERVICES", "ICE KIT", "OPTIONAL EMERGENCY TONE",
+    ]}  # 3 of 5 remain -- ambiguous, not exactly one
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=constrained_opts,
+        governed_ids={21}, rule_governed_ids={21}, already_filled_multi=multi,
+        display_order={"additionalSystemEnhancementFeatureType_astro": 5},
+    )
+    assert multi.get("additionalSystemEnhancementFeatureType_astro") is None
+
+
+def test_blind_pick_uses_the_real_narrowed_whitelist_not_raw_catalog_order(monkeypatch):
+    """docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_10.md.
+
+    Live bug: carrierSelectionMultiSelect_astro's blind-pick used the raw
+    catalog menu order, which can include a real, data-proven-ILLEGAL
+    option for the current context. Replays that exact shape: the raw
+    catalog's FIRST option ("BELL CANADA") is real-data-illegal for this
+    destination country; the real Data Table narrows the legal set to 2
+    other options. The narrowed set's first member must be picked, not the
+    raw catalog's first member."""
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXT", "BaseModel": "H55TGT9PW8AN",
+             "attr1": "carrierSelectionMultiSelect_astro", "val1": "BELL CANADA",
+             "attr2": "ultimateDestinationCountry", "val2": "CA"},
+            {"CPQModel": "APXNEXT", "BaseModel": "H55TGT9PW8AN",
+             "attr1": "carrierSelectionMultiSelect_astro", "val1": "ATT/FIRSTNET",
+             "attr2": "ultimateDestinationCountry", "val2": "US"},
+            {"CPQModel": "APXNEXT", "BaseModel": "H55TGT9PW8AN",
+             "attr1": "carrierSelectionMultiSelect_astro", "val1": "T MOBILE",
+             "attr2": "ultimateDestinationCountry", "val2": "US"},
+        ],
+    })
+    attr = ConfigAttr(
+        entity_id=30, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier", required=False, default_value="",
+        select_type="multi",
+        options=[
+            MenuOption(item_value="BELL CANADA", display_name="Bell Canada", order=1),
+            MenuOption(item_value="ATT/FIRSTNET", display_name="ATT/FirstNet", order=2),
+            MenuOption(item_value="T MOBILE", display_name="T-Mobile", order=3),
+        ],
+    )
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    source: dict[str, str] = {}
+    eng.auto_fill(
+        [attr], hints={},
+        already_filled={
+            "modelSelectionbaseModel_astro": "H55TGT9PW8AN",
+            "productSelectionProduct_all": "APX NEXT MULTI",
+            "ultimateDestinationCountry": "US",
+        },
+        governed_ids={30}, rule_governed_ids={30},
+        already_filled_multi=multi, filled_source=source,
+        display_order={"carrierSelectionMultiSelect_astro": 5},
+        workspace_id=7,
+    )
+    assert multi.get("carrierSelectionMultiSelect_astro") == ["ATT/FIRSTNET"], (
+        "must pick from the real narrowed legal set (ATT/FIRSTNET, T MOBILE), "
+        "never BELL CANADA -- real data proves it illegal for this US order, "
+        "even though it's the raw catalog's first-listed option"
+    )
+    assert source.get("carrierSelectionMultiSelect_astro") == "default_first_available"
+
+
+def test_blind_pick_falls_to_empty_when_whitelist_confirms_zero_legal_values(monkeypatch):
+    """Real Data Table coverage exists for this attr/context but every row's
+    condition fails to match -- a confirmed, real "nothing is legal right
+    now" answer, not something to guess past."""
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            {"CPQModel": "APXNEXT", "BaseModel": "H55TGT9PW8AN",
+             "attr1": "carrierSelectionMultiSelect_astro", "val1": "BELL CANADA",
+             "attr2": "ultimateDestinationCountry", "val2": "CA"},
+        ],
+    })
+    attr = ConfigAttr(
+        entity_id=31, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier", required=False, default_value="",
+        select_type="multi",
+        options=[
+            MenuOption(item_value="BELL CANADA", display_name="Bell Canada", order=1),
+            MenuOption(item_value="ATT/FIRSTNET", display_name="ATT/FirstNet", order=2),
+        ],
+    )
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={},
+        already_filled={
+            "modelSelectionbaseModel_astro": "H55TGT9PW8AN",
+            "productSelectionProduct_all": "APX NEXT MULTI",
+            "ultimateDestinationCountry": "US",  # doesn't match the one row's "CA"
+        },
+        governed_ids={31}, rule_governed_ids={31}, already_filled_multi=multi,
+        display_order={"carrierSelectionMultiSelect_astro": 5},
+        workspace_id=7,
+    )
+    assert multi.get("carrierSelectionMultiSelect_astro") == []
+
+
+def test_blind_pick_unchanged_when_no_table_coverage_at_all(monkeypatch):
+    """No ingested Data Table row at all for this attr -- raw catalog-order
+    pick, exactly today's pre-whitelist-narrowing behavior. Regression lock
+    for the earlier CPQ_MULTISELECT_GOVERNED_NO_MATCH_ASK_PLAN fix."""
+    _patch_rdb(monkeypatch, {"WhitelistTest": []})
+    attr = ConfigAttr(
+        entity_id=32, variable_name="carrierSelectionMultiSelect_astro",
+        display_label="Carrier", required=False, default_value="",
+        select_type="multi",
+        options=[
+            MenuOption(item_value="VERIZON", display_name="Verizon", order=1),
+            MenuOption(item_value="ATT/FIRSTNET", display_name="ATT/FirstNet", order=2),
+        ],
+    )
+    eng = CpqEngine()
+    multi: dict[str, list[str]] = {}
+    eng.auto_fill(
+        [attr], hints={},
+        already_filled={
+            "modelSelectionbaseModel_astro": "H55TGT9PW8AN",
+            "productSelectionProduct_all": "APX NEXT MULTI",
+        },
+        governed_ids={32}, rule_governed_ids={32}, already_filled_multi=multi,
+        display_order={"carrierSelectionMultiSelect_astro": 5},
+        workspace_id=7,
+    )
+    assert multi.get("carrierSelectionMultiSelect_astro") == ["VERIZON"]

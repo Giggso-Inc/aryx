@@ -1,7 +1,10 @@
 """Unit tests for post-failure prevention guards (session/BOM/summary/telemetry)."""
 from __future__ import annotations
 
-from aryx.cpq.bom_gate import check_provenance, recheck_constraints, validate_before_payload
+from aryx.cpq.bom_gate import (
+    check_provenance, find_missing_required_fields, recheck_constraints,
+    validate_before_payload,
+)
 from aryx.cpq.session_guard import (
     CLARIFY_STREAK_MAX,
     HISTORY_CAP,
@@ -26,11 +29,14 @@ from aryx.cpq.telemetry import (
 )
 
 
-def _attr(vn: str, label: str, options: list[tuple[str, str]]) -> ConfigAttr:
+def _attr(
+    vn: str, label: str, options: list[tuple[str, str]], *,
+    required: bool = False, select_type: str = "single",
+) -> ConfigAttr:
     opts = [MenuOption(item_value=iv, display_name=dn) for iv, dn in options]
     return ConfigAttr(
         entity_id=1, variable_name=vn, display_label=label,
-        required=False, default_value="", options=opts,
+        required=required, default_value="", options=opts, select_type=select_type,
     )
 
 
@@ -99,6 +105,81 @@ def test_bom_gate_hard_fail_never_ok_on_bad_value():
     result = validate_before_payload(engine, [attr], s, [], None)
     assert result.ok is False
     assert "blocked" in result.catch_message.lower() or "gate" in result.catch_message.lower()
+
+
+# find_missing_required_fields / validate_before_payload missing-required
+# hard-fail (2026-08-08) — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2c
+# can leave a required, non-decision attr silently unfilled; nothing
+# previously checked for that before declaring a config "complete".
+
+def test_find_missing_required_fields_flags_an_empty_required_attr():
+    attr = _attr("modelSelectionbaseModel_astro", "Base Model", [], required=True)
+    s = CpqSession()
+    missing = find_missing_required_fields([attr], s)
+    assert missing == [attr]
+
+
+def test_find_missing_required_fields_ignores_a_filled_required_attr():
+    attr = _attr("modelSelectionbaseModel_astro", "Base Model", [], required=True)
+    s = CpqSession()
+    s.filled = {"modelSelectionbaseModel_astro": "H45TGU9PW8AN"}
+    assert find_missing_required_fields([attr], s) == []
+
+
+def test_find_missing_required_fields_ignores_optional_attrs():
+    attr = _attr("carrierSelectionMultiSelect_astro", "Carrier Selection", [], required=False)
+    s = CpqSession()
+    assert find_missing_required_fields([attr], s) == []
+
+
+def test_find_missing_required_fields_checks_filled_multi_for_multi_select():
+    attr = _attr(
+        "requiredAccessories_astro", "Accessories", [],
+        required=True, select_type="multi",
+    )
+    s = CpqSession()
+    assert find_missing_required_fields([attr], s) == [attr]
+    s.filled_multi = {"requiredAccessories_astro": ["A"]}
+    assert find_missing_required_fields([attr], s) == []
+
+
+def test_find_missing_required_fields_only_checks_currently_visible_attrs():
+    """A required attr an active hiding rule already removed from the
+    `attrs` list passed in is never flagged -- the catalog's own rules
+    already say it doesn't apply here."""
+    attr = _attr("hiddenRequiredThing_astro", "Hidden Thing", [], required=True)
+    s = CpqSession()
+    assert find_missing_required_fields([], s) == []
+
+
+def test_find_missing_required_fields_ignores_noise_shaped_system_attrs():
+    """Required-but-noise-shaped attrs (Price Book/User Currency/User
+    Groups/User Language/User Number Format/Config Operation Context --
+    confirmed live 2026-08-09) are populated by the calling CRM/account
+    layer, never by product configuration, and are already excluded from
+    the real BOM payload and from conversation. required=True on these is
+    a fact about Oracle's OWN system, not something Aryx should ever block
+    completion on."""
+    underscore_attr = _attr("_price_book_var_name", "Price Book", [], required=True)
+    upper_prefix_attr = _attr("CRM_USER_CURRENCY", "User Currency", [], required=True)
+    real_attr = _attr("modelSelectionbaseModel_astro", "Base Model", [], required=True)
+    s = CpqSession()
+    missing = find_missing_required_fields(
+        [underscore_attr, upper_prefix_attr, real_attr], s,
+    )
+    assert missing == [real_attr]
+
+
+def test_validate_before_payload_hard_fails_on_missing_required_field():
+    attr = _attr("modelSelectionbaseModel_astro", "Base Model", [], required=True)
+    s = CpqSession()
+    engine = type("E", (), {
+        "apply_constraint_rules": staticmethod(lambda *a, **k: {}),
+    })()
+    result = validate_before_payload(engine, [attr], s, [], None)
+    assert result.ok is False
+    assert "Base Model" in result.catch_message
+    assert "required" in result.errors[0]
 
 
 # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §9 — the ONLY

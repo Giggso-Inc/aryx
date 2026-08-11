@@ -20,6 +20,40 @@ logger = logging.getLogger(__name__)
 # Sources that count as user-confirmed (may keep free-text / none-like codes).
 _USER_LIKE_SOURCES = frozenset({"user", "hint", "cascade"})
 
+# Engine-computed helper values that live in `filled` purely so BML scripts
+# can read them (e.g. hiding-rule conditions doing SPLIT()/findinarray() on
+# the master string) -- never a real catalog option, never something a
+# customer answered, and never present in the real BOM payload (build_
+# payload's own layout-intersection already keeps it out, confirmed live
+# 2026-08-11). `_is_noise_var` alone doesn't catch this one -- it has no
+# underscore prefix and no all-caps integration-style segment -- so it's
+# named explicitly here, the same way this module already special-cases
+# known non-catalog synthetic values rather than guessing from shape alone.
+_SYNTHETIC_ENGINE_VARS = frozenset({"hiddenMasterStringForAstroPortable_astro"})
+
+
+def _is_noise_var(variable_name: str) -> bool:
+    """True for underscore-prefixed or integration/system-prefixed vars --
+    same structural check as CpqEngine._is_noise_var (engine.py), duplicated
+    here rather than imported to avoid a bom_gate<->engine import coupling.
+
+    Confirmed live (2026-08-09): a real catalog's `required=True` flag on
+    attrs like `_price_book_var_name`/`_BM_USER_CURRENCY`/`_BM_USER_GROUPS`/
+    `_BM_USER_LANGUAGE`/`_BM_USER_NUMBER_FORMAT`/`_configOperationContext`
+    reflects Oracle CPQ's own account/session-context integration -- these
+    are populated by the calling CRM/account layer, never by product
+    configuration, and are already excluded from the real BOM payload
+    (build_payload's own `_is_noise_var` check) and never asked in
+    conversation (auto_fill's own `_is_noise_var` check). Without this same
+    exclusion here, `find_missing_required_fields` wrongly reported them as
+    "missing required data" and blocked completion on fields Aryx was never
+    going to fill by design.
+    """
+    if variable_name.startswith("_"):
+        return True
+    head = variable_name.split("_", 1)[0]
+    return len(head) >= 2 and head.isalpha() and head.isupper()
+
 
 @dataclass
 class StaleConstraintViolation:
@@ -137,6 +171,52 @@ def recheck_constraints(
     return violations
 
 
+def find_missing_required_fields(
+    attrs: list[ConfigAttr], session: CpqSession,
+) -> list[ConfigAttr]:
+    """Every currently-visible attribute the catalog itself marks
+    `required=True` that has no value at all -- in `session.filled` for a
+    single-select/free-text attr, or a non-empty list in
+    `session.filled_multi` for a multi-select.
+
+    Confirmed live (2026-08-08): docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.
+    md §2c's "only ask decision-attr anchors, skip everything else that
+    nothing upstream resolved" behavior is deliberate (its own comment:
+    "per your explicit call") -- but nothing anywhere ever checked whether
+    one of those silently-skipped attrs was actually `required` before
+    declaring the configuration "complete". This is a pure completeness
+    check, independent of WHY an attr wasn't filled (§2c's skip, a rule
+    that never fired, anything else) -- it never touches or second-guesses
+    what §2c itself decides to ask or skip.
+
+    `attrs` is the caller's currently-visible attribute list (post hiding-
+    rule filtering) -- a required attr an active hiding rule has removed
+    from view is never flagged; the catalog's own rules already say it
+    doesn't apply here.
+
+    Noise-shaped integration/system attrs (`_is_noise_var`, e.g. Price
+    Book/User Currency/User Groups/User Language/User Number Format/Config
+    Operation Context) are excluded even when `required=True` -- these are
+    populated by the calling CRM/account layer, never by product
+    configuration or by this engine, matching the same exclusion every
+    other real-BOM-facing path (auto_fill, build_payload) already applies.
+    """
+    missing: list[ConfigAttr] = []
+    for attr in attrs:
+        if not attr.required:
+            continue
+        vn = attr.variable_name
+        if _is_noise_var(vn):
+            continue
+        if attr.select_type == "multi":
+            if session.filled_multi.get(vn):
+                continue
+        elif session.filled.get(vn):
+            continue
+        missing.append(attr)
+    return missing
+
+
 def check_provenance(
     attrs: list[ConfigAttr],
     session: CpqSession,
@@ -166,6 +246,8 @@ def check_provenance(
         return False
 
     for vn, iv in session.filled.items():
+        if _is_noise_var(vn) or vn in _SYNTHETIC_ENGINE_VARS:
+            continue
         attr = by_vn.get(vn)
         source = session.filled_source.get(vn, "")
         display = session.display_filled.get(vn, "")
@@ -176,6 +258,8 @@ def check_provenance(
             )
 
     for vn, values in session.filled_multi.items():
+        if _is_noise_var(vn) or vn in _SYNTHETIC_ENGINE_VARS:
+            continue
         attr = by_vn.get(vn)
         source = session.filled_source.get(vn, "user")
         for iv in values:
@@ -215,7 +299,35 @@ def validate_before_payload(
     third case, deliberately treated as a hard fail — same "never guess"
     discipline as a provenance failure, not silently treated as "no
     violations found."
+
+    A fourth case, added 2026-08-08: a currently-visible attr the catalog
+    marks `required` with no value at all — confirmed live, this could
+    previously reach this gate with no check catching it at all (docs/
+    CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2c's ask/skip behavior can
+    leave a required, non-decision attr silently unfilled). Hard-failed,
+    same as provenance — the engine has no value to guess from here either.
     """
+    missing_required = find_missing_required_fields(attrs, session)
+    if missing_required:
+        labels = [
+            f"{a.display_label} ({a.variable_name})" for a in missing_required
+        ]
+        logger.warning(
+            "bom_gate: MISSING REQUIRED run_id=%s fields=%s",
+            session.run_id or "-", [a.variable_name for a in missing_required],
+        )
+        catch = (
+            "⚠️ **Configuration gate blocked the BOM payload.**\n\n"
+            "The following required fields have no value: "
+            + ", ".join(f"**{l}**" for l in labels)
+            + ".\n\nNo payload was emitted. Provide these fields, or say "
+            "**undo** to restore the previous snapshot."
+        )
+        return BomGateResult(
+            ok=False,
+            errors=[f"missing required: {a.variable_name}" for a in missing_required],
+            catch_message=catch,
+        )
     try:
         stale = recheck_constraints(engine, attrs, session, con_rules, bml_eval)
     except Exception as exc:  # noqa: BLE001

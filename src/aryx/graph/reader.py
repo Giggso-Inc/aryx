@@ -180,6 +180,35 @@ class GraphReader:
         )
         return [{**_entity(r[:4]), "relationship": r[4], "direction": r[5]} for r in rows]
 
+    def neighbors_batch(self, entity_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        """Batched form of neighbors() -- one round trip for many entities.
+
+        docs/CPQ_LOAD_PRODUCT_CONFIG_NEIGHBORS_N_PLUS_1_PERFORMANCE_PLAN_2026_08_10.md
+        -- load_product_config's per-attribute neighbor discovery was calling
+        neighbors() once per entity (confirmed live: 498 calls, 6.85s just for
+        that loop). Returns {entity_id: [neighbor dicts, same shape as
+        neighbors()]}; an entity with no neighbors is simply absent from the
+        dict (matches neighbors() returning [] for callers already doing
+        .get(eid, [])-style access).
+        """
+        if not entity_ids:
+            return {}
+        rows = self._query(
+            "MATCH (e:Entity)-[r:REL]->(n:Entity) WHERE e.id IN $ids "
+            "RETURN e.id AS src, n.id AS id, n.type AS type, n.name AS name, "
+            "properties(n) AS attrs, r.name AS rel, 'out' AS dir "
+            "UNION "
+            "MATCH (e:Entity)<-[r:REL]-(n:Entity) WHERE e.id IN $ids "
+            "RETURN e.id AS src, n.id AS id, n.type AS type, n.name AS name, "
+            "properties(n) AS attrs, r.name AS rel, 'in' AS dir",
+            {"ids": list(entity_ids)},
+        )
+        out: dict[int, list[dict[str, Any]]] = {}
+        for r in rows:
+            out.setdefault(r[0], []).append(
+                {**_entity(r[1:5]), "relationship": r[5], "direction": r[6]})
+        return out
+
     def all_relationships(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Return relationship edges in the graph, optionally capped."""
         cap = f" LIMIT {max(1, int(limit))}" if limit else ""

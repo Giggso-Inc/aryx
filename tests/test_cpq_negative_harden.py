@@ -141,6 +141,27 @@ def test_n7_still_rejects_invented_menu_value():
     assert check_provenance([attr], s)
 
 
+def test_hidden_master_string_never_blocks_confirm():
+    """Live incident (2026-08-11): confirm was hard-blocked with 'failed
+    provenance' on hiddenMasterStringForAstroPortable_astro -- a real,
+    engine-computed helper value that lives in `filled` purely so BML
+    hiding-rule scripts can SPLIT()/findinarray() over it. It has no
+    filled_source (never a customer answer) and no ConfigAttr (not a real
+    catalog option), so check_provenance previously flagged it as
+    unprovenanced on every confirm where the value had actually been
+    computed -- which became far more common once the cascade-staleness
+    fix started recomputing it reliably. Must never appear in
+    check_provenance's errors, regardless of its value."""
+    s = CpqSession()
+    s.filled = {
+        "hiddenMasterStringForAstroPortable_astro": "foo@@@bar@@@baz",
+        "_hiddenMasterStringForAstroPortable_astro_computed_for": "PRODUCT_A\x1fBASE1",
+    }
+    s.filled_source = {}
+    s.display_filled = {}
+    assert check_provenance([], s) == []
+
+
 # ── N8 clarify loops ────────────────────────────────────────────────────────
 
 def test_n8_numbered_options_after_two_clarifies():

@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -27,7 +28,7 @@ from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
 from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
-from aryx.pipeline.orchestrate import run_pipeline
+from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
@@ -111,6 +112,36 @@ def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
     return chunks or [data]
 
 
+def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0):
+    """Cheap, throttled cancellation check for a running job's worker thread.
+
+    POST /admin/jobs/{job_id}/cancel only ever updated the job-store row
+    (see jobs_api.py) -- nothing in the pipeline ever read it back, so a
+    "cancelled" job kept running to completion regardless, consuming a
+    worker-pool slot the whole time (confirmed live: 20+ minutes of entity
+    creation after cancellation). This closure is polled from inside the
+    pipeline's hottest loops (dimension_link.py) and at each stage boundary
+    (orchestrate.py) -- real DB reads are throttled to at most once per
+    `min_interval_s` regardless of how often the caller checks, so callers
+    can poll every iteration without hammering Postgres.
+    """
+    state = {"last_check": 0.0, "cancelled": False}
+
+    def should_stop() -> bool:
+        if state["cancelled"]:
+            return True
+        now = time.monotonic()
+        if now - state["last_check"] < min_interval_s:
+            return False
+        state["last_check"] = now
+        row = jobs.get(job_id)
+        if row is not None and row.get("status") == "cancelled":
+            state["cancelled"] = True
+        return state["cancelled"]
+
+    return should_stop
+
+
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
@@ -122,6 +153,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     try:
         jobs = JobStore(settings.rdb_dsn)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
+        should_stop = _make_should_stop(jobs, job_id)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
@@ -215,7 +247,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     system="json", dataset=Path(name).stem,
                     ontology_type=ontology_type, match_keys=match_keys,
                     graph_url=settings.graph_url, broker=broker,
-                    on_progress=on_prog,
+                    on_progress=on_prog, should_stop=should_stop,
                     fk_links=fk_links, workspace_id=workspace_id,
                     relate=True,
                 )
@@ -261,7 +293,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=on_prog,
+                        on_progress=on_prog, should_stop=should_stop,
                         fk_links=auto_fk if is_last else [],
                         workspace_id=workspace_id,
                         relate=is_last,
@@ -306,7 +338,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=on_prog,
+                        on_progress=on_prog, should_stop=should_stop,
                         fk_links=xlsx_auto_fk if is_last else [],
                         workspace_id=workspace_id,
                         relate=is_last,
@@ -356,7 +388,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                         system="csv", dataset=dataset,
                         ontology_type=eff_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=on_prog,
+                        on_progress=on_prog, should_stop=should_stop,
                         fk_links=eff_fk if is_last_chunk else [],
                         workspace_id=workspace_id,
                         relate=eff_relate and is_last_chunk,
@@ -383,11 +415,17 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 system="document", dataset="upload",
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
-                on_progress=on_prog,
+                on_progress=on_prog, should_stop=should_stop,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )
         jobs.finish(job_id, run_id=None, status="complete")
+    except PipelineCancelled:
+        # The job row is already "cancelled" (that's what should_stop() just
+        # read to get here) -- leave it alone, don't overwrite it with
+        # "failed". This is the actual fix: the worker thread now really
+        # stops instead of running the rest of the pipeline to completion.
+        logger.info("file ingest cancelled job=%s", job_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc)
         if jobs is not None:
