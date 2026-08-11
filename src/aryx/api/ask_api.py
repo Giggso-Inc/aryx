@@ -6664,6 +6664,23 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             (a for a in attrs if a.variable_name == session.pending_change_no_value_vn), None,
         )
         session.pending_change_no_value_vn = ""
+        # Same topic-switch gap as STEP 5's pending-answer lock (docs/
+        # CPQ_PENDING_TOPIC_SWITCH_PLAN_2026_08_11.md), but on this
+        # earlier, separate "which value?" pending mechanism -- confirmed
+        # live 2026-08-11: with Hardware Version pending here, "First i
+        # wanted to changed Wireless Carrier" has no _CHANGE_VERB_RE match
+        # ("changed" isn't "change"/"changing") and named a DIFFERENT real
+        # attr in plain language, but this block had no topic-switch check
+        # of its own -- it forced the whole message into `_handle_cascade`
+        # as a literal (failing) new value for Hardware Version, producing
+        # "I couldn't match that to a valid option for Hardware Version."
+        # Falls through to normal routing (identical to the STEP 5 fix)
+        # whenever the LLM confidently identifies a different real target.
+        if _pcnv_attr and _pending_reply_is_topic_switch(
+            req.question, _pcnv_attr, attrs, session.filled,
+            session.filled_multi, req.workspace_id,
+        ):
+            _pcnv_attr = None
         if _pcnv_attr:
             # QA issue #3: re-derive constrained set for scoped match/retry.
             # §15: try/except so pure declines never crash on rule engine.

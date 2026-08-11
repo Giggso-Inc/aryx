@@ -88,3 +88,48 @@ when there's no pending attribute or no other candidate attrs to name).
 Full CPQ regression: 936 passed, 0 failed (up from 926 baseline + 10
 new tests), same pre-existing unrelated `datetime.UTC` collection
 errors, untouched.
+
+## Follow-up: a second, separate pending mechanism had the same gap (2026-08-11)
+
+Live-reported after the first fix shipped: with **Hardware Version**
+pending via the *"Which value would you like for Hardware Version?"*
+no-value-change flow, the message **"First i wanted to changed Wireless
+Carrier"** still failed with *"I couldn't match that to a valid option
+for Hardware Version."*
+
+Root cause: that prompt is tracked by `session.pending_change_no_value_vn`
+— a completely different pending-answer mechanism from
+`session.pending_variables` (STEP 5), set by `_build_no_value_response`
+and consumed unconditionally at the top of `_run_cpq_turn_inner`
+(ask_api.py ~line 6662). It had **no topic-switch check of its own** —
+the fix shipped for STEP 5 never covered it. It always treated the next
+message as the literal new value, and on a failed match forced it
+straight into `_handle_cascade` against the pending attr — exactly
+matching the "I couldn't match..." error text, which comes from
+`_handle_cascade`, not STEP 5.
+
+Separately: "wanted to **changed**" doesn't match `_CHANGE_VERB_RE`
+either — the regex requires "change"/"changing", and "changed" breaks
+the `\b` boundary right after "chang" fails to fire for this
+conjugation — so even the deterministic layer had nothing to catch here.
+
+Fix: applied the exact same `_pending_reply_is_topic_switch` check to
+this branch too, right after `session.pending_change_no_value_vn` is
+read and before it's used to force a value match — when the check
+returns `True`, the branch's local pending-attr reference is dropped so
+the message falls through to normal routing instead of being coerced
+into `_handle_cascade`.
+
+Added `test_combined_check_live_2026_08_11_wireless_carrier_phrasing`
+to `tests/test_cpq_pending_topic_switch.py` (11 tests total) — proves
+the combined check now correctly resolves this exact reported phrasing
+to `carrierSelection_astro`. Full CPQ regression re-run: 937 passed, 0
+failed. Rebuilt and redeployed the API container.
+
+Live multi-turn e2e replay of the full reported transcript in the local
+dev stack did not reach the same session state (an unrelated
+country-capture quirk in this local catalog data stalled the flow
+before Hardware Version); the fix itself is verified at the unit level
+against the exact reported message text and confirmed via full
+regression. Recommend a live check against the real environment to
+close the loop end-to-end.

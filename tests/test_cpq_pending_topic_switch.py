@@ -114,6 +114,25 @@ def test_combined_check_falls_back_to_llm_for_natural_language_redirect():
     assert result is True
 
 
+def test_combined_check_live_2026_08_11_wireless_carrier_phrasing():
+    """'wanted to changed' (not 'change'/'changing') doesn't match
+    _CHANGE_VERB_RE at all -- confirmed live to leave the pending
+    'which value?' mechanism with no signal, forcing the whole message
+    into apply_answer against the wrong (pending) attr and producing
+    'I couldn't match that to a valid option for Hardware Version.'"""
+    pending = _hardware_version()
+    carrier = _carrier_selection()
+    carrier.display_label = "Wireless Carrier"
+    attrs = [pending, carrier]
+    fake_reply = '{"switch_to": "carrierSelection_astro"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _pending_reply_is_topic_switch(
+            "First i wanted to changed Wireless Carrier",
+            pending, attrs, {}, {}, workspace_id=1,
+        )
+    assert result is True
+
+
 def test_combined_check_second_reported_phrasing():
     pending = _hardware_version()
     attrs = [pending, _carrier_selection()]
