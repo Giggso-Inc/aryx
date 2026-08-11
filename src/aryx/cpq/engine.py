@@ -5792,7 +5792,20 @@ class CpqEngine:
             if values is None:
                 continue
             if len(values) != 1:
-                return None
+                # This candidate is ambiguous -- try the REST of the
+                # candidate tuple before giving up. `_cpq_model_candidates`
+                # appends base-model-specific candidates after the
+                # product-derived primary one(s) (confirmed live:
+                # H45TGU9PW8AN's real whitelist rows are keyed to
+                # APXNEXTXNSINGLE, only reachable via that appended tail,
+                # even though the product resolves primary to
+                # APXNEXTSINGLE/APXNEXTSINGLE_BOM). Returning None here
+                # would end the search the moment the FIRST candidate
+                # happens to be ambiguous, even when a later candidate
+                # would have resolved to exactly one confirmed value --
+                # the same "continue past ambiguous, don't abort" contract
+                # `_resolve_narrowed_legal_values` already uses below.
+                continue
             return next((o for o in valid_opts if o.item_value == values[0]), None)
         return None
 

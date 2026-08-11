@@ -175,6 +175,61 @@ def test_blind_first_pick_gets_overridden_once_data_table_narrows_to_a_real_answ
     assert display_pass2.get("modelSelectionKeypadType_astro") == "Touch Screen"
 
 
+def test_ambiguous_primary_candidate_falls_through_to_a_resolvable_base_model_candidate(
+    monkeypatch,
+):
+    """Real, confirmed live shape: base model H45TGU9PW8AN's real whitelist
+    rows are keyed to CPQModel "APXNEXTXNSINGLE" (only reachable via
+    _cpq_model_candidates' appended base-model-specific tail), even though
+    the product name "APX NEXT SINGLE BAND" resolves its PRIMARY candidate
+    to "APXNEXTSINGLE" via a real tier-1 constraint row. The primary
+    candidate is genuinely ambiguous for wirelessCarrier_astro (2 real
+    rows); the appended base-model candidate resolves to exactly one.
+    _resolve_via_data_tables must try the second candidate instead of
+    aborting the whole search the moment the FIRST one is ambiguous."""
+    _patch_rdb(monkeypatch, {
+        "WhitelistTest": [
+            # Tier-1 mapping row: proves "APX NEXT SINGLE BAND" -> primary
+            # CPQModel "APXNEXTSINGLE" (resolve_product_cpq_models_from_rows).
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "productSelectionProduct_all", "val1": "APX NEXT SINGLE BAND"},
+            # Primary candidate's own rows for wirelessCarrier_astro are
+            # genuinely ambiguous (2 real values).
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "wirelessCarrier_astro", "val1": "VERIZON"},
+            {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+             "attr1": "wirelessCarrier_astro", "val1": "ATT/FIRSTNET"},
+            # Base-model-discovery row: proves H45TGU9PW8AN also uses the
+            # more specific "APXNEXTXNSINGLE" CPQModel (discover_cpq_
+            # models_for_base_model scans for BaseModel == exact match).
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": "H45TGU9PW8AN",
+             "attr1": "modelSelectionKeypadType_astro", "val1": "TOUCH SCREEN"},
+            # The appended candidate's own row for wirelessCarrier_astro
+            # resolves to exactly ONE confirmed value for this base model.
+            {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": "H45TGU9PW8AN",
+             "attr1": "wirelessCarrier_astro", "val1": "ATT/FIRSTNET"},
+        ],
+    })
+    eng = CpqEngine()
+    attrs = [_base_model_attr(), _product_attr(), _wireless_carrier_attr()]
+    filled = {
+        "modelSelectionbaseModel_astro": "H45TGU9PW8AN",
+        "productSelectionProduct_all": "APX NEXT SINGLE BAND",
+    }
+
+    filled_out, display_out, _ = eng.auto_fill(
+        attrs, hints={}, already_filled=filled,
+        governed_ids={3}, rule_governed_ids={3},
+        workspace_id=7,
+    )
+
+    assert filled_out.get("wirelessCarrier_astro") == "ATT/FIRSTNET", (
+        "must fall through the ambiguous primary candidate to the "
+        "resolvable base-model-specific one, not abort the whole search"
+    )
+    assert display_out.get("wirelessCarrier_astro") == "ATT/FirstNet (provided by Motorola)"
+
+
 def test_ambiguous_data_table_result_does_not_change_the_pre_existing_fallback(monkeypatch):
     """2 real options for wirelessCarrier_astro -- genuinely ambiguous, so
     the new data_table tier itself contributes nothing (returns None, per

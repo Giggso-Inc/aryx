@@ -10,5 +10,10 @@
 -- 3-8s scans, several stacked concurrently, once per ingested ontology_type
 -- per governed attribute resolved in a single /ask turn.
 
-CREATE INDEX IF NOT EXISTS idx_entity_ws_type_lower
+-- CONCURRENTLY -- this table is a live ingestion write target; a plain
+-- CREATE INDEX holds a SHARE lock for the full build, blocking concurrent
+-- writes on a 453K-row table. Safe here: the migration runner connects
+-- with autocommit=True (store/migrate.py), so this doesn't run inside a
+-- transaction block, which CONCURRENTLY requires.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_entity_ws_type_lower
     ON aryx_entity (workspace_id, lower(ontology_type));
