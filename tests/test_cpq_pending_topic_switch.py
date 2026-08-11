@@ -172,3 +172,69 @@ def test_combined_check_skips_llm_when_no_other_attrs_exist():
         )
     assert result is False
     mock_chat.assert_not_called()
+
+
+# ── Negative cases: must NOT be misclassified as a switch ──────────────────
+
+
+def test_change_verb_naming_the_pending_attr_itself_is_not_a_switch():
+    """'select hardware version' has a change-verb match (_CHANGE_VERB_RE
+    fires on 'select'), but the only real attr it names IS the pending
+    one -- `other_attrs` excludes it by construction, so the deterministic
+    check's own 'and' clause must fail, and the LLM (asked only about
+    OTHER candidates) must also find nothing to switch to."""
+    pending = _hardware_version()
+    attrs = [pending, _carrier_selection()]
+    fake_reply = '{"switch_to": "none"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _pending_reply_is_topic_switch(
+            "let me select hardware version 4G LTE Only",
+            pending, attrs, {}, {}, workspace_id=1,
+        )
+    assert result is False
+
+
+def test_shared_option_value_across_attrs_is_not_misread_as_a_switch():
+    """Docstring-referenced live gap: 'VHF' is a legal option on BOTH the
+    pending attr and a sibling attr. A bare reply that's actually
+    answering the pending question with a value that HAPPENS to also be
+    a legal value elsewhere must stay a plain answer (LLM says 'none'),
+    not get redirected to the sibling."""
+    pending = _hardware_version()
+    sibling = _carrier_selection()
+    sibling.options = _menu("VHF", "UHF")
+    attrs = [pending, sibling]
+    fake_reply = '{"switch_to": "none"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        result = _pending_reply_is_topic_switch(
+            "VHF", pending, attrs, {}, {}, workspace_id=1,
+        )
+    assert result is False
+
+
+def test_combined_check_fails_safe_on_llm_error_treating_reply_as_an_answer():
+    """If the LLM call itself blows up, the combined check must default
+    to False (treat the reply as a plain answer attempt) rather than
+    propagating the exception or silently guessing a switch -- a failed
+    LLM call must never be more disruptive than no LLM call at all."""
+    pending = _hardware_version()
+    attrs = [pending, _carrier_selection()]
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=RuntimeError("boom")):
+        result = _pending_reply_is_topic_switch(
+            "I wanted to check the carrier selection value",
+            pending, attrs, {}, {}, workspace_id=1,
+        )
+    assert result is False
+
+
+def test_combined_check_fails_safe_on_malformed_llm_json():
+    """A non-JSON or schema-mismatched reply from the model must resolve
+    to 'not a switch', same fail-safe direction as a call failure."""
+    pending = _hardware_version()
+    attrs = [pending, _carrier_selection()]
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json at all", 10, 5)):
+        result = _pending_reply_is_topic_switch(
+            "I don't want hardware version but carrier selection",
+            pending, attrs, {}, {}, workspace_id=1,
+        )
+    assert result is False
