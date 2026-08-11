@@ -4438,6 +4438,90 @@ def _llm_resolve_quantity_target(
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
+def _llm_detect_pending_topic_switch(
+    question: str, pending_attr: Any, other_attrs: list, workspace_id: int,
+) -> str | None:
+    """Whether a reply to an actively-pending question is actually the
+    customer trying to talk about a DIFFERENT attribute instead — tried
+    only when `_pending_reply_looks_like_new_request`'s deterministic
+    change-verb/arrow check already said no (docs/CPQ_PENDING_TOPIC_
+    SWITCH_PLAN_2026_08_11.md).
+
+    That deterministic check only catches explicit "change X to Y" /
+    arrow phrasing. Real redirects rarely look like that — confirmed live:
+    "I wanted to check the carrier selection value", "I don't want
+    hardware version but carrier selection", and "I don't want to select
+    the hardware version but i wanted to check with carrier selection"
+    all name a different real attr in plain language with no change verb
+    the regex recognises, so all three fell through to STEP 5's
+    pending-answer lock and were misread as failed attempts to answer the
+    pending question, looping the same re-ask forever.
+
+    Same narrow-helper pattern as `_llm_resolve_quantity_target` /
+    `_llm_resolve_label_collision`: only ever returns an exact
+    `other_attrs` variable_name or None — never invents one, never
+    guesses when ambiguous. A None result means the caller must keep
+    treating this as a plain answer attempt to the pending question.
+    """
+    candidate_lines = "\n".join(
+        f"- {a.variable_name} ({a.display_label})" for a in other_attrs
+    )
+    sys = (
+        "A customer is being asked a single pending question in a product-"
+        "configuration chat. Decide whether their reply is actually trying "
+        "to answer that pending question, or whether they are instead "
+        "trying to talk about a DIFFERENT attribute from the candidate "
+        "list — e.g. asking about it, or saying they don't want the "
+        "pending one and want the other one instead. Only pick a "
+        "variable_name if the message clearly names or clearly refers to "
+        "one specific candidate attribute. Never invent a variable_name "
+        "that isn't in the candidate list."
+    )
+    user = (
+        f"PENDING QUESTION IS ABOUT: {pending_attr.variable_name} "
+        f"({pending_attr.display_label})\n\n"
+        "OTHER CANDIDATE ATTRIBUTES (variable_name (label)):\n"
+        f"{candidate_lines}\n\n"
+        f"USER MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"switch_to": "<exact variable_name>" | "none"}'
+    )
+    valid_targets = {a.variable_name for a in other_attrs}
+
+    def _validate(parsed: dict) -> str | None:
+        target = parsed.get("switch_to") or ""
+        if target not in valid_targets:
+            return None
+        return target
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _pending_reply_is_topic_switch(
+    question: str, pending_attr: Any, attrs: list, filled: dict,
+    filled_multi: dict, workspace_id: int,
+) -> bool:
+    """Combines the deterministic `_pending_reply_looks_like_new_request`
+    check with a narrow LLM fallback for the natural-language redirects
+    the regex can't see (docs/CPQ_PENDING_TOPIC_SWITCH_PLAN_2026_08_11.md).
+    Deterministic check runs first and short-circuits the LLM call
+    whenever it already agrees — same cost discipline as every other
+    LLM fallback in this file.
+    """
+    if pending_attr is None:
+        return False
+    if _pending_reply_looks_like_new_request(
+        question, pending_attr, attrs, filled, filled_multi,
+    ):
+        return True
+    other_attrs = [a for a in attrs if a.variable_name != pending_attr.variable_name]
+    if not other_attrs:
+        return False
+    switch_vn = _llm_detect_pending_topic_switch(
+        question, pending_attr, other_attrs, workspace_id,
+    )
+    return switch_vn is not None
+
+
 def _llm_resolve_label_collision(
     reply: str, candidates: list, session: Any, workspace_id: int,
 ) -> str | None:
@@ -7113,9 +7197,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             )
         _defer_gateway_to_pending_answer = (
             _pending_attr_for_gate is not None
-            and not _pending_reply_looks_like_new_request(
+            and not _pending_reply_is_topic_switch(
                 req.question, _pending_attr_for_gate, attrs,
-                session.filled, session.filled_multi,
+                session.filled, session.filled_multi, req.workspace_id,
             )
         )
 
@@ -7815,8 +7899,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         # handles a fresh "change X" during a configuring-status turn
         # (the same block that resolved "change the solution Type"
         # correctly once Product wasn't blocking it).
-        _looks_like_new_request = _pending_reply_looks_like_new_request(
-            req.question, pending_attr, attrs, session.filled, session.filled_multi,
+        _looks_like_new_request = _pending_reply_is_topic_switch(
+            req.question, pending_attr, attrs, session.filled,
+            session.filled_multi, req.workspace_id,
         )
         if pending_attr and not _looks_like_new_request:
             vn_flat_pv = pending_var.lower().replace("_", "")
