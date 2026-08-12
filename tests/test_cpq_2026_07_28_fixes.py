@@ -542,6 +542,68 @@ def test_llm_first_change_target_without_value_asks_which_value():
     assert session.pending_change_no_value_vn == "solutionTypeDevices_astro"
 
 
+def test_llm_first_attr_query_dispatches_on_high_confidence():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2:
+    ATTR_QUERY with HIGH confidence and a resolvable target must dispatch
+    to the same _build_attr_query_response the regex path shares."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="configuring")
+    req = AskRequest(question="what are the options for solution type?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_QUERY, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Solution Type", new_value_description=None),
+        rationale="attr query",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, [solution], result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=100, classify_completion_tokens=10,
+        )
+    assert resp is not None
+    assert "Solution Type" in resp["answer"]
+    assert "RadioCentral" in resp["answer"]
+    assert resp["tools_called"] == ["cpq_attr_query(solutionTypeDevices_astro)"]
+
+
+def test_llm_first_attr_query_medium_confidence_falls_through():
+    """ATTR_QUERY has no deterministic-agreement cross-check (not in
+    intent_gateway.MUTATING_CATEGORIES), so it requires HIGH confidence
+    specifically -- MEDIUM must defer to the regex path exactly like LOW
+    already does everywhere else (residual-risk mitigation #1)."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="configuring")
+    req = AskRequest(question="what are the options for solution type?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_QUERY, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Solution Type", new_value_description=None),
+        rationale="attr query",
+    )
+    resp = _dispatch_intent_result(req, session, [solution], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_attr_query_unresolvable_target_falls_through():
+    """Two attrs share the description word -- no unique resolution ->
+    dispatch must return None, never silently guess one, same discipline
+    as the CHANGE_TARGET_WITHOUT_VALUE case above."""
+    a = _attr(1, "productInformationText_astro", "Product Information Text")
+    b = _attr(2, "productSelectionProduct_all", "Product")
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="configuring")
+    req = AskRequest(question="what are the product options?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_QUERY, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Product", new_value_description=None),
+        rationale="attr query",
+    )
+    resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
+    assert resp is None
+
+
 def test_llm_first_unresolvable_target_falls_through_never_guesses():
     """Two attrs share the description word — no unique resolution ->
     dispatch must return None (fall through to deterministic path),

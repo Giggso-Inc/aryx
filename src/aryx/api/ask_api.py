@@ -4170,6 +4170,18 @@ def _gateway_to_intent_result(
     display_name (passed in as value_display). Never trusts free-text
     item_value from the model. Returns None for categories the existing
     _dispatch_intent_result does not yet handle (fall through).
+
+    docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 1:
+    `needs_target` previously only listed the 3 originally-wired
+    categories, silently drifted from `IntentResult`'s own docstring
+    contract (which already documented ATTR_ACTIVATION/ATTR_CLEAR/
+    ATTR_QUERY/BULK_QUANTITY_CHANGE/MULTI_SELECT_REMOVAL as target-
+    bearing) -- a missing target for any of these used to proceed
+    silently with target=None instead of refusing the mapping. `targets`
+    was also only ever populated for CHANGE_REQUESTS_MULTI despite the
+    same docstring documenting it as shared with MULTI_SELECT_REMOVAL.
+    Both closed here so the remaining dispatch-branch phases (2-4) have
+    a converter that actually matches its own documented contract.
     """
     from aryx.cpq.intent_schema import GatewayIntentResult as _GIR
     if not isinstance(gw, _GIR):
@@ -4188,6 +4200,11 @@ def _gateway_to_intent_result(
         IntentCategory.CHANGE_REQUEST,
         IntentCategory.CHANGE_TARGET_WITHOUT_VALUE,
         IntentCategory.CHANGE_REQUESTS_MULTI,
+        IntentCategory.ATTR_ACTIVATION,
+        IntentCategory.ATTR_CLEAR,
+        IntentCategory.ATTR_QUERY,
+        IntentCategory.BULK_QUANTITY_CHANGE,
+        IntentCategory.MULTI_SELECT_REMOVAL,
     }
     if needs_target and target is None:
         return None
@@ -4196,12 +4213,60 @@ def _gateway_to_intent_result(
         confidence=gw.confidence,
         target=target,
         targets=[target] if (
-            gw.intent_category == IntentCategory.CHANGE_REQUESTS_MULTI
+            gw.intent_category in (
+                IntentCategory.CHANGE_REQUESTS_MULTI,
+                IntentCategory.MULTI_SELECT_REMOVAL,
+            )
             and target is not None
         ) else [],
         clarifying_question=gw.clarifying_question,
         rationale=gw.rationale,
     )
+
+
+def _build_attr_query_response(
+    req: "AskRequest", session: Any, attrs: list, con_rules: list, bml_eval: Any,
+    queried_attr: Any,
+) -> dict[str, Any]:
+    """"What are the options for X?" response — factored out of the
+    regex path (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+    Phase 2) so `_dispatch_intent_result`'s new `ATTR_QUERY` branch can
+    share the exact same response shape instead of duplicating it.
+    """
+    # Constrain to values compatible with what's already selected — same
+    # apply_constraint_rules call the pending-question flow already
+    # makes (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 2
+    # — confirmed live: querying "Product" after Hardware Version was set
+    # listed all 325 catalog codes instead of the 2 the active constraint
+    # rule actually allows).
+    _queried_constrained = _cpq_engine.apply_constraint_rules(
+        attrs, con_rules, session.filled, bml_eval, filled_multi=session.filled_multi)
+    options_block = _cpq_engine.next_question_prompt(
+        queried_attr,
+        constrained_item_values=_queried_constrained.get(queried_attr.entity_id),
+    )
+    current_val = session.filled.get(queried_attr.variable_name)
+    current_note = (
+        f"\n\n*Currently set to: **{session.display_filled.get(queried_attr.variable_name, current_val)}***"
+        if current_val else ""
+    )
+    answer = (
+        f"Here are the available values for "
+        f"**{_cpq_engine.disambiguated_label(queried_attr, attrs)}**:"
+        f"\n\n{options_block}{current_note}"
+        f"\n\nReply with your choice and I'll update the configuration."
+    )
+    other_pending = [v for v in session.pending_variables if v != queried_attr.variable_name]
+    session.pending_variables = [queried_attr.variable_name] + other_pending
+    session.last_qa_variables = [queried_attr.variable_name]
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [queried_attr.variable_name],
+        "tools_called": [f"cpq_attr_query({queried_attr.variable_name})"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
 
 
 def _with_classify_usage(
@@ -4278,16 +4343,34 @@ def _dispatch_intent_result(
         risk.
       - OUT_OF_SCOPE: the same plain refusal wording `_llm_classify_
         is_cpq_question`'s negative case already uses.
+      - ATTR_QUERY (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+        Phase 2, 2026-08-12): dispatched to the SAME
+        `_build_attr_query_response` the regex-based `detect_attr_query`
+        path already shares. Requires `Confidence.HIGH` specifically
+        (not just "not LOW") since this category isn't in
+        `intent_gateway.MUTATING_CATEGORIES` and has no deterministic-
+        agreement cross-check — read-only, so a wrong dispatch can't
+        corrupt the configuration, only ask about the wrong attribute.
       - Every other category (MULTI_SELECT_REMOVAL, ATTR_ACTIVATION,
         ATTR_CLEAR, BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST,
-        APPROVAL, ATTR_QUERY, QA_QUESTION, PRODUCT_MENTION) returns
-        None — deliberately deferred rather than rushed, so the
-        deterministic path keeps owning them until a follow-up lands
-        each one with the same care as the ones above.
+        APPROVAL, QA_QUESTION, PRODUCT_MENTION) returns None —
+        deliberately deferred rather than rushed, so the deterministic
+        path keeps owning them until a follow-up lands each one with
+        the same care as the ones above. PRODUCT_MENTION specifically
+        cannot be wired the same way as ATTR_QUERY once attempted: its
+        target would have to be a product name, but `_gateway_to_
+        intent_result` only ever builds a `ChangeTarget` from `attrs`
+        (`ConfigAttr` candidates already injected for the CURRENT
+        product) — products are never injected as gateway candidates
+        at all, so there is no `variable_name` to resolve a product
+        name from. Wiring it needs a real product-candidate-injection
+        design in `intent_gateway.py` first, not just a dispatch
+        branch — a structural gap, not a missing `if`.
 
     Confidence gating: LOW always returns None (fall through) regardless
     of category — mirrors the shadow-mode logging convention and plan doc
     mitigation #9 (ambiguity threshold must default conservative).
+    ATTR_QUERY additionally requires HIGH (see above).
 
     Target resolution (for CHANGE_REQUEST's own target ATTR, not its
     value) uses `_resolve_target_description` — 0 or 2+ candidates both
@@ -4380,6 +4463,30 @@ def _dispatch_intent_result(
                 classify_prompt_tokens, classify_completion_tokens,
             )
         return None
+
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2 +
+    # residual-risk mitigation #1: ATTR_QUERY has no deterministic-
+    # agreement cross-check (it isn't in intent_gateway.MUTATING_
+    # CATEGORIES), so HIGH confidence is required here specifically —
+    # stricter than the shared LOW-confidence gate above, since there's
+    # no second opinion protecting this category the way CHANGE_REQUEST
+    # and its siblings have. Read-only (no session mutation beyond the
+    # same pending-var bookkeeping the regex path already does), so a
+    # wrong dispatch here can't corrupt the configuration — only ask
+    # about the wrong attribute.
+    if (
+        result.category == IntentCategory.ATTR_QUERY
+        and result.confidence == Confidence.HIGH
+        and result.target
+    ):
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None:
+            return None
+        return _with_classify_usage(
+            _build_attr_query_response(req, session, attrs, con_rules, bml_eval, attr),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
 
     return None
 
@@ -7713,40 +7820,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # ── Attribute option query: "what values are available for X?" ────────────
     queried_attr = _cpq_engine.detect_attr_query(req.question, attrs)
     if queried_attr:
-        # Constrain to values compatible with what's already selected — same
-        # apply_constraint_rules call the pending-question flow already
-        # makes, just missing here (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md
-        # Related finding 2 — confirmed live: querying "Product" after
-        # Hardware Version was set listed all 325 catalog codes instead of
-        # the 2 the active constraint rule actually allows).
-        _queried_constrained = _cpq_engine.apply_constraint_rules(
-            attrs, con_rules, session.filled, bml_eval, filled_multi=session.filled_multi)
-        options_block = _cpq_engine.next_question_prompt(
-            queried_attr,
-            constrained_item_values=_queried_constrained.get(queried_attr.entity_id),
+        return _build_attr_query_response(
+            req, session, attrs, con_rules, bml_eval, queried_attr,
         )
-        current_val = session.filled.get(queried_attr.variable_name)
-        current_note = (
-            f"\n\n*Currently set to: **{session.display_filled.get(queried_attr.variable_name, current_val)}***"
-            if current_val else ""
-        )
-        answer = (
-            f"Here are the available values for "
-            f"**{_cpq_engine.disambiguated_label(queried_attr, attrs)}**:"
-            f"\n\n{options_block}{current_note}"
-            f"\n\nReply with your choice and I'll update the configuration."
-        )
-        other_pending = [v for v in session.pending_variables if v != queried_attr.variable_name]
-        session.pending_variables = [queried_attr.variable_name] + other_pending
-        session.last_qa_variables = [queried_attr.variable_name]
-        _persist_cpq_history(req.workspace_id, req.question, answer)
-        return {
-            "answer": answer, "terms": [queried_attr.variable_name],
-            "tools_called": [f"cpq_attr_query({queried_attr.variable_name})"],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-        }
 
     # ── Free-text constraint query: "what values are available for X?" asked
     # about the CURRENTLY PENDING attr when it has no options at all
