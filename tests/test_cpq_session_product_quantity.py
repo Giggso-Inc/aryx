@@ -19,6 +19,7 @@ from aryx.api.ask_api import AskRequest
 from aryx.cpq.engine import (
     MAX_PRODUCT_QUANTITY,
     MIN_PRODUCT_QUANTITY,
+    extract_quantity_decimal_hint,
     extract_quantity_hint,
     find_catalog_quantity_attrs,
     is_valid_product_quantity,
@@ -68,6 +69,18 @@ def test_extract_quantity_hint_ignores_unrelated_numbers():
     assert extract_quantity_hint("no number-adjacent quantity word here") is None
 
 
+def test_extract_quantity_hint_never_lifts_digits_out_of_a_model_code():
+    """PR #186 review, critical #1: a model code glued directly onto a
+    quantity-trigger word ("APX8000 radios") must never be read as the
+    stated quantity, even when the real quantity earlier in the message
+    isn't itself adjacent to a trigger word. Without a left boundary on
+    the digit group, "8000" (from "APX8000") matches "(-?\\d+)...radios"
+    since \\d+ can start matching mid-identifier -- silently replacing the
+    customer's real "5" with "8000"."""
+    assert extract_quantity_hint("quote me 5 APX8000 radios") is None
+    assert extract_quantity_hint("check pricing for XPR7000e units") is None
+
+
 def test_extract_quantity_hint_captures_negative_numbers_rather_than_dropping_the_sign():
     """A negative number must be captured AS negative (then rejected by
     is_valid_product_quantity), never silently parsed as if the minus
@@ -81,6 +94,56 @@ def test_extract_quantity_hint_never_truncates_a_decimal():
     part is worse than not matching at all (a truncated integer looks like
     a confidently-parsed whole number when it isn't one)."""
     assert extract_quantity_hint("change quantity to 1.5") is None
+
+
+def test_extract_quantity_hint_never_matches_the_fractional_remainder_of_a_decimal():
+    """PR #186 review, medium: "10.0" must never come back as 0 -- the
+    (?!\\.\\d) guard correctly blocks the direct "10" match, but without a
+    left-boundary guard on the digit group, the regex engine backtracks
+    and matches the trailing "0" after the decimal point instead of
+    failing outright. Covers both prefix-style ("quantity is X") and
+    suffix-style ("X units"/"X qty") trigger phrasing, since the two
+    pattern shapes hit the bug differently."""
+    assert extract_quantity_hint("change quantity to 10.0") is None
+    assert extract_quantity_hint("quantity is 10.0") is None
+    assert extract_quantity_hint("10.0 units please") is None
+    assert extract_quantity_hint("10.0 qty") is None
+    assert extract_quantity_hint("qty of 10.0") is None
+    assert extract_quantity_hint("i want 10.0 radios") is None
+
+
+def test_extract_quantity_decimal_hint_exposes_the_real_decimal_text():
+    """The companion function must return the exact decimal substring the
+    customer typed, so a rejection message can quote it correctly instead
+    of the wrong digit the old regex-backtracking bug used to produce."""
+    assert extract_quantity_decimal_hint("change quantity to 10.0") == "10.0"
+    assert extract_quantity_decimal_hint("quantity is -3.5") == "-3.5"
+    assert extract_quantity_decimal_hint("10.0 units please") == "10.0"
+    assert extract_quantity_decimal_hint("I want 50 radios") is None
+    assert extract_quantity_decimal_hint("no quantity mentioned here at all") is None
+
+
+def test_extract_quantity_hint_strips_thousands_separator_commas():
+    """PR #186 review, critical #2: "1,000" sits at a real word boundary
+    right at the comma, so an unguarded integer pattern happily matches
+    just the "1" before it and silently truncates the stated quantity --
+    no rejection, no indication anything was mangled. Must resolve to the
+    full intended value instead."""
+    assert extract_quantity_hint("change quantity to 1,000") == 1000
+    assert extract_quantity_hint("quantity is 100,000") == 100_000
+    assert extract_quantity_hint("i want 12,345 units") == 12_345
+
+
+def test_extract_quantity_hint_thousands_separator_requires_exactly_three_digits():
+    """Only a comma glued directly onto exactly 3 trailing digits counts
+    as thousands-grouping -- a comma followed by a space (an ordinary
+    list separator, "5, 1000") or by a non-3-digit run is left untouched
+    rather than being misread as a group separator."""
+    # Comma + space is never grouping syntax -- untouched, so "i want"
+    # still resolves to the adjacent "5", not the unrelated "1000".
+    assert extract_quantity_hint("i want 5, 1000 items ordered separately") == 5
+    # Only 2 digits after the comma -- not a real thousands group.
+    assert extract_quantity_hint("quantity is 1,00") == 1
 
 
 # ── is_valid_product_quantity ────────────────────────────────────────────────
@@ -310,6 +373,25 @@ def test_explicit_absurd_quantity_is_rejected_not_silently_accepted(monkeypatch)
                       session_data=session.to_dict())
     resp = _run_cpq_turn(req, object())
     assert resp["tools_called"] == ["cpq_product_quantity_rejected()"]
+    assert resp["session_data"]["product_quantity"] == 50
+
+
+def test_explicit_decimal_quantity_is_rejected_quoting_the_real_input(monkeypatch):
+    """PR #186 review, medium: the rejection message must quote the exact
+    decimal the customer typed ("10.0"), never the wrong digit the old
+    regex-backtracking bug used to surface ("0")."""
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=50)
+    req = AskRequest(question="change quantity to 10.0", workspace_id=1,
+                      session_data=session.to_dict())
+    resp = _run_cpq_turn(req, object())
+    assert resp["tools_called"] == ["cpq_product_quantity_rejected()"]
+    assert "10.0" in resp["answer"]
+    assert "isn't a valid quantity" in resp["answer"]
+    # The stale, still-valid value must survive untouched.
     assert resp["session_data"]["product_quantity"] == 50
 
 

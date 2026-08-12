@@ -5475,6 +5475,26 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     req.question, _qty_candidates, session, req.workspace_id,
                 )
             if _qty_target == "product":
+                if _qty_pre["is_change"] and _qty_pre.get("decimal_value") is not None:
+                    # PR #186 review, medium: an explicit decimal ("change
+                    # quantity to 10.0") gets its own dedicated rejection
+                    # quoting exactly what the customer typed — never the
+                    # wrong, confusing digit the old regex-backtracking
+                    # bug used to surface here ("0" instead of "10.0").
+                    answer = (
+                        f"**{_qty_pre['decimal_value']}** isn't a valid quantity — it "
+                        f"needs to be a whole number from {MIN_PRODUCT_QUANTITY} to "
+                        f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
+                        f"still **{session.product_quantity}**."
+                    )
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_product_quantity_rejected()"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    }
                 if (
                     _qty_pre["is_change"] and _qty_pre["value"] is not None
                     and not is_valid_product_quantity(_qty_pre["value"])
@@ -7643,7 +7663,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         summary = _cpq_summary_text(
             session.display_filled, attrs, rule_ids_nudge,
             session.product_name, req.workspace_id, sources=session.filled_source,
-                product_quantity=session.product_quantity,
+            product_quantity=session.product_quantity,
         )
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
@@ -8502,7 +8522,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         summary = _cpq_summary_text(
             display_filled, visible_attrs, rule_ids,
             session.product_name, req.workspace_id, sources=session.filled_source,
-                product_quantity=session.product_quantity,
+            product_quantity=session.product_quantity,
         )
         answer = (
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
