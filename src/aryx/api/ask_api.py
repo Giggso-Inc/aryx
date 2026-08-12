@@ -4765,6 +4765,46 @@ def _llm_resolve_quantity_target(
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
 
+def _llm_extract_quantity(question: str, workspace_id: int) -> int | None:
+    """Narrow extraction fallback for a stated quantity `extract_quantity_
+    hint`'s regex/word-number patterns can't parse at all (docs/CPQ_REGEX_
+    VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row 23) — tried only when
+    the caller has already confirmed the message has an explicit quantity-
+    change verb (`quantity_turn_precheck`'s `has_change_verb`) AND the
+    deterministic extractor found neither an integer nor a decimal at all.
+
+    "A couple dozen", "half a gross", "a few hundred" all state a real
+    quantity a customer might plausibly type, but match none of the
+    digit/word-number patterns the deterministic extractor knows.
+
+    Returns a bare int or None (call/parse failure, or the model itself
+    couldn't find a number) — the caller MUST still run it through
+    `is_valid_product_quantity` before accepting, exactly like the
+    regex path already requires; this only replaces the extraction step,
+    never the validation step.
+    """
+    sys = (
+        "A customer stated a quantity for a product order in a way that "
+        "doesn't use plain digits or simple number words. Extract the "
+        "integer quantity they mean, if any is genuinely stated "
+        "(\"a couple dozen\" = 24, \"half a gross\" = 72). If no specific "
+        "quantity is actually stated, say so — never guess a number that "
+        "isn't really there."
+    )
+    user = (
+        f"USER MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"quantity": <integer> | null}'
+    )
+
+    def _validate(parsed: dict) -> int | None:
+        val = parsed.get("quantity")
+        if not isinstance(val, int) or isinstance(val, bool):
+            return None
+        return val
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
 def _llm_detect_pending_topic_switch(
     question: str, pending_attr: Any, other_attrs: list, workspace_id: int,
 ) -> str | None:
@@ -5862,6 +5902,23 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             _qty_attrs = []
         _qty_pre = quantity_turn_precheck(req.question, _qty_attrs)
         if _qty_pre is not None:
+            # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+            # row 23: an explicit change verb with NOTHING parseable at
+            # all ("change quantity to a couple dozen") — tried only
+            # here, never for a bare quantity question with no change
+            # intent at all, and never when the regex/decimal extractor
+            # already found something (has_change_verb but value/
+            # decimal_value are both None is exactly the "unparseable"
+            # case, distinct from "not a change attempt").
+            if (
+                _qty_pre["has_change_verb"]
+                and _qty_pre["value"] is None
+                and _qty_pre.get("decimal_value") is None
+            ):
+                _qty_llm_value = _llm_extract_quantity(req.question, req.workspace_id)
+                if _qty_llm_value is not None:
+                    _qty_pre["value"] = _qty_llm_value
+                    _qty_pre["is_change"] = True
             # load_product_config returns the FULL raw catalog attribute
             # list for this product family, never filtered by hiding
             # rules or by what the customer has actually selected — a

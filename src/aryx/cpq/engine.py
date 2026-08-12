@@ -745,9 +745,18 @@ def quantity_turn_precheck(question: str, attrs: list[ConfigAttr]) -> dict[str, 
         return None
     value = extract_quantity_hint(question)
     decimal_value = extract_quantity_decimal_hint(question)
+    _has_change_verb = bool(_QUANTITY_CHANGE_VERB_RE.search(question))
     return {
-        "is_change": bool(_QUANTITY_CHANGE_VERB_RE.search(question))
+        "is_change": _has_change_verb
         and (value is not None or decimal_value is not None),
+        # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row
+        # 23: exposed separately from `is_change` so a caller can tell
+        # "explicit change verb, but nothing parseable at all" ("change
+        # quantity to a couple dozen") apart from "not a change attempt
+        # in the first place" -- the former is exactly the case an LLM
+        # extraction fallback should be tried for; the latter never
+        # should be.
+        "has_change_verb": _has_change_verb,
         "value": value,
         "decimal_value": decimal_value,
         "candidates": find_catalog_quantity_attrs(attrs),

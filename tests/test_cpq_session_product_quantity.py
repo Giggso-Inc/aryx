@@ -410,6 +410,59 @@ def test_explicit_decimal_quantity_is_rejected_quoting_the_real_input(monkeypatc
     assert resp["session_data"]["product_quantity"] == 50
 
 
+def test_explicit_quantity_unparseable_phrase_resolves_via_llm_fallback(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row 23:
+    "a couple dozen" has an explicit change verb but matches neither the
+    digit nor word-number patterns at all -- the LLM extraction fallback
+    must resolve it to a real integer, re-validated exactly like the
+    regex path."""
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=1)
+    req = AskRequest(question="change quantity to a couple dozen", workspace_id=1,
+                      session_data=session.to_dict())
+    fake_reply = '{"quantity": 24}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, object())
+    assert resp["tools_called"] == ["cpq_product_quantity()"]
+    assert resp["session_data"]["product_quantity"] == 24
+
+
+def test_explicit_quantity_unparseable_phrase_llm_fallback_fails_safe(monkeypatch):
+    """When the LLM fallback itself can't find a real number either, the
+    turn must never crash or silently accept a guess -- falls through to
+    the existing generic behavior with product_quantity untouched."""
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=5)
+    req = AskRequest(question="change quantity to a bunch", workspace_id=1,
+                      session_data=session.to_dict())
+    fake_reply = '{"quantity": null}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, object())
+    assert resp["session_data"]["product_quantity"] == 5
+
+
+def test_bare_quantity_question_never_triggers_the_llm_fallback(monkeypatch):
+    """A plain "what's my quantity?" (no change verb at all) must never
+    reach the LLM extraction fallback -- has_change_verb gates it."""
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=7)
+    req = AskRequest(question="what is my quantity?", workspace_id=1,
+                      session_data=session.to_dict())
+    with patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
+        resp = _run_cpq_turn(req, object())
+    mock_chat.assert_not_called()
+    assert resp["session_data"]["product_quantity"] == 7
+
+
 def test_implausible_number_in_opening_message_is_silently_ignored_not_accepted():
     """Turn 1's unconditional background capture never surfaces a
     rejection message (there was no explicit "set my quantity" request to
