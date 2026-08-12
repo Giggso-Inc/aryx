@@ -517,6 +517,22 @@ def _mutating_agrees(
         )
     if not result.variable_name:
         return False
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md review
+    # finding (HIGH): the last_qa_variables shortcut below only makes sense
+    # for value-bearing categories, where an independently-stated value
+    # PLUS the just-discussed variable corroborate each other (neither
+    # signal alone would be trustworthy, but together they are). Activation
+    # and clear carry no value at all — the very thing that's unverified is
+    # "is this really an activation/clear request," and conversational
+    # recency says nothing about that question. Letting the shortcut apply
+    # here would mean any ambiguous reply about a recently-discussed
+    # attribute could silently activate or clear it with no real detector
+    # confirmation at all. These two categories must always go through
+    # their real deterministic detector.
+    if result.intent_category in (
+        IntentCategory.ATTR_ACTIVATION, IntentCategory.ATTR_CLEAR,
+    ):
+        return bool(det_vns) and result.variable_name in det_vns
     if last_qa_variables and result.variable_name in last_qa_variables:
         return True
     if not det_vns:

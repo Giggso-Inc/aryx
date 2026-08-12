@@ -1423,6 +1423,33 @@ def test_llm_first_approval_dispatches_and_submits_the_payload(monkeypatch):
     assert resp["tools_called"] == ["cpq_payload_approved()"]
 
 
+def test_llm_first_approval_threads_hints_into_terms(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md review
+    finding (MEDIUM): _handle_approval's regex call site passes hints=hints;
+    the LLM-dispatch call site was silently defaulting to {} instead of
+    threading hints through _dispatch_intent_result, so an approval reached
+    via unusual phrasing ("yep, that's everything, go ahead") returned an
+    empty terms field where the regex path would have populated one."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    attrs = [battery]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="yep, that's everything, go ahead", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, attrs, result, [], [], [], BmlEvaluator({}),
+            hints={"warranty": "Extended warranty included"},
+        )
+    assert resp is not None
+    assert resp["terms"] == ["Extended warranty included"]
+
+
 def test_llm_first_approval_medium_confidence_falls_through():
     """APPROVAL has no deterministic-agreement cross-check (not in
     intent_gateway.MUTATING_CATEGORIES), so it requires HIGH confidence

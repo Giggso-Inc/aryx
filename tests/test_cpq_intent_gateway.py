@@ -394,6 +394,78 @@ def test_clear_dispatches_when_real_probing_agrees():
     assert decision.result.variable_name == "deviceColor_astro"
 
 
+def test_activation_never_dispatches_via_last_qa_variables_shortcut_alone():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md review
+    finding (HIGH): last_qa_variables is a value-corroboration shortcut for
+    the CHANGE_REQUEST family -- it must never substitute for a real
+    detect_attr_activation hit, since activation carries no value to
+    corroborate against. The variable being recently discussed is not
+    evidence the customer asked to activate it."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.last_qa_variables = ["extendedBatteryColor_astro"]
+    color = _attr("extendedBatteryColor_astro", "Extended Battery Color")
+    attrs = [color]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+    engine.detect_attr_activation.return_value = None  # real detector disagrees
+
+    ambiguous_json = (
+        '{"intent_category":"attr_activation","confidence":"high",'
+        '"variable_name":"extendedBatteryColor_astro","value_ref":null,'
+        '"evidence_span":"what does that even mean","rationale":"guess"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(ambiguous_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "actually hold on, what does that even mean?", attrs, session, engine,
+            workspace_id=1, hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+        )
+    assert decision.action != "dispatch"
+
+
+def test_clear_never_dispatches_via_last_qa_variables_shortcut_alone():
+    """Same fix, ATTR_CLEAR side -- a recently-discussed color attribute
+    must not get silently cleared just because it's in last_qa_variables;
+    the real detect_attr_clear must actually agree."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.filled = {"deviceColor_astro": "Black"}
+    session.last_qa_variables = ["deviceColor_astro"]
+    color = _attr("deviceColor_astro", "Device Color", [("Black", "Black"), ("Silver", "Silver")])
+    attrs = [color]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+    engine.detect_attr_clear.return_value = None  # real detector disagrees
+
+    ambiguous_json = (
+        '{"intent_category":"attr_clear","confidence":"high",'
+        '"variable_name":"deviceColor_astro","value_ref":null,'
+        '"evidence_span":"what does that even mean","rationale":"guess"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(ambiguous_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "actually hold on, what does that even mean?", attrs, session, engine,
+            workspace_id=1, hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+        )
+    assert decision.action != "dispatch"
+
+
 def test_mutating_categories_cover_change_family():
     assert IntentCategory.CHANGE_REQUEST in MUTATING_CATEGORIES
     assert IntentCategory.ATTR_CLEAR in MUTATING_CATEGORIES

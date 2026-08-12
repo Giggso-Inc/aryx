@@ -4313,7 +4313,7 @@ def _dispatch_intent_result(
     req: "AskRequest", session: Any, attrs: list, result: IntentResult,
     hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
     classify_prompt_tokens: int = 0, classify_completion_tokens: int = 0,
-    reader: Any = None,
+    reader: Any = None, hints: dict | None = None,
 ) -> "dict[str, Any] | None":
     """Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md.
 
@@ -4802,7 +4802,10 @@ def _dispatch_intent_result(
         and result.confidence == Confidence.HIGH
     ):
         return _with_classify_usage(
-            _handle_approval(req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval),
+            _handle_approval(
+                req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
+                hints=hints,
+            ),
             classify_prompt_tokens, classify_completion_tokens,
         )
 
@@ -8102,7 +8105,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         req, session, attrs, _mapped,
                         hiding_rules, rec_rules, con_rules, bml_eval,
                         _gw.prompt_tokens, _gw.completion_tokens,
-                        reader=reader,
+                        reader=reader, hints=hints,
                     )
                     if _dispatched is not None:
                         return _dispatched
