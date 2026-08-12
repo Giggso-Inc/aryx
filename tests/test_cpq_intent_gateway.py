@@ -287,6 +287,113 @@ def test_classify_dispatch_when_mutating_agrees():
     assert decision.value_display == "H45"
 
 
+def test_activation_clear_stay_unprobed_without_rule_context():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
+    follow-up: any EXISTING caller of classify_intent that doesn't pass
+    hiding_rules/rec_rules/con_rules/bml_eval must keep working exactly
+    as before -- ATTR_ACTIVATION/ATTR_CLEAR simply stay unprobed (never
+    called at all), never crashing on missing rule context."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    battery = _attr("extendedBattery_astro", "Extended Battery")
+    attrs = [battery]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"attr_activation","confidence":"high",'
+        '"variable_name":"extendedBattery_astro","value_ref":null,'
+        '"evidence_span":"add extended battery","rationale":"llm only"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "add extended battery", attrs, session, engine, workspace_id=1,
+        )
+    engine.detect_attr_activation.assert_not_called()
+    assert decision.action == "clarify"
+    assert decision.reason == "mutating_disagreement"
+
+
+def test_activation_dispatches_when_real_probing_agrees():
+    """With hiding_rules/rec_rules/con_rules/bml_eval supplied, the real
+    detect_attr_activation probe runs and a genuine agreement now
+    reaches "dispatch" -- the fix this session's cost/impact analysis
+    led to."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    battery = _attr("extendedBattery_astro", "Extended Battery")
+    attrs = [battery]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+    engine.detect_attr_activation.return_value = battery
+
+    good_json = (
+        '{"intent_category":"attr_activation","confidence":"high",'
+        '"variable_name":"extendedBattery_astro","value_ref":null,'
+        '"evidence_span":"add extended battery","rationale":"agreed"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "add extended battery", attrs, session, engine, workspace_id=1,
+            hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+        )
+    engine.detect_attr_activation.assert_called_once()
+    assert decision.action == "dispatch"
+    assert decision.result is not None
+    assert decision.result.variable_name == "extendedBattery_astro"
+
+
+def test_clear_dispatches_when_real_probing_agrees():
+    """Same fix, ATTR_CLEAR side."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.filled = {"deviceColor_astro": "Black"}
+    color = _attr("deviceColor_astro", "Device Color", [("Black", "Black"), ("Silver", "Silver")])
+    attrs = [color]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+    engine.detect_attr_clear.return_value = color
+
+    good_json = (
+        '{"intent_category":"attr_clear","confidence":"high",'
+        '"variable_name":"deviceColor_astro","value_ref":null,'
+        '"evidence_span":"clear device color","rationale":"agreed"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 10, 5),
+    ):
+        decision = classify_intent(
+            "clear device color", attrs, session, engine, workspace_id=1,
+            hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+        )
+    engine.detect_attr_clear.assert_called_once()
+    assert decision.action == "dispatch"
+    assert decision.result is not None
+    assert decision.result.variable_name == "deviceColor_astro"
+
+
 def test_mutating_categories_cover_change_family():
     assert IntentCategory.CHANGE_REQUEST in MUTATING_CATEGORIES
     assert IntentCategory.ATTR_CLEAR in MUTATING_CATEGORIES

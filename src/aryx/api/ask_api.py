@@ -4371,25 +4371,34 @@ def _dispatch_intent_result(
         CURRENTLY in `session.filled_multi` — naming an unselected or
         nonexistent option is never a removal request, mirroring the
         regex detector's own invariant exactly.
-      - Every other category (ATTR_ACTIVATION, ATTR_CLEAR,
-        BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST, APPROVAL,
-        PRODUCT_MENTION) returns None —
-        deliberately deferred rather than rushed, so the deterministic
-        path keeps owning them until a follow-up lands each one with
-        the same care as the ones above. ATTR_ACTIVATION and ATTR_CLEAR
-        specifically are NOT a "just add a branch" case even though
-        both are also in `MUTATING_CATEGORIES`: `_deterministic_
-        mutating_signals`'s own docstring in intent_gateway.py admits
-        it never probes them ("ATTR_CLEAR / ATTR_ACTIVATION need
-        rec_rules / hiding_rules... left empty here so disagreement
-        forces clarify") — meaning `_mutating_agrees` sees an
-        permanently-empty candidate set for these two and returns
-        `False` almost unconditionally (bar rare `last_qa_variables`
-        corroboration), so `_gw.action` essentially never becomes
-        `"dispatch"` for them today. A dispatch branch here would be
-        dead code until that upstream probe gap is closed first — this
-        is upstream `intent_gateway.py` work, not an `if` in this
-        function. PRODUCT_MENTION specifically
+      - ATTR_ACTIVATION / ATTR_CLEAR (Phase 2b follow-up, 2026-08-12):
+        dispatched to the SAME `_handle_attr_activation`/
+        `_handle_attr_clear` the regex path already uses. Both were
+        initially left unwired because `_deterministic_mutating_
+        signals` (intent_gateway.py) never probed either category —
+        its own docstring admitted this was deliberate ("left empty
+        here so disagreement forces clarify"), meaning `_mutating_
+        agrees` returned `False` almost unconditionally for them and
+        `_gw.action` essentially never reached `"dispatch"`. Fixed
+        upstream first: `_deterministic_mutating_signals` (and
+        `classify_intent`/`gateway_classify_intent`) now accept
+        optional `hiding_rules`/`rec_rules`/`con_rules`/`bml_eval`/
+        `catalog_prefix` and genuinely call `detect_attr_activation`/
+        `detect_attr_clear` when supplied (confirmed cheap: no new LLM
+        call, pure deterministic rule-evaluation, only on a cache miss
+        during review-stage turns). With real probing in place, these
+        two dispatch branches re-verify the exact same eligibility
+        predicate their regex counterparts use before calling the
+        handler — not required/not hidden/not already filled for
+        activation; not required/single-select/already filled plus a
+        trial-removal simulation for clear — since
+        `_resolve_target_description` alone only proves the label is
+        unique, not that the action is currently valid.
+      - Every other category (BULK_QUANTITY_CHANGE,
+        RESPONSE_MODE_REQUEST, APPROVAL, PRODUCT_MENTION) returns
+        None — deliberately deferred rather than rushed, so the
+        deterministic path keeps owning them until a follow-up lands
+        each one with the same care as the ones above. PRODUCT_MENTION specifically
         cannot be wired the same way as ATTR_QUERY once attempted: its
         target would have to be a product name, but `_gateway_to_
         intent_result` only ever builds a `ChangeTarget` from `attrs`
@@ -4561,6 +4570,86 @@ def _dispatch_intent_result(
             _handle_multi_select_removal(
                 req, session, attrs, attr, [_resolved_iv],
                 hiding_rules, rec_rules, con_rules,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
+    # follow-up: now that intent_gateway._deterministic_mutating_signals
+    # genuinely probes ATTR_ACTIVATION/ATTR_CLEAR (real
+    # detect_attr_activation/detect_attr_clear calls, not permanently
+    # empty), a mapped result here has ALSO already passed real
+    # deterministic agreement upstream — same shape as
+    # MULTI_SELECT_REMOVAL above, no extra Confidence.HIGH gate needed.
+    # `_resolve_target_description` only proves the label is unique; it
+    # says nothing about whether the attr is currently ELIGIBLE for
+    # activation. Re-verified here against the exact same predicate
+    # detect_attr_activation itself uses — not required, not
+    # attr.hidden, not already filled/selected, and not currently
+    # excluded by a live-evaluated hiding rule — so a stale or
+    # since-changed session state can never activate an attr the regex
+    # path would have silently declined.
+    if (
+        result.category == IntentCategory.ATTR_ACTIVATION
+        and result.target
+    ):
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None:
+            return None
+        if attr.required or attr.hidden:
+            return None
+        if attr.variable_name in session.filled or session.filled_multi.get(attr.variable_name):
+            return None
+        _hidden_now = _cpq_engine.apply_hiding_rules(
+            attrs, session.filled, hiding_rules, bml_eval=bml_eval,
+            filled_multi=session.filled_multi,
+        )[2]
+        if attr.variable_name in _hidden_now:
+            return None
+        return _with_classify_usage(
+            _handle_attr_activation(
+                req, session, attrs, attr, hiding_rules, rec_rules, con_rules,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
+    # Same reasoning as ATTR_ACTIVATION above, for ATTR_CLEAR: re-verify
+    # the exact eligibility predicate detect_attr_clear itself uses —
+    # not required, single-select, already filled, AND a trial removal
+    # confirms no recommendation rule would immediately refill it and no
+    # constraint rule would narrow it to exactly one forced option
+    # (clearing would otherwise silently no-op, the same "never a no-op
+    # disguised as an action" discipline detect_attr_clear's own
+    # docstring describes).
+    if (
+        result.category == IntentCategory.ATTR_CLEAR
+        and result.target
+    ):
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None:
+            return None
+        if attr.required or attr.select_type == "multi":
+            return None
+        if not session.filled.get(attr.variable_name):
+            return None
+        _trial_filled = dict(session.filled)
+        _trial_filled.pop(attr.variable_name, None)
+        _rec_fires = _cpq_engine.apply_recommendation_rules(
+            attrs, _trial_filled, rec_rules, bml_eval=bml_eval)
+        if attr.variable_name in _rec_fires:
+            return None
+        _constrained = _cpq_engine.apply_constraint_rules(
+            attrs, con_rules, _trial_filled, bml_eval=bml_eval)
+        _allowed = _constrained.get(attr.entity_id)
+        if _allowed is not None:
+            _valid_opts = [o for o in attr.options if o.item_value in _allowed]
+            if len(_valid_opts) == 1:
+                return None
+        return _with_classify_usage(
+            _handle_attr_clear(
+                req, session, attrs, attr, hiding_rules, rec_rules, con_rules,
             ),
             classify_prompt_tokens, classify_completion_tokens,
         )
@@ -7482,6 +7571,8 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         ):
             _gw = gateway_classify_intent(
                 req.question, attrs, session, _cpq_engine, req.workspace_id,
+                hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
+                bml_eval=bml_eval, catalog_prefix=catalog_prefix,
             )
             logger.info(
                 "cpq_intent_gateway_turn: action=%s reason=%r category=%s "

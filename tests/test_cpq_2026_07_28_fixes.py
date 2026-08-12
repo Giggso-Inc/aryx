@@ -673,6 +673,163 @@ def test_llm_first_multi_select_removal_requires_a_multi_select_attr():
     assert resp is None
 
 
+def test_llm_first_attr_activation_dispatches_an_eligible_attr():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
+    follow-up: ATTR_ACTIVATION is in intent_gateway.MUTATING_CATEGORIES
+    and is now genuinely probed (upstream fix), so no extra
+    Confidence.HIGH gate is needed -- proven by dispatching at MEDIUM."""
+    battery = _attr(1, "extendedBattery_astro", "Extended Battery", required=False)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="add extended battery", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules", return_value=({}, {}, set())), \
+         patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        mock_activate.return_value = {
+            "answer": "stub activation", "terms": [], "tools_called": ["cpq_attr_activation()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
+    mock_activate.assert_called_once()
+    assert resp["answer"] == "stub activation"
+
+
+def test_llm_first_attr_activation_never_reactivates_an_already_filled_attr():
+    """Eligibility must be re-checked against CURRENT session state, not
+    assumed from target resolution alone -- an already-filled attr is
+    never a valid activation target."""
+    battery = _attr(1, "extendedBattery_astro", "Extended Battery", required=False)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"extendedBattery_astro": "YES"})
+    req = AskRequest(question="add extended battery", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
+    mock_activate.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_activation_never_reactivates_a_required_attr():
+    """A required attr is never eligible for activation -- it's already
+    part of the quote by definition."""
+    required_attr = _attr(1, "hWVersion_astro", "Hardware Version", required=True)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="add hardware version", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Hardware Version", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        resp = _dispatch_intent_result(req, session, [required_attr], result, [], [], [], None)
+    mock_activate.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_activation_never_reactivates_a_still_hidden_attr():
+    """A live-evaluated hiding rule that still excludes the attr must
+    block activation, same as detect_attr_activation's own re-check."""
+    battery = _attr(1, "extendedBattery_astro", "Extended Battery", required=False)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="add extended battery", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules",
+               return_value=({}, {}, {"extendedBattery_astro"})), \
+         patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
+    mock_activate.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_clear_dispatches_an_eligible_attr():
+    """ATTR_CLEAR: eligible when filled, single-select, not required, and
+    the trial-removal simulation shows no rule would immediately refill
+    or narrow it back -- dispatches even at MEDIUM confidence, proving
+    no extra gate is needed once real upstream probing exists."""
+    color = _attr(1, "deviceColor_astro", "Device Color", required=False,
+                   options=_opt("Black", "Silver"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"deviceColor_astro": "Black"})
+    req = AskRequest(question="clear device color", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_CLEAR, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Device Color", new_value_description=None),
+        rationale="clear",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules", return_value={}), \
+         patch("aryx.api.ask_api._cpq_engine.apply_constraint_rules", return_value={}), \
+         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+        mock_clear.return_value = {
+            "answer": "stub clear", "terms": [], "tools_called": ["cpq_attr_clear()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
+    mock_clear.assert_called_once()
+    assert resp["answer"] == "stub clear"
+
+
+def test_llm_first_attr_clear_never_clears_an_unfilled_attr():
+    """Nothing to clear if the attr isn't even filled -- never a valid
+    clear target."""
+    color = _attr(1, "deviceColor_astro", "Device Color", required=False,
+                   options=_opt("Black", "Silver"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="clear device color", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_CLEAR, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Device Color", new_value_description=None),
+        rationale="clear",
+    )
+    with patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+        resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
+    mock_clear.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_clear_refuses_when_a_recommendation_would_immediately_refill():
+    """Mirrors detect_attr_clear's own "never a silent no-op" discipline
+    -- if a recommendation rule would immediately refill the value,
+    clearing is refused, not silently accepted as a no-op action."""
+    color = _attr(1, "deviceColor_astro", "Device Color", required=False,
+                   options=_opt("Black", "Silver"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"deviceColor_astro": "Black"})
+    req = AskRequest(question="clear device color", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_CLEAR, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Device Color", new_value_description=None),
+        rationale="clear",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules",
+               return_value={"deviceColor_astro": "Black"}), \
+         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+        resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
+    mock_clear.assert_not_called()
+    assert resp is None
+
+
 def test_llm_first_change_target_without_value_asks_which_value():
     solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
                       options=_opt("RadioCentral", "CloudRC"))
