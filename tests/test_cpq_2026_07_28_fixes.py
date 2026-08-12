@@ -585,6 +585,94 @@ def test_llm_first_qa_question_never_dispatches_without_a_reader():
     assert resp is None
 
 
+def test_llm_first_multi_select_removal_dispatches_a_currently_selected_option():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b:
+    MULTI_SELECT_REMOVAL is in intent_gateway.MUTATING_CATEGORIES and IS
+    genuinely probed, so no extra Confidence.HIGH gate is required -- but
+    the named option must resolve to a real, currently-selected item_value."""
+    mount = _attr(1, "mountingTypeArray_viSoln", "Mounting Type",
+                  select_type="multi", options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"))
+    session = CpqSession(mode="cpq", product_name="videoSolutions_BOM", status="awaiting_approval",
+                         filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]})
+    req = AskRequest(question="remove the jacket mount", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL,
+        confidence=Confidence.MEDIUM,  # deliberately not HIGH -- proves no gate is needed here
+        target=ChangeTarget(target_description="Mounting Type",
+                             new_value_description="Jacket Magnetic Mount"),
+        rationale="removal",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})), \
+         patch("aryx.api.ask_api._cpq_engine.load_layout_display_order", return_value=[]), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_always_ask_skips", return_value=set()):
+        resp = _dispatch_intent_result(
+            req, session, [mount], result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=100, classify_completion_tokens=10,
+        )
+    assert resp is not None
+    assert resp["tools_called"] == ["cpq_multi_select_removal()"]
+    assert session.filled_multi["mountingTypeArray_viSoln"] == ["Shirt Magnetic Mount"]
+
+
+def test_llm_first_multi_select_removal_never_removes_an_unselected_option():
+    """Naming an option that isn't currently selected must never dispatch
+    -- mirrors detect_multi_select_removal's own "only remove what's
+    genuinely selected" invariant exactly."""
+    mount = _attr(1, "mountingTypeArray_viSoln", "Mounting Type",
+                  select_type="multi", options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"))
+    session = CpqSession(mode="cpq", product_name="videoSolutions_BOM", status="awaiting_approval",
+                         filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]})
+    req = AskRequest(question="remove the jacket mount", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Mounting Type",
+                             new_value_description="Jacket Magnetic Mount"),
+        rationale="removal",
+    )
+    resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
+    assert resp is None
+    assert session.filled_multi["mountingTypeArray_viSoln"] == ["Shirt Magnetic Mount"]
+
+
+def test_llm_first_multi_select_removal_never_invents_an_option():
+    """A value_display that doesn't match any real option on the attr
+    must never dispatch -- never guess an item_value from free text."""
+    mount = _attr(1, "mountingTypeArray_viSoln", "Mounting Type",
+                  select_type="multi", options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"))
+    session = CpqSession(mode="cpq", product_name="videoSolutions_BOM", status="awaiting_approval",
+                         filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]})
+    req = AskRequest(question="remove the fleece mount", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Mounting Type",
+                             new_value_description="Fleece Mount"),
+        rationale="removal",
+    )
+    resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_multi_select_removal_requires_a_multi_select_attr():
+    """A resolved target that isn't actually a multi-select must never
+    dispatch as a removal."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"solutionTypeDevices_astro": "RadioCentral"})
+    req = AskRequest(question="remove radiocentral", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Solution Type", new_value_description="RadioCentral"),
+        rationale="removal",
+    )
+    resp = _dispatch_intent_result(req, session, [solution], result, [], [], [], None)
+    assert resp is None
+
+
 def test_llm_first_change_target_without_value_asks_which_value():
     solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
                       options=_opt("RadioCentral", "CloudRC"))

@@ -4358,12 +4358,38 @@ def _dispatch_intent_result(
         call site. Same `Confidence.HIGH` requirement as ATTR_QUERY.
         Requires `reader`, threaded through as a new optional parameter
         on this function (default `None`) — never dispatches without it.
-      - Every other category (MULTI_SELECT_REMOVAL, ATTR_ACTIVATION,
-        ATTR_CLEAR, BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST,
-        APPROVAL, PRODUCT_MENTION) returns None —
+      - MULTI_SELECT_REMOVAL (Phase 2b, 2026-08-12): dispatched to the
+        SAME `_handle_multi_select_removal` the regex-based `detect_
+        multi_select_removal` path already uses. This category IS in
+        `intent_gateway.MUTATING_CATEGORIES` and IS genuinely probed by
+        `_deterministic_mutating_signals` (`_probe_removal`), so a
+        mapped result already passed real deterministic agreement
+        upstream — no extra `Confidence.HIGH` gate needed here, unlike
+        ATTR_QUERY/QA_QUESTION. `_resolve_target_description` only
+        proves the attribute label is unique; separately re-verified
+        here that the named option resolves to a real `item_value`
+        CURRENTLY in `session.filled_multi` — naming an unselected or
+        nonexistent option is never a removal request, mirroring the
+        regex detector's own invariant exactly.
+      - Every other category (ATTR_ACTIVATION, ATTR_CLEAR,
+        BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST, APPROVAL,
+        PRODUCT_MENTION) returns None —
         deliberately deferred rather than rushed, so the deterministic
         path keeps owning them until a follow-up lands each one with
-        the same care as the ones above. PRODUCT_MENTION specifically
+        the same care as the ones above. ATTR_ACTIVATION and ATTR_CLEAR
+        specifically are NOT a "just add a branch" case even though
+        both are also in `MUTATING_CATEGORIES`: `_deterministic_
+        mutating_signals`'s own docstring in intent_gateway.py admits
+        it never probes them ("ATTR_CLEAR / ATTR_ACTIVATION need
+        rec_rules / hiding_rules... left empty here so disagreement
+        forces clarify") — meaning `_mutating_agrees` sees an
+        permanently-empty candidate set for these two and returns
+        `False` almost unconditionally (bar rare `last_qa_variables`
+        corroboration), so `_gw.action` essentially never becomes
+        `"dispatch"` for them today. A dispatch branch here would be
+        dead code until that upstream probe gap is closed first — this
+        is upstream `intent_gateway.py` work, not an `if` in this
+        function. PRODUCT_MENTION specifically
         cannot be wired the same way as ATTR_QUERY once attempted: its
         target would have to be a product name, but `_gateway_to_
         intent_result` only ever builds a `ChangeTarget` from `attrs`
@@ -4493,6 +4519,51 @@ def _dispatch_intent_result(
                 classify_prompt_tokens, classify_completion_tokens,
             )
         return None
+
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b:
+    # MULTI_SELECT_REMOVAL IS in intent_gateway.MUTATING_CATEGORIES and IS
+    # genuinely probed by _deterministic_mutating_signals (unlike
+    # ATTR_ACTIVATION/ATTR_CLEAR below, whose probes don't exist yet — see
+    # that finding at the end of this function) — so a mapped result here
+    # already passed real deterministic agreement upstream, before
+    # `_gw.action` was ever set to "dispatch". No extra Confidence.HIGH
+    # gate needed the way ATTR_QUERY/QA_QUESTION require, since this
+    # category already has the stronger protection.
+    #
+    # `_resolve_target_description` only proves the ATTRIBUTE label is
+    # unique — it says nothing about the OPTION the LLM identified for
+    # removal. Two more things must hold, mirroring detect_multi_select_
+    # removal's own invariants exactly: the attr must actually be a
+    # multi-select, and the named option must resolve to a real
+    # `item_value` that is CURRENTLY SELECTED — naming an unselected
+    # option, or one that doesn't exist at all, is never a removal
+    # request (never guessed).
+    if (
+        result.category == IntentCategory.MULTI_SELECT_REMOVAL
+        and result.target
+        and result.target.new_value_description
+    ):
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None or attr.select_type != "multi":
+            return None
+        _current_selection = session.filled_multi.get(attr.variable_name, [])
+        _wanted_display = result.target.new_value_description.strip().lower()
+        _resolved_iv = next(
+            (o.item_value for o in attr.options
+             if o.display_name.strip().lower() == _wanted_display
+             and o.item_value in _current_selection),
+            None,
+        )
+        if _resolved_iv is None:
+            return None
+        return _with_classify_usage(
+            _handle_multi_select_removal(
+                req, session, attrs, attr, [_resolved_iv],
+                hiding_rules, rec_rules, con_rules,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
 
     # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2 +
     # residual-risk mitigation #1: ATTR_QUERY has no deterministic-
