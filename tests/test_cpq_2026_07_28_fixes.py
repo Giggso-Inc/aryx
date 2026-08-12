@@ -519,6 +519,317 @@ def test_llm_first_out_of_scope_answers_without_touching_config():
     assert session.filled == {"a": "b"}, "out-of-scope must never mutate config state"
 
 
+def test_llm_first_qa_question_dispatches_on_high_confidence_with_reader():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 3:
+    QA_QUESTION with HIGH confidence and a reader passed must dispatch to
+    _handle_cpq_qa(..., resume_review=True), the same handler the regex
+    path at this same review-stage call site already uses."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="what does extended battery mean?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
+        rationale="graph question",
+    )
+    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        mock_qa.return_value = {
+            "answer": "stub qa answer", "terms": [], "tools_called": ["cpq_qa()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-qa", "answer_model": "cpq-qa"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        resp = _dispatch_intent_result(
+            req, session, [], result, [], [], [], None, reader=object(),
+        )
+    mock_qa.assert_called_once()
+    kwargs = mock_qa.call_args
+    assert kwargs.kwargs.get("resume_review") is True or (
+        len(kwargs.args) >= 5 and kwargs.args[4] is True
+    )
+    assert resp["answer"] == "stub qa answer"
+
+
+def test_llm_first_qa_question_medium_confidence_falls_through():
+    """No deterministic-agreement cross-check exists for QA_QUESTION
+    (residual-risk mitigation #1) -- MEDIUM confidence must defer to the
+    regex path exactly like ATTR_QUERY's own gate."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="what does extended battery mean?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.QA_QUESTION, confidence=Confidence.MEDIUM,
+        rationale="graph question",
+    )
+    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        resp = _dispatch_intent_result(
+            req, session, [], result, [], [], [], None, reader=object(),
+        )
+    mock_qa.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_qa_question_never_dispatches_without_a_reader():
+    """QA_QUESTION needs `reader` for its graph-grounded lookups -- never
+    dispatch (fall through) if it wasn't actually passed, rather than
+    guessing a data source."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="what does extended battery mean?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
+        rationale="graph question",
+    )
+    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    mock_qa.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_multi_select_removal_dispatches_a_currently_selected_option():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b:
+    MULTI_SELECT_REMOVAL is in intent_gateway.MUTATING_CATEGORIES and IS
+    genuinely probed, so no extra Confidence.HIGH gate is required -- but
+    the named option must resolve to a real, currently-selected item_value."""
+    mount = _attr(1, "mountingTypeArray_viSoln", "Mounting Type",
+                  select_type="multi", options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"))
+    session = CpqSession(mode="cpq", product_name="videoSolutions_BOM", status="awaiting_approval",
+                         filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]})
+    req = AskRequest(question="remove the jacket mount", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL,
+        confidence=Confidence.MEDIUM,  # deliberately not HIGH -- proves no gate is needed here
+        target=ChangeTarget(target_description="Mounting Type",
+                             new_value_description="Jacket Magnetic Mount"),
+        rationale="removal",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})), \
+         patch("aryx.api.ask_api._cpq_engine.load_layout_display_order", return_value=[]), \
+         patch("aryx.api.ask_api._cpq_engine.resolve_always_ask_skips", return_value=set()):
+        resp = _dispatch_intent_result(
+            req, session, [mount], result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=100, classify_completion_tokens=10,
+        )
+    assert resp is not None
+    assert resp["tools_called"] == ["cpq_multi_select_removal()"]
+    assert session.filled_multi["mountingTypeArray_viSoln"] == ["Shirt Magnetic Mount"]
+
+
+def test_llm_first_multi_select_removal_never_removes_an_unselected_option():
+    """Naming an option that isn't currently selected must never dispatch
+    -- mirrors detect_multi_select_removal's own "only remove what's
+    genuinely selected" invariant exactly."""
+    mount = _attr(1, "mountingTypeArray_viSoln", "Mounting Type",
+                  select_type="multi", options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"))
+    session = CpqSession(mode="cpq", product_name="videoSolutions_BOM", status="awaiting_approval",
+                         filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]})
+    req = AskRequest(question="remove the jacket mount", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Mounting Type",
+                             new_value_description="Jacket Magnetic Mount"),
+        rationale="removal",
+    )
+    resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
+    assert resp is None
+    assert session.filled_multi["mountingTypeArray_viSoln"] == ["Shirt Magnetic Mount"]
+
+
+def test_llm_first_multi_select_removal_never_invents_an_option():
+    """A value_display that doesn't match any real option on the attr
+    must never dispatch -- never guess an item_value from free text."""
+    mount = _attr(1, "mountingTypeArray_viSoln", "Mounting Type",
+                  select_type="multi", options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"))
+    session = CpqSession(mode="cpq", product_name="videoSolutions_BOM", status="awaiting_approval",
+                         filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]})
+    req = AskRequest(question="remove the fleece mount", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Mounting Type",
+                             new_value_description="Fleece Mount"),
+        rationale="removal",
+    )
+    resp = _dispatch_intent_result(req, session, [mount], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_multi_select_removal_requires_a_multi_select_attr():
+    """A resolved target that isn't actually a multi-select must never
+    dispatch as a removal."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"solutionTypeDevices_astro": "RadioCentral"})
+    req = AskRequest(question="remove radiocentral", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.MULTI_SELECT_REMOVAL, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Solution Type", new_value_description="RadioCentral"),
+        rationale="removal",
+    )
+    resp = _dispatch_intent_result(req, session, [solution], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_attr_activation_dispatches_an_eligible_attr():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
+    follow-up: ATTR_ACTIVATION is in intent_gateway.MUTATING_CATEGORIES
+    and is now genuinely probed (upstream fix), so no extra
+    Confidence.HIGH gate is needed -- proven by dispatching at MEDIUM."""
+    battery = _attr(1, "extendedBattery_astro", "Extended Battery", required=False)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="add extended battery", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules", return_value=({}, {}, set())), \
+         patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        mock_activate.return_value = {
+            "answer": "stub activation", "terms": [], "tools_called": ["cpq_attr_activation()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
+    mock_activate.assert_called_once()
+    assert resp["answer"] == "stub activation"
+
+
+def test_llm_first_attr_activation_never_reactivates_an_already_filled_attr():
+    """Eligibility must be re-checked against CURRENT session state, not
+    assumed from target resolution alone -- an already-filled attr is
+    never a valid activation target."""
+    battery = _attr(1, "extendedBattery_astro", "Extended Battery", required=False)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"extendedBattery_astro": "YES"})
+    req = AskRequest(question="add extended battery", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
+    mock_activate.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_activation_never_reactivates_a_required_attr():
+    """A required attr is never eligible for activation -- it's already
+    part of the quote by definition."""
+    required_attr = _attr(1, "hWVersion_astro", "Hardware Version", required=True)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="add hardware version", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Hardware Version", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        resp = _dispatch_intent_result(req, session, [required_attr], result, [], [], [], None)
+    mock_activate.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_activation_never_reactivates_a_still_hidden_attr():
+    """A live-evaluated hiding rule that still excludes the attr must
+    block activation, same as detect_attr_activation's own re-check."""
+    battery = _attr(1, "extendedBattery_astro", "Extended Battery", required=False)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="add extended battery", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_ACTIVATION, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Extended Battery", new_value_description=None),
+        rationale="activation",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_hiding_rules",
+               return_value=({}, {}, {"extendedBattery_astro"})), \
+         patch("aryx.api.ask_api._handle_attr_activation") as mock_activate:
+        resp = _dispatch_intent_result(req, session, [battery], result, [], [], [], None)
+    mock_activate.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_clear_dispatches_an_eligible_attr():
+    """ATTR_CLEAR: eligible when filled, single-select, not required, and
+    the trial-removal simulation shows no rule would immediately refill
+    or narrow it back -- dispatches even at MEDIUM confidence, proving
+    no extra gate is needed once real upstream probing exists."""
+    color = _attr(1, "deviceColor_astro", "Device Color", required=False,
+                   options=_opt("Black", "Silver"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"deviceColor_astro": "Black"})
+    req = AskRequest(question="clear device color", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_CLEAR, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Device Color", new_value_description=None),
+        rationale="clear",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules", return_value={}), \
+         patch("aryx.api.ask_api._cpq_engine.apply_constraint_rules", return_value={}), \
+         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+        mock_clear.return_value = {
+            "answer": "stub clear", "terms": [], "tools_called": ["cpq_attr_clear()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
+    mock_clear.assert_called_once()
+    assert resp["answer"] == "stub clear"
+
+
+def test_llm_first_attr_clear_never_clears_an_unfilled_attr():
+    """Nothing to clear if the attr isn't even filled -- never a valid
+    clear target."""
+    color = _attr(1, "deviceColor_astro", "Device Color", required=False,
+                   options=_opt("Black", "Silver"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="clear device color", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_CLEAR, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Device Color", new_value_description=None),
+        rationale="clear",
+    )
+    with patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+        resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
+    mock_clear.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_attr_clear_refuses_when_a_recommendation_would_immediately_refill():
+    """Mirrors detect_attr_clear's own "never a silent no-op" discipline
+    -- if a recommendation rule would immediately refill the value,
+    clearing is refused, not silently accepted as a no-op action."""
+    color = _attr(1, "deviceColor_astro", "Device Color", required=False,
+                   options=_opt("Black", "Silver"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"deviceColor_astro": "Black"})
+    req = AskRequest(question="clear device color", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_CLEAR, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Device Color", new_value_description=None),
+        rationale="clear",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.apply_recommendation_rules",
+               return_value={"deviceColor_astro": "Black"}), \
+         patch("aryx.api.ask_api._handle_attr_clear") as mock_clear:
+        resp = _dispatch_intent_result(req, session, [color], result, [], [], [], None)
+    mock_clear.assert_not_called()
+    assert resp is None
+
+
 def test_llm_first_change_target_without_value_asks_which_value():
     solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
                       options=_opt("RadioCentral", "CloudRC"))
@@ -540,6 +851,68 @@ def test_llm_first_change_target_without_value_asks_which_value():
     assert resp is not None
     assert "Solution Type" in resp["answer"]
     assert session.pending_change_no_value_vn == "solutionTypeDevices_astro"
+
+
+def test_llm_first_attr_query_dispatches_on_high_confidence():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2:
+    ATTR_QUERY with HIGH confidence and a resolvable target must dispatch
+    to the same _build_attr_query_response the regex path shares."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="configuring")
+    req = AskRequest(question="what are the options for solution type?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_QUERY, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Solution Type", new_value_description=None),
+        rationale="attr query",
+    )
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, [solution], result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=100, classify_completion_tokens=10,
+        )
+    assert resp is not None
+    assert "Solution Type" in resp["answer"]
+    assert "RadioCentral" in resp["answer"]
+    assert resp["tools_called"] == ["cpq_attr_query(solutionTypeDevices_astro)"]
+
+
+def test_llm_first_attr_query_medium_confidence_falls_through():
+    """ATTR_QUERY has no deterministic-agreement cross-check (not in
+    intent_gateway.MUTATING_CATEGORIES), so it requires HIGH confidence
+    specifically -- MEDIUM must defer to the regex path exactly like LOW
+    already does everywhere else (residual-risk mitigation #1)."""
+    solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="configuring")
+    req = AskRequest(question="what are the options for solution type?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_QUERY, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Solution Type", new_value_description=None),
+        rationale="attr query",
+    )
+    resp = _dispatch_intent_result(req, session, [solution], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_attr_query_unresolvable_target_falls_through():
+    """Two attrs share the description word -- no unique resolution ->
+    dispatch must return None, never silently guess one, same discipline
+    as the CHANGE_TARGET_WITHOUT_VALUE case above."""
+    a = _attr(1, "productInformationText_astro", "Product Information Text")
+    b = _attr(2, "productSelectionProduct_all", "Product")
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="configuring")
+    req = AskRequest(question="what are the product options?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.ATTR_QUERY, confidence=Confidence.HIGH,
+        target=ChangeTarget(target_description="Product", new_value_description=None),
+        rationale="attr query",
+    )
+    resp = _dispatch_intent_result(req, session, [a, b], result, [], [], [], None)
+    assert resp is None
 
 
 def test_llm_first_unresolvable_target_falls_through_never_guesses():
@@ -1024,6 +1397,263 @@ def test_confirm_during_awaiting_approval_submits_the_payload(monkeypatch):
     assert resp["tools_called"] == ["cpq_payload_approved()"]
 
 
+def test_llm_first_approval_dispatches_and_submits_the_payload(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md APPROVAL
+    dispatch: same _handle_approval the regex path (test above) uses,
+    reached via _dispatch_intent_result instead of detect_approval."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    attrs = [battery]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="yep, that's everything", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, attrs, result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=100, classify_completion_tokens=10,
+        )
+    assert resp is not None
+    assert resp["cpq_payload"] is not None
+    assert resp["session_data"]["status"] == "post_approval"
+    assert resp["tools_called"] == ["cpq_payload_approved()"]
+
+
+def test_llm_first_approval_threads_hints_into_terms(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md review
+    finding (MEDIUM): _handle_approval's regex call site passes hints=hints;
+    the LLM-dispatch call site was silently defaulting to {} instead of
+    threading hints through _dispatch_intent_result, so an approval reached
+    via unusual phrasing ("yep, that's everything, go ahead") returned an
+    empty terms field where the regex path would have populated one."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    attrs = [battery]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="yep, that's everything, go ahead", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, attrs, result, [], [], [], BmlEvaluator({}),
+            hints={"warranty": "Extended warranty included"},
+        )
+    assert resp is not None
+    assert resp["terms"] == ["Extended warranty included"]
+
+
+def test_llm_first_approval_medium_confidence_falls_through():
+    """APPROVAL has no deterministic-agreement cross-check (not in
+    intent_gateway.MUTATING_CATEGORIES), so it requires HIGH confidence
+    specifically -- MEDIUM must defer to the regex path, same gate as
+    ATTR_QUERY/QA_QUESTION."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"batteryType_astro": "STANDARD"})
+    req = AskRequest(question="yep, that's everything", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.MEDIUM,
+                          rationale="approval")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_approval_still_blocks_on_a_real_rule_conflict(monkeypatch):
+    """The classification alone must never bypass the untouched BOM
+    gate -- a genuine rule conflict still blocks the payload exactly
+    like the regex path, since both now share _handle_approval."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "aryx.api.ask_api.validate_before_payload",
+        lambda *a, **k: type(
+            "Gate", (), {"ok": False, "stale_violations": [], "catch_message": "blocked"},
+        )(),
+    )
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"}, status="awaiting_approval")
+    req = AskRequest(question="confirm please", workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, [battery], result, [], [], [], BmlEvaluator({}),
+        )
+    assert resp is not None
+    assert resp["cpq_payload"] is None
+    assert resp["tools_called"] == ["cpq_bom_gate_blocked()"]
+
+
+# ── B5. Phase 4: RESPONSE_MODE_REQUEST (json) / BULK_QUANTITY_CHANGE ────
+
+def test_llm_first_response_mode_request_json_dispatches_a_preview(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
+    RESPONSE_MODE_REQUEST("json") dispatches the same json-preview
+    response _build_json_preview_response gives the regex path."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="can I see the underlying data please", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.RESPONSE_MODE_REQUEST,
+                          confidence=Confidence.HIGH, response_mode="json",
+                          rationale="wants json")
+    resp = _dispatch_intent_result(
+        req, session, [battery], result, [], [], [], BmlEvaluator({}),
+    )
+    assert resp is not None
+    assert resp["tools_called"] == ["cpq_json_preview()"]
+    assert resp["preview"] is True
+    assert resp["cpq_payload"] is None
+    # Must not mutate session status -- this is a preview, not a submit.
+    assert resp["session_data"]["status"] == "awaiting_approval"
+
+
+def test_llm_first_response_mode_request_batch_never_dispatches():
+    """"batch" is a configuring-flow-only concept the awaiting_approval-
+    only dispatch call site never reaches -- must fall through."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"batteryType_astro": "STANDARD"})
+    req = AskRequest(question="give me the batch of questions", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.RESPONSE_MODE_REQUEST,
+                          confidence=Confidence.HIGH, response_mode="batch",
+                          rationale="wants batch")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_response_mode_request_medium_confidence_falls_through():
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="show me the json", workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.RESPONSE_MODE_REQUEST,
+                          confidence=Confidence.MEDIUM, response_mode="json",
+                          rationale="wants json")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+def _mount_attrs_for_bulk_qty() -> list[ConfigAttr]:
+    selector = ConfigAttr(
+        entity_id=1, variable_name="mountingTypeArray_viSoln",
+        display_label="Mounting Type Array",
+        required=False, default_value="", select_type="multi",
+        options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"),
+    )
+    single_sibling = ConfigAttr(
+        entity_id=2, variable_name="mountType_viSoln", display_label="Mounting Type",
+        required=False, default_value="", select_type="single",
+        options=_opt("Swivel Clip", "Adjustable Lanyard"),
+    )
+    shirt_qty = ConfigAttr(
+        entity_id=3, variable_name="mountingTypeShirtMagneticMountQuantity_viSoln",
+        display_label="mounting type Shirt Magnetic Mount Quantity",
+        required=False, default_value="", select_type="single", options=[], hidden=True,
+    )
+    jacket_qty = ConfigAttr(
+        entity_id=4, variable_name="mountingTypeJacketMagneticMountQuantity_viSoln",
+        display_label="mounting type Jacket Magnetic Mount Quantity",
+        required=False, default_value="", select_type="single", options=[], hidden=True,
+    )
+    return [selector, single_sibling, shirt_qty, jacket_qty]
+
+
+def test_llm_first_bulk_quantity_change_dispatches_the_selected_grid_rows(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
+    BULK_QUANTITY_CHANGE dispatches the same _handle_bulk_quantity_change
+    the regex path (detect_bulk_quantity_change) uses, re-verifying the
+    target is a real array-grid selector with resolvable selected rows."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom", country="United States",
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]},
+        status="awaiting_approval", turn=4,
+    )
+    req = AskRequest(question="change both the mounting types quantity to 67", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="67", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(
+        req, session, attrs, result, [], [], [], BmlEvaluator({}),
+    )
+    assert resp is not None
+    assert session.filled.get("mountingTypeShirtMagneticMountQuantity_viSoln") == "67"
+    assert session.filled.get("mountingTypeJacketMagneticMountQuantity_viSoln") == "67"
+
+
+def test_llm_first_bulk_quantity_change_never_targets_an_unselected_grid():
+    """The named selector resolves to a real grid attr, but nothing is
+    currently selected on it -- must never invent rows to update."""
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(mode="cpq", product_name="viSoln_bom", status="awaiting_approval")
+    req = AskRequest(question="change both the mounting types quantity to 67", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="67", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_bulk_quantity_change_never_targets_a_non_grid_sibling():
+    """Two attrs share the display_label "Mounting Type" -- the plain
+    single-select sibling has no grid links at all and must never be
+    resolved as a bulk-quantity target even if the LLM's target
+    resolves ambiguously toward it."""
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom",
+        filled={"mountType_viSoln": "Swivel Clip"}, status="awaiting_approval",
+    )
+    req = AskRequest(question="change the mounting type quantity to 67", workspace_id=1,
+                      session_data=session.to_dict())
+    # Simulate the LLM naming the single-select sibling by mistake --
+    # _resolve_target_description would only ever resolve one winner for
+    # an ambiguous label, but even if it picked the sibling, resolve
+    # must fail closed since it's not a real grid selector.
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Swivel Clip Adjustable Lanyard"),
+        quantity_description="67", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_bulk_quantity_change_rejects_a_non_numeric_quantity():
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom",
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]},
+        status="awaiting_approval",
+    )
+    req = AskRequest(question="change the mounting type quantity to a lot", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="a lot", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+
+
 def test_confirm_is_idempotent_when_already_post_approval(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
@@ -1141,15 +1771,22 @@ def test_llm_first_low_confidence_always_falls_through_regardless_of_category(ca
 
 
 @pytest.mark.parametrize("category", [
+    # QA_QUESTION/ATTR_QUERY are wired but need a target/reader this
+    # bare IntentResult doesn't supply, so they still correctly return
+    # None here — kept to prove that absence, not that the category is
+    # unwired. APPROVAL/MULTI_SELECT_REMOVAL/ATTR_ACTIVATION/ATTR_CLEAR
+    # removed from this list once wired (docs/CPQ_REGEX_VS_LLM_ANCHOR_
+    # GUARDRAIL_AUDIT_2026_08_12.md) — APPROVAL needs neither a target
+    # nor reader, so it genuinely would have dispatched here.
     IntentCategory.QA_QUESTION,
-    IntentCategory.APPROVAL,
     IntentCategory.ATTR_QUERY,
     IntentCategory.PRODUCT_MENTION,
     IntentCategory.RESPONSE_MODE_REQUEST,
 ])
 def test_llm_first_uncovered_categories_defer_to_deterministic_path(category):
-    """Phase 2 is explicitly PARTIAL — every category _dispatch_intent_
-    result doesn't yet own must return None, not raise or guess."""
+    """Every category _dispatch_intent_result doesn't yet own (or that
+    needs a target/reader this bare result doesn't supply) must return
+    None, not raise or guess."""
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
     req = AskRequest(question="some message", workspace_id=1, session_data=session.to_dict())
     result = IntentResult(category=category, confidence=Confidence.HIGH, rationale="n/a")

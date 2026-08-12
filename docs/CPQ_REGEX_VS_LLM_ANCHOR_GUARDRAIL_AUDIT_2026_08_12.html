@@ -1,0 +1,1178 @@
+<title>CPQ Ask-Flow: Regex vs. LLM-Anchor + Guardrail Audit</title>
+<style>
+:root{
+  --bg:#f6f4ef; --panel:#ffffff; --ink:#241f1a; --ink-soft:#5b5347;
+  --line:#e4ddce; --accent:#b5482f; --accent-soft:#f1ded7;
+  --good:#3f6b4f; --good-soft:#e4efe6;
+  --bad:#a13a2e; --bad-soft:#f7e6e2;
+  --warn:#a17a1f; --warn-soft:#f5ecd6;
+  --neutral-soft:#f0ede4;
+  --radius:10px;
+}
+/* Forced light theme for this document, per prior explicit request for
+   this doc series -- do not flip on prefers-color-scheme or data-theme. */
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family: "Iowan Old Style","Palatino Linotype",Georgia,serif;
+  line-height:1.6;
+}
+.wrap{max-width:1120px; margin:0 auto; padding:56px 28px 96px;}
+.eyebrow{
+  font-family:"Avenir Next","Segoe UI",sans-serif; text-transform:uppercase;
+  letter-spacing:.14em; font-size:.72rem; color:var(--accent); font-weight:700;
+}
+h1{
+  font-size:clamp(1.7rem,4vw,2.4rem); margin:.35em 0 .2em; text-wrap:balance;
+  line-height:1.15;
+}
+.sub{color:var(--ink-soft); font-size:1.05rem; max-width:75ch; margin-bottom:2.4em;}
+h2{
+  font-family:"Avenir Next","Segoe UI",sans-serif; font-size:1.05rem;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--accent);
+  border-bottom:1px solid var(--line); padding-bottom:.5em; margin:2.6em 0 1em;
+}
+h3{ font-size:1.15rem; margin:1.6em 0 .5em; }
+p{margin:.8em 0; max-width:80ch;}
+.card{
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  padding:22px 24px; margin:1em 0;
+}
+.callout{
+  border-left:4px solid var(--accent); background:var(--accent-soft);
+  padding:14px 18px; border-radius:0 8px 8px 0; margin:1.4em 0;
+}
+.callout b{color:var(--accent);}
+ul.plain{ padding-left:1.3em; }
+ul.plain li{ margin:.6em 0; }
+ol.plain{ padding-left:1.3em; }
+ol.plain li{ margin:.6em 0; }
+.tag{
+  display:inline-block; font-family:"Avenir Next","Segoe UI",sans-serif;
+  font-size:.72rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase;
+  padding:.25em .6em; border-radius:999px; white-space:nowrap;
+}
+.tag.yes{ background:var(--good-soft); color:var(--good); border:1px solid var(--good); }
+.tag.no{ background:var(--bad-soft); color:var(--bad); border:1px solid var(--bad); }
+.tag.partial{ background:var(--warn-soft); color:var(--warn); border:1px solid var(--warn); }
+.table-scroll{ overflow-x:auto; margin:1.2em 0; border-radius:var(--radius); border:1px solid var(--line); }
+table{ border-collapse:collapse; width:100%; background:var(--panel); font-size:.92rem; }
+th, td{ padding:10px 14px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+th{
+  font-family:"Avenir Next","Segoe UI",sans-serif; font-size:.72rem; text-transform:uppercase;
+  letter-spacing:.04em; background:#efe9dc; color:var(--ink-soft);
+}
+tr:last-child td{ border-bottom:none; }
+tr:nth-child(even) td{ background:#fbfaf6; }
+.num-col{ font-variant-numeric:tabular-nums; text-align:center; width:2.5em; }
+.summary-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:1.4em 0; }
+@media (max-width:800px){ .summary-grid{ grid-template-columns:1fr 1fr; } }
+.summary-card{ border-radius:var(--radius); padding:18px; text-align:center; background:var(--panel); border:1px solid var(--line); }
+.summary-card .num{ font-size:2.2rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1; color:var(--accent); }
+.summary-card .label{ margin-top:.4em; color:var(--ink-soft); font-size:.82rem; }
+.priority-badge{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:1.6em; height:1.6em; border-radius:50%; font-weight:800;
+  font-family:"Avenir Next","Segoe UI",sans-serif; font-size:.85rem;
+  background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent);
+}
+footer{ margin-top:3em; color:var(--ink-soft); font-size:.82rem; font-family:"Avenir Next","Segoe UI",sans-serif; }
+.diagram-wrap{ overflow-x:auto; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:18px; margin:1.2em 0; }
+.diagram-wrap pre.mermaid{ margin:0; min-width:760px; }
+</style>
+<div class="wrap">
+  <div class="eyebrow">CPQ / Aryx &middot; Audit &middot; 2026-08-12</div>
+  <h1>Regex vs. LLM-Anchor + Guardrail Audit</h1>
+  <p class="sub">
+    A full inventory of every deterministic (regex-based) decision point in the CPQ
+    ask/chat flow, checked against two questions: does it have an LLM safety net
+    (an <b>anchor</b>), and does that safety net actually stop a wrong or invented
+    answer from reaching the customer (a <b>guardrail</b>)?
+  </p>
+
+  <h2>Summary</h2>
+  <div class="callout">
+    <p style="margin:0"><b>What this is about:</b> when a customer types something
+      in the configurator chat, the system has to figure out what they mean &mdash;
+      &ldquo;change the color to red,&rdquo; &ldquo;remove that option,&rdquo;
+      &ldquo;yes, submit it,&rdquo; &ldquo;show me the JSON,&rdquo; and so on. There
+      are two ways it currently figures that out: <b>pattern-matching</b> (fast,
+      cheap, but only recognizes phrasing it was specifically built to expect) and
+      an <b>AI classifier</b> (understands more natural, varied phrasing, but every
+      AI answer is double-checked against the real catalog before anything is
+      acted on, so it can never invent a product, option, or value that doesn't
+      exist).</p>
+  </div>
+  <p>This audit found 12 places where the system was still relying only on
+    pattern-matching, meaning an unusual way of phrasing a request could go
+    unrecognized. Over this project, most of those were fixed so the AI
+    classifier now backs up the pattern-matching &mdash; always double-checked,
+    never trusted blindly.</p>
+  <p><b>What actually changed, in plain terms:</b></p>
+  <ul class="plain">
+    <li><b>Confirming an order</b> (&ldquo;yes, that's everything, submit
+      it&rdquo;) &mdash; now understood even when phrased unusually, not just
+      exact words like &ldquo;confirm.&rdquo; The same safety check that
+      verifies the order is valid before submitting still runs every time,
+      unchanged.</li>
+    <li><b>Asking a question about the configuration</b> &mdash; now recognized
+      even when the AI has to consult the underlying product documentation to
+      answer, not just when phrased as an obvious question.</li>
+    <li><b>Removing one option from a multi-choice selection, turning an
+      optional feature on, or clearing a value back to blank</b> &mdash; all now
+      understood from more natural phrasing, with checks in place so the system
+      never removes/adds/clears something that wasn't actually selected, isn't
+      actually optional, or would immediately get filled back in by another
+      rule (which would make the action pointless and confusing).</li>
+    <li><b>&ldquo;Change the quantity for both/all of these to 67&rdquo;</b> &mdash;
+      a bulk quantity update &mdash; now understood from natural phrasing,
+      restricted so it only ever updates rows the customer actually has
+      selected, never a lookalike field that happens to share the same
+      on-screen label.</li>
+    <li><b>&ldquo;Show me the underlying JSON data&rdquo;</b> &mdash; now
+      understood from more varied phrasing while reviewing a finished
+      configuration, not just the obvious &ldquo;show me the json.&rdquo;</li>
+    <li><b>Declining a proposed change</b> (&ldquo;no, leave it as is,&rdquo;
+      &ldquo;actually, never mind&rdquo;) &mdash; now recognized more reliably,
+      with a safeguard added mid-way through this work after testing caught it
+      initially being too eager &mdash; it now only ever asks the AI when the
+      message already sounds decline-shaped, so it doesn't slow down or
+      second-guess ordinary answers.</li>
+    <li><b>A confusing or unusual reply to &ldquo;did you mean to switch
+      products?&rdquo; or a quantity typed as words instead of digits</b> &mdash;
+      both now have an AI fallback so the system can still figure out what was
+      meant instead of getting stuck.</li>
+    <li><b>A rare case where negating an attribute's only real option could
+      wrongly hide the whole thing</b> &mdash; fixed with a small, purely
+      mechanical rule change (no AI involved), so this one is a plain bug fix
+      rather than a phrasing-understanding improvement.</li>
+    <li><b>Two things investigated and found to already work correctly</b> &mdash;
+      a &ldquo;did you mean one of these numbered options?&rdquo; fallback, and
+      how the system resolves disagreements between the two detection methods.
+      Both were already handled properly by existing code; nothing needed to be
+      built, so the audit was corrected instead of adding a duplicate
+      mechanism.</li>
+  </ul>
+  <p><b>Still open, deliberately not done yet:</b> recognizing when a customer
+    mentions a <i>different product</i> mid-conversation (e.g. &ldquo;actually I
+    meant the XE model&rdquo;) through the AI classifier is a bigger piece of
+    work than everything above &mdash; it requires teaching the AI classifier
+    what products exist in the catalog in the first place, which nothing above
+    needed. That's written up as a design sketch, not built, pending a decision
+    on whether it's worth doing now. One older cosmetic item (a phrasing nuance
+    around stating an assumption) was also deliberately left alone &mdash; low
+    value, not worth the engineering cost.</p>
+  <p><b>Safety net throughout:</b> every change above was covered by new
+    automated tests, and the full existing test suite (997 tests) was run after
+    every single change with zero failures. Nothing was shipped without the
+    system rebuilt, redeployed, and re-verified as healthy.</p>
+
+  <h2>Three Problem Statements</h2>
+
+  <h3>Problem 1 &mdash; The AI Was Being Asked, Then Ignored</h3>
+  <p>Behind the scenes, every customer message was already being shown to an AI
+    model that tried to classify what the customer meant &mdash; &ldquo;this is
+    a request to remove an option,&rdquo; &ldquo;this is a question,&rdquo;
+    &ldquo;this is an approval,&rdquo; and so on. That classification happened.
+    It just wasn't <i>used</i>. The system asked the AI, got an answer back,
+    logged it for engineers to look at later &mdash; and then went and made
+    its actual decision using only the older pattern-matching method, as if
+    the AI had never been asked at all.</p>
+  <p>Think of it like having a bilingual translator standing in the room who
+    correctly translates what a customer said, but the person running the
+    counter ignores the translator and just goes with their own guess. Most of
+    the time the guess is fine, because most customers phrase things the
+    expected way. But when a customer phrases something unusually, the
+    translator had the right answer the whole time &mdash; and it was thrown
+    away. This audit's core job was finding every place this was happening and
+    switching the system to actually use the answer it already had, once it
+    was safe to do so.</p>
+  <div class="callout">
+    <p style="margin:0"><b>Root cause:</b> the AI's answer, once produced, has
+      to pass through a single checkpoint that decides what to actually do
+      with it. That checkpoint only recognized <b>5 out of 14</b> possible
+      kinds of answer it could be handed. For the other 9 kinds &mdash;
+      including things like &ldquo;remove this option,&rdquo; &ldquo;turn on
+      this feature,&rdquo; &ldquo;approve the order,&rdquo; &ldquo;answer this
+      question,&rdquo; and &ldquo;update this quantity&rdquo; &mdash; the
+      checkpoint simply didn't know what to do, so it shrugged and told the
+      rest of the system &ldquo;ignore this, fall back to the old
+      method.&rdquo; Nothing was broken and the AI wasn't wrong &mdash; the
+      part of the system responsible for listening to the AI's answer had
+      just never been taught to recognize those 9 answer types. Two of those
+      9 (turning a feature on, and clearing a value) had a second, separate
+      version of the same issue one step earlier: even before reaching that
+      checkpoint, an internal cross-check that's supposed to double-confirm
+      the AI's answer had never been built to look at those two cases at all
+      &mdash; so even fixing the checkpoint wouldn't have been enough on its
+      own for those two without also fixing that earlier step.</p>
+  </div>
+
+  <h3>Problem 2 &mdash; What A &ldquo;Guardrail&rdquo; Is, And Why It's Not Optional</h3>
+  <p>An AI model can be wrong in a specific, dangerous way: it can sound
+    completely confident while inventing something that doesn't exist &mdash;
+    a product that isn't in the catalog, an option that was never offered, a
+    value nobody selected. A guardrail is the second check that catches this
+    before it ever reaches the customer or the final order. It's the
+    difference between &ldquo;the AI said X&rdquo; and &ldquo;the AI said X,
+    and X is verified to be a real, currently-valid choice for this customer's
+    configuration.&rdquo;</p>
+  <div class="callout">
+    <p style="margin:0">Every single AI-driven decision in this system goes
+      through a guardrail before it's allowed to change anything. If the
+      guardrail can't verify the AI's answer against the real, current list of
+      valid options, the system does not guess &mdash; it either falls back to
+      the older pattern-matching method, or it stops and asks the customer a
+      clarifying question. This is why turning on more AI-assisted
+      understanding (Problem 1) was safe to do: the guardrail was already
+      required as a precondition for every single change made in this audit,
+      never an afterthought bolted on later.</p>
+  </div>
+  <p><b>Root cause:</b> an AI doesn't look answers up in a list of facts
+    &mdash; it generates text that sounds right based on patterns it learned,
+    which means it can produce something that sounds exactly like a real
+    product or option without that thing actually existing, especially when a
+    customer's wording is unusual. This isn't the AI malfunctioning; it's
+    simply what this kind of technology does by nature, which is why its raw
+    answer can never be trusted on its own. The fix built into this system is
+    a second, independent check that only allows the AI to point at something
+    from the real, current, up-to-date list of valid choices &mdash; it is
+    never allowed to just write out a name of its own choosing. If that
+    check can't confirm the AI's pick is real and genuinely present in what
+    the customer typed, or if the AI itself reports low confidence, the
+    system automatically backs off to asking the customer a clarifying
+    question instead of guessing. This check runs before any of the 24 touch
+    points in Problem 3 are allowed to use an AI-classified answer at all.</p>
+
+  <h3>Problem 3 &mdash; The 24 &ldquo;Decision Touch Points&rdquo; Audited</h3>
+  <p>Every time the system has to decide what a customer meant, that's one
+    &ldquo;decision touch point.&rdquo; This audit went through the entire
+    customer-chat flow and found <b>24 distinct places</b> where such a
+    decision gets made &mdash; everything from &ldquo;is this an
+    approval?&rdquo; to &ldquo;is this a request to remove a selected
+    option?&rdquo; to &ldquo;did the customer just mention a different
+    product?&rdquo;</p>
+  <p>For each of the 24, this audit asked two plain questions: <i>does the AI
+    get a chance to help here, or is it pattern-matching only?</i> and
+    <i>if the AI does help, is there a guardrail catching a wrong answer
+    before it reaches the customer?</i> Out of 24, most were found to be
+    AI-assisted-but-ignored (Problem 1) or pattern-matching-only with no AI
+    backup at all. This audit closed the large majority of those gaps,
+    verified two were already safely handled by existing code, and left one
+    (recognizing a different product mid-conversation) as a documented,
+    scoped-but-not-built design decision for a future session.</p>
+  <div class="callout">
+    <p style="margin:0"><b>Root cause:</b> the chat system wasn't built all
+      at once with AI in mind from day one. It started as a growing
+      collection of individual pattern-matching rules, each one added
+      whenever a new kind of phrasing tripped the system up in real use. The
+      AI classifier and its safety check were introduced later, as a layer
+      placed on top of that existing patchwork rather than a full rebuild
+      &mdash; and it was turned on for one type of request at a time rather
+      than all at once. That's exactly why the 24 spots ended up in different
+      states: a handful were AI-backed from the very start, most had the AI
+      quietly ignored (Problem 1), and one case (recognizing a different
+      product mid-conversation) needs a bigger change first, because the AI
+      has never even been shown the list of real products that exist &mdash;
+      only the details of the one product already being configured &mdash; so
+      it has nothing to pick a product from yet, even if asked to. It also
+      matters where in the conversation this all happens: the one place that
+      currently listens to the AI's answer only runs while the customer is
+      reviewing a finished configuration, right before confirming it &mdash;
+      so even a fully fixed spot has no effect earlier in the conversation.
+      A few of the 24 (like asking for a batch of questions at once) fall
+      into that earlier stage on purpose, not by oversight.</p>
+  </div>
+
+  <h2>Why This Audit</h2>
+  <div class="card">
+    <p>
+      Two live incidents this week (<i>CPQ_PENDING_TOPIC_SWITCH_PLAN_2026_08_11.md</i>)
+      shared the exact same root cause: a customer redirecting mid-question in plain
+      language &mdash; &ldquo;I don't want hardware version, I want carrier
+      selection&rdquo; &mdash; wasn't recognized, because the only detection logic was a
+      fixed keyword list. Both were fixed by adding a small, guarded LLM fallback that
+      only runs when the keyword list already says no.
+    </p>
+    <p style="margin-bottom:0">
+      This audit asks the same question of every other regex-driven decision point in
+      the CPQ flow: <b>is the same risk hiding somewhere else?</b>
+    </p>
+  </div>
+
+  <h2>Full Ask-Turn Flow (<code>_run_cpq_turn_inner</code>)</h2>
+  <p>
+    Every <code>/ask</code> request in CPQ mode runs through one function, top to bottom,
+    with early returns at almost every gate &mdash; the first gate that matches wins and
+    short-circuits everything below it. This is the real execution order (not file line
+    order &mdash; some checks repeat at different points for different reasons), so the
+    inventory table below can be read in context: which pending mechanism each
+    regex/LLM check actually guards, and how early or late in the turn it runs.
+  </p>
+  <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart TD
+    A["POST /ask, mode=cpq"] --> B["Restore/init CpqSession, turn += 1"]
+    B --> C{"detect_undo?"}
+    C -->|yes| C1["Restore last snapshot, return"]
+    C -->|no| D{"guided-mode accept phrase?"}
+    D -->|yes| D1["Turn on guided_mode, return"]
+    D -->|no| E["Quantity capture: extract_quantity_hint<br/>unconditional, every turn -- Row 23"]
+    E --> F{"no product yet AND question<br/>mentions quantity AND no number stated?"}
+    F -->|yes| F1["'Quantity not configured yet --<br/>what would you like to order?' return"]
+    F -->|no| G["Extract NL hints"]
+    G --> H{"pending_anchor set?<br/>country / switch_country /<br/>suggest_switch / confirm_switch"}
+    H -->|yes, unresolved| H1["Handle anchor/switch reply, return<br/>Row 21 -- partial guardrail"]
+    H -->|no / resolved| I["STEP 1: anchor gate --<br/>block until product + country known"]
+    I -->|missing| I1["Ask for missing anchor, return"]
+    I -->|present| J["STEP 2: resolve product name to item_value<br/>incl. pending_model_leaf_candidates -- Row 22"]
+    J --> K["Load rule sets: hiding / recommendation /<br/>constraint / validation + bml_eval"]
+    K --> L{"pending_change_no_value_vn set?"}
+    L -->|yes| L1{"_pending_reply_is_topic_switch?<br/>Row 1/2 -- FIXED"}
+    L1 -->|switch detected| M
+    L1 -->|no switch| L2["Apply reply as the new value<br/>via _handle_cascade, return"]
+    L -->|no| M["Branch on session.status"]
+    M --> N{"status == awaiting_approval<br/>or post_approval?"}
+    N -->|yes| N1["STEP 8: approval to JSON payload<br/>STEP 7: Q&amp;A during review<br/>pending_label_collision_vns -- Row 19<br/>pending_change_collision_vns -- Row 18<br/>LLM-first gateway pre-check -- Rows 3-5<br/>STEP 6: change-request cascade"]
+    N -->|no| O["response-mode / label-collision /<br/>attr-option-query / free-text query checks<br/>Rows 6-14: classified-but-discarded live here"]
+    O --> P["STEP 7: Q&amp;A during active config"]
+    P --> Q["Mid-configuration change-request block"]
+    Q --> R["STEP 5: lock previous turn's pending answer<br/>pending_variables -- Rows 1/2, FIXED"]
+    R --> S["STEP 5b: removal while blocked,<br/>no pending question"]
+    S --> T["STEP 3: rule evaluation loop<br/>hide to recommend to constrain, to fixpoint"]
+    T --> U["Multi-target intent-queue drain"]
+    U --> V{"Response format"}
+    V -->|verbose| V1["STEP 6 FORMAT B: summary text<br/>+ quantity line -- see Row 23"]
+    V -->|compact| V2["STEP 4 FORMAT A: context sentence<br/>+ numbered constrained options"]
+    V1 --> W["Return response + session_data"]
+    V2 --> W
+
+    style F1 fill:#f7e6e2,stroke:#a13a2e,color:#241f1a
+    style L2 fill:#f7e6e2,stroke:#a13a2e,color:#241f1a
+    style L1 fill:#e4efe6,stroke:#3f6b4f,color:#241f1a
+    style R fill:#e4efe6,stroke:#3f6b4f,color:#241f1a
+    style O fill:#f5ecd6,stroke:#a17a1f,color:#241f1a
+</pre>
+  </div>
+
+  <h3>Flow stops, in real execution order &mdash; with the actual function and a live example</h3>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th class="num-col">Order</th><th>Gate</th><th>Function(s)</th><th>Concrete example &rarr; outcome</th><th>Pending field</th><th>Row(s)</th></tr></thead>
+    <tbody>
+      <tr><td class="num-col">1</td><td>Session restore + turn increment</td><td><code>CpqSession.from_dict</code>, <code>_mine_history_for_cpq_context</code></td><td>Client resends <code>session_data</code> from the previous response; <code>turn</code> goes 4&rarr;5</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">2</td><td><code>detect_undo</code></td><td><code>detect_undo</code> / <code>restore_last_snapshot</code></td><td>&ldquo;undo that&rdquo; &rarr; last <code>push_snapshot()</code> state restored, rest of turn logic never runs</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">3</td><td>Guided-mode accept</td><td><code>detect_guided_mode_accept</code></td><td>&ldquo;just ask me one thing at a time&rdquo; &rarr; <code>session.guided_mode = True</code>, gateway never called again this session</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">4</td><td>Quantity capture</td><td><code>extract_quantity_hint</code></td><td>&ldquo;...50 in qty...&rdquo; &rarr; regex matches &rarr; <code>session.product_quantity = 50</code>, silently, every turn</td><td><code>product_quantity</code></td><td>23</td></tr>
+      <tr><td class="num-col">5</td><td>Quantity-before-any-quote</td><td><code>question_mentions_quantity</code> + <code>quantity_turn_precheck</code></td><td>&ldquo;what is my quantity?&rdquo; with no product yet &rarr; &ldquo;Quantity is not configured yet&hellip;&rdquo;, return</td><td>&mdash;</td><td>23</td></tr>
+      <tr><td class="num-col">6</td><td>NL hint extraction</td><td><code>extract_hints</code>, <code>extract_catalog_hints</code>, <code>extract_flag_hints</code></td><td>&ldquo;Houston, Texas, destination US&rdquo; &rarr; <code>{country: "United States"}</code> added to <code>hints</code></td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">7</td><td><code>pending_anchor</code> (country/switch)</td><td>inline block, <code>_country_available_for</code>, <code>_complete_product_switch</code></td><td>Prior turn offered a product switch; &ldquo;no&rdquo; &rarr; cleared, &ldquo;OK &mdash; continuing with X&rdquo;</td><td><code>pending_anchor</code>, <code>pending_switch_product</code></td><td>21</td></tr>
+      <tr><td class="num-col">8</td><td>STEP 1 &mdash; anchor gate</td><td>inline, checks <code>product_name</code>/<code>country</code></td><td>Neither set yet &rarr; &ldquo;Product &mdash; choose one: &hellip;&rdquo; numbered list, return</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">9</td><td>STEP 2 &mdash; product resolution</td><td><code>load_product_config</code>, model-leaf block</td><td>&ldquo;APX NEXT All Band&rdquo; &rarr; resolved to real <code>aPXNext_BOM</code> leaf via scope match then <code>_llm_resolve_label_collision</code> on a miss</td><td><code>pending_model_leaf_candidates</code></td><td>22</td></tr>
+      <tr><td class="num-col">10</td><td>Load rule sets</td><td><code>load_hiding_rules</code>, <code>load_recommendation_and_constraint_rules</code>, <code>load_validation_rules</code>, <code>build_bml_evaluator</code></td><td>Pure catalog reads for this workspace/product &mdash; no branching</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">11</td><td><code>pending_change_no_value_vn</code></td><td><code>_pending_reply_is_topic_switch</code> then <code>apply_answer</code>/<code>_handle_cascade</code></td><td>&ldquo;First i wanted to changed Wireless Carrier&rdquo; while Hardware Version pending &rarr; LLM identifies <code>carrierSelection_astro</code>, falls through instead of forcing a failed match</td><td>same field</td><td>1, 2 (fixed)</td></tr>
+      <tr><td class="num-col">12</td><td>Status branch: awaiting/post-approval</td><td>STEP 8/7/6 handlers, <code>_llm_resolve_label_collision</code>, <code>intent_gateway.classify_intent</code></td><td>&ldquo;confirm&rdquo; while <code>status=awaiting_approval</code> &rarr; STEP 8 builds the real JSON payload</td><td><code>pending_label_collision_vns</code>, <code>pending_change_collision_vns</code></td><td>3-5, 18, 19</td></tr>
+      <tr><td class="num-col">13</td><td>Response-mode / label-collision / attr-query / free-text-query</td><td><code>detect_response_mode_request</code>, <code>detect_label_collision</code>, <code>detect_attr_query</code></td><td>&ldquo;what are the options for mount type?&rdquo; &rarr; options shown; <b>this is where an already-classified <code>ATTR_QUERY</code>/<code>QA_QUESTION</code> result would be used, if dispatch were wired</b></td><td>&mdash;</td><td>6-14</td></tr>
+      <tr><td class="num-col">14</td><td>STEP 7 &mdash; active-config Q&amp;A</td><td><code>detect_qa_question(strict=True)</code>, <code>_handle_cpq_qa</code></td><td>&ldquo;why does hardware version matter?&rdquo; mid-config &rarr; graph-grounded answer, config state untouched</td><td>&mdash;</td><td>11</td></tr>
+      <tr><td class="num-col">15</td><td>Mid-configuration change request</td><td><code>detect_change_request</code>, <code>_handle_cascade</code></td><td>&ldquo;change hardware version to 4G LTE Only&rdquo; after it's already set &rarr; cascade invalidates dependents, re-asks</td><td>&mdash;</td><td>3-5</td></tr>
+      <tr><td class="num-col">16</td><td>STEP 5 &mdash; lock pending answer</td><td><code>_pending_reply_is_topic_switch</code>, <code>apply_answer</code></td><td>&ldquo;APX NEXT (4G LTE Only)&rdquo; answering a pending Hardware Version prompt &rarr; value locked in</td><td><code>pending_variables</code></td><td>1, 2 (fixed)</td></tr>
+      <tr><td class="num-col">17</td><td>STEP 5b &mdash; blocked removal</td><td>inline, checks <code>filled_multi</code></td><td>A multi-select decline mid-block (&ldquo;no mounts needed&rdquo;) while nothing else pending</td><td>&mdash;</td><td>6</td></tr>
+      <tr><td class="num-col">18</td><td>STEP 3 &mdash; rule evaluation loop</td><td><code>evaluate_rules_loop</code></td><td>Setting Hardware Version hides/reveals Carrier Selection options per <code>HidingRule</code>s</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <tr><td class="num-col">19</td><td>Multi-target queue drain</td><td><code>session.pending_intent_queue</code></td><td>&ldquo;change hardware version and carrier selection&rdquo; &rarr; asks Hardware Version first, queues the other</td><td><code>pending_intent_queue</code></td><td>&mdash;</td></tr>
+      <tr><td class="num-col">20</td><td>STEP 6/4 &mdash; response formatting</td><td><code>_cpq_summary_text</code> or numbered-options block</td><td>&ldquo;Configuration complete&rdquo; summary, now including <code>**Quantity:** 50</code></td><td>&mdash;</td><td>23</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Why Not Just One LLM Configured To Handle All Of This?</h2>
+  <p>
+    There already <b>is</b> one general-purpose classifier that runs once per turn &mdash;
+    <code>intent_gateway.classify_intent</code> (feeding the status-branch and mid-config
+    steps above) &mdash; with the strongest guardrails in the codebase: it can only pick
+    from attribute candidates actually injected into its prompt, its evidence span must
+    be a verbatim substring of the user's own message, and it already receives
+    <code>SESSION PENDING: pending_attr=..., awaiting_value_for=...</code> context in
+    every prompt &mdash; so it is <b>already pending-state aware in principle</b>.
+  </p>
+  <p>The honest answer has two parts &mdash; one structural, one operational (and the
+    operational one is the more important finding here).</p>
+
+  <h3>Part 1 &mdash; structural reasons a single schema can't cover everything</h3>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Reason</th><th>Example</th><th>Why one shared schema can't absorb it</th></tr></thead>
+    <tbody>
+      <tr><td><b>The concept isn't a catalog attribute</b></td><td>Session-level product quantity (&ldquo;how many radios total&rdquo;)</td><td>The gateway's <code>variable_name</code> field is validated against real <code>ConfigAttr</code> ids injected from the catalog. &ldquo;The whole order's quantity&rdquo; has no such id &mdash; teaching the schema to also emit non-catalog session concepts means validating a second, parallel universe of fields inside the same quarantine logic.</td></tr>
+      <tr><td><b>The ambiguity is only discoverable after a resolution attempt fails</b></td><td>Two real attrs share a display label (&ldquo;Mounting Type&rdquo; on both a single- and multi-select attr)</td><td><code>intent_schema.py</code>'s own design note says this explicitly: label collision is a property of the deterministic resolution layer, not knowable from the raw message upfront. It's inherently two-stage: classify &rarr; attempt resolve &rarr; disambiguate only on failure.</td></tr>
+      <tr><td><b>The question is deliberately narrower than &ldquo;classify this message&rdquo;</b></td><td>&ldquo;Does this redirect name a DIFFERENT specific attribute than the one currently pending?&rdquo;</td><td>A yes/no/which-of-these-N question has a far smaller answer space than &ldquo;pick 1 of 12 categories across the whole catalog.&rdquo; Smaller answer space is empirically more reliable &mdash; the same reasoning is already written into <code>_llm_resolve_quantity_target</code>'s own docstring this session.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Part 2 &mdash; the more important finding: the gateway already tries to be that one LLM, and its answer is thrown away for most categories</h3>
+  <div class="callout">
+    <p style="margin-top:0">Per this audit's own table (rows 6&ndash;14), <code>_dispatch_intent_result</code>
+      computes a confident, guardrailed classification for <b>9 of 12</b> categories every
+      single turn and then explicitly discards it &mdash; its own docstring calls this
+      &ldquo;deliberately deferred rather than rushed.&rdquo; Two of those nine are
+      <code>ATTR_QUERY</code> and <code>QA_QUESTION</code> &mdash; which is <i>exactly</i>
+      the shape of &ldquo;customer wants to talk about/ask about a different attribute&rdquo;
+      that the new <code>_llm_detect_pending_topic_switch</code> helper (Row 1/2) was built
+      to catch. The gateway likely already classifies &ldquo;I wanted to check the carrier
+      selection value&rdquo; as <code>ATTR_QUERY</code> on <code>carrierSelection_astro</code>
+      correctly, in the same call &mdash; but that result is never used, because
+      <code>_dispatch_intent_result</code> returns <code>None</code> for <code>ATTR_QUERY</code>
+      unconditionally.</p>
+    <p style="margin-bottom:0"><b>So the honest count is: not &ldquo;12 different LLM
+      anchors were needed,&rdquo; but &ldquo;1 general anchor exists, ~6 narrow anchors were
+      added for cases the general one structurally can't express, and a 7th class of bug
+      (this week's) was fixed with a narrow anchor that likely duplicates a capability the
+      general one already has but doesn't act on.&rdquo;</b></p>
+  </div>
+
+  <h3>The Exact 12-Category Breakdown: Wired vs. Not Wired</h3>
+  <p>
+    The gateway (<code>IntentCategory</code> in <code>intent_schema.py</code>) classifies
+    every one of these 12 categories on every turn it runs.
+    <code>_dispatch_intent_result</code> only <i>acts on</i> 5 of them &mdash; the other 9
+    are computed and discarded, so pure regex is still the actual decision-maker for
+    those today.
+  </p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th class="num-col">#</th><th>Category</th><th>Wired?</th><th>What decides it today</th></tr></thead>
+    <tbody>
+      <tr><td class="num-col">1</td><td><code>CHANGE_REQUEST</code></td><td><span class="tag yes">Wired</span></td><td>LLM result used (<code>_handle_cascade</code>), agreement with <code>detect_change_request</code> required</td></tr>
+      <tr><td class="num-col">2</td><td><code>CHANGE_REQUESTS_MULTI</code></td><td><span class="tag yes">Wired</span></td><td>LLM result used (<code>_handle_cascade_multi</code>), agreement required</td></tr>
+      <tr><td class="num-col">3</td><td><code>CHANGE_TARGET_WITHOUT_VALUE</code></td><td><span class="tag yes">Wired</span></td><td>LLM result used (<code>_build_no_value_response</code>), agreement required</td></tr>
+      <tr><td class="num-col">4</td><td><code>AMBIGUOUS</code></td><td><span class="tag yes">Wired</span></td><td>LLM's own <code>clarifying_question</code> answered directly &mdash; no mutation risk</td></tr>
+      <tr><td class="num-col">5</td><td><code>OUT_OF_SCOPE</code></td><td><span class="tag yes">Wired</span></td><td>Same refusal wording as <code>_llm_classify_is_cpq_question</code>'s negative case</td></tr>
+      <tr><td class="num-col">6</td><td><code>MULTI_SELECT_REMOVAL</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>_REMOVE_VERB_RE</code> / <code>detect_multi_select_removal</code></td></tr>
+      <tr><td class="num-col">7</td><td><code>ATTR_ACTIVATION</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>_ADD_VERB_RE</code> / <code>detect_attr_activation</code></td></tr>
+      <tr><td class="num-col">8</td><td><code>ATTR_CLEAR</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>_CLEAR_VERB_RE</code> / <code>detect_attr_clear</code></td></tr>
+      <tr><td class="num-col">9</td><td><code>BULK_QUANTITY_CHANGE</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>_BULK_QTY_RE</code> / <code>detect_bulk_quantity_change</code></td></tr>
+      <tr><td class="num-col">10</td><td><code>APPROVAL</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>_APPROVAL_RE</code> / <code>detect_approval</code></td></tr>
+      <tr><td class="num-col">11</td><td><code>QA_QUESTION</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>_QA_INTENT_RE</code> / <code>detect_qa_question</code></td></tr>
+      <tr><td class="num-col">12</td><td><code>ATTR_QUERY</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>detect_attr_query</code></td></tr>
+      <tr><td class="num-col">&mdash;</td><td><code>PRODUCT_MENTION</code></td><td><span class="tag no">Not wired</span></td><td>Fuzzy/regex &mdash; <code>detect_product_mention</code> (in the schema, used differently from the 12 one-regex-mirror set)</td></tr>
+      <tr><td class="num-col">&mdash;</td><td><code>RESPONSE_MODE_REQUEST</code></td><td><span class="tag no">Not wired</span></td><td>Pure regex &mdash; <code>detect_response_mode_request</code></td></tr>
+      <tr><td class="num-col">&mdash;</td><td><code>UNDO</code></td><td><span class="tag partial">N/A</span></td><td>Handled before the gateway even runs &mdash; first-class undo check at the very top of the turn</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    <b>Split of the 9 not-wired categories by risk, for sequencing:</b><br/>
+    Read-only/routing (low risk): <code>APPROVAL</code>, <code>QA_QUESTION</code>,
+    <code>ATTR_QUERY</code>, <code>PRODUCT_MENTION</code>, <code>RESPONSE_MODE_REQUEST</code>.<br/>
+    State-mutating (needs the same agreement guard as the 5 already wired):
+    <code>MULTI_SELECT_REMOVAL</code>, <code>ATTR_ACTIVATION</code>, <code>ATTR_CLEAR</code>,
+    <code>BULK_QUANTITY_CHANGE</code>.
+  </p>
+
+  <h3>Purpose Of Regex In This Codebase &mdash; And Why It Genuinely Can't Handle Complex Requests</h3>
+  <p>
+    Regex is not here to be &ldquo;the intelligence&rdquo; &mdash; it's here for three
+    narrower jobs, all still valuable even in an LLM-first design.
+  </p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Job</th><th>Why it matters</th><th>Where it shows up</th></tr></thead>
+    <tbody>
+      <tr><td>Zero-latency, zero-cost triage</td><td>Most turns are trivially unambiguous (a bare &ldquo;yes&rdquo;, a numbered pick, an exact catalog string) &mdash; round-tripping every one through an LLM adds real latency and token cost for no benefit</td><td>Every narrow LLM helper this session is gated <i>behind</i> a deterministic check that runs first and short-circuits on a match</td></tr>
+      <tr><td>Determinism / testability</td><td>A regex match is 100% reproducible in CI, no network mocking, no drift across model versions</td><td>Every regex detector has direct unit tests with zero LLM involvement</td></tr>
+      <tr><td>Final-mile grounding</td><td>Even after an LLM correctly identifies intent, something still has to match the free text against the real catalog option string</td><td><code>apply_answer</code>/<code>apply_multi_answer</code> run after every LLM-driven path &mdash; the LLM's job is intent, never ground truth</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    What regex <b>cannot</b> do is handle compositional, multi-clause, or
+    unusually-phrased requests &mdash; a fixed keyword list has no way to generalize to
+    phrasing its author didn't anticipate. That's the exact shape of both bugs fixed this
+    week (&ldquo;I don't want hardware version but carrier selection&rdquo; matches none
+    of <code>_CHANGE_VERB_RE</code>'s enumerated verb forms). This codebase's own
+    trajectory already agrees: the gateway is a single LLM call per turn built
+    specifically because regex couldn't scale to real conversational phrasing for the 5
+    categories it now owns. The right next step is finishing that migration for the
+    other 9 categories, not building a second, separate &ldquo;one LLM for
+    everything&rdquo; from scratch &mdash; that would duplicate a system that already
+    works for nearly half the categories and already has its guardrails proven in
+    production.
+  </p>
+
+  <h3>Why Not Remove Regex Entirely, Even For The 5 Already-Wired Categories</h3>
+  <p>
+    Because the gateway's own design is &ldquo;LLM decides, regex confirms&rdquo; for
+    mutating changes on purpose &mdash; <code>MUTATING_CATEGORIES</code> requires the LLM
+    and the deterministic detector to <i>agree</i> before a change is trusted. Dropping
+    that agreement check removes the only thing stopping a hallucinated attribute from
+    mutating a customer's real configuration with no second opinion. Separately, the
+    gateway already caps what it shows the model per call (<code>_ATTR_CAP = 60</code>
+    attributes, <code>_VALUE_CAP = 40</code> options) &mdash; a true &ldquo;one call sees
+    the entire catalog&rdquo; design doesn't scale past a certain size without candidate
+    pruning, which is itself a deterministic (non-LLM) step run before the LLM call.
+  </p>
+
+  <h3>What this means for the &ldquo;why so many&rdquo; question</h3>
+  <ul class="plain">
+    <li><b>Legitimate, keep separate:</b> quantity-target resolution, label/change-target collision, model-leaf disambiguation, clarify-reply resolution &mdash; these plug real, permanent structural gaps in the general schema (Part 1 above).</li>
+    <li><b>Possibly redundant, worth re-examining:</b> <code>_llm_detect_pending_topic_switch</code> (this week's fix). If <code>ATTR_QUERY</code>/<code>QA_QUESTION</code> dispatch had already been wired (this audit's own Priority 1/2 recommendation), the pending-answer redirect bug may never have needed its own bespoke helper &mdash; the general gateway would likely have caught it for free, since it already has the pending-state context and already classifies the message correctly today, just doesn't act on it.</li>
+    <li><b>Practical recommendation:</b> finish wiring the 9 discarded categories (this audit's existing priority order) <i>before</i> adding further narrow one-off helpers for new bugs. Each new narrow helper that duplicates an already-classified-but-discarded category is technical debt accumulating in the same place the fix already exists &mdash; it just isn't switched on.</li>
+  </ul>
+
+  <h2>The Guardrail Patterns In This Codebase</h2>
+  <div class="callout">
+    <p style="margin-top:0"><b>Status note (2026-08-12):</b> originally this section
+      catalogued only 2 patterns, because the audit that produced it was scoped
+      narrowly to one question &mdash; <i>is the LLM being honest?</i> &mdash;
+      triggered by the two topic-switch bugs. It described what already existed for
+      that specific problem, not a claim that those 2 were a complete guardrail set.
+      PR #186's regex bugs exposed a second class of failure (deterministic code
+      being wrong on its own terms) neither pattern was ever designed to catch.
+      <b>4 more guardrails (#3-#6) are now adopted</b> &mdash; see &ldquo;Guardrail
+      Taxonomy&rdquo; further below for the full rationale and evidence behind each.</p>
+    <p style="margin-bottom:0">The two below remain the ones the <b>Inventory</b>
+      table's own &ldquo;Guardrails?&rdquo; column measures per detector (#1/#2 are
+      wired row-by-row); #3-#6 apply orthogonally across the whole surface as a
+      testing/verification practice, not as a per-row wiring choice, so they aren't
+      re-scored into the Inventory table itself.</p>
+  </div>
+
+  <h3>#1-#2 &mdash; Detector-Level (Existing, Measured In The Inventory Table Below)</h3>
+  <p>A detector only counts as &ldquo;guardrailed&rdquo; below if it matches one of these
+    two existing shapes &mdash; not just &ldquo;an LLM is called somewhere nearby.&rdquo;</p>
+  <ol class="plain">
+    <li><b>Gateway quarantine</b> (the universal LLM-first classifier,
+      <code>intent_gateway.py</code>): the model may only pick from a candidate list
+      actually injected into the prompt; the chosen value must be in-range; the
+      evidence span must appear verbatim in the user's own message; low confidence
+      always falls back to the deterministic path; and any answer that would change
+      the configuration must additionally agree with what the existing regex
+      detector independently found, or it's discarded.</li>
+    <li><b>Narrow single-purpose helper</b> (used by both bugs fixed this week, and by
+      earlier features like ambiguous-label resolution): a small, scoped question with
+      an explicit allow-list of valid answers; the model's answer is thrown out and
+      treated as &ldquo;no result&rdquo; if it names anything outside that list; a
+      failed or malformed LLM call also resolves to &ldquo;no result,&rdquo; never a
+      guess.</li>
+  </ol>
+
+  <h3>#3-#6 &mdash; System-Level (Newly Adopted, Applied Across The Whole Surface)</h3>
+  <ol class="plain" start="3">
+    <li><b>Adversarial / property-based regex testing</b> &mdash; systematically
+      generated edge cases (glued digits, separators, decimals, sign characters) per
+      pattern, not just hand-picked examples. Applied as one consolidated pass after
+      the master implementation plan's Phases 1-4 and the 9 open items are built (see
+      that plan's verification section for the exact sequencing and the trade-off it
+      accepts).</li>
+    <li><b>Contract / drift tests</b> &mdash; assert code actually does what its own
+      docstring claims (the check that would have caught
+      <code>_gateway_to_intent_result</code>'s <code>needs_target</code> drift from
+      <code>IntentResult</code>'s own documented contract). Same consolidated-pass
+      timing as #3.</li>
+    <li><b>Plausibility cross-check</b> &mdash; flag a value that suspiciously matches
+      something already present elsewhere in session state (e.g. a quantity equal to
+      a digit run inside a model code just selected). <b>Not yet adopted</b> &mdash;
+      remains a distinct future design proposal, not scheduled into the current
+      plan.</li>
+    <li><b>Regression-locking on the exact reported phrasing</b> &mdash; every
+      live-reported bug gets a permanent test tied to the customer's real sentence,
+      applied both during implementation (where a real incident already exists) and
+      retroactively in the final consolidated pass.</li>
+  </ol>
+
+  <h2>Full Inventory &mdash; 24 Decision Points</h2>
+  <p>
+    Status meaning &mdash; <span class="tag yes">Yes</span> a real guardrail is
+    protecting this decision today; <span class="tag partial">Partial</span> some
+    protection under some conditions; <span class="tag no">No</span> pure regex, or an
+    LLM result that's computed and discarded.
+  </p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr>
+      <th class="num-col">#</th><th>Component (regex)</th><th>What it decides</th>
+      <th>LLM anchor?</th><th>Guardrails?</th><th>Gap / risk</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="num-col">1</td><td><code>_CHANGE_VERB_RE</code> / <code>_ARROW_RE</code> &mdash; pending-answer redirect</td><td>Is a reply to a pending question actually about a different attribute?</td><td><span class="tag yes">Yes</span> (fixed 08-11)</td><td><span class="tag yes">Yes</span> &mdash; allow-list, fails safe</td><td>Closed</td></tr>
+      <tr><td class="num-col">2</td><td>Same, on <code>pending_change_no_value_vn</code>'s &ldquo;which value?&rdquo; flow</td><td>Same question, second pending mechanism</td><td><span class="tag yes">Yes</span> (fixed 08-11)</td><td><span class="tag yes">Yes</span></td><td>Closed</td></tr>
+      <tr><td class="num-col">3</td><td><code>detect_change_request</code></td><td>Change-verb + value &rarr; (attr, value)</td><td><span class="tag partial">Partial</span> &mdash; gateway CHANGE_REQUEST, only when enabled &amp; confidence not LOW</td><td><span class="tag yes">Yes</span> when it fires</td><td>Flag off / LOW confidence / disagreement &rarr; pure regex</td></tr>
+      <tr><td class="num-col">4</td><td><code>detect_change_target_without_value</code></td><td>Change-verb naming an attr, no value given</td><td><span class="tag yes">Yes</span> &mdash; gateway CHANGE_TARGET_WITHOUT_VALUE</td><td><span class="tag yes">Yes</span></td><td>Same flag/confidence caveat</td></tr>
+      <tr><td class="num-col">5</td><td><code>detect_change_requests_multi</code></td><td>Multiple change targets in one message</td><td><span class="tag yes">Yes</span> &mdash; gateway CHANGE_REQUESTS_MULTI</td><td><span class="tag yes">Yes</span></td><td>Same caveat</td></tr>
+      <tr><td class="num-col">6</td><td><code>_REMOVE_VERB_RE</code> (<code>detect_multi_select_removal</code>)</td><td>Deselect a multi-select option</td><td><span class="tag no">Classified, not dispatched</span> (MULTI_SELECT_REMOVAL)</td><td><span class="tag no">No</span> &mdash; result discarded</td><td>LLM already computes this correctly every turn; thrown away</td></tr>
+      <tr><td class="num-col">7</td><td><code>_ADD_VERB_RE</code> (<code>detect_attr_activation</code>)</td><td>Turn on / select an optional attribute</td><td><span class="tag no">Classified, not dispatched</span> (ATTR_ACTIVATION)</td><td><span class="tag no">No</span></td><td>Same gap</td></tr>
+      <tr><td class="num-col">8</td><td><code>_CLEAR_VERB_RE</code> (<code>detect_attr_clear</code>)</td><td>Explicitly clear a value</td><td><span class="tag no">Classified, not dispatched</span> (ATTR_CLEAR)</td><td><span class="tag no">No</span></td><td>Same gap</td></tr>
+      <tr><td class="num-col">9</td><td><code>_BULK_QTY_RE</code> (<code>detect_bulk_quantity_change</code>)</td><td>&ldquo;set all X to N&rdquo; bulk edits</td><td><span class="tag no">Classified, not dispatched</span> (BULK_QUANTITY_CHANGE)</td><td><span class="tag no">No</span></td><td>Same gap</td></tr>
+      <tr><td class="num-col">10</td><td><code>_APPROVAL_RE</code> (<code>detect_approval</code>)</td><td>Is this a &ldquo;yes / confirm / submit&rdquo;?</td><td><span class="tag no">Classified, not dispatched</span> (APPROVAL)</td><td><span class="tag no">No</span></td><td>Pure regex decides submit-adjacent flow today</td></tr>
+      <tr><td class="num-col">11</td><td><code>_QA_INTENT_RE</code> (<code>detect_qa_question</code>)</td><td>Is this a question, not a config answer?</td><td><span class="tag no">Classified, not dispatched</span> (QA_QUESTION)</td><td><span class="tag no">No</span></td><td>Oddly-phrased question can be misread as an answer attempt</td></tr>
+      <tr><td class="num-col">12</td><td><code>detect_attr_query</code></td><td>&ldquo;what are the options for X&rdquo;</td><td><span class="tag no">Classified, not dispatched</span> (ATTR_QUERY)</td><td><span class="tag no">No</span></td><td>Same gap</td></tr>
+      <tr><td class="num-col">13</td><td><code>detect_product_mention</code></td><td>Does the message name a real product?</td><td><span class="tag no">Classified, not dispatched</span> (PRODUCT_MENTION)</td><td><span class="tag no">No</span> (try/except fail-safe only)</td><td>Regex/fuzzy match only for actual dispatch</td></tr>
+      <tr><td class="num-col">14</td><td><code>detect_response_mode_request</code></td><td>&ldquo;just give me the JSON&rdquo; mode switch</td><td><span class="tag no">Classified, not dispatched</span> (RESPONSE_MODE_REQUEST)</td><td><span class="tag no">No</span></td><td>Low risk, cosmetic, still discarded</td></tr>
+      <tr><td class="num-col">15</td><td><code>_DECLINE_CHANGE_RE</code> / <code>_is_change_value_decline</code></td><td>Is a reply declining a proposed change?</td><td><span class="tag no">No</span></td><td><span class="tag no">No</span></td><td><b>Real gap</b> &mdash; unusual decline phrasing gets tried as a literal new value</td></tr>
+      <tr><td class="num-col">16</td><td><code>_CHANGE_VALUE_DECLINE_RE</code> / <code>_GLOBAL_CHANGE_SCOPE_RE</code></td><td>Scope of a decline (&ldquo;no changes&rdquo; vs. &ldquo;not that one&rdquo;)</td><td><span class="tag no">No</span></td><td><span class="tag no">No</span></td><td>Same shape of gap as #15</td></tr>
+      <tr><td class="num-col">17</td><td><code>_NEGATION_RE</code></td><td>&ldquo;not VHF&rdquo; style exclusion near a catalog term</td><td><span class="tag no">No</span></td><td><span class="tag no">No</span></td><td>Narrow window, lower blast radius, still a hard cutoff</td></tr>
+      <tr><td class="num-col">18</td><td><code>pending_change_collision_vns</code> resolution</td><td>Which of 2+ ambiguous change targets?</td><td><span class="tag yes">Yes</span> &mdash; narrow helper</td><td><span class="tag yes">Yes</span></td><td>Closed</td></tr>
+      <tr><td class="num-col">19</td><td><code>pending_label_collision_vns</code> resolution</td><td>Which of 2+ ambiguous label matches?</td><td><span class="tag yes">Yes</span> &mdash; same helper</td><td><span class="tag yes">Yes</span></td><td>Closed</td></tr>
+      <tr><td class="num-col">20</td><td><code>pending_clarify_vns</code> resolution</td><td>Resolve a reply to a clarify question</td><td><span class="tag yes">Yes</span> &mdash; deterministic tiers + 3-way LLM classifier</td><td><span class="tag yes">Yes</span> &mdash; allow-list + &ldquo;unclear = new request&rdquo;</td><td>Closed</td></tr>
+      <tr><td class="num-col">21</td><td><code>pending_switch_product</code> / confirm-switch</td><td>Accept / decline a proposed product switch</td><td><span class="tag partial">Partial</span> &mdash; deterministic yes/no + re-detect-different-product on decline</td><td><span class="tag partial">Partial</span></td><td>Genuinely ambiguous reply (&ldquo;maybe&rdquo;) has no LLM tiebreaker</td></tr>
+      <tr><td class="num-col">22</td><td><code>pending_model_leaf_candidates</code> resolution</td><td>Which specific model/line was meant?</td><td><span class="tag yes">Yes</span> &mdash; scope match then narrow helper</td><td><span class="tag yes">Yes</span></td><td>Lower priority &mdash; misses re-ask rather than dead-end</td></tr>
+      <tr><td class="num-col">23</td><td>Quantity extraction (<code>extract_quantity_hint</code>)</td><td>Parse a quantity value out of free text</td><td><span class="tag no">No</span> in extraction step itself</td><td><span class="tag partial">Partial</span> &mdash; range-validates, but unparseable phrasing just returns None</td><td>Only the target (product vs. attribute) has an LLM anchor, not the extraction</td></tr>
+      <tr><td class="num-col">24</td><td><code>_JSON_REQUEST_RE</code> / <code>_BATCH_REQUEST_RE</code></td><td>Meta-commands (&ldquo;show me JSON&rdquo;)</td><td><span class="tag no">No</span></td><td><span class="tag no">No</span></td><td>Cosmetic / utility, low risk</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Summary Counts</h2>
+  <div class="summary-grid">
+    <div class="summary-card"><div class="num">8</div><div class="label">Fully anchored + guardrailed</div></div>
+    <div class="summary-card"><div class="num">9</div><div class="label">Classified by LLM, result discarded</div></div>
+    <div class="summary-card"><div class="num">6</div><div class="label">No LLM anchor at all</div></div>
+    <div class="summary-card"><div class="num">2</div><div class="label">Partial / conditional</div></div>
+  </div>
+
+  <h2>Biggest Finding</h2>
+  <div class="callout">
+    <p style="margin-top:0"><b>Rows 6&ndash;14 are the real systemic gap &mdash; and it is
+      cheaper to fix than it looks.</b> The universal intent classifier already runs
+      every turn (when enabled) and already produces a confident, quarantine-guarded
+      answer for all nine of these categories: MULTI_SELECT_REMOVAL, ATTR_ACTIVATION,
+      ATTR_CLEAR, BULK_QUANTITY_CHANGE, APPROVAL, QA_QUESTION, ATTR_QUERY,
+      PRODUCT_MENTION, RESPONSE_MODE_REQUEST.</p>
+    <p>The dispatch function's own docstring says so explicitly: &ldquo;deliberately
+      deferred rather than rushed&hellip; until a follow-up lands each one with the same
+      care.&rdquo; That follow-up hasn't landed &mdash; the LLM's answer for these nine
+      categories is computed on every single turn and thrown away, and the regex
+      detectors are still the only thing actually deciding the turn, with zero
+      guardrail.</p>
+    <p style="margin-bottom:0">This is the same class of gap as the pending-answer bug
+      fixed this week, just at a different layer: not &ldquo;no LLM fallback
+      exists,&rdquo; but &ldquo;an LLM fallback exists, is already running, and its
+      answer is being discarded.&rdquo;</p>
+  </div>
+
+  <h2>Recommended Fix Order (Not Yet Actioned)</h2>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th class="num-col">Priority</th><th>Action</th><th>Rationale</th><th>Effort</th></tr></thead>
+    <tbody>
+      <tr><td class="num-col"><span class="priority-badge">1</span></td><td>Wire <code>APPROVAL</code> and <code>QA_QUESTION</code> dispatch</td><td>Both route to the same existing handlers the regex path already calls (submit flow, <code>_handle_cpq_qa</code>) &mdash; no new mutation-safety design needed</td><td>Low</td></tr>
+      <tr><td class="num-col"><span class="priority-badge">2</span></td><td>Wire <code>ATTR_QUERY</code> and <code>PRODUCT_MENTION</code> dispatch</td><td>Also read/routing only, not state-mutating</td><td>Low</td></tr>
+      <tr><td class="num-col"><span class="priority-badge">3</span></td><td>Wire <code>MULTI_SELECT_REMOVAL</code>, <code>ATTR_ACTIVATION</code>, <code>ATTR_CLEAR</code>, <code>BULK_QUANTITY_CHANGE</code> dispatch</td><td>These mutate <code>session.filled</code>/<code>filled_multi</code> &mdash; needs the same <code>MUTATING_CATEGORIES</code> agreement-with-deterministic-detector requirement <code>CHANGE_REQUEST</code> already uses, not a raw pass-through</td><td>Medium</td></tr>
+      <tr><td class="num-col"><span class="priority-badge">4</span></td><td>Add a narrow LLM helper for decline detection (#15/#16)</td><td>Same shape of live-bug risk as the two already fixed this week, mirroring <code>_llm_detect_pending_topic_switch</code></td><td>Medium</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>What's Still Open After Wiring The 9 Categories (Rows 6&ndash;14)</h2>
+  <p>
+    Wiring dispatch for the 9 discarded categories closes exactly those 9 rows &mdash;
+    no more, no less. It does not touch anything that was never one of the gateway's 12
+    categories in the first place.
+  </p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Status after wiring</th><th>Rows</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag yes">Newly closed</span></td><td>6, 7, 8, 9, 10, 11, 12, 13, 14</td><td>These <i>are</i> the 9 discarded categories &mdash; wiring dispatch is the fix</td></tr>
+      <tr><td><span class="tag yes">Already closed</span></td><td>1, 2, 18, 19, 20, 22</td><td>Fixed earlier this session &mdash; no dependency on this wiring</td></tr>
+      <tr><td><span class="tag partial">Still partial</span></td><td>3, 4, 5</td><td>The &ldquo;flag off / LOW confidence / disagreement &rarr; pure regex&rdquo; fallback is untouched &mdash; wiring the <i>other 9</i> doesn't change how these 3 <i>already-wired</i> ones fall back</td></tr>
+      <tr><td><span class="tag no">Still open</span></td><td>15, 16</td><td>Decline detection isn't an <code>IntentCategory</code> at all &mdash; no gateway signal exists to wire</td></tr>
+      <tr><td><span class="tag no">Still open, low priority</span></td><td>17, 24</td><td>Narrow-scope/cosmetic, never proposed for gateway coverage</td></tr>
+      <tr><td><span class="tag partial">Still partial</span></td><td>21</td><td>Product-switch confirm's genuinely-ambiguous reply case has no LLM tiebreaker</td></tr>
+      <tr><td><span class="tag no">Still open, structural</span></td><td>23</td><td>Quantity extraction has no LLM anchor &mdash; non-catalog session concept</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout">
+    <p style="margin:0"><b>Net result: 15 of 24 rows resolved</b> (1, 2, 6&ndash;14, 18, 19, 20, 22); <b>9 remain open</b> in some form (3&ndash;5, 15&ndash;17, 21, 23&ndash;24).</p>
+  </div>
+
+  <h2>Audit Of The 9 Remaining Open Rows &mdash; Proposed LLM-Anchored Fix Per Row</h2>
+  <p>
+    Same discipline as everything already shipped this session: <b>deterministic check
+    runs first; the LLM is only ever consulted on a miss; every LLM answer is validated
+    against a bounded allow-list or a yes/no/fail-safe contract</b> &mdash; never a
+    free-text guess.
+  </p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Row</th><th>Gap</th><th>Proposed fix</th><th>LLM anchor shape</th><th>Guardrail</th><th>Priority</th></tr></thead>
+    <tbody>
+      <tr><td>3-5</td><td><s><code>CHANGE_REQUEST</code>/<code>CHANGE_REQUESTS_MULTI</code>/<code>CHANGE_TARGET_WITHOUT_VALUE</code>: regex silently wins on disagreement</s></td><td colspan="3"><b>Corrected 2026-08-12 &mdash; not a real gap, no fix needed.</b> Investigated to implement the tie-break helper, found it already exists: <code>intent_gateway._mutating_agrees</code> disagreement already returns <code>action="clarify"</code> with an explicit <code>AMBIGUOUS</code> result, pre-existing and already tested (<code>test_classify_clarify_on_mutating_disagreement</code>). The regex never silently wins on a genuine disagreement.</td><td>Closed</td></tr>
+      <tr><td>15-16</td><td><code>_DECLINE_CHANGE_RE</code>: unusual decline phrasing (&ldquo;nah, forget it&rdquo;) tried as a literal new value</td><td>New helper <code>_llm_detect_change_decline(question, attr, current_value, workspace_id)</code>, same shape as <code>_llm_detect_pending_topic_switch</code></td><td>Bounded yes/no: &ldquo;does this decline the proposed change, keeping the current value?&rdquo;</td><td>Fails safe to <b>not a decline</b> on any error &mdash; preserves today's exact behavior</td><td><b>High</b></td></tr>
+      <tr><td>17</td><td><code>_NEGATION_RE</code>: single-word-window exclusion, hard cutoff</td><td>Not worth an LLM call &mdash; add a deterministic sanity check instead: verify the negated item isn't the <i>only</i> remaining valid option</td><td>&mdash;</td><td>Deterministic only</td><td>Low</td></tr>
+      <tr><td>21</td><td><code>pending_switch_product</code>: a genuinely ambiguous reply (&ldquo;maybe&rdquo;) has no tiebreaker, defaults to decline</td><td>Reuse the proven <code>pending_clarify_vns</code> 3-way pattern &mdash; <code>_llm_classify_switch_reply(question, candidate_product, session, workspace_id)</code></td><td>3-way: <code>accept</code>/<code>decline</code>/<code>unclear</code>, &ldquo;unclear&rdquo; defers to today's decline-and-fall-through</td><td><b>Updated 2026-08-12 (residual-risk mitigation):</b> &ldquo;unclear&rdquo; stays fail-safe but must state the assumption explicitly (&ldquo;I'll keep you on <b>X</b> &mdash; say 'actually switch' if you meant to change&rdquo;) instead of declining silently</td><td>Medium</td></tr>
+      <tr><td>23</td><td><code>extract_quantity_hint</code>: unparseable phrasing (&ldquo;a couple dozen&rdquo;) returns <code>None</code> silently</td><td>Narrow extraction fallback <code>_llm_extract_quantity(question, workspace_id)</code>, tried only when quantity is mentioned AND regex/word-number extraction already returned <code>None</code></td><td>Bounded integer-only output, re-validated through the SAME <code>is_valid_product_quantity</code> range check</td><td>Returns <code>None</code> on any non-integer/out-of-range/malformed response</td><td>Medium</td></tr>
+      <tr><td>24</td><td><code>_JSON_REQUEST_RE</code>/<code>_BATCH_REQUEST_RE</code>: cosmetic meta-commands</td><td><b>No fix recommended</b> &mdash; cost/latency not justified for a low-risk UI-toggle command</td><td>&mdash;</td><td>&mdash;</td><td>Won't fix</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Sequencing Recommendation For These 9</h3>
+  <ol class="plain">
+    <li><b>Rows 15-16 (decline detection)</b> &mdash; highest priority: proven live-bug shape, smallest isolated helper, no dependency on the category-wiring work.</li>
+    <li><b>Row 21 (switch-reply tiebreak)</b> &mdash; reuses an already-proven 3-way pattern, low implementation risk.</li>
+    <li><b>Row 23 (quantity extraction fallback)</b> &mdash; reuses all existing validation, just adds the missing extraction attempt.</li>
+    <li><b>Rows 3-5 (disagreement adjudication)</b> &mdash; higher regression risk since it touches the highest-traffic, already-wired path; do this after the above three are stable.</li>
+    <li><b>Row 17</b> &mdash; cheap deterministic sanity check, not an LLM project; can land anytime.</li>
+    <li><b>Row 24</b> &mdash; no action.</li>
+  </ol>
+
+  <h2>Master Implementation Plan &mdash; Wiring The 9 Discarded Categories</h2>
+  <div class="callout">
+    <p style="margin:0"><b>Not yet implemented &mdash; planning only.</b> Verified by
+      reading the actual code (<code>_dispatch_intent_result</code>,
+      <code>_gateway_to_intent_result</code>, <code>intent_schema.py</code>) rather than
+      assumed, this section corrects and sharpens the earlier priority split now that the
+      exact mechanics are confirmed.</p>
+  </div>
+
+  <h3>Key Finding That Changes The Plan</h3>
+  <p>There are <b>two</b> result shapes in play, and the mapping between them is the real
+    missing piece &mdash; not a new safety design:</p>
+  <ol class="plain">
+    <li><code>GatewayIntentResult</code> (<code>intent_schema.py:244</code>, produced by
+      <code>intent_gateway.classify_intent</code>) &mdash; the strongly-guardrailed one
+      (candidate-constrained <code>variable_name</code>, in-range <code>value_ref</code>,
+      verbatim <code>evidence_span</code>). Its <code>MUTATING_CATEGORIES</code> set
+      <b>already includes all 7 mutating categories</b> &mdash;
+      <code>CHANGE_REQUEST</code>, <code>CHANGE_TARGET_WITHOUT_VALUE</code>,
+      <code>CHANGE_REQUESTS_MULTI</code>, <code>MULTI_SELECT_REMOVAL</code>,
+      <code>ATTR_CLEAR</code>, <code>ATTR_ACTIVATION</code>,
+      <code>BULK_QUANTITY_CHANGE</code> &mdash; and requires deterministic agreement
+      <b>before</b> <code>_gw.action</code> is ever set to <code>"dispatch"</code>. The
+      safety-critical agreement check for the 4 not-yet-wired mutating categories
+      <b>already runs today, for every turn</b>, even though nothing downstream uses the
+      result &mdash; the earlier &ldquo;these 4 need more careful design&rdquo; framing
+      overstated the remaining risk; the hard part is already built.</li>
+    <li><code>IntentResult</code> (<code>intent_schema.py:101</code>) &mdash; the plain
+      shape <code>_dispatch_intent_result</code> (ask_api.py:4229) actually switches on.
+      <code>_gateway_to_intent_result</code> (ask_api.py:4162) converts one to the
+      other, and <b>this converter is the actual gap</b>:
+      <ul class="plain">
+        <li><code>needs_target</code> (line 4187) only lists 3 categories &mdash; it must
+          also include <code>ATTR_ACTIVATION</code>, <code>ATTR_CLEAR</code>,
+          <code>ATTR_QUERY</code>, <code>BULK_QUANTITY_CHANGE</code>,
+          <code>MULTI_SELECT_REMOVAL</code>, matching <code>IntentResult</code>'s own
+          docstring contract (line 110-113) &mdash; the docstring and the code have
+          drifted apart.</li>
+        <li><code>targets</code> (line 198-201) is only populated for
+          <code>CHANGE_REQUESTS_MULTI</code>, despite the docstring (line 115-118)
+          saying it's shared with <code>MULTI_SELECT_REMOVAL</code>.</li>
+        <li><code>response_mode</code> and <code>quantity_description</code> have
+          <b>no source field on <code>GatewayIntentResult</code> at all</b> &mdash;
+          <code>RESPONSE_MODE_REQUEST</code> and <code>BULK_QUANTITY_CHANGE</code>
+          cannot be mapped today without a schema extension.</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h3>Phase 1 &mdash; Fix The Converter (Prerequisite)</h3>
+  <p>Extend <code>_gateway_to_intent_result</code> (ask_api.py:4162-4204): add the 5
+    missing categories to <code>needs_target</code> so a missing target refuses the
+    mapping instead of silently proceeding with <code>target=None</code>; populate
+    <code>targets</code> for <code>MULTI_SELECT_REMOVAL</code> the same way
+    <code>CHANGE_REQUESTS_MULTI</code> already is.</p>
+
+  <h3>Phase 2 &mdash; Wire The Categories With No Schema Gap</h3>
+  <div class="callout">
+    <p style="margin:0"><b>Updated 2026-08-12 (residual-risk mitigation #1):</b> none
+      of these 5 categories are in <code>MUTATING_CATEGORIES</code>, so none get the
+      deterministic-agreement cross-check <code>CHANGE_REQUEST</code> and its siblings
+      already have. To close that gap without building a new mechanism:
+      <b>require <code>Confidence.HIGH</code> specifically for these 5</b>, not just
+      &ldquo;not LOW.&rdquo; <code>MEDIUM</code> confidence defers to the regex path
+      exactly like <code>LOW</code> already does everywhere else.</p>
+  </div>
+  <div class="callout">
+    <p style="margin:0"><b>Scope correction, found during implementation (2026-08-12)
+      &mdash; this phase was originally framed as &ldquo;clean mapping, target-only&rdquo;
+      for all 5 categories. That framing was only correct for 1 of the 5.</b>
+      Splitting by what was actually discovered building each one.</p>
+  </div>
+
+  <h4>Phase 2a &mdash; Genuinely Clean Mapping (Implemented)</h4>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Category</th><th>Existing handler to reuse</th><th>New code needed</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>ATTR_QUERY</code></td><td><code>detect_attr_query</code>'s regex-path response, factored into the shared <code>_build_attr_query_response</code></td><td>One dispatch branch, <code>Confidence.HIGH</code> gate</td><td><span class="tag yes">Implemented</span> &mdash; <code>feature/cpq-intent-dispatch-wiring</code>, commit <code>5765a4f</code>. 3 new tests, full CPQ regression 951 passed / 0 failed</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h4>Phase 2b &mdash; Investigated 2026-08-12, Split By What Was Actually Found</h4>
+  <p><code>_resolve_target_description</code> only answers &ldquo;does this label match
+    exactly one real attribute?&rdquo; &mdash; it says nothing about whether that
+    attribute is currently <i>eligible</i> for the action. Investigating all 3
+    categories surfaced a further split: one has real upstream agreement-checking and
+    was straightforward to wire; the other two have a <b>separate, deeper gap
+    upstream</b> that makes a dispatch branch pointless until it's fixed first.</p>
+
+  <h5>MULTI_SELECT_REMOVAL &mdash; Implemented</h5>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Category</th><th>Existing handler to reuse</th><th>Precondition the regex path re-checks that target resolution alone does NOT provide</th><th>New code needed</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>MULTI_SELECT_REMOVAL</code></td><td><code>_handle_multi_select_removal</code> (ask_api.py:2100)</td><td>The LLM's plain-language option mention must be resolved back to a real <code>item_value</code> AND confirmed already selected &mdash; naming an unselected option is not a removal request</td><td>One dispatch branch, resolving the named option against the attr's real options AND re-verifying it's currently selected</td><td><span class="tag yes">Implemented</span> &mdash; <code>feature/cpq-intent-dispatch-wiring</code>, commit <code>a121ce4</code>. 4 new tests, full CPQ regression 958 passed / 0 failed</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>This category is genuinely reachable because it's in
+    <code>intent_gateway.MUTATING_CATEGORIES</code> <b>and</b> actually probed by
+    <code>_deterministic_mutating_signals</code> (<code>_probe_removal</code> calls
+    <code>detect_multi_select_removal</code> for real) &mdash; so a mapped result
+    already passed real deterministic agreement upstream, before <code>_gw.action</code>
+    was ever set to <code>"dispatch"</code>. No extra <code>Confidence.HIGH</code> gate
+    needed here, unlike <code>ATTR_QUERY</code>/<code>QA_QUESTION</code> &mdash; proven
+    by a test that dispatches successfully at <code>Confidence.MEDIUM</code>.</p>
+
+  <h5>ATTR_ACTIVATION / ATTR_CLEAR &mdash; A Deeper Upstream Gap Found, Then Fixed And Implemented (2026-08-12)</h5>
+  <p><b>Both are also in <code>MUTATING_CATEGORIES</code>, but investigating them
+    revealed something the original Phase 2b framing didn't know:</b>
+    <code>_deterministic_mutating_signals</code> (<code>intent_gateway.py</code>) never
+    actually probed either category. Its own docstring admitted this was deliberate:</p>
+  <div class="callout">
+    <p style="margin:0">&ldquo;ATTR_CLEAR / ATTR_ACTIVATION need rec_rules /
+      hiding_rules &mdash; those are left empty here so disagreement forces clarify
+      rather than a half-blind agreement.&rdquo;</p>
+  </div>
+  <p>So for <code>ATTR_ACTIVATION</code>/<code>ATTR_CLEAR</code>,
+    <code>_mutating_agrees</code> returned <code>False</code> <b>almost
+    unconditionally</b>. <code>_gw.action</code> essentially never became
+    <code>"dispatch"</code> for these two categories regardless of anything
+    <code>_dispatch_intent_result</code> did &mdash; a dispatch branch alone would have
+    been dead code.</p>
+  <p><b>Cost/impact quantified before fixing, not assumed:</b></p>
+  <ul class="plain">
+    <li><b>Zero new LLM calls.</b> The gateway's classification call already happens once per qualifying turn regardless; the probes are pure deterministic function calls, no network/model round-trip.</li>
+    <li><b>Only runs on a genuine cache miss</b> &mdash; a cache hit returns before <code>_deterministic_mutating_signals</code> is ever called at all.</li>
+    <li><b>Only during review-stage turns</b> &mdash; the gateway's one call site is gated on <code>session.status in ("awaiting_approval", "post_approval")</code>.</li>
+    <li><b>Bounded per-turn cost when it does run:</b> one <code>apply_hiding_rules</code> pass for activation; for clear, one <code>apply_recommendation_rules</code> + one <code>apply_constraint_rules</code> trial-removal pass, only for the (almost always 0 or 1) attrs whose label text actually appears in the message.</li>
+  </ul>
+  <p><b>Fixed upstream, then wired downstream &mdash; both implemented:</b></p>
+  <ol class="plain">
+    <li><code>_deterministic_mutating_signals</code>, <code>classify_intent</code>, and <code>gateway_classify_intent</code> now accept optional <code>hiding_rules</code>/<code>rec_rules</code>/<code>con_rules</code>/<code>bml_eval</code>/<code>catalog_prefix</code> (all default <code>None</code>/empty, so every existing caller keeps working unchanged &mdash; confirmed by a dedicated backward-compat test). <code>_probe_activation</code>/<code>_probe_clear</code> call <code>detect_attr_activation</code>/<code>detect_attr_clear</code> for real when supplied.</li>
+    <li>The ask_api.py gateway call site now passes the <code>hiding_rules</code>/<code>rec_rules</code>/<code>con_rules</code>/<code>bml_eval</code>/<code>catalog_prefix</code> already in scope there &mdash; no new data had to be computed.</li>
+    <li><code>_dispatch_intent_result</code> gained <code>ATTR_ACTIVATION</code>/<code>ATTR_CLEAR</code> branches, exactly the shape <code>MULTI_SELECT_REMOVAL</code>'s already had: resolve the target, re-verify the exact eligibility precondition the regex-path detector itself uses, then call the existing handler. No extra <code>Confidence.HIGH</code> gate needed &mdash; proven by tests dispatching successfully at <code>Confidence.MEDIUM</code>.</li>
+  </ol>
+  <div class="callout">
+    <p style="margin:0"><b>Status: Implemented</b> &mdash; <code>feature/cpq-intent-dispatch-wiring</code>, commit <code>2c44553</code>. 10 new tests (3 in <code>test_cpq_intent_gateway.py</code>, 7 in <code>test_cpq_2026_07_28_fixes.py</code>). Full CPQ regression: 968 passed, 0 failed. Rebuilt and redeployed.</p>
+  </div>
+
+  <h4>Phase 2c &mdash; Structurally Blocked, Needs Upstream Design First (Not Yet Implementable As Scoped)</h4>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Category</th><th>Why it can't be wired the same way</th><th>What it actually needs</th></tr></thead>
+    <tbody>
+      <tr><td><code>PRODUCT_MENTION</code></td><td>Its target would have to be a <b>product name</b>, but <code>_gateway_to_intent_result</code> only ever builds a <code>ChangeTarget</code> from <code>attrs</code> &mdash; real <code>ConfigAttr</code>s already injected as candidates for the current product. Products are never injected as gateway candidates anywhere in <code>intent_gateway.py</code>'s prompt-building. There is no <code>variable_name</code> a product name could ever resolve from.</td><td>A real product-candidate-injection design in <code>intent_gateway.py</code>, plus a schema decision on how the LLM signals &ldquo;this is a product, not an attribute&rdquo; &mdash; upstream gateway work, not a dispatch branch. Moved into Phase 4's scope below, not Phase 2.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Phase 3 &mdash; Wire The Two Categories With No Target At All</h3>
+  <p>Same <code>Confidence.HIGH</code>-only restriction from Phase 2 applies here too
+    (residual-risk mitigation #1) &mdash; <code>APPROVAL</code> and <code>QA_QUESTION</code>
+    have no agreement cross-check either.</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Category</th><th>Existing handler to reuse</th><th>New code needed</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>APPROVAL</code></td><td><code>_handle_approval</code> (ask_api.py) &mdash; the regex path's own 100+-line inline STEP 8 gate factored out verbatim, so both call sites share one implementation</td><td>Factor the gate into a callable function, then one dispatch branch, <code>Confidence.HIGH</code> gate</td><td><span class="tag yes">Implemented</span> &mdash; commit <code>06d4c69</code>. 3 new tests, full CPQ regression 990 passed / 0 failed</td></tr>
+      <tr><td><code>QA_QUESTION</code></td><td><code>_handle_cpq_qa</code> (ask_api.py:933, already exists)</td><td>One dispatch branch</td><td><span class="tag yes">Implemented</span> &mdash; commit <code>b7151cc</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Phase 4 &mdash; Extend The Schema For The Last 2 Categories</h3>
+  <div class="callout">
+    <p style="margin:0"><b><span class="tag yes">Implemented</span> 2026-08-12</b> &mdash;
+      <code>feature/cpq-intent-dispatch-wiring</code>, commit <code>bbe4377</code>.
+      <code>PRODUCT_MENTION</code> remains open (see the Phase 2c row above) &mdash;
+      materially larger scope (a second candidate space in
+      <code>intent_gateway.py</code>'s prompt-building) than the additive schema
+      fields the other two needed.</p>
+  </div>
+  <p>Added <code>quantity_text: str | None</code> (<code>BULK_QUANTITY_CHANGE</code>'s
+    free-form digits-only quantity, e.g. <code>"67"</code> &mdash; never a
+    candidate-list selection, so <code>value_ref</code> couldn't express it) and
+    <code>response_mode: str | None</code> (<code>"json"</code> / <code>"batch"</code>)
+    to <code>GatewayIntentResult</code> and <code>GATEWAY_INTENT_JSON_SCHEMA</code>.
+    <code>validate_gateway_quarantine</code> downgrades to <code>AMBIGUOUS</code> when
+    <code>BULK_QUANTITY_CHANGE</code> lacks a digits-only <code>quantity_text</code>, or
+    <code>RESPONSE_MODE_REQUEST</code> lacks a valid <code>response_mode</code>.</p>
+  <p><code>BULK_QUANTITY_CHANGE</code>'s dispatch branch (already in
+    <code>MUTATING_CATEGORIES</code>, so real deterministic agreement already ran
+    upstream) re-verifies the exact predicate <code>detect_bulk_quantity_change</code>
+    itself uses: the resolved target must be a real array-grid selector
+    (<code>resolve_array_grid_links</code>) &mdash; never a plain single-select
+    sibling sharing its <code>display_label</code> &mdash; with at least one
+    currently-selected, quantity-resolvable row, and the stated quantity must be
+    digits-only.</p>
+  <p><code>RESPONSE_MODE_REQUEST</code>'s dispatch branch only wires
+    <code>"json"</code>, gated <code>Confidence.HIGH</code>. The regex path's own
+    JSON-preview block was factored into <code>_build_json_preview_response</code>
+    (same pattern as <code>_handle_approval</code>) so both callers share one
+    implementation; it already runs before the single
+    <code>_dispatch_intent_result</code> call site is reached, so the new branch
+    only fires for phrasing the regex misses. <code>"batch"</code> is intentionally
+    left unwired &mdash; a configuring-flow-only concept the review-stage-only
+    dispatch call site never reaches. 10 new tests. Full CPQ regression: 997
+    passed, 0 failed. Rebuilt and redeployed.</p>
+
+  <h3><code>PRODUCT_MENTION</code> &mdash; Deep-Dive (Documented 2026-08-12, Not Yet Implemented)</h3>
+  <p>The last of the 9 categories, and structurally the odd one out: every other
+    category's target is an <b>attribute</b> (<code>variable_name</code>), which
+    <code>intent_gateway.py</code> already injects into the classification prompt
+    as a candidate list the LLM selects from &mdash; the &ldquo;never trust free
+    text&rdquo; quarantine discipline this whole design rests on.
+    <code>PRODUCT_MENTION</code>'s target is a <b>product</b>, and products are
+    never injected as candidates anywhere in the gateway's prompt-building. This
+    is a different kind of gap from Phase 4's &mdash; not a missing scalar field,
+    but a missing candidate space entirely.</p>
+  <p><b>What already exists (deterministic, reusable):</b>
+    <code>CpqEngine.detect_product_mention</code> (<code>engine.py:1886</code>)
+    already resolves a plain-language product mention against the real,
+    dynamically ingested product/family names for the workspace
+    (<code>_ingested_product_names</code> + <code>ingested_product_alias_map</code>,
+    longest-candidate-first, with a deterministic fuzzy-substring fallback via
+    <code>string_score</code> &mdash; no hardcoded product list, no LLM). It is
+    called from several places in <code>ask_api.py</code> (lines ~6738, ~6854,
+    ~6867, ~7177, ~7194, ~9467) for different purposes &mdash; initial anchor
+    resolution, and mid-session product-switch detection. The mid-session switch
+    path (<code>ask_api.py:~7177</code>) is the one <code>PRODUCT_MENTION</code>
+    would actually dispatch to: on a genuine candidate it sets
+    <code>session.pending_switch_product</code> / <code>session.pending_anchor =
+    "confirm_switch"</code> and asks the customer to confirm &mdash; it does
+    <b>not</b> mutate the session in one turn, matching the &ldquo;never guess,
+    always confirm a destructive action&rdquo; pattern the rest of this plan
+    already follows for approval/removal/clear.</p>
+  <p><b>Why it can't be wired as a dispatch branch today (root cause):</b></p>
+  <ol class="plain">
+    <li><code>_gateway_to_intent_result</code> (<code>ask_api.py:4170</code>)
+      only ever builds a <code>ChangeTarget</code> from <code>attrs</code> &mdash;
+      real <code>ConfigAttr</code>s for the <i>current</i> product. There is no
+      <code>variable_name</code> a product name could ever resolve from, so even
+      a perfectly classified <code>PRODUCT_MENTION</code> result has nothing to
+      map onto.</li>
+    <li><code>intent_gateway.py</code>'s prompt-building
+      (<code>_format_candidates_for_prompt</code> / <code>AttrCandidateBundle</code>)
+      is attribute-only. The LLM is never shown what products exist in the
+      workspace, so it has no grounded way to select one &mdash; asking it to
+      name a product in free text would break the same quarantine discipline
+      <code>evidence_span</code>/<code>value_ref</code> enforce for every other
+      category.</li>
+    <li>Unlike <code>BULK_QUANTITY_CHANGE</code> (Phase 4), this isn't fixable
+      with one additive scalar field &mdash; it needs a <b>second, parallel
+      candidate space</b> (products, not attributes) threaded through
+      prompt-building, the schema, and quarantine validation.</li>
+  </ol>
+  <p><b>What the real fix needs (sketch, not committed to yet &mdash; this is
+    scope, not a plan):</b></p>
+  <ul class="plain">
+    <li>Inject a <code>product_candidates: list[str]</code> list into the
+      gateway prompt (workspace's ingested product/family names, same source
+      <code>detect_product_mention</code> already reads), analogous to how
+      attribute candidates are injected today.</li>
+    <li>Add a <code>product_ref: int | None</code> field to
+      <code>GatewayIntentResult</code> / <code>GATEWAY_INTENT_JSON_SCHEMA</code>
+      &mdash; an index into <code>product_candidates</code>, never a free-text
+      product name, same discipline as <code>value_ref</code>.</li>
+    <li><code>validate_gateway_quarantine</code> gains a <code>PRODUCT_MENTION</code>
+      branch: reject (downgrade to <code>AMBIGUOUS</code>) when
+      <code>product_ref</code> is out of range or absent.</li>
+    <li>The dispatch branch resolves <code>product_ref</code> back to a real
+      ingested product name and re-verifies it differs from
+      <code>session.product_name</code> (same equality check the deterministic
+      path already makes) before setting
+      <code>pending_switch_product</code>/<code>pending_anchor</code> &mdash;
+      never jumping straight to a switch, preserving the existing confirm-first
+      UX.</li>
+  </ul>
+  <div class="callout">
+    <p style="margin:0"><b>Open question this sketch does not resolve:</b> at
+      the <i>review-stage-only</i> dispatch call site
+      (<code>awaiting_approval</code>/<code>post_approval</code>), is a
+      mid-review product mention (&ldquo;actually I meant the XE model&rdquo;)
+      common enough to justify this work now, or does it belong with a future
+      pass over the earlier <code>configuring</code>-stage call sites where
+      <code>detect_product_mention</code> is used more heavily? Not decided
+      &mdash; flagging it rather than guessing, per this doc's own &ldquo;ask,
+      don't guess&rdquo; discipline.</p>
+  </div>
+  <p><b>Status: documented, not implemented.</b> No code change from this
+    write-up. Tracked as the one open item left in Phase 4's original
+    3-category scope.</p>
+
+  <h3>Sequencing Across All Of This &mdash; 9 Categories + 9 Open Items Combined</h3>
+  <ol class="plain">
+    <li><b>Phase 1</b> (converter fix) &mdash; prerequisite, must land first. <span class="tag yes">Implemented</span> &mdash; <code>feature/cpq-intent-dispatch-wiring</code>, commit <code>5765a4f</code>.</li>
+    <li><b>Phase 2a</b> (<code>ATTR_QUERY</code> only, <code>Confidence.HIGH</code>-only gate) &mdash; genuinely clean mapping. <span class="tag yes">Implemented</span> &mdash; same commit, 951 passed / 0 failed.</li>
+    <li><b>Phase 2b</b> &mdash; <span class="tag yes">Fully implemented 2026-08-12</span>. <code>MULTI_SELECT_REMOVAL</code> (commit <code>a121ce4</code>, 958 passed / 0 failed). <code>ATTR_ACTIVATION</code>/<code>ATTR_CLEAR</code> (commit <code>2c44553</code>, 968 passed / 0 failed) &mdash; required an upstream fix first (<code>intent_gateway.py</code>'s deterministic-agreement probe never checked either category), quantified as cheap (zero new LLM calls, cache-miss-only, review-stage-only, bounded CPU cost) before implementing both the probe fix and the dispatch branches together.</li>
+    <li><b>Phase 3</b> &mdash; <span class="tag yes">Fully implemented 2026-08-12</span>. <code>QA_QUESTION</code> (commit <code>b7151cc</code>, 954 passed / 0 failed). <code>APPROVAL</code> (commit <code>06d4c69</code>, 990 passed / 0 failed) &mdash; required factoring its 100+-line unfactored payload-generation gate into <code>_handle_approval</code> first, given its own dedicated care since it's the highest-stakes code path in the file.</li>
+    <li><b>Rows 15-16 (decline detection)</b> &mdash; <span class="tag yes">Implemented</span> &mdash; commit <code>8e9c96b</code>, 979 passed / 0 failed. A mid-build regression (unfiltered LLM fallback firing on every ordinary value change) was caught and fixed with a cheap pre-filter regex before landing.</li>
+    <li><b>Row 21 (switch-reply tiebreak), Row 23 (quantity extraction)</b> &mdash; <span class="tag yes">Implemented</span> &mdash; commits <code>1d2c273</code> (986 passed) and <code>d1923e5</code> (982 passed). Row 17 (negation singleton guard, deterministic-only) also implemented &mdash; commit <code>23f6d78</code>, 988 passed.</li>
+    <li><b>Phase 4</b> &mdash; <span class="tag yes">Implemented 2026-08-12</span> &mdash; commit <code>bbe4377</code>, 997 passed / 0 failed, for <code>RESPONSE_MODE_REQUEST</code>(json)/<code>BULK_QUANTITY_CHANGE</code>. <code>PRODUCT_MENTION</code>'s product-candidate-injection design (rescoped 2026-08-12 into this phase, moved out of Phase 2c) <b>remains open</b> &mdash; materially larger scope than the additive schema fields the other two needed.</li>
+    <li><b>Row 3-5</b> &mdash; <span class="tag yes">Corrected 2026-08-12, no fix needed</span>. Investigated before building; <code>intent_gateway._mutating_agrees</code> already returns an explicit <code>AMBIGUOUS</code> clarify response on genuine disagreement, pre-existing and already tested.</li>
+    <li><b>Row 17</b> &mdash; cheap deterministic fix, independent, can land anytime.</li>
+    <li><b>Row 24</b> &mdash; no action.</li>
+    <li><b><code>pending_scope_misses</code> auto-escalation</b> (residual-risk mitigation #5) &mdash; <span class="tag yes">Investigated 2026-08-12, already correctly implemented</span>. The numbered-list escalation and exact digit-index resolution both already exist in <code>_scoped_reask_response</code>/<code>resolve_against_scope</code> &mdash; no code change made.</li>
+  </ol>
+
+  <h3>Verification Plan For Every Phase Above</h3>
+  <div class="callout">
+    <p style="margin-top:0"><b>Decision (2026-08-12): negative-case / adversarial
+      testing runs as ONE consolidated pass after all of Phases 1-4 and the 9
+      open items are implemented &mdash; not per-phase.</b> Each phase still gets
+      its own positive-path tests and full-regression run as it lands; the
+      adversarial/edge-case hardening pass (guardrail #3 below) is deliberately
+      deferred to the end, across the whole surface at once.</p>
+    <p style="margin-bottom:0"><b>Trade-off, recorded rather than silently
+      accepted:</b> Phase 1 (the <code>_gateway_to_intent_result</code> converter
+      fix) is a shared prerequisite every later phase builds on. If a
+      negative-case gap in Phase 1 is only caught during the final consolidated
+      pass &mdash; after Phases 2-4 are already built on top of it &mdash; the
+      fix and re-verification then spans every phase at once instead of one
+      isolated phase. Accepted deliberately in exchange for fewer
+      context-switches and one consolidated hardening pass instead of six small
+      ones.</p>
+  </div>
+  <p><b>Per-phase, as it lands:</b></p>
+  <ul class="plain">
+    <li>Unit tests per new dispatch branch, positive path only: LLM path matches regex path's output shape for an unambiguous message; a 0-candidate or 2+-candidate <code>target_description</code> correctly falls through to <code>None</code>; LOW confidence never dispatches (regression test per branch, not just relying on the shared top-of-function gate).</li>
+    <li>Full CPQ regression suite after each phase, not just at the end.</li>
+    <li>Live verification against the real reported transcripts already on file for the two topic-switch bugs, to confirm <code>ATTR_QUERY</code>/<code>QA_QUESTION</code> dispatch (Phase 2/3) now catches those messages natively &mdash; potentially making <code>_llm_detect_pending_topic_switch</code> (this week's fix) redundant, per the earlier finding. If so, that's a candidate for later removal, not a blocker for this work.</li>
+  </ul>
+  <p><b>After Phases 1-4 and the 9 open items are all implemented, as one final pass:</b></p>
+  <ul class="plain">
+    <li>Guardrail #3 (adversarial/property-based regex testing) applied across every pure-regex row touched by this plan (rows 6-17, 23-24), generating edge cases systematically rather than relying on hand-picked examples &mdash; the same class of testing that would have caught all 4 PR #186 regex bugs, applied here before shipping rather than after a live incident.</li>
+    <li>Guardrail #4 (contract/drift tests) applied to every converter and mapping function touched across Phases 1-4, asserting each matches its own documented contract (the same check that would have caught <code>_gateway_to_intent_result</code>'s <code>needs_target</code> drift on its own).</li>
+    <li>Guardrail #6 (regression-locking) applied retroactively: every open item's real reported phrasing (where one exists) gets a permanent test at this point if it didn't already get one during implementation.</li>
+    <li>One final full CPQ regression run across the entire combined surface (9 categories + 9 open items) before declaring this plan complete.</li>
+  </ul>
+
+  <h2>Guardrail Taxonomy &mdash; Is Two Enough?</h2>
+  <div class="callout">
+    <p style="margin:0"><b>No.</b> Both documented guardrail patterns (gateway
+      quarantine, narrow helper allow-list) answer the same underlying question:
+      <i>is the LLM being honest?</i> Neither answers <i>is my own deterministic
+      code correct?</i> or <i>does this decision make sense given everything else
+      already known this turn?</i> &mdash; and those are exactly the two classes
+      of live bug this session actually found, independent of PR #186.</p>
+  </div>
+  <p>
+    Concrete evidence: PR #186's code review found 4 real regex bugs (a model
+    code's embedded digits misread as quantity, a hyphenated variant of the same
+    bug, a thousands-separator silently truncated, a decimal input backtracking
+    into the wrong digit) &mdash; every one a pure deterministic-code correctness
+    failure. Neither the gateway quarantine nor the narrow-helper pattern would
+    ever have caught any of them, because neither is designed to check regex
+    correctness at all; they only ever validate an <i>LLM's</i> output against a
+    candidate set.
+  </p>
+
+  <h3>Proposed Additional Guardrail Shapes</h3>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>#</th><th>Guardrail</th><th>Question it answers</th><th>Evidence it's missing today</th><th>Applies to</th></tr></thead>
+    <tbody>
+      <tr><td>1 <i>(existing)</i></td><td>Gateway quarantine</td><td>Is the LLM only picking from real candidates?</td><td>&mdash;</td><td>Rows 3-14</td></tr>
+      <tr><td>2 <i>(existing)</i></td><td>Narrow helper allow-list</td><td>Did the LLM invent something outside a bounded set?</td><td>&mdash;</td><td>Rows 1, 2, 18-22</td></tr>
+      <tr><td>3 <i>(new)</i></td><td><b>Adversarial / property-based regex testing</b> &mdash; generate edge cases (glued digits, separators, decimals, sign characters) per pattern systematically, not just hand-picked examples</td><td>Is my own deterministic pattern correct on edge cases I didn't think to test?</td><td>PR #186: 4 regex bugs, all caught by human code review, zero caught by the existing test suite</td><td>Rows 6-17, 23-24 &mdash; every pure-regex row</td></tr>
+      <tr><td>4 <i>(new)</i></td><td><b>Contract / drift tests</b> &mdash; assert code actually does what its own docstring claims</td><td>Does the code match its own documented contract?</td><td><code>_gateway_to_intent_result</code>'s <code>needs_target</code> set silently drifted from <code>IntentResult</code>'s own documented list of target-bearing categories (intent_schema.py:110-113) &mdash; found only by manually reading both, not by any test</td><td>The 9-category wiring work directly</td></tr>
+      <tr><td>5 <i>(new)</i></td><td><b>Plausibility cross-check</b> &mdash; flag a value that suspiciously matches something already present elsewhere in session state</td><td>Does this value make sense given everything else already known this turn, not just &ldquo;is it in a valid range&rdquo;?</td><td>Quantity <code>8000</code> lifted from <code>APX8000</code> passed <code>is_valid_product_quantity</code> (in-range) while being obviously implausible next to a just-selected model name &mdash; no detector cross-references session state at all</td><td>Row 23 primarily, generalizable to any numeric/free-text extraction</td></tr>
+      <tr><td>6 <i>(new)</i></td><td><b>Regression-locking on the exact reported phrasing</b> &mdash; every live-reported bug gets a permanent test tied to the customer's real sentence</td><td>Will the specific message a real customer typed ever silently regress, even after an unrelated refactor?</td><td>Already practiced ad hoc this session &mdash; not yet a named, enforced policy</td><td>All rows with a live incident on file</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>What's Cheap Now vs. Real Design Work</h3>
+  <ul class="plain">
+    <li><b>#3, #4, #6 are pure testing-discipline additions</b> &mdash; no runtime cost, no architecture debate, immediately actionable alongside the wiring work in the master plan above. #4 in particular would have caught the exact converter gap the master plan needed a manual code read to find.</li>
+    <li><b>#5 is a genuine design decision</b>, not a quick add &mdash; how much cross-checking is signal vs. noise, and what &ldquo;suspicious&rdquo; means precisely, needs its own scoped proposal rather than being bundled into the category-wiring work.</li>
+  </ul>
+
+  <h3>Recommendation</h3>
+  <p>
+    <b>Superseded 2026-08-12</b> by the sequencing decision recorded in the
+    master implementation plan's verification section above: #3, #4, and #6 are
+    still adopted, but as ONE consolidated pass after all of Phases 1-4 and the
+    9 open items are implemented, not interleaved per-phase as originally
+    recommended here. The trade-off (a Phase-1 negative-case gap surfacing late
+    could require touching every later phase at once) is recorded there rather
+    than silently accepted. #5 remains a distinct, future proposal requiring its
+    own design pass once the higher-priority wiring and open-item fixes are
+    stable.
+  </p>
+
+  <h2>What Remains After Full Implementation</h2>
+  <p>
+    Even with every phase of the master plan built, the 9 open items fixed, and
+    guardrails #3/#4/#6 adopted, at least 5 residual risk classes survive by
+    design, not by oversight. This is the honest answer to &ldquo;is anything
+    still unaddressed&rdquo;: yes, and here specifically is what and why.
+  </p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th class="num-col">#</th><th>Risk</th><th>Wrong response or loop?</th><th>Why it survives the full plan</th></tr></thead>
+    <tbody>
+      <tr><td class="num-col">1</td><td>The 5 newly-wired non-mutating categories (<code>APPROVAL</code>, <code>QA_QUESTION</code>, <code>ATTR_QUERY</code>, <code>PRODUCT_MENTION</code>, <code>RESPONSE_MODE_REQUEST</code>) have <b>no deterministic-agreement cross-check</b></td><td>Wrong response</td><td>They're non-mutating, so <code>MUTATING_CATEGORIES</code>'s agreement requirement never applied to them by design &mdash; once wired, the LLM's classification alone decides these 5, with only candidate/evidence-span quarantine, not a second opinion</td></tr>
+      <tr><td class="num-col">2</td><td>Row 21's &ldquo;unclear&rdquo; switch-reply still defaults to <b>silent decline</b></td><td>Wrong response</td><td>A genuinely ambiguous reply that wasn't actually a decline gets the switch cancelled anyway &mdash; fail-safe in one direction can still misread real intent, not just avoid guessing</td></tr>
+      <tr><td class="num-col">3</td><td><s>Row 3-5's disagreement adjudication falls back to &ldquo;regex wins&rdquo;</s></td><td>Corrected &mdash; not real</td><td><code>_mutating_agrees</code> disagreement already returns an explicit <code>AMBIGUOUS</code> clarify response, pre-existing and already tested.</td></tr>
+      <tr><td class="num-col">4</td><td>Phase 4 decision (<code>RESPONSE_MODE_REQUEST</code>/<code>BULK_QUANTITY_CHANGE</code> schema extension) &mdash; <b>if deferred</b>, stays regex-only indefinitely</td><td>Wrong response (silent no-op on unusual phrasing)</td><td>Explicitly optional in the plan as written; if never picked up, this pair keeps the exact &ldquo;regex can't handle novel phrasing&rdquo; ceiling everything else just fixed</td></tr>
+      <tr><td class="num-col">5</td><td><s>Scoped re-ask loops (model-leaf, pending-scope)</s> &mdash; <b>corrected 2026-08-12, not a real gap.</b> Verified false: <code>_scoped_reask_response</code> already auto-escalates to a numbered list after <code>scope_loop_exit_threshold()</code> misses, and <code>resolve_against_scope</code> already resolves a bare digit reply as an exact index match against that list.</td><td>Closed (was never actually open)</td><td>&mdash;</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    <b>What's genuinely closed vs. what isn't:</b> every specific bug reported
+    this session is closed by the plan above. What isn't closed is the general
+    shape &mdash; an LLM can still misclassify with no second check, and a
+    fail-safe fallback path can still be substantively wrong, just less often
+    and less visibly than before. No amount of guardrailing removes that; it
+    only narrows how often and how loudly it happens.
+  </p>
+
+  <h2>How These 5 Risks Can Be Addressed</h2>
+  <p>None of the mitigations below need new infrastructure &mdash; each reuses a mechanism that already exists in the codebase.</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th class="num-col">#</th><th>Risk</th><th>Mitigation</th><th>Why this closes it without over-building</th></tr></thead>
+    <tbody>
+      <tr><td class="num-col">1</td><td>5 non-mutating categories have no agreement cross-check</td><td><b>Confidence-tier restriction</b>: require <code>HIGH</code> confidence specifically for these 5 (not just &ldquo;not LOW&rdquo;). <code>MEDIUM</code> defers to the regex path instead of dispatching &mdash; same shape as the existing &ldquo;LOW never dispatches&rdquo; gate, just a stricter bar for the categories with no second opinion</td><td>No new mechanism &mdash; reuses the confidence field already on every result; costs nothing extra to check</td></tr>
+      <tr><td class="num-col">2</td><td>Row 21's &ldquo;unclear&rdquo; silently declines</td><td><b>State the assumption, don't just act on it</b>: reply &ldquo;I'll keep you on <b>X</b> &mdash; say 'actually switch' if you meant to change&rdquo; instead of silently proceeding with no trace. Fail-safe direction unchanged; the failure becomes visible and one word to correct</td><td>Turns a silent wrong guess into a stated, reversible one &mdash; no new detection logic, just a wording change at the existing decline branch</td></tr>
+      <tr><td class="num-col">3</td><td>Row 3-5 tie-break failure defaults to &ldquo;regex wins&rdquo; silently</td><td><b>Convert to an explicit <code>AMBIGUOUS</code> response</b> instead of a silent default: &ldquo;Not sure if you meant X or Y &mdash; which one?&rdquo; reusing the same <code>AMBIGUOUS</code>-category handling every other genuinely-ambiguous case in this codebase already uses</td><td>Consistent with the existing &ldquo;never guess, ask&rdquo; philosophy elsewhere &mdash; no new response type needed, just routes to code that already exists</td></tr>
+      <tr><td class="num-col">4</td><td>Phase 4 left as an open (a)/(b) decision, risks defaulting to indefinite regex-only</td><td><b>Don't leave it open</b> &mdash; commit to (a), the schema extension, as part of this plan rather than a &ldquo;maybe later.&rdquo; It's the same size of work as Phases 1-3, just deferred by convenience, not by real difficulty</td><td>Removes the risk by removing the deferral, not by adding a mechanism</td></tr>
+      <tr><td class="num-col">5</td><td><s>Scoped re-ask loop only escapes if the customer opts into guided mode</s></td><td><b>No fix needed &mdash; corrected 2026-08-12.</b> Investigated to implement, found already done: the proposed mechanism already exists under a different name than assumed.</td><td>N/A &mdash; no code change; corrected the original finding instead</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    <b>Common thread:</b> #1 tightens an existing confidence check; #2 and #3
+    change what a fail-safe default <i>says</i> rather than what it
+    <i>decides</i>; #4 is a scheduling decision, not an engineering one; #5
+    escalates an existing counter's action from passive to active. None
+    require new design work, only wiring &mdash; but none are scheduled into the
+    master plan above yet, and are listed here explicitly so they aren't
+    mistaken for &ldquo;already covered&rdquo; once Phases 1-4 ship.
+  </p>
+
+  <footer>Generated 2026-08-12 &mdash; CPQ Ask-Flow Regex/LLM Anchor Audit &middot; docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md</footer>
+</div>
+
+<script>
+// Standalone-open support: the Artifact viewer renders `<pre class="mermaid">`
+// natively; a plain browser opening this file directly has no Mermaid engine
+// at all, so load it only when it isn't already present.
+(function () {
+  if (typeof window.mermaid !== "undefined") return;
+  var script = document.createElement("script");
+  script.src = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js";
+  script.onload = function () {
+    window.mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+    window.mermaid.run();
+  };
+  document.head.appendChild(script);
+})();
+</script>

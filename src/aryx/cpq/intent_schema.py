@@ -248,6 +248,16 @@ class GatewayIntentResult:
     confidence: Confidence
     variable_name: str | None = None
     value_ref: int | None = None
+    # BULK_QUANTITY_CHANGE only — the new quantity as stated by the user,
+    # a free-form digits-only string (e.g. "67"). Not a candidate-list
+    # selection, so it can't be expressed via value_ref like every other
+    # category's value — docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+    # Phase 4. Null for every other category.
+    quantity_text: str | None = None
+    # RESPONSE_MODE_REQUEST only — "json" | "batch" | None, mirrors
+    # detect_response_mode_request's own return value. Null for every
+    # other category.
+    response_mode: str | None = None
     evidence_span: str = ""
     clarifying_question: str | None = None
     rationale: str = ""
@@ -280,6 +290,22 @@ GATEWAY_INTENT_JSON_SCHEMA: dict = {
             "description": (
                 "0-based index into that attribute's VALUE CANDIDATES list. "
                 "Never free text. Null when no value is named."
+            ),
+        },
+        "quantity_text": {
+            "type": ["string", "null"],
+            "description": (
+                "BULK_QUANTITY_CHANGE only -- the new quantity as stated by "
+                "the user, digits only (e.g. \"67\"). Null for every other "
+                "category."
+            ),
+        },
+        "response_mode": {
+            "type": ["string", "null"],
+            "enum": ["json", "batch", None],
+            "description": (
+                "RESPONSE_MODE_REQUEST only -- \"json\" or \"batch\". Null "
+                "for every other category."
             ),
         },
         "evidence_span": {
@@ -332,11 +358,21 @@ def parse_gateway_intent(raw: dict) -> GatewayIntentResult | None:
     if category == IntentCategory.AMBIGUOUS and not clarifying:
         return None
 
+    quantity_text = raw.get("quantity_text")
+    if quantity_text is not None and not isinstance(quantity_text, str):
+        return None
+
+    response_mode = raw.get("response_mode")
+    if response_mode is not None and response_mode not in ("json", "batch"):
+        return None
+
     return GatewayIntentResult(
         intent_category=category,
         confidence=confidence,
         variable_name=vn,
         value_ref=value_ref,
+        quantity_text=quantity_text,
+        response_mode=response_mode,
         evidence_span=evidence,
         clarifying_question=clarifying,
         rationale=str(raw.get("rationale") or ""),
@@ -367,6 +403,8 @@ def validate_gateway_quarantine(
             confidence=Confidence.LOW,
             variable_name=None,
             value_ref=None,
+            quantity_text=None,
+            response_mode=None,
             evidence_span=result.evidence_span or "",
             clarifying_question=q,
             rationale=f"quarantine:{reason}; {result.rationale}".strip(),
@@ -389,10 +427,19 @@ def validate_gateway_quarantine(
         if result.value_ref is not None:
             if result.value_ref < 0 or result.value_ref >= n_vals:
                 return _ambiguous("value_ref_out_of_range")
+        if result.intent_category == IntentCategory.BULK_QUANTITY_CHANGE:
+            qty = result.quantity_text
+            if not qty or not qty.strip().isdigit():
+                return _ambiguous("quantity_text_missing_or_invalid")
     else:
         # No-target categories must not smuggle a hallucinated variable_name
         # that isn't in the candidate list (null is fine).
         if result.variable_name and result.variable_name not in candidate_vns:
             return _ambiguous("variable_name_not_in_candidates")
+        if (
+            result.intent_category == IntentCategory.RESPONSE_MODE_REQUEST
+            and result.response_mode not in ("json", "batch")
+        ):
+            return _ambiguous("response_mode_missing_or_invalid")
 
     return result

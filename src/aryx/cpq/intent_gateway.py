@@ -384,13 +384,32 @@ def _deterministic_mutating_signals(
     question: str,
     attrs: list[ConfigAttr],
     session: CpqSession,
+    hiding_rules: list | None = None,
+    rec_rules: list | None = None,
+    con_rules: list | None = None,
+    bml_eval: Any = None,
+    workspace_id: int = 1,
+    catalog_prefix: str = "",
 ) -> dict[str, set[str]]:
     """Map mutating category → set of variable_names detectors found.
 
-    Only probes detectors with signatures safe to call without full
-    rule/BML context. ATTR_CLEAR / ATTR_ACTIVATION need rec_rules /
-    hiding_rules — those are left empty here so disagreement forces
-    clarify rather than a half-blind agreement.
+    docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
+    follow-up: ATTR_CLEAR / ATTR_ACTIVATION need rec_rules / hiding_rules
+    / bml_eval to probe for real — previously left permanently empty
+    ("so disagreement forces clarify rather than a half-blind
+    agreement"), which meant `_mutating_agrees` returned False almost
+    unconditionally for these two categories no matter what the LLM
+    said, so `_gw.action` essentially never reached "dispatch" for
+    them. Cost/impact confirmed cheap before wiring this: no new LLM
+    call (the classification call already happened by this point
+    regardless), only runs on a genuine cache miss (a cache hit returns
+    before this function is ever called at all), and only during
+    review-stage turns (this whole gateway's one call site is gated on
+    `session.status in ("awaiting_approval", "post_approval")`).
+    `hiding_rules`/`rec_rules`/`bml_eval` are optional (default `None`)
+    so any other caller that doesn't have them yet keeps working
+    unchanged — activation/clear probing is simply skipped (empty sets,
+    same as before) when they're not supplied, never guessed.
     """
     out: dict[str, set[str]] = {c.value: set() for c in MUTATING_CATEGORIES}
 
@@ -440,9 +459,30 @@ def _deterministic_mutating_signals(
             # bulk[0] is the selector variable_name string
             out[IntentCategory.BULK_QUANTITY_CHANGE.value].add(bulk[0])
 
+    def _probe_activation() -> None:
+        if hiding_rules is None:
+            return
+        activation = engine.detect_attr_activation(
+            question, attrs, session.filled, session.filled_multi,
+            hiding_rules, workspace_id, catalog_prefix, bml_eval=bml_eval,
+        )
+        if activation:
+            out[IntentCategory.ATTR_ACTIVATION.value].add(activation.variable_name)
+
+    def _probe_clear() -> None:
+        if rec_rules is None or con_rules is None:
+            return
+        cleared = engine.detect_attr_clear(
+            question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
+        )
+        if cleared:
+            out[IntentCategory.ATTR_CLEAR.value].add(cleared.variable_name)
+
     _safe("change", _probe_change)
     _safe("removal", _probe_removal)
     _safe("bulk", _probe_bulk)
+    _safe("activation", _probe_activation)
+    _safe("clear", _probe_clear)
     return out
 
 
@@ -477,6 +517,22 @@ def _mutating_agrees(
         )
     if not result.variable_name:
         return False
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md review
+    # finding (HIGH): the last_qa_variables shortcut below only makes sense
+    # for value-bearing categories, where an independently-stated value
+    # PLUS the just-discussed variable corroborate each other (neither
+    # signal alone would be trustworthy, but together they are). Activation
+    # and clear carry no value at all — the very thing that's unverified is
+    # "is this really an activation/clear request," and conversational
+    # recency says nothing about that question. Letting the shortcut apply
+    # here would mean any ambiguous reply about a recently-discussed
+    # attribute could silently activate or clear it with no real detector
+    # confirmation at all. These two categories must always go through
+    # their real deterministic detector.
+    if result.intent_category in (
+        IntentCategory.ATTR_ACTIVATION, IntentCategory.ATTR_CLEAR,
+    ):
+        return bool(det_vns) and result.variable_name in det_vns
     if last_qa_variables and result.variable_name in last_qa_variables:
         return True
     if not det_vns:
@@ -512,8 +568,21 @@ def classify_intent(
     session: CpqSession,
     engine: Any,
     workspace_id: int = 1,
+    hiding_rules: list | None = None,
+    rec_rules: list | None = None,
+    con_rules: list | None = None,
+    bml_eval: Any = None,
+    catalog_prefix: str = "",
 ) -> GatewayDecision:
     """LLM-first classification with quarantine, agreement, cache, fallback.
+
+    `hiding_rules`/`rec_rules`/`con_rules`/`bml_eval`/`catalog_prefix`
+    (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
+    follow-up, all optional/default None): threaded through to
+    `_deterministic_mutating_signals` so ATTR_ACTIVATION/ATTR_CLEAR can
+    be genuinely probed instead of permanently forced to "disagree".
+    Any existing caller that doesn't pass them keeps working exactly as
+    before — those two categories simply stay unprobed.
 
     Returns a GatewayDecision the ask_api orchestrator consumes:
       dispatch — safe to act (handlers resolve values; never writes filled)
@@ -583,7 +652,11 @@ def classify_intent(
         parsed, question, candidate_vns, value_counts,
     )
 
-    signals = _deterministic_mutating_signals(engine, question, attrs, session)
+    signals = _deterministic_mutating_signals(
+        engine, question, attrs, session,
+        hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
+        bml_eval=bml_eval, workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+    )
     det_label = deterministic_category_summary(signals)
 
     if quarantined.intent_category == IntentCategory.AMBIGUOUS:
