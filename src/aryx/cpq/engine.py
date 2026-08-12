@@ -448,23 +448,26 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
 # directly followed by "radios" (that "APX8000" is in the way) so it never
 # matches, but "8000" lifted straight out of "APX8000" IS directly
 # followed by " radios" and matches instead, silently becoming the
-# quantity. `(?<![\w.])` immediately before the digit group rejects any
+# quantity. `(?<![\w.\-])` immediately before the digit group rejects any
 # match whose digit run is glued onto a preceding letter/digit/word
-# character (a model code, a decimal fraction) -- redundant but harmless
-# on patterns that already require preceding whitespace via a literal
-# keyword phrase.
+# character OR a hyphen (a model code like "APX8000" or "APX-5000", a
+# decimal fraction) -- redundant but harmless on patterns that already
+# require preceding whitespace via a literal keyword phrase. The hyphen
+# exclusion (review follow-up) still allows a genuine negative quantity
+# ("quantity is -5") since that "-" is itself preceded by whitespace, not
+# by the digit group's own left edge.
 _QUANTITY_PATTERNS: list[re.Pattern] = [
-    re.compile(r"(?i:\bqty\s+of\s+)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?i:\bquantity\s+of\s+)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?i:\bquantity\s+(?:is|to|as)\s+)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?i:\bqty\s*[:=]?\s*)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?i:\bquantity\s*[:=]?\s*)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?<![\w.])(-?\d+)(?!\.\d)\s*(?i:in\s+qty)\b"),
-    re.compile(r"(?<![\w.])(-?\d+)(?!\.\d)\s*(?i:qty)\b"),
-    re.compile(r"(?<![\w.])(-?\d+)(?!\.\d)\s*(?i:units?)\b"),
-    re.compile(r"(?i:\bi\s+want\s+)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?i:\bneed\s+)(?<![\w.])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?<![\w.])(-?\d+)(?!\.\d)\s*(?i:radios?|devices?|pieces?|pcs)\b"),
+    re.compile(r"(?i:\bqty\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s+(?:is|to|as)\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bqty\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:in\s+qty)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:qty)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:units?)\b"),
+    re.compile(r"(?i:\bi\s+want\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bneed\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:radios?|devices?|pieces?|pcs)\b"),
 ]
 
 # PR #186 review, medium: decimal variants of the same patterns above,
@@ -478,7 +481,7 @@ _QUANTITY_PATTERNS: list[re.Pattern] = [
 # other.
 _QUANTITY_DECIMAL_PATTERNS: list[re.Pattern] = [
     re.compile(
-        p.pattern.replace(r"(?<![\w.])(-?\d+)(?!\.\d)", r"(?<![\w.])(-?\d+\.\d+)")
+        p.pattern.replace(r"(?<![\w.\-])(-?\d+)(?!\.\d)", r"(?<![\w.\-])(-?\d+\.\d+)")
     )
     for p in _QUANTITY_PATTERNS
 ]

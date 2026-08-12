@@ -81,6 +81,21 @@ def test_extract_quantity_hint_never_lifts_digits_out_of_a_model_code():
     assert extract_quantity_hint("check pricing for XPR7000e units") is None
 
 
+def test_extract_quantity_hint_never_lifts_digits_out_of_a_hyphenated_model_code():
+    """PR #186 review follow-up: the letter-glued fix left `-` out of the
+    excluded lookbehind class, so a hyphenated model code ("APX-5000")
+    reproduced the identical bug through a different glue character --
+    the digit run is preceded by "-", which `[\\w.]` alone doesn't cover,
+    so the regex simply resumed matching at the digit itself."""
+    assert extract_quantity_hint("quote me 5 APX-5000 radios") is None
+    assert extract_quantity_hint("check pricing for XPR-7550e units") is None
+    # A genuine negative quantity must still work -- that "-" is preceded
+    # by whitespace, not glued to a preceding identifier, so it's a
+    # different case from the model-code glue this test targets.
+    assert extract_quantity_hint("quantity is -5") == -5
+    assert extract_quantity_hint("change quantity to -10") == -10
+
+
 def test_extract_quantity_hint_captures_negative_numbers_rather_than_dropping_the_sign():
     """A negative number must be captured AS negative (then rejected by
     is_valid_product_quantity), never silently parsed as if the minus
