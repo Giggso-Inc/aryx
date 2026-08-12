@@ -1397,6 +1397,73 @@ def test_confirm_during_awaiting_approval_submits_the_payload(monkeypatch):
     assert resp["tools_called"] == ["cpq_payload_approved()"]
 
 
+def test_llm_first_approval_dispatches_and_submits_the_payload(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md APPROVAL
+    dispatch: same _handle_approval the regex path (test above) uses,
+    reached via _dispatch_intent_result instead of detect_approval."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    attrs = [battery]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="yep, that's everything", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, attrs, result, [], [], [], BmlEvaluator({}),
+            classify_prompt_tokens=100, classify_completion_tokens=10,
+        )
+    assert resp is not None
+    assert resp["cpq_payload"] is not None
+    assert resp["session_data"]["status"] == "post_approval"
+    assert resp["tools_called"] == ["cpq_payload_approved()"]
+
+
+def test_llm_first_approval_medium_confidence_falls_through():
+    """APPROVAL has no deterministic-agreement cross-check (not in
+    intent_gateway.MUTATING_CATEGORIES), so it requires HIGH confidence
+    specifically -- MEDIUM must defer to the regex path, same gate as
+    ATTR_QUERY/QA_QUESTION."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"batteryType_astro": "STANDARD"})
+    req = AskRequest(question="yep, that's everything", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.MEDIUM,
+                          rationale="approval")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_approval_still_blocks_on_a_real_rule_conflict(monkeypatch):
+    """The classification alone must never bypass the untouched BOM
+    gate -- a genuine rule conflict still blocks the payload exactly
+    like the regex path, since both now share _handle_approval."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "aryx.api.ask_api.validate_before_payload",
+        lambda *a, **k: type(
+            "Gate", (), {"ok": False, "stale_violations": [], "catch_message": "blocked"},
+        )(),
+    )
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"}, status="awaiting_approval")
+    req = AskRequest(question="confirm please", workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, [battery], result, [], [], [], BmlEvaluator({}),
+        )
+    assert resp is not None
+    assert resp["cpq_payload"] is None
+    assert resp["tools_called"] == ["cpq_bom_gate_blocked()"]
+
+
 def test_confirm_is_idempotent_when_already_post_approval(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
@@ -1514,15 +1581,22 @@ def test_llm_first_low_confidence_always_falls_through_regardless_of_category(ca
 
 
 @pytest.mark.parametrize("category", [
+    # QA_QUESTION/ATTR_QUERY are wired but need a target/reader this
+    # bare IntentResult doesn't supply, so they still correctly return
+    # None here — kept to prove that absence, not that the category is
+    # unwired. APPROVAL/MULTI_SELECT_REMOVAL/ATTR_ACTIVATION/ATTR_CLEAR
+    # removed from this list once wired (docs/CPQ_REGEX_VS_LLM_ANCHOR_
+    # GUARDRAIL_AUDIT_2026_08_12.md) — APPROVAL needs neither a target
+    # nor reader, so it genuinely would have dispatched here.
     IntentCategory.QA_QUESTION,
-    IntentCategory.APPROVAL,
     IntentCategory.ATTR_QUERY,
     IntentCategory.PRODUCT_MENTION,
     IntentCategory.RESPONSE_MODE_REQUEST,
 ])
 def test_llm_first_uncovered_categories_defer_to_deterministic_path(category):
-    """Phase 2 is explicitly PARTIAL — every category _dispatch_intent_
-    result doesn't yet own must return None, not raise or guess."""
+    """Every category _dispatch_intent_result doesn't yet own (or that
+    needs a target/reader this bare result doesn't supply) must return
+    None, not raise or guess."""
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
     req = AskRequest(question="some message", workspace_id=1, session_data=session.to_dict())
     result = IntentResult(category=category, confidence=Confidence.HIGH, rationale="n/a")

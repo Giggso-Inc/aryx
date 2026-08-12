@@ -4415,16 +4415,18 @@ def _dispatch_intent_result(
         at all, so there is no `variable_name` to resolve a product
         name from. Wiring it needs a real product-candidate-injection
         design in `intent_gateway.py` first, not just a dispatch
-        branch — a structural gap, not a missing `if`. APPROVAL's
-        regex path (`detect_approval` → STEP 8, this same call site,
-        ~lines 6939-7200+) is a 100+-line multi-branch inline gate —
-        rule-conflict reporting, stale-constraint auto-clear-and-reask,
-        the final BOM-generation success path — none of it factored
-        into a callable function the way `_build_attr_query_response`/
-        `_handle_cpq_qa` are. Dispatching it safely means factoring that
-        whole gate first, not adding a branch; deliberately left
-        untouched rather than risking the highest-stakes code path in
-        this file (payload generation/submission) under time pressure.
+        branch — a structural gap, not a missing `if`.
+      - APPROVAL (implemented 2026-08-12): dispatched to the SAME
+        `_handle_approval` the regex path now shares — factored out of
+        what was previously a 100+-line unfactored inline STEP 8 block
+        (rule-conflict reporting, stale-constraint auto-clear-and-reask,
+        the final BOM-generation success path) specifically so this
+        dispatch branch and the regex-triggered gate can never behave
+        differently. Same `Confidence.HIGH` gate as ATTR_QUERY/
+        QA_QUESTION. The classification is only ever trusted for "the
+        customer wants to submit" — the untouched BOM gate (constraint
+        re-run + provenance hard-fail) inside `_handle_approval` still
+        owns every actual payload-safety decision, exactly as before.
 
     IMPORTANT scoping note (found 2026-08-12, applies to every category
     in this function, not just the ones listed above): this function
@@ -4708,6 +4710,27 @@ def _dispatch_intent_result(
             classify_prompt_tokens, classify_completion_tokens,
         )
 
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+    # `APPROVAL`: dispatched to the SAME _handle_approval the regex path
+    # now shares (factored out specifically so this dispatch branch and
+    # the regex-triggered STEP 8 gate can never behave differently).
+    # Same Confidence.HIGH gate as ATTR_QUERY/QA_QUESTION (not in
+    # MUTATING_CATEGORIES, no deterministic-agreement cross-check).
+    # Category alone is the signal, no target resolution needed — but
+    # this is the highest-stakes dispatch branch in the file (payload
+    # generation/submission), so it reuses _handle_approval's own
+    # untouched BOM gate (constraint re-run + provenance hard-fail)
+    # rather than trusting the classification alone for anything beyond
+    # "the customer wants to submit."
+    if (
+        result.category == IntentCategory.APPROVAL
+        and result.confidence == Confidence.HIGH
+    ):
+        return _with_classify_usage(
+            _handle_approval(req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
     return None
 
 
@@ -4763,6 +4786,165 @@ def _llm_resolve_quantity_target(
         return target
 
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _handle_approval(
+    req: "AskRequest", session: Any, attrs: list,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
+    hints: dict | None = None,
+) -> dict[str, Any]:
+    """STEP 8 — explicit approval → generate BOM payload.
+
+    Factored out of the regex path (docs/CPQ_REGEX_VS_LLM_ANCHOR_
+    GUARDRAIL_AUDIT_2026_08_12.md `APPROVAL` dispatch) verbatim — same
+    final BOM gate (constraint re-run + provenance hard-fail), same
+    rule-conflict / stale-constraint-reask / bom-gate-blocked branches,
+    same payload construction — so the LLM-dispatched path and the
+    regex-triggered path can never drift into two different approval
+    behaviors. Recomputes `catalog_prefix` and `_hidden_for_payload`
+    internally rather than accepting them as params, since this is now
+    the single source of truth both callers share — deliberately NOT
+    threading the outer turn's already-computed values in, so a future
+    change to either payload-drop rule only ever has one place to edit.
+
+    `hints` (default `{}`) only affects the final approved response's
+    cosmetic `terms` field — never anything the BOM gate itself checks.
+    """
+    hints = hints or {}
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    _hidden_for_payload = _cpq_engine.apply_hiding_rules(
+        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
+    _hidden_for_payload = _hidden_for_payload | _cpq_engine.payload_flow_exclusions(
+        req.workspace_id, catalog_prefix, attrs)
+    if session.model_leaf_resolved:
+        _hidden_for_payload = _hidden_for_payload | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
+
+    # Final BOM gate — constraint re-run + provenance hard-fail. Never
+    # emit a payload that fails verification.
+    catalog_prefix_gate = attrs[0].catalog_prefix if attrs else ""
+    bml_gate = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix_gate)
+    gate = validate_before_payload(_cpq_engine, attrs, session, con_rules, bml_gate)
+    if not gate.ok and gate.stale_violations:
+        # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15 —
+        # multiple active constraints can legitimately intersect to an
+        # EMPTY allowed set (a genuine rule conflict, not a stale-but-
+        # fixable value). Report the conflict instead of an unanswerable
+        # re-ask loop; nothing is mutated.
+        _conflicted = [v for v in gate.stale_violations if not v.allowed]
+        if _conflicted:
+            _conflict_labels = [
+                _cpq_engine.disambiguated_label(v.attr, attrs) for v in _conflicted
+            ]
+            answer = (
+                "⚠️ **Rule conflict detected.**\n\n"
+                + (
+                    f"**{_conflict_labels[0]}** has no valid options "
+                    if len(_conflict_labels) == 1 else
+                    "The following have no valid options "
+                    + ", ".join(f"**{l}**" for l in _conflict_labels) + " "
+                )
+                + "left, given your other selections — the active "
+                "rules conflict with each other.\n\nPlease change one "
+                "of your earlier selections, or say **undo** to "
+                "restore the previous snapshot."
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_rule_conflict()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+        # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §11/§12 —
+        # auto-clear + re-ask rather than hard-block; push_snapshot
+        # before mutating so "undo" reverts just this clear.
+        push_snapshot(session, reason="stale_constraint_reask")
+        _stale_display: dict[str, str] = {}
+        _stale_vns: list[str] = []
+        for _v in gate.stale_violations:
+            _vn = _v.attr.variable_name
+            _stale_display[_vn] = session.display_filled.get(_vn) or _v.current_value
+            if _v.attr.select_type == "multi":
+                _kept = [
+                    iv for iv in session.filled_multi.get(_vn, []) if iv in _v.allowed
+                ]
+                if _kept:
+                    session.filled_multi[_vn] = _kept
+                    session.display_filled[_vn] = ", ".join(
+                        next((o.display_name for o in _v.attr.options if o.item_value == iv), iv)
+                        for iv in _kept
+                    )
+                else:
+                    session.filled_multi.pop(_vn, None)
+                    session.display_filled.pop(_vn, None)
+            else:
+                session.filled.pop(_vn, None)
+                session.display_filled.pop(_vn, None)
+            session.filled_source.pop(_vn, None)
+            _stale_vns.append(_vn)
+        session.pending_variables = _stale_vns + [
+            v for v in session.pending_variables if v not in _stale_vns
+        ]
+        session.status = "configuring"
+        session.complete = False
+        _first = gate.stale_violations[0]
+        _stale_opts_prompt = _cpq_engine.next_question_prompt(
+            _first.attr, constrained_item_values=_first.allowed,
+        )
+        _rest_labels = [
+            _cpq_engine.disambiguated_label(_v.attr, attrs) for _v in gate.stale_violations[1:]
+        ]
+        _also_note = (
+            f"\n\n*(I'll also ask about {', '.join(f'**{l}**' for l in _rest_labels)} next.)*"
+            if _rest_labels else ""
+        )
+        answer = (
+            f"A couple of your earlier selections no longer match your "
+            f"other choices — let's update "
+            f"{'them' if _rest_labels else 'it'} before I generate the BOM.\n\n"
+            f"**{_cpq_engine.disambiguated_label(_first.attr, attrs)}** is "
+            f"currently *{_stale_display[_first.attr.variable_name]}*, which "
+            f"isn't valid anymore given your other choices:\n\n"
+            f"{_stale_opts_prompt}{_also_note}"
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_stale_constraint_reask()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+    if not gate.ok:
+        session.complete = False
+        session.status = "awaiting_approval"
+        _persist_cpq_history(req.workspace_id, req.question, gate.catch_message)
+        return {
+            "answer": gate.catch_message, "terms": [], "tools_called": ["cpq_bom_gate_blocked()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+    session.status = "post_approval"
+    session.complete = True
+    # Real confirm signal for the rule-execution trace — session.status
+    # is never actually "approved" anywhere in this codebase;
+    # session.complete becoming True here, at BOM payload generation, is
+    # the true one-time confirm event.
+    rule_trace.seal(session.run_id, status="post_approval")
+    payload = _cpq_engine.build_payload(
+        session.filled, session.filled_source, session.filled_multi, attrs,
+        hidden_vns=_hidden_for_payload,
+        rules=[*hiding_rules, *rec_rules, *con_rules],
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
+    answer = f"```json\n{json.dumps(payload, indent=2)}\n```"
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": list(hints.values()), "tools_called": ["cpq_payload_approved()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": payload,
+    }
 
 
 def _llm_extract_quantity(question: str, workspace_id: int) -> int | None:
@@ -7414,184 +7596,15 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         # just re-shows the CURRENT (possibly edited) JSON, nothing new
         # to run (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md §4.1).
         if _cpq_engine.detect_approval(req.question):
-            # Final BOM gate — constraint re-run + provenance hard-fail.
-            # Never emit a payload that fails verification.
-            catalog_prefix_gate = attrs[0].catalog_prefix if attrs else ""
-            bml_gate = _cpq_engine.build_bml_evaluator(
-                req.workspace_id, catalog_prefix_gate,
+            # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+            # `APPROVAL` dispatch: factored into _handle_approval so the
+            # regex path here and the new LLM-dispatch branch in
+            # _dispatch_intent_result share one implementation and can
+            # never drift into two different approval behaviors.
+            return _handle_approval(
+                req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
+                hints=hints,
             )
-            gate = validate_before_payload(
-                _cpq_engine, attrs, session, con_rules, bml_gate,
-            )
-            if not gate.ok and gate.stale_violations:
-                # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15
-                # — review finding: multiple active constraints can
-                # legitimately intersect to an EMPTY allowed set (a genuine
-                # rule conflict, not a stale-but-fixable value). Auto-
-                # clearing and re-asking with `constrained_item_values=[]`
-                # produced an unanswerable "Please provide a value" loop —
-                # confirmed live, no reply could ever match. Report the
-                # conflict instead; nothing is mutated (no push_snapshot,
-                # no pops) since there's no productive value to ask for.
-                _conflicted = [v for v in gate.stale_violations if not v.allowed]
-                if _conflicted:
-                    _conflict_labels = [
-                        _cpq_engine.disambiguated_label(v.attr, attrs)
-                        for v in _conflicted
-                    ]
-                    answer = (
-                        "⚠️ **Rule conflict detected.**\n\n"
-                        + (
-                            f"**{_conflict_labels[0]}** has no valid options "
-                            if len(_conflict_labels) == 1 else
-                            "The following have no valid options "
-                            + ", ".join(f"**{l}**" for l in _conflict_labels) + " "
-                        )
-                        + "left, given your other selections — the active "
-                        "rules conflict with each other.\n\nPlease change one "
-                        "of your earlier selections, or say **undo** to "
-                        "restore the previous snapshot."
-                    )
-                    _persist_cpq_history(req.workspace_id, req.question, answer)
-                    return {
-                        "answer": answer, "terms": [],
-                        "tools_called": ["cpq_rule_conflict()"],
-                        "usage": {
-                            "prompt_tokens": 0, "completion_tokens": 0,
-                            "latency_ms": 0, "menial_model": "cpq-engine",
-                            "answer_model": "cpq-engine",
-                        },
-                        "grounding": None, "session_data": session.to_dict(),
-                        "cpq_payload": None,
-                    }
-                # docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md
-                # §11 — auto-clear + re-ask rather than hard-block: the
-                # engine knows these values are stale but not what the
-                # replacement should be, so it asks instead of guessing or
-                # refusing outright.
-                # §12 — push_snapshot BEFORE mutating, same discipline as
-                # every other mutation site (_handle_cascade etc.), so
-                # "undo" right after this re-ask reverts just this clear
-                # instead of skipping past it to an earlier state.
-                push_snapshot(session, reason="stale_constraint_reask")
-                _stale_display: dict[str, str] = {}
-                _stale_vns: list[str] = []
-                for _v in gate.stale_violations:
-                    _vn = _v.attr.variable_name
-                    _stale_display[_vn] = (
-                        session.display_filled.get(_vn) or _v.current_value
-                    )
-                    # §12 — a multi-select's value lives in filled_multi,
-                    # not filled; popping the wrong dict left it untouched.
-                    # §17 review finding: popping the ENTIRE filled_multi
-                    # entry discarded every still-valid selection alongside
-                    # the invalid one(s) — a customer with 5 valid carrier
-                    # selections and 1 now-invalid one lost all 5. `_v.
-                    # current_value` (bom_gate.py) already isolates only the
-                    # invalid item(s); keep everything else instead of
-                    # wiping the whole key.
-                    if _v.attr.select_type == "multi":
-                        _kept = [
-                            iv for iv in session.filled_multi.get(_vn, [])
-                            if iv in _v.allowed
-                        ]
-                        if _kept:
-                            session.filled_multi[_vn] = _kept
-                            session.display_filled[_vn] = ", ".join(
-                                next(
-                                    (o.display_name for o in _v.attr.options
-                                     if o.item_value == iv),
-                                    iv,
-                                )
-                                for iv in _kept
-                            )
-                        else:
-                            session.filled_multi.pop(_vn, None)
-                            session.display_filled.pop(_vn, None)
-                    else:
-                        session.filled.pop(_vn, None)
-                        session.display_filled.pop(_vn, None)
-                    session.filled_source.pop(_vn, None)
-                    _stale_vns.append(_vn)
-                session.pending_variables = _stale_vns + [
-                    v for v in session.pending_variables if v not in _stale_vns
-                ]
-                session.status = "configuring"
-                session.complete = False
-                _first = gate.stale_violations[0]
-                _stale_opts_prompt = _cpq_engine.next_question_prompt(
-                    _first.attr, constrained_item_values=_first.allowed,
-                )
-                _rest_labels = [
-                    _cpq_engine.disambiguated_label(_v.attr, attrs)
-                    for _v in gate.stale_violations[1:]
-                ]
-                _also_note = (
-                    f"\n\n*(I'll also ask about {', '.join(f'**{l}**' for l in _rest_labels)} next.)*"
-                    if _rest_labels else ""
-                )
-                answer = (
-                    f"A couple of your earlier selections no longer match your "
-                    f"other choices — let's update "
-                    f"{'them' if _rest_labels else 'it'} before I generate the BOM.\n\n"
-                    f"**{_cpq_engine.disambiguated_label(_first.attr, attrs)}** is "
-                    f"currently *{_stale_display[_first.attr.variable_name]}*, which "
-                    f"isn't valid anymore given your other choices:\n\n"
-                    f"{_stale_opts_prompt}{_also_note}"
-                )
-                _persist_cpq_history(req.workspace_id, req.question, answer)
-                return {
-                    "answer": answer, "terms": [],
-                    "tools_called": ["cpq_stale_constraint_reask()"],
-                    "usage": {
-                        "prompt_tokens": 0, "completion_tokens": 0,
-                        "latency_ms": 0, "menial_model": "cpq-engine",
-                        "answer_model": "cpq-engine",
-                    },
-                    "grounding": None, "session_data": session.to_dict(),
-                    "cpq_payload": None,
-                }
-            if not gate.ok:
-                session.complete = False
-                session.status = "awaiting_approval"
-                _persist_cpq_history(
-                    req.workspace_id, req.question, gate.catch_message,
-                )
-                return {
-                    "answer": gate.catch_message, "terms": [],
-                    "tools_called": ["cpq_bom_gate_blocked()"],
-                    "usage": {
-                        "prompt_tokens": 0, "completion_tokens": 0,
-                        "latency_ms": 0, "menial_model": "cpq-engine",
-                        "answer_model": "cpq-engine",
-                    },
-                    "grounding": None, "session_data": session.to_dict(),
-                    "cpq_payload": None,
-                }
-            session.status = "post_approval"
-            session.complete = True
-            # Real confirm signal for the rule-execution trace (docs/
-            # CPQ_RULE_EXPORT_AND_TRACE_TDD_PLAN.md) -- session.status is
-            # never actually set to the legacy "approved" value anywhere in
-            # this codebase; session.complete becoming True here, at BOM
-            # payload generation, is the true one-time confirm event.
-            rule_trace.seal(session.run_id, status="post_approval")
-            payload = _cpq_engine.build_payload(
-                session.filled, session.filled_source, session.filled_multi, attrs,
-                hidden_vns=_hidden_for_payload,
-                rules=[*hiding_rules, *rec_rules, *con_rules],
-                display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
-            answer = (
-                f"```json\n{json.dumps(payload, indent=2)}\n```"
-            )
-            _persist_cpq_history(req.workspace_id, req.question, answer)
-            return {
-                "answer": answer, "terms": list(hints.values()),
-                "tools_called": ["cpq_payload_approved()"],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                "grounding": None, "session_data": session.to_dict(), "cpq_payload": payload,
-            }
 
         # Pending OPTIONS-QUERY collision resolution — a PRIOR turn's
         # detect_label_collision (inside _handle_cpq_qa) asked "which one
