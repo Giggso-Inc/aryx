@@ -5252,6 +5252,52 @@ def _llm_classify_pending_clarify_reply(
     return result if result is not None else ("unclear", None)
 
 
+def _llm_classify_switch_reply(
+    question: str, candidate_product: str, current_product: str, workspace_id: int,
+) -> str:
+    """3-way classification of a reply to "switch to X?", tried only for
+    a genuinely ambiguous reply (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_
+    AUDIT_2026_08_12.md row 21) — the deterministic checks already catch
+    a clear "yes"/the product's own name (affirmative), a clear "no"/
+    "nope"/"never" (decline), and a reply naming a genuinely different
+    real product (handled separately, re-offers that product instead).
+    This only ever runs for what's left: "maybe", "I guess", "not sure"
+    and similar — mirrors `_llm_classify_pending_clarify_reply`'s exact
+    3-way contract and narrow-helper discipline.
+
+    Returns "accept", "decline", or "unclear" — "unclear" (including any
+    call/parse failure) must be treated by the caller exactly like
+    today's existing decline behavior (fail-safe: never completes a
+    switch on an ambiguous reply), just with the same already-stated
+    "OK — continuing with X" message, not a silent guess either way.
+    """
+    sys = (
+        "A customer was asked whether they want to switch their current "
+        "product-configuration session to a different product, e.g. "
+        "\"Switch to X? (yes/no)\". Classify their reply as exactly one "
+        'of: "accept" (they want to switch), "decline" (they want to '
+        'stay on the current product), or "unclear" (genuinely '
+        "ambiguous, doesn't clearly commit either way — e.g. \"maybe\", "
+        "\"I guess\", \"not sure\"). Never guess accept or decline for a "
+        "reply that doesn't actually commit."
+    )
+    user = (
+        f"CURRENT PRODUCT: {current_product}\n"
+        f"OFFERED SWITCH TO: {candidate_product}\n\n"
+        f"USER REPLY: {question}\n\n"
+        'Reply ONLY as JSON: {"decision": "accept" | "decline" | "unclear"}'
+    )
+
+    def _validate(parsed: dict) -> str | None:
+        decision = parsed.get("decision")
+        if decision not in ("accept", "decline", "unclear"):
+            return None
+        return decision
+
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return result if result is not None else "unclear"
+
+
 def _reply_matches_attr_option(reply: str, attr: Any) -> bool:
     """True if `reply` exactly names one of `attr`'s real catalog values.
 
@@ -6323,6 +6369,26 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             reply.startswith(("y", "yes", "switch", "confirm"))
             or (_pending_norm and re.sub(r"[^a-z0-9]", "", reply) == _pending_norm)
         )
+        # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row
+        # 21: a genuinely ambiguous reply ("maybe", "I guess", "not
+        # sure") is neither a clear yes nor a clear no — tried only for
+        # what's left after the clear-no check below, mirroring the same
+        # "deterministic first, narrow LLM fallback only for what's
+        # actually ambiguous" discipline as every other fix this
+        # session. A clear "no"/"nope"/"never" never reaches the LLM at
+        # all — cheap and unambiguous enough that asking would be pure
+        # cost with no benefit.
+        _clear_decline = bool(re.match(
+            r"^\s*(n|no|nope|nah|never|not\s+now|not\s+really)\b",
+            reply, re.IGNORECASE,
+        ))
+        if not affirmative and not _clear_decline:
+            _switch_decision = _llm_classify_switch_reply(
+                req.question, session.pending_switch_product,
+                session.product_name, req.workspace_id,
+            )
+            if _switch_decision == "accept":
+                affirmative = True
         logger.info(
             "cpq_switch: confirm-reply turn=%s current=%r pending=%r reply=%r decision=%s",
             session.turn, session.product_name, session.pending_switch_product,

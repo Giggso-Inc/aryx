@@ -27,6 +27,8 @@ family entity carrying its real product name.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
@@ -267,6 +269,80 @@ def test_decline_reply_with_no_new_product_still_declines_normally(monkeypatch):
     assert sd["product_name"] == "SL3500e"
     assert sd["pending_switch_product"] == ""
     assert sd["pending_anchor"] == ""
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
+# docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row 21: a
+# genuinely ambiguous reply ("maybe", "I guess") is neither a clear yes
+# nor a clear no — the LLM tiebreak must resolve it correctly instead of
+# always defaulting to decline.
+
+def test_ambiguous_switch_reply_resolves_to_accept_via_llm(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e", country="")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="I guess so", workspace_id=1, session_data=session_data)
+    fake_reply = '{"decision": "accept"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO"
+    assert sd["pending_switch_product"] == ""
+
+
+def test_ambiguous_switch_reply_falls_back_to_declined_when_llm_says_unclear(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="not sure", workspace_id=1, session_data=session_data)
+    fake_reply = '{"decision": "unclear"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e", "unclear must never guess a switch"
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
+def test_ambiguous_switch_reply_fails_safe_to_declined_on_llm_error(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="maybe", workspace_id=1, session_data=session_data)
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=RuntimeError("boom")):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e"
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
+def test_clear_decline_reply_never_calls_the_llm(monkeypatch):
+    """A clear "no"/"nope"/"never" is cheap and unambiguous enough that
+    it must never reach the LLM tiebreak at all."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="nope", workspace_id=1, session_data=session_data)
+    with patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
+        resp = _run_cpq_turn(req, reader)
+
+    mock_chat.assert_not_called()
     assert resp["tools_called"] == ["cpq_switch_declined()"]
 
 
