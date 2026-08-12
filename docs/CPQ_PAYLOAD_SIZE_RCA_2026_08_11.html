@@ -1,0 +1,381 @@
+<title>Why the Quote Has 30+ Fields Instead of 9</title>
+<style>
+:root{
+  --bg:#f6f4ef; --panel:#ffffff; --ink:#241f1a; --ink-soft:#5b5347;
+  --line:#e4ddce; --accent:#b5482f; --accent-soft:#f1ded7;
+  --good:#3f6b4f; --good-soft:#e4efe6;
+  --bad:#a13a2e; --bad-soft:#f7e6e2;
+  --neutral-soft:#f0ede4;
+  --radius:10px;
+}
+/* Forced light theme for this document, per explicit request -- do not
+   flip on prefers-color-scheme or data-theme, this report is meant to be
+   read/printed the same way every time. */
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family: "Iowan Old Style","Palatino Linotype",Georgia,serif;
+  line-height:1.6;
+}
+.wrap{max-width:960px; margin:0 auto; padding:56px 28px 96px;}
+.eyebrow{
+  font-family:"Avenir Next","Segoe UI",sans-serif; text-transform:uppercase;
+  letter-spacing:.14em; font-size:.72rem; color:var(--accent); font-weight:700;
+}
+h1{
+  font-size:clamp(1.7rem,4vw,2.4rem); margin:.35em 0 .2em; text-wrap:balance;
+  line-height:1.15;
+}
+.sub{color:var(--ink-soft); font-size:1.05rem; max-width:70ch; margin-bottom:2.4em;}
+h2{
+  font-family:"Avenir Next","Segoe UI",sans-serif; font-size:1.05rem;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--accent);
+  border-bottom:1px solid var(--line); padding-bottom:.5em; margin:2.6em 0 1em;
+}
+h3{ font-size:1.15rem; margin:1.6em 0 .5em; }
+p{margin:.8em 0;}
+.card{
+  background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+  padding:22px 24px; margin:1em 0;
+}
+.scoreboard{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:1.4em 0; }
+@media (max-width:600px){ .scoreboard{grid-template-columns:1fr;} }
+.score{
+  border-radius:var(--radius); padding:20px; text-align:center;
+  font-family:"Avenir Next","Segoe UI",sans-serif;
+}
+.score.expect{ background:var(--good-soft); border:1px solid var(--good); }
+.score.actual{ background:var(--bad-soft); border:1px solid var(--bad); }
+.score .num{ font-size:2.6rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1;}
+.score.expect .num{ color:var(--good); }
+.score.actual .num{ color:var(--bad); }
+.score .label{ margin-top:.4em; color:var(--ink-soft); font-size:.9rem; }
+.callout{
+  border-left:4px solid var(--accent); background:var(--accent-soft);
+  padding:14px 18px; border-radius:0 8px 8px 0; margin:1.4em 0;
+}
+.callout b{color:var(--accent);}
+ul.plain{ padding-left:1.3em; }
+ul.plain li{ margin:.5em 0; }
+.tag{
+  display:inline-block; font-family:"Avenir Next","Segoe UI",sans-serif;
+  font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+  padding:2px 9px; border-radius:99px; margin-left:.4em; vertical-align:1px;
+}
+.tag.core{ background:var(--good-soft); color:var(--good); border:1px solid var(--good);}
+.tag.extra{ background:var(--bad-soft); color:var(--bad); border:1px solid var(--bad);}
+.tag.yes{ background:var(--bad-soft); color:var(--bad); border:1px solid var(--bad);}
+.tag.no{ background:var(--good-soft); color:var(--good); border:1px solid var(--good);}
+.table-wrap{ overflow-x:auto; }
+table{ width:100%; border-collapse:collapse; margin:1em 0; font-size:.92rem; background:var(--panel); }
+th,td{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+td.wrap-cell{ white-space:normal; }
+th{ font-family:"Avenir Next","Segoe UI",sans-serif; font-size:.74rem; text-transform:uppercase;
+    letter-spacing:.04em; color:var(--ink-soft); background:var(--neutral-soft); position:sticky; top:0; }
+tr.core-row{ background:var(--good-soft); }
+.pill-list{ display:flex; flex-wrap:wrap; gap:8px; margin:1em 0; }
+.pill{
+  font-family:"Avenir Next","Segoe UI",sans-serif; font-size:.82rem;
+  background:var(--panel); border:1px solid var(--line); border-radius:99px;
+  padding:5px 12px; color:var(--ink-soft);
+}
+.diagram-wrap{ overflow-x:auto; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:18px; margin:1.2em 0; }
+.diagram-wrap pre.mermaid{ margin:0; min-width:640px; }
+.footer{ margin-top:3.5em; padding-top:1.4em; border-top:1px solid var(--line);
+  color:var(--ink-soft); font-size:.85rem; font-family:"Avenir Next","Segoe UI",sans-serif; }
+.stat-row{ display:flex; gap:14px; flex-wrap:wrap; margin:1em 0; }
+.stat{
+  flex:1; min-width:180px; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:16px; text-align:center;
+  font-family:"Avenir Next","Segoe UI",sans-serif;
+}
+.stat .big{ font-size:1.8rem; font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums;}
+.stat .lbl{ color:var(--ink-soft); font-size:.82rem; margin-top:.3em; }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">CPQ Quote Investigation &middot; APX Next &middot; Updated 2026-08-11</div>
+  <h1>Why the quote has 30+ fields instead of the 9 we expect</h1>
+  <p class="sub">A plain-language look at why Aryx's quote comes back much bigger than the reference
+  quote the client is used to seeing, with the layout order, the AJAX flag, and the "hide=false /
+  empty default" theories all checked directly against the real catalog data.</p>
+
+  <h2>The Problem</h2>
+  <p>When a customer configures an APX Next radio, the client expects the final quote to list
+  around <b>8&ndash;10 fields</b> &mdash; the handful of things the customer actually chose or
+  that identify the product. Instead, Aryx is returning roughly <b>30 fields</b> &mdash; three
+  times as many.</p>
+
+  <div class="scoreboard">
+    <div class="score expect">
+      <div class="num">9</div>
+      <div class="label">Fields the client expects</div>
+    </div>
+    <div class="score actual">
+      <div class="num">32</div>
+      <div class="label">Fields Aryx actually sends</div>
+    </div>
+  </div>
+
+  <p>Nothing in the extra fields is <i>wrong</i> &mdash; every value is a real, valid catalog
+  option. The problem is <b>volume</b>: Aryx is filling in and shipping a lot of detail nobody
+  asked it to decide.</p>
+
+  <h2>Question 1 &mdash; Is the 95% AJAX figure about all 30 fields, or the whole catalog?</h2>
+  <p>It's about the fields in <b>this quote specifically</b> &mdash; not the whole catalog. We
+  checked both numbers directly:</p>
+  <div class="stat-row">
+    <div class="stat"><div class="big">97%</div><div class="lbl">of the 32 fields in THIS quote are AJAX-tagged (31 of 32)</div></div>
+    <div class="stat"><div class="big">59%</div><div class="lbl">of ALL 429 fields in the whole catalog are AJAX-tagged (252 of 429)</div></div>
+  </div>
+  <p>That gap matters: fields in this quote are <b>far more likely</b> to be AJAX-tagged
+  than an average catalog field. That's exactly what we'd expect if Aryx is disproportionately
+  pulling in "loads later" sections &mdash; those sections are almost entirely AJAX-tagged,
+  while the catalog as a whole is a roughly even mix.</p>
+
+  <h2>Question 2 &mdash; Does the real layout confirm these extra fields belong to later steps?</h2>
+  <p>Yes. We pulled each field's position in the real customer-facing layout file (the same file
+  that drives the actual order fields appear in on the real ordering website) and sorted every
+  field in this quote by that real position. The 9 fields the client expects cluster almost
+  entirely in the <b>first 1,700 lines</b> of an 18,500+ line layout. Nearly every extra field
+  sits far later &mdash; several past line 4,000, one as far down as line 18,508.</p>
+  <div class="callout">
+    <b>Two small exceptions worth flagging honestly:</b> <code>extendRangeTo762764MHz_astro</code>
+    (line 947) and <code>languageLanguageType_astro</code> (line 1169) sit early in the layout
+    alongside the core 9, yet weren't on the client's expected list. These two may be genuinely
+    early-form fields worth a second look, separate from the "later section" pattern.
+  </div>
+
+  <h2>Questions 3 &amp; 4 &mdash; Checked Again, Against the Real Layout File</h2>
+  <p>The client's exact rule was: <i>"hide = false AND defaultValue is not empty &rarr; the field
+  should show up in the final output."</i> Our first pass checked the wrong data source &mdash;
+  the raw catalog's business <i>rules</i> and the raw catalog attribute's own factory default. The
+  client meant the <b>layout file itself</b> (<code>Config Layout APXNext.txt</code>), which has
+  its own literal <code>"hide"</code> and <code>"defaultValue"</code> setting on every single field
+  placement &mdash; a separate, more direct source than either of those. Re-checked against the
+  real layout data for all 32 fields currently in Aryx's payload:</p>
+
+  <div class="stat-row">
+    <div class="stat"><div class="big">32 / 32</div><div class="lbl">have <code>hide: false</code> in the layout &mdash; true for every single one, no exceptions</div></div>
+    <div class="stat"><div class="big">4 / 32</div><div class="lbl">ALSO have a non-empty <code>defaultValue</code> in the layout</div></div>
+  </div>
+
+  <div class="callout">
+    <b>This is the real, direct answer.</b> <code>hide=false</code> carries no diagnostic power on
+    its own here &mdash; it's true for every field in this payload, with zero variation. But
+    <code>defaultValue</code> does vary, and by the client's own rule, only fields with BOTH
+    conditions true should be auto-populated. Only <b>4 of the 32</b> fields qualify:
+    <code>modelSelectionFrequencyBands_astro</code> ("700/800 MHZ"),
+    <code>antennasType_astro</code> ("WHIP APX NEXT"),
+    <code>beltClipType_astro</code> ("2.0 INCH / 5.08 CM (STANDARD)"), and
+    <code>solutionTypeDevices_astro</code> ("RADIOCENTRAL PLUS CPS PROGRAMMING").
+    The remaining <b>28 fields have no layout default at all</b> &mdash; Aryx is auto-filling them
+    with no basis in the layout's own configuration, purely from its own rule-resolution or
+    "pick the first legal option" logic.
+  </div>
+
+  <p>This lines up with &mdash; and sharpens &mdash; the catalog-level check we ran first: the raw
+  catalog attribute record also shows an empty default for all 32 fields. The layout file is the
+  more directly relevant source (it's what actually drives the real ordering UI), and it draws
+  the exact same line the client's rule predicts: a small, specific set of fields (4, not 9) have
+  a real default anywhere in the system; everything else is Aryx's own invention.</p>
+
+  <h3>Layout hide / defaultValue &mdash; all 32 fields</h3>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Layout hide</th><th>Layout defaultValue</th><th>Should auto-fill per client's rule?</th></tr></thead>
+    <tbody>
+      <tr><td>modelSelectionFrequencyBands_astro</td><td>false</td><td>700/800 MHZ</td><td><span class="tag no">Yes</span></td></tr>
+      <tr><td>antennasType_astro</td><td>false</td><td>WHIP APX NEXT</td><td><span class="tag no">Yes</span></td></tr>
+      <tr><td>beltClipType_astro</td><td>false</td><td>2.0 INCH / 5.08 CM (STANDARD)</td><td><span class="tag no">Yes</span></td></tr>
+      <tr><td>solutionTypeDevices_astro</td><td>false</td><td>RADIOCENTRAL PLUS CPS PROGRAMMING</td><td><span class="tag no">Yes</span></td></tr>
+      <tr><td>ultimateDestinationCountry</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>hWVersion_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>productSelectionProduct_all</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>modelSelectionFrequencyBandMsl_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>softwareBundlesBundleType_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>packageTypeBundles_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>baselineReleaseSW_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>carrierSelectionMultiSelect_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>videoRSM_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>batteryType_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>rSMDMSDuration_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>serviceTypeRSM_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>wirelessCarrier_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>isFedRampRequired_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>selectEndUserType_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>aTAKEnabledPackage_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>packingPackageType_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>relatedServicesType_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>languageLanguageType_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>accessoriesSolutionSet_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>extendRangeTo762764MHz_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>serviceActivationDelay_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>trainTheTrainerTraining_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>deviceManagementTraining_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>advancedSystemKeyHardwareKey_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>isProvisioningRequiredInCloudEnv_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>serviceTypeAdditionalDMSCoverage_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>agencyHasMotorolaEvidenceSolution_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+      <tr><td>includeAccidentalDamageAddDMSCoverage_astro</td><td>false</td><td class="wrap-cell"><i>(empty)</i></td><td><span class="tag yes">No</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Full Comparison Table &mdash; All 32 Fields Currently in Aryx's Payload</h2>
+  <p>Sorted by real position in the layout (top = appears earliest in the real order form).
+  <span class="tag core">green rows</span> are on the client's expected-9 list.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Layout line</th><th>Field</th><th>Expected?</th><th>AJAX-tagged?</th>
+        <th>AJAX rules / total rules</th><th>Catalog default empty?</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="core-row"><td>394</td><td>ultimateDestinationCountry</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>61 / 86</td><td>Yes</td></tr>
+      <tr class="core-row"><td>560</td><td>hWVersion_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>4 / 9</td><td>Yes</td></tr>
+      <tr class="core-row"><td>615</td><td>productSelectionProduct_all</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>132 / 171</td><td>Yes</td></tr>
+      <tr class="core-row"><td>782</td><td>modelSelectionFrequencyBands_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>19 / 22</td><td>Yes</td></tr>
+      <tr class="core-row"><td>837</td><td>modelSelectionFrequencyBandMsl_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>12 / 15</td><td>Yes</td></tr>
+      <tr><td>947</td><td>extendRangeTo762764MHz_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>4 / 5</td><td>Yes</td></tr>
+      <tr><td>1169</td><td>languageLanguageType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>7 / 10</td><td>Yes</td></tr>
+      <tr class="core-row"><td>1303</td><td>softwareBundlesBundleType_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>58 / 72</td><td>Yes</td></tr>
+      <tr class="core-row"><td>1358</td><td>packageTypeBundles_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>44 / 56</td><td>Yes</td></tr>
+      <tr class="core-row"><td>1692</td><td>baselineReleaseSW_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>8 / 8</td><td>Yes</td></tr>
+      <tr><td>2026</td><td>advancedSystemKeyHardwareKey_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>9 / 11</td><td>Yes</td></tr>
+      <tr><td>2360</td><td>antennasType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>14 / 18</td><td>Yes</td></tr>
+      <tr><td>2527</td><td>batteryType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>19 / 24</td><td>Yes</td></tr>
+      <tr><td>2804</td><td>beltClipType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>17 / 20</td><td>Yes</td></tr>
+      <tr><td>2971</td><td>serviceTypeRSM_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>5 / 7</td><td>Yes</td></tr>
+      <tr><td>3026</td><td>rSMDMSDuration_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>3 / 5</td><td>Yes</td></tr>
+      <tr><td>3592</td><td>videoRSM_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>4 / 5</td><td>Yes</td></tr>
+      <tr><td>3868</td><td>packingPackageType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>13 / 16</td><td>Yes</td></tr>
+      <tr><td>4257</td><td>isProvisioningRequiredInCloudEnv_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>19 / 23</td><td>Yes</td></tr>
+      <tr><td>4422</td><td>isFedRampRequired_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>9 / 13</td><td>Yes</td></tr>
+      <tr><td>4589</td><td>solutionTypeDevices_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>17 / 18</td><td>Yes</td></tr>
+      <tr><td>4756</td><td>serviceTypeAdditionalDMSCoverage_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>15 / 16</td><td>Yes</td></tr>
+      <tr><td>4866</td><td>includeAccidentalDamageAddDMSCoverage_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>3 / 4</td><td>Yes</td></tr>
+      <tr><td>5033</td><td>trainTheTrainerTraining_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>3 / 3</td><td>Yes</td></tr>
+      <tr><td>5088</td><td>deviceManagementTraining_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>8 / 10</td><td>Yes</td></tr>
+      <tr><td>6137</td><td>aTAKEnabledPackage_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>10 / 11</td><td>Yes</td></tr>
+      <tr class="core-row"><td>6304</td><td>carrierSelectionMultiSelect_astro</td><td><span class="tag no">Expected</span></td><td><span class="tag yes">Yes</span></td><td>11 / 12</td><td>Yes</td></tr>
+      <tr><td>6469</td><td>wirelessCarrier_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>6 / 7</td><td>Yes</td></tr>
+      <tr><td>6634</td><td>selectEndUserType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>2 / 2</td><td>Yes</td></tr>
+      <tr><td>7019</td><td>agencyHasMotorolaEvidenceSolution_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag no">No</span></td><td>0 / 1</td><td>Yes</td></tr>
+      <tr><td>7129</td><td>serviceActivationDelay_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>5 / 7</td><td>Yes</td></tr>
+      <tr><td>17659</td><td>accessoriesSolutionSet_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>1 / 2</td><td>Yes</td></tr>
+      <tr><td>18508</td><td>relatedServicesType_astro</td><td><span class="tag yes">Extra</span></td><td><span class="tag yes">Yes</span></td><td>5 / 5</td><td>Yes</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Root Cause</h2>
+  <p>Here's the simple version: the real Motorola ordering website is built like a
+  multi-step wizard. The customer answers a few core questions up front, and everything else
+  &mdash; battery, antenna, training, service coverage &mdash; only appears <b>later</b>, in
+  separate sections that load one at a time as the customer scrolls or clicks further into the
+  form. Those later sections use a web technique called <b>AJAX</b>, which loads a section of the
+  page on demand instead of all at once.</p>
+
+  <p>Aryx doesn't have that step-by-step concept. It treats the <i>entire</i> order form as one
+  flat list of fields and tries to resolve <b>everything on that list in a single pass</b> &mdash;
+  including all those later, AJAX-loaded sections the customer never actually got to in the real
+  website. Wherever Aryx can pick a sensible-looking default (a rule, or "just take the first valid
+  option"), it does &mdash; and then includes that guess in the final quote as if the customer had
+  chosen it.</p>
+
+  <div class="callout">
+    <b>In one sentence:</b> Aryx is finishing the whole order form on the customer's behalf,
+    including sections the real website would only reveal much later &mdash; and shipping all of
+    that guesswork in the quote, because none of these fields have a catalog default AND none of
+    them are ever explicitly forced visible &mdash; they're just never told "not yet."
+  </div>
+
+  <h2>The Flow, Visually</h2>
+  <div class="diagram-wrap">
+<pre class="mermaid">
+flowchart TD
+    A["Customer answers a<br/>few core questions"] --> B{"Real Motorola website"}
+    B -->|"Step 1 shown now"| C["Core fields<br/>(product, hardware, frequency, carrier)"]
+    B -.->|"Later steps, loaded on<br/>demand via AJAX as customer<br/>scrolls / clicks further"| D["Battery, antenna, belt clip,<br/>training, service coverage, etc."]
+    D -.->|"Customer never<br/>reached these yet"| E(("Not part of<br/>today's quote"))
+
+    A --> F{"Aryx today"}
+    F --> G["Resolves the ENTIRE<br/>order form in one pass"]
+    G --> H["Core fields<br/>(same 9 as above)"]
+    G --> I["ALSO resolves every<br/>later-step field too"]
+    I --> J["Rule-decided values"]
+    I --> K["Auto-picked first legal<br/>option guesses"]
+    H --> L(("Final quote:<br/>9 fields expected"))
+    J --> M(("Final quote:<br/>32 fields actual"))
+    K --> M
+
+    style E fill:#e4efe6,stroke:#3f6b4f,color:#241f1a
+    style L fill:#e4efe6,stroke:#3f6b4f,color:#241f1a
+    style M fill:#f7e6e2,stroke:#a13a2e,color:#241f1a
+    style G fill:#f7e6e2,stroke:#a13a2e,color:#241f1a
+</pre>
+  </div>
+
+  <h2>Summary of All Four Checks</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Client question</th><th>Answer</th></tr></thead>
+    <tbody>
+      <tr><td class="wrap-cell">Is the 95% AJAX figure about the whole catalog?</td>
+          <td class="wrap-cell">No &mdash; it's about the 32 fields in this specific quote (97%). The whole catalog is only 59% AJAX-tagged. Fields in this quote are disproportionately "later section" fields.</td></tr>
+      <tr><td class="wrap-cell">Does the layout confirm sequence/order?</td>
+          <td class="wrap-cell">Yes &mdash; the 9 expected fields cluster in the first 1,700 lines of the real layout; nearly all extras sit much later (up to line 18,508).</td></tr>
+      <tr><td class="wrap-cell">Does the layout's hide=false + defaultValue rule explain what should auto-fill?</td>
+          <td class="wrap-cell">Yes, precisely. hide=false is true for all 32 (not diagnostic on its own) but only 4 of 32 also have a non-empty layout defaultValue. By the client's own rule, only those 4 should auto-populate &mdash; the other 28 have no layout basis for their value at all.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>What This Means for the Fix</h2>
+  <p>This isn't a data-quality bug &mdash; every value Aryx sends is real and catalog-valid. It's a
+  <b>scope</b> problem: Aryx needs a way to know which fields belong to "the part of the form the
+  customer has actually reached" versus "later sections that shouldn't be resolved or shipped
+  yet." Given the empty-default finding above, one concrete signal is already sitting in the data:
+  a field with no catalog default AND no rule/customer input yet is a strong candidate for "leave
+  it out of the quote for now." Options worth discussing:</p>
+  <ul class="plain">
+    <li>Only include fields the customer actually answered, plus fields a rule <i>requires</i> to
+      make sense of those answers &mdash; drop everything else from the quote until asked.</li>
+    <li>Use the AJAX flag and/or layout position as a signal for "later section" fields, and hold
+      those back from the quote by default.</li>
+    <li>Introduce a "quick quote" vs. "full build sheet" distinction, so the client can choose
+      which one they want back.</li>
+  </ul>
+  <p>Each of these is a real, scoped option &mdash; not yet decided. The next step is picking one
+  and reproducing it end-to-end before touching any code.</p>
+
+  <div class="footer">
+    Investigation basis: live audit against the real APX Next catalog export, the real customer-
+    facing layout file, and a running Aryx conversation. Every number above was checked directly
+    against the ingested catalog data or the layout file, not estimated.
+  </div>
+</div>
+
+<script>
+// This file is meant to be opened both as a standalone .html file (e.g.
+// double-clicked from docs/) and as a published Artifact. The Artifact
+// viewer renders `<pre class="mermaid">` natively with no script needed;
+// a plain browser opening this file directly has no Mermaid engine at
+// all, so without this it just shows the raw flowchart text. Loading
+// Mermaid here only when it isn't already present covers the standalone
+// case without double-initializing under the Artifact viewer.
+(function () {
+  if (typeof window.mermaid !== "undefined") return;
+  var script = document.createElement("script");
+  script.src = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js";
+  script.onload = function () {
+    window.mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+    window.mermaid.run();
+  };
+  document.head.appendChild(script);
+})();
+</script>

@@ -18,7 +18,7 @@ from aryx.api.ask_api import (
     _user_texts_from_history,
 )
 from aryx.cpq.engine import CpqEngine
-from aryx.cpq.state import CpqSession
+from aryx.cpq.state import ConfigAttr, CpqSession
 
 
 _ORDER = (
@@ -95,7 +95,17 @@ def test_run_cpq_turn_mines_history_before_country_gate() -> None:
         eng.detect_product_mention = MagicMock(return_value="aSTRO25_bom")
         eng.resolve_product_hint = MagicMock(return_value=None)
         eng.list_ingested_families = MagicMock(return_value=["aSTRO25_bom"])
-        eng.load_product_config = MagicMock(return_value=([], "aSTRO25_bom"))
+        # A real (if minimal) attrs list -- an empty one hits _run_cpq_turn_
+        # inner's own "if not attrs: return {}" bailout (deliberate "no CPQ
+        # data in graph, fall through to standard Ask" signal), which made
+        # this test's own assertions about session_data unreachable
+        # regardless of whether history-mining itself worked correctly.
+        country_attr = ConfigAttr(
+            entity_id=1, variable_name="ultimateDestinationCountry",
+            display_label="Destination Country", required=True,
+            default_value="", options=[],
+        )
+        eng.load_product_config = MagicMock(return_value=([country_attr], "aSTRO25_bom"))
         eng.detect_qa_question = MagicMock(return_value=False)
         eng.count_turn_intents = MagicMock(return_value=[])
         eng.extract_catalog_hints = MagicMock(return_value=({}, set()))

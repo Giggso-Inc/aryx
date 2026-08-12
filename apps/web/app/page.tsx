@@ -8,18 +8,11 @@ import { AskHistoryDrawer } from "@/components/ask/AskHistoryDrawer";
 import { AskSearchInput } from "@/components/ask/AskSearchInput";
 import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
-import { FollowupChips } from "@/components/ask/FollowupChips";
 import { api } from "@/lib/api";
 import { streamReveal } from "@/lib/stream";
 import { useWorkspace } from "@/lib/workspace";
 import { parseWorkspaceScope, workspaceStartHref } from "@/lib/workspace-route";
 import type { AskThreadMessage, ChatTurn, Citation, Usage } from "@/lib/types";
-
-const FOLLOWUPS = [
-  "What else do we know about that Customer?",
-  "Show me the underlying records",
-  "What's missing or weak in this data?",
-];
 
 function uid() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -544,11 +537,6 @@ export default function HomePage() {
                   conversationId={conversationIdRef.current}
                   autoScroll={autoScrollTranscript && !normalizedMessageSearch}
                 />
-              )}
-              {!busy && !normalizedMessageSearch && (
-                <div className="mt-6 pl-12">
-                  <FollowupChips prompts={FOLLOWUPS} onPick={(p) => send(p)} />
-                </div>
               )}
             </div>
           )}

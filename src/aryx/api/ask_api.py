@@ -20,7 +20,11 @@ from aryx.api.ask_overview import build as build_overview
 from aryx.ask import build_grounding
 from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
-from aryx.cpq.engine import CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY
+from aryx.cpq.engine import (
+    CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY,
+    MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, extract_quantity_hint,
+    is_valid_product_quantity, question_mentions_quantity, quantity_turn_precheck,
+)
 from aryx.cpq.bom_gate import (
     find_missing_required_fields, recheck_constraints, validate_before_payload,
 )
@@ -150,6 +154,19 @@ def _user_texts_from_history(
         if role in ("", "user", "human", "h", "customer"):
             out.append(text)
     return out
+
+
+def _safe_detect_product_mention(question: str, reader: Any, workspace_id: int) -> str:
+    """`CpqEngine.detect_product_mention`, but never lets a lookup failure
+    (e.g. a test-double `reader` without the real graph methods) propagate
+    into a gate that has no business crashing a turn — degrades to "no
+    mention found," the same never-guess convention every other
+    best-effort gate in this file already uses."""
+    try:
+        return _cpq_engine.detect_product_mention(question, {}, reader, workspace_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("cpq quantity gate: detect_product_mention failed: %r", exc)
+        return ""
 
 
 def _mine_history_for_cpq_context(
@@ -489,6 +506,7 @@ def _cpq_summary_text(
     product_name: str,
     workspace_id: int,
     sources: dict[str, str] | None = None,
+    product_quantity: int | None = None,
 ) -> str:
     """Structured, headed/bulleted summary of the filtered configuration.
 
@@ -520,13 +538,27 @@ def _cpq_summary_text(
     `render_filled_summary` — the CPQ flow must never block on, or silently
     mis-format via, the narrator.
     """
+    def _finish(text: str) -> str:
+        # Session-level product quantity (docs/CPQ_QUANTITY_SLOTFILLING_AND_
+        # UI_ISSUES_PLAN_2026_08_11.md) is deliberately appended here,
+        # AFTER the LLM narration/fallback machinery above has already
+        # produced its text — never fed into the LLM prompt or the
+        # segment-count contract, so this can never break the summary_guard
+        # validation or the "exactly N segments" schema those paths
+        # enforce. Omitted only when the caller has no product yet
+        # (product_quantity is None) or the whole summary is itself empty
+        # (nothing to append a fact onto).
+        if product_quantity is None or not text:
+            return text
+        return f"{text}\n\n**Quantity:** {product_quantity}"
+
     _catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     display_order = _cpq_engine.load_layout_display_order(workspace_id, _catalog_prefix)
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
         display_order=display_order)
     if not groups:
-        return ""
+        return _finish("")
     # The narrator and its bullet fallback are only ever asked to cover
     # THESE curated (label, value) facts — never the raw display_filled
     # dict, which includes hundreds of internal/technical BM fields
@@ -624,7 +656,7 @@ def _cpq_summary_text(
             )
             missing = fields_missing_from_summary(draft, curated_fields)
             if not missing:
-                return draft
+                return _finish(draft)
             logger.info(
                 "summary_guard: LLM summary missing %s — regenerating via "
                 "deterministic bullets", missing[:5],
@@ -635,7 +667,7 @@ def _cpq_summary_text(
             )
             missing2 = fields_missing_from_summary(second, curated_fields)
             if not missing2:
-                return second
+                return _finish(second)
             logger.warning(
                 "summary_guard: deterministic bullet fallback ALSO missing "
                 "%s — falling back to raw_state_table", missing2[:5],
@@ -643,15 +675,15 @@ def _cpq_summary_text(
             stub = CpqSession()
             stub.display_filled = dict(display_filled)
             stub.filled_source = dict(sources or {})
-            return raw_state_table(stub, attrs)
+            return _finish(raw_state_table(stub, attrs))
         logger.debug(
             "cpq: summary narration returned %d segments (expected %d) — "
             "using bullet fallback", len(segments), expected_segments)
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
-    return _cpq_engine.render_filled_summary(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources)
+    return _finish(_cpq_engine.render_filled_summary(
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources))
 
 
 def _build_attr_options_text(
@@ -2045,6 +2077,7 @@ def _handle_cascade(
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 cascade_note + "\n\n"
@@ -2248,6 +2281,7 @@ def _handle_multi_select_removal(
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 cascade_note + "\n\n"
@@ -2426,6 +2460,7 @@ def _handle_attr_activation(
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 cascade_note + "\n\n"
@@ -2582,6 +2617,7 @@ def _handle_attr_clear(
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 cascade_note + "\n\n"
@@ -2754,6 +2790,7 @@ def _handle_bulk_quantity_change(
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 cascade_note + "\n\n"
@@ -3092,6 +3129,7 @@ def _handle_cascade_multi(
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 cascade_note + "\n\n"
@@ -4346,6 +4384,144 @@ def _dispatch_intent_result(
     return None
 
 
+def _llm_resolve_quantity_target(
+    question: str, candidates: list, session: Any, workspace_id: int,
+) -> str | None:
+    """Which quantity the customer means, tried only when
+    CpqEngine.quantity_turn_precheck already found the message quantity-
+    related AND at least one real catalog quantity attribute exists
+    alongside the overall product quantity (docs/CPQ_QUANTITY_SLOTFILLING_
+    AND_UI_ISSUES_PLAN_2026_08_11.md step 3) -- with no competing catalog
+    attribute, the caller resolves directly with no LLM call at all.
+
+    "Which target does this message mean" is a real judgment call, not a
+    keyword-matchable one — the big intent gateway (classify_intent) can't
+    express this either, since its schema only ever names real ConfigAttr
+    variable_names, never the session-level product quantity. A small,
+    single-purpose helper here matches this file's own established
+    pattern (_llm_resolve_label_collision, _llm_split_compound_change_and_
+    question) rather than extending the gateway's schema/cache/quarantine
+    machinery for one narrow case.
+
+    Returns "product", a candidate's exact variable_name, or None
+    (genuinely ambiguous or the LLM call/parse failed) — a None result
+    means the caller must ask the customer directly, never guess.
+    """
+    catalog_lines = [
+        f"- {a.variable_name} ({a.display_label}): "
+        f"current={session.filled.get(a.variable_name, 'unset')!r}"
+        for a in candidates
+    ]
+    sys = (
+        "You resolve which \"quantity\" a user means in a product-configuration "
+        "chat: the OVERALL product quantity (how many of the whole product they "
+        "want), or one of several specific per-item catalog quantity fields. "
+        "Only use variable_names from the candidate list, or the literal string "
+        "\"product\" for the overall quantity — never invent a name. If the "
+        "message doesn't clearly point to exactly one, say ambiguous."
+    )
+    user = (
+        f"OVERALL PRODUCT QUANTITY: currently {session.product_quantity}\n\n"
+        "CANDIDATE PER-ITEM QUANTITY FIELDS (variable_name (label)):\n"
+        + "\n".join(catalog_lines)
+        + f"\n\nUSER MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"target": "product" | "<exact variable_name>" | "ambiguous"}'
+    )
+    valid_targets = {"product", "ambiguous"} | {a.variable_name for a in candidates}
+
+    def _validate(parsed: dict) -> str | None:
+        target = parsed.get("target") or ""
+        if target not in valid_targets or target == "ambiguous":
+            return None
+        return target
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _llm_detect_pending_topic_switch(
+    question: str, pending_attr: Any, other_attrs: list, workspace_id: int,
+) -> str | None:
+    """Whether a reply to an actively-pending question is actually the
+    customer trying to talk about a DIFFERENT attribute instead — tried
+    only when `_pending_reply_looks_like_new_request`'s deterministic
+    change-verb/arrow check already said no (docs/CPQ_PENDING_TOPIC_
+    SWITCH_PLAN_2026_08_11.md).
+
+    That deterministic check only catches explicit "change X to Y" /
+    arrow phrasing. Real redirects rarely look like that — confirmed live:
+    "I wanted to check the carrier selection value", "I don't want
+    hardware version but carrier selection", and "I don't want to select
+    the hardware version but i wanted to check with carrier selection"
+    all name a different real attr in plain language with no change verb
+    the regex recognises, so all three fell through to STEP 5's
+    pending-answer lock and were misread as failed attempts to answer the
+    pending question, looping the same re-ask forever.
+
+    Same narrow-helper pattern as `_llm_resolve_quantity_target` /
+    `_llm_resolve_label_collision`: only ever returns an exact
+    `other_attrs` variable_name or None — never invents one, never
+    guesses when ambiguous. A None result means the caller must keep
+    treating this as a plain answer attempt to the pending question.
+    """
+    candidate_lines = "\n".join(
+        f"- {a.variable_name} ({a.display_label})" for a in other_attrs
+    )
+    sys = (
+        "A customer is being asked a single pending question in a product-"
+        "configuration chat. Decide whether their reply is actually trying "
+        "to answer that pending question, or whether they are instead "
+        "trying to talk about a DIFFERENT attribute from the candidate "
+        "list — e.g. asking about it, or saying they don't want the "
+        "pending one and want the other one instead. Only pick a "
+        "variable_name if the message clearly names or clearly refers to "
+        "one specific candidate attribute. Never invent a variable_name "
+        "that isn't in the candidate list."
+    )
+    user = (
+        f"PENDING QUESTION IS ABOUT: {pending_attr.variable_name} "
+        f"({pending_attr.display_label})\n\n"
+        "OTHER CANDIDATE ATTRIBUTES (variable_name (label)):\n"
+        f"{candidate_lines}\n\n"
+        f"USER MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"switch_to": "<exact variable_name>" | "none"}'
+    )
+    valid_targets = {a.variable_name for a in other_attrs}
+
+    def _validate(parsed: dict) -> str | None:
+        target = parsed.get("switch_to") or ""
+        if target not in valid_targets:
+            return None
+        return target
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _pending_reply_is_topic_switch(
+    question: str, pending_attr: Any, attrs: list, filled: dict,
+    filled_multi: dict, workspace_id: int,
+) -> bool:
+    """Combines the deterministic `_pending_reply_looks_like_new_request`
+    check with a narrow LLM fallback for the natural-language redirects
+    the regex can't see (docs/CPQ_PENDING_TOPIC_SWITCH_PLAN_2026_08_11.md).
+    Deterministic check runs first and short-circuits the LLM call
+    whenever it already agrees — same cost discipline as every other
+    LLM fallback in this file.
+    """
+    if pending_attr is None:
+        return False
+    if _pending_reply_looks_like_new_request(
+        question, pending_attr, attrs, filled, filled_multi,
+    ):
+        return True
+    other_attrs = [a for a in attrs if a.variable_name != pending_attr.variable_name]
+    if not other_attrs:
+        return False
+    switch_vn = _llm_detect_pending_topic_switch(
+        question, pending_attr, other_attrs, workspace_id,
+    )
+    return switch_vn is not None
+
+
 def _llm_resolve_label_collision(
     reply: str, candidates: list, session: Any, workspace_id: int,
 ) -> str | None:
@@ -5183,6 +5359,199 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                       "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         }
+
+    # ── Session-level product quantity (docs/CPQ_QUANTITY_SLOTFILLING_AND_
+    # UI_ISSUES_PLAN_2026_08_11.md) ───────────────────────────────────────────
+    # Runs on EVERY turn, unconditionally, before any other gate — this is
+    # what captures a quantity stated as part of a fresh order ("...50 in
+    # qty...") on turn 1, not just a later direct question about it.
+    # Deliberately a plain overwrite, not "first wins": a customer restating
+    # the quantity later in the conversation means the new number, not the
+    # original one.
+    _qty_hint = extract_quantity_hint(req.question)
+    if _qty_hint is not None and is_valid_product_quantity(_qty_hint):
+        session.product_quantity = _qty_hint
+    # An implausible number here (zero, negative, an absurd overflow) is
+    # silently ignored rather than rejected with a message — this is an
+    # inferred background capture from a free-text order request, not an
+    # explicit "set my quantity" instruction; the explicit case (below,
+    # gated on question_mentions_quantity) is where a bad value gets a
+    # real rejection message instead of silent handling either way.
+
+    # A quantity question/statement before any quote has even started
+    # (no product selected yet) -- live-confirmed gap: without this,
+    # "what is my quantity?" as an opening message fell straight into the
+    # product-family anchor gate below and came back as "I didn't get
+    # ... for product family, please pick one" -- confusing, and doesn't
+    # answer what was actually asked. There is no catalog to disambiguate
+    # against yet (no product = no catalog quantity attributes at all),
+    # so this is always unambiguous: state the default plainly and invite
+    # the customer to actually start a quote, same tone as everywhere
+    # else in this file a quantity resolves to the session value.
+    if (
+        not session.product_name
+        and question_mentions_quantity(req.question)
+        # A message that ALSO states a real quantity ("I want to order 50
+        # radios, what's my quantity?") must NOT be short-circuited here —
+        # it's establishing a quote right now (the number was already
+        # captured into session.product_quantity above), not asking about
+        # one that doesn't exist. Only a bare question with no number at
+        # all falls into this "nothing started yet" case. (soft_quote_
+        # heuristic was tried first and rejected — its own keyword list
+        # includes "quantity"/"qty", so it's unconditionally true for
+        # every message this gate could ever see, never a usable signal
+        # here.)
+        and _qty_hint is None
+        # This SAME message might itself be naming a product for the
+        # first time ("Give me a quote of APX NEXT with 10 qty") -- must
+        # never steal the turn from the real anchor/detection flow in
+        # that case (live-confirmed regression: a confident new product
+        # mention got swallowed by this gate before detection ever ran).
+        # Cheap relative to the rest of a real turn — the normal flow
+        # pays this same lookup cost regardless. Never let a lookup
+        # failure block this gate — degrade to "no mention found" (never
+        # guess a product exists when the check itself couldn't run).
+        and not _safe_detect_product_mention(req.question, reader, req.workspace_id)
+    ):
+        _qty_pre_anchor = quantity_turn_precheck(req.question, [])
+        if _qty_pre_anchor is not None:
+            answer = (
+                f"Quantity is not configured yet — no quote has been started, so "
+                f"there's nothing to set a quantity on (it defaults to "
+                f"**{session.product_quantity}** once you do). What would you "
+                f"like to order?"
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity_no_quote()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
+    # A dedicated question/change about quantity — resolved from the
+    # session-level value first, per the plan's step 3 resolution order,
+    # short-circuiting the catalog-attribute pipeline entirely unless the
+    # message clearly names (or, via disambiguation, picks) a real
+    # competing catalog quantity attribute. Only considered once a product
+    # is selected — no quantity target makes sense before then, and the
+    # anchor-gate turns above have already returned by this point for any
+    # message they needed to handle.
+    if session.product_name and question_mentions_quantity(req.question):
+        try:
+            _qty_attrs, _ = _cpq_engine.load_product_config(
+                reader, req.workspace_id, session.product_name,
+            )
+        except Exception as exc:  # noqa: BLE001 — never crash a turn on this gate
+            logger.debug("cpq quantity gate: load_product_config failed: %r", exc)
+            _qty_attrs = []
+        _qty_pre = quantity_turn_precheck(req.question, _qty_attrs)
+        if _qty_pre is not None:
+            # load_product_config returns the FULL raw catalog attribute
+            # list for this product family, never filtered by hiding
+            # rules or by what the customer has actually selected — a
+            # real catalog carries "Quantity of X" for every optional
+            # accessory the product family could ever have (spares, RSM
+            # mics, adaptors, ...), most of which are irrelevant unless
+            # that specific accessory is actually part of THIS
+            # configuration. A "competing candidate" must mean "something
+            # genuinely present in the current configuration," not
+            # "theoretically exists somewhere in the catalog" — restricted
+            # to attrs that already carry a real value in session.filled
+            # (single-select-shaped) or session.filled_multi
+            # (multi-select-shaped array-set members).
+            _qty_candidates = [
+                a for a in _qty_pre["candidates"]
+                if a.variable_name in session.filled
+                or a.variable_name in session.filled_multi
+            ]
+            _qty_target: str | None
+            if not _qty_candidates:
+                # Nothing to disambiguate against — unambiguous by
+                # construction, no LLM call needed.
+                _qty_target = "product"
+            else:
+                _qty_target = _llm_resolve_quantity_target(
+                    req.question, _qty_candidates, session, req.workspace_id,
+                )
+            if _qty_target == "product":
+                if _qty_pre["is_change"] and _qty_pre.get("decimal_value") is not None:
+                    # PR #186 review, medium: an explicit decimal ("change
+                    # quantity to 10.0") gets its own dedicated rejection
+                    # quoting exactly what the customer typed — never the
+                    # wrong, confusing digit the old regex-backtracking
+                    # bug used to surface here ("0" instead of "10.0").
+                    answer = (
+                        f"**{_qty_pre['decimal_value']}** isn't a valid quantity — it "
+                        f"needs to be a whole number from {MIN_PRODUCT_QUANTITY} to "
+                        f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
+                        f"still **{session.product_quantity}**."
+                    )
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_product_quantity_rejected()"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    }
+                if (
+                    _qty_pre["is_change"] and _qty_pre["value"] is not None
+                    and not is_valid_product_quantity(_qty_pre["value"])
+                ):
+                    # An explicit, invalid request ("change quantity to
+                    # -5"/"...to 0") gets a real rejection, never a silent
+                    # ignore or a silently-accepted nonsense value — the
+                    # customer asked for something specific and needs to
+                    # know why it didn't happen.
+                    answer = (
+                        f"**{_qty_pre['value']}** isn't a valid quantity — it needs to be "
+                        f"a whole number from {MIN_PRODUCT_QUANTITY} to "
+                        f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
+                        f"**{session.product_quantity}**."
+                    )
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [],
+                        "tools_called": ["cpq_product_quantity_rejected()"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    }
+                if _qty_pre["is_change"] and _qty_pre["value"] is not None:
+                    session.product_quantity = _qty_pre["value"]
+                answer = f"**Quantity** → {session.product_quantity}"
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+            if _qty_target is None:
+                # Genuinely ambiguous (or the LLM call/parse failed) — ask,
+                # never guess which one the customer meant.
+                _qty_options = ", ".join(
+                    f"**{a.display_label}**" for a in _qty_candidates
+                )
+                answer = (
+                    f"Are you asking about the overall **product quantity** "
+                    f"(currently {session.product_quantity}), or the quantity "
+                    f"for a specific item like {_qty_options}?"
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [],
+                    "tools_called": ["cpq_quantity_disambiguation()"],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+            # _qty_target names a specific real catalog attribute — fall
+            # through to the normal pipeline below, which resolves it via
+            # the existing apply_answer/cascade machinery exactly like any
+            # other attribute; this gate's job (deciding WHICH target) is
+            # done.
 
     # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
     hints = _cpq_engine.extract_hints(req.question)
@@ -6315,6 +6684,23 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             (a for a in attrs if a.variable_name == session.pending_change_no_value_vn), None,
         )
         session.pending_change_no_value_vn = ""
+        # Same topic-switch gap as STEP 5's pending-answer lock (docs/
+        # CPQ_PENDING_TOPIC_SWITCH_PLAN_2026_08_11.md), but on this
+        # earlier, separate "which value?" pending mechanism -- confirmed
+        # live 2026-08-11: with Hardware Version pending here, "First i
+        # wanted to changed Wireless Carrier" has no _CHANGE_VERB_RE match
+        # ("changed" isn't "change"/"changing") and named a DIFFERENT real
+        # attr in plain language, but this block had no topic-switch check
+        # of its own -- it forced the whole message into `_handle_cascade`
+        # as a literal (failing) new value for Hardware Version, producing
+        # "I couldn't match that to a valid option for Hardware Version."
+        # Falls through to normal routing (identical to the STEP 5 fix)
+        # whenever the LLM confidently identifies a different real target.
+        if _pcnv_attr and _pending_reply_is_topic_switch(
+            req.question, _pcnv_attr, attrs, session.filled,
+            session.filled_multi, req.workspace_id,
+        ):
+            _pcnv_attr = None
         if _pcnv_attr:
             # QA issue #3: re-derive constrained set for scoped match/retry.
             # §15: try/except so pure declines never crash on rule engine.
@@ -6460,6 +6846,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             summary = _cpq_summary_text(
                 session.display_filled, attrs, rule_ids_preview,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             answer = (
                 (f"{summary}\n\n" if summary else "")
@@ -6847,9 +7234,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             )
         _defer_gateway_to_pending_answer = (
             _pending_attr_for_gate is not None
-            and not _pending_reply_looks_like_new_request(
+            and not _pending_reply_is_topic_switch(
                 req.question, _pending_attr_for_gate, attrs,
-                session.filled, session.filled_multi,
+                session.filled, session.filled_multi, req.workspace_id,
             )
         )
 
@@ -7276,6 +7663,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         summary = _cpq_summary_text(
             session.display_filled, attrs, rule_ids_nudge,
             session.product_name, req.workspace_id, sources=session.filled_source,
+            product_quantity=session.product_quantity,
         )
         answer = (
             f"I didn't quite catch that. Here is the current configuration for "
@@ -7548,8 +7936,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         # handles a fresh "change X" during a configuring-status turn
         # (the same block that resolved "change the solution Type"
         # correctly once Product wasn't blocking it).
-        _looks_like_new_request = _pending_reply_looks_like_new_request(
-            req.question, pending_attr, attrs, session.filled, session.filled_multi,
+        _looks_like_new_request = _pending_reply_is_topic_switch(
+            req.question, pending_attr, attrs, session.filled,
+            session.filled_multi, req.workspace_id,
         )
         if pending_attr and not _looks_like_new_request:
             vn_flat_pv = pending_var.lower().replace("_", "")
@@ -8133,6 +8522,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         summary = _cpq_summary_text(
             display_filled, visible_attrs, rule_ids,
             session.product_name, req.workspace_id, sources=session.filled_source,
+            product_quantity=session.product_quantity,
         )
         answer = (
             (f"{dropped_note.strip()}\n\n" if dropped_note else "")
@@ -8187,6 +8577,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
+                product_quantity=session.product_quantity,
             )
             still_need = ", ".join(a.display_label for a in pending)
             answer = (

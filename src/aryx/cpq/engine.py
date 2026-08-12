@@ -435,6 +435,325 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\blatin\s+america\b", "LA"),
 ]
 
+# Session-level product quantity extraction (docs/CPQ_QUANTITY_SLOTFILLING_
+# AND_UI_ISSUES_PLAN_2026_08_11.md) -- a number adjacent to a quantity-
+# indicating word or "units"/product-noun phrasing, never a bare number
+# anywhere in the message (a model code, a year, a street address digit
+# would all be wrongly captured otherwise). Longest/most specific patterns
+# first so "50 in qty" doesn't get short-circuited by a looser alternative.
+# PR #186 review, critical #1: every pattern's digit group needs a LEFT
+# boundary too, not just the trailing `(?!\.\d)` guard -- `\d+` has no
+# built-in word-start requirement, so it can start matching mid-identifier.
+# Confirmed live: "quote me 5 APX8000 radios" -- the real "5" isn't
+# directly followed by "radios" (that "APX8000" is in the way) so it never
+# matches, but "8000" lifted straight out of "APX8000" IS directly
+# followed by " radios" and matches instead, silently becoming the
+# quantity. `(?<![\w.\-])` immediately before the digit group rejects any
+# match whose digit run is glued onto a preceding letter/digit/word
+# character OR a hyphen (a model code like "APX8000" or "APX-5000", a
+# decimal fraction) -- redundant but harmless on patterns that already
+# require preceding whitespace via a literal keyword phrase. The hyphen
+# exclusion (review follow-up) still allows a genuine negative quantity
+# ("quantity is -5") since that "-" is itself preceded by whitespace, not
+# by the digit group's own left edge.
+_QUANTITY_PATTERNS: list[re.Pattern] = [
+    re.compile(r"(?i:\bqty\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s+(?:is|to|as)\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bqty\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:in\s+qty)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:qty)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:units?)\b"),
+    re.compile(r"(?i:\bi\s+want\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bneed\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:radios?|devices?|pieces?|pcs)\b"),
+]
+
+# PR #186 review, medium: decimal variants of the same patterns above,
+# checked BEFORE the integer patterns run. Without this, a decimal like
+# "10.0" gets rejected from matching as "10" by `(?!\.\d)` as intended,
+# but the regex engine then backtracks and matches the trailing "0" after
+# the decimal point instead of failing outright -- silently turning
+# "change quantity to 10.0" into quantity=0. Derived by substituting each
+# pattern's own `(-?\d+)(?!\.\d)` integer group for a `(-?\d+\.\d+)`
+# decimal group, so the two lists can never drift out of sync with each
+# other.
+_QUANTITY_DECIMAL_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        p.pattern.replace(r"(?<![\w.\-])(-?\d+)(?!\.\d)", r"(?<![\w.\-])(-?\d+\.\d+)")
+    )
+    for p in _QUANTITY_PATTERNS
+]
+
+# PR #186 review, critical #2: a thousands-separator comma between two
+# digit groups ("1,000") sits at a real word boundary, so an integer
+# pattern happily matches just the "1" before it and silently truncates
+# the stated quantity -- no rejection, no indication anything was
+# mangled. Stripped before any pattern runs, so "1,000" is treated
+# exactly like "1000" was always the input. Deliberately narrow (exactly
+# 3 digits after the comma, comma glued to digits on both sides) so it
+# never touches an ordinary list separator like "5, 1000 items".
+_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d),(?=\d{3}(?:\D|$))")
+
+# A real order is somewhere between "at least one" and "not an absurd
+# typo/overflow" -- callers use this to decide whether an extracted number
+# is a plausible quantity at all, distinct from "no number found" (None).
+# 100,000 units of a single product line is already far beyond any real
+# order this catalog has ever seen; treated as a probable typo, not a
+# genuine bulk order, same "never silently accept an implausible value"
+# discipline the rest of this module already applies elsewhere.
+MIN_PRODUCT_QUANTITY = 1
+MAX_PRODUCT_QUANTITY = 100_000
+
+
+def is_valid_product_quantity(value: int) -> bool:
+    """True for a real, plausible order quantity -- rejects zero, negative,
+    and absurdly large values. Never silently coerces (e.g. clamps a
+    negative to 0 or a huge number down to the max) -- callers must reject
+    and ask again, not guess what the customer actually meant."""
+    return MIN_PRODUCT_QUANTITY <= value <= MAX_PRODUCT_QUANTITY
+
+
+# Spelled-out quantities ("I want ten APX Next", "twenty-five units") --
+# a customer typing the number as a word is exactly as valid as typing a
+# digit, and neither the client's report nor a reasonable customer would
+# expect one to work and not the other. Deliberately covers "and" only as
+# glue between words already in a real number run ("one hundred and
+# fifty"), never as a standalone match -- "one" is a valid START token,
+# "and" is not, so ordinary text containing "and" is never mistaken for a
+# number.
+_ONES_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19,
+}
+_TENS_WORDS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_SCALE_WORDS = {"hundred": 100, "thousand": 1000}
+_NUMBER_WORDS = {**_ONES_WORDS, **_TENS_WORDS, **_SCALE_WORDS}
+_SIGN_WORDS = {"negative", "minus"}
+_NUM_WORD_ALT = "|".join(_NUMBER_WORDS)
+_NUMBER_WORD_RUN_RE = re.compile(
+    rf"\b(?:(?:negative|minus)[\s-]+)?(?:{_NUM_WORD_ALT})"
+    rf"(?:[\s-]+(?:and[\s-]+)?(?:{_NUM_WORD_ALT}))*\b",
+    re.IGNORECASE,
+)
+
+
+def _words_to_number(phrase: str) -> int | None:
+    """"twenty-five" -> 25, "one hundred and fifty" -> 150,
+    "negative five" -> -5 -- None if any token isn't a recognized number
+    word (never guess a partial parse). A leading sign word must produce a
+    real negative result, never silently drop the sign and return the
+    magnitude as if it were positive."""
+    tokens = [t for t in re.split(r"[\s-]+", phrase.strip().lower()) if t and t != "and"]
+    if not tokens:
+        return None
+    negative = tokens[0] in _SIGN_WORDS
+    if negative:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    total = 0
+    current = 0
+    for tok in tokens:
+        if tok in _NUMBER_WORDS:
+            val = _NUMBER_WORDS[tok]
+            if val in _SCALE_WORDS.values():
+                current = (current or 1) * val
+                if val >= 1000:
+                    total += current
+                    current = 0
+            else:
+                current += val
+        else:
+            return None  # unrecognized token -- abort, never guess
+    result = total + current
+    return -result if negative else result
+
+
+def _substitute_number_words(text: str) -> str:
+    """Replaces every recognizable number-word run with its digit form so
+    the existing digit-anchored _QUANTITY_PATTERNS can match it unchanged
+    -- e.g. "I want ten APX Next" -> "I want 10 APX Next". A run whose
+    words don't form a valid number (shouldn't happen given the regex only
+    matches known number words, but kept as a safety net) is left as-is."""
+    def _replace(m: re.Match) -> str:
+        value = _words_to_number(m.group(0))
+        return str(value) if value is not None else m.group(0)
+    return _NUMBER_WORD_RUN_RE.sub(_replace, text)
+
+
+def _normalize_quantity_text(text: str) -> str:
+    """Shared preprocessing for both the decimal check and the integer
+    patterns -- quote-stripping and thousands-separator removal must
+    happen identically for both, or a comma/quote could dodge one path
+    and not the other."""
+    text = re.sub(
+        r"[\"'‘’“”]([A-Za-z0-9-]+)[\"'‘’“”]",
+        r"\1", text,
+    )
+    return _THOUSANDS_SEPARATOR_RE.sub("", text)
+
+
+def extract_quantity_decimal_hint(text: str) -> str | None:
+    """The exact decimal substring (e.g. "10.0", "-3.5") when a decimal
+    number sits in one of the same quantity-context positions
+    `_QUANTITY_PATTERNS` matches integers in -- None otherwise.
+
+    PR #186 review, medium: exists so a caller building a customer-facing
+    rejection message can quote what the customer actually typed ("10.0")
+    instead of the wrong, confusing digit `extract_quantity_hint`'s own
+    regex backtracking used to produce ("0", the fractional remainder).
+    Checked BEFORE `extract_quantity_hint` runs its integer patterns at
+    all -- this is a short-circuit, not just an alternate lookup.
+    """
+    normalized = _normalize_quantity_text(text)
+    for pattern in _QUANTITY_DECIMAL_PATTERNS:
+        m = pattern.search(normalized)
+        if m:
+            return m.group(1)
+    return None
+
+
+def extract_quantity_hint(text: str) -> int | None:
+    """The overall product quantity stated in free text, e.g. "50 in qty",
+    "qty of 50", "i want 50", "50 radios" -- None when no supported phrasing
+    matches. Deliberately narrow (a number must be adjacent to a quantity-
+    indicating word) rather than "the first number found anywhere" -- a raw
+    number scan would misread a model code, a year, or an unrelated count
+    (like a street address) as the quantity.
+
+    Also recognizes the number spelled out as words ("I want ten APX
+    Next", "twenty-five units") -- exactly as valid as a digit from a
+    customer's point of view, so it must work exactly the same way. Tried
+    only as a fallback (digit forms first): the number-word text is
+    substituted with its digit equivalent and re-run through the same
+    digit-anchored patterns above, so both forms share one set of
+    quantity-context rules rather than duplicating each pattern twice.
+
+    Returns the raw parsed integer, including zero/negative when the text
+    actually says so ("change quantity to -5") -- callers must validate
+    with `is_valid_product_quantity` before accepting, never assume a
+    return value here is automatically a sane quantity. A decimal like
+    "1.5"/"10.0" is deliberately never matched at all -- checked via
+    `extract_quantity_decimal_hint` FIRST and short-circuited to None
+    here, rather than relying solely on each integer pattern's own
+    `(?!\\.\\d)` guard, which blocks the direct "10" match but does not
+    stop the regex engine from backtracking into the fractional
+    remainder instead (PR #186 review, medium: "10.0" was silently
+    becoming quantity 0 without this).
+    """
+    text = _normalize_quantity_text(text)
+    if extract_quantity_decimal_hint(text) is not None:
+        return None
+    for pattern in _QUANTITY_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                continue
+    substituted = _substitute_number_words(text)
+    if substituted == text:
+        return None
+    for pattern in _QUANTITY_PATTERNS:
+        m = pattern.search(substituted)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+# Any mention of the word "quantity"/"qty"/"how many" at all -- the cheap,
+# deterministic pre-filter for even bothering to consider quantity routing.
+# Purely a "is it worth looking at this turn at all" gate, not a judgment
+# call -- the actual product-vs-catalog-attribute disambiguation (a real
+# judgment call, not something a keyword list can reliably make) is an LLM
+# decision, made in ask_api.py's _llm_resolve_quantity_target, mirroring
+# this file's other single-purpose LLM helpers rather than the big
+# generic intent gateway (whose schema has no way to represent "the
+# overall product quantity" at all -- it only ever names real ConfigAttr
+# variable_names).
+_QUANTITY_WORD_RE = re.compile(r"(?i:\bqty\b|\bquantity\b|\bhow\s+many\b)")
+# "change/set/update the quantity to N" vs. a plain question ("what's my
+# quantity") -- deterministic, not a judgment call: these are unambiguous
+# verb cues, unlike WHICH quantity is meant.
+_QUANTITY_CHANGE_VERB_RE = re.compile(
+    r"(?i:\b(?:change|set|update|make\s+it|adjust)\b)"
+)
+
+
+def question_mentions_quantity(question: str) -> bool:
+    """Cheap, regex-only pre-check: is this turn even worth loading the
+    catalog for to consider quantity routing? Callers must check this
+    BEFORE loading attrs -- loading the full product config on every
+    single turn regardless of content is wasteful and, in a caller with a
+    test-double reader, can fail for reasons unrelated to quantity at all.
+    """
+    return bool(_QUANTITY_WORD_RE.search(question))
+
+
+def find_catalog_quantity_attrs(attrs: list[ConfigAttr]) -> list[ConfigAttr]:
+    """Real catalog attributes shaped like a per-item quantity field: no
+    catalog menu (a genuine free-text/numeric attribute), select_type
+    integer/float, and "quantity" or "qty" in the display label or variable
+    name -- e.g. "Quantity (VX650 Item Type)". These are never asked
+    proactively (the session-level product_quantity is), but stay
+    reachable when the customer names one directly or picks one via
+    disambiguation.
+    """
+    out = []
+    for a in attrs:
+        if a.options:
+            continue
+        if a.select_type not in ("integer", "float"):
+            continue
+        haystack = f"{a.display_label} {a.variable_name}".lower()
+        if "quantity" in haystack or "qty" in haystack:
+            out.append(a)
+    return out
+
+
+def quantity_turn_precheck(question: str, attrs: list[ConfigAttr]) -> dict[str, Any] | None:
+    """Cheap, deterministic first pass for a quantity-related turn -- None
+    when the message isn't about quantity at all (caller falls through to
+    normal handling). Otherwise returns the facts the caller needs to
+    decide routing:
+      {"is_change": bool, "value": int | None, "decimal_value": str | None,
+       "candidates": list[ConfigAttr]}
+
+    `decimal_value` (PR #186 review, medium) is set when the message
+    stated a decimal quantity ("change quantity to 10.0") -- `value`
+    stays None for these (a decimal is never a valid quantity), but
+    `is_change` is still True so the caller can reject with a message
+    quoting the real decimal text instead of silently doing nothing.
+
+    Deliberately does NOT decide "which quantity does the customer mean" --
+    that's a real judgment call once `candidates` is non-empty, made by an
+    LLM (ask_api._llm_resolve_quantity_target), not a keyword heuristic
+    (docs/CPQ_QUANTITY_SLOTFILLING_AND_UI_ISSUES_PLAN_2026_08_11.md step 3).
+    """
+    if not _QUANTITY_WORD_RE.search(question):
+        return None
+    value = extract_quantity_hint(question)
+    decimal_value = extract_quantity_decimal_hint(question)
+    return {
+        "is_change": bool(_QUANTITY_CHANGE_VERB_RE.search(question))
+        and (value is not None or decimal_value is not None),
+        "value": value,
+        "decimal_value": decimal_value,
+        "candidates": find_catalog_quantity_attrs(attrs),
+    }
+
+
 # catalog-hint matching (extract_catalog_hints): a real menu option's own
 # text (item_value/display_name) found verbatim in the question — punctuation
 # and casing stripped so "AT&T/FirstNet" matches item_value "ATT/FIRSTNET" and

@@ -1188,12 +1188,30 @@ def test_llm_first_gate_calls_the_llm_and_dispatches_when_enabled(monkeypatch):
                          status="awaiting_approval", turn=3)
     req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
                       session_data=session.to_dict())
+    # Real schema (GATEWAY_INTENT_JSON_SCHEMA): intent_category/confidence/
+    # variable_name/value_ref/evidence_span -- the old fake_reply here used
+    # a stale category/target shape from an earlier gateway contract, which
+    # failed schema validation, triggered the retry-once path, and (since
+    # the mock returns the same invalid reply both times) fell all the way
+    # through to the deterministic detector -- masking the fact that the
+    # dispatch path was never actually exercised. value_ref=1 is CloudRC,
+    # the second VALUE CANDIDATES entry for solutionTypeDevices_astro.
     fake_reply = (
-        '{"category": "change_request", "confidence": "high", '
-        '"target": {"target_description": "Solution Type", '
-        '"new_value_description": "CloudRC"}, "rationale": "named attr + value"}'
+        '{"intent_category": "change_request", "confidence": "high", '
+        '"variable_name": "solutionTypeDevices_astro", "value_ref": 1, '
+        '"evidence_span": "change solution type to CloudRC", '
+        '"rationale": "named attr + value"}'
     )
-    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 700, 30)) as mock_chat:
+    # The LLM-first gateway (aryx.cpq.intent_gateway.classify_intent) calls
+    # aryx.llm.complete_text directly, not llm_runtime.chat -- confirmed by
+    # tracing a live call: intent_gateway.py imports `complete_text` from
+    # aryx.llm and never touches llm_runtime at all, so patching
+    # ask_api.llm_runtime.chat (the old target) silently mocked nothing,
+    # letting a real, unmocked LLM call resolve the turn underneath the
+    # test and masking the fact that the mock was never exercised.
+    with patch(
+        "aryx.cpq.intent_gateway.complete_text", return_value=(fake_reply, 700, 30),
+    ) as mock_chat:
         resp = _run_cpq_turn(req, object())
     mock_chat.assert_called_once()
     assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
@@ -1214,7 +1232,7 @@ def test_llm_first_gate_never_calls_the_llm_when_disabled(monkeypatch):
                          status="awaiting_approval", turn=3)
     req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
+    with patch("aryx.cpq.intent_gateway.complete_text") as mock_chat:
         resp = _run_cpq_turn(req, object())
     mock_chat.assert_not_called()
     # The deterministic regex path alone must still resolve this —
@@ -1239,7 +1257,9 @@ def test_llm_first_gate_falls_through_to_deterministic_on_unparseable_reply(monk
                          status="awaiting_approval", turn=3)
     req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
                       session_data=session.to_dict())
-    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=("not json at all", 5, 0)):
+    with patch(
+        "aryx.cpq.intent_gateway.complete_text", return_value=("not json at all", 5, 0),
+    ):
         resp = _run_cpq_turn(req, object())
     assert resp["session_data"]["filled"]["solutionTypeDevices_astro"] == "CloudRC"
 
