@@ -1445,6 +1445,26 @@ class CpqEngine:
                 continue  # "exclude ... <phrase>" — not a selection
             hints[vn] = item_value
 
+        # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row
+        # 17: a deterministic sanity check, not an LLM call — negating an
+        # attr's ONLY real (non-boolean) option is contradictory (there's
+        # nothing left to fall back to), so it must never silently
+        # suppress the whole attribute the way a genuine "exclude X, use
+        # Y instead" negation among 2+ real options correctly does.
+        # Cheap: reuses `attrs` already scoped to this call, no new rule
+        # evaluation or threading needed.
+        _attr_by_vn = {a.variable_name: a for a in attrs}
+
+        def _has_only_one_real_option(vn: str) -> bool:
+            attr = _attr_by_vn.get(vn)
+            if attr is None:
+                return False
+            real_opts = [
+                o for o in attr.options
+                if o.item_value.strip().lower() not in self._BOOLEAN_DISPLAY_VALUES
+            ]
+            return len(real_opts) <= 1
+
         negated_vns: set[str] = set()
         for phrase, owners in all_owners.items():
             idx = _find_plural_tolerant(q_norm, phrase)
@@ -1452,7 +1472,7 @@ class CpqEngine:
                 continue
             if not _is_negated_before(q_lower, q_index_map[idx]):
                 continue
-            negated_vns.update(owners)
+            negated_vns.update(vn for vn in owners if not _has_only_one_real_option(vn))
             # Passive suppression (negated_vns) only stops auto_fill's blind
             # first-by-order fallback — it does nothing about an attr whose
             # own default_value applies unconditionally regardless of
