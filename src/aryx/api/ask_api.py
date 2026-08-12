@@ -1708,13 +1708,21 @@ def _handle_cascade(
     constrained_item_values: list[str] | None = None,
 ) -> dict[str, Any]:
     """STEP 6 — Cascade: apply a change, invalidate dependents, re-run rule loop."""
-    if _DECLINE_CHANGE_RE.search(new_value_hint):
+    _cascade_label = _cpq_engine.disambiguated_label(changed_attr, attrs)
+    if _is_decline_reply(
+        new_value_hint, _cascade_label,
+        session.display_filled.get(changed_attr.variable_name, ""),
+        req.workspace_id,
+        deterministic_hit=bool(_DECLINE_CHANGE_RE.search(new_value_hint)),
+    ):
         # Customer declined the pending change (docs/CPQ_SESSION_2026_07_29_
-        # ISSUES_PLAN.md #2) — keep the current value, don't touch
-        # session.filled/pop/cascade at all, and don't attempt apply_answer
-        # against a phrase that was never meant as a value.
+        # ISSUES_PLAN.md #2, LLM fallback added per docs/CPQ_REGEX_VS_LLM_
+        # ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row 15-16) — keep the
+        # current value, don't touch session.filled/pop/cascade at all,
+        # and don't attempt apply_answer against a phrase that was never
+        # meant as a value.
         current_display = session.display_filled.get(changed_attr.variable_name, "")
-        label = _cpq_engine.disambiguated_label(changed_attr, attrs)
+        label = _cascade_label
         answer = (
             f"No changes made — **{label}** stays as "
             f"**{current_display}**." if current_display else
@@ -4841,6 +4849,94 @@ def _pending_reply_is_topic_switch(
     return switch_vn is not None
 
 
+def _llm_detect_change_decline(
+    question: str, attr_label: str, current_value: str, workspace_id: int,
+) -> bool:
+    """Whether a reply to a proposed/pending change is actually declining
+    it (keeping the current value), tried only when the deterministic
+    decline regexes (`_DECLINE_CHANGE_RE`/`_CHANGE_VALUE_DECLINE_RE`)
+    already said no (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_
+    2026_08_12.md row 15-16).
+
+    Those regexes only catch a fixed phrase list ("don't want to
+    change", "no change", "never mind", "leave it", "keep it", "cancel
+    that"). Real declines vary just as much as the topic-switch
+    redirects this session's other fix already handles — "nah, forget
+    it", "meh, skip that", "on second thought don't bother" all mean
+    the same thing but match none of those phrases, so they were
+    previously tried as a literal (failing) new value instead.
+
+    Same narrow-helper pattern as every other `_llm_classify_intent_
+    core` caller in this file: a bounded yes/no question, fails safe to
+    `False` (not a decline — try it as a value, today's exact existing
+    behavior) on any call/parse failure, never invents a decline that
+    wasn't there.
+    """
+    sys = (
+        "A customer was asked whether they want to change a product-"
+        "configuration attribute's value, or was in the middle of "
+        "changing one. Decide whether their reply explicitly DECLINES "
+        "the change (wants to keep the current value, e.g. \"never "
+        "mind\", \"forget it\", \"leave it as is\", \"skip that\", "
+        "\"on second thought don't bother\") or whether it's a genuine "
+        "attempt to state a new value or something else entirely. Only "
+        "say yes if the reply clearly rejects making any change at all."
+    )
+    user = (
+        f"ATTRIBUTE: {attr_label}\n"
+        f"CURRENT VALUE: {current_value or 'unset'}\n\n"
+        f"USER MESSAGE: {question}\n\n"
+        'Reply ONLY as JSON: {"declines_change": true | false}'
+    )
+
+    def _validate(parsed: dict) -> bool | None:
+        val = parsed.get("declines_change")
+        if not isinstance(val, bool):
+            return None
+        return val
+
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
+    return bool(result)
+
+
+# Cheap pre-filter, gating the LLM fallback below — NOT itself a
+# decline decision. Live regression caught during this fix: without a
+# gate, `_is_decline_reply` tried the LLM on the "no strict-regex
+# match" branch of `_handle_cascade`, which is the SAME branch every
+# ordinary value change ("change solution type to CloudRC") falls
+# through — that made an LLM call on essentially every cascade turn in
+# the whole system, not just plausible declines. This loose word list
+# only has to be broad enough to contain every decline phrasing the
+# strict regexes miss ("nah, forget it" / "on second thought don't
+# bother"), not exact — the LLM call itself still does the real
+# decision, this only decides whether it's even worth asking.
+_LOOSE_DECLINE_HINT_RE = re.compile(
+    r"\b(no|not|don'?t|never|forget|skip|leave|keep|cancel|nah|meh|"
+    r"nevermind|bother|actually|mind)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_decline_reply(
+    question: str, attr_label: str, current_value: str, workspace_id: int,
+    *, deterministic_hit: bool,
+) -> bool:
+    """Combines a deterministic decline-regex result (passed in by the
+    caller, since the two call sites use two different regexes —
+    `_DECLINE_CHANGE_RE` vs. `_CHANGE_VALUE_DECLINE_RE`) with the narrow
+    LLM fallback above. Deterministic hit short-circuits before any LLM
+    call, same cost discipline as every other fallback in this file.
+    `_LOOSE_DECLINE_HINT_RE` gates the LLM call itself — an ordinary
+    value change ("CloudRC", "10", "APX NEXT") never contains any of
+    these words and never reaches the LLM at all.
+    """
+    if deterministic_hit:
+        return True
+    if not _LOOSE_DECLINE_HINT_RE.search(question):
+        return False
+    return _llm_detect_change_decline(question, attr_label, current_value, workspace_id)
+
+
 def _llm_resolve_label_collision(
     reply: str, candidates: list, session: Any, workspace_id: int,
 ) -> str | None:
@@ -7050,8 +7146,15 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                 _pcnv_matched = _cpq_engine.apply_answer(
                     _pcnv_attr, _pcnv_match_text, _pcnv_constrained,
                 ) is not None
-            if not _pcnv_matched and _is_change_value_decline(req.question):
-                _pcnv_current = session.display_filled.get(_pcnv_attr.variable_name)
+            _pcnv_current = session.display_filled.get(_pcnv_attr.variable_name)
+            if not _pcnv_matched and _is_decline_reply(
+                req.question, _cpq_engine.disambiguated_label(_pcnv_attr, attrs),
+                _pcnv_current or "", req.workspace_id,
+                deterministic_hit=_is_change_value_decline(req.question),
+            ):
+                # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+                # row 15-16: LLM fallback added for decline phrasing the
+                # deterministic regex doesn't cover.
                 answer = (
                     f"No problem — I'll leave "
                     f"**{_cpq_engine.disambiguated_label(_pcnv_attr, attrs)}** "
