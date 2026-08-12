@@ -4295,6 +4295,7 @@ def _dispatch_intent_result(
     req: "AskRequest", session: Any, attrs: list, result: IntentResult,
     hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
     classify_prompt_tokens: int = 0, classify_completion_tokens: int = 0,
+    reader: Any = None,
 ) -> "dict[str, Any] | None":
     """Phase 2 (PARTIAL), docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md.
 
@@ -4351,9 +4352,15 @@ def _dispatch_intent_result(
         `intent_gateway.MUTATING_CATEGORIES` and has no deterministic-
         agreement cross-check — read-only, so a wrong dispatch can't
         corrupt the configuration, only ask about the wrong attribute.
+      - QA_QUESTION (Phase 3, 2026-08-12): dispatched to the SAME
+        `_handle_cpq_qa(..., resume_review=True)` the regex-based
+        `detect_qa_question` path already uses at this same review-stage
+        call site. Same `Confidence.HIGH` requirement as ATTR_QUERY.
+        Requires `reader`, threaded through as a new optional parameter
+        on this function (default `None`) — never dispatches without it.
       - Every other category (MULTI_SELECT_REMOVAL, ATTR_ACTIVATION,
         ATTR_CLEAR, BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST,
-        APPROVAL, QA_QUESTION, PRODUCT_MENTION) returns None —
+        APPROVAL, PRODUCT_MENTION) returns None —
         deliberately deferred rather than rushed, so the deterministic
         path keeps owning them until a follow-up lands each one with
         the same care as the ones above. PRODUCT_MENTION specifically
@@ -4365,7 +4372,30 @@ def _dispatch_intent_result(
         at all, so there is no `variable_name` to resolve a product
         name from. Wiring it needs a real product-candidate-injection
         design in `intent_gateway.py` first, not just a dispatch
-        branch — a structural gap, not a missing `if`.
+        branch — a structural gap, not a missing `if`. APPROVAL's
+        regex path (`detect_approval` → STEP 8, this same call site,
+        ~lines 6939-7200+) is a 100+-line multi-branch inline gate —
+        rule-conflict reporting, stale-constraint auto-clear-and-reask,
+        the final BOM-generation success path — none of it factored
+        into a callable function the way `_build_attr_query_response`/
+        `_handle_cpq_qa` are. Dispatching it safely means factoring that
+        whole gate first, not adding a branch; deliberately left
+        untouched rather than risking the highest-stakes code path in
+        this file (payload generation/submission) under time pressure.
+
+    IMPORTANT scoping note (found 2026-08-12, applies to every category
+    in this function, not just the ones listed above): this function
+    and the `gateway_classify_intent` call that feeds it each have
+    exactly ONE call site in the whole file, nested inside the
+    `session.status in ("awaiting_approval", "post_approval")` branch.
+    Every category wired here — including the 5 already-wired at this
+    function's original creation — only ever dispatches during the
+    review/confirm stage of a conversation, never during general
+    mid-configuration turns. STEP 5's `pending_variables` lock (a
+    separate, always-active deterministic mechanism) is what actually
+    protects the configuring phase; this LLM-first gateway is a
+    review-stage-only enhancement layered on top of it, not a
+    general-purpose per-turn classifier.
 
     Confidence gating: LOW always returns None (fall through) regardless
     of category — mirrors the shadow-mode logging convention and plan doc
@@ -4485,6 +4515,28 @@ def _dispatch_intent_result(
             return None
         return _with_classify_usage(
             _build_attr_query_response(req, session, attrs, con_rules, bml_eval, attr),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 3:
+    # QA_QUESTION has no target at all — the category itself is the
+    # signal. Same Confidence.HIGH gate as ATTR_QUERY (no agreement
+    # cross-check). `_handle_cpq_qa` needs `reader` for its graph-
+    # grounded lookups, which this function didn't previously receive —
+    # threaded through as an optional param (default None) so the one
+    # existing call site (inside the awaiting_approval/post_approval
+    # gateway block, the only place this function is ever called from)
+    # can pass it, while every pre-existing direct-call test site that
+    # never needed it keeps working unchanged. Never dispatches if
+    # `reader` wasn't actually passed — never guess a graph lookup
+    # target's data source.
+    if (
+        result.category == IntentCategory.QA_QUESTION
+        and result.confidence == Confidence.HIGH
+        and reader is not None
+    ):
+        return _with_classify_usage(
+            _handle_cpq_qa(req, session, attrs, reader, resume_review=True),
             classify_prompt_tokens, classify_completion_tokens,
         )
 
@@ -7549,6 +7601,7 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                         req, session, attrs, _mapped,
                         hiding_rules, rec_rules, con_rules, bml_eval,
                         _gw.prompt_tokens, _gw.completion_tokens,
+                        reader=reader,
                     )
                     if _dispatched is not None:
                         return _dispatched

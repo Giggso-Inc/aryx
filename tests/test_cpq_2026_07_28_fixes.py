@@ -519,6 +519,72 @@ def test_llm_first_out_of_scope_answers_without_touching_config():
     assert session.filled == {"a": "b"}, "out-of-scope must never mutate config state"
 
 
+def test_llm_first_qa_question_dispatches_on_high_confidence_with_reader():
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 3:
+    QA_QUESTION with HIGH confidence and a reader passed must dispatch to
+    _handle_cpq_qa(..., resume_review=True), the same handler the regex
+    path at this same review-stage call site already uses."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="what does extended battery mean?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
+        rationale="graph question",
+    )
+    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        mock_qa.return_value = {
+            "answer": "stub qa answer", "terms": [], "tools_called": ["cpq_qa()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-qa", "answer_model": "cpq-qa"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        resp = _dispatch_intent_result(
+            req, session, [], result, [], [], [], None, reader=object(),
+        )
+    mock_qa.assert_called_once()
+    kwargs = mock_qa.call_args
+    assert kwargs.kwargs.get("resume_review") is True or (
+        len(kwargs.args) >= 5 and kwargs.args[4] is True
+    )
+    assert resp["answer"] == "stub qa answer"
+
+
+def test_llm_first_qa_question_medium_confidence_falls_through():
+    """No deterministic-agreement cross-check exists for QA_QUESTION
+    (residual-risk mitigation #1) -- MEDIUM confidence must defer to the
+    regex path exactly like ATTR_QUERY's own gate."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="what does extended battery mean?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.QA_QUESTION, confidence=Confidence.MEDIUM,
+        rationale="graph question",
+    )
+    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        resp = _dispatch_intent_result(
+            req, session, [], result, [], [], [], None, reader=object(),
+        )
+    mock_qa.assert_not_called()
+    assert resp is None
+
+
+def test_llm_first_qa_question_never_dispatches_without_a_reader():
+    """QA_QUESTION needs `reader` for its graph-grounded lookups -- never
+    dispatch (fall through) if it wasn't actually passed, rather than
+    guessing a data source."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="what does extended battery mean?", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.QA_QUESTION, confidence=Confidence.HIGH,
+        rationale="graph question",
+    )
+    with patch("aryx.api.ask_api._handle_cpq_qa") as mock_qa:
+        resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    mock_qa.assert_not_called()
+    assert resp is None
+
+
 def test_llm_first_change_target_without_value_asks_which_value():
     solution = _attr(1, "solutionTypeDevices_astro", "Solution Type",
                       options=_opt("RadioCentral", "CloudRC"))
