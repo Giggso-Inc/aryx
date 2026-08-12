@@ -4227,6 +4227,16 @@ def _gateway_to_intent_result(
             )
             and target is not None
         ) else [],
+        quantity_description=(
+            gw.quantity_text
+            if gw.intent_category == IntentCategory.BULK_QUANTITY_CHANGE
+            else None
+        ),
+        response_mode=(
+            gw.response_mode
+            if gw.intent_category == IntentCategory.RESPONSE_MODE_REQUEST
+            else None
+        ),
         clarifying_question=gw.clarifying_question,
         rationale=gw.rationale,
     )
@@ -4664,6 +4674,71 @@ def _dispatch_intent_result(
             classify_prompt_tokens, classify_completion_tokens,
         )
 
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
+    # BULK_QUANTITY_CHANGE is in MUTATING_CATEGORIES so it has already
+    # passed deterministic agreement upstream (same shape as
+    # MULTI_SELECT_REMOVAL/ATTR_ACTIVATION/ATTR_CLEAR above) — but
+    # `quantity_description` is free-form text the LLM stated, never a
+    # candidate-list selection, so it's re-verified here against the
+    # exact same predicate `detect_bulk_quantity_change` itself uses:
+    # the target must resolve to a real array-grid selector (never a
+    # plain single-select sibling sharing its display_label), it must
+    # have at least one currently-selected, quantity-resolvable row, and
+    # the stated quantity must be digits-only — never guessed at, never
+    # applied to an unselected or unresolvable row.
+    if (
+        result.category == IntentCategory.BULK_QUANTITY_CHANGE
+        and result.target
+        and result.quantity_description
+    ):
+        attr, _candidates = _resolve_target_description(
+            result.target.target_description, attrs)
+        if attr is None:
+            return None
+        _grid_links = _cpq_engine.resolve_array_grid_links(attrs)
+        _item_map = _grid_links.get(attr.variable_name)
+        if not _item_map:
+            return None
+        _selected = session.filled_multi.get(attr.variable_name) or []
+        _resolvable = [
+            iv for iv in _selected if iv.strip().lower() in _item_map
+        ]
+        if not _resolvable:
+            return None
+        _qty = result.quantity_description.strip()
+        if not _qty.isdigit():
+            return None
+        return _with_classify_usage(
+            _handle_bulk_quantity_change(
+                req, session, attrs, attr.variable_name, _resolvable, _qty,
+                hiding_rules, rec_rules, con_rules,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
+    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
+    # RESPONSE_MODE_REQUEST has no target at all — same Confidence.HIGH
+    # gate as APPROVAL/QA_QUESTION (residual-risk mitigation #1). Only
+    # "json" is wired: the regex path's own detect_response_mode_request
+    # check for "json" already runs BEFORE this dispatch call site is
+    # ever reached (STEP 6/7/8 routing, ask_api.py), so this branch only
+    # fires for phrasing the regex missed — never a behavior change for
+    # phrasing regex already catches. "batch" is a configuring-flow-only
+    # concept (mode_request check ask_api.py:~8295) that this dispatch
+    # call site — scoped to awaiting_approval/post_approval only — never
+    # reaches, so it's intentionally left unwired here.
+    if (
+        result.category == IntentCategory.RESPONSE_MODE_REQUEST
+        and result.confidence == Confidence.HIGH
+        and result.response_mode == "json"
+    ):
+        return _with_classify_usage(
+            _build_json_preview_response(
+                req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
     # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2 +
     # residual-risk mitigation #1: ATTR_QUERY has no deterministic-
     # agreement cross-check (it isn't in intent_gateway.MUTATING_
@@ -4786,6 +4861,55 @@ def _llm_resolve_quantity_target(
         return target
 
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _build_json_preview_response(
+    req: "AskRequest", session: Any, attrs: list,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
+) -> dict[str, Any]:
+    """"Show me the JSON" preview while awaiting approval — factored out of
+    the regex path (docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md
+    Phase 4) so the new RESPONSE_MODE_REQUEST dispatch branch can share the
+    exact same response shape instead of duplicating it. Preview only —
+    never sets cpq_payload, never mutates session.status. Recomputes
+    `catalog_prefix`/hidden-attr set internally, same reasoning as
+    `_handle_approval` — one source of truth both callers share.
+    """
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+    hidden_for_payload = _cpq_engine.apply_hiding_rules(
+        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
+    hidden_for_payload = hidden_for_payload | _cpq_engine.payload_flow_exclusions(
+        req.workspace_id, catalog_prefix, attrs)
+    if session.model_leaf_resolved:
+        hidden_for_payload = hidden_for_payload | _cpq_engine.product_label_noise_vns(
+            attrs, hiding_rules, rec_rules, con_rules)
+    preview_payload = _cpq_engine.build_payload(
+        session.filled, session.filled_source, session.filled_multi, attrs,
+        hidden_vns=hidden_for_payload,
+        rules=[*hiding_rules, *rec_rules, *con_rules],
+        display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
+    rule_ids_preview = _cpq_engine.rule_governed_ids(
+        attrs, hiding_rules, rec_rules, con_rules)
+    summary = _cpq_summary_text(
+        session.display_filled, attrs, rule_ids_preview,
+        session.product_name, req.workspace_id, sources=session.filled_source,
+        product_quantity=session.product_quantity,
+    )
+    answer = (
+        (f"{summary}\n\n" if summary else "")
+        + f"Here's the full configuration for **{session.product_name}** — "
+          f"**preview, not final**:\n\n"
+        f"```json\n{json.dumps(preview_payload, indent=2)}\n```\n\n"
+        f"Say **confirm** to submit, or describe any changes."
+    )
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_json_preview()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        "preview": True,
+    }
 
 
 def _handle_approval(
@@ -7563,33 +7687,9 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
         # check in the configuring flow below). JSON stays on-demand only —
         # this does not submit anything, cpq_payload stays unset.
         if _cpq_engine.detect_response_mode_request(req.question) == "json":
-            preview_payload = _cpq_engine.build_payload(
-                session.filled, session.filled_source, session.filled_multi, attrs,
-                hidden_vns=_hidden_for_payload,
-                rules=[*hiding_rules, *rec_rules, *con_rules],
-                display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix))
-            rule_ids_preview = _cpq_engine.rule_governed_ids(
-                attrs, hiding_rules, rec_rules, con_rules)
-            summary = _cpq_summary_text(
-                session.display_filled, attrs, rule_ids_preview,
-                session.product_name, req.workspace_id, sources=session.filled_source,
-                product_quantity=session.product_quantity,
+            return _build_json_preview_response(
+                req, session, attrs, hiding_rules, rec_rules, con_rules, bml_eval,
             )
-            answer = (
-                (f"{summary}\n\n" if summary else "")
-                + f"Here's the full configuration for **{session.product_name}** — "
-                  f"**preview, not final**:\n\n"
-                f"```json\n{json.dumps(preview_payload, indent=2)}\n```\n\n"
-                f"Say **confirm** to submit, or describe any changes."
-            )
-            _persist_cpq_history(req.workspace_id, req.question, answer)
-            return {
-                "answer": answer, "terms": [], "tools_called": ["cpq_json_preview()"],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                "preview": True,
-            }
 
         # STEP 8: explicit approval → generate BOM payload. Saying
         # "confirm" again while already post_approval is idempotent — it

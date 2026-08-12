@@ -1464,6 +1464,169 @@ def test_llm_first_approval_still_blocks_on_a_real_rule_conflict(monkeypatch):
     assert resp["tools_called"] == ["cpq_bom_gate_blocked()"]
 
 
+# ── B5. Phase 4: RESPONSE_MODE_REQUEST (json) / BULK_QUANTITY_CHANGE ────
+
+def test_llm_first_response_mode_request_json_dispatches_a_preview(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
+    RESPONSE_MODE_REQUEST("json") dispatches the same json-preview
+    response _build_json_preview_response gives the regex path."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="can I see the underlying data please", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.RESPONSE_MODE_REQUEST,
+                          confidence=Confidence.HIGH, response_mode="json",
+                          rationale="wants json")
+    resp = _dispatch_intent_result(
+        req, session, [battery], result, [], [], [], BmlEvaluator({}),
+    )
+    assert resp is not None
+    assert resp["tools_called"] == ["cpq_json_preview()"]
+    assert resp["preview"] is True
+    assert resp["cpq_payload"] is None
+    # Must not mutate session status -- this is a preview, not a submit.
+    assert resp["session_data"]["status"] == "awaiting_approval"
+
+
+def test_llm_first_response_mode_request_batch_never_dispatches():
+    """"batch" is a configuring-flow-only concept the awaiting_approval-
+    only dispatch call site never reaches -- must fall through."""
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval",
+                         filled={"batteryType_astro": "STANDARD"})
+    req = AskRequest(question="give me the batch of questions", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.RESPONSE_MODE_REQUEST,
+                          confidence=Confidence.HIGH, response_mode="batch",
+                          rationale="wants batch")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_response_mode_request_medium_confidence_falls_through():
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", status="awaiting_approval")
+    req = AskRequest(question="show me the json", workspace_id=1, session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.RESPONSE_MODE_REQUEST,
+                          confidence=Confidence.MEDIUM, response_mode="json",
+                          rationale="wants json")
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is None
+
+
+def _mount_attrs_for_bulk_qty() -> list[ConfigAttr]:
+    selector = ConfigAttr(
+        entity_id=1, variable_name="mountingTypeArray_viSoln",
+        display_label="Mounting Type Array",
+        required=False, default_value="", select_type="multi",
+        options=_opt("Shirt Magnetic Mount", "Jacket Magnetic Mount"),
+    )
+    single_sibling = ConfigAttr(
+        entity_id=2, variable_name="mountType_viSoln", display_label="Mounting Type",
+        required=False, default_value="", select_type="single",
+        options=_opt("Swivel Clip", "Adjustable Lanyard"),
+    )
+    shirt_qty = ConfigAttr(
+        entity_id=3, variable_name="mountingTypeShirtMagneticMountQuantity_viSoln",
+        display_label="mounting type Shirt Magnetic Mount Quantity",
+        required=False, default_value="", select_type="single", options=[], hidden=True,
+    )
+    jacket_qty = ConfigAttr(
+        entity_id=4, variable_name="mountingTypeJacketMagneticMountQuantity_viSoln",
+        display_label="mounting type Jacket Magnetic Mount Quantity",
+        required=False, default_value="", select_type="single", options=[], hidden=True,
+    )
+    return [selector, single_sibling, shirt_qty, jacket_qty]
+
+
+def test_llm_first_bulk_quantity_change_dispatches_the_selected_grid_rows(monkeypatch):
+    """docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 4:
+    BULK_QUANTITY_CHANGE dispatches the same _handle_bulk_quantity_change
+    the regex path (detect_bulk_quantity_change) uses, re-verifying the
+    target is a real array-grid selector with resolvable selected rows."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom", country="United States",
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"]},
+        status="awaiting_approval", turn=4,
+    )
+    req = AskRequest(question="change both the mounting types quantity to 67", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="67", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(
+        req, session, attrs, result, [], [], [], BmlEvaluator({}),
+    )
+    assert resp is not None
+    assert session.filled.get("mountingTypeShirtMagneticMountQuantity_viSoln") == "67"
+    assert session.filled.get("mountingTypeJacketMagneticMountQuantity_viSoln") == "67"
+
+
+def test_llm_first_bulk_quantity_change_never_targets_an_unselected_grid():
+    """The named selector resolves to a real grid attr, but nothing is
+    currently selected on it -- must never invent rows to update."""
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(mode="cpq", product_name="viSoln_bom", status="awaiting_approval")
+    req = AskRequest(question="change both the mounting types quantity to 67", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="67", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_bulk_quantity_change_never_targets_a_non_grid_sibling():
+    """Two attrs share the display_label "Mounting Type" -- the plain
+    single-select sibling has no grid links at all and must never be
+    resolved as a bulk-quantity target even if the LLM's target
+    resolves ambiguously toward it."""
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom",
+        filled={"mountType_viSoln": "Swivel Clip"}, status="awaiting_approval",
+    )
+    req = AskRequest(question="change the mounting type quantity to 67", workspace_id=1,
+                      session_data=session.to_dict())
+    # Simulate the LLM naming the single-select sibling by mistake --
+    # _resolve_target_description would only ever resolve one winner for
+    # an ambiguous label, but even if it picked the sibling, resolve
+    # must fail closed since it's not a real grid selector.
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Swivel Clip Adjustable Lanyard"),
+        quantity_description="67", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+
+
+def test_llm_first_bulk_quantity_change_rejects_a_non_numeric_quantity():
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom",
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]},
+        status="awaiting_approval",
+    )
+    req = AskRequest(question="change the mounting type quantity to a lot", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="a lot", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+
+
 def test_confirm_is_idempotent_when_already_post_approval(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
