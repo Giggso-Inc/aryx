@@ -467,7 +467,16 @@ _QUANTITY_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:units?)\b"),
     re.compile(r"(?i:\bi\s+want\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
     re.compile(r"(?i:\bneed\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:radios?|devices?|pieces?|pcs)\b"),
+    # "I need pricing for a dozen X" / "...for 12 X" -- live-verified gap,
+    # 2026-08-13: the bare "need N" pattern above requires the number
+    # RIGHT after "need", so "need pricing for N" (a very common real
+    # quoting phrasing) never matched at all, regardless of digit vs
+    # word-form. Anchored on the fixed phrase "pricing for" specifically
+    # (not a general "for N" pattern) to keep the same narrow-adjacency
+    # safety discipline as every other pattern here -- never a bare number
+    # anywhere in the message.
+    re.compile(r"(?i:\bpricing\s+for\s+(?:an?\s+)?)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:radios?|devices?|pieces?|pcs|models?)\b"),
 ]
 
 # PR #186 review, medium: decimal variants of the same patterns above,
@@ -534,7 +543,7 @@ _TENS_WORDS = {
     "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
-_SCALE_WORDS = {"hundred": 100, "thousand": 1000}
+_SCALE_WORDS = {"hundred": 100, "thousand": 1000, "dozen": 12}
 _NUMBER_WORDS = {**_ONES_WORDS, **_TENS_WORDS, **_SCALE_WORDS}
 _SIGN_WORDS = {"negative", "minus"}
 _NUM_WORD_ALT = "|".join(_NUMBER_WORDS)
@@ -8349,6 +8358,34 @@ class CpqEngine:
         """True when the user is approving/confirming the configuration (Step 8)."""
         return bool(self._APPROVAL_RE.search(question.strip()))
 
+    # "give/show me the (final) summary/configuration", "recap", "what do
+    # I have so far" — a request to RE-SHOW the current configuration, not
+    # a question about a specific attribute and not an approval. Live-
+    # verified gap, 2026-08-13: with no dedicated category for this, "give
+    # the final summary now" was classified OUT_OF_SCOPE by the LLM
+    # classifier (none of its fixed categories represent "show it again"),
+    # and a shorter phrasing like "give the configuration" could
+    # coincidentally word-match a real catalog attribute whose own label
+    # contains "configuration" (e.g. "Configuration Type"), silently
+    # hijacking the turn into a change-target prompt for that unrelated
+    # attribute instead. Checked deterministically, ahead of both paths.
+    _SHOW_SUMMARY_RE = re.compile(
+        r"(?i:"
+        r"\b(?:show|give|send|display)\s+(?:me\s+)?(?:the\s+)?"
+        r"(?:final\s+|current\s+|full\s+)?(?:summary|configuration|config)\b"
+        r"|\brecap\b"
+        r"|\breview\s+(?:the\s+|my\s+)?(?:configuration|config|summary|order)\b"
+        r"|\bwhat\s+(?:do\s+i\s+have|have\s+i\s+(?:chosen|selected|picked))\s+so\s+far\b"
+        r"|\bwhat'?s?\s+my\s+(?:current\s+)?(?:configuration|config)\b"
+        r")"
+    )
+
+    def detect_show_summary_request(self, question: str) -> bool:
+        """True when the customer is asking to see the configuration
+        summary again, not naming a specific attribute or approving.
+        """
+        return bool(self._SHOW_SUMMARY_RE.search(question.strip()))
+
     def detect_qa_question(
         self,
         question: str,
@@ -10651,6 +10688,7 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        product_quantity: int | None = None,
     ) -> str:
         """Deterministic, categorized summary of what has been auto-filled.
 
@@ -10661,8 +10699,14 @@ class CpqEngine:
         generic across any ingested catalog, never a per-catalog literal).
         Used directly as the fallback whenever the LLM-narrated paragraph
         (ask_api `_cpq_summary_text`) is unavailable or fails.
+
+        product_quantity — forwarded to `categorized_summary_groups` so
+        this deterministic fallback shows the same Product Quantity fact,
+        in the same position, as the LLM-narrated path.
         """
-        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids, sources)
+        groups = self.categorized_summary_groups(
+            display_filled, attrs, rule_governed_ids, sources,
+            product_quantity=product_quantity)
         if not groups:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
@@ -10690,6 +10734,7 @@ class CpqEngine:
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
         display_order: dict[str, int] | None = None,
+        product_quantity: int | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
         """(category, [(label, value), ...]) groups, non-empty categories
         only, in the fixed display order (Product Name, Service Plan,
@@ -10703,6 +10748,16 @@ class CpqEngine:
         display_order — see `_filled_summary_triples`; restricts to and
         orders WITHIN each of the fixed categories above by layout rank
         when supplied. Does not replace the 4-category grouping itself.
+
+        product_quantity — the session-level order quantity (a virtual
+        fact, not a real catalog attribute, so it can never come out of
+        `_filled_summary_triples`). Injected here as the FIRST fact under
+        Product Name, labeled "Product Quantity" — previously appended as
+        a hardcoded suffix after every category regardless of catalog
+        shape, which always put it last (live-verified gap, 2026-08-13).
+        Only injected when there's an actual configuration to attach it
+        to (`triples` non-empty) — never synthesizes a Product Name
+        section out of nothing when no product has been selected yet.
         """
         triples = self._filled_summary_triples(
             display_filled, attrs, rule_governed_ids, sources, display_order)
@@ -10711,6 +10766,12 @@ class CpqEngine:
         by_category: dict[str, list[tuple[str, str]]] = {}
         for var, label, value in triples:
             by_category.setdefault(self._summary_category(var), []).append((label, value))
+        if product_quantity is not None:
+            by_category.setdefault("Product Name", [])
+            by_category["Product Name"] = [
+                ("Product Quantity", str(product_quantity)),
+                *by_category["Product Name"],
+            ]
         section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [_SUMMARY_FALLBACK_CATEGORY]
         return [
             (category, by_category[category])

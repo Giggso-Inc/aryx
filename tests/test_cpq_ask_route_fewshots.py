@@ -310,7 +310,13 @@ def test_run_ask_shadow_follows_deterministic_not_llm():
     assert out["answer"] == "cpq path"
 
 
-def test_run_ask_escape_hatch_on_gateway_error():
+def test_run_ask_llm_first_gateway_error_surfaces_a_customer_facing_error():
+    """docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    extraction plan: llm_first mode's router failure (timeout/error/double
+    validation) is a DELIBERATE, scoped departure from the old silent
+    escape-hatch fallback — once quantity/country extraction is fused
+    into this same call, silently falling back would mask a real LLM
+    outage. Never calls _run_cpq_turn at all in this mode on failure."""
     from aryx.api.ask_api import AskRequest, run_ask
 
     req = AskRequest(
@@ -329,6 +335,36 @@ def test_run_ask_escape_hatch_on_gateway_error():
          patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
          patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r):
         gs.return_value.cpq_intent_mode = "llm_first"
+        gs.return_value.cpq_intent_timeout_s = 10.0
+        out = run_ask(req)
+    mock_cpq.assert_not_called()
+    assert "went wrong" in out["answer"].lower()
+    assert out["tools_called"] == ["cpq_router_error()"]
+    assert out["cpq_payload"] is None
+
+
+def test_run_ask_shadow_mode_gateway_error_still_uses_the_old_escape_hatch():
+    """Shadow mode's whole point is "gateway is observe-only" -- a gateway
+    FAILURE must not become customer-visible either. This is the ONE mode
+    that keeps the pre-existing silent-fallback behavior."""
+    from aryx.api.ask_api import AskRequest, run_ask
+
+    req = AskRequest(
+        question="order APX Next",
+        workspace_id=1, history=[], session_data={},
+    )
+    meta = AskRouteDecision(
+        route="quote", confidence="low",
+        clarifying_question=None, rationale="timeout",
+        timed_out=True, error="timeout", model_id="m", det_is_cpq=True,
+    )
+    with patch("aryx.api.ask_api._reader", return_value=object()), \
+         patch("aryx.api.ask_api.get_settings") as gs, \
+         patch("aryx.api.ask_api.classify_ask_route", return_value=meta), \
+         patch("aryx.api.ask_api._deterministic_cpq_gate", return_value=True), \
+         patch("aryx.api.ask_api._run_cpq_turn") as mock_cpq, \
+         patch("aryx.api.ask_api._attach_share_flags", side_effect=lambda r, *a, **k: r):
+        gs.return_value.cpq_intent_mode = "shadow"
         gs.return_value.cpq_intent_timeout_s = 10.0
         mock_cpq.return_value = {
             "answer": "escaped to det", "tools_called": [],

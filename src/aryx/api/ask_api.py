@@ -5,6 +5,7 @@ grounding. Returns the answer, graph calls, usage, and the grounding record.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -539,15 +540,19 @@ def _cpq_summary_text(
     mis-format via, the narrator.
     """
     def _finish(text: str) -> str:
-        # Session-level product quantity (docs/CPQ_QUANTITY_SLOTFILLING_AND_
-        # UI_ISSUES_PLAN_2026_08_11.md) is deliberately appended here,
-        # AFTER the LLM narration/fallback machinery above has already
-        # produced its text — never fed into the LLM prompt or the
-        # segment-count contract, so this can never break the summary_guard
-        # validation or the "exactly N segments" schema those paths
-        # enforce. Omitted only when the caller has no product yet
-        # (product_quantity is None) or the whole summary is itself empty
-        # (nothing to append a fact onto).
+        # Live-verified gap, 2026-08-13: this used to unconditionally
+        # append "**Quantity:** N" AFTER the whole summary regardless of
+        # catalog shape, which always put it last (after Service Plan,
+        # Quantity & Duration, Associated Options). Product Quantity is now
+        # injected directly into the Product Name category by
+        # `categorized_summary_groups`/`render_filled_summary` themselves,
+        # so both the LLM-narrated path (`draft`) and the deterministic
+        # bullet fallback (`second`) already carry it in the right place
+        # by the time they reach a return statement — this helper is only
+        # still needed for the LAST-resort `raw_state_table` fallback
+        # below, which has no category concept at all (a flat, alphabetized
+        # state table) and so still needs the old trailing-append behavior
+        # rather than silently dropping the fact.
         if product_quantity is None or not text:
             return text
         return f"{text}\n\n**Quantity:** {product_quantity}"
@@ -556,7 +561,7 @@ def _cpq_summary_text(
     display_order = _cpq_engine.load_layout_display_order(workspace_id, _catalog_prefix)
     groups = _cpq_engine.categorized_summary_groups(
         display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
-        display_order=display_order)
+        display_order=display_order, product_quantity=product_quantity)
     if not groups:
         return _finish("")
     # The narrator and its bullet fallback are only ever asked to cover
@@ -656,18 +661,21 @@ def _cpq_summary_text(
             )
             missing = fields_missing_from_summary(draft, curated_fields)
             if not missing:
-                return _finish(draft)
+                # Product Quantity is already embedded in `draft` via
+                # `groups` (Product Name category) — no _finish() append.
+                return draft
             logger.info(
                 "summary_guard: LLM summary missing %s — regenerating via "
                 "deterministic bullets", missing[:5],
             )
             second = _cpq_engine.render_filled_summary(
                 display_filled, attrs, rule_governed_ids=rule_governed_ids,
-                sources=sources,
+                sources=sources, product_quantity=product_quantity,
             )
             missing2 = fields_missing_from_summary(second, curated_fields)
             if not missing2:
-                return _finish(second)
+                # Same reasoning as `draft` above — already embedded.
+                return second
             logger.warning(
                 "summary_guard: deterministic bullet fallback ALSO missing "
                 "%s — falling back to raw_state_table", missing2[:5],
@@ -675,6 +683,9 @@ def _cpq_summary_text(
             stub = CpqSession()
             stub.display_filled = dict(display_filled)
             stub.filled_source = dict(sources or {})
+            # raw_state_table has no category concept at all (flat,
+            # alphabetized) — _finish()'s trailing-append is still the
+            # right behavior here, the one remaining caller of it.
             return _finish(raw_state_table(stub, attrs))
         logger.debug(
             "cpq: summary narration returned %d segments (expected %d) — "
@@ -682,8 +693,9 @@ def _cpq_summary_text(
     except Exception:  # noqa: BLE001
         logger.debug("cpq: summary narration failed — using bullet fallback",
                      exc_info=True)
-    return _finish(_cpq_engine.render_filled_summary(
-        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources))
+    return _cpq_engine.render_filled_summary(
+        display_filled, attrs, rule_governed_ids=rule_governed_ids, sources=sources,
+        product_quantity=product_quantity)
 
 
 def _build_attr_options_text(
@@ -2638,6 +2650,88 @@ def _handle_attr_clear(
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_attr_clear()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _build_show_summary_response(
+    req: "AskRequest", session: Any, reader: Any,
+) -> dict[str, Any] | None:
+    """"Give me the final summary now" / "show me the configuration" /
+    "recap" — re-render the current configuration, whether or not it's
+    actually complete yet. Returns None if the underlying catalog load
+    fails or nothing is filled at all (never crash a turn on this).
+
+    Live-verified gap, 2026-08-13: this phrasing had no dedicated
+    handling at all. The LLM-first classifier has no category for "show
+    it again" so it defaulted to OUT_OF_SCOPE; separately, a shorter
+    phrasing like "give the configuration" could coincidentally
+    word-match a real catalog attribute whose own label contains
+    "configuration" (e.g. "Configuration Type"), hijacking the turn into
+    a change-target prompt for that unrelated attribute. Checked and
+    handled here, deterministically, before either of those paths runs.
+    """
+    try:
+        attrs, catalog_prefix = _cpq_engine.load_product_config(
+            reader, req.workspace_id, session.product_name,
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash a turn on this gate
+        logger.debug("cpq show-summary: load_product_config failed: %r", exc)
+        return None
+    if not attrs or not session.display_filled:
+        return None
+    # Never intercept a literal, exact answer to the currently pending
+    # question just because it happens to contain a trigger word (e.g. a
+    # real option named "Custom Configuration") — an exact case-
+    # insensitive match against the pending attr's own option text always
+    # wins over this heuristic.
+    if session.pending_variables:
+        _pending_attr = next(
+            (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+        )
+        if _pending_attr is not None:
+            _q_norm = req.question.strip().lower()
+            for _opt in _pending_attr.options:
+                if _q_norm in (_opt.display_name.strip().lower(), _opt.item_value.strip().lower()):
+                    return None
+    hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
+    rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
+        req.workspace_id, catalog_prefix)
+    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    hidden_vns = _cpq_engine.apply_hiding_rules(
+        attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi)[2]
+    visible_attrs = [a for a in attrs if a.variable_name not in hidden_vns]
+    rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
+    summary = _cpq_summary_text(
+        session.display_filled, visible_attrs, rule_ids,
+        session.product_name, req.workspace_id, sources=session.filled_source,
+        product_quantity=session.product_quantity,
+    )
+    if not summary:
+        return None
+    if session.pending_variables:
+        _next = next(
+            (a for a in visible_attrs if a.variable_name == session.pending_variables[0]),
+            None,
+        )
+        _still_need = f" I still need **{_next.display_label}** to finish." if _next else ""
+        answer = (
+            f"Here's your configuration so far for **{session.product_name}**.\n\n"
+            f"{summary}\n\n"
+            f"{_still_need}".strip()
+        )
+    else:
+        answer = (
+            f"Configuration complete for **{session.product_name}**.\n\n"
+            f"{summary}\n\n"
+            f"Click **JSON** below to see the full payload, say **confirm** "
+            f"to submit, or describe any changes."
+        )
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_show_summary()"],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
                   "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
         "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
@@ -6022,8 +6116,17 @@ def _set_pending_clarify_and_answer(
     }, prompt_tokens, completion_tokens)
 
 
-def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
+def _run_cpq_turn(
+    req: AskRequest, reader: Any, route_meta: "AskRouteDecision | None" = None,
+) -> dict[str, Any]:
     """Execute one turn of the 8-step CPQ guided-configuration conversation.
+
+    route_meta — the top-level router's decision, when this is the very
+    first turn of a brand-new session (never populated for turn 2+, since
+    the live-session path in `run_ask` never calls the router at all).
+    docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    extraction plan: carries `quantity`/`country` extracted by that SAME
+    router call, threaded through to seed the turn before Step 1 runs.
 
     Step 1 — Anchor validation: block until product_family + country present in NL.
     Step 2 — API value mapping: NL hints → item_value via graph options.
@@ -6054,7 +6157,7 @@ def _run_cpq_turn(req: AskRequest, reader: Any) -> dict[str, Any]:
     dozens of individual response-construction blocks by hand.
     """
     llm_runtime.reset_turn_usage()
-    result = enforce_conversational_invariant(_run_cpq_turn_inner(req, reader))
+    result = enforce_conversational_invariant(_run_cpq_turn_inner(req, reader, route_meta))
     _apply_real_llm_usage(result)
     return result
 
@@ -6117,7 +6220,9 @@ def _pending_reply_looks_like_new_request(
     )
 
 
-def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
+def _run_cpq_turn_inner(
+    req: AskRequest, reader: Any, route_meta: "AskRouteDecision | None" = None,
+) -> dict[str, Any]:
     """Inner CPQ turn body — see ``_run_cpq_turn`` for the step contract."""
     # Restore or initialise session
     session = (
@@ -6154,6 +6259,26 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
             "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
         }
 
+    # "give the final summary now" / "show me the configuration" / "recap"
+    # — re-show the current configuration. Checked early, before the
+    # pending-anchor/pending-answer machinery and the LLM-first classifier
+    # both get a chance to misfire on this phrasing (docs/CPQ_QUANTITY_
+    # COUNTRY_SUMMARY_FIXES_2026_08_13.md issue 4, live-verified: "give
+    # the final summary now" was classified OUT_OF_SCOPE; "give the
+    # configuration" coincidentally word-matched a real attr labeled
+    # "Configuration Type" and hijacked the turn into asking about it
+    # instead). Only considered once a product is selected and we're not
+    # mid-anchor-resolution — nothing to summarize otherwise, and an
+    # anchor reply must never be stolen by this.
+    if (
+        session.product_name
+        and not session.pending_anchor
+        and _cpq_engine.detect_show_summary_request(req.question)
+    ):
+        _summary_resp = _build_show_summary_response(req, session, reader)
+        if _summary_resp is not None:
+            return _summary_resp
+
     # Accept deterministic guided mode (loop-exit offer).
     if detect_guided_mode_accept(req.question) and not session.guided_mode:
         session.guided_mode = True
@@ -6179,6 +6304,14 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # the quantity later in the conversation means the new number, not the
     # original one.
     _qty_hint = extract_quantity_hint(req.question)
+    # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    # extraction plan: when the regex above found nothing, fall back to
+    # whatever the top-level router already extracted in its ONE call
+    # (route_meta is only ever populated on this, the very first turn of
+    # a brand-new session — turn 2+ never has a route_meta at all, so this
+    # is naturally inert past turn 1). Never overrides a regex hit.
+    if _qty_hint is None and route_meta is not None and route_meta.quantity is not None:
+        _qty_hint = route_meta.quantity
     if _qty_hint is not None and is_valid_product_quantity(_qty_hint):
         session.product_quantity = _qty_hint
     # An implausible number here (zero, negative, an absurd overflow) is
@@ -6347,6 +6480,25 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
                     }
                 if _qty_pre["is_change"] and _qty_pre["value"] is not None:
                     session.product_quantity = _qty_pre["value"]
+                # Live-verified gap, 2026-08-13: a quantity change used to
+                # return ONLY "Quantity → N", with no updated configuration
+                # summary — every other attribute change shows the running
+                # configuration once it's complete. If the configuration
+                # is already complete (no pending variables), show the
+                # same "Configuration complete" + summary parity a normal
+                # attribute change gets; mid-configuration, no complete
+                # configuration exists yet to show, so the plain quantity
+                # line stays as-is (matching how every other mid-cascade
+                # attribute change behaves).
+                if not session.pending_variables:
+                    _qty_summary_resp = _build_show_summary_response(req, session, reader)
+                    if _qty_summary_resp is not None:
+                        _qty_summary_resp["answer"] = (
+                            f"**Quantity** → {session.product_quantity}\n\n"
+                            + _qty_summary_resp["answer"]
+                        )
+                        _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
+                        return _qty_summary_resp
                 answer = f"**Quantity** → {session.product_quantity}"
                 _persist_cpq_history(req.workspace_id, req.question, answer)
                 return {
@@ -6389,6 +6541,20 @@ def _run_cpq_turn_inner(req: AskRequest, reader: Any) -> dict[str, Any]:
     # answer (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
     if session.pending_anchor == "country" and "country" not in hints:
         hints["country"] = req.question.strip()
+    # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    # extraction plan: when the regex above found nothing, fall back to
+    # whatever the top-level router already extracted in its ONE call —
+    # never a second, separate LLM call. `route_meta` is only ever
+    # populated on turn 1 of a brand-new session (turn 2+ never calls the
+    # router at all), so this is naturally inert past turn 1. Validated
+    # against `is_recognized_country` in the very next `if` block below,
+    # exactly like every other country hint.
+    elif (
+        "country" not in hints
+        and route_meta is not None
+        and route_meta.country
+    ):
+        hints["country"] = route_meta.country
     if (
         "country" in hints and not session.country
         # Real, confirmed live bug: extract_hints' generic preposition
@@ -9435,7 +9601,7 @@ def _deterministic_cpq_gate(req: AskRequest, reader: Any) -> bool:
 def _route_quote(
     req: AskRequest, reader: Any, meta: AskRouteDecision | None = None,
 ) -> dict[str, Any]:
-    result = _run_cpq_turn(req, reader)
+    result = _run_cpq_turn(req, reader, route_meta=meta)
     finished = _finish_cpq_result(result, req, reader, route_meta=meta)
     if finished:
         return finished
@@ -9581,17 +9747,46 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     # N4: mid-session gateway in _run_cpq_turn will no-op this turn.
     mark_top_level_route_used()
 
-    # Escape hatch: timeout / double validation / transport error → det path
-    # N6: soft_quote catches "order APX…" paraphrases det regex misses.
     if route_meta.error or route_meta.timed_out:
-        logger.warning(
-            "cpq_router: escape_hatch mode=%s error=%r timed_out=%s "
-            "det=%s soft_quote=%s → fallback",
-            mode, route_meta.error, route_meta.timed_out, det_is_cpq, soft_quote,
+        if mode == "shadow":
+            # Shadow mode's whole point is "gateway is observe-only" — a
+            # gateway FAILURE must not become customer-visible either;
+            # the deterministic escape hatch stays exactly as it always
+            # has for this mode.
+            logger.warning(
+                "cpq_router: escape_hatch mode=%s error=%r timed_out=%s "
+                "det=%s soft_quote=%s → fallback",
+                mode, route_meta.error, route_meta.timed_out, det_is_cpq, soft_quote,
+            )
+            if det_is_cpq or soft_quote:
+                return _route_quote(req, reader, route_meta)
+            return _standard_ask_pipeline(req, reader)
+        # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1
+        # unified extraction plan — DELIBERATE, SCOPED departure from this
+        # codebase's usual "never fail the turn, always degrade
+        # gracefully" convention, for llm_first mode ONLY: once quantity/
+        # country extraction is fused into this same call, a silent
+        # fallback here would mask a real LLM/provider outage from both
+        # the customer and whoever's on call, since routing AND
+        # extraction are now lost together. Explicitly NOT applied to any
+        # other LLM call site in this codebase (see the plan doc).
+        logger.error(
+            "cpq_router: llm_first router failure surfaced to customer "
+            "error=%r timed_out=%s",
+            route_meta.error, route_meta.timed_out,
         )
-        if det_is_cpq or soft_quote:
-            return _route_quote(req, reader, route_meta)
-        return _standard_ask_pipeline(req, reader)
+        answer = (
+            "Something went wrong processing your request — please try "
+            "again in a moment."
+        )
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_router_error()"],
+            "usage": {"prompt_tokens": route_meta.prompt_tokens,
+                      "completion_tokens": route_meta.completion_tokens,
+                      "latency_ms": 0, "menial_model": route_meta.model_id or "cpq-engine",
+                      "answer_model": route_meta.model_id or "cpq-engine"},
+            "grounding": None, "session_data": req.session_data or {}, "cpq_payload": None,
+        }
 
     # Bidirectional shadow log (LLM route + det auditor)
     log_fn = logger.warning if (
@@ -9608,8 +9803,16 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     if mode == "shadow":
         # Deterministic path still decides; gateway is observe-only.
         # N6: soft_quote widens det path so shadow traffic mirrors escape hatch.
+        # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1
+        # unified extraction plan: quantity/country stay observe-only here
+        # too — "shadow" means the gateway's decision (including these two
+        # new fields) must never silently change turn behavior, only be
+        # logged. Strip them before the turn engine ever sees this
+        # route_meta; the un-stripped original still goes to
+        # _finish_cpq_result for logging via the closure below.
         if det_is_cpq or soft_quote:
-            return _route_quote(req, reader, route_meta)
+            _shadow_meta = dataclasses.replace(route_meta, quantity=None, country=None)
+            return _route_quote(req, reader, _shadow_meta)
         return _standard_ask_pipeline(req, reader)
 
     # ── llm_first: handlers execute the gateway decision ────────────────────

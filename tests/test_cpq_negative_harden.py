@@ -256,6 +256,13 @@ def test_n2_route_qa_read_only_product():
 # ── N6 escape hatch soft quote ───────────────────────────────────────────────
 
 def test_n6_escape_hatch_soft_quote_routes_cpq():
+    """docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    extraction plan: llm_first mode's router failure is now a deliberate
+    customer-facing error, not a silent escape hatch -- this is the ONE
+    mode where quantity/country extraction is trusted, so a gateway
+    failure there is a real outage worth surfacing, not masking. Shadow
+    mode (test_cpq_ask_route_fewshots.py) is where the old escape-hatch
+    fallback still lives, since it's observe-only by design."""
     from aryx.api.ask_api import AskRequest, run_ask
     from aryx.cpq.intent_gateway import AskRouteDecision
 
@@ -279,11 +286,7 @@ def test_n6_escape_hatch_soft_quote_routes_cpq():
          patch("aryx.api.ask_api._standard_ask_pipeline") as mock_std:
         gs.return_value.cpq_intent_mode = "llm_first"
         gs.return_value.cpq_intent_timeout_s = 10.0
-        mock_cpq.return_value = {
-            "answer": "cpq via soft quote", "tools_called": [],
-            "session_data": {}, "usage": {},
-        }
         out = run_ask(req)
-    mock_cpq.assert_called_once()
+    mock_cpq.assert_not_called()
     mock_std.assert_not_called()
-    assert out["answer"] == "cpq via soft quote"
+    assert "went wrong" in out["answer"].lower()

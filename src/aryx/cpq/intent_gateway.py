@@ -790,6 +790,20 @@ _ROUTE_SCHEMA: dict = {
             "description": "Required when route=ambiguous; otherwise null.",
         },
         "rationale": {"type": "string"},
+        "quantity": {
+            "type": ["integer", "null"],
+            "description": (
+                "The overall order quantity, if genuinely stated anywhere "
+                "in the message. Never guess or invent one."
+            ),
+        },
+        "country": {
+            "type": ["string", "null"],
+            "description": (
+                "The destination country, if genuinely stated anywhere in "
+                "the message. Never guess or invent one."
+            ),
+        },
     },
 }
 
@@ -808,6 +822,10 @@ POSITIVE examples (route correctly):
 3) Q: "astra in astrological sense"
    → route=off_topic
    WHY: explicitly non-product/non-quoting. Do NOT force into CPQ or invent catalog facts.
+
+4) Q: "I need pricing for a dozen APX NEXT standard models in the United States"
+   → route=quote, quantity=12, country="United States"
+   WHY: "a dozen" is a genuine, plainly stated quantity (=12) and the country is stated even though an article ("the") sits between the preposition and the name — extract both exactly as meant, never leave them null just because the phrasing is unusual.
 
 NEGATIVE examples (wrong behaviors — NEVER do these):
 
@@ -841,6 +859,15 @@ class AskRouteDecision:
     # Deterministic auditor (is_cpq_question) for agreement logs.
     det_is_cpq: bool | None = None
     agreement: bool | None = None
+    # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    # extraction plan — quantity/country stated in the cold-start message,
+    # extracted by this SAME call rather than a second, separate LLM call.
+    # Raw, UNVALIDATED model output — the caller MUST still run quantity
+    # through is_valid_product_quantity and country through
+    # is_recognized_country before trusting either, exactly like every
+    # other free-text LLM extraction in this codebase.
+    quantity: int | None = None
+    country: str | None = None
 
 
 def _parse_route(raw: dict | None) -> AskRouteDecision | None:
@@ -860,6 +887,16 @@ def _parse_route(raw: dict | None) -> AskRouteDecision | None:
             "I want to make sure I help correctly — are you trying to "
             "configure/quote a product, or ask a general question about one?"
         )
+    # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
+    # extraction plan — type-checked only here (fail-closed to None on any
+    # type mismatch); real semantic validation (is_valid_product_quantity/
+    # is_recognized_country) is the CALLER's job, same "parse here, trust
+    # nothing, validate at the consumer" split every other _llm_*/gateway
+    # parse function in this codebase already follows.
+    qty_raw = raw.get("quantity")
+    quantity = qty_raw if isinstance(qty_raw, int) and not isinstance(qty_raw, bool) else None
+    country_raw = raw.get("country")
+    country = country_raw.strip() if isinstance(country_raw, str) and country_raw.strip() else None
     if conf == "low" and route in ("quote", "qa"):
         # Low confidence → force clarify rather than wrong path
         return AskRouteDecision(
@@ -870,12 +907,16 @@ def _parse_route(raw: dict | None) -> AskRouteDecision | None:
                 "product question?"
             ),
             rationale=f"low_confidence_downgrade; {raw.get('rationale') or ''}",
+            quantity=quantity,
+            country=country,
         )
     return AskRouteDecision(
         route=route,  # type: ignore[arg-type]
         confidence=conf,
         clarifying_question=cq,
         rationale=str(raw.get("rationale") or ""),
+        quantity=quantity,
+        country=country,
     )
 
 
@@ -936,6 +977,13 @@ def classify_ask_route(
         "3. Astrology, weather, sports, jokes → off_topic.\n"
         "4. Mid-session product-family names that differ from the active "
         "session → quote (engine owns switch confirmation).\n"
+        "5. If a specific order quantity or destination country is stated "
+        "anywhere in the message, extract it into the quantity/country "
+        "fields exactly as stated (quantity as an integer, country as its "
+        "plain name) — including unusual phrasing (word-form numbers like "
+        "'a dozen', an article between a preposition and the country "
+        "name). Never invent a value that isn't genuinely there — leave "
+        "the field null instead.\n"
     )
     session_block = (
         f"SESSION HINT: {session_hint}\n" if session_hint else "SESSION HINT: none (cold start)\n"
