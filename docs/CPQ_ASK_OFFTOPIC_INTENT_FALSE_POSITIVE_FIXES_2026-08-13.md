@@ -85,6 +85,51 @@ No code change needed.
 - `pytest tests/test_cpq_intent_gateway.py tests/test_cpq_post_approval_activation.py`
   — **41 passed.**
 
+## Follow-up — does the regex fix generalize? (branch `fix/cpq-approval-llm-first-coverage-proof`)
+
+**Issue:** the 4 bugs above were fixed with targeted regex edits. Regex is an
+enumeration — it can't cover every way a customer phrases approval ("sounds good to
+me", "works for me"), and narrowing `great`/`perfect` to a whole-message-only pattern
+(the D42 fix) introduced a new gap: "Perfect, let's go" no longer matches either.
+
+**Root cause:** `detect_approval`/`detect_qa_question` (`engine.py`) are pure anchored
+regex with no semantic fallback — unlike `intent_gateway.py`'s LLM-first classifier,
+which already exists for other categories.
+
+**Fix:** investigated adding a new LLM-fallback helper (the originally recommended
+approach) and found one is not needed — `APPROVAL` and `QA_QUESTION` are **already**
+wired into `_dispatch_intent_result` (`ask_api.py`, commits `06d4c69`/`b7151cc`, see
+`docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md`) as no-target,
+non-mutating categories — `classify_intent`'s quarantine (confidence=HIGH +
+evidence_span present) is the only gate, with **no dependency on the regex at all**,
+and `cpq_llm_first_enabled` defaults to `True`. Building a second, parallel LLM helper
+would have duplicated already-reviewed infrastructure. Instead, added tests proving
+this coverage:
+- `tests/test_cpq_intent_gateway.py` — 2 new tests: `classify_intent` resolves "sounds
+  good to me..." and "Perfect, let's go" to `APPROVAL`/`HIGH` via the LLM path.
+- `tests/test_cpq_2026_07_28_fixes.py` — 1 new integration test proving
+  `_dispatch_intent_result`'s `APPROVAL` branch submits the payload for "sounds good to
+  me, let's finalize this" with `_cpq_engine.detect_approval` explicitly patched to
+  return `False` — the real production claim, at the real call site.
+
+**Known, documented gap this does NOT close:** sessions with `session.guided_mode =
+True` skip the LLM-first gateway entirely (`ask_api.py`'s STEP-6 gate). Guided-mode
+sessions still rely solely on the regex for approval detection.
+
+**Review:** an independent `code-reviewer` pass on the first draft of this work caught
+3 issues, all fixed before this PR: (1) HIGH — a `classify_intent`-level test asserted
+`engine.detect_approval.assert_not_called()` as "proof" the LLM path skips the regex,
+but `intent_gateway.py` never calls that method for *any* category, making the
+assertion a tautology rather than evidence — replaced with the real integration test
+above; (2) MEDIUM — the `guided_mode` gap (above) was undocumented; (3) LOW — two new
+tests left `engine.detect_change_*` mocks unset, unlike every other test in the file —
+fixed to match convention.
+
+**Verification:** `tests/test_cpq_intent_gateway.py` — 25 passed.
+`tests/test_cpq_2026_07_28_fixes.py -k approval` — 7 passed. (The full file has
+pre-existing, unrelated tests that hang in this sandbox due to a real network-access
+limitation — confirmed via bisection this predates and is unrelated to this change.)
+
 ## Environment hazard noted during this session
 
 Mid-session, a **second concurrent process/session was operating on this same working
