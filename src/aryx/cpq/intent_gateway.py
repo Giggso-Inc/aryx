@@ -639,20 +639,49 @@ def classify_intent(
     candidate_vns = {b.attr.variable_name for b in bundles}
     value_counts = {b.attr.variable_name: len(b.values) for b in bundles}
 
-    parsed, pt, ct = _llm_classify_once(
-        question, bundles, session, model_id, workspace_id,
-    )
+    timeout = float(getattr(settings, "cpq_intent_classify_timeout_s", 10.0) or 10.0)
+
+    def _classify_with_timeout(
+        repair_hint: str = "",
+    ) -> tuple[GatewayIntentResult | None, int, int, bool]:
+        """Returns (parsed, pt, ct, timed_out) -- never raises TimeoutError."""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                _llm_classify_once, question, bundles, session, model_id,
+                workspace_id, repair_hint,
+            )
+            try:
+                parsed, pt, ct = fut.result(timeout=timeout)
+                return parsed, pt, ct, False
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "cpq_intent_gateway: TIMEOUT run_id=%s model=%s timeout_s=%s",
+                    run_id, model_id, timeout,
+                )
+                return None, 0, 0, True
+
+    parsed, pt, ct, timed_out = _classify_with_timeout()
     total_pt, total_ct = pt, ct
+
+    if timed_out:
+        return GatewayDecision(
+            action="fallback", result=None, reason="timeout",
+            prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
+        )
 
     # Schema retry once
     if parsed is None:
-        parsed, pt2, ct2 = _llm_classify_once(
-            question, bundles, session, model_id, workspace_id,
+        parsed, pt2, ct2, timed_out = _classify_with_timeout(
             repair_hint="Previous JSON was unparseable or failed schema. "
                         "Return valid JSON only, matching the schema exactly.",
         )
         total_pt += pt2
         total_ct += ct2
+        if timed_out:
+            return GatewayDecision(
+                action="fallback", result=None, reason="timeout",
+                prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
+            )
 
     if parsed is None:
         logger.info(

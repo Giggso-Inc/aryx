@@ -633,3 +633,32 @@ def test_classify_intent_empty_question_still_bails_without_calling_the_llm():
     mock_chat.assert_not_called()
     assert decision.action == "fallback"
     assert decision.reason == "empty_question"
+
+
+def test_classify_intent_timeout_falls_through_to_fallback():
+    """docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8 Phase 4: classify_intent
+    had no timeout wrapper at all before this -- a hang here would hang the
+    whole turn. A slow/stuck LLM call must degrade to action="fallback"
+    (the existing "proceed to the deterministic path" signal), never hang
+    or raise."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    engine = MagicMock()
+
+    def _slow_chat(*a, **k):
+        import time as _time
+        _time.sleep(0.5)
+        return ("{}", 0, 0)
+
+    with patch("aryx.cpq.intent_gateway._pinned_chat", side_effect=_slow_chat):
+        with patch("aryx.config.get_settings") as mock_settings, \
+             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+            for m in (mock_settings, mock_settings2):
+                m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
+                m.return_value.cpq_intent_classify_timeout_s = 0.05
+            decision = classify_intent(
+                "change country to Canada", [], session, engine, workspace_id=1,
+            )
+    assert decision.action == "fallback"
+    assert decision.reason == "timeout"

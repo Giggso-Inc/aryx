@@ -738,6 +738,23 @@ class Settings(BaseSettings):
             "is_cpq_question path. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
         ),
     )
+    cpq_intent_classify_timeout_s: float = Field(
+        default=10.0,
+        description=(
+            "Hard timeout (seconds) for classify_intent (intent_gateway.py) "
+            "-- the mid-session LLM-first classifier, distinct from "
+            "cpq_intent_timeout_s (the turn-1 top-level router's own "
+            "timeout). Added docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md "
+            "§8 Phase 4: classify_intent had no timeout wrapper at all "
+            "before this, unlike classify_ask_route -- broadening how "
+            "often it's called (every turn, not just post-approval) made "
+            "an unbounded hang a bigger exposure than it was before. On "
+            "timeout, returns action='fallback' -- callers already treat "
+            "that as 'proceed to the deterministic path', so no new "
+            "caller-side branch is needed. Override with "
+            "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
+        ),
+    )
     bml_tier2_max_per_turn: int = Field(
         default=50,
         description=(
