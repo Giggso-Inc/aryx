@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from rdflib.namespace import OWL, RDFS
 
-from aryx.graph.falkor_store import _safe_labels
+from aryx.graph.falkor_store import _lift_props, _safe_labels
 from aryx.models import OntologyType
 from aryx.ontology.rdf import GraphBundle
 from aryx.ontology.rdf.exporter import build_graph
@@ -44,6 +44,31 @@ def test_safe_labels_exact_duplicate_still_dedupes() -> None:
     # suffix — distinct from a sanitized collision between different labels.
     out = _safe_labels(["Product-Type", "Product-Type"])
     assert out == ["Product_Type"]
+
+
+# ---------- Phase 1: property-key safety ----------
+
+def test_lift_props_sanitizes_instead_of_dropping(caplog) -> None:
+    # "attr:1" isn't a safe Cypher identifier — it must survive under a
+    # sanitized name (with a warning), not vanish like the original bug.
+    with caplog.at_level("WARNING"):
+        out = _lift_props({"attr:1": "v"})
+    assert out == {"attr_1": "v"}
+    assert any("attr_1" in r.message for r in caplog.records)
+
+
+def test_lift_props_suffixes_sanitized_collision() -> None:
+    # "attr-1" and "attr:1" both sanitize to "attr_1" — two distinct source
+    # keys must not collapse into one write silently overwriting the other.
+    out = _lift_props({"attr-1": "first", "attr:1": "second"})
+    assert out == {"attr_1": "first", "attr_1_2": "second"}
+
+
+def test_lift_props_sanitized_collision_with_already_safe_key() -> None:
+    # A sanitized key can also collide with a distinct key that was already
+    # a safe identifier as-is — same suffix protection applies.
+    out = _lift_props({"attr_1": "first", "attr:1": "second"})
+    assert out == {"attr_1": "first", "attr_1_2": "second"}
 
 
 # ---------- Phase 1: stable IRI ----------
