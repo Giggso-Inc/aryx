@@ -46,6 +46,15 @@ class IntentCategory(str, Enum):
     ATTR_ACTIVATION = "attr_activation"                 # detect_attr_activation
     ATTR_CLEAR = "attr_clear"                           # detect_attr_clear
     BULK_QUANTITY_CHANGE = "bulk_quantity_change"       # detect_bulk_quantity_change
+    # The OVERALL order/product quantity (a session-level virtual field,
+    # never a real catalog attribute — quantity_turn_precheck/
+    # extract_quantity_hint own the deterministic side). Added 2026-08-13:
+    # this category never existed before, so the LLM had no way to even
+    # express "the customer wants to change the overall quantity" — every
+    # configuring-stage quantity change was decided by regex alone, with
+    # no LLM confirmation possible even in principle. See docs/
+    # CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up.
+    PRODUCT_QUANTITY_CHANGE = "product_quantity_change"
     APPROVAL = "approval"                               # detect_approval
     QA_QUESTION = "qa_question"                         # detect_qa_question
     CHANGE_REQUEST = "change_request"                   # detect_change_request
@@ -295,9 +304,16 @@ GATEWAY_INTENT_JSON_SCHEMA: dict = {
         "quantity_text": {
             "type": ["string", "null"],
             "description": (
-                "BULK_QUANTITY_CHANGE only -- the new quantity as stated by "
-                "the user, digits only (e.g. \"67\"). Null for every other "
-                "category."
+                "BULK_QUANTITY_CHANGE (a specific grid row's quantity) or "
+                "PRODUCT_QUANTITY_CHANGE (the OVERALL order quantity) only "
+                "-- the new quantity as stated by the user, digits only "
+                "(e.g. \"67\"). Only set this when the user is actually "
+                "STATING a quantity to change TO, never when a number "
+                "merely appears inside a conditional/comparison clause "
+                "(e.g. \"unless the quantity is 6\" is NOT a request to "
+                "change the quantity to 6 -- it is a condition; classify "
+                "that as ambiguous or whatever the sentence is actually "
+                "asking for instead). Null for every other category."
             ),
         },
         "response_mode": {
@@ -326,6 +342,10 @@ _GATEWAY_NO_TARGET_CATEGORIES = frozenset({
     IntentCategory.OUT_OF_SCOPE,
     IntentCategory.AMBIGUOUS,
     IntentCategory.PRODUCT_MENTION,
+    # The overall product quantity is a session-level field, never a real
+    # catalog attribute -- there is no variable_name to select here, only
+    # a stated quantity (see the quantity_text check below).
+    IntentCategory.PRODUCT_QUANTITY_CHANGE,
 })
 
 
@@ -441,5 +461,9 @@ def validate_gateway_quarantine(
             and result.response_mode not in ("json", "batch")
         ):
             return _ambiguous("response_mode_missing_or_invalid")
+        if result.intent_category == IntentCategory.PRODUCT_QUANTITY_CHANGE:
+            qty = result.quantity_text
+            if not qty or not qty.strip().isdigit():
+                return _ambiguous("quantity_text_missing_or_invalid")
 
     return result

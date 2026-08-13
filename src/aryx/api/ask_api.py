@@ -4270,6 +4270,52 @@ def _shadow_classify_cpq_turn(
         logger.debug("cpq_shadow_intent: diagnostic failed", exc_info=True)
 
 
+def _llm_confirm_deterministic_intent(
+    req: "AskRequest", session: Any, attrs: list, expected_category: IntentCategory,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any, catalog_prefix: str,
+    expected_variable_name: str | None = None,
+) -> bool:
+    """Blanket LLM-as-final-verdict checkpoint — docs/CPQ_QUANTITY_COUNTRY_
+    SUMMARY_FIXES_2026_08_13.md follow-up (live bug: "Change country to
+    United States unless the quantity is 6" was misread as a command to
+    set quantity=6, because two unrelated regex matches — a global
+    change-verb detector and a quantity-value detector — compounded
+    across a conditional clause neither one understands).
+
+    A deterministic detector just proposed an action during a
+    CONFIGURING-stage turn — a stage `gateway_classify_intent` was never
+    previously consulted on at all (its one prior call site is scoped to
+    awaiting_approval/post_approval only). This calls that SAME existing
+    classifier fresh, independently, and requires it to agree with the
+    deterministic candidate before the caller is allowed to act on it.
+
+    Reject-on-failure, deliberately: any exception, a `None` result, or a
+    disagreeing category/variable_name all return False. This NEVER
+    falls back to "trust the deterministic match anyway" — that fallback
+    is exactly what produced the live bug this checkpoint exists to
+    close. A caller that gets False here must fall through to whatever
+    the turn would otherwise do next, never act on the rejected match.
+    """
+    try:
+        decision = gateway_classify_intent(
+            req.question, attrs, session, _cpq_engine, req.workspace_id,
+            hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
+            bml_eval=bml_eval, catalog_prefix=catalog_prefix,
+        )
+    except Exception as exc:  # noqa: BLE001 — reject on any failure, never guess
+        logger.debug(
+            "cpq llm_verdict_checkpoint: gateway call failed, rejecting "
+            "deterministic match: %r", exc,
+        )
+        return False
+    result = decision.result
+    if result is None or result.intent_category != expected_category:
+        return False
+    if expected_variable_name is not None and result.variable_name != expected_variable_name:
+        return False
+    return True
+
+
 def _gateway_to_intent_result(
     gw: Any,
     attrs: list,
@@ -6324,7 +6370,30 @@ def _run_cpq_turn_inner(
     if _qty_hint is None and route_meta is not None and route_meta.quantity is not None:
         _qty_hint = route_meta.quantity
     if _qty_hint is not None and is_valid_product_quantity(_qty_hint):
-        session.product_quantity = _qty_hint
+        # Blanket LLM-as-final-verdict checkpoint (docs/CPQ_QUANTITY_
+        # COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up): this background
+        # capture is deliberately silent/best-effort for a quantity stated
+        # as PART of a larger order description ("...50 radios...", no
+        # explicit change framing at all) — that case still needs no LLM
+        # call, exactly as before. But when the message ALSO carries an
+        # explicit change verb (has_change_verb), it's making the same
+        # kind of assertion the STEP 6 quantity gate guards, and is
+        # exposed to the identical live bug: "Change country to United
+        # States unless the quantity is 6" has both "change" (about
+        # country) and "quantity is 6" (a conditional comparison, not a
+        # command) — this background capture would otherwise silently set
+        # quantity=6 before the STEP 6 gate (which does confirm) ever even
+        # runs, since this block executes first, unconditionally, on
+        # every turn. Reject-on-failure, same as every other checkpoint.
+        _qty_bg_precheck = quantity_turn_precheck(req.question, [])
+        _qty_bg_confirmed = not (_qty_bg_precheck and _qty_bg_precheck.get("has_change_verb"))
+        if not _qty_bg_confirmed:
+            _qty_bg_confirmed = _llm_confirm_deterministic_intent(
+                req, session, [], IntentCategory.PRODUCT_QUANTITY_CHANGE,
+                hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
+            )
+        if _qty_bg_confirmed:
+            session.product_quantity = _qty_hint
     # An implausible number here (zero, negative, an absurd overflow) is
     # silently ignored rather than rejected with a message — this is an
     # inferred background capture from a free-text order request, not an
@@ -6446,78 +6515,105 @@ def _run_cpq_turn_inner(
                     req.question, _qty_candidates, session, req.workspace_id,
                 )
             if _qty_target == "product":
-                if _qty_pre["is_change"] and _qty_pre.get("decimal_value") is not None:
-                    # PR #186 review, medium: an explicit decimal ("change
-                    # quantity to 10.0") gets its own dedicated rejection
-                    # quoting exactly what the customer typed — never the
-                    # wrong, confusing digit the old regex-backtracking
-                    # bug used to surface here ("0" instead of "10.0").
-                    answer = (
-                        f"**{_qty_pre['decimal_value']}** isn't a valid quantity — it "
-                        f"needs to be a whole number from {MIN_PRODUCT_QUANTITY} to "
-                        f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
-                        f"still **{session.product_quantity}**."
+                # Blanket LLM-as-final-verdict checkpoint (docs/CPQ_
+                # QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up,
+                # live bug: "Change country to United States unless the
+                # quantity is 6" was misread as a command to set
+                # quantity=6 — a global change-verb regex and a quantity-
+                # value regex each matched independently, compounding
+                # across a conditional clause neither one understands).
+                # Only an actual CHANGE attempt (is_change) needs
+                # confirmation — a bare question ("what's my quantity?")
+                # is never mutating, so it's answered exactly as before,
+                # no LLM call needed. Reject-on-failure: if the gateway
+                # disagrees (or fails/times out), this whole gate is
+                # treated as not applicable to this turn at all — falls
+                # through to normal hint/attribute processing below,
+                # rather than answering with a stale/unchanged quantity
+                # as if a bare question had been asked instead.
+                _qty_confirmed = (
+                    not _qty_pre["is_change"]
+                    or _llm_confirm_deterministic_intent(
+                        req, session, _qty_attrs, IntentCategory.PRODUCT_QUANTITY_CHANGE,
+                        hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
+                        catalog_prefix=(_qty_attrs[0].catalog_prefix if _qty_attrs else ""),
                     )
-                    _persist_cpq_history(req.workspace_id, req.question, answer)
-                    return {
-                        "answer": answer, "terms": [],
-                        "tools_called": ["cpq_product_quantity_rejected()"],
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                    }
-                if (
-                    _qty_pre["is_change"] and _qty_pre["value"] is not None
-                    and not is_valid_product_quantity(_qty_pre["value"])
-                ):
-                    # An explicit, invalid request ("change quantity to
-                    # -5"/"...to 0") gets a real rejection, never a silent
-                    # ignore or a silently-accepted nonsense value — the
-                    # customer asked for something specific and needs to
-                    # know why it didn't happen.
-                    answer = (
-                        f"**{_qty_pre['value']}** isn't a valid quantity — it needs to be "
-                        f"a whole number from {MIN_PRODUCT_QUANTITY} to "
-                        f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
-                        f"**{session.product_quantity}**."
-                    )
-                    _persist_cpq_history(req.workspace_id, req.question, answer)
-                    return {
-                        "answer": answer, "terms": [],
-                        "tools_called": ["cpq_product_quantity_rejected()"],
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                    }
-                if _qty_pre["is_change"] and _qty_pre["value"] is not None:
-                    session.product_quantity = _qty_pre["value"]
-                # Live-verified gap, 2026-08-13: a quantity change used to
-                # return ONLY "Quantity → N", with no updated configuration
-                # summary — every other attribute change shows the running
-                # configuration once it's complete. If the configuration
-                # is already complete (no pending variables), show the
-                # same "Configuration complete" + summary parity a normal
-                # attribute change gets; mid-configuration, no complete
-                # configuration exists yet to show, so the plain quantity
-                # line stays as-is (matching how every other mid-cascade
-                # attribute change behaves).
-                if not session.pending_variables:
-                    _qty_summary_resp = _build_show_summary_response(req, session, reader)
-                    if _qty_summary_resp is not None:
-                        _qty_summary_resp["answer"] = (
-                            f"**Quantity** → {session.product_quantity}\n\n"
-                            + _qty_summary_resp["answer"]
+                )
+                if _qty_confirmed:
+                    if _qty_pre["is_change"] and _qty_pre.get("decimal_value") is not None:
+                        # PR #186 review, medium: an explicit decimal ("change
+                        # quantity to 10.0") gets its own dedicated rejection
+                        # quoting exactly what the customer typed — never the
+                        # wrong, confusing digit the old regex-backtracking
+                        # bug used to surface here ("0" instead of "10.0").
+                        answer = (
+                            f"**{_qty_pre['decimal_value']}** isn't a valid quantity — it "
+                            f"needs to be a whole number from {MIN_PRODUCT_QUANTITY} to "
+                            f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
+                            f"still **{session.product_quantity}**."
                         )
-                        _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
-                        return _qty_summary_resp
-                answer = f"**Quantity** → {session.product_quantity}"
-                _persist_cpq_history(req.workspace_id, req.question, answer)
-                return {
-                    "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                              "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                }
+                        _persist_cpq_history(req.workspace_id, req.question, answer)
+                        return {
+                            "answer": answer, "terms": [],
+                            "tools_called": ["cpq_product_quantity_rejected()"],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                        }
+                    if (
+                        _qty_pre["is_change"] and _qty_pre["value"] is not None
+                        and not is_valid_product_quantity(_qty_pre["value"])
+                    ):
+                        # An explicit, invalid request ("change quantity to
+                        # -5"/"...to 0") gets a real rejection, never a silent
+                        # ignore or a silently-accepted nonsense value — the
+                        # customer asked for something specific and needs to
+                        # know why it didn't happen.
+                        answer = (
+                            f"**{_qty_pre['value']}** isn't a valid quantity — it needs to be "
+                            f"a whole number from {MIN_PRODUCT_QUANTITY} to "
+                            f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
+                            f"**{session.product_quantity}**."
+                        )
+                        _persist_cpq_history(req.workspace_id, req.question, answer)
+                        return {
+                            "answer": answer, "terms": [],
+                            "tools_called": ["cpq_product_quantity_rejected()"],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                        }
+                    if _qty_pre["is_change"] and _qty_pre["value"] is not None:
+                        session.product_quantity = _qty_pre["value"]
+                    # Live-verified gap, 2026-08-13: a quantity change used to
+                    # return ONLY "Quantity → N", with no updated configuration
+                    # summary — every other attribute change shows the running
+                    # configuration once it's complete. If the configuration
+                    # is already complete (no pending variables), show the
+                    # same "Configuration complete" + summary parity a normal
+                    # attribute change gets; mid-configuration, no complete
+                    # configuration exists yet to show, so the plain quantity
+                    # line stays as-is (matching how every other mid-cascade
+                    # attribute change behaves).
+                    if not session.pending_variables:
+                        _qty_summary_resp = _build_show_summary_response(req, session, reader)
+                        if _qty_summary_resp is not None:
+                            _qty_summary_resp["answer"] = (
+                                f"**Quantity** → {session.product_quantity}\n\n"
+                                + _qty_summary_resp["answer"]
+                            )
+                            _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
+                            return _qty_summary_resp
+                    answer = f"**Quantity** → {session.product_quantity}"
+                    _persist_cpq_history(req.workspace_id, req.question, answer)
+                    return {
+                        "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                    }
+                # else: rejected -- fall through to normal hint/attribute
+                # processing below, exactly as if this gate never fired.
             if _qty_target is None:
                 # Genuinely ambiguous (or the LLM call/parse failed) — ask,
                 # never guess which one the customer meant.
@@ -8317,7 +8413,11 @@ def _run_cpq_turn_inner(
         # handled entirely separately before either of those runs.
         _removal_match = _cpq_engine.detect_multi_select_removal(
             req.question, attrs, session.filled_multi)
-        if _removal_match:
+        if _removal_match and _llm_confirm_deterministic_intent(
+            req, session, attrs, IntentCategory.MULTI_SELECT_REMOVAL,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+            expected_variable_name=_removal_match[0].variable_name,
+        ):
             _removal_attr, _to_remove = _removal_match
             return _handle_multi_select_removal(
                 req, session, attrs, _removal_attr, _to_remove,
@@ -8333,7 +8433,11 @@ def _run_cpq_turn_inner(
             req.question, attrs, session.filled, session.filled_multi,
             hiding_rules, req.workspace_id, catalog_prefix, bml_eval=bml_eval,
         )
-        if _activation_match:
+        if _activation_match and _llm_confirm_deterministic_intent(
+            req, session, attrs, IntentCategory.ATTR_ACTIVATION,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+            expected_variable_name=_activation_match.variable_name,
+        ):
             return _handle_attr_activation(
                 req, session, attrs, _activation_match,
                 hiding_rules, rec_rules, con_rules,
@@ -8345,7 +8449,11 @@ def _run_cpq_turn_inner(
         _clear_match = _cpq_engine.detect_attr_clear(
             req.question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
         )
-        if _clear_match:
+        if _clear_match and _llm_confirm_deterministic_intent(
+            req, session, attrs, IntentCategory.ATTR_CLEAR,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+            expected_variable_name=_clear_match.variable_name,
+        ):
             return _handle_attr_clear(
                 req, session, attrs, _clear_match,
                 hiding_rules, rec_rules, con_rules,
@@ -8414,7 +8522,11 @@ def _run_cpq_turn_inner(
         else:
             change_result = _cpq_engine.detect_change_request(
                 req.question, attrs, session.filled, filled_multi=session.filled_multi)
-            if change_result:
+            if change_result and _llm_confirm_deterministic_intent(
+                req, session, attrs, IntentCategory.CHANGE_REQUEST,
+                hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+                expected_variable_name=change_result[0].variable_name,
+            ):
                 changed_attr, new_value_hint = change_result
                 # Enqueue sibling named targets before applying the primary.
                 _scan_and_enqueue_remaining_targets(
@@ -8690,7 +8802,11 @@ def _run_cpq_turn_inner(
         else:
             _mc_change_result = _cpq_engine.detect_change_request(
                 req.question, attrs, session.filled, filled_multi=session.filled_multi)
-            if _mc_change_result:
+            if _mc_change_result and _llm_confirm_deterministic_intent(
+                req, session, attrs, IntentCategory.CHANGE_REQUEST,
+                hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+                expected_variable_name=_mc_change_result[0].variable_name,
+            ):
                 _mc_changed_attr, _mc_new_value_hint = _mc_change_result
                 _scan_and_enqueue_remaining_targets(
                     session, req.question, attrs,
@@ -9095,7 +9211,11 @@ def _run_cpq_turn_inner(
     if not session.pending_variables and session.turn > 1 and not mode_request:
         _gap_removal_match = _cpq_engine.detect_multi_select_removal(
             req.question, attrs, session.filled_multi)
-        if _gap_removal_match:
+        if _gap_removal_match and _llm_confirm_deterministic_intent(
+            req, session, attrs, IntentCategory.MULTI_SELECT_REMOVAL,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+            expected_variable_name=_gap_removal_match[0].variable_name,
+        ):
             _gap_attr, _gap_to_remove = _gap_removal_match
             return _handle_multi_select_removal(
                 req, session, attrs, _gap_attr, _gap_to_remove,

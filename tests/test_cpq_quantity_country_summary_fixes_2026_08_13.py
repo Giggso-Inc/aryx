@@ -16,8 +16,27 @@ from aryx.api.ask_api import (
 )
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.engine import CpqEngine, extract_quantity_hint
-from aryx.cpq.intent_gateway import AskRouteDecision, _parse_route
+from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision, _parse_route
+from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+
+
+def _confirm_product_quantity_change(monkeypatch) -> None:
+    """docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up:
+    every real quantity-change command must now be confirmed by the LLM
+    gateway before it executes (blanket LLM-as-final-verdict, reject-on-
+    failure). Mocked to agree for tests exercising genuine commands."""
+    monkeypatch.setattr(
+        api, "gateway_classify_intent",
+        lambda *a, **k: GatewayDecision(
+            action="dispatch",
+            result=GatewayIntentResult(
+                intent_category=IntentCategory.PRODUCT_QUANTITY_CHANGE,
+                confidence=Confidence.HIGH,
+                quantity_text="1", evidence_span="", rationale="test-confirm",
+            ),
+        ),
+    )
 
 _engine = CpqEngine()
 
@@ -72,6 +91,7 @@ def test_extract_quantity_hint_dozen_without_a_quantity_context_word_returns_non
 
 def test_quantity_change_shows_full_summary_when_config_already_complete(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     attrs = [battery]
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
@@ -141,6 +161,7 @@ def test_build_show_summary_response_derives_catalog_prefix_from_attrs_not_load_
 
 def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -158,6 +179,7 @@ def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monke
 
 def test_quantity_change_invalid_value_still_rejects_without_a_summary(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
@@ -176,6 +198,7 @@ def test_quantity_change_invalid_value_still_rejects_without_a_summary(monkeypat
 
 def test_quantity_change_summary_build_failure_falls_back_to_plain_line(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([battery], "aSTRO25_bom"))

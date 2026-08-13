@@ -27,7 +27,29 @@ from aryx.cpq.engine import (
     quantity_turn_precheck,
 )
 from aryx.cpq.bml import BmlEvaluator
+from aryx.cpq.intent_gateway import GatewayDecision
+from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession, ConfigAttr, MenuOption
+
+
+def _confirm_product_quantity_change(monkeypatch) -> None:
+    """docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up:
+    every real quantity-change command must now be confirmed by the LLM
+    gateway before it's allowed to execute (blanket LLM-as-final-verdict,
+    reject-on-failure). These tests exercise genuine, unambiguous
+    commands, so the gateway is mocked to agree -- the rejection-on-
+    disagreement path itself is covered separately."""
+    monkeypatch.setattr(
+        api, "gateway_classify_intent",
+        lambda *a, **k: GatewayDecision(
+            action="dispatch",
+            result=GatewayIntentResult(
+                intent_category=IntentCategory.PRODUCT_QUANTITY_CHANGE,
+                confidence=Confidence.HIGH,
+                quantity_text="1", evidence_span="", rationale="test-confirm",
+            ),
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -338,6 +360,7 @@ def test_quantity_question_answers_from_session_with_no_competing_attribute(monk
 
 
 def test_quantity_change_with_no_competing_attribute_updates_session(monkeypatch):
+    _confirm_product_quantity_change(monkeypatch)
     monkeypatch.setattr(
         "aryx.api.ask_api._cpq_engine.load_product_config",
         lambda *a, **k: ([], "aSTRO25_bom"),
@@ -350,6 +373,7 @@ def test_quantity_change_with_no_competing_attribute_updates_session(monkeypatch
 
 
 def test_explicit_zero_quantity_is_rejected_not_silently_accepted(monkeypatch):
+    _confirm_product_quantity_change(monkeypatch)
     monkeypatch.setattr(
         "aryx.api.ask_api._cpq_engine.load_product_config",
         lambda *a, **k: ([], "aSTRO25_bom"),
@@ -365,6 +389,7 @@ def test_explicit_zero_quantity_is_rejected_not_silently_accepted(monkeypatch):
 
 
 def test_explicit_negative_quantity_is_rejected_not_silently_accepted(monkeypatch):
+    _confirm_product_quantity_change(monkeypatch)
     monkeypatch.setattr(
         "aryx.api.ask_api._cpq_engine.load_product_config",
         lambda *a, **k: ([], "aSTRO25_bom"),
@@ -379,6 +404,7 @@ def test_explicit_negative_quantity_is_rejected_not_silently_accepted(monkeypatc
 
 
 def test_explicit_absurd_quantity_is_rejected_not_silently_accepted(monkeypatch):
+    _confirm_product_quantity_change(monkeypatch)
     monkeypatch.setattr(
         "aryx.api.ask_api._cpq_engine.load_product_config",
         lambda *a, **k: ([], "aSTRO25_bom"),
@@ -395,6 +421,7 @@ def test_explicit_decimal_quantity_is_rejected_quoting_the_real_input(monkeypatc
     """PR #186 review, medium: the rejection message must quote the exact
     decimal the customer typed ("10.0"), never the wrong digit the old
     regex-backtracking bug used to surface ("0")."""
+    _confirm_product_quantity_change(monkeypatch)
     monkeypatch.setattr(
         "aryx.api.ask_api._cpq_engine.load_product_config",
         lambda *a, **k: ([], "aSTRO25_bom"),
@@ -416,6 +443,7 @@ def test_explicit_quantity_unparseable_phrase_resolves_via_llm_fallback(monkeypa
     digit nor word-number patterns at all -- the LLM extraction fallback
     must resolve it to a real integer, re-validated exactly like the
     regex path."""
+    _confirm_product_quantity_change(monkeypatch)
     monkeypatch.setattr(
         "aryx.api.ask_api._cpq_engine.load_product_config",
         lambda *a, **k: ([], "aSTRO25_bom"),
