@@ -23,8 +23,9 @@ from aryx.ask.evidence import RetrievedEntity
 from aryx.config import get_settings
 from aryx.cpq.engine import (
     CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY,
-    MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, extract_quantity_hint,
-    is_valid_product_quantity, question_mentions_quantity, quantity_turn_precheck,
+    MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, detect_country_change_request,
+    extract_quantity_hint, is_valid_product_quantity, question_mentions_quantity,
+    quantity_turn_precheck,
 )
 from aryx.cpq.bom_gate import (
     find_missing_required_fields, recheck_constraints, validate_before_payload,
@@ -6638,6 +6639,46 @@ def _run_cpq_turn_inner(
             # the existing apply_answer/cascade machinery exactly like any
             # other attribute; this gate's job (deciding WHICH target) is
             # done.
+
+    # Explicit "change country to X" command (docs/CPQ_QUANTITY_COUNTRY_
+    # SUMMARY_FIXES_2026_08_13.md follow-up, live bug: "Change country to
+    # United States unless the quantity is 10" fell through to the generic
+    # attribute-disambiguation clarify prompt -- session.country had no
+    # change detector at all, only a one-time initial-hint assignment
+    # below). Checked before hint extraction so it always takes priority
+    # over the passive "first hint wins" anchor logic, and skipped while a
+    # switch_country reprompt is already pending (that gate owns the reply
+    # to its own question). Blanket LLM-as-final-verdict checkpoint, same
+    # reject-on-failure discipline as every other deterministic gate --
+    # attrs/rule sets aren't loaded yet this early, so empty/None
+    # placeholders are passed, exactly like the session-level quantity
+    # background capture above.
+    _country_change_match = detect_country_change_request(req.question)
+    if (
+        _country_change_match
+        and session.pending_anchor != "switch_country"
+        and _llm_confirm_deterministic_intent(
+            req, session, [], IntentCategory.COUNTRY_CHANGE,
+            hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
+        )
+    ):
+        if (
+            session.country
+            and session.country.strip().lower() == _country_change_match.strip().lower()
+        ):
+            answer = f"Country is already set to **{session.country}** — no change made."
+        else:
+            session.country = _country_change_match
+            answer = f"Country → {session.country}"
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [], "tools_called": ["cpq_country_change()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+        # else: rejected -- fall through to normal hint/attribute
+        # processing below, exactly as if this gate never fired.
 
     # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
     hints = _cpq_engine.extract_hints(req.question)

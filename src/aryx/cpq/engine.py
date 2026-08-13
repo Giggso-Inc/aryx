@@ -427,6 +427,43 @@ _COUNTRY_PREP = re.compile(
     r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
 )
 
+# Verb-anchored country CHANGE command, mirroring _QUANTITY_CHANGE_VERB_RE's
+# shape but scoped to "country" -- _COUNTRY_PREP above only recognizes
+# DESCRIPTIVE phrasing ("customer in X", "destination country is X"), never
+# a change COMMAND ("change country to X"), so a customer explicitly asking
+# to change the country mid-session had no detector at all before this
+# (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up -- live
+# bug: "Change country to United States unless the quantity is 10" fell
+# through to the generic attribute-disambiguation clarify prompt instead of
+# ever being recognized as a country-change request). The negative
+# lookahead keeps this from firing on an unrelated change command that
+# merely happens to mention "country" later in a longer sentence about
+# something else entirely -- "country" must appear within a short span of
+# the verb.
+_COUNTRY_CHANGE_RE = re.compile(
+    r"(?i:\b(?:change|set|update|make\s+it)\b(?:(?!\b(?:quantity|qty)\b).){0,25}?"
+    r"\bcountry\b\s+(?:to|as|is)\s+)"
+    r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
+)
+
+
+def detect_country_change_request(question: str) -> str | None:
+    """Deterministic detector for an explicit "change country to X" command.
+
+    Returns the as-typed, validated country name (e.g. "United States"),
+    or None when no verb-anchored country-change command is present, or
+    the captured text isn't a country the engine actually recognizes
+    (`CpqEngine.is_recognized_country`) -- never a bare regex fragment.
+    """
+    m = _COUNTRY_CHANGE_RE.search(question or "")
+    if not m:
+        return None
+    candidate = m.group(1).strip()
+    if not CpqEngine.is_recognized_country(candidate):
+        return None
+    return candidate
+
+
 # Region hints (abbreviations the generic extractor won't catch as country names)
 _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\b(north\s+america|namer)\b", "NA"),

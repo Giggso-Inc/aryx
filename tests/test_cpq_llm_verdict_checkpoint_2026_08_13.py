@@ -304,3 +304,81 @@ def test_change_request_rejected_by_gateway_never_executes(monkeypatch):
     ), patch.object(api, "_handle_cascade") as mock_handle:
         _run_cpq_turn_inner(req, object())
     mock_handle.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# COUNTRY_CHANGE — session-level country field, same follow-up
+# (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md): "change country
+# to X" had NO deterministic detector at all before this, so it fell
+# through to generic attribute-disambiguation instead of ever being
+# recognized as a country-change request.
+# ═══════════════════════════════════════════════════════════════════════
+
+def _confirm_country_change(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api, "gateway_classify_intent",
+        lambda *a, **k: _confirming_decision(IntentCategory.COUNTRY_CHANGE),
+    )
+
+
+def test_live_bug_repro_country_command_is_recognized_and_quantity_is_not(monkeypatch):
+    """Exact reported live bug (with quantity=10 in the actual transcript):
+    the country instruction must be processed, and the conditional
+    "unless the quantity is 10" clause must NOT be misread as a command
+    to set the quantity."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([], "aSTRO25_bom"))
+    _confirm_country_change(monkeypatch)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", product_quantity=1)
+    req = AskRequest(
+        question=(
+            "Change country to United States unless the quantity is 10. "
+            "If it is 10, do nothing."
+        ),
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    resp = _run_cpq_turn_inner(req, object())
+    assert resp["session_data"]["country"] == "United States"
+    assert resp["session_data"]["product_quantity"] == 1
+
+
+def test_country_change_confirmed_by_gateway_updates_session(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([], "aSTRO25_bom"))
+    _confirm_country_change(monkeypatch)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom")
+    req = AskRequest(question="please change my country to Canada", workspace_id=1,
+                      session_data=session.to_dict())
+    resp = _run_cpq_turn_inner(req, object())
+    assert resp["session_data"]["country"] == "Canada"
+    assert resp["tools_called"] == ["cpq_country_change()"]
+
+
+def test_country_change_already_matching_current_value_is_a_no_op_message(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([], "aSTRO25_bom"))
+    _confirm_country_change(monkeypatch)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States")
+    req = AskRequest(question="change country to United States", workspace_id=1,
+                      session_data=session.to_dict())
+    resp = _run_cpq_turn_inner(req, object())
+    assert resp["session_data"]["country"] == "United States"
+    assert "already set" in resp["answer"]
+
+
+def test_country_change_rejected_by_gateway_never_updates_session(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([], "aSTRO25_bom"))
+    monkeypatch.setattr(
+        api, "gateway_classify_intent",
+        lambda *a, **k: _confirming_decision(IntentCategory.AMBIGUOUS),
+    )
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="Canada")
+    req = AskRequest(question="change country to United States", workspace_id=1,
+                      session_data=session.to_dict())
+    resp = _run_cpq_turn_inner(req, object())
+    assert resp.get("tools_called") != ["cpq_country_change()"]

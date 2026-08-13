@@ -55,6 +55,13 @@ class IntentCategory(str, Enum):
     # no LLM confirmation possible even in principle. See docs/
     # CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up.
     PRODUCT_QUANTITY_CHANGE = "product_quantity_change"
+    # The session-level shipping/destination country hint (session.country),
+    # never a real catalog attribute -- mirrors PRODUCT_QUANTITY_CHANGE's
+    # reasoning exactly. Added 2026-08-13 follow-up: detect_country_change_
+    # request owns the deterministic side; before this category existed,
+    # an explicit "change country to X" command had no way to be classified
+    # at all and fell through to generic attribute disambiguation instead.
+    COUNTRY_CHANGE = "country_change"
     APPROVAL = "approval"                               # detect_approval
     QA_QUESTION = "qa_question"                         # detect_qa_question
     CHANGE_REQUEST = "change_request"                   # detect_change_request
@@ -346,6 +353,9 @@ _GATEWAY_NO_TARGET_CATEGORIES = frozenset({
     # catalog attribute -- there is no variable_name to select here, only
     # a stated quantity (see the quantity_text check below).
     IntentCategory.PRODUCT_QUANTITY_CHANGE,
+    # session.country is likewise session-level, not a catalog attribute --
+    # no variable_name to select here either.
+    IntentCategory.COUNTRY_CHANGE,
 })
 
 
