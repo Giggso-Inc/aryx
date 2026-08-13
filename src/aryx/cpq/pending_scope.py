@@ -281,8 +281,21 @@ def format_did_you_mean(
     character overlap, and phrasing that as a confident guess overstated
     the actual match quality. The caller (_scoped_reask_response) decides
     this from the underlying ScopeResolve.score/tier, not this function.
+
+    Live-confirmed wording bug (2026-08-13): quoting the reply verbatim
+    ("I didn't get **{reply}**...") reads fine for a short, typo'd
+    product-name attempt, but produces garbled, confusing phrasing for a
+    full sentence -- "I didn't get **I wanted to set the product** for
+    Product" sounds like a broken double-negative, not a clarification
+    request. A short reply (<=5 words) is still quoted, since that's the
+    genuinely useful case (showing the customer exactly what didn't
+    match); a longer one is replaced with generic "that reply" wording.
     """
-    reply_s = (reply or "").strip() or "that"
+    reply_stripped = (reply or "").strip()
+    reply_s = (
+        reply_stripped if reply_stripped and len(reply_stripped.split()) <= 5
+        else "that reply"
+    )
     label_bit = f" for **{scope_label}**" if scope_label else ""
     if numbered or len(suggestions) > 3:
         lines = "\n".join(f"{i + 1}. **{s}**" for i, s in enumerate(suggestions))

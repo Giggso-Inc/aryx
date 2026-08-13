@@ -25,6 +25,7 @@ from unittest.mock import patch
 import aryx.api.ask_api as api
 from aryx.api.ask_api import (
     AskRequest,
+    _build_scope_family_only_response,
     _build_scope_skip_response,
     _llm_classify_scope_reply,
     _resolve_scope_reply,
@@ -148,10 +149,11 @@ def test_llm_call_failure_falls_through_to_deterministic_miss():
     assert res.tier == "miss"
 
 
-def test_i_want_quote_for_apx_next_radios_still_asks_to_disambiguate():
-    """Names the family but no specific variant -- correctly classified
-    unrelated (it genuinely doesn't specify one), falls through to the
-    existing miss/reask. This is expected, not a regression."""
+def test_i_want_quote_for_apx_next_radios_is_family_only_not_a_generic_miss():
+    """Names the family but no specific variant -- classified
+    "family_only", distinct from a genuine "unrelated" miss, so the
+    customer gets told plainly to pick a specific option instead of the
+    generic "I didn't get X" wording."""
     cands = [
         "APX NEXT All Band", "APX NEXT XE All Band", "APX NEXT Single Band",
         "APX NEXT XE Single Band", "APX NEXT International (Federal)",
@@ -159,13 +161,51 @@ def test_i_want_quote_for_apx_next_radios_still_asks_to_disambiguate():
     ]
     with patch.object(
         api.llm_runtime, "chat",
-        return_value=_chat_json('{"outcome": "unrelated", "guess": null}'),
+        return_value=_chat_json('{"outcome": "family_only", "guess": null}'),
     ):
         res = _resolve_scope_reply(
             "I want quote for APX Next radios", cands, "Product", CpqSession(), 1,
         )
+    assert res == "family_only"
+
+
+def test_family_only_response_tells_customer_to_pick_a_specific_option():
+    cands = ["APX NEXT All Band", "APX NEXT XE All Band"]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom")
+    req = AskRequest(
+        question="I want quote for APX Next radios", workspace_id=1,
+        session_data=session.to_dict(),
+    )
+    resp = _build_scope_family_only_response(req, session, cands, "Product")
+    assert resp["tools_called"] == ["cpq_scope_family_only()"]
+    assert "select the specific" in resp["answer"].lower()
+    assert "APX NEXT All Band" in resp["answer"]
+    assert "APX NEXT XE All Band" in resp["answer"]
+    # Never says the reply itself failed to match anything.
+    assert "didn't get" not in resp["answer"].lower()
+
+
+def test_a_variant_embedded_in_a_longer_sentence_still_resolves_as_candidate():
+    """A specific variant mentioned anywhere in the reply must win over
+    treating the message as merely naming the family -- owner directive:
+    if the product name is already present in the query, it must be
+    detected, not deferred to family_only."""
+    cands = [
+        "APX NEXT All Band", "APX NEXT XE All Band", "APX NEXT Single Band",
+    ]
+    with patch.object(
+        api.llm_runtime, "chat",
+        return_value=_chat_json(
+            '{"outcome": "candidate", "guess": "APX NEXT All Band"}',
+        ),
+    ):
+        res = _resolve_scope_reply(
+            "I want a quote for the APX Next All Band radios please",
+            cands, "Product", CpqSession(), 1,
+        )
     assert res != "skip"
-    assert res.matched is None
+    assert res != "family_only"
+    assert res.matched == "APX NEXT All Band"
 
 
 # ═══════════════════════════════════════════════════════════════════════
