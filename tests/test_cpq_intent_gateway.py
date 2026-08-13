@@ -584,3 +584,86 @@ def test_build_candidates_boosts_last_qa_variable():
     ]
     bundles = build_candidate_bundles(attrs, session, "make it ATT/FirstNet")
     assert bundles[0].attr.variable_name == "wirelessCarrier_astro"
+
+
+# docs/CPQ_ASK_OFFTOPIC_INTENT_FALSE_POSITIVE_FIXES_2026-08-13.md follow-up:
+# _APPROVAL_RE (engine.py) is a fixed keyword enumeration and can never cover
+# every natural way of saying "yes, submit it" — "sounds good to me" matches
+# none of its alternatives ("looks good" is listed, "sounds good" is not).
+# APPROVAL is a no-target, non-mutating category (MUTATING_CATEGORIES doesn't
+# apply — see IntentCategory.APPROVAL's own comment in intent_schema.py), so
+# classify_intent's quarantine (confidence=HIGH + evidence_span present) is
+# the only gate for this category — no deterministic-agreement cross-check
+# against any engine-side regex. This proves classify_intent itself resolves
+# a phrasing the regex misses to dispatch; the further claim that the live
+# turn then reaches this via ask_api.py's _dispatch_intent_result (bypassing
+# detect_approval entirely) is proven separately, at that call site, in
+# tests/test_cpq_2026_07_28_fixes.py (test_llm_first_approval_dispatches_
+# and_submits_the_payload et al. — that suite constructs the classification
+# result directly and never calls classify_intent, so the two suites
+# together cover both halves of the claim). NOT covered by either: sessions
+# with guided_mode=True skip the LLM-first gateway entirely (ask_api.py's
+# STEP-6 gate checks `not session.guided_mode`), so a guided-mode session
+# still has only the regex as its approval detector.
+def test_classify_dispatch_approval_on_phrasing_regex_alone_would_miss():
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"approval","confidence":"high",'
+        '"variable_name":null,"value_ref":null,'
+        '"evidence_span":"sounds good to me","rationale":"customer confirmed"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 8, 4),
+    ):
+        decision = classify_intent(
+            "sounds good to me, let's finalize this", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "dispatch"
+    assert decision.result is not None
+    assert decision.result.intent_category == IntentCategory.APPROVAL
+
+
+# Same mechanism, covering the narrowing this session's own regex fix
+# introduced: moving bare "great"/"perfect" out of _APPROVAL_RE's general
+# alternation into a whole-message-only pattern (to stop "great question
+# about mounting" from false-positiving as approval) means "Perfect, let's
+# go" no longer matches the regex either. The LLM-first path is the safety
+# net for exactly that kind of combined phrasing.
+def test_classify_dispatch_approval_on_combined_phrasing_regex_no_longer_matches():
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"approval","confidence":"high",'
+        '"variable_name":null,"value_ref":null,'
+        '"evidence_span":"Perfect, let\'s go","rationale":"customer confirmed"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 8, 4),
+    ):
+        decision = classify_intent(
+            "Perfect, let's go", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "dispatch"
+    assert decision.result is not None
+    assert decision.result.intent_category == IntentCategory.APPROVAL
