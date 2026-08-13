@@ -250,3 +250,29 @@ def test_activation_does_not_false_positive_on_a_shared_generic_word():
         hiding_rules=[], workspace_id=1, catalog_prefix="",
     )
     assert result is target, "must match the real target, never the unrelated 2-word-label decoy"
+
+
+# ── detect_approval regression pin (raven review on PR #192) ───────────────
+# The original fix for "great question about mounting" false-positiving as
+# approval (docs/CPQ_ASK_OFFTOPIC_INTENT_FALSE_POSITIVE_FIXES_2026-08-13.md
+# D42) replaced bare great/perfect keywords with a whole-message-only
+# pattern, which correctly killed the false positive but also broke
+# previously-working combined phrasings like "Great, let's go" and
+# "Perfect, that works" that the pre-fix regex used to match. For
+# session.guided_mode=True sessions — which never reach the LLM-first
+# gateway that papers over this for everyone else (ask_api.py's STEP-6
+# gate checks `not session.guided_mode`) — that was a real behavior
+# regression, not just a documented gap. Loosened the standalone pattern to
+# accept the two natural trailing clauses ("let's go" / "that's
+# works/good/right") while keeping the false-positive fix intact.
+def test_detect_approval_accepts_combined_great_perfect_phrasing():
+    engine = CpqEngine()
+    for text in ("Great, let's go", "Perfect, that works", "Perfect, let's go",
+                 "Great!", "Perfect."):
+        assert engine.detect_approval(text), f"must approve: {text!r}"
+
+
+def test_detect_approval_still_rejects_great_as_a_pleasantry():
+    engine = CpqEngine()
+    for text in ("great question about mounting", "greatly appreciated"):
+        assert not engine.detect_approval(text), f"must not approve: {text!r}"

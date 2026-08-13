@@ -1488,6 +1488,63 @@ def test_confirm_switch_accepts_the_product_name_as_affirmative(monkeypatch):
     assert "OK — continuing" not in resp["answer"]
 
 
+# ── MT17 (cpq_test_cases.xlsx, 6-MultiProduct): undo-vs-switch collision ────
+# "go back" is _UNDO_RE's own undo trigger phrase AND a completely ordinary
+# way to ask for a product switch back — "Actually go back to APX NEXT". The
+# undo check ran unconditionally before any switch detection, so naming a
+# real product got swallowed as a snapshot rollback that ignores what was
+# actually asked. Fixed by reusing detect_product_mention (dynamic,
+# catalog-driven, no hardcoded product/phrase list) to check whether the
+# message names a different real product before honoring the undo trigger.
+
+def test_go_back_naming_a_real_product_is_a_switch_not_an_undo(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="MOTOTRBO")
+    # A snapshot exists (as it would after an earlier real switch) — proves
+    # this isn't merely "nothing to undo" masking the collision.
+    session_data["history"] = [{"product_name": "SL3500e", "_snapshot_reason": "mutating"}]
+    req = AskRequest(question="Actually go back to APX NEXT", workspace_id=1,
+                      session_data=session_data)
+    reader._catalogs["ApxNextConfig"] = "APX NEXT"
+
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["tools_called"] == ["cpq_switch_candidate()"], (
+        "naming a real product must win over the 'go back' undo trigger"
+    )
+    assert resp["session_data"]["pending_switch_product"] == "APX NEXT"
+    assert resp["session_data"]["product_name"] == "MOTOTRBO", "not switched yet — confirmation still required"
+    assert resp["session_data"]["history"], "the undo path must not have consumed the snapshot"
+
+
+def test_go_back_with_no_real_product_still_undoes_normally(monkeypatch):
+    """The fix must not disable undo generally — only when a real, different
+    product is actually named."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="MOTOTRBO")
+    session_data["history"] = [{"product_name": "MOTOTRBO", "battery": "STANDARD",
+                                 "_snapshot_reason": "mutating"}]
+    req = AskRequest(question="please go back", workspace_id=1, session_data=session_data)
+
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["tools_called"] == ["cpq_undo()"]
+    assert not resp["session_data"]["history"], "a genuine undo must still consume the snapshot"
+
+
+def test_go_back_naming_the_current_product_still_undoes_normally(monkeypatch):
+    """Naming the CURRENT product isn't a switch signal — must not block undo."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="MOTOTRBO")
+    session_data["history"] = [{"product_name": "MOTOTRBO", "_snapshot_reason": "mutating"}]
+    req = AskRequest(question="go back to MOTOTRBO please", workspace_id=1,
+                      session_data=session_data)
+
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["tools_called"] == ["cpq_undo()"]
+
+
 def test_country_availability_raw_display_text_documents_the_p1_bug():
     """The exact pre-fix failure: seeding check_country_availability with
     RAW display text (no cascade) never matches the rule's item_value
