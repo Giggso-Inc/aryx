@@ -609,6 +609,7 @@ def test_classify_intent_still_calls_the_llm_with_empty_attrs():
     good_json = (
         '{"intent_category":"country_change","confidence":"high",'
         '"variable_name":null,"value_ref":null,"quantity_text":null,'
+        '"country_text":"Canada",'
         '"evidence_span":"change country to Canada","rationale":"llm only"}'
     )
     with patch(

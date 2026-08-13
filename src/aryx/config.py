@@ -709,6 +709,29 @@ class Settings(BaseSettings):
             "CI run) or before considering this validated for production."
         ),
     )
+    cpq_llm_first_universal_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 4 (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8): "
+            "runs the LLM-first dispatcher (_dispatch_intent_result, gated "
+            "above by cpq_llm_first_enabled) on EVERY turn regardless of "
+            "session.status -- previously it only ran inside the "
+            "awaiting_approval/post_approval block, so it never fired "
+            "during the actual configuring-stage conversation, which is "
+            "most real traffic. Also enables the 6 new dispatch branches "
+            "(PRODUCT_QUANTITY_CHANGE, COUNTRY_CHANGE, "
+            "BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST, APPROVAL) that "
+            "Phase 2's initial landing deliberately deferred. Off by "
+            "default -- ships behind this flag for shadow/staging "
+            "validation first, per the plan doc's own rollout discipline, "
+            "since these are real mutating actions during active "
+            "configuration, not just post-review edits. Requires "
+            "cpq_llm_first_enabled=True to have any effect at all -- this "
+            "flag only widens WHEN/WHAT that mechanism covers, it doesn't "
+            "replace it. Override with "
+            "ARYX_CPQ_LLM_FIRST_UNIVERSAL_ENABLED=true."
+        ),
+    )
     cpq_intent_gemini_model: str = Field(
         default="gemini-2.5-pro",
         description=(
