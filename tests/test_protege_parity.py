@@ -22,14 +22,28 @@ def test_safe_labels_accepts_identifiers() -> None:
     assert _safe_labels(["Vehicle", "Car", "Sedan"]) == ["Vehicle", "Car", "Sedan"]
 
 
-def test_safe_labels_drops_injection() -> None:
+def test_safe_labels_sanitizes_instead_of_dropping() -> None:
     out = _safe_labels(["Car", "Foo) DELETE n //", "Bar Baz", "Ok_2"])
-    assert out == ["Car", "Ok_2"]
+    assert out == ["Car", "Foo__DELETE_n___", "Bar_Baz", "Ok_2"]
 
 
 def test_safe_labels_dedupes_and_caps() -> None:
     out = _safe_labels(["A", "A", "B", "C", "D", "E", "F", "G"])
     assert out == ["A", "B", "C", "D", "E", "F"]  # cap = 6
+
+
+def test_safe_labels_suffixes_sanitized_collision() -> None:
+    # "Product-Type" and "Product:Type" both sanitize to "Product_Type" —
+    # they must not collapse into one label and silently drop the second.
+    out = _safe_labels(["Product-Type", "Product:Type"])
+    assert out == ["Product_Type", "Product_Type_2"]
+
+
+def test_safe_labels_exact_duplicate_still_dedupes() -> None:
+    # A raw label repeated verbatim is an intentional, lossless dedup — no
+    # suffix — distinct from a sanitized collision between different labels.
+    out = _safe_labels(["Product-Type", "Product-Type"])
+    assert out == ["Product_Type"]
 
 
 # ---------- Phase 1: stable IRI ----------

@@ -138,17 +138,31 @@ def _safe_labels(labels: list[str] | None) -> list[str]:
     non-ASCII character still gets attached as a label instead of vanishing.
     Sanitization can never reintroduce Cypher-unsafe characters, so this
     remains injection-safe.
+
+    Two distinct raw labels can sanitize to the same identifier (e.g.
+    "Product-Type" and "Product:Type" both -> "Product_Type"). That collision
+    is suffixed (mirroring _lift_props) rather than silently dropped, so one
+    doesn't overwrite the other. An exact repeat of the same raw label is
+    still deduped as-is — that's an intentional, lossless dedup.
     """
     out: list[str] = []
+    seen_raw: set[str] = set()
     for raw in labels or []:
-        if not raw:
+        if not raw or raw in seen_raw:
             continue
+        seen_raw.add(raw)
         label = raw if _LABEL_RE.match(raw) else _sanitize_ident(raw)
         if label != raw:
             logger.warning(
                 "sanitizing label %r -> %r (not a Cypher identifier)", raw, label)
         if label in out:
-            continue
+            suffix = 2
+            while f"{label}_{suffix}" in out:
+                suffix += 1
+            logger.warning(
+                "label %r sanitized to %r, which collides with an existing "
+                "label — suffixing to %r", raw, label, f"{label}_{suffix}")
+            label = f"{label}_{suffix}"
         out.append(label)
         if len(out) >= _MAX_LABELS:
             break
