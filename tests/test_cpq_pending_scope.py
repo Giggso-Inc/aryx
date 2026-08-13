@@ -302,3 +302,62 @@ def test_candidates_from_attr_options_respects_constrained_item_values():
     ]
     cands = candidates_from_attr_options(options, constrained_item_values=["A"])
     assert cands == ["Alpha"]
+
+
+def test_already_resolved_model_leaf_never_wipes_an_unrelated_pending_scope(monkeypatch):
+    """Live-confirmed bug (2026-08-13): the ambiguous-model-leaf
+    re-resolution block had no `model_leaf_resolved` short-circuit, so
+    once resolved on an earlier turn it kept re-resolving (and calling
+    clear_pending_scope) on EVERY subsequent turn, silently wiping an
+    unrelated, in-progress Product disambiguation scope -- "now set the
+    product" replied to a pending "Product -- choose one" question had
+    its 7-item scope silently cleared before ever reaching the
+    Product-matching code, turning a should-be-scoped reask into a
+    full-catalog one.
+    """
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules",
+        lambda *a, **k: ([], []),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "single_model_variable_name", lambda *a, **k: "")
+    # 2+ leaves (ambiguous tree) -- the same shape that originally
+    # required disambiguation -- with one matching the already-filled
+    # hint, so `_resolved_leaf` is truthy on every turn, not just once.
+    monkeypatch.setattr(
+        api._cpq_engine, "model_variable_candidates",
+        lambda *a, **k: ["aPXNext_BOM", "aPXN70_BOM"],
+    )
+
+    scoped = ["APX NEXT All Band", "APX NEXT XE All Band", "APX NEXT Single Band"]
+    product = _attr(1, "productSelectionProduct_all", "Product", options=_opt(*scoped))
+    monkeypatch.setattr(
+        api._cpq_engine, "load_product_config",
+        lambda *a, **k: ([product], "aSTRO25_bom"),
+    )
+    monkeypatch.setattr(
+        api._cpq_engine, "apply_constraint_rules",
+        lambda *a, **k: {1: [o.item_value for o in product.options]},
+    )
+
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        filled={"_bm_model_variable_name": "aPXNext_BOM"},
+        model_leaf_resolved=True,
+        pending_variables=["productSelectionProduct_all"],
+        pending_scope_kind="product_options",
+        pending_scope_candidates=scoped,
+        pending_scope_attr_vn="productSelectionProduct_all",
+        pending_scope_asked_turn=2,
+        status="configuring", turn=3,
+    )
+    req = AskRequest(
+        question="now set the product", workspace_id=1, session_data=session.to_dict(),
+    )
+    resp = _run_cpq_turn(req, object())
+    assert resp is not None
+    assert resp["session_data"]["pending_scope_candidates"] == scoped

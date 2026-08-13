@@ -8221,7 +8221,21 @@ def _run_cpq_turn_inner(
     if model_vn:
         hints.setdefault("_bm_model_variable_name", model_vn)
         session.pending_model_leaf_candidates = []
-    else:
+    elif not session.model_leaf_resolved:
+        # Live-confirmed bug (2026-08-13): this whole ambiguous-tree
+        # re-resolution block had no `model_leaf_resolved` short-circuit
+        # at all, unlike every other call site in this file that checks
+        # it (e.g. lines ~2073, ~2381). Once already resolved on an
+        # earlier turn, `_existing_hint` (from session.filled) keeps
+        # matching the same leaf every subsequent turn, re-hitting
+        # `if _resolved_leaf: ... clear_pending_scope(session)`
+        # unconditionally — silently wiping an UNRELATED pending_scope
+        # (e.g. a live "Product — choose one" disambiguation already in
+        # progress) on every turn regardless of what the turn's message
+        # was actually about. Confirmed live: "now set the product"
+        # replied to a pending Product question had its scope silently
+        # cleared here before ever reaching the Product-matching code,
+        # turning a should-be-scoped reask into a full-catalog one.
         # Amendment 10 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a
         # catalog with 2+ model leaves (CommandCentral Aware:
         # commandCentralAware2024_BOM, commandCentralAware2026_BOM,
