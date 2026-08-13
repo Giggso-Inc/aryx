@@ -529,6 +529,33 @@ def test_regex_extracted_values_are_not_overwritten_by_the_router(monkeypatch):
     assert resp["session_data"]["product_quantity"] == 50
 
 
+def test_route_meta_recovers_when_regex_matches_a_product_name_fragment(monkeypatch):
+    """docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_PLAN_2026_08_13.md -- exact
+    live bug: "for APXNET in United States" has `for` before `in`, and
+    `_COUNTRY_PREP`'s `[A-Z]{2}` branch (no word boundary) greedily
+    matches "AP" from "APXNET" first, stopping regex search before it
+    ever reaches "in United States". The old guard (`"country" not in
+    hints`) treated this WRONG-but-present regex match as if the regex
+    had succeeded, permanently masking the correct `route_meta.country`
+    (from the SAME turn-1 unified LLM call, never a second one) for the
+    rest of the turn -- the customer got re-asked for a country they'd
+    already stated."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
+    session = CpqSession(mode="cpq")
+    req = AskRequest(
+        question="Give me a quote for APXNET in United States",
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    route_meta = AskRouteDecision(
+        route="quote", confidence="high", clarifying_question=None,
+        rationale="ok", quantity=None, country="United States",
+    )
+    resp = _run_cpq_turn_inner(req, object(), route_meta)
+    assert resp["session_data"]["country"] == "United States"
+
+
 def test_route_meta_rejects_a_hallucinated_country(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])

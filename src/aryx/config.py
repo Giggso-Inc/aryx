@@ -741,16 +741,23 @@ class Settings(BaseSettings):
         ),
     )
     cpq_intent_mode: str = Field(
-        default="shadow",
+        default="llm_first",
         description=(
             "Top-level /ask intent router mode (Prompt 3). "
-            "'llm_first' — gateway classifies every cold-start turn; "
-            "handlers only execute. "
+            "'llm_first' (default) — gateway classifies every cold-start "
+            "turn; handlers only execute. Required for route_meta.quantity/"
+            "route_meta.country (docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_"
+            "PLAN_2026_08_13.md) to ever reach the actual turn at all -- "
+            "'shadow' strips both before the turn runs (observe-only), so "
+            "a turn-1 message stating the country/quantity is left entirely "
+            "to the deterministic regex extractor with no LLM fallback, "
+            "even when the regex mis-parses it. "
             "'deterministic_first' — legacy is_cpq_question regex/alias gate "
             "(no gateway). "
-            "'shadow' (default) — deterministic path decides; gateway "
-            "classifies in parallel for agreement logs only (grep by run_id). "
-            "Rollback = set ARYX_CPQ_INTENT_MODE=deterministic_first."
+            "'shadow' — deterministic path decides; gateway classifies in "
+            "parallel for agreement logs only (grep by run_id). "
+            "Rollback = set ARYX_CPQ_INTENT_MODE=shadow or "
+            "=deterministic_first."
         ),
     )
     cpq_intent_timeout_s: float = Field(

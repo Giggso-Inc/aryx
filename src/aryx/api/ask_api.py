@@ -7307,16 +7307,27 @@ def _run_cpq_turn_inner(
     # answer (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
     if session.pending_anchor == "country" and "country" not in hints:
         hints["country"] = req.question.strip()
-    # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
-    # extraction plan: when the regex above found nothing, fall back to
-    # whatever the top-level router already extracted in its ONE call —
-    # never a second, separate LLM call. `route_meta` is only ever
-    # populated on turn 1 of a brand-new session (turn 2+ never calls the
-    # router at all), so this is naturally inert past turn 1. Validated
-    # against `is_recognized_country` in the very next `if` block below,
-    # exactly like every other country hint.
+    # docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_PLAN_2026_08_13.md: the
+    # guard here used to be bare `"country" not in hints`, which only
+    # covers the regex finding NOTHING. Live bug: "Give me a quote for
+    # APXNET in United States" -- `_COUNTRY_PREP`'s `re.search` stops at
+    # the FIRST match, and its `[A-Z]{2}` branch (no word boundary)
+    # greedily matches the first two letters of "APXNET" ("for AP")
+    # before ever reaching "in United States" later in the sentence.
+    # That WRONG-but-present value used to permanently mask this exact
+    # fallback -- the turn-1 unified LLM extraction (`route_meta.
+    # country`, from `classify_ask_route`'s single per-turn call, never
+    # a second/separate LLM call) held the correct answer the whole
+    # time but was never consulted, because "country" not in hints" was
+    # False. Now treats "hints has no VALID country" (regex found
+    # nothing, or found something `is_recognized_country` rejects) as
+    # the trigger instead -- a real, valid regex match is still
+    # preferred and never overwritten (matches this file's existing
+    # "regex-extracted values are not overwritten by the router"
+    # discipline), but a rejected match no longer blocks the LLM's own
+    # correct extraction from winning.
     elif (
-        "country" not in hints
+        not _cpq_engine.is_recognized_country(hints.get("country", ""))
         and route_meta is not None
         and route_meta.country
     ):
