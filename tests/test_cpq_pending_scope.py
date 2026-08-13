@@ -5,6 +5,7 @@ import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.bml import BmlEvaluator
 from aryx.cpq.pending_scope import (
+    candidates_from_attr_options,
     clear_pending_scope,
     format_did_you_mean,
     is_confident_scope_suggestion,
@@ -273,3 +274,31 @@ def test_pending_federal_partial_applies(monkeypatch):
     assert resp is not None
     filled = resp["session_data"]["filled"].get("productSelectionProduct_all")
     assert filled == "APX NEXT International (Federal)"
+
+
+def test_candidates_from_attr_options_only_includes_display_name():
+    """Live-confirmed bug (2026-08-13): item_value was also appended
+    whenever it differed from display_name (e.g. item_value "APX NEXT
+    MULTI" for the real "APX NEXT All Band" option) -- an internal
+    catalog code, never meant to be customer-facing, that leaked into
+    the numbered "same list as before" re-ask as if it were a separate,
+    legitimate product choice, inflating a real 7-option list into 11.
+    """
+    options = [
+        MenuOption(item_value="APX NEXT ALL BAND", display_name="APX NEXT All Band", order=0),
+        MenuOption(item_value="APX NEXT MULTI", display_name="APX NEXT All Band", order=1),
+        MenuOption(item_value="APX NEXT INTL FED", display_name="APX NEXT International (Federal)", order=2),
+    ]
+    cands = candidates_from_attr_options(options)
+    assert cands == ["APX NEXT All Band", "APX NEXT All Band", "APX NEXT International (Federal)"]
+    assert "APX NEXT MULTI" not in cands
+    assert "APX NEXT INTL FED" not in cands
+
+
+def test_candidates_from_attr_options_respects_constrained_item_values():
+    options = [
+        MenuOption(item_value="A", display_name="Alpha", order=0),
+        MenuOption(item_value="B", display_name="Beta", order=1),
+    ]
+    cands = candidates_from_attr_options(options, constrained_item_values=["A"])
+    assert cands == ["Alpha"]
