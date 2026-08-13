@@ -29,6 +29,7 @@ table, risk #4).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -326,14 +327,31 @@ GATEWAY_INTENT_JSON_SCHEMA: dict = {
             "description": (
                 "BULK_QUANTITY_CHANGE (a specific grid row's quantity) or "
                 "PRODUCT_QUANTITY_CHANGE (the OVERALL order quantity) only "
-                "-- the new quantity as stated by the user, digits only "
-                "(e.g. \"67\"). Only set this when the user is actually "
-                "STATING a quantity to change TO, never when a number "
-                "merely appears inside a conditional/comparison clause "
-                "(e.g. \"unless the quantity is 6\" is NOT a request to "
-                "change the quantity to 6 -- it is a condition; classify "
-                "that as ambiguous or whatever the sentence is actually "
-                "asking for instead). Null for every other category."
+                "-- the new quantity as stated by the user, converted to "
+                "plain digits, optionally with a leading '-' for a "
+                "genuinely negative quantity (e.g. \"67\", \"-5\"). "
+                "Always resolve the FINAL numeric value yourself -- "
+                "spelled-out numbers (\"one hundred and twelve\" -> "
+                "\"112\"), compound/scaled phrases (\"half a dozen\" -> "
+                "\"6\", \"a couple dozen\" -> \"24\", \"twenty twelve\" -> "
+                "\"32\"), and a sign word before a digit (\"minus 5\" -> "
+                "\"-5\") all resolve to ONE plain digit string -- never "
+                "leave any of it as words. A product name or other words "
+                "sitting between the number and a quantity word (\"15 APX "
+                "NEXT radios\") does not change the answer -- extract 15 "
+                "regardless of what's in between. Only set this when the "
+                "user is actually STATING a quantity to change TO: never "
+                "when a number merely appears inside a conditional/"
+                "comparison clause (e.g. \"unless the quantity is 6\" is "
+                "NOT a request to change the quantity to 6 -- it is a "
+                "condition; classify that as ambiguous or whatever the "
+                "sentence is actually asking for instead), and never a "
+                "year, model number, or other unrelated count that "
+                "happens to precede a noun (e.g. \"the 2026 model\" "
+                "states no order quantity at all -- null here, even "
+                "though \"model\" can otherwise be a quantity-context "
+                "word). Null for every other category or when no "
+                "quantity is genuinely stated."
             ),
         },
         "response_mode": {
@@ -439,6 +457,22 @@ def parse_gateway_intent(raw: dict) -> GatewayIntentResult | None:
     )
 
 
+_SIGNED_DIGITS_RE = re.compile(r"^-?\d+$")
+
+
+def _is_signed_digit_quantity_text(qty: str | None) -> bool:
+    """True for a plain (optionally negative) digit string -- "67", "-5"
+    -- never a word/decimal/anything else. `str.isdigit()` alone rejects
+    a leading "-", which would silently make it impossible for the
+    quarantine to ever accept a genuinely negative quantity the LLM
+    correctly extracted (e.g. "minus 5 units") -- the deterministic
+    `extract_quantity_hint` path explicitly supports and returns
+    negative values (validated downstream by `is_valid_product_
+    quantity`, never here), so this quarantine must not be stricter
+    than that path for the exact same shape of input."""
+    return bool(qty and _SIGNED_DIGITS_RE.match(qty.strip()))
+
+
 def validate_gateway_quarantine(
     result: GatewayIntentResult,
     question: str,
@@ -489,7 +523,7 @@ def validate_gateway_quarantine(
                 return _ambiguous("value_ref_out_of_range")
         if result.intent_category == IntentCategory.BULK_QUANTITY_CHANGE:
             qty = result.quantity_text
-            if not qty or not qty.strip().isdigit():
+            if not _is_signed_digit_quantity_text(qty):
                 return _ambiguous("quantity_text_missing_or_invalid")
     else:
         # No-target categories must not smuggle a hallucinated variable_name
@@ -503,7 +537,7 @@ def validate_gateway_quarantine(
             return _ambiguous("response_mode_missing_or_invalid")
         if result.intent_category == IntentCategory.PRODUCT_QUANTITY_CHANGE:
             qty = result.quantity_text
-            if not qty or not qty.strip().isdigit():
+            if not _is_signed_digit_quantity_text(qty):
                 return _ambiguous("quantity_text_missing_or_invalid")
         if result.intent_category == IntentCategory.COUNTRY_CHANGE:
             # Lazy import — engine.py is a large module and this keeps the

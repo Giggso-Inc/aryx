@@ -178,7 +178,14 @@ def test_genuine_quantity_command_still_works_when_gateway_confirms(monkeypatch)
                          lambda *a, **k: ([battery], "aSTRO25_bom"))
     monkeypatch.setattr(
         api, "gateway_classify_intent",
-        lambda *a, **k: _confirming_decision(IntentCategory.PRODUCT_QUANTITY_CHANGE),
+        lambda *a, **k: GatewayDecision(
+            action="dispatch",
+            result=GatewayIntentResult(
+                intent_category=IntentCategory.PRODUCT_QUANTITY_CHANGE,
+                confidence=Confidence.HIGH, quantity_text="6",
+                evidence_span="", rationale="test-confirm",
+            ),
+        ),
     )
     session = CpqSession(
         mode="cpq", product_name="aSTRO25_bom", country="United States",

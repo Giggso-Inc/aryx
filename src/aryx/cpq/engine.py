@@ -498,6 +498,13 @@ _QUANTITY_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?i:\bquantity\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
     re.compile(r"(?i:\bquantity\s+(?:is|to|as)\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
     re.compile(r"(?i:\bqty\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    # "qty to N" -- live-verified gap, 2026-08-13 (docs/CPQ_QUANTITY_
+    # EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 6): the "quantity"
+    # pattern above already supports "is|to|as", but "qty" (its own
+    # common shorthand) only ever supported the bare/colon/equals form,
+    # so "update qty to 30" silently matched nothing while "update
+    # quantity to 30" worked.
+    re.compile(r"(?i:\bqty\s+(?:is|to|as)\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
     re.compile(r"(?i:\bquantity\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
     re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:in\s+qty)\b"),
     re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:qty)\b"),
@@ -513,7 +520,41 @@ _QUANTITY_PATTERNS: list[re.Pattern] = [
     # safety discipline as every other pattern here -- never a bare number
     # anywhere in the message.
     re.compile(r"(?i:\bpricing\s+for\s+(?:an?\s+)?)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
-    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:radios?|devices?|pieces?|pcs|models?)\b"),
+    # Tolerates up to 3 intervening words between the number and the unit
+    # noun ("15 APX NEXT radios") -- live-verified gap, 2026-08-13 (docs/
+    # CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 5): every
+    # pattern here used to require the number strictly ADJACENT to its
+    # context word, so a product name sitting between them (the single
+    # most common real quoting phrasing) matched nothing at all. Each
+    # intervening word must be PURELY alphabetic (no digit anywhere in
+    # it) -- a model code glued to digits ("APX8000") must still block
+    # the match entirely (PR #186 review, critical #1's existing guard),
+    # never be treated as an acceptable "product name" word, and this
+    # can never stretch across into an unrelated, separately-stated
+    # number later in the same sentence either.
+    re.compile(
+        r"(?<![\w.\-])(-?\d+)(?!\.\d)\s+(?:[A-Za-z][A-Za-z'-]*\s+){0,3}"
+        r"(?i:radios?|devices?|pieces?|pcs)\b"
+    ),
+    # "model(s)" gets its own pattern with a year guard -- live-verified
+    # gap, 2026-08-13 (docs/CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_
+    # 13.md cluster 4): "the 2026 model" stated no order quantity at all,
+    # but the combined pattern above matched "2026" as if it were one,
+    # since a year and a genuine quantity look identical to a bare regex.
+    # Excludes any 19xx/20xx-shaped 4-digit number immediately before
+    # "model(s)" -- a real order of exactly 1900-2099 units of a single
+    # line is not a realistic phrasing this catalog has ever seen, so the
+    # trade-off favors never misreading a year as a quantity. The year
+    # guard is a trailing lookbehind, deliberately placed AFTER the
+    # shared `(?<![\w.\-])(-?\d+)(?!\.\d)` substring (not spliced inside
+    # it) -- `_QUANTITY_DECIMAL_PATTERNS` derives its variants via an
+    # exact string substitution of that literal substring, which silently
+    # no-ops (leaving the integer pattern in place unconverted) if
+    # anything is inserted in the middle of it, corrupting the decimal
+    # short-circuit for every other digit run this pattern matches.
+    re.compile(
+        r"(?<![\w.\-])(-?\d+)(?!\.\d)(?<!(?:19|20)\d{2})\s*(?i:models?)\b"
+    ),
 ]
 
 # PR #186 review, medium: decimal variants of the same patterns above,
@@ -583,9 +624,18 @@ _TENS_WORDS = {
 _SCALE_WORDS = {"hundred": 100, "thousand": 1000, "dozen": 12}
 _NUMBER_WORDS = {**_ONES_WORDS, **_TENS_WORDS, **_SCALE_WORDS}
 _SIGN_WORDS = {"negative", "minus"}
+# Fraction/count modifiers before a scale word ("half a dozen" -> 6, "a
+# couple dozen" -> 24) -- live-verified gap, 2026-08-13 (docs/CPQ_
+# QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 2): neither
+# "half" nor "couple" is a number word, so `_NUMBER_WORD_RUN_RE` used to
+# match only the bare scale word ("dozen"), silently dropping the
+# modifier and reporting 12 instead of 6/24.
+_FRACTION_MODIFIERS = {"half": 0.5}
+_COUNT_MODIFIERS = {"couple": 2}
 _NUM_WORD_ALT = "|".join(_NUMBER_WORDS)
+_MODIFIER_ALT = r"(?:half\s+(?:a\s+)?|(?:a\s+)?couple\s+(?:of\s+)?)"
 _NUMBER_WORD_RUN_RE = re.compile(
-    rf"\b(?:(?:negative|minus)[\s-]+)?(?:{_NUM_WORD_ALT})"
+    rf"\b(?:(?:negative|minus)[\s-]+)?(?:{_MODIFIER_ALT})?(?:{_NUM_WORD_ALT})"
     rf"(?:[\s-]+(?:and[\s-]+)?(?:{_NUM_WORD_ALT}))*\b",
     re.IGNORECASE,
 )
@@ -593,15 +643,28 @@ _NUMBER_WORD_RUN_RE = re.compile(
 
 def _words_to_number(phrase: str) -> int | None:
     """"twenty-five" -> 25, "one hundred and fifty" -> 150,
-    "negative five" -> -5 -- None if any token isn't a recognized number
-    word (never guess a partial parse). A leading sign word must produce a
-    real negative result, never silently drop the sign and return the
-    magnitude as if it were positive."""
-    tokens = [t for t in re.split(r"[\s-]+", phrase.strip().lower()) if t and t != "and"]
+    "negative five" -> -5, "half a dozen" -> 6, "a couple dozen" -> 24 --
+    None if any token isn't a recognized number word (never guess a
+    partial parse). A leading sign word must produce a real negative
+    result, never silently drop the sign and return the magnitude as if
+    it were positive."""
+    tokens = [
+        t for t in re.split(r"[\s-]+", phrase.strip().lower())
+        if t and t not in ("and", "a", "of")
+    ]
     if not tokens:
         return None
     negative = tokens[0] in _SIGN_WORDS
     if negative:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    multiplier: float = 1
+    if tokens[0] in _FRACTION_MODIFIERS:
+        multiplier = _FRACTION_MODIFIERS[tokens[0]]
+        tokens = tokens[1:]
+    elif tokens[0] in _COUNT_MODIFIERS:
+        multiplier = _COUNT_MODIFIERS[tokens[0]]
         tokens = tokens[1:]
     if not tokens:
         return None
@@ -610,7 +673,14 @@ def _words_to_number(phrase: str) -> int | None:
     for tok in tokens:
         if tok in _NUMBER_WORDS:
             val = _NUMBER_WORDS[tok]
-            if val in _SCALE_WORDS.values():
+            # Identity check (which WORD it is), never a value check --
+            # "twelve" (a _ONES_WORDS entry worth 12) must never be
+            # mistaken for the scale word "dozen" just because they share
+            # the same numeric value (docs/CPQ_QUANTITY_EXTRACTION_
+            # DEFECTS_PLAN_2026_08_13.md cluster 1: "one hundred and
+            # twelve" was silently becoming 1200, treating "twelve" as a
+            # second multiplier applied on top of "hundred").
+            if tok in _SCALE_WORDS:
                 current = (current or 1) * val
                 if val >= 1000:
                     total += current
@@ -619,7 +689,11 @@ def _words_to_number(phrase: str) -> int | None:
                 current += val
         else:
             return None  # unrecognized token -- abort, never guess
-    result = total + current
+    result = (total + current) * multiplier
+    if isinstance(result, float):
+        if not result.is_integer():
+            return None  # a fractional quantity is never a valid whole count
+        result = int(result)
     return -result if negative else result
 
 
@@ -635,6 +709,19 @@ def _substitute_number_words(text: str) -> str:
     return _NUMBER_WORD_RUN_RE.sub(_replace, text)
 
 
+# A sign WORD directly before a DIGIT ("minus 5", "negative 12") --
+# live-verified gap, 2026-08-13 (docs/CPQ_QUANTITY_EXTRACTION_DEFECTS_
+# PLAN_2026_08_13.md cluster 3): `_SIGN_WORDS` is only ever consulted
+# inside `_words_to_number`, which only runs on a matched number-WORD
+# run -- a bare digit after a sign word never reaches it at all, so
+# "minus 5 units" silently became +5 (the digit-only pattern `(-?\d+)`
+# only recognizes a literal "-" character glued to the digit, never the
+# word "minus" with a space before the digit). Normalized to the
+# literal sign form ("minus 5" -> "-5") before either the decimal or
+# integer patterns run, so both paths see it identically.
+_SIGN_WORD_DIGIT_RE = re.compile(r"(?i:\b(?:negative|minus)\b)[\s-]+(?=\d)")
+
+
 def _normalize_quantity_text(text: str) -> str:
     """Shared preprocessing for both the decimal check and the integer
     patterns -- quote-stripping and thousands-separator removal must
@@ -644,6 +731,7 @@ def _normalize_quantity_text(text: str) -> str:
         r"[\"'‘’“”]([A-Za-z0-9-]+)[\"'‘’“”]",
         r"\1", text,
     )
+    text = _SIGN_WORD_DIGIT_RE.sub("-", text)
     return _THOUSANDS_SEPARATOR_RE.sub("", text)
 
 

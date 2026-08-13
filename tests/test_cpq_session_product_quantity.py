@@ -32,13 +32,23 @@ from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCatego
 from aryx.cpq.state import CpqSession, ConfigAttr, MenuOption
 
 
-def _confirm_product_quantity_change(monkeypatch) -> None:
+def _confirm_product_quantity_change(monkeypatch, quantity_text: str | None = None) -> None:
     """docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up:
     every real quantity-change command must now be confirmed by the LLM
     gateway before it's allowed to execute (blanket LLM-as-final-verdict,
     reject-on-failure). These tests exercise genuine, unambiguous
     commands, so the gateway is mocked to agree -- the rejection-on-
-    disagreement path itself is covered separately."""
+    disagreement path itself is covered separately.
+
+    `quantity_text` defaults to None (confirm the category only) rather
+    than a fixed placeholder digit -- docs/CPQ_QUANTITY_EXTRACTION_
+    DEFECTS_PLAN_2026_08_13.md's checkpoint now also EXTRACTS the value
+    from this same call, using quantity_text as the source of truth over
+    the deterministic value when it's a real digit string. A fixed
+    placeholder here would silently override every test's own expected
+    quantity to that placeholder; None lets the deterministic/LLM-
+    fallback value already computed upstream flow through unchanged,
+    exactly like the old bool-only checkpoint did."""
     monkeypatch.setattr(
         api, "gateway_classify_intent",
         lambda *a, **k: GatewayDecision(
@@ -46,7 +56,7 @@ def _confirm_product_quantity_change(monkeypatch) -> None:
             result=GatewayIntentResult(
                 intent_category=IntentCategory.PRODUCT_QUANTITY_CHANGE,
                 confidence=Confidence.HIGH,
-                quantity_text="1", evidence_span="", rationale="test-confirm",
+                quantity_text=quantity_text, evidence_span="", rationale="test-confirm",
             ),
         ),
     )
