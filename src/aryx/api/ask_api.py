@@ -4559,6 +4559,51 @@ def _llm_confirm_and_extract_quantity(
     return True, fallback_value, fallback_decimal
 
 
+def _llm_confirm_and_extract_country(
+    req: "AskRequest", session: Any, attrs: list,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any, catalog_prefix: str,
+) -> tuple[bool, str | None]:
+    """LLM-first confirm-AND-extract for COUNTRY_CHANGE —
+    docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md.
+
+    Sibling of `_llm_confirm_and_extract_quantity`, but simpler: unlike
+    `quantity_text` (which can be confirmed-but-unusable, requiring a
+    fallback to the deterministic value), `validate_gateway_quarantine`
+    (intent_schema.py) already REJECTS any COUNTRY_CHANGE result whose
+    `country_text` isn't a real, recognized country before it ever
+    reaches here — a CONFIRMED result is therefore guaranteed to carry a
+    valid country. There is no fallback branch and no deterministic
+    regex value ever consulted: the directive this closes is "no regex
+    decides the country at any point" — `detect_country_change_request`
+    (the caller's own regex) may only ever be used as a cheap trigger for
+    whether to make this call at all, never as the value.
+
+    Returns (confirmed, country):
+      - confirmed=False -- LLM disagreed on category, the call failed/
+        timed out, or (defensively) a confirmed result still somehow
+        lacked a usable country. Caller must never fall back to a
+        regex-captured value here.
+      - confirmed=True, country=<str> -- the real destination country.
+    """
+    try:
+        decision = gateway_classify_intent(
+            req.question, attrs, session, _cpq_engine, req.workspace_id,
+            hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
+            bml_eval=bml_eval, catalog_prefix=catalog_prefix,
+        )
+    except Exception as exc:  # noqa: BLE001 — reject on any failure, never guess
+        logger.debug(
+            "cpq llm_first_country: gateway call failed, rejecting: %r", exc,
+        )
+        return False, None
+    result = decision.result
+    if result is None or result.intent_category != IntentCategory.COUNTRY_CHANGE:
+        return False, None
+    if result.country_text and _cpq_engine.is_recognized_country(result.country_text):
+        return True, result.country_text
+    return False, None
+
+
 def _gateway_to_intent_result(
     gw: Any,
     attrs: list,
@@ -7280,58 +7325,62 @@ def _run_cpq_turn_inner(
     # below). Checked before hint extraction so it always takes priority
     # over the passive "first hint wins" anchor logic, and skipped while a
     # switch_country reprompt is already pending (that gate owns the reply
-    # to its own question). Blanket LLM-as-final-verdict checkpoint, same
-    # reject-on-failure discipline as every other deterministic gate --
-    # attrs/rule sets aren't loaded yet this early, so empty/None
-    # placeholders are passed, exactly like the session-level quantity
-    # background capture above.
+    # to its own question).
+    #
+    # LLM decides the VALUE too (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_
+    # 13.md): `detect_country_change_request`/`_COUNTRY_CHANGE_RE` is now
+    # ONLY a cheap trigger for "is this worth confirming with the LLM at
+    # all" -- the actual destination country always comes from the SAME
+    # gateway call's own `country_text`, never from this regex's capture
+    # group. `_country_change_match`'s captured value is deliberately
+    # unused below. Reject-on-failure, same discipline as every other
+    # checkpoint: an LLM disagreement/failure means this gate never
+    # fired, falling through to normal hint/attribute processing exactly
+    # as before.
     _country_change_match = detect_country_change_request(req.question)
-    if (
-        _country_change_match
-        and session.pending_anchor != "switch_country"
-        and _llm_confirm_deterministic_intent(
-            req, session, [], IntentCategory.COUNTRY_CHANGE,
+    if _country_change_match and session.pending_anchor != "switch_country":
+        _country_confirmed, _country_value = _llm_confirm_and_extract_country(
+            req, session, [],
             hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
         )
-    ):
-        return _build_country_change_response(req, session, _country_change_match)
+        if _country_confirmed:
+            return _build_country_change_response(req, session, _country_value)
         # else: rejected -- fall through to normal hint/attribute
         # processing below, exactly as if this gate never fired.
 
     # ── Extract NL hints (Step 1 prerequisite) ────────────────────────────────
+    _country_llm_call_failed = False
     hints = _cpq_engine.extract_hints(req.question)
+    # docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md: regex may never decide
+    # WHAT the country is, only ever be used as a cheap trigger elsewhere
+    # (e.g. "does this message mention a country at all"). Drop whatever
+    # `_COUNTRY_PREP` guessed here unconditionally -- it's about to be
+    # replaced by either the raw bare-reply text or the LLM's own turn-1
+    # extraction below, never by this regex's own capture.
+    hints.pop("country", None)
 
-    # A direct reply to an anchor question we JUST asked (e.g. a bare "United
-    # States") won't match extract_hints' preposition-requiring patterns —
-    # when we know exactly what we asked for, treat the raw reply as the
-    # answer (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
-    if session.pending_anchor == "country" and "country" not in hints:
+    # A direct reply to an anchor question we JUST asked (e.g. a bare
+    # "United States") IS the answer -- not a regex decision at all, the
+    # customer's entire message answers the exact question just asked
+    # (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
+    if session.pending_anchor == "country":
         hints["country"] = req.question.strip()
-    # docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_PLAN_2026_08_13.md: the
-    # guard here used to be bare `"country" not in hints`, which only
-    # covers the regex finding NOTHING. Live bug: "Give me a quote for
-    # APXNET in United States" -- `_COUNTRY_PREP`'s `re.search` stops at
-    # the FIRST match, and its `[A-Z]{2}` branch (no word boundary)
-    # greedily matches the first two letters of "APXNET" ("for AP")
-    # before ever reaching "in United States" later in the sentence.
-    # That WRONG-but-present value used to permanently mask this exact
-    # fallback -- the turn-1 unified LLM extraction (`route_meta.
-    # country`, from `classify_ask_route`'s single per-turn call, never
-    # a second/separate LLM call) held the correct answer the whole
-    # time but was never consulted, because "country" not in hints" was
-    # False. Now treats "hints has no VALID country" (regex found
-    # nothing, or found something `is_recognized_country` rejects) as
-    # the trigger instead -- a real, valid regex match is still
-    # preferred and never overwritten (matches this file's existing
-    # "regex-extracted values are not overwritten by the router"
-    # discipline), but a rejected match no longer blocks the LLM's own
-    # correct extraction from winning.
-    elif (
-        not _cpq_engine.is_recognized_country(hints.get("country", ""))
-        and route_meta is not None
-        and route_meta.country
-    ):
-        hints["country"] = route_meta.country
+    elif route_meta is not None:
+        # The turn-1 unified LLM extraction (`route_meta.country`, from
+        # `classify_ask_route`'s single per-turn call, never a second/
+        # separate LLM call) is now the ONLY source for a fresh country
+        # statement -- no regex fallback, per the directive that regex
+        # must never decide this value, at any point.
+        if route_meta.country:
+            hints["country"] = route_meta.country
+        elif route_meta.timed_out or route_meta.error:
+            # The one call that could have told us the country
+            # demonstrably failed -- never silently proceed as if the
+            # customer said nothing (they may well have), and never fall
+            # back to a regex guess. Surfaced to the customer at the
+            # "ask for country" fallback below, only if we actually end
+            # up needing to say something because no country resolved.
+            _country_llm_call_failed = True
     if (
         "country" in hints and not session.country
         # Real, confirmed live bug: extract_hints' generic preposition
@@ -7552,7 +7601,15 @@ def _run_cpq_turn_inner(
                           "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
                 "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
             }
-        new_country = hints.get("country") or req.question.strip()
+        # docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md: always the raw
+        # reply, never `hints.get("country")` -- the customer was just
+        # asked to name the replacement country, so (like the normal
+        # country anchor above) their entire message IS the answer; the
+        # old `hints.get("country") or ...` fallback let a regex
+        # misparse of THIS SAME reply (e.g. "in CANADA" -> "Ca") win
+        # over the correct raw text purely because a truthy-but-wrong
+        # match short-circuited the `or`.
+        new_country = req.question.strip()
         new_product = session.pending_switch_product
         if _country_available_for(new_product, new_country):
             _complete_product_switch(new_product, new_country)
@@ -8231,30 +8288,37 @@ def _run_cpq_turn_inner(
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
 
-    # Country-once: re-scan this turn + anchor + switch + mined history
-    # texts before prompting. Covers turn 1 standard-Ask (no session) then
-    # "aSTRO25_bom" later — history mine at turn start + these sources.
+    # docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md: the old "Country-once"
+    # re-scan here reran the SAME regex (`extract_hints`) across multiple
+    # historical texts as a last resort — dropped entirely. Its only
+    # reason to exist was "the regex missed it the first time, try again
+    # over more text with the same regex," which is no longer a
+    # meaningful fallback now that the actual extraction points (turn-1
+    # LLM read, explicit change-command LLM confirm+extract) are
+    # themselves LLM-sourced rather than regex-sourced. Verified during
+    # implementation that removing it doesn't reopen the cases it used to
+    # catch (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md's
+    # original "Country-once" issue): those transcripts are turn-1
+    # shaped and are now resolved directly by `route_meta.country`
+    # above, never needing a second-chance rescan.
     if not session.country:
-        _hist_user = _user_texts_from_history(req.history)
-        for _country_src in (
-            req.question,
-            session.product_anchor_question,
-            session.pending_switch_question,
-            *_hist_user,
-        ):
-            if not _country_src:
-                continue
-            _ch = _cpq_engine.extract_hints(_country_src)
-            if _ch.get("country") and _cpq_engine.is_recognized_country(_ch["country"]):
-                session.country = _ch["country"]
-                hints.setdefault("country", _ch["country"])
-                logger.info(
-                    "cpq: latched country=%r from prior utterance turn=%s",
-                    session.country, session.turn,
-                )
-                break
-
-    if not session.country:
+        if _country_llm_call_failed:
+            # The one call that could have told us the country
+            # demonstrably failed (timeout/error) -- tell the customer
+            # the truth instead of asking them to repeat information
+            # they may have already given, and never silently fall back
+            # to a regex guess to paper over the failure.
+            answer = (
+                "Sorry — I couldn't process that just now (a classifier "
+                "call failed). Please try again in a moment."
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_llm_call_failed()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
         session.pending_anchor = "country"
         answer = (
             "Thanks — and what's the **destination country** for this "
