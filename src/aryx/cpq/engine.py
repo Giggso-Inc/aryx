@@ -493,6 +493,14 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
 # exclusion (review follow-up) still allows a genuine negative quantity
 # ("quantity is -5") since that "-" is itself preceded by whitespace, not
 # by the digit group's own left edge.
+# Named separately (not inline in the list literal) so `extract_quantity_
+# hint` can identify it by reference and apply the year exclusion against
+# the FULL captured digit string -- see the comment where it's used in
+# `_QUANTITY_PATTERNS` below.
+_MODEL_QUANTITY_PATTERN = re.compile(
+    r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:models?)\b"
+)
+
 _QUANTITY_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?i:\bqty\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
     re.compile(r"(?i:\bquantity\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
@@ -536,25 +544,19 @@ _QUANTITY_PATTERNS: list[re.Pattern] = [
         r"(?<![\w.\-])(-?\d+)(?!\.\d)\s+(?:[A-Za-z][A-Za-z'-]*\s+){0,3}"
         r"(?i:radios?|devices?|pieces?|pcs)\b"
     ),
-    # "model(s)" gets its own pattern with a year guard -- live-verified
-    # gap, 2026-08-13 (docs/CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_
-    # 13.md cluster 4): "the 2026 model" stated no order quantity at all,
-    # but the combined pattern above matched "2026" as if it were one,
-    # since a year and a genuine quantity look identical to a bare regex.
-    # Excludes any 19xx/20xx-shaped 4-digit number immediately before
-    # "model(s)" -- a real order of exactly 1900-2099 units of a single
-    # line is not a realistic phrasing this catalog has ever seen, so the
-    # trade-off favors never misreading a year as a quantity. The year
-    # guard is a trailing lookbehind, deliberately placed AFTER the
-    # shared `(?<![\w.\-])(-?\d+)(?!\.\d)` substring (not spliced inside
-    # it) -- `_QUANTITY_DECIMAL_PATTERNS` derives its variants via an
-    # exact string substitution of that literal substring, which silently
-    # no-ops (leaving the integer pattern in place unconverted) if
-    # anything is inserted in the middle of it, corrupting the decimal
-    # short-circuit for every other digit run this pattern matches.
-    re.compile(
-        r"(?<![\w.\-])(-?\d+)(?!\.\d)(?<!(?:19|20)\d{2})\s*(?i:models?)\b"
-    ),
+    # "model(s)" -- live-verified gap, 2026-08-13 (docs/CPQ_QUANTITY_
+    # EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 4): "the 2026 model"
+    # stated no order quantity at all, but the combined pattern above
+    # matched "2026" as if it were one, since a year and a genuine
+    # quantity look identical to a bare regex. The year exclusion itself
+    # is NOT encoded in this pattern (a fixed-width lookbehind here would
+    # only ever inspect the last 4 characters of an arbitrarily long
+    # digit run, wrongly rejecting real 5+-digit quantities like 12026 or
+    # 32026 whose TRAILING 4 digits happen to look like a year -- PR
+    # review finding, 2026-08-13) -- it's applied in `extract_quantity_
+    # hint` below, which can check the FULL captured digit string's
+    # length before deciding it's a year.
+    _MODEL_QUANTITY_PATTERN,
 ]
 
 # PR #186 review, medium: decimal variants of the same patterns above,
@@ -755,6 +757,21 @@ def extract_quantity_decimal_hint(text: str) -> str | None:
     return None
 
 
+def _is_year_shaped_model_quantity(digits: str) -> bool:
+    """True only when `digits` (the exact captured string, sign included)
+    is EXACTLY a 4-digit 19xx/20xx run -- never for a longer number whose
+    trailing 4 digits merely happen to look like a year. PR review
+    finding, 2026-08-13: a fixed-width regex lookbehind can only ever see
+    the last 4 characters before the match position, so it can't tell
+    "2026" (a real year, no quantity stated) apart from "...2026" at the
+    tail of a longer real quantity like "12026" or "32026" -- both would
+    wrongly be rejected if the exclusion were encoded purely as a
+    lookbehind inside the pattern itself. Checking the FULL captured
+    group's length here, in Python, after the match, gets this right."""
+    unsigned = digits[1:] if digits.startswith("-") else digits
+    return len(unsigned) == 4 and unsigned[:2] in ("19", "20")
+
+
 def extract_quantity_hint(text: str) -> int | None:
     """The overall product quantity stated in free text, e.g. "50 in qty",
     "qty of 50", "i want 50", "50 radios" -- None when no supported phrasing
@@ -789,6 +806,8 @@ def extract_quantity_hint(text: str) -> int | None:
     for pattern in _QUANTITY_PATTERNS:
         m = pattern.search(text)
         if m:
+            if pattern is _MODEL_QUANTITY_PATTERN and _is_year_shaped_model_quantity(m.group(1)):
+                continue
             try:
                 return int(m.group(1))
             except ValueError:
@@ -799,6 +818,8 @@ def extract_quantity_hint(text: str) -> int | None:
     for pattern in _QUANTITY_PATTERNS:
         m = pattern.search(substituted)
         if m:
+            if pattern is _MODEL_QUANTITY_PATTERN and _is_year_shaped_model_quantity(m.group(1)):
+                continue
             try:
                 return int(m.group(1))
             except ValueError:

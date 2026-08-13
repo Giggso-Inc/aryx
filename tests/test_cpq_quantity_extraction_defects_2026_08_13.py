@@ -74,6 +74,19 @@ def test_year_before_model_is_never_read_as_a_quantity():
     assert extract_quantity_hint("the 2026 model") is None
 
 
+def test_real_5_digit_quantity_ending_in_a_year_shape_still_extracts():
+    """PR review finding, 2026-08-13: a fixed-width lookbehind guard can
+    only ever see the trailing 4 characters before the match, so it
+    can't distinguish a real year ("2026") from a longer, real quantity
+    whose LAST 4 digits merely happen to look like one ("12026",
+    "32026") -- both were wrongly rejected entirely. The exclusion must
+    be checked against the full captured digit string's length, not
+    just its tail."""
+    assert extract_quantity_hint("order 12026 models") == 12026
+    assert extract_quantity_hint("order 32026 models") == 32026
+    assert extract_quantity_hint("order 55026 models") == 55026
+
+
 def test_plain_digit_before_model_still_works():
     assert extract_quantity_hint("order 12 models") == 12
 
