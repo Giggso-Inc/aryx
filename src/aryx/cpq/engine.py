@@ -8074,7 +8074,7 @@ class CpqEngine:
         r"(yes|confirm(?:ed)?|approve(?:d)?|submit|finali[sz]e|"
         r"looks?\s+good|that'?s?\s+(correct|right|good|it)|go\s+ahead|"
         r"proceed|ok(?:ay)?|all\s+good|send\s+it|let'?s?\s+go)\b|"
-        r"^(?:great|perfect)\s*[!.]*$",
+        r"^(?:great|perfect)\b[\s,!.]*(?:let'?s?\s+go|that'?s?\s+(?:works|good|right))?$",
         re.IGNORECASE,
     )
 
