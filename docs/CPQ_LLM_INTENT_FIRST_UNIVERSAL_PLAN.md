@@ -511,8 +511,55 @@ turn fall through to old, pre-Issue-6 behavior for that one gate.
 
 ### Status
 
-**Not started.** This section is the design only, written per owner
-request following Issues 6/7 (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_
-FIXES_2026_08_13.md). No code changes made yet — awaiting explicit
-go-ahead to begin Phase 4 implementation, per this plan's own §7
-go/no-go discipline and the shadow-mode-first rollout in §8.5 above.
+**Implemented 2026-08-13, off by default pending shadow-mode validation.**
+
+- **Critical bug found and fixed before implementation started**:
+  `classify_intent` bailed to `action="fallback"` whenever `attrs` was
+  empty, WITHOUT ever calling the LLM — the PRODUCT_QUANTITY_CHANGE and
+  COUNTRY_CHANGE confirmation checkpoints from Issues 6/7 (already
+  merged via PR #188) both call this with `attrs=[]` by design, meaning
+  the country-change gate was a silent no-op in production despite
+  passing every test. Fixed: only an empty question bails now.
+- **Timeout wrapper** — new `cpq_intent_classify_timeout_s` (default
+  10s), same `ThreadPoolExecutor` pattern as `classify_ask_route`.
+- **Scope correction**: `_dispatch_intent_result` turned out to already
+  resolve 12 of 16 categories, not the 4-10 this doc's earlier sections
+  suggested (the docstring had drifted from the actual code) — only
+  `PRODUCT_QUANTITY_CHANGE`/`COUNTRY_CHANGE` needed new branches;
+  `BULK_QUANTITY_CHANGE`/`RESPONSE_MODE_REQUEST`/`APPROVAL` were already
+  wired. `PRODUCT_MENTION` remains the one deliberate, permanent
+  deferral (needs a different resolution shape entirely).
+- **Single call site achieved**: the ~200-line inline gateway-consult
+  block was extracted into a shared `_llm_first_gateway_turn` function,
+  now called from both the pre-existing awaiting_approval/post_approval
+  site AND a new configuring-stage site (right after rule loading),
+  gated by new setting `cpq_llm_first_universal_enabled` (default
+  **off**). No double-dispatch: the configuring-stage site explicitly
+  skips when `session.status` is awaiting_approval/post_approval,
+  deferring to the existing site.
+- New `GatewayIntentResult.country_text` / `IntentResult.country_
+  description` fields, validated via `CpqEngine.is_recognized_country`
+  in `validate_gateway_quarantine` — also fixed `parse_gateway_intent`,
+  which never read `country_text` off the raw LLM JSON at all (caught
+  by the new dispatch branch's own test).
+- **Shared response-building**: `_build_product_quantity_change_
+  response`/`_build_country_change_response` factored out so the
+  deterministic gates (Issues 6/7) and the new dispatch branches use
+  identical logic, not duplicated copies.
+
+**Tests**: `tests/test_cpq_llm_first_universal_cutover_2026_08_13.py`
+(5 new) covers flag-off inertness, flag-on dispatch during configuring
+stage, single-call-site discipline when both call sites exist in one
+turn, and both new dispatch branches end-to-end. Plus 2 new tests in
+`test_cpq_intent_gateway.py` for the empty-attrs fix and the timeout
+wrapper. Full CPQ suite: **1064 passed**, rebuilt and redeployed.
+Branch `feature/cpq-llm-first-universal-cutover`.
+
+**Not yet done, deliberately deferred**: `PRODUCT_MENTION` dispatch
+branch; the shadow-mode staging rollout itself (flag ships off);
+several of the negative test cases from this section's own test plan
+above (`test_dispatch_disagreement_falls_through_never_double_mutates`,
+`test_product_mention_still_falls_through_undispatched`) — the
+single-call-site tests actually shipped cover the same discipline via
+call-count assertions, but not every scenario listed above was written
+individually.
