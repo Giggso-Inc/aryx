@@ -9701,8 +9701,19 @@ class CpqEngine:
         hidden_vns: set[str] | None = None,
         rules: list[Any] | None = None,
         display_order: dict[str, int] | None = None,
-    ) -> dict[str, dict[str, Any]]:
+        product_quantity: int | None = None,
+    ) -> dict[str, Any]:
         """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
+
+        product_quantity — the session-level order quantity, added as a
+        top-level ``"quantity"`` key SIBLING to ``configData`` (never
+        inside it — that dict is a mirror of real catalog variable_names
+        only, never a synthetic key). Live-verified gap, 2026-08-13: the
+        overall order quantity reached the human-readable text summary
+        but never the actual submitted JSON payload at all. Strictly
+        opt-in — omitted entirely (not even a null key) when not
+        supplied, so this can never change the payload shape for any
+        existing caller that doesn't pass it.
 
         display_order — optional {variable_name: rank} from
         `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
@@ -10098,7 +10109,10 @@ class CpqEngine:
                 (k for k in ordered_keys if k in display_order),
                 key=lambda k: display_order[k],
             )
-        return {"configData": {k: out[k] for k in ordered_keys}}
+        result: dict[str, Any] = {"configData": {k: out[k] for k in ordered_keys}}
+        if product_quantity is not None:
+            result["quantity"] = product_quantity
+        return result
 
     @staticmethod
     def _rule_condition_edges(

@@ -193,6 +193,50 @@ def test_quantity_change_summary_build_failure_falls_back_to_plain_line(monkeypa
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Issue 6 (live feedback, 2026-08-13) — Product Quantity missing from the
+# actual JSON payload, not just the text summary
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_build_payload_omits_quantity_key_when_not_supplied():
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    payload = _engine.build_payload({"batteryType_astro": "STANDARD"}, attrs=[battery])
+    assert "quantity" not in payload
+    assert "configData" in payload
+
+
+def test_build_payload_includes_quantity_as_a_sibling_of_configdata():
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    payload = _engine.build_payload(
+        {"batteryType_astro": "STANDARD"}, attrs=[battery], product_quantity=15,
+    )
+    assert payload["quantity"] == 15
+    assert "quantity" not in payload["configData"]
+
+
+def test_final_approval_payload_includes_the_product_quantity(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], []))
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([battery], "aSTRO25_bom"))
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        filled={"batteryType_astro": "STANDARD"},
+        display_filled={"batteryType_astro": "Standard"},
+        status="awaiting_approval", turn=4, product_quantity=10,
+    )
+    req = AskRequest(question="confirm", workspace_id=1, session_data=session.to_dict())
+    resp = _run_cpq_turn_inner(req, object())
+    assert resp["cpq_payload"] is not None
+    assert resp["cpq_payload"]["quantity"] == 10
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Issue 3 — quantity positioned under Product Name, not appended last
 # ═══════════════════════════════════════════════════════════════════════
 
