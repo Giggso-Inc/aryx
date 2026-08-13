@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -72,6 +72,7 @@ from aryx.cpq.session_guard import (
     undo_success_message,
 )
 from aryx.cpq.pending_scope import (
+    ScopeResolve,
     candidates_from_attr_options,
     clear_pending_scope,
     format_did_you_mean,
@@ -1488,6 +1489,175 @@ def _scoped_reask_response(
     answer = format_did_you_mean(
         reply, sug, numbered=numbered, scope_label=scope_label,
         confident_single=confident_single,
+    )
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": [tools_called],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _llm_classify_scope_reply(
+    reply: str, candidates: list[str], scope_label: str,
+    session: Any, workspace_id: int,
+) -> tuple[Literal["candidate", "skip", "family_only", "unrelated"], str | None]:
+    """LLM-first classification of a reply to a pending scope question
+    (product/family/attr-option disambiguation) — docs/CPQ_PRODUCT_
+    SCOPE_LLM_FIRST_PLAN_2026_08_13.md.
+
+    Runs BEFORE `resolve_against_scope`'s deterministic ladder, not
+    after: classifies the reply's INTENT (does it name one specific
+    option, ask to skip/defer this question, name only the broader
+    family/category with no specific variant, or neither) — never the
+    final value. The LLM's "candidate" guess is only ever a pointer;
+    `_resolve_scope_reply` is the only thing allowed to turn it into a
+    real answer, by independently confirming it against the actual
+    candidate list (never trusted verbatim — same discipline as every
+    other `_llm_*` fallback in this file).
+
+    Two live bugs this exists to close:
+    - "go further" replied to a pending "Product — choose one" question
+      got the same content-free "I didn't get X" re-ask as a garbled
+      product name — string-similarity alone has no way to recognize
+      "the customer wants to move past this question" as distinct from
+      "the customer tried and failed to name a product."
+    - "I want quote for APX Next radios" (names the family, no variant)
+      got the identical generic "I didn't get X" wording too, reading as
+      if the WHOLE message failed to match anything, when really the
+      customer is on-topic and just hasn't picked a specific product yet
+      — "family_only" gets a response that says so directly instead
+      (owner decision: never auto-pick a variant for them, just tell
+      them to choose one so the quote can proceed).
+
+    A variant NAMED anywhere in the reply — even embedded in a longer
+    sentence ("I want quote for the APX Next All Band radios") — must
+    still resolve as "candidate", never "family_only": the presence of
+    extra surrounding text is not itself a reason to treat the reply as
+    unspecific when it does specify one.
+    """
+    if not reply.strip() or not candidates:
+        return "unrelated", None
+    cand_lines = "\n".join(f"- {c}" for c in candidates)
+    sys = (
+        "You classify a user's reply to a pending multiple-choice "
+        f'question about "{scope_label}". Exactly one of four outcomes:\n'
+        '- "candidate": the reply clearly and specifically points at ONE '
+        'of the listed options (even indirectly, e.g. "the international '
+        'one", or embedded in a longer sentence, e.g. "I want quote for '
+        'the All Band radios") -- give your best-guess exact string from '
+        "the list. A specific variant mentioned ANYWHERE in the reply "
+        'always wins, no matter how much other text surrounds it.\n'
+        '- "skip": the reply is asking to move past, skip, or defer this '
+        'question rather than naming any option (e.g. "go further", '
+        '"skip this", "let\'s continue", "come back to this later").\n'
+        '- "family_only": the reply is clearly on-topic and about this '
+        'same product line, but names only the broader family/category '
+        '-- no specific option from the list is identifiable (e.g. "I '
+        'want a quote for APX Next radios" when the list is specific '
+        "APX NEXT variants).\n"
+        '- "unrelated": none of the above -- off-topic or a genuinely '
+        "different request.\n"
+        'Never guess when unsure -- prefer "unrelated" over a low-'
+        'confidence "candidate".'
+    )
+    user = (
+        f"OPTIONS:\n{cand_lines}\n\nUSER REPLY: {reply}\n\n"
+        'Reply ONLY as JSON: {"outcome": "candidate"|"skip"|"family_only"'
+        '|"unrelated", "guess": "<exact string from OPTIONS, or null>"}'
+    )
+
+    def _validate(
+        parsed: dict,
+    ) -> tuple[Literal["candidate", "skip", "family_only", "unrelated"], str | None]:
+        outcome = parsed.get("outcome")
+        if outcome not in ("candidate", "skip", "family_only", "unrelated"):
+            return "unrelated", None
+        if outcome == "candidate":
+            guess = parsed.get("guess")
+            if not isinstance(guess, str) or guess not in candidates:
+                return "unrelated", None
+            return "candidate", guess
+        return outcome, None
+
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate, role="answer")
+    if result is None:
+        # Reject-on-failure (Issues 6/7 discipline): an exception/timeout/
+        # malformed reply must never be treated as a confident answer —
+        # "unrelated" makes _resolve_scope_reply fall through to the
+        # unchanged deterministic ladder, exactly as if this call never
+        # happened.
+        return "unrelated", None
+    return result
+
+
+def _resolve_scope_reply(
+    reply: str, candidates: list[str], scope_label: str,
+    session: Any, workspace_id: int,
+) -> "ScopeResolve | Literal['skip', 'family_only']":
+    """Single integration point replacing a bare `resolve_against_scope`
+    call wherever a reply to an ACTIVE pending scope question is being
+    resolved (docs/CPQ_PRODUCT_SCOPE_LLM_FIRST_PLAN_2026_08_13.md).
+
+    LLM classifies first; the deterministic ladder validates second —
+    the LLM never hands a final value to the caller, only a pointer
+    `resolve_against_scope` must independently confirm is real. Any
+    outcome other than a confirmed "candidate" falls through to running
+    the deterministic ladder on the ORIGINAL reply, unchanged from
+    today's behavior — this function can only ever ADD the "skip"/
+    "family_only" outcomes and loose-phrasing recovery, never remove
+    existing coverage.
+    """
+    outcome, guess = _llm_classify_scope_reply(reply, candidates, scope_label, session, workspace_id)
+    if outcome in ("skip", "family_only"):
+        return outcome
+    if outcome == "candidate" and guess:
+        res = resolve_against_scope(guess, candidates)
+        if res.tier != "miss":
+            return res
+    return resolve_against_scope(reply, candidates)
+
+
+def _build_scope_skip_response(
+    req: "AskRequest", session: Any, candidates: list[str], scope_label: str,
+    tools_called: str = "cpq_scope_skip_declined()",
+) -> dict[str, Any]:
+    """Response for a reply classified as asking to skip/defer a pending
+    scope question. Owner decision: ask what they'd like to do instead —
+    never auto-pick a default, never silently escalate.
+    """
+    lines = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
+    answer = (
+        f"This choice determines the rest of the configuration, so I "
+        f"can't skip it yet — could you tell me which **{scope_label}** "
+        f"you'd like, or what you're trying to configure? Here are the "
+        f"choices again:\n\n{lines}"
+    )
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": [tools_called],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _build_scope_family_only_response(
+    req: "AskRequest", session: Any, candidates: list[str], scope_label: str,
+    tools_called: str = "cpq_scope_family_only()",
+) -> dict[str, Any]:
+    """Response for a reply that's clearly on-topic but names only the
+    broader family/category, not a specific option — owner decision:
+    never auto-pick a variant for them, just tell them plainly to
+    choose one so the quote can proceed. Distinct wording from a
+    genuine miss (`_scoped_reask_response`) since the reply itself
+    wasn't wrong, just not specific enough yet.
+    """
+    lines = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
+    answer = (
+        f"To proceed with the quote, please select the specific "
+        f"**{scope_label}** from the list below:\n\n{lines}"
     )
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -3430,22 +3600,32 @@ def _llm_resolve_pending_answer(
 
 def _llm_classify_intent_core(
     sys_prompt: str, user_prompt: str, workspace_id: int,
-    validate: Any,
+    validate: Any, role: str = "answer",
 ) -> Any:
     """Shared skeleton for every Tier-2 LLM intent fallback in this file.
 
     Factored out of `_llm_classify_change_intent` and
     `_llm_resolve_label_collision` (both pre-existing, both already
-    following this exact shape): call the menial-tier model, parse its
+    following this exact shape): call the given tier's model, parse its
     JSON reply, and hand the parsed dict to a caller-supplied `validate`
     function that enforces the never-guess discipline specific to that
     call site (only real attrs/options ever get trusted). Any exception —
     LLM call failure, malformed JSON, missing braces — returns None rather
     than raising, since every caller here is a fallback that must never
     crash the turn.
+
+    `role` — "answer" (default) uses `llm_runtime`'s reasoning-capable
+    tier (backed by `llm_reason_model`) — despite the "answer" role name
+    (`llm_runtime.chat`'s only two roles are "menial" and "answer"),
+    it's genuinely the stronger model, needed for classifications that
+    require real judgment rather than pattern matching (e.g.
+    `_llm_classify_scope_reply` distinguishing "skip" vs "family_only"
+    vs a specific candidate named indirectly). Pass role="menial" to opt
+    a caller into the cheap/fast tier (`llm_menial_model`) instead, for
+    a classification simple enough not to need it.
     """
     try:
-        text, _it, _ot = llm_runtime.chat("menial", sys_prompt, user_prompt, workspace_id=workspace_id)
+        text, _it, _ot = llm_runtime.chat(role, sys_prompt, user_prompt, workspace_id=workspace_id)
         s, e = text.find("{"), text.rfind("}")
         parsed = json.loads(text[s:e + 1])
     except Exception as exc:  # noqa: BLE001 — fallback must never crash the turn
@@ -4379,7 +4559,15 @@ def _gateway_to_intent_result(
         ) else [],
         quantity_description=(
             gw.quantity_text
-            if gw.intent_category == IntentCategory.BULK_QUANTITY_CHANGE
+            if gw.intent_category in (
+                IntentCategory.BULK_QUANTITY_CHANGE,
+                IntentCategory.PRODUCT_QUANTITY_CHANGE,
+            )
+            else None
+        ),
+        country_description=(
+            gw.country_text
+            if gw.intent_category == IntentCategory.COUNTRY_CHANGE
             else None
         ),
         response_mode=(
@@ -4639,6 +4827,39 @@ def _dispatch_intent_result(
             hidden_vns=_hidden_vns,
             hiding_rules=hiding_rules,
             rec_rules=rec_rules,
+        )
+
+    # PRODUCT_QUANTITY_CHANGE / COUNTRY_CHANGE (docs/CPQ_LLM_INTENT_FIRST_
+    # UNIVERSAL_PLAN.md §8 Phase 4): both session-level, no-target
+    # categories -- quantity_description/country_description are already
+    # validated (digits-only / is_recognized_country) by
+    # validate_gateway_quarantine before this function ever sees them, so
+    # no further resolution step is needed, unlike attribute-targeting
+    # categories. Shares the exact same response-building helpers the
+    # deterministic gates (ask_api.py, mid-turn) already use.
+    if (
+        result.category == IntentCategory.PRODUCT_QUANTITY_CHANGE
+        and result.quantity_description
+    ):
+        _qty = result.quantity_description.strip()
+        if not _qty.isdigit():
+            return None
+        return _with_classify_usage(
+            _build_product_quantity_change_response(
+                req, session, reader, value=int(_qty),
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
+    if (
+        result.category == IntentCategory.COUNTRY_CHANGE
+        and result.country_description
+    ):
+        return _with_classify_usage(
+            _build_country_change_response(
+                req, session, result.country_description,
+            ),
+            classify_prompt_tokens, classify_completion_tokens,
         )
 
     if result.category == IntentCategory.OUT_OF_SCOPE:
@@ -4959,6 +5180,364 @@ def _dispatch_intent_result(
             classify_prompt_tokens, classify_completion_tokens,
         )
 
+    return None
+
+
+def _build_product_quantity_change_response(
+    req: "AskRequest", session: Any, reader: Any,
+    value: int | None, decimal_value: str | None = None,
+) -> dict[str, Any]:
+    """Apply a confirmed overall product-quantity change (or, when `value`
+    and `decimal_value` are both None, just report the current one) and
+    build the response.
+
+    Factored out of the STEP-6 quantity gate (docs/CPQ_LLM_INTENT_FIRST_
+    UNIVERSAL_PLAN.md §8 Phase 4) so the LLM-first dispatcher's new
+    PRODUCT_QUANTITY_CHANGE branch shares the exact same validation and
+    "show full summary once complete" logic instead of duplicating it —
+    same discipline as `_build_attr_query_response` factoring out
+    ATTR_QUERY's shared response shape.
+    """
+    if decimal_value is not None:
+        # PR #186 review, medium: an explicit decimal ("change quantity to
+        # 10.0") gets its own dedicated rejection quoting exactly what the
+        # customer typed — never the wrong, confusing digit the old
+        # regex-backtracking bug used to surface here ("0" instead of "10.0").
+        answer = (
+            f"**{decimal_value}** isn't a valid quantity — it "
+            f"needs to be a whole number from {MIN_PRODUCT_QUANTITY} to "
+            f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
+            f"still **{session.product_quantity}**."
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [],
+            "tools_called": ["cpq_product_quantity_rejected()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+    if value is not None and not is_valid_product_quantity(value):
+        # An explicit, invalid request ("change quantity to -5"/"...to 0")
+        # gets a real rejection, never a silent ignore or a silently-
+        # accepted nonsense value — the customer asked for something
+        # specific and needs to know why it didn't happen.
+        answer = (
+            f"**{value}** isn't a valid quantity — it needs to be "
+            f"a whole number from {MIN_PRODUCT_QUANTITY} to "
+            f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
+            f"**{session.product_quantity}**."
+        )
+        _persist_cpq_history(req.workspace_id, req.question, answer)
+        return {
+            "answer": answer, "terms": [],
+            "tools_called": ["cpq_product_quantity_rejected()"],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+        }
+    if value is not None:
+        session.product_quantity = value
+    # Live-verified gap, 2026-08-13: a quantity change used to return ONLY
+    # "Quantity → N", with no updated configuration summary — every other
+    # attribute change shows the running configuration once it's complete.
+    if not session.pending_variables:
+        _qty_summary_resp = _build_show_summary_response(req, session, reader)
+        if _qty_summary_resp is not None:
+            _qty_summary_resp["answer"] = (
+                f"**Quantity** → {session.product_quantity}\n\n"
+                + _qty_summary_resp["answer"]
+            )
+            _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
+            return _qty_summary_resp
+    answer = f"**Quantity** → {session.product_quantity}"
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _build_country_change_response(
+    req: "AskRequest", session: Any, new_country: str,
+) -> dict[str, Any]:
+    """Apply a confirmed country change (or report a no-op when it already
+    matches) and build the response. Factored out of the mid-turn
+    country-change gate (Issue 7, docs/CPQ_QUANTITY_COUNTRY_SUMMARY_
+    FIXES_2026_08_13.md) so the LLM-first dispatcher's COUNTRY_CHANGE
+    branch (§8 Phase 4) shares the exact same logic.
+    """
+    if session.country and session.country.strip().lower() == new_country.strip().lower():
+        answer = f"Country is already set to **{session.country}** — no change made."
+    else:
+        session.country = new_country
+        answer = f"Country → {session.country}"
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_country_change()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _llm_first_gateway_turn(
+    req: "AskRequest", session: Any, attrs: list, reader: Any, hints: dict | None,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
+    catalog_prefix: str,
+) -> "dict[str, Any] | None":
+    """LLM-first classify-and-dispatch for one turn — the single call site
+    both the post-approval review flow AND (behind
+    `cpq_llm_first_universal_enabled`) the configuring-stage flow share
+    (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8 Phase 4).
+
+    Factored out of what used to be inline code nested inside the
+    `awaiting_approval`/`post_approval` status branch only — that
+    scoping meant this dispatcher, despite already resolving 12 of 16
+    `IntentCategory` values, never ran during the actual configuring
+    conversation (most real traffic). Extracting it here, unchanged in
+    behavior, is what lets a second call site reuse it instead of
+    duplicating ~200 lines, satisfying the plan doc's own "one
+    classification, one handler call, no double-dispatch" convergence
+    discipline (§5/§6 mitigation #5) for both call sites at once.
+
+    Returns a full response dict when the turn was fully handled, or
+    None when the LLM/deterministic layers found nothing dispatchable —
+    callers MUST treat None as "fall through to the unchanged
+    deterministic path," exactly like `_dispatch_intent_result`'s own
+    contract.
+    """
+    _pending_attr_for_gate = None
+    if session.pending_variables and session.turn > 1:
+        _pending_attr_for_gate = next(
+            (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+        )
+    _defer_gateway_to_pending_answer = (
+        _pending_attr_for_gate is not None
+        and not _pending_reply_is_topic_switch(
+            req.question, _pending_attr_for_gate, attrs,
+            session.filled, session.filled_multi, req.workspace_id,
+        )
+    )
+
+    # N4: skip when top-level classify_ask_route already ran this turn
+    # (one classification LLM call per turn). Live sessions never mark
+    # top-level, so they still get this gateway. Guided mode stays
+    # deterministic-only.
+    if not (
+        get_settings().cpq_llm_first_enabled
+        and not session.guided_mode
+        and not top_level_route_used()
+        and not _defer_gateway_to_pending_answer
+    ):
+        return None
+
+    _gw = gateway_classify_intent(
+        req.question, attrs, session, _cpq_engine, req.workspace_id,
+        hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
+        bml_eval=bml_eval, catalog_prefix=catalog_prefix,
+    )
+    logger.info(
+        "cpq_intent_gateway_turn: action=%s reason=%r category=%s "
+        "vn=%r value_ref=%r cache_hit=%s tokens=(%d,%d) model=%s",
+        _gw.action, _gw.reason,
+        _gw.result.intent_category.value if _gw.result else None,
+        _gw.result.variable_name if _gw.result else None,
+        _gw.result.value_ref if _gw.result else None,
+        _gw.cache_hit, _gw.prompt_tokens, _gw.completion_tokens,
+        _gw.model_id,
+    )
+    if _gw.action == "clarify" and _gw.result:
+        # Compound "change X and what is Y" messages (docs/CPQ_
+        # COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §4) land
+        # here as an ambiguous clarify — the gateway's own schema
+        # can't hold two targets. Try an LLM-first split BEFORE
+        # falling to the generic clarify prompt; cheap conjunction
+        # pre-check keeps this from firing on ordinary ambiguous
+        # single-intent messages that have no "and"/";" at all.
+        #
+        # docs/config_consistency_issues_2026-07-30.md Issue 12
+        # follow-up — live-confirmed a THIRD phrasing this
+        # conjunction-only gate still misses entirely: "Frequency
+        # Bands -700/800 MHz Wireless Carrier- ATT/FirstNet
+        # (provided by Motorola)" uses "-" as its separator, no
+        # "and"/";" anywhere, so neither splitter below was ever
+        # even attempted — straight through to the generic clarify
+        # prompt every time, regardless of how well last_qa_
+        # variables/_ground_clarify_candidates already improved
+        # that prompt's own candidate ranking. A keyword-only gate
+        # can never anticipate every way a customer separates two
+        # requests; last_qa_variables already knows — cheaply,
+        # without any extra LLM call — that the immediately
+        # preceding turn discussed exactly these 2+ attributes, so
+        # it's an equally valid (and keyword-free) signal that a
+        # split is worth attempting.
+        _cq_lower = req.question.lower()
+        _looks_compound = " and " in _cq_lower or ";" in req.question
+        _recent_multi_topic = len(session.last_qa_variables or []) >= 2
+        if _looks_compound or _recent_multi_topic:
+            _split = _llm_split_compound_change_and_question(
+                req.question, req.workspace_id,
+            )
+            if _split is not None:
+                _change_text, _question_text = _split
+                _change_hint = _cpq_engine.detect_change_request(
+                    _change_text, attrs, session.filled, session.filled_multi,
+                )
+                if _change_hint is not None:
+                    _changed_attr, _new_value_hint = _change_hint
+                    _change_req = req.model_copy(
+                        update={"question": _change_text},
+                    )
+                    _change_result = _handle_cascade(
+                        _change_req, session, attrs, _changed_attr,
+                        _new_value_hint, hiding_rules, rec_rules, con_rules,
+                    )
+                    _qa_req = req.model_copy(
+                        update={"question": _question_text},
+                    )
+                    _qa_result = _handle_cpq_qa(
+                        _qa_req, session, attrs, reader,
+                    )
+                    _combined = (
+                        f"{_change_result.get('answer', '')}\n\n"
+                        f"{_qa_result.get('answer', '')}"
+                    )
+                    _persist_cpq_history(
+                        req.workspace_id, req.question, _combined,
+                    )
+                    return {
+                        **_qa_result,
+                        "answer": _combined,
+                        "tools_called": (
+                            list(_change_result.get("tools_called") or [])
+                            + list(_qa_result.get("tools_called") or [])
+                        ),
+                    }
+                # Split succeeded but the change clause didn't
+                # resolve deterministically — fall through to the
+                # existing clarify path unchanged (safe default).
+            else:
+                # Not a change+question compound — try change+change
+                # (docs/config_consistency_issues_2026-07-30.md
+                # Issue 12): classify_intent's schema can only ever
+                # name ONE target, so "Add Frequency Bands as VHF
+                # and Wireless Carrier as ATT/FirstNet" collapses to
+                # "ambiguous" here regardless of how well-formed it
+                # is. last_qa_variables (both attrs from the
+                # customer's immediately preceding compound options
+                # query) is passed in as context to help produce a
+                # correct split.
+                _multi_change_texts = _llm_split_multi_attr_change_request(
+                    req.question, attrs, req.workspace_id,
+                    last_qa_variables=session.last_qa_variables,
+                )
+                if _multi_change_texts:
+                    _resolved_changes = [
+                        (
+                            _mc_text,
+                            _resolve_split_change_text(
+                                _mc_text, attrs, session.filled,
+                                session.filled_multi,
+                                last_qa_variables=session.last_qa_variables,
+                            ),
+                        )
+                        for _mc_text in _multi_change_texts
+                    ]
+                    # Never half-apply and guess (same discipline as
+                    # the change+question split above) — only
+                    # proceed when EVERY split fragment resolved to
+                    # a real attr+value; otherwise fall through to
+                    # the existing clarify path unchanged.
+                    if all(hint is not None for _, hint in _resolved_changes):
+                        _mc_results = []
+                        for _mc_text, _mc_hint in _resolved_changes:
+                            _mc_attr, _mc_value_hint = _mc_hint
+                            _mc_req = req.model_copy(
+                                update={"question": _mc_text},
+                            )
+                            _mc_results.append(_handle_cascade(
+                                _mc_req, session, attrs, _mc_attr,
+                                _mc_value_hint, hiding_rules, rec_rules,
+                                con_rules,
+                            ))
+                        _combined = "\n\n".join(
+                            r.get("answer", "") for r in _mc_results
+                        )
+                        _persist_cpq_history(
+                            req.workspace_id, req.question, _combined,
+                        )
+                        return {
+                            **_mc_results[-1],
+                            "answer": _combined,
+                            "tools_called": [
+                                t for r in _mc_results
+                                for t in (r.get("tools_called") or [])
+                            ],
+                        }
+        # docs/config_consistency_issues_2026-07-30.md issue 1 — never
+        # offer a currently-hidden-for-this-product attribute as a
+        # disambiguation candidate.
+        _hidden_vns = _cpq_engine.apply_hiding_rules(
+            attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
+        )[2]
+        return _set_pending_clarify_and_answer(
+            req, session, attrs,
+            original_question=req.question,
+            clarifying_question=_gw.result.clarifying_question,
+            con_rules=con_rules,
+            bml_eval=bml_eval,
+            prompt_tokens=_gw.prompt_tokens,
+            completion_tokens=_gw.completion_tokens,
+            tool_name="cpq_intent_gateway_clarify()",
+            hidden_vns=_hidden_vns,
+            hiding_rules=hiding_rules,
+            rec_rules=rec_rules,
+        )
+    if _gw.action == "dispatch" and _gw.result:
+        clear_clarify(session, _gw.result.variable_name)
+        # Successful non-clarify path — drop any stale clarify memory.
+        _clear_pending_clarify(session)
+        _mapped = _gateway_to_intent_result(
+            _gw.result, attrs, _gw.value_display,
+        )
+        if _mapped is not None:
+            # AMBIGUOUS via dispatch path must also set pending memory.
+            if _mapped.category == IntentCategory.AMBIGUOUS:
+                # docs/config_consistency_issues_2026-07-30.md issue 1
+                _hidden_vns = _cpq_engine.apply_hiding_rules(
+                    attrs, session.filled, hiding_rules, bml_eval,
+                    filled_multi=session.filled_multi,
+                )[2]
+                return _set_pending_clarify_and_answer(
+                    req, session, attrs,
+                    original_question=req.question,
+                    clarifying_question=_mapped.clarifying_question,
+                    con_rules=con_rules,
+                    bml_eval=bml_eval,
+                    prompt_tokens=_gw.prompt_tokens,
+                    completion_tokens=_gw.completion_tokens,
+                    tool_name="cpq_llm_first_ambiguous()",
+                    hidden_vns=_hidden_vns,
+                    hiding_rules=hiding_rules,
+                    rec_rules=rec_rules,
+                )
+            _dispatched = _dispatch_intent_result(
+                req, session, attrs, _mapped,
+                hiding_rules, rec_rules, con_rules, bml_eval,
+                _gw.prompt_tokens, _gw.completion_tokens,
+                reader=reader, hints=hints,
+            )
+            if _dispatched is not None:
+                return _dispatched
+            logger.info(
+                "cpq_intent_gateway_turn: dispatch mapped but handler "
+                "returned None — falling through to deterministic path",
+            )
+    # action=fallback (or dispatch that couldn't map) → caller's own
+    # deterministic path.
     return None
 
 
@@ -6298,6 +6877,18 @@ def _run_cpq_turn_inner(
     set_run_id(session.run_id)
     session.turn += 1
     record_utterance(session, req.question)
+    # Snapshot BEFORE any anchor-resolution logic below mutates it — the
+    # universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
+    # PLAN.md §8 Phase 4) needs to know whether THIS turn started out
+    # answering a pending anchor question (country/product/switch), so it
+    # can defer to that already-correct resolution instead of redundantly
+    # reclassifying the same reply after the anchor logic already
+    # consumed it. Live-confirmed regression: replying "United States" to
+    # the country anchor question got correctly filled by the existing
+    # anchor logic, then the universal dispatcher ran anyway, saw country
+    # already matched, and answered "already set — no change made"
+    # instead of ever reaching the next question (Product).
+    _incoming_pending_anchor = session.pending_anchor
 
     # Residual Bug A: if earlier turns were standard Ask (no CpqSession),
     # recover country + long order text from req.history before any gate.
@@ -6560,78 +7151,14 @@ def _run_cpq_turn_inner(
                     )
                 )
                 if _qty_confirmed:
-                    if _qty_pre["is_change"] and _qty_pre.get("decimal_value") is not None:
-                        # PR #186 review, medium: an explicit decimal ("change
-                        # quantity to 10.0") gets its own dedicated rejection
-                        # quoting exactly what the customer typed — never the
-                        # wrong, confusing digit the old regex-backtracking
-                        # bug used to surface here ("0" instead of "10.0").
-                        answer = (
-                            f"**{_qty_pre['decimal_value']}** isn't a valid quantity — it "
-                            f"needs to be a whole number from {MIN_PRODUCT_QUANTITY} to "
-                            f"{MAX_PRODUCT_QUANTITY:,}, not a decimal. Current quantity is "
-                            f"still **{session.product_quantity}**."
-                        )
-                        _persist_cpq_history(req.workspace_id, req.question, answer)
-                        return {
-                            "answer": answer, "terms": [],
-                            "tools_called": ["cpq_product_quantity_rejected()"],
-                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                        }
-                    if (
-                        _qty_pre["is_change"] and _qty_pre["value"] is not None
-                        and not is_valid_product_quantity(_qty_pre["value"])
-                    ):
-                        # An explicit, invalid request ("change quantity to
-                        # -5"/"...to 0") gets a real rejection, never a silent
-                        # ignore or a silently-accepted nonsense value — the
-                        # customer asked for something specific and needs to
-                        # know why it didn't happen.
-                        answer = (
-                            f"**{_qty_pre['value']}** isn't a valid quantity — it needs to be "
-                            f"a whole number from {MIN_PRODUCT_QUANTITY} to "
-                            f"{MAX_PRODUCT_QUANTITY:,}. Current quantity is still "
-                            f"**{session.product_quantity}**."
-                        )
-                        _persist_cpq_history(req.workspace_id, req.question, answer)
-                        return {
-                            "answer": answer, "terms": [],
-                            "tools_called": ["cpq_product_quantity_rejected()"],
-                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                        }
-                    if _qty_pre["is_change"] and _qty_pre["value"] is not None:
-                        session.product_quantity = _qty_pre["value"]
-                    # Live-verified gap, 2026-08-13: a quantity change used to
-                    # return ONLY "Quantity → N", with no updated configuration
-                    # summary — every other attribute change shows the running
-                    # configuration once it's complete. If the configuration
-                    # is already complete (no pending variables), show the
-                    # same "Configuration complete" + summary parity a normal
-                    # attribute change gets; mid-configuration, no complete
-                    # configuration exists yet to show, so the plain quantity
-                    # line stays as-is (matching how every other mid-cascade
-                    # attribute change behaves).
-                    if not session.pending_variables:
-                        _qty_summary_resp = _build_show_summary_response(req, session, reader)
-                        if _qty_summary_resp is not None:
-                            _qty_summary_resp["answer"] = (
-                                f"**Quantity** → {session.product_quantity}\n\n"
-                                + _qty_summary_resp["answer"]
-                            )
-                            _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
-                            return _qty_summary_resp
-                    answer = f"**Quantity** → {session.product_quantity}"
-                    _persist_cpq_history(req.workspace_id, req.question, answer)
-                    return {
-                        "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-                        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-                    }
+                    return _build_product_quantity_change_response(
+                        req, session, reader,
+                        value=_qty_pre["value"] if _qty_pre["is_change"] else None,
+                        decimal_value=(
+                            _qty_pre.get("decimal_value")
+                            if _qty_pre["is_change"] else None
+                        ),
+                    )
                 # else: rejected -- fall through to normal hint/attribute
                 # processing below, exactly as if this gate never fired.
             if _qty_target is None:
@@ -6681,21 +7208,7 @@ def _run_cpq_turn_inner(
             hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
         )
     ):
-        if (
-            session.country
-            and session.country.strip().lower() == _country_change_match.strip().lower()
-        ):
-            answer = f"Country is already set to **{session.country}** — no change made."
-        else:
-            session.country = _country_change_match
-            answer = f"Country → {session.country}"
-        _persist_cpq_history(req.workspace_id, req.question, answer)
-        return {
-            "answer": answer, "terms": [], "tools_called": ["cpq_country_change()"],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
-                      "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
-            "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
-        }
+        return _build_country_change_response(req, session, _country_change_match)
         # else: rejected -- fall through to normal hint/attribute
         # processing below, exactly as if this gate never fired.
 
@@ -7158,9 +7671,19 @@ def _run_cpq_turn_inner(
         if session.pending_scope_candidates and session.pending_scope_kind in (
             "product_suggestions", "family_disambiguation", "",
         ):
-            _sres0 = resolve_against_scope(
-                req.question, list(session.pending_scope_candidates),
+            _scope_cands0 = list(session.pending_scope_candidates)
+            _sres0 = _resolve_scope_reply(
+                req.question, _scope_cands0, "product family",
+                session, req.workspace_id,
             )
+            if _sres0 == "skip":
+                return _build_scope_skip_response(
+                    req, session, _scope_cands0, "product family",
+                )
+            if _sres0 == "family_only":
+                return _build_scope_family_only_response(
+                    req, session, _scope_cands0, "product family",
+                )
             if _sres0.matched:
                 detected = _sres0.matched
                 clear_pending_scope(session)
@@ -7717,7 +8240,21 @@ def _run_cpq_turn_inner(
     if model_vn:
         hints.setdefault("_bm_model_variable_name", model_vn)
         session.pending_model_leaf_candidates = []
-    else:
+    elif not session.model_leaf_resolved:
+        # Live-confirmed bug (2026-08-13): this whole ambiguous-tree
+        # re-resolution block had no `model_leaf_resolved` short-circuit
+        # at all, unlike every other call site in this file that checks
+        # it (e.g. lines ~2073, ~2381). Once already resolved on an
+        # earlier turn, `_existing_hint` (from session.filled) keeps
+        # matching the same leaf every subsequent turn, re-hitting
+        # `if _resolved_leaf: ... clear_pending_scope(session)`
+        # unconditionally — silently wiping an UNRELATED pending_scope
+        # (e.g. a live "Product — choose one" disambiguation already in
+        # progress) on every turn regardless of what the turn's message
+        # was actually about. Confirmed live: "now set the product"
+        # replied to a pending Product question had its scope silently
+        # cleared here before ever reaching the Product-matching code,
+        # turning a should-be-scoped reask into a full-catalog one.
         # Amendment 10 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a
         # catalog with 2+ model leaves (CommandCentral Aware:
         # commandCentralAware2024_BOM, commandCentralAware2026_BOM,
@@ -7754,26 +8291,29 @@ def _run_cpq_turn_inner(
                 session.model_leaf_resolved = True
             elif session.pending_model_leaf_candidates:
                 # A prior turn already asked — this reply should answer it.
-                # PROMPT 7: exact → partial → fuzzy within the same leaf list
-                # before LLM; on miss, scoped re-ask (never Product 325).
+                # LLM classifies first (docs/CPQ_PRODUCT_SCOPE_LLM_FIRST_
+                # PLAN_2026_08_13.md), deterministic ladder validates
+                # second; on miss, scoped re-ask (never Product 325).
+                # Supersedes the old ConfigAttr-wrapping
+                # _llm_resolve_label_collision fallback this call site
+                # used to awkwardly reuse — _resolve_scope_reply already
+                # covers that same job, natively, for plain strings.
                 _reply = req.question.strip()
                 _leaf_scope = list(session.pending_model_leaf_candidates)
-                _sres = resolve_against_scope(_reply, _leaf_scope)
+                _scope_reply = _resolve_scope_reply(
+                    _reply, _leaf_scope, "product line", session, req.workspace_id,
+                )
+                if _scope_reply == "skip":
+                    return _build_scope_skip_response(
+                        req, session, _leaf_scope, "product line",
+                    )
+                if _scope_reply == "family_only":
+                    return _build_scope_family_only_response(
+                        req, session, _leaf_scope, "product line",
+                    )
+                _sres = _scope_reply
                 if _sres.matched:
                     _resolved_leaf = _sres.matched
-                if _resolved_leaf is None:
-                    _leaf_attr_candidates = [
-                        ConfigAttr(
-                            entity_id=0, variable_name=leaf, display_label=leaf,
-                            required=False, default_value="",
-                            options=[MenuOption(item_value=leaf, display_name=leaf)],
-                        )
-                        for leaf in _leaf_scope
-                    ]
-                    _llm_leaf = _llm_resolve_label_collision(
-                        _reply, _leaf_attr_candidates, session, req.workspace_id)
-                    if _llm_leaf and _llm_leaf in _leaf_scope:
-                        _resolved_leaf = _llm_leaf
                 if _resolved_leaf is None:
                     # Keep model-leaf candidates AND pending_scope in sync
                     set_pending_scope(
@@ -8007,6 +8547,40 @@ def _run_cpq_turn_inner(
             _array_grid_vns,
         )
 
+    # Universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
+    # PLAN.md §8 Phase 4): `_llm_first_gateway_turn` already runs below
+    # for awaiting_approval/post_approval turns (STEP 6/7/8 routing,
+    # nested inside the status-check block right after this) — this is
+    # the SAME shared function, called here too so it also runs during
+    # the actual configuring-stage conversation, which it never did
+    # before this (the STEP 6 gates themselves stay unreachable during
+    # configuring — this earlier call site is the only way a mutating
+    # category like MULTI_SELECT_REMOVAL ever gets a chance to dispatch
+    # then). Positioned AFTER pending_change_no_value_vn/pending_change_
+    # collision_vns/pending_label_collision_vns resolution above (never
+    # before it — a live-confirmed regression: with this call site
+    # placed earlier, "prefer Premium over Standard" answering a pending
+    # no-value change request got frozen classified fresh instead of
+    # consumed by its own already-correct deterministic handler).
+    # Guarded so status in (awaiting_approval, post_approval) is never
+    # double-classified in the same turn — that status's own call site
+    # below owns it, matching the "one classification, one handler call"
+    # convergence discipline. Also deferred whenever this turn STARTED
+    # out answering a pending anchor question (country/product/switch) —
+    # see `_incoming_pending_anchor`'s own comment above for the
+    # live-confirmed regression this closes.
+    if (
+        get_settings().cpq_llm_first_universal_enabled
+        and session.status not in ("awaiting_approval", "post_approval")
+        and not _incoming_pending_anchor
+    ):
+        _llm_first_universal_result = _llm_first_gateway_turn(
+            req, session, attrs, reader, hints,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+        )
+        if _llm_first_universal_result is not None:
+            return _llm_first_universal_result
+
     # ── STEP 6 / 7 / 8 routing: awaiting_approval / post_approval status ────
     # "approved" is a legacy dead-end value (pre-
     # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D1) that used to be set once
@@ -8206,247 +8780,13 @@ def _run_cpq_turn_inner(
             session.pending_change_collision_vns = []
             session.pending_change_collision_question = ""
 
-        # docs/config_consistency_issues_2026-07-30.md issue 4 follow-up —
-        # this gateway used to run unconditionally here, BEFORE STEP 5 ever
-        # got a chance to apply a bare reply to an actively-pending
-        # single-select question. Live-confirmed: replying "VHF" to a
-        # correctly-pending "Frequency Bands — choose one: VHF/UHF"
-        # reprompt got reclassified fresh by the gateway and dispatched to
-        # a different, plausible-but-wrong sibling attribute
-        # (modelSelectionFrequencyBandMsl_astro also legally accepts
-        # "VHF"), leaving the real pending attribute's stale value
-        # untouched — the customer then confirms, the same staleness is
-        # detected again, and the whole reprompt loops forever. Deferring
-        # to STEP 5 whenever a reply doesn't clearly look like a fresh
-        # request (same _pending_reply_looks_like_new_request check STEP 5
-        # already uses for its own domain) closes that gap without
-        # touching genuine new requests, which still reach the gateway.
-        _pending_attr_for_gate = None
-        if session.pending_variables and session.turn > 1:
-            _pending_attr_for_gate = next(
-                (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
-            )
-        _defer_gateway_to_pending_answer = (
-            _pending_attr_for_gate is not None
-            and not _pending_reply_is_topic_switch(
-                req.question, _pending_attr_for_gate, attrs,
-                session.filled, session.filled_multi, req.workspace_id,
-            )
+        _llm_first_result = _llm_first_gateway_turn(
+            req, session, attrs, reader, hints,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
         )
-
-        # LLM-first mid-session gateway. N4: skip when top-level
-        # classify_ask_route already ran this turn (one classification LLM
-        # call per turn). Live sessions never mark top-level, so they still
-        # get STEP-6 gateway. Guided mode stays deterministic-only.
-        if (
-            get_settings().cpq_llm_first_enabled
-            and not session.guided_mode
-            and not top_level_route_used()
-            and not _defer_gateway_to_pending_answer
-        ):
-            _gw = gateway_classify_intent(
-                req.question, attrs, session, _cpq_engine, req.workspace_id,
-                hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
-                bml_eval=bml_eval, catalog_prefix=catalog_prefix,
-            )
-            logger.info(
-                "cpq_intent_gateway_turn: action=%s reason=%r category=%s "
-                "vn=%r value_ref=%r cache_hit=%s tokens=(%d,%d) model=%s",
-                _gw.action, _gw.reason,
-                _gw.result.intent_category.value if _gw.result else None,
-                _gw.result.variable_name if _gw.result else None,
-                _gw.result.value_ref if _gw.result else None,
-                _gw.cache_hit, _gw.prompt_tokens, _gw.completion_tokens,
-                _gw.model_id,
-            )
-            if _gw.action == "clarify" and _gw.result:
-                # Compound "change X and what is Y" messages (docs/CPQ_
-                # COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §4) land
-                # here as an ambiguous clarify — the gateway's own schema
-                # can't hold two targets. Try an LLM-first split BEFORE
-                # falling to the generic clarify prompt; cheap conjunction
-                # pre-check keeps this from firing on ordinary ambiguous
-                # single-intent messages that have no "and"/";" at all.
-                #
-                # docs/config_consistency_issues_2026-07-30.md Issue 12
-                # follow-up — live-confirmed a THIRD phrasing this
-                # conjunction-only gate still misses entirely: "Frequency
-                # Bands -700/800 MHz Wireless Carrier- ATT/FirstNet
-                # (provided by Motorola)" uses "-" as its separator, no
-                # "and"/";" anywhere, so neither splitter below was ever
-                # even attempted — straight through to the generic clarify
-                # prompt every time, regardless of how well last_qa_
-                # variables/_ground_clarify_candidates already improved
-                # that prompt's own candidate ranking. A keyword-only gate
-                # can never anticipate every way a customer separates two
-                # requests; last_qa_variables already knows — cheaply,
-                # without any extra LLM call — that the immediately
-                # preceding turn discussed exactly these 2+ attributes, so
-                # it's an equally valid (and keyword-free) signal that a
-                # split is worth attempting.
-                _cq_lower = req.question.lower()
-                _looks_compound = " and " in _cq_lower or ";" in req.question
-                _recent_multi_topic = len(session.last_qa_variables or []) >= 2
-                if _looks_compound or _recent_multi_topic:
-                    _split = _llm_split_compound_change_and_question(
-                        req.question, req.workspace_id,
-                    )
-                    if _split is not None:
-                        _change_text, _question_text = _split
-                        _change_hint = _cpq_engine.detect_change_request(
-                            _change_text, attrs, session.filled, session.filled_multi,
-                        )
-                        if _change_hint is not None:
-                            _changed_attr, _new_value_hint = _change_hint
-                            _change_req = req.model_copy(
-                                update={"question": _change_text},
-                            )
-                            _change_result = _handle_cascade(
-                                _change_req, session, attrs, _changed_attr,
-                                _new_value_hint, hiding_rules, rec_rules, con_rules,
-                            )
-                            _qa_req = req.model_copy(
-                                update={"question": _question_text},
-                            )
-                            _qa_result = _handle_cpq_qa(
-                                _qa_req, session, attrs, reader,
-                            )
-                            _combined = (
-                                f"{_change_result.get('answer', '')}\n\n"
-                                f"{_qa_result.get('answer', '')}"
-                            )
-                            _persist_cpq_history(
-                                req.workspace_id, req.question, _combined,
-                            )
-                            return {
-                                **_qa_result,
-                                "answer": _combined,
-                                "tools_called": (
-                                    list(_change_result.get("tools_called") or [])
-                                    + list(_qa_result.get("tools_called") or [])
-                                ),
-                            }
-                        # Split succeeded but the change clause didn't
-                        # resolve deterministically — fall through to the
-                        # existing clarify path unchanged (safe default).
-                    else:
-                        # Not a change+question compound — try change+change
-                        # (docs/config_consistency_issues_2026-07-30.md
-                        # Issue 12): classify_intent's schema can only ever
-                        # name ONE target, so "Add Frequency Bands as VHF
-                        # and Wireless Carrier as ATT/FirstNet" collapses to
-                        # "ambiguous" here regardless of how well-formed it
-                        # is. last_qa_variables (both attrs from the
-                        # customer's immediately preceding compound options
-                        # query) is passed in as context to help produce a
-                        # correct split.
-                        _multi_change_texts = _llm_split_multi_attr_change_request(
-                            req.question, attrs, req.workspace_id,
-                            last_qa_variables=session.last_qa_variables,
-                        )
-                        if _multi_change_texts:
-                            _resolved_changes = [
-                                (
-                                    _mc_text,
-                                    _resolve_split_change_text(
-                                        _mc_text, attrs, session.filled,
-                                        session.filled_multi,
-                                        last_qa_variables=session.last_qa_variables,
-                                    ),
-                                )
-                                for _mc_text in _multi_change_texts
-                            ]
-                            # Never half-apply and guess (same discipline as
-                            # the change+question split above) — only
-                            # proceed when EVERY split fragment resolved to
-                            # a real attr+value; otherwise fall through to
-                            # the existing clarify path unchanged.
-                            if all(hint is not None for _, hint in _resolved_changes):
-                                _mc_results = []
-                                for _mc_text, _mc_hint in _resolved_changes:
-                                    _mc_attr, _mc_value_hint = _mc_hint
-                                    _mc_req = req.model_copy(
-                                        update={"question": _mc_text},
-                                    )
-                                    _mc_results.append(_handle_cascade(
-                                        _mc_req, session, attrs, _mc_attr,
-                                        _mc_value_hint, hiding_rules, rec_rules,
-                                        con_rules,
-                                    ))
-                                _combined = "\n\n".join(
-                                    r.get("answer", "") for r in _mc_results
-                                )
-                                _persist_cpq_history(
-                                    req.workspace_id, req.question, _combined,
-                                )
-                                return {
-                                    **_mc_results[-1],
-                                    "answer": _combined,
-                                    "tools_called": [
-                                        t for r in _mc_results
-                                        for t in (r.get("tools_called") or [])
-                                    ],
-                                }
-                # docs/config_consistency_issues_2026-07-30.md issue 1 — never
-                # offer a currently-hidden-for-this-product attribute as a
-                # disambiguation candidate.
-                _hidden_vns = _cpq_engine.apply_hiding_rules(
-                    attrs, session.filled, hiding_rules, bml_eval, filled_multi=session.filled_multi,
-                )[2]
-                return _set_pending_clarify_and_answer(
-                    req, session, attrs,
-                    original_question=req.question,
-                    clarifying_question=_gw.result.clarifying_question,
-                    con_rules=con_rules,
-                    bml_eval=bml_eval,
-                    prompt_tokens=_gw.prompt_tokens,
-                    completion_tokens=_gw.completion_tokens,
-                    tool_name="cpq_intent_gateway_clarify()",
-                    hidden_vns=_hidden_vns,
-                    hiding_rules=hiding_rules,
-                    rec_rules=rec_rules,
-                )
-            if _gw.action == "dispatch" and _gw.result:
-                clear_clarify(session, _gw.result.variable_name)
-                # Successful non-clarify path — drop any stale clarify memory.
-                _clear_pending_clarify(session)
-                _mapped = _gateway_to_intent_result(
-                    _gw.result, attrs, _gw.value_display,
-                )
-                if _mapped is not None:
-                    # AMBIGUOUS via dispatch path must also set pending memory.
-                    if _mapped.category == IntentCategory.AMBIGUOUS:
-                        # docs/config_consistency_issues_2026-07-30.md issue 1
-                        _hidden_vns = _cpq_engine.apply_hiding_rules(
-                            attrs, session.filled, hiding_rules, bml_eval,
-                            filled_multi=session.filled_multi,
-                        )[2]
-                        return _set_pending_clarify_and_answer(
-                            req, session, attrs,
-                            original_question=req.question,
-                            clarifying_question=_mapped.clarifying_question,
-                            con_rules=con_rules,
-                            bml_eval=bml_eval,
-                            prompt_tokens=_gw.prompt_tokens,
-                            completion_tokens=_gw.completion_tokens,
-                            tool_name="cpq_llm_first_ambiguous()",
-                            hidden_vns=_hidden_vns,
-                            hiding_rules=hiding_rules,
-                            rec_rules=rec_rules,
-                        )
-                    _dispatched = _dispatch_intent_result(
-                        req, session, attrs, _mapped,
-                        hiding_rules, rec_rules, con_rules, bml_eval,
-                        _gw.prompt_tokens, _gw.completion_tokens,
-                        reader=reader, hints=hints,
-                    )
-                    if _dispatched is not None:
-                        return _dispatched
-                    logger.info(
-                        "cpq_intent_gateway_turn: dispatch mapped but handler "
-                        "returned None — falling through to deterministic path",
-                    )
-            # action=fallback (or dispatch that couldn't map) → STEP 6+
+        if _llm_first_result is not None:
+            return _llm_first_result
+        # action=fallback (or dispatch that couldn't map) → STEP 6+
 
         # STEP 6: change request → cascade
         # Bulk quantity check first — "change both the mounting types
@@ -8995,12 +9335,29 @@ def _run_cpq_turn_inner(
                 if _scope_ivs:
                     pending_constrained = _scope_ivs
 
-            # In-scope resolve ladder (exact → partial → fuzzy) before
-            # unconstrained free-text / LLM — preserves "Federal" partial
-            # and recovers "r7ex" within the same list.
+            # In-scope resolve — LLM classifies first (docs/CPQ_PRODUCT_
+            # SCOPE_LLM_FIRST_PLAN_2026_08_13.md), deterministic ladder
+            # (exact → partial → fuzzy) validates second — preserves
+            # "Federal" partial and recovers "r7ex" within the same
+            # list, and now also recognizes a reply asking to skip/defer
+            # this question ("go further") as a distinct outcome instead
+            # of a failed product-name match.
             _scope_match_text = req.question
             if _scope_for_attr and pending_attr.select_type != "multi":
-                _sres = resolve_against_scope(req.question, _scope_cands)
+                _scope_label_early = _cpq_engine.disambiguated_label(pending_attr, attrs)
+                _scope_reply = _resolve_scope_reply(
+                    req.question, _scope_cands, _scope_label_early,
+                    session, req.workspace_id,
+                )
+                if _scope_reply == "skip":
+                    return _build_scope_skip_response(
+                        req, session, _scope_cands, _scope_label_early,
+                    )
+                if _scope_reply == "family_only":
+                    return _build_scope_family_only_response(
+                        req, session, _scope_cands, _scope_label_early,
+                    )
+                _sres = _scope_reply
                 if _sres.matched:
                     _scope_match_text = _sres.matched
                     logger.info(

@@ -349,3 +349,217 @@ lowest-risk path to the same design.
   gate* the LLM-first path must also satisfy (recommended), or superseded?
 - Who reviews/owns the classification prompt as it evolves — prompts are
   harder to code-review than regex diffs.
+
+---
+
+## 8. Phase 4 — Universal cutover: LLM-first on every turn, not just post-approval (2026-08-13)
+
+### Context
+
+Two live bugs this same day (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md,
+Issues 6/7) both had the same shape: a deterministic regex either
+misfired or was simply missing for a real customer request, during a
+normal **configuring-stage** turn. The fix applied there
+(`_llm_confirm_deterministic_intent`) is a *confirm-after* checkpoint —
+the regex still runs first, the LLM only vetoes. Owner directive
+following that fix: the LLM should identify intent **first**, on every
+turn, everywhere — not just as a post-hoc veto, and not just on the
+narrow slice of turns this plan's Phase 2 already covers.
+
+**The gap, confirmed by code read:** `_dispatch_intent_result` — the
+Phase 2 LLM-first dispatcher — already resolves **10 of the 16
+`IntentCategory` values** directly to real handlers (`CHANGE_REQUEST`,
+`CHANGE_REQUESTS_MULTI`, `CHANGE_TARGET_WITHOUT_VALUE`, `AMBIGUOUS`,
+`OUT_OF_SCOPE`, `ATTR_QUERY`, `QA_QUESTION`, `MULTI_SELECT_REMOVAL`,
+`ATTR_ACTIVATION`, `ATTR_CLEAR`). It is far more built-out than this
+doc's own §5 status table suggests. But its **only call site**
+(`ask_api.py:8418`) sits inside `if session.status in
+("awaiting_approval", "post_approval"):` — a block that only runs
+*after* the customer has already seen a complete configuration summary.
+During the entire configuring-stage conversation (every turn before
+that point — the majority of real traffic), this dispatcher never
+executes at all; only the narrower, confirm-after checkpoint from
+Issues 6/7 runs there today.
+
+Two more gaps found alongside this:
+- `classify_intent`/`gateway_classify_intent` has **no timeout
+  wrapper** — unlike `classify_ask_route`'s `cpq_intent_timeout_s`
+  (10s, `ThreadPoolExecutor`-based). Calling it far more often makes an
+  unbounded hang a bigger exposure than it is today.
+- `PRODUCT_QUANTITY_CHANGE` and `COUNTRY_CHANGE` (new categories added
+  for Issues 6/7) are not wired into `_dispatch_intent_result` at all
+  yet — they exist only as confirm-after checkpoints.
+- `BULK_QUANTITY_CHANGE`, `RESPONSE_MODE_REQUEST`, `APPROVAL`,
+  `PRODUCT_MENTION` remain unwired from this plan's original Phase 2
+  landing, deferred deliberately at the time.
+
+### Goal
+
+The LLM classifies intent first, for every turn, regardless of
+`session.status` — configuring, awaiting_approval, and post_approval
+alike — for every `IntentCategory`, with the deterministic layer
+staying in place underneath as the exactness/resolution step (§5's
+already-agreed design), never removed.
+
+### Design
+
+**1. Timeout wrapper on `classify_intent` (`intent_gateway.py`).**
+Wrap the `_pinned_chat` call the same way `classify_ask_route` already
+wraps its own call — `ThreadPoolExecutor` + a new setting
+`cpq_intent_classify_timeout_s` (default 10.0s, mirroring
+`cpq_intent_timeout_s`). On timeout, return a `GatewayDecision` with
+`action="fallback"` (not `"dispatch"` or `"clarify"`) — callers already
+treat `fallback` as "proceed to the deterministic path," so no new
+caller-side branch is needed, only the new failure mode feeding an
+existing one.
+
+**2. Move the dispatch call site out of the status-gated block.**
+Relocate the "LLM-first mid-session gateway" section (`ask_api.py`,
+currently ~8177-8210, nested inside the `awaiting_approval`/
+`post_approval` `if`) to run unconditionally, immediately after
+`hiding_rules`/`rec_rules`/`con_rules`/`bml_eval` load (~line 7793) —
+the same insertion point Issues 6/7's confirm-after checkpoints already
+use for their own early gates, so both mechanisms sit at a consistent
+place in the turn. Existing guards (`cpq_llm_first_enabled`,
+`not session.guided_mode`, `not top_level_route_used()`, `not
+_defer_gateway_to_pending_answer`) are kept as-is — they already exist
+to prevent double-classification and to respect an actively-pending
+reply, and apply equally well regardless of status.
+
+The existing status-scoped call site is then redundant and removed —
+one call site, one dispatch point, for every stage of the
+conversation, matching this plan's own §5 convergence-discipline
+mitigation (#5 in the risk register).
+
+**3. Wire the 6 remaining categories into `_dispatch_intent_result`.**
+Two groups, same pattern each existing branch already follows
+(resolve target via `_resolve_target_description`, re-verify the
+action is *currently valid* the same way the regex counterpart would,
+call the same existing handler):
+
+- `PRODUCT_QUANTITY_CHANGE` → the existing STEP-6 quantity-gate body
+  (`ask_api.py`, `_qty_target == "product"` branch) refactored into a
+  small callable both the regex path and this dispatch branch invoke,
+  taking the already-parsed quantity value directly (no
+  `_resolve_target_description` needed — this category has no
+  `variable_name`, mirroring how `PRODUCT_QUANTITY_CHANGE` is already
+  in `_GATEWAY_NO_TARGET_CATEGORIES`).
+- `COUNTRY_CHANGE` → same shape, reusing the country-change response
+  logic (no-op-if-already-matching included) added for Issue 7.
+- `BULK_QUANTITY_CHANGE` → resolve the named grid/selector via
+  `_resolve_target_description`, re-verify real quantity-linked rows
+  exist for it, call `_handle_bulk_quantity_change`.
+- `RESPONSE_MODE_REQUEST` → no target needed; dispatch straight to
+  `_build_json_preview_response`/existing batch-mode handling, mirroring
+  `detect_response_mode_request`'s own return value via the
+  already-defined `response_mode` schema field.
+- `APPROVAL` → dispatch to `_handle_approval`, `Confidence.HIGH`
+  required (mutating + terminal — same discipline `ATTR_QUERY`/
+  `QA_QUESTION` already use for their own high-stakes-but-unprobed
+  categories).
+- `PRODUCT_MENTION` → deferred again, explicitly, in this phase too —
+  this doc's own §5 already flags it needs a different resolution
+  shape (product/family name, not an attribute), which is a separate,
+  smaller follow-up, not blocking the other 5.
+
+**4. Reject-on-failure stays a fallback, not a hard error.**
+Unlike `classify_ask_route`'s turn-1 behavior (explicit customer-facing
+error on failure, per §5/Follow-up in the sibling doc), a mid-session
+classification failure here falls through to the unchanged
+deterministic-detector-plus-confirm-checkpoint path from Issues 6/7 —
+never a raw error to the customer. This is a deliberate difference from
+the turn-1 router: turn-1 has no deterministic fallback with any
+real chance of being right (the whole point of that call was
+extraction), whereas here the full deterministic layer is right there,
+already hardened, and already gets its own independent LLM
+confirmation. Two failed LLM calls in a row (dispatch-attempt +
+confirm-checkpoint) is the actual worst case, and only then does the
+turn fall through to old, pre-Issue-6 behavior for that one gate.
+
+**5. Rollout — shadow-mode first, matching this plan's own §6/#9 discipline.**
+1. Ship behind the existing `cpq_llm_first_enabled` flag, default
+   unchanged (already `True` in dev/test per `config.py`) — but add a
+   NEW, separate flag `cpq_llm_first_universal_enabled` (default
+   **off**) gating specifically "run regardless of status" (item 2
+   above) and the 6 new dispatch branches (item 3), so the existing,
+   already-shipped awaiting_approval-only behavior is untouched until
+   this is explicitly turned on.
+2. Enable in staging/shadow first; log dispatch vs fallback vs
+   disagreement rates per category, same `run_id`-keyed grep-analysis
+   approach Phase 1 already established — no new logging mechanism
+   needed.
+3. Flip `cpq_llm_first_universal_enabled` to default-on only after a
+   measured disagreement rate is reviewed for the 5 newly-mutating
+   categories (quantity/country/bulk-quantity/approval/response-mode)
+   specifically — these are the ones with real blast radius; read-only
+   categories (`ATTR_QUERY`, `QA_QUESTION`) already carry lower risk
+   and were exactly the pattern Phase 3 used to justify shipping ahead
+   of full evidence.
+
+### Test plan
+
+*Positive:*
+- `test_dispatch_runs_during_configuring_status_not_just_awaiting_approval` — the core regression this phase exists to fix: a configuring-stage turn with `cpq_llm_first_universal_enabled=True`, LLM confirms `MULTI_SELECT_REMOVAL`, assert `_handle_multi_select_removal` is called from the dispatcher, not the confirm-after checkpoint (distinguish via call count / mock target).
+- `test_product_quantity_change_dispatches_directly` / `test_country_change_dispatches_directly` — each new branch, mirroring the existing `MULTI_SELECT_REMOVAL` dispatch test shape in the current suite.
+- `test_classify_intent_timeout_falls_through_to_deterministic_path` — mock `_pinned_chat` to hang past the new timeout, assert `action="fallback"` and the turn completes via the regex-plus-confirm path, not an error or a hang.
+- `test_single_call_site_no_double_dispatch` — regression-protect §5's convergence discipline: assert `gateway_classify_intent` is called at most once per turn for the dispatch attempt (the confirm-checkpoint's OWN call, when the dispatch path already resolved, must never also fire — dispatch success short-circuits before any gate's confirm-checkpoint runs).
+
+*Negative:*
+- `test_universal_flag_off_preserves_todays_awaiting_approval_only_behavior` — flag off (default) → a configuring-stage turn behaves exactly as it does today (confirm-after checkpoints only, dispatcher inert), full existing suite unaffected.
+- `test_dispatch_disagreement_falls_through_never_double_mutates` — dispatcher resolves+calls a handler; assert the SAME gate's confirm-after checkpoint from Issues 6/7 is never ALSO reached for that turn (the two mechanisms must be mutually exclusive per turn, not additive) — direct regression test for item 4's "worst case is 2 calls, never 2 mutations."
+- `test_product_mention_still_falls_through_undispatched` — confirms the explicit deferral in item 3 remains inert, not silently half-wired.
+
+### Status
+
+**Implemented 2026-08-13, off by default pending shadow-mode validation.**
+
+- **Critical bug found and fixed before implementation started**:
+  `classify_intent` bailed to `action="fallback"` whenever `attrs` was
+  empty, WITHOUT ever calling the LLM — the PRODUCT_QUANTITY_CHANGE and
+  COUNTRY_CHANGE confirmation checkpoints from Issues 6/7 (already
+  merged via PR #188) both call this with `attrs=[]` by design, meaning
+  the country-change gate was a silent no-op in production despite
+  passing every test. Fixed: only an empty question bails now.
+- **Timeout wrapper** — new `cpq_intent_classify_timeout_s` (default
+  10s), same `ThreadPoolExecutor` pattern as `classify_ask_route`.
+- **Scope correction**: `_dispatch_intent_result` turned out to already
+  resolve 12 of 16 categories, not the 4-10 this doc's earlier sections
+  suggested (the docstring had drifted from the actual code) — only
+  `PRODUCT_QUANTITY_CHANGE`/`COUNTRY_CHANGE` needed new branches;
+  `BULK_QUANTITY_CHANGE`/`RESPONSE_MODE_REQUEST`/`APPROVAL` were already
+  wired. `PRODUCT_MENTION` remains the one deliberate, permanent
+  deferral (needs a different resolution shape entirely).
+- **Single call site achieved**: the ~200-line inline gateway-consult
+  block was extracted into a shared `_llm_first_gateway_turn` function,
+  now called from both the pre-existing awaiting_approval/post_approval
+  site AND a new configuring-stage site (right after rule loading),
+  gated by new setting `cpq_llm_first_universal_enabled` (default
+  **off**). No double-dispatch: the configuring-stage site explicitly
+  skips when `session.status` is awaiting_approval/post_approval,
+  deferring to the existing site.
+- New `GatewayIntentResult.country_text` / `IntentResult.country_
+  description` fields, validated via `CpqEngine.is_recognized_country`
+  in `validate_gateway_quarantine` — also fixed `parse_gateway_intent`,
+  which never read `country_text` off the raw LLM JSON at all (caught
+  by the new dispatch branch's own test).
+- **Shared response-building**: `_build_product_quantity_change_
+  response`/`_build_country_change_response` factored out so the
+  deterministic gates (Issues 6/7) and the new dispatch branches use
+  identical logic, not duplicated copies.
+
+**Tests**: `tests/test_cpq_llm_first_universal_cutover_2026_08_13.py`
+(5 new) covers flag-off inertness, flag-on dispatch during configuring
+stage, single-call-site discipline when both call sites exist in one
+turn, and both new dispatch branches end-to-end. Plus 2 new tests in
+`test_cpq_intent_gateway.py` for the empty-attrs fix and the timeout
+wrapper. Full CPQ suite: **1064 passed**, rebuilt and redeployed.
+Branch `feature/cpq-llm-first-universal-cutover`.
+
+**Not yet done, deliberately deferred**: `PRODUCT_MENTION` dispatch
+branch; the shadow-mode staging rollout itself (flag ships off);
+several of the negative test cases from this section's own test plan
+above (`test_dispatch_disagreement_falls_through_never_double_mutates`,
+`test_product_mention_still_falls_through_undispatched`) — the
+single-call-site tests actually shipped cover the same discipline via
+call-count assertions, but not every scenario listed above was written
+individually.

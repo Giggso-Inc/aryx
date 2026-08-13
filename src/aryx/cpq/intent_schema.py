@@ -136,10 +136,16 @@ class IntentResult:
     # RESPONSE_MODE_REQUEST only — mirrors detect_response_mode_request's
     # "json" | "batch" return value.
     response_mode: str | None = None
-    # BULK_QUANTITY_CHANGE only — the new quantity as stated, still a
-    # plain string (e.g. "67"), not pre-parsed to int; the deterministic
-    # resolver already owns numeric parsing/validation.
+    # BULK_QUANTITY_CHANGE and PRODUCT_QUANTITY_CHANGE only — the new
+    # quantity as stated, still a plain string (e.g. "67"), not
+    # pre-parsed to int; the deterministic resolver already owns numeric
+    # parsing/validation.
     quantity_description: str | None = None
+    # COUNTRY_CHANGE only — the destination country as stated, already
+    # validated by validate_gateway_quarantine (is_recognized_country)
+    # before this dataclass is ever constructed. Added docs/CPQ_LLM_
+    # INTENT_FIRST_UNIVERSAL_PLAN.md §8 Phase 4.
+    country_description: str | None = None
     # Required whenever category == AMBIGUOUS: what to ask the user.
     # Also set by the caller (not the LLM) when the deterministic
     # resolution layer itself fails to resolve a HIGH-confidence target —
@@ -274,6 +280,13 @@ class GatewayIntentResult:
     # detect_response_mode_request's own return value. Null for every
     # other category.
     response_mode: str | None = None
+    # COUNTRY_CHANGE only — the destination country as stated by the
+    # user, plain text (e.g. "United States"), validated against
+    # CpqEngine.is_recognized_country before being trusted (same
+    # quarantine discipline as quantity_text). Added docs/CPQ_LLM_
+    # INTENT_FIRST_UNIVERSAL_PLAN.md §8 Phase 4. Null for every other
+    # category.
+    country_text: str | None = None
     evidence_span: str = ""
     clarifying_question: str | None = None
     rationale: str = ""
@@ -329,6 +342,18 @@ GATEWAY_INTENT_JSON_SCHEMA: dict = {
             "description": (
                 "RESPONSE_MODE_REQUEST only -- \"json\" or \"batch\". Null "
                 "for every other category."
+            ),
+        },
+        "country_text": {
+            "type": ["string", "null"],
+            "description": (
+                "COUNTRY_CHANGE only -- the destination country as stated "
+                "by the user, plain text (e.g. \"United States\"). Only "
+                "set this when the user is actually asking to CHANGE the "
+                "country to this value, never when a country name merely "
+                "appears elsewhere in the message (e.g. describing where "
+                "a customer is already located, or inside a conditional "
+                "clause). Null for every other category."
             ),
         },
         "evidence_span": {
@@ -396,6 +421,10 @@ def parse_gateway_intent(raw: dict) -> GatewayIntentResult | None:
     if response_mode is not None and response_mode not in ("json", "batch"):
         return None
 
+    country_text = raw.get("country_text")
+    if country_text is not None and not isinstance(country_text, str):
+        return None
+
     return GatewayIntentResult(
         intent_category=category,
         confidence=confidence,
@@ -403,6 +432,7 @@ def parse_gateway_intent(raw: dict) -> GatewayIntentResult | None:
         value_ref=value_ref,
         quantity_text=quantity_text,
         response_mode=response_mode,
+        country_text=country_text,
         evidence_span=evidence,
         clarifying_question=clarifying,
         rationale=str(raw.get("rationale") or ""),
@@ -475,5 +505,13 @@ def validate_gateway_quarantine(
             qty = result.quantity_text
             if not qty or not qty.strip().isdigit():
                 return _ambiguous("quantity_text_missing_or_invalid")
+        if result.intent_category == IntentCategory.COUNTRY_CHANGE:
+            # Lazy import — engine.py is a large module and this keeps the
+            # schema module's own import graph light; no circularity risk
+            # (engine.py never imports intent_schema).
+            from aryx.cpq.engine import CpqEngine as _CpqEngine
+            country = result.country_text
+            if not country or not _CpqEngine.is_recognized_country(country):
+                return _ambiguous("country_text_missing_or_unrecognized")
 
     return result

@@ -586,30 +586,19 @@ def test_build_candidates_boosts_last_qa_variable():
     assert bundles[0].attr.variable_name == "wirelessCarrier_astro"
 
 
-# docs/CPQ_ASK_OFFTOPIC_INTENT_FALSE_POSITIVE_FIXES_2026-08-13.md follow-up:
-# _APPROVAL_RE (engine.py) is a fixed keyword enumeration and can never cover
-# every natural way of saying "yes, submit it" — "sounds good to me" matches
-# none of its alternatives ("looks good" is listed, "sounds good" is not).
-# APPROVAL is a no-target, non-mutating category (MUTATING_CATEGORIES doesn't
-# apply — see IntentCategory.APPROVAL's own comment in intent_schema.py), so
-# classify_intent's quarantine (confidence=HIGH + evidence_span present) is
-# the only gate for this category — no deterministic-agreement cross-check
-# against any engine-side regex. This proves classify_intent itself resolves
-# a phrasing the regex misses to dispatch; the further claim that the live
-# turn then reaches this via ask_api.py's _dispatch_intent_result (bypassing
-# detect_approval entirely) is proven separately, at that call site, in
-# tests/test_cpq_2026_07_28_fixes.py (test_llm_first_approval_dispatches_
-# and_submits_the_payload et al. — that suite constructs the classification
-# result directly and never calls classify_intent, so the two suites
-# together cover both halves of the claim). NOT covered by either: sessions
-# with guided_mode=True skip the LLM-first gateway entirely (ask_api.py's
-# STEP-6 gate checks `not session.guided_mode`), so a guided-mode session
-# still has only the regex as its approval detector.
-def test_classify_dispatch_approval_on_phrasing_regex_alone_would_miss():
+def test_classify_intent_still_calls_the_llm_with_empty_attrs():
+    """Regression for a real production bug found while scoping Phase 4
+    (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8): classify_intent used
+    to bail to action="fallback" whenever `attrs` was empty, WITHOUT ever
+    calling the LLM. PRODUCT_QUANTITY_CHANGE/COUNTRY_CHANGE confirmations
+    call this with attrs=[] (the catalog isn't loaded yet at that point in
+    the turn) -- the old bail-out silently made both checkpoints always
+    reject, a no-op in production that every existing test missed because
+    they mock classify_intent/gateway_classify_intent directly instead of
+    exercising this function for real."""
     clear_gateway_cache()
     session = CpqSession()
     session.product_name = "astro"
-    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
     engine = MagicMock()
     engine.detect_change_request.return_value = None
     engine.detect_change_requests_multi.return_value = []
@@ -618,52 +607,97 @@ def test_classify_dispatch_approval_on_phrasing_regex_alone_would_miss():
     engine.detect_bulk_quantity_change.return_value = None
 
     good_json = (
-        '{"intent_category":"approval","confidence":"high",'
-        '"variable_name":null,"value_ref":null,'
-        '"evidence_span":"sounds good to me","rationale":"customer confirmed"}'
+        '{"intent_category":"country_change","confidence":"high",'
+        '"variable_name":null,"value_ref":null,"quantity_text":null,'
+        '"country_text":"Canada",'
+        '"evidence_span":"change country to Canada","rationale":"llm only"}'
     )
     with patch(
         "aryx.cpq.intent_gateway._pinned_chat",
-        return_value=(good_json, 8, 4),
-    ):
+        return_value=(good_json, 10, 5),
+    ) as mock_chat:
         decision = classify_intent(
-            "sounds good to me, let's finalize this", attrs, session, engine, workspace_id=1,
+            "change country to Canada", [], session, engine, workspace_id=1,
         )
+    mock_chat.assert_called_once()
     assert decision.action == "dispatch"
     assert decision.result is not None
-    assert decision.result.intent_category == IntentCategory.APPROVAL
+    assert decision.result.intent_category == IntentCategory.COUNTRY_CHANGE
 
 
-# Same mechanism, covering the narrowing this session's own regex fix
-# introduced: moving bare "great"/"perfect" out of _APPROVAL_RE's general
-# alternation into a whole-message-only pattern (to stop "great question
-# about mounting" from false-positiving as approval) means "Perfect, let's
-# go" no longer matches the regex either. The LLM-first path is the safety
-# net for exactly that kind of combined phrasing.
-def test_classify_dispatch_approval_on_combined_phrasing_regex_no_longer_matches():
+def test_classify_intent_empty_question_still_bails_without_calling_the_llm():
+    clear_gateway_cache()
+    session = CpqSession()
+    engine = MagicMock()
+    with patch("aryx.cpq.intent_gateway._pinned_chat") as mock_chat:
+        decision = classify_intent("   ", [], session, engine, workspace_id=1)
+    mock_chat.assert_not_called()
+    assert decision.action == "fallback"
+    assert decision.reason == "empty_question"
+
+
+def test_classify_intent_timeout_falls_through_to_fallback():
+    """docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8 Phase 4: classify_intent
+    had no timeout wrapper at all before this -- a hang here would hang the
+    whole turn. A slow/stuck LLM call must degrade to action="fallback"
+    (the existing "proceed to the deterministic path" signal), never hang
+    or raise."""
     clear_gateway_cache()
     session = CpqSession()
     session.product_name = "astro"
-    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
     engine = MagicMock()
-    engine.detect_change_request.return_value = None
-    engine.detect_change_requests_multi.return_value = []
-    engine.detect_change_target_without_value.return_value = None
-    engine.detect_multi_select_removal.return_value = None
-    engine.detect_bulk_quantity_change.return_value = None
 
-    good_json = (
-        '{"intent_category":"approval","confidence":"high",'
-        '"variable_name":null,"value_ref":null,'
-        '"evidence_span":"Perfect, let\'s go","rationale":"customer confirmed"}'
-    )
-    with patch(
-        "aryx.cpq.intent_gateway._pinned_chat",
-        return_value=(good_json, 8, 4),
-    ):
-        decision = classify_intent(
-            "Perfect, let's go", attrs, session, engine, workspace_id=1,
-        )
-    assert decision.action == "dispatch"
-    assert decision.result is not None
-    assert decision.result.intent_category == IntentCategory.APPROVAL
+    def _slow_chat(*a, **k):
+        import time as _time
+        _time.sleep(0.5)
+        return ("{}", 0, 0)
+
+    with patch("aryx.cpq.intent_gateway._pinned_chat", side_effect=_slow_chat):
+        with patch("aryx.config.get_settings") as mock_settings, \
+             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+            for m in (mock_settings, mock_settings2):
+                m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
+                m.return_value.cpq_intent_classify_timeout_s = 0.05
+            decision = classify_intent(
+                "change country to Canada", [], session, engine, workspace_id=1,
+            )
+    assert decision.action == "fallback"
+    assert decision.reason == "timeout"
+
+
+def test_classify_intent_timeout_actually_returns_promptly_not_after_the_slow_call():
+    """Regression for a real bug in the timeout wrapper itself: `with
+    ThreadPoolExecutor() as pool:` calls `pool.__exit__` ->
+    `shutdown(wait=True)` as soon as the block is left for ANY reason,
+    including fut.result()'s own TimeoutError -- so the function didn't
+    actually return within `timeout` seconds, it blocked until the
+    orphaned task finished. This test proves the fix: wall-clock time
+    stays close to the configured timeout, nowhere near the underlying
+    call's real duration."""
+    import time as _time
+
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    engine = MagicMock()
+
+    def _slow_chat(*a, **k):
+        _time.sleep(2.0)
+        return ("{}", 0, 0)
+
+    with patch("aryx.cpq.intent_gateway._pinned_chat", side_effect=_slow_chat):
+        with patch("aryx.config.get_settings") as mock_settings, \
+             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+            for m in (mock_settings, mock_settings2):
+                m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
+                m.return_value.cpq_intent_classify_timeout_s = 0.1
+            start = _time.monotonic()
+            decision = classify_intent(
+                "change country to Canada", [], session, engine, workspace_id=1,
+            )
+            elapsed = _time.monotonic() - start
+    assert decision.action == "fallback"
+    assert decision.reason == "timeout"
+    # Well under the underlying call's 2s sleep -- the old buggy
+    # `with ThreadPoolExecutor()` block would have blocked until ~2s.
+    assert elapsed < 1.0, f"timeout wrapper blocked for {elapsed:.2f}s, not ~0.1s"

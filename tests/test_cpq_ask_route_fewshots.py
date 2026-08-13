@@ -180,6 +180,7 @@ def test_timeout_escape_hatch():
             def __enter__(self): return self
             def __exit__(self, *a): pass
             def submit(self, fn): return _Fut()
+            def shutdown(self, wait=True): pass
 
         with patch("concurrent.futures.ThreadPoolExecutor", _Pool):
             d = classify_ask_route("order APX Next", det_is_cpq=True, timeout_s=0.01)

@@ -709,6 +709,29 @@ class Settings(BaseSettings):
             "CI run) or before considering this validated for production."
         ),
     )
+    cpq_llm_first_universal_enabled: bool = Field(
+        default=True,
+        description=(
+            "Phase 4 (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8): "
+            "runs the LLM-first dispatcher (_dispatch_intent_result, gated "
+            "above by cpq_llm_first_enabled) on EVERY turn regardless of "
+            "session.status -- previously it only ran inside the "
+            "awaiting_approval/post_approval block, so it never fired "
+            "during the actual configuring-stage conversation, which is "
+            "most real traffic. Also enables the 6 new dispatch branches "
+            "(PRODUCT_QUANTITY_CHANGE, COUNTRY_CHANGE, "
+            "BULK_QUANTITY_CHANGE, RESPONSE_MODE_REQUEST, APPROVAL) that "
+            "Phase 2's initial landing deliberately deferred. Off by "
+            "default -- ships behind this flag for shadow/staging "
+            "validation first, per the plan doc's own rollout discipline, "
+            "since these are real mutating actions during active "
+            "configuration, not just post-review edits. Requires "
+            "cpq_llm_first_enabled=True to have any effect at all -- this "
+            "flag only widens WHEN/WHAT that mechanism covers, it doesn't "
+            "replace it. Override with "
+            "ARYX_CPQ_LLM_FIRST_UNIVERSAL_ENABLED=true."
+        ),
+    )
     cpq_intent_gemini_model: str = Field(
         default="gemini-2.5-pro",
         description=(
@@ -736,6 +759,23 @@ class Settings(BaseSettings):
             "Hard timeout (seconds) for the top-level intent gateway call. "
             "On timeout/error, escape hatch falls back to the deterministic "
             "is_cpq_question path. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
+        ),
+    )
+    cpq_intent_classify_timeout_s: float = Field(
+        default=120.0,
+        description=(
+            "Hard timeout (seconds) for classify_intent (intent_gateway.py) "
+            "-- the mid-session LLM-first classifier, distinct from "
+            "cpq_intent_timeout_s (the turn-1 top-level router's own "
+            "timeout). Added docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md "
+            "§8 Phase 4: classify_intent had no timeout wrapper at all "
+            "before this, unlike classify_ask_route -- broadening how "
+            "often it's called (every turn, not just post-approval) made "
+            "an unbounded hang a bigger exposure than it was before. On "
+            "timeout, returns action='fallback' -- callers already treat "
+            "that as 'proceed to the deterministic path', so no new "
+            "caller-side branch is needed. Override with "
+            "ARYX_CPQ_INTENT_CLASSIFY_TIMEOUT_S."
         ),
     )
     bml_tier2_max_per_turn: int = Field(

@@ -136,7 +136,23 @@ def candidates_from_attr_options(
     options: list[Any],
     constrained_item_values: list[str] | None = None,
 ) -> list[str]:
-    """Build display/item strings for scope from MenuOption-like objects."""
+    """Build display-name strings for scope from MenuOption-like objects.
+
+    Display name ONLY, never the raw internal item_value (2026-08-13
+    live-confirmed bug): this list is both what a reply is matched
+    against AND what gets echoed back verbatim to the customer in a
+    numbered re-ask (`_scoped_reask_response`'s "same list as before"
+    fallback) whenever it collapses to the full candidate set.
+    Previously also appending item_value whenever it differed from
+    display_name (e.g. item_value "APX NEXT MULTI" for the real
+    "APX NEXT All Band" option) meant internal catalog codes -- never
+    meant to be customer-facing -- leaked into that visible re-ask as
+    if they were separate, legitimate product choices, inflating a
+    real 7-option list into an 11-entry one. `resolve_against_scope`'s
+    own partial/fuzzy tiers already recover a customer typing an
+    internal-code-shaped reply against the display name alone, so
+    matching flexibility isn't lost by dropping item_value here.
+    """
     allowed = set(constrained_item_values) if constrained_item_values is not None else None
     out: list[str] = []
     for o in options or []:
@@ -144,11 +160,8 @@ def candidates_from_attr_options(
         dn = getattr(o, "display_name", "") or iv
         if allowed is not None and iv not in allowed:
             continue
-        # Prefer display for "did you mean"; keep item_value if distinct
         if dn.strip():
             out.append(dn.strip())
-        if iv.strip() and iv.strip().lower() != (dn or "").strip().lower():
-            out.append(iv.strip())
     return out
 
 
@@ -268,8 +281,21 @@ def format_did_you_mean(
     character overlap, and phrasing that as a confident guess overstated
     the actual match quality. The caller (_scoped_reask_response) decides
     this from the underlying ScopeResolve.score/tier, not this function.
+
+    Live-confirmed wording bug (2026-08-13): quoting the reply verbatim
+    ("I didn't get **{reply}**...") reads fine for a short, typo'd
+    product-name attempt, but produces garbled, confusing phrasing for a
+    full sentence -- "I didn't get **I wanted to set the product** for
+    Product" sounds like a broken double-negative, not a clarification
+    request. A short reply (<=5 words) is still quoted, since that's the
+    genuinely useful case (showing the customer exactly what didn't
+    match); a longer one is replaced with generic "that reply" wording.
     """
-    reply_s = (reply or "").strip() or "that"
+    reply_stripped = (reply or "").strip()
+    reply_s = (
+        reply_stripped if reply_stripped and len(reply_stripped.split()) <= 5
+        else "that reply"
+    )
     label_bit = f" for **{scope_label}**" if scope_label else ""
     if numbered or len(suggestions) > 3:
         lines = "\n".join(f"{i + 1}. **{s}**" for i, s in enumerate(suggestions))

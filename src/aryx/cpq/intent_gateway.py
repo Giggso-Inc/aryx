@@ -593,11 +593,27 @@ def classify_intent(
     model_id = settings.cpq_intent_gemini_model
     run_id = get_run_id() or "-"
 
-    if not question.strip() or not attrs:
+    if not question.strip():
         return GatewayDecision(
-            action="fallback", result=None, reason="empty_question_or_attrs",
+            action="fallback", result=None, reason="empty_question",
             model_id=model_id,
         )
+    # `attrs` may legitimately be empty — callers confirming a
+    # session-level, no-target category (PRODUCT_QUANTITY_CHANGE,
+    # COUNTRY_CHANGE) call this before the catalog is even loaded this
+    # turn (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md
+    # Issue 6/7 follow-up). Previously bailing to "fallback" here meant
+    # the LLM was NEVER actually consulted for those two categories —
+    # `_llm_confirm_deterministic_intent` always saw `result=None` and
+    # always rejected, silently making the country-change gate a no-op
+    # in production despite passing every test (tests mock this
+    # function directly, bypassing this check). `build_candidate_
+    # bundles`/`_format_candidates_for_prompt` both tolerate an empty
+    # `attrs` list already (empty candidate block, not a crash) — a
+    # target-requiring category simply can't resolve a `variable_name`
+    # against an empty candidate set and correctly quarantines to
+    # ambiguous/fallback downstream, so this is safe for every category,
+    # not just the two that motivated it.
 
     key = _cache_key(question, session, model_id)
     if key in _CACHE:
@@ -623,20 +639,64 @@ def classify_intent(
     candidate_vns = {b.attr.variable_name for b in bundles}
     value_counts = {b.attr.variable_name: len(b.values) for b in bundles}
 
-    parsed, pt, ct = _llm_classify_once(
-        question, bundles, session, model_id, workspace_id,
-    )
+    timeout = float(getattr(settings, "cpq_intent_classify_timeout_s", 10.0) or 10.0)
+
+    def _classify_with_timeout(
+        repair_hint: str = "",
+    ) -> tuple[GatewayIntentResult | None, int, int, bool]:
+        """Returns (parsed, pt, ct, timed_out) -- never raises TimeoutError.
+
+        Deliberately does NOT use the executor as a context manager: `with
+        ThreadPoolExecutor() as pool:` calls `pool.__exit__` ->
+        `shutdown(wait=True)` as soon as the block is left for ANY reason,
+        including via an exception -- so `fut.result(timeout=timeout)`
+        raising TimeoutError still blocks this call until the orphaned
+        task actually finishes, defeating the timeout entirely. Confirmed
+        live: a lambda sleeping 3s with `timeout=0.5` doesn't return until
+        ~3s even though TimeoutError fires at 0.5s. `shutdown(wait=False)`
+        after handling the result/timeout lets the orphaned thread finish
+        and get GC'd in the background instead, so this function actually
+        returns within `timeout` seconds as advertised.
+        """
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = pool.submit(
+            _llm_classify_once, question, bundles, session, model_id,
+            workspace_id, repair_hint,
+        )
+        try:
+            parsed, pt, ct = fut.result(timeout=timeout)
+            return parsed, pt, ct, False
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                "cpq_intent_gateway: TIMEOUT run_id=%s model=%s timeout_s=%s",
+                run_id, model_id, timeout,
+            )
+            return None, 0, 0, True
+        finally:
+            pool.shutdown(wait=False)
+
+    parsed, pt, ct, timed_out = _classify_with_timeout()
     total_pt, total_ct = pt, ct
+
+    if timed_out:
+        return GatewayDecision(
+            action="fallback", result=None, reason="timeout",
+            prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
+        )
 
     # Schema retry once
     if parsed is None:
-        parsed, pt2, ct2 = _llm_classify_once(
-            question, bundles, session, model_id, workspace_id,
+        parsed, pt2, ct2, timed_out = _classify_with_timeout(
             repair_hint="Previous JSON was unparseable or failed schema. "
                         "Return valid JSON only, matching the schema exactly.",
         )
         total_pt += pt2
         total_ct += ct2
+        if timed_out:
+            return GatewayDecision(
+                action="fallback", result=None, reason="timeout",
+                prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
+            )
 
     if parsed is None:
         logger.info(
@@ -994,11 +1054,18 @@ def classify_ask_route(
         return _pinned_chat(sys, user, model_id, workspace_id)
 
     text, pt, ct = "", 0, 0
+    # Hard timeout — escape hatch for the orchestrator. Deliberately not a
+    # `with ThreadPoolExecutor() as pool:` block: __exit__ calls
+    # shutdown(wait=True) as soon as the block is left for ANY reason,
+    # including via fut.result()'s own TimeoutError, so the "timeout"
+    # still blocks this call until the orphaned task actually finishes —
+    # confirmed live (see classify_intent's _classify_with_timeout, same
+    # fix). shutdown(wait=False) below lets it finish/GC in the
+    # background instead.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        # Hard timeout — escape hatch for the orchestrator.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_call)
-            text, pt, ct = fut.result(timeout=timeout)
+        fut = pool.submit(_call)
+        text, pt, ct = fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         logger.warning(
             "cpq_ask_route: TIMEOUT run_id=%s model=%s timeout_s=%s",
@@ -1028,6 +1095,8 @@ def classify_ask_route(
             error=str(exc),
             det_is_cpq=det_is_cpq,
         )
+    finally:
+        pool.shutdown(wait=False)
 
     raw = _parse_json_object(text)
     parsed = _parse_route(raw)
