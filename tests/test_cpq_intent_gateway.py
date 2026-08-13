@@ -584,3 +584,52 @@ def test_build_candidates_boosts_last_qa_variable():
     ]
     bundles = build_candidate_bundles(attrs, session, "make it ATT/FirstNet")
     assert bundles[0].attr.variable_name == "wirelessCarrier_astro"
+
+
+def test_classify_intent_still_calls_the_llm_with_empty_attrs():
+    """Regression for a real production bug found while scoping Phase 4
+    (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8): classify_intent used
+    to bail to action="fallback" whenever `attrs` was empty, WITHOUT ever
+    calling the LLM. PRODUCT_QUANTITY_CHANGE/COUNTRY_CHANGE confirmations
+    call this with attrs=[] (the catalog isn't loaded yet at that point in
+    the turn) -- the old bail-out silently made both checkpoints always
+    reject, a no-op in production that every existing test missed because
+    they mock classify_intent/gateway_classify_intent directly instead of
+    exercising this function for real."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"country_change","confidence":"high",'
+        '"variable_name":null,"value_ref":null,"quantity_text":null,'
+        '"evidence_span":"change country to Canada","rationale":"llm only"}'
+    )
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=(good_json, 10, 5),
+    ) as mock_chat:
+        decision = classify_intent(
+            "change country to Canada", [], session, engine, workspace_id=1,
+        )
+    mock_chat.assert_called_once()
+    assert decision.action == "dispatch"
+    assert decision.result is not None
+    assert decision.result.intent_category == IntentCategory.COUNTRY_CHANGE
+
+
+def test_classify_intent_empty_question_still_bails_without_calling_the_llm():
+    clear_gateway_cache()
+    session = CpqSession()
+    engine = MagicMock()
+    with patch("aryx.cpq.intent_gateway._pinned_chat") as mock_chat:
+        decision = classify_intent("   ", [], session, engine, workspace_id=1)
+    mock_chat.assert_not_called()
+    assert decision.action == "fallback"
+    assert decision.reason == "empty_question"

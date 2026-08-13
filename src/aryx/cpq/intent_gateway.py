@@ -593,11 +593,27 @@ def classify_intent(
     model_id = settings.cpq_intent_gemini_model
     run_id = get_run_id() or "-"
 
-    if not question.strip() or not attrs:
+    if not question.strip():
         return GatewayDecision(
-            action="fallback", result=None, reason="empty_question_or_attrs",
+            action="fallback", result=None, reason="empty_question",
             model_id=model_id,
         )
+    # `attrs` may legitimately be empty — callers confirming a
+    # session-level, no-target category (PRODUCT_QUANTITY_CHANGE,
+    # COUNTRY_CHANGE) call this before the catalog is even loaded this
+    # turn (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md
+    # Issue 6/7 follow-up). Previously bailing to "fallback" here meant
+    # the LLM was NEVER actually consulted for those two categories —
+    # `_llm_confirm_deterministic_intent` always saw `result=None` and
+    # always rejected, silently making the country-change gate a no-op
+    # in production despite passing every test (tests mock this
+    # function directly, bypassing this check). `build_candidate_
+    # bundles`/`_format_candidates_for_prompt` both tolerate an empty
+    # `attrs` list already (empty candidate block, not a crash) — a
+    # target-requiring category simply can't resolve a `variable_name`
+    # against an empty candidate set and correctly quarantines to
+    # ambiguous/fallback downstream, so this is safe for every category,
+    # not just the two that motivated it.
 
     key = _cache_key(question, session, model_id)
     if key in _CACHE:
