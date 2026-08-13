@@ -8070,9 +8070,11 @@ class CpqEngine:
 
     # Approval keywords — user is confirming the configuration (Step 8 trigger)
     _APPROVAL_RE = re.compile(
-        r"^(yes|confirm(?:ed)?|approve(?:d)?|submit|finali[sz]e|"
+        r"^(?:i\s+(?:hereby\s+|just\s+|really\s+)?)?"
+        r"(yes|confirm(?:ed)?|approve(?:d)?|submit|finali[sz]e|"
         r"looks?\s+good|that'?s?\s+(correct|right|good|it)|go\s+ahead|"
-        r"proceed|ok(?:ay)?|all\s+good|perfect|great|send\s+it|let'?s?\s+go)\b",
+        r"proceed|ok(?:ay)?|all\s+good|send\s+it|let'?s?\s+go)\b|"
+        r"^(?:great|perfect)\s*[!.]*$",
         re.IGNORECASE,
     )
 
@@ -8080,7 +8082,7 @@ class CpqEngine:
     _QA_INTENT_RE = re.compile(
         r"^(what|why|how|explain|tell\s+me|describe|what'?s?\s*(is|are)?|"
         r"difference\s+between|compare|which\s+is\s+(better|best)|"
-        r"can\s+you\s+explain|why\s+can'?t|how\s+does|how\s+do)",
+        r"can\s+you\s+explain|why\s+can'?t|how\s+does|how\s+do)\b",
         re.IGNORECASE,
     )
 

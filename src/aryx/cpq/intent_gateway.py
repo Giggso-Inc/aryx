@@ -79,7 +79,7 @@ _top_level_route_used: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # N10: hard off-topic veto — do not trust LLM if these fire.
 _OFF_TOPIC_HARD = re.compile(
     r"\b(astrolog(?:y|ical)?|horoscope|zodiac|tarot|"
-    r"weather|forecast|world\s*cup|tell\s+me\s+a\s+joke|knock[\s-]knock)\b",
+    r"weather(?:\s*forecast)?|world\s*cup|tell\s+me\s+a\s+joke|knock[\s-]knock)\b",
     re.IGNORECASE,
 )
 # N6: soft quote bias for escape hatch when regex/alias miss paraphrases.
