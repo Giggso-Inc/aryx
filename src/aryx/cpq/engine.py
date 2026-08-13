@@ -936,6 +936,39 @@ def _hiding_rule_needs_missing_data_table(rule: "HidingRule") -> bool:
     return any(table.lower() in script_lower for table in _KNOWN_MISSING_DATA_TABLES)
 
 
+def _parenthetical_suffix(text: str) -> str | None:
+    """The content of a trailing "(...)" segment in `text`, or None.
+
+    Catalog display names often encode a distinguishing variant this way —
+    "APX NEXT (4G LTE+5G)": a common family name outside the parens, the
+    specific variant inside. extract_catalog_hints' D2 verbatim rule
+    requires the WHOLE glued option text to appear in the question; a
+    customer answering with only the variant ("I'll take the 4G LTE+5G
+    version") — the most natural way to name it — never satisfies that,
+    even though the variant is exactly what distinguishes this option from
+    its siblings. Exposing the inner segment as an additional candidate
+    text lets the existing ambiguity/negation/never-guess machinery in
+    extract_catalog_hints treat it exactly like any other option text —
+    this is plain string parsing (no pattern list, no per-product
+    special-casing), so it generalizes to any catalog option shaped this
+    way, not just this one product.
+
+    Only a single, unnested trailing "(...)" is trusted — returns None on
+    anything else (nested parens, an unmatched "(" earlier in the segment,
+    empty parens), so a shape this helper can't safely parse is simply
+    never offered as a candidate rather than risk extracting a corrupted
+    fragment (e.g. a literal trailing ")" left over from a nested group).
+    """
+    stripped = text.rstrip()
+    if "(" not in stripped or not stripped.endswith(")"):
+        return None
+    _before, _, after = stripped.rpartition("(")
+    inner = after[:-1].strip()
+    if "(" in inner or ")" in inner:
+        return None
+    return inner or None
+
+
 def _normalize_for_hint(text: str) -> str:
     return _HINT_STRIP_RE.sub("", text.lower())
 
@@ -1450,7 +1483,11 @@ class CpqEngine:
             for opt in attr.options:
                 if opt.item_value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
                     continue
-                for text in (opt.item_value, opt.display_name):
+                _texts = [(opt.item_value, False), (opt.display_name, False)]
+                _suffix = _parenthetical_suffix(opt.display_name)
+                if _suffix and _suffix not in (opt.item_value, opt.display_name):
+                    _texts.append((_suffix, True))
+                for text, _is_suffix in _texts:
                     stripped = text.strip()
                     is_code = any(c.isdigit() for c in stripped) or "/" in stripped
                     norm = _normalize_for_hint(text)
@@ -1472,6 +1509,18 @@ class CpqEngine:
                         # recorded above for negation-suppression, just not
                         # added to `candidates` below.
                         continue
+                    if _is_suffix and not is_code:
+                        # A parenthetical suffix is a much shorter, more
+                        # generic-sounding fragment than the full option
+                        # text it's plucked from ("Best Value", "Recommended
+                        # for most users") — multi-word alone isn't enough
+                        # distinctiveness evidence the way it is for a
+                        # full, catalog-specific item_value/display_name
+                        # (raven review, PR follow-up). Only trust it when
+                        # it also looks like a technical/distinguishing
+                        # code (contains a digit or slash) — "4G LTE+5G"
+                        # qualifies, ordinary marketing prose does not.
+                        continue
                     candidates.setdefault(norm, []).append(
                         (attr.variable_name, opt.item_value))
 
@@ -1484,6 +1533,15 @@ class CpqEngine:
             owners = {vn for vn, _iv in entries}
             if len(owners) > 1:
                 continue  # real option for 2+ different attrs — never guess
+            if len(set(entries)) > 1:
+                # Same attr, but 2+ genuinely different real values share
+                # this exact phrase (e.g. two hardware-version options both
+                # display a "(4G LTE+5G)" variant suffix on siblings like
+                # "APX NEXT" and "APX NEXT XE") — this widens once
+                # _parenthetical_suffix starts contributing candidate text,
+                # since a shared variant suffix is common across sibling
+                # products. Never guess which one the customer meant.
+                continue
             vn, item_value = entries[0]
             if vn in hints:
                 continue  # a longer, more specific phrase already matched this attr
