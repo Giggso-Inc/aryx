@@ -69,6 +69,21 @@ All in `src/aryx/cpq/engine.py` / `src/aryx/api/ask_api.py`:
 | 3 | Switch-country flow | `hints.get("country") or req.question.strip()` (`ask_api.py:7555`) | `new_country` for `_complete_product_switch` |
 | 4 | "Country-once" history re-scan | `extract_hints` rerun across `req.question`, `product_anchor_question`, `pending_switch_question`, and mined history turns (`ask_api.py:8234-8253`) | `session.country`, last resort before the clarifying question fires |
 | 5 | US/UK literal aliases | `_HINT_PATTERNS` (`engine.py:357-358`, e.g. `u\.s\.`) | Same `hints["country"]` path as #1 |
+| 6 | `_mine_history_for_cpq_context` (`ask_api.py:176-223`, called unconditionally at `ask_api.py:7002`, before every other gate) | Same `_COUNTRY_PREP` via `extract_hints` | `session.country`, recovering a country stated on an EARLIER, non-CPQ (standard-Ask) turn |
+
+**Site 6 was missed by this table in the first pass — found via post-
+merge code review, 2026-08-13.** Unlike sites 1-5, there is no existing
+per-turn LLM classification of the historical texts this site scans
+(they predate CPQ mode entirely, so nothing ever classified them) —
+closing it fully would require a genuinely NEW LLM call. Owner decision
+when presented with the three options (new call / regex hardening /
+drop entirely): **harden `_COUNTRY_PREP` itself** instead — a
+word-boundary fix on the ALLCAPS branch, an optional definite article,
+and (in `extract_hints`) trying every match in the sentence rather than
+only the leftmost one. This is fallback-path hardening, matching the
+precedent already set for the quantity-extraction clusters, not a
+violation of the "LLM decides" directive for sites 1-5, which are all
+still fully LLM-sourced.
 
 Two places are **not** regex-deciding-the-value and should stay as-is —
 flagging them explicitly so the implementation doesn't over-reach:
