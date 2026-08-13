@@ -1491,6 +1491,37 @@ def test_llm_first_approval_still_blocks_on_a_real_rule_conflict(monkeypatch):
     assert resp["tools_called"] == ["cpq_bom_gate_blocked()"]
 
 
+# docs/CPQ_ASK_OFFTOPIC_INTENT_FALSE_POSITIVE_FIXES_2026-08-13.md follow-up:
+# proves the actual production claim (unlike the classify_intent-level tests
+# in test_cpq_intent_gateway.py, which only prove the LLM would classify
+# these phrasings as APPROVAL) — that _dispatch_intent_result's APPROVAL
+# branch submits the payload for phrasing the regex (_APPROVAL_RE) cannot
+# match, with _cpq_engine.detect_approval patched to return False so a
+# passing test can't be hiding a regex match underneath the LLM path.
+def test_llm_first_approval_dispatches_for_phrasing_the_regex_cannot_match(monkeypatch):
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "detect_approval", lambda q: False)
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    attrs = [battery]
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="United States",
+                         filled={"batteryType_astro": "STANDARD"},
+                         display_filled={"batteryType_astro": "Standard"},
+                         status="awaiting_approval", turn=4)
+    req = AskRequest(question="sounds good to me, let's finalize this", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(category=IntentCategory.APPROVAL, confidence=Confidence.HIGH,
+                          rationale="approval")
+    assert api._cpq_engine.detect_approval(req.question) is False
+    with patch("aryx.api.ask_api._cpq_engine.build_bml_evaluator", return_value=BmlEvaluator({})):
+        resp = _dispatch_intent_result(
+            req, session, attrs, result, [], [], [], BmlEvaluator({}),
+        )
+    assert resp is not None
+    assert resp["cpq_payload"] is not None
+    assert resp["session_data"]["status"] == "post_approval"
+    assert resp["tools_called"] == ["cpq_payload_approved()"]
+
+
 # ── B5. Phase 4: RESPONSE_MODE_REQUEST (json) / BULK_QUANTITY_CHANGE ────
 
 def test_llm_first_response_mode_request_json_dispatches_a_preview(monkeypatch):

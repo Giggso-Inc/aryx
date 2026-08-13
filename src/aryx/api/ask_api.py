@@ -6895,7 +6895,26 @@ def _run_cpq_turn_inner(
     _mine_history_for_cpq_context(session, req.history, _cpq_engine)
 
     # First-class UNDO — restore last session snapshot before any other routing.
-    if detect_undo(req.question):
+    # EXCEPT when the message ALSO names a different real, ingested product
+    # ("Actually go back to APX NEXT") — "go back" is _UNDO_RE's own trigger
+    # phrase, but the customer named a specific product, which a snapshot
+    # replay cannot honor (it blindly restores whatever the last snapshot
+    # happened to be, ignoring what was actually asked). Reuses the same
+    # dynamic, catalog-driven detect_product_mention every other switch-
+    # detection call site in this file already trusts — no new pattern, no
+    # hardcoded product name — so a false/failed lookup degrades to "",
+    # falling through to today's plain undo behavior exactly as before.
+    _is_undo = detect_undo(req.question)
+    _is_product_switch_instead = False
+    if _is_undo:
+        _undo_switch_target = _safe_detect_product_mention(
+            req.question, reader, req.workspace_id,
+        )
+        _is_product_switch_instead = bool(
+            _undo_switch_target
+            and _undo_switch_target.strip().lower() != session.product_name.strip().lower()
+        )
+    if _is_undo and not _is_product_switch_instead:
         if restore_last_snapshot(session):
             answer = undo_success_message(session)
         else:
