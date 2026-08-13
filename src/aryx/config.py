@@ -710,7 +710,7 @@ class Settings(BaseSettings):
         ),
     )
     cpq_llm_first_universal_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Phase 4 (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_PLAN.md §8): "
             "runs the LLM-first dispatcher (_dispatch_intent_result, gated "

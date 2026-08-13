@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -72,6 +72,7 @@ from aryx.cpq.session_guard import (
     undo_success_message,
 )
 from aryx.cpq.pending_scope import (
+    ScopeResolve,
     candidates_from_attr_options,
     clear_pending_scope,
     format_did_you_mean,
@@ -1488,6 +1489,126 @@ def _scoped_reask_response(
     answer = format_did_you_mean(
         reply, sug, numbered=numbered, scope_label=scope_label,
         confident_single=confident_single,
+    )
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": [tools_called],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
+def _llm_classify_scope_reply(
+    reply: str, candidates: list[str], scope_label: str,
+    session: Any, workspace_id: int,
+) -> tuple[Literal["candidate", "skip", "unrelated"], str | None]:
+    """LLM-first classification of a reply to a pending scope question
+    (product/family/attr-option disambiguation) — docs/CPQ_PRODUCT_
+    SCOPE_LLM_FIRST_PLAN_2026_08_13.md.
+
+    Runs BEFORE `resolve_against_scope`'s deterministic ladder, not
+    after: classifies the reply's INTENT (does it name one specific
+    option, ask to skip/defer this question, or neither) — never the
+    final value. The LLM's "candidate" guess is only ever a pointer;
+    `_resolve_scope_reply` is the only thing allowed to turn it into a
+    real answer, by independently confirming it against the actual
+    candidate list (never trusted verbatim — same discipline as every
+    other `_llm_*` fallback in this file).
+
+    Live bug this exists to close: "go further" replied to a pending
+    "Product — choose one" question got the same content-free "I didn't
+    get X" re-ask as a garbled product name — string-similarity alone
+    has no way to recognize "the customer wants to move past this
+    question" as a distinct thing from "the customer tried and failed
+    to name a product."
+    """
+    if not reply.strip() or not candidates:
+        return "unrelated", None
+    cand_lines = "\n".join(f"- {c}" for c in candidates)
+    sys = (
+        "You classify a user's reply to a pending multiple-choice "
+        f'question about "{scope_label}". Exactly one of three outcomes:\n'
+        '- "candidate": the reply clearly and specifically points at ONE '
+        'of the listed options (even indirectly, e.g. "the international '
+        'one") -- give your best-guess exact string from the list.\n'
+        '- "skip": the reply is asking to move past, skip, or defer this '
+        'question rather than naming any option (e.g. "go further", '
+        '"skip this", "let\'s continue", "come back to this later").\n'
+        '- "unrelated": neither of the above -- off-topic, a new '
+        'unrelated request, or too vague to name a specific option '
+        "(e.g. naming only a broader family with no specific variant).\n"
+        'Never guess when unsure -- prefer "unrelated" over a low-'
+        'confidence "candidate".'
+    )
+    user = (
+        f"OPTIONS:\n{cand_lines}\n\nUSER REPLY: {reply}\n\n"
+        'Reply ONLY as JSON: {"outcome": "candidate"|"skip"|"unrelated", '
+        '"guess": "<exact string from OPTIONS, or null>"}'
+    )
+
+    def _validate(parsed: dict) -> tuple[Literal["candidate", "skip", "unrelated"], str | None]:
+        outcome = parsed.get("outcome")
+        if outcome not in ("candidate", "skip", "unrelated"):
+            return "unrelated", None
+        if outcome == "candidate":
+            guess = parsed.get("guess")
+            if not isinstance(guess, str) or guess not in candidates:
+                return "unrelated", None
+            return "candidate", guess
+        return outcome, None
+
+    result = _llm_classify_intent_core(sys, user, workspace_id, _validate)
+    if result is None:
+        # Reject-on-failure (Issues 6/7 discipline): an exception/timeout/
+        # malformed reply must never be treated as a confident answer —
+        # "unrelated" makes _resolve_scope_reply fall through to the
+        # unchanged deterministic ladder, exactly as if this call never
+        # happened.
+        return "unrelated", None
+    return result
+
+
+def _resolve_scope_reply(
+    reply: str, candidates: list[str], scope_label: str,
+    session: Any, workspace_id: int,
+) -> "ScopeResolve | Literal['skip']":
+    """Single integration point replacing a bare `resolve_against_scope`
+    call wherever a reply to an ACTIVE pending scope question is being
+    resolved (docs/CPQ_PRODUCT_SCOPE_LLM_FIRST_PLAN_2026_08_13.md).
+
+    LLM classifies first; the deterministic ladder validates second —
+    the LLM never hands a final value to the caller, only a pointer
+    `resolve_against_scope` must independently confirm is real. Any
+    outcome other than a confirmed "candidate" falls through to running
+    the deterministic ladder on the ORIGINAL reply, unchanged from
+    today's behavior — this function can only ever ADD the "skip"
+    outcome and loose-phrasing recovery, never remove existing coverage.
+    """
+    outcome, guess = _llm_classify_scope_reply(reply, candidates, scope_label, session, workspace_id)
+    if outcome == "skip":
+        return "skip"
+    if outcome == "candidate" and guess:
+        res = resolve_against_scope(guess, candidates)
+        if res.tier != "miss":
+            return res
+    return resolve_against_scope(reply, candidates)
+
+
+def _build_scope_skip_response(
+    req: "AskRequest", session: Any, candidates: list[str], scope_label: str,
+    tools_called: str = "cpq_scope_skip_declined()",
+) -> dict[str, Any]:
+    """Response for a reply classified as asking to skip/defer a pending
+    scope question. Owner decision: ask what they'd like to do instead —
+    never auto-pick a default, never silently escalate.
+    """
+    lines = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
+    answer = (
+        f"This choice determines the rest of the configuration, so I "
+        f"can't skip it yet — could you tell me which **{scope_label}** "
+        f"you'd like, or what you're trying to configure? Here are the "
+        f"choices again:\n\n{lines}"
     )
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
@@ -6697,6 +6818,18 @@ def _run_cpq_turn_inner(
     set_run_id(session.run_id)
     session.turn += 1
     record_utterance(session, req.question)
+    # Snapshot BEFORE any anchor-resolution logic below mutates it — the
+    # universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
+    # PLAN.md §8 Phase 4) needs to know whether THIS turn started out
+    # answering a pending anchor question (country/product/switch), so it
+    # can defer to that already-correct resolution instead of redundantly
+    # reclassifying the same reply after the anchor logic already
+    # consumed it. Live-confirmed regression: replying "United States" to
+    # the country anchor question got correctly filled by the existing
+    # anchor logic, then the universal dispatcher ran anyway, saw country
+    # already matched, and answered "already set — no change made"
+    # instead of ever reaching the next question (Product).
+    _incoming_pending_anchor = session.pending_anchor
 
     # Residual Bug A: if earlier turns were standard Ask (no CpqSession),
     # recover country + long order text from req.history before any gate.
@@ -7460,9 +7593,15 @@ def _run_cpq_turn_inner(
         if session.pending_scope_candidates and session.pending_scope_kind in (
             "product_suggestions", "family_disambiguation", "",
         ):
-            _sres0 = resolve_against_scope(
-                req.question, list(session.pending_scope_candidates),
+            _scope_cands0 = list(session.pending_scope_candidates)
+            _sres0 = _resolve_scope_reply(
+                req.question, _scope_cands0, "product family",
+                session, req.workspace_id,
             )
+            if _sres0 == "skip":
+                return _build_scope_skip_response(
+                    req, session, _scope_cands0, "product family",
+                )
             if _sres0.matched:
                 detected = _sres0.matched
                 clear_pending_scope(session)
@@ -8056,26 +8195,25 @@ def _run_cpq_turn_inner(
                 session.model_leaf_resolved = True
             elif session.pending_model_leaf_candidates:
                 # A prior turn already asked — this reply should answer it.
-                # PROMPT 7: exact → partial → fuzzy within the same leaf list
-                # before LLM; on miss, scoped re-ask (never Product 325).
+                # LLM classifies first (docs/CPQ_PRODUCT_SCOPE_LLM_FIRST_
+                # PLAN_2026_08_13.md), deterministic ladder validates
+                # second; on miss, scoped re-ask (never Product 325).
+                # Supersedes the old ConfigAttr-wrapping
+                # _llm_resolve_label_collision fallback this call site
+                # used to awkwardly reuse — _resolve_scope_reply already
+                # covers that same job, natively, for plain strings.
                 _reply = req.question.strip()
                 _leaf_scope = list(session.pending_model_leaf_candidates)
-                _sres = resolve_against_scope(_reply, _leaf_scope)
+                _scope_reply = _resolve_scope_reply(
+                    _reply, _leaf_scope, "product line", session, req.workspace_id,
+                )
+                if _scope_reply == "skip":
+                    return _build_scope_skip_response(
+                        req, session, _leaf_scope, "product line",
+                    )
+                _sres = _scope_reply
                 if _sres.matched:
                     _resolved_leaf = _sres.matched
-                if _resolved_leaf is None:
-                    _leaf_attr_candidates = [
-                        ConfigAttr(
-                            entity_id=0, variable_name=leaf, display_label=leaf,
-                            required=False, default_value="",
-                            options=[MenuOption(item_value=leaf, display_name=leaf)],
-                        )
-                        for leaf in _leaf_scope
-                    ]
-                    _llm_leaf = _llm_resolve_label_collision(
-                        _reply, _leaf_attr_candidates, session, req.workspace_id)
-                    if _llm_leaf and _llm_leaf in _leaf_scope:
-                        _resolved_leaf = _llm_leaf
                 if _resolved_leaf is None:
                     # Keep model-leaf candidates AND pending_scope in sync
                     set_pending_scope(
@@ -8153,29 +8291,6 @@ def _run_cpq_turn_inner(
         req.workspace_id, catalog_prefix)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
-
-    # Universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
-    # PLAN.md §8 Phase 4): `_llm_first_gateway_turn` already runs below
-    # for awaiting_approval/post_approval turns (STEP 6/7/8 routing) —
-    # this is the SAME shared function, called here too so it also runs
-    # during the actual configuring-stage conversation, which it never
-    # did before this. Guarded so status in (awaiting_approval,
-    # post_approval) is never double-classified in the same turn — that
-    # status's own call site below owns it, matching the "one
-    # classification, one handler call" convergence discipline. Off by
-    # default (cpq_llm_first_universal_enabled) pending shadow-mode
-    # validation, since these are real mutating actions during active
-    # configuration, not just post-review edits.
-    if (
-        get_settings().cpq_llm_first_universal_enabled
-        and session.status not in ("awaiting_approval", "post_approval")
-    ):
-        _llm_first_universal_result = _llm_first_gateway_turn(
-            req, session, attrs, reader, hints,
-            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
-        )
-        if _llm_first_universal_result is not None:
-            return _llm_first_universal_result
 
     # Resolve a pending "which value?" clarifying question from a previous
     # turn's valueless change request (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md
@@ -8331,6 +8446,40 @@ def _run_cpq_turn_inner(
             "(no rule data links row selection to quantity attrs): %s",
             _array_grid_vns,
         )
+
+    # Universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
+    # PLAN.md §8 Phase 4): `_llm_first_gateway_turn` already runs below
+    # for awaiting_approval/post_approval turns (STEP 6/7/8 routing,
+    # nested inside the status-check block right after this) — this is
+    # the SAME shared function, called here too so it also runs during
+    # the actual configuring-stage conversation, which it never did
+    # before this (the STEP 6 gates themselves stay unreachable during
+    # configuring — this earlier call site is the only way a mutating
+    # category like MULTI_SELECT_REMOVAL ever gets a chance to dispatch
+    # then). Positioned AFTER pending_change_no_value_vn/pending_change_
+    # collision_vns/pending_label_collision_vns resolution above (never
+    # before it — a live-confirmed regression: with this call site
+    # placed earlier, "prefer Premium over Standard" answering a pending
+    # no-value change request got frozen classified fresh instead of
+    # consumed by its own already-correct deterministic handler).
+    # Guarded so status in (awaiting_approval, post_approval) is never
+    # double-classified in the same turn — that status's own call site
+    # below owns it, matching the "one classification, one handler call"
+    # convergence discipline. Also deferred whenever this turn STARTED
+    # out answering a pending anchor question (country/product/switch) —
+    # see `_incoming_pending_anchor`'s own comment above for the
+    # live-confirmed regression this closes.
+    if (
+        get_settings().cpq_llm_first_universal_enabled
+        and session.status not in ("awaiting_approval", "post_approval")
+        and not _incoming_pending_anchor
+    ):
+        _llm_first_universal_result = _llm_first_gateway_turn(
+            req, session, attrs, reader, hints,
+            hiding_rules, rec_rules, con_rules, bml_eval, catalog_prefix,
+        )
+        if _llm_first_universal_result is not None:
+            return _llm_first_universal_result
 
     # ── STEP 6 / 7 / 8 routing: awaiting_approval / post_approval status ────
     # "approved" is a legacy dead-end value (pre-
@@ -9086,12 +9235,25 @@ def _run_cpq_turn_inner(
                 if _scope_ivs:
                     pending_constrained = _scope_ivs
 
-            # In-scope resolve ladder (exact → partial → fuzzy) before
-            # unconstrained free-text / LLM — preserves "Federal" partial
-            # and recovers "r7ex" within the same list.
+            # In-scope resolve — LLM classifies first (docs/CPQ_PRODUCT_
+            # SCOPE_LLM_FIRST_PLAN_2026_08_13.md), deterministic ladder
+            # (exact → partial → fuzzy) validates second — preserves
+            # "Federal" partial and recovers "r7ex" within the same
+            # list, and now also recognizes a reply asking to skip/defer
+            # this question ("go further") as a distinct outcome instead
+            # of a failed product-name match.
             _scope_match_text = req.question
             if _scope_for_attr and pending_attr.select_type != "multi":
-                _sres = resolve_against_scope(req.question, _scope_cands)
+                _scope_label_early = _cpq_engine.disambiguated_label(pending_attr, attrs)
+                _scope_reply = _resolve_scope_reply(
+                    req.question, _scope_cands, _scope_label_early,
+                    session, req.workspace_id,
+                )
+                if _scope_reply == "skip":
+                    return _build_scope_skip_response(
+                        req, session, _scope_cands, _scope_label_early,
+                    )
+                _sres = _scope_reply
                 if _sres.matched:
                     _scope_match_text = _sres.matched
                     logger.info(
