@@ -663,3 +663,41 @@ def test_classify_intent_timeout_falls_through_to_fallback():
             )
     assert decision.action == "fallback"
     assert decision.reason == "timeout"
+
+
+def test_classify_intent_timeout_actually_returns_promptly_not_after_the_slow_call():
+    """Regression for a real bug in the timeout wrapper itself: `with
+    ThreadPoolExecutor() as pool:` calls `pool.__exit__` ->
+    `shutdown(wait=True)` as soon as the block is left for ANY reason,
+    including fut.result()'s own TimeoutError -- so the function didn't
+    actually return within `timeout` seconds, it blocked until the
+    orphaned task finished. This test proves the fix: wall-clock time
+    stays close to the configured timeout, nowhere near the underlying
+    call's real duration."""
+    import time as _time
+
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    engine = MagicMock()
+
+    def _slow_chat(*a, **k):
+        _time.sleep(2.0)
+        return ("{}", 0, 0)
+
+    with patch("aryx.cpq.intent_gateway._pinned_chat", side_effect=_slow_chat):
+        with patch("aryx.config.get_settings") as mock_settings, \
+             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+            for m in (mock_settings, mock_settings2):
+                m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
+                m.return_value.cpq_intent_classify_timeout_s = 0.1
+            start = _time.monotonic()
+            decision = classify_intent(
+                "change country to Canada", [], session, engine, workspace_id=1,
+            )
+            elapsed = _time.monotonic() - start
+    assert decision.action == "fallback"
+    assert decision.reason == "timeout"
+    # Well under the underlying call's 2s sleep -- the old buggy
+    # `with ThreadPoolExecutor()` block would have blocked until ~2s.
+    assert elapsed < 1.0, f"timeout wrapper blocked for {elapsed:.2f}s, not ~0.1s"

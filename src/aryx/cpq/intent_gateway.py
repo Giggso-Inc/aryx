@@ -644,21 +644,36 @@ def classify_intent(
     def _classify_with_timeout(
         repair_hint: str = "",
     ) -> tuple[GatewayIntentResult | None, int, int, bool]:
-        """Returns (parsed, pt, ct, timed_out) -- never raises TimeoutError."""
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(
-                _llm_classify_once, question, bundles, session, model_id,
-                workspace_id, repair_hint,
+        """Returns (parsed, pt, ct, timed_out) -- never raises TimeoutError.
+
+        Deliberately does NOT use the executor as a context manager: `with
+        ThreadPoolExecutor() as pool:` calls `pool.__exit__` ->
+        `shutdown(wait=True)` as soon as the block is left for ANY reason,
+        including via an exception -- so `fut.result(timeout=timeout)`
+        raising TimeoutError still blocks this call until the orphaned
+        task actually finishes, defeating the timeout entirely. Confirmed
+        live: a lambda sleeping 3s with `timeout=0.5` doesn't return until
+        ~3s even though TimeoutError fires at 0.5s. `shutdown(wait=False)`
+        after handling the result/timeout lets the orphaned thread finish
+        and get GC'd in the background instead, so this function actually
+        returns within `timeout` seconds as advertised.
+        """
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = pool.submit(
+            _llm_classify_once, question, bundles, session, model_id,
+            workspace_id, repair_hint,
+        )
+        try:
+            parsed, pt, ct = fut.result(timeout=timeout)
+            return parsed, pt, ct, False
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                "cpq_intent_gateway: TIMEOUT run_id=%s model=%s timeout_s=%s",
+                run_id, model_id, timeout,
             )
-            try:
-                parsed, pt, ct = fut.result(timeout=timeout)
-                return parsed, pt, ct, False
-            except concurrent.futures.TimeoutError:
-                logger.warning(
-                    "cpq_intent_gateway: TIMEOUT run_id=%s model=%s timeout_s=%s",
-                    run_id, model_id, timeout,
-                )
-                return None, 0, 0, True
+            return None, 0, 0, True
+        finally:
+            pool.shutdown(wait=False)
 
     parsed, pt, ct, timed_out = _classify_with_timeout()
     total_pt, total_ct = pt, ct
@@ -1039,11 +1054,18 @@ def classify_ask_route(
         return _pinned_chat(sys, user, model_id, workspace_id)
 
     text, pt, ct = "", 0, 0
+    # Hard timeout — escape hatch for the orchestrator. Deliberately not a
+    # `with ThreadPoolExecutor() as pool:` block: __exit__ calls
+    # shutdown(wait=True) as soon as the block is left for ANY reason,
+    # including via fut.result()'s own TimeoutError, so the "timeout"
+    # still blocks this call until the orphaned task actually finishes —
+    # confirmed live (see classify_intent's _classify_with_timeout, same
+    # fix). shutdown(wait=False) below lets it finish/GC in the
+    # background instead.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        # Hard timeout — escape hatch for the orchestrator.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_call)
-            text, pt, ct = fut.result(timeout=timeout)
+        fut = pool.submit(_call)
+        text, pt, ct = fut.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         logger.warning(
             "cpq_ask_route: TIMEOUT run_id=%s model=%s timeout_s=%s",
@@ -1073,6 +1095,8 @@ def classify_ask_route(
             error=str(exc),
             det_is_cpq=det_is_cpq,
         )
+    finally:
+        pool.shutdown(wait=False)
 
     raw = _parse_json_object(text)
     parsed = _parse_route(raw)

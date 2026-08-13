@@ -762,7 +762,7 @@ class Settings(BaseSettings):
         ),
     )
     cpq_intent_classify_timeout_s: float = Field(
-        default=10.0,
+        default=120.0,
         description=(
             "Hard timeout (seconds) for classify_intent (intent_gateway.py) "
             "-- the mid-session LLM-first classifier, distinct from "
