@@ -58,6 +58,20 @@ pattern `^(?:great|perfect)\s*[!.]*$` that only matches when the entire trimmed 
 **is** just that word (+ optional punctuation). "Great!" still approves; "great
 question..." no longer does.
 
+**Raven review caught a regression in this fix, now fixed:** the whole-message-only
+pattern above also broke previously-working combined phrasings like "Great, let's go"
+and "Perfect, that works" — the pre-fix regex used to match these via bare
+`great`/`perfect`; the D42 fix silently dropped them. For `cpq_llm_first_enabled=True`
+(the default) this was masked by the LLM-first gateway, but `session.guided_mode=True`
+sessions never reach that fallback, so this was a real behavior regression for them,
+not merely an "unclosed gap." Loosened the pattern to
+`^(?:great|perfect)\b[\s,!.]*(?:let'?s?\s+go|that'?s?\s+(?:works|good|right))?$` —
+restores "Great, let's go" / "Perfect, that works" / "Perfect, let's go" while keeping
+"great question about mounting" and "greatly appreciated" correctly rejected. Verified
+against the full 4-Intent approval sheet (8/8) plus 7 regression phrasings via a
+standalone replay script before editing the file; 2 pinning tests added directly
+against `engine.detect_approval` in `tests/test_cpq_post_approval_activation.py`.
+
 ## Bug 4 — D48: `qa_strict` false positive on "whatever works"
 
 **File:** [`src/aryx/cpq/engine.py:8080-8085`](../src/aryx/cpq/engine.py)
