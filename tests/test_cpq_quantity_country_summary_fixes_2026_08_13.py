@@ -457,10 +457,16 @@ def test_show_summary_catalog_load_failure_falls_through_safely(monkeypatch):
 # Issue 5 — country regex + Turn-1 unified extraction (classify_ask_route)
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_extract_hints_country_still_fails_on_article_between_preposition_and_name():
+def test_extract_hints_country_now_succeeds_with_an_article_between_preposition_and_name():
+    """docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md review finding:
+    _mine_history_for_cpq_context has no LLM call to route through (it
+    recovers a country from an earlier, non-CPQ turn), so _COUNTRY_PREP
+    itself needed hardening as a fallback-path fix -- an optional "the"
+    between the preposition and the country name. This used to fail
+    outright; it must succeed now."""
     hints = api._cpq_engine.extract_hints(
         "I need pricing for a dozen APX NEXT standard models in the United States")
-    assert "country" not in hints
+    assert hints.get("country") == "United States"
 
 
 def test_extract_hints_country_succeeds_without_the_article():

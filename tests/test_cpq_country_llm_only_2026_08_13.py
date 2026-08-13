@@ -11,7 +11,14 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.api.ask_api as api
-from aryx.api.ask_api import AskRequest, _llm_confirm_and_extract_country, _run_cpq_turn_inner
+from aryx.api.ask_api import (
+    AskRequest,
+    Turn,
+    _llm_confirm_and_extract_country,
+    _mine_history_for_cpq_context,
+    _run_cpq_turn_inner,
+)
+from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision
 from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
 from aryx.cpq.state import CpqSession
@@ -229,3 +236,50 @@ def test_turn1_no_country_stated_at_all_still_asks_normally(monkeypatch):
     resp = _run_cpq_turn_inner(req, object(), route_meta)
     assert resp["tools_called"] == ["cpq_anchor_validation()"]
     assert "destination country" in resp["answer"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _mine_history_for_cpq_context -- the 6th regex-decided-value site the
+# original PR audit missed (review finding, 2026-08-13). No LLM call to
+# route through here (it recovers a country from an earlier, non-CPQ
+# turn), so this is fallback-path regex hardening, not an LLM fix --
+# the same discipline as the mechanical quantity-cluster fixes.
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_mine_history_recovers_country_despite_a_definite_article():
+    """"...in the United States" used to fail _COUNTRY_PREP outright --
+    the customer's country would have been silently lost when CPQ starts
+    on a later turn after an earlier standard-Ask turn stated it this
+    way."""
+    session = CpqSession(mode="cpq")
+    history = [
+        Turn(role="user", text="I need pricing for APX Next in the United States"),
+        Turn(role="assistant", text="Sure, here are some options..."),
+    ]
+    _mine_history_for_cpq_context(session, history, CpqEngine())
+    assert session.country == "United States"
+
+
+def test_mine_history_not_shadowed_by_an_earlier_bogus_allcaps_match():
+    """A bogus earlier trigger ("for APX Next" truncating to a fragment)
+    must never shadow a real, later-stated country in the same
+    historical message -- the leftmost-match-wins failure mode this
+    review finding also cited."""
+    session = CpqSession(mode="cpq")
+    history = [
+        Turn(role="user", text="What is the pricing for APX models in the United States"),
+    ]
+    _mine_history_for_cpq_context(session, history, CpqEngine())
+    assert session.country == "United States"
+
+
+def test_mine_history_never_latches_a_bogus_product_fragment_as_a_country():
+    """Regression guard: a message with NO real country stated must
+    never latch a product-name fragment ("Apx"/"Apx Next") as if it
+    were one."""
+    session = CpqSession(mode="cpq")
+    history = [
+        Turn(role="user", text="Start a new order for APX NEXT XE All Band"),
+    ]
+    _mine_history_for_cpq_context(session, history, CpqEngine())
+    assert not session.country
