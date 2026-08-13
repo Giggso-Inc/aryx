@@ -1,6 +1,15 @@
-# CPQ Product/Family Scope-Reply LLM Fallback — Plan (2026-08-13)
+# CPQ Product/Family Scope-Reply LLM-First Classification — Plan (2026-08-13)
 
 Status: **design only — not implemented, not approved for code changes**
+
+Note: this doc's first draft (§ "Root cause" below) proposed an
+LLM-as-fallback design — LLM only tried after the deterministic ladder
+missed. That was superseded same-day (see "Revised 2026-08-13" section)
+per owner directive: the LLM classifies FIRST, deterministic matching
+validates second. The file was renamed from `..._LLM_FALLBACK_PLAN...`
+to `..._LLM_FIRST_PLAN...` to match; the "Root cause" section below is
+kept as-written for the investigation trail, but the "Design" section
+further down is the one actually current.
 
 ## Source
 
