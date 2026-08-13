@@ -45,6 +45,7 @@ from aryx.cpq.intent_schema import (
     INTENT_RESULT_JSON_SCHEMA,
     IntentCategory,
     IntentResult,
+    _is_signed_digit_quantity_text,
     parse_intent_result,
 )
 from aryx.cpq.logging_context import install_run_id_logging, set_run_id
@@ -4497,6 +4498,67 @@ def _llm_confirm_deterministic_intent(
     return True
 
 
+def _llm_confirm_and_extract_quantity(
+    req: "AskRequest", session: Any, attrs: list,
+    hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any, catalog_prefix: str,
+    fallback_value: int | None, fallback_decimal: str | None,
+) -> tuple[bool, int | None, str | None]:
+    """LLM-first confirm-AND-extract for PRODUCT_QUANTITY_CHANGE —
+    docs/CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md.
+
+    Sibling of `_llm_confirm_deterministic_intent`, extended: that
+    function only ever returns a bool, so every caller discarded the
+    LLM's own `quantity_text` and trusted the deterministic regex value
+    unconditionally once confirmed — meaning a deterministic mis-parse
+    ("one hundred and twelve" -> 1200 via the dozen/twelve value
+    collision, "minus 5" -> +5, "15 APX NEXT radios" -> None from the
+    adjacency requirement) still won even when the SAME LLM call being
+    made to confirm the category also, in the same response, correctly
+    read the real value. Reuses the exact same `gateway_classify_intent`
+    call this checkpoint already makes — no new/separate LLM call
+    (unlike `_llm_extract_quantity`, the pre-existing dedicated fallback
+    tried only for the "totally unparseable" case, which a wrong-but-
+    non-None deterministic value never reaches).
+
+    Returns (confirmed, value, decimal_value):
+      - confirmed=False -- LLM disagreed on category, or the call
+        failed/timed out. Caller MUST treat this exactly like
+        `_llm_confirm_deterministic_intent` returning False: fall
+        through to normal processing, never act on the deterministic
+        match either (same reject-on-failure discipline).
+      - confirmed=True, value=<int> -- the LLM's own `quantity_text`
+        was a valid digit string; THIS is the value to use, not the
+        deterministic one.
+      - confirmed=True, value=None -- the LLM confirmed the category
+        but its `quantity_text` wasn't usable (missing/non-digit);
+        caller falls back to `fallback_value`/`fallback_decimal` (the
+        deterministic extraction it was already going to use) —
+        preserves 100% of existing coverage, never a net loss.
+    """
+    try:
+        decision = gateway_classify_intent(
+            req.question, attrs, session, _cpq_engine, req.workspace_id,
+            hiding_rules=hiding_rules, rec_rules=rec_rules, con_rules=con_rules,
+            bml_eval=bml_eval, catalog_prefix=catalog_prefix,
+        )
+    except Exception as exc:  # noqa: BLE001 — reject on any failure, never guess
+        logger.debug(
+            "cpq llm_first_quantity: gateway call failed, rejecting: %r", exc,
+        )
+        return False, None, None
+    result = decision.result
+    if result is None or result.intent_category != IntentCategory.PRODUCT_QUANTITY_CHANGE:
+        return False, None, None
+    # `.isdigit()` rejects a leading "-", which would silently make a
+    # genuinely negative LLM-reported quantity ("-5") fall through to
+    # the fallback instead of being used -- same bug as `intent_schema.
+    # py`'s `validate_gateway_quarantine`, fixed there via the same
+    # helper.
+    if _is_signed_digit_quantity_text(result.quantity_text):
+        return True, int(result.quantity_text), None
+    return True, fallback_value, fallback_decimal
+
+
 def _gateway_to_intent_result(
     gw: Any,
     attrs: list,
@@ -6986,25 +7048,36 @@ def _run_cpq_turn_inner(
         # capture is deliberately silent/best-effort for a quantity stated
         # as PART of a larger order description ("...50 radios...", no
         # explicit change framing at all) — that case still needs no LLM
-        # call, exactly as before. But when the message ALSO carries an
-        # explicit change verb (has_change_verb), it's making the same
-        # kind of assertion the STEP 6 quantity gate guards, and is
-        # exposed to the identical live bug: "Change country to United
-        # States unless the quantity is 6" has both "change" (about
-        # country) and "quantity is 6" (a conditional comparison, not a
-        # command) — this background capture would otherwise silently set
-        # quantity=6 before the STEP 6 gate (which does confirm) ever even
-        # runs, since this block executes first, unconditionally, on
-        # every turn. Reject-on-failure, same as every other checkpoint.
+        # call, exactly as before (calling the gateway on every single
+        # turn that merely mentions a number would be a real, unbounded
+        # latency/cost change well beyond "reuse the existing call," and
+        # every one of those plain-statement misparses is instead closed
+        # by the mechanical regex fixes in engine.py — docs/CPQ_QUANTITY_
+        # EXTRACTION_DEFECTS_PLAN_2026_08_13.md). But when the message
+        # ALSO carries an explicit change verb (has_change_verb), it's
+        # making the same kind of assertion the STEP 6 quantity gate
+        # guards, and is exposed to the identical live bug: "Change
+        # country to United States unless the quantity is 6" has both
+        # "change" (about country) and "quantity is 6" (a conditional
+        # comparison, not a command) — this background capture would
+        # otherwise silently set quantity=6 before the STEP 6 gate (which
+        # does confirm) ever even runs, since this block executes first,
+        # unconditionally, on every turn. Reject-on-failure, same as
+        # every other checkpoint. Extended to also extract the value from
+        # this same call (rather than only confirming the category) so a
+        # change-verb turn with a misparsed deterministic value ("change
+        # it to one hundred and twelve units") gets corrected here too.
         _qty_bg_precheck = quantity_turn_precheck(req.question, [])
-        _qty_bg_confirmed = not (_qty_bg_precheck and _qty_bg_precheck.get("has_change_verb"))
-        if not _qty_bg_confirmed:
-            _qty_bg_confirmed = _llm_confirm_deterministic_intent(
-                req, session, [], IntentCategory.PRODUCT_QUANTITY_CHANGE,
-                hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
-            )
-        if _qty_bg_confirmed:
+        if not (_qty_bg_precheck and _qty_bg_precheck.get("has_change_verb")):
             session.product_quantity = _qty_hint
+        else:
+            _qty_bg_confirmed, _qty_bg_value, _ = _llm_confirm_and_extract_quantity(
+                req, session, [],
+                hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None, catalog_prefix="",
+                fallback_value=_qty_hint, fallback_decimal=None,
+            )
+            if _qty_bg_confirmed and _qty_bg_value is not None:
+                session.product_quantity = _qty_bg_value
     # An implausible number here (zero, negative, an absurd overflow) is
     # silently ignored rather than rejected with a message — this is an
     # inferred background capture from a free-text order request, not an
@@ -7142,20 +7215,33 @@ def _run_cpq_turn_inner(
                 # through to normal hint/attribute processing below,
                 # rather than answering with a stale/unchanged quantity
                 # as if a bare question had been asked instead.
-                _qty_confirmed = (
-                    not _qty_pre["is_change"]
-                    or _llm_confirm_deterministic_intent(
-                        req, session, _qty_attrs, IntentCategory.PRODUCT_QUANTITY_CHANGE,
+                #
+                # LLM-first value too (docs/CPQ_QUANTITY_EXTRACTION_
+                # DEFECTS_PLAN_2026_08_13.md): reuse this SAME gateway
+                # call's own quantity_text instead of trusting the
+                # deterministic regex value unconditionally once
+                # confirmed -- the regex misparses "one hundred and
+                # twelve" (dozen/twelve value collision), "minus 5"
+                # (sign dropped), "15 APX NEXT radios" (adjacency),
+                # etc. Falls back to the deterministic value when the
+                # LLM's own quantity_text isn't a usable digit string,
+                # so no existing coverage regresses.
+                if not _qty_pre["is_change"]:
+                    _qty_confirmed, _qty_value, _qty_decimal = True, None, None
+                else:
+                    _qty_confirmed, _qty_value, _qty_decimal = _llm_confirm_and_extract_quantity(
+                        req, session, _qty_attrs,
                         hiding_rules=[], rec_rules=[], con_rules=[], bml_eval=None,
                         catalog_prefix=(_qty_attrs[0].catalog_prefix if _qty_attrs else ""),
+                        fallback_value=_qty_pre["value"],
+                        fallback_decimal=_qty_pre.get("decimal_value"),
                     )
-                )
                 if _qty_confirmed:
                     return _build_product_quantity_change_response(
                         req, session, reader,
-                        value=_qty_pre["value"] if _qty_pre["is_change"] else None,
+                        value=_qty_value if _qty_pre["is_change"] else None,
                         decimal_value=(
-                            _qty_pre.get("decimal_value")
+                            _qty_decimal
                             if _qty_pre["is_change"] else None
                         ),
                     )
@@ -7221,16 +7307,27 @@ def _run_cpq_turn_inner(
     # answer (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
     if session.pending_anchor == "country" and "country" not in hints:
         hints["country"] = req.question.strip()
-    # docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md turn-1 unified
-    # extraction plan: when the regex above found nothing, fall back to
-    # whatever the top-level router already extracted in its ONE call —
-    # never a second, separate LLM call. `route_meta` is only ever
-    # populated on turn 1 of a brand-new session (turn 2+ never calls the
-    # router at all), so this is naturally inert past turn 1. Validated
-    # against `is_recognized_country` in the very next `if` block below,
-    # exactly like every other country hint.
+    # docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_PLAN_2026_08_13.md: the
+    # guard here used to be bare `"country" not in hints`, which only
+    # covers the regex finding NOTHING. Live bug: "Give me a quote for
+    # APXNET in United States" -- `_COUNTRY_PREP`'s `re.search` stops at
+    # the FIRST match, and its `[A-Z]{2}` branch (no word boundary)
+    # greedily matches the first two letters of "APXNET" ("for AP")
+    # before ever reaching "in United States" later in the sentence.
+    # That WRONG-but-present value used to permanently mask this exact
+    # fallback -- the turn-1 unified LLM extraction (`route_meta.
+    # country`, from `classify_ask_route`'s single per-turn call, never
+    # a second/separate LLM call) held the correct answer the whole
+    # time but was never consulted, because "country" not in hints" was
+    # False. Now treats "hints has no VALID country" (regex found
+    # nothing, or found something `is_recognized_country` rejects) as
+    # the trigger instead -- a real, valid regex match is still
+    # preferred and never overwritten (matches this file's existing
+    # "regex-extracted values are not overwritten by the router"
+    # discipline), but a rejected match no longer blocks the LLM's own
+    # correct extraction from winning.
     elif (
-        "country" not in hints
+        not _cpq_engine.is_recognized_country(hints.get("country", ""))
         and route_meta is not None
         and route_meta.country
     ):

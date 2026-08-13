@@ -21,11 +21,18 @@ from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCatego
 from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
 
 
-def _confirm_product_quantity_change(monkeypatch) -> None:
+def _confirm_product_quantity_change(monkeypatch, quantity_text: str | None = None) -> None:
     """docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up:
     every real quantity-change command must now be confirmed by the LLM
     gateway before it executes (blanket LLM-as-final-verdict, reject-on-
-    failure). Mocked to agree for tests exercising genuine commands."""
+    failure). Mocked to agree for tests exercising genuine commands.
+
+    `quantity_text` defaults to None (confirm category only) -- docs/
+    CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md's checkpoint now
+    also extracts the value from this same call, so a fixed placeholder
+    digit here would silently override every test's own expected
+    quantity; None lets the deterministic value already computed
+    upstream flow through unchanged."""
     monkeypatch.setattr(
         api, "gateway_classify_intent",
         lambda *a, **k: GatewayDecision(
@@ -33,7 +40,7 @@ def _confirm_product_quantity_change(monkeypatch) -> None:
             result=GatewayIntentResult(
                 intent_category=IntentCategory.PRODUCT_QUANTITY_CHANGE,
                 confidence=Confidence.HIGH,
-                quantity_text="1", evidence_span="", rationale="test-confirm",
+                quantity_text=quantity_text, evidence_span="", rationale="test-confirm",
             ),
         ),
     )
@@ -522,6 +529,33 @@ def test_regex_extracted_values_are_not_overwritten_by_the_router(monkeypatch):
     assert resp["session_data"]["product_quantity"] == 50
 
 
+def test_route_meta_recovers_when_regex_matches_a_product_name_fragment(monkeypatch):
+    """docs/CPQ_TURN1_COUNTRY_EXTRACTION_DEFECT_PLAN_2026_08_13.md -- exact
+    live bug: "for APXNET in United States" has `for` before `in`, and
+    `_COUNTRY_PREP`'s `[A-Z]{2}` branch (no word boundary) greedily
+    matches "AP" from "APXNET" first, stopping regex search before it
+    ever reaches "in United States". The old guard (`"country" not in
+    hints`) treated this WRONG-but-present regex match as if the regex
+    had succeeded, permanently masking the correct `route_meta.country`
+    (from the SAME turn-1 unified LLM call, never a second one) for the
+    rest of the turn -- the customer got re-asked for a country they'd
+    already stated."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
+    session = CpqSession(mode="cpq")
+    req = AskRequest(
+        question="Give me a quote for APXNET in United States",
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    route_meta = AskRouteDecision(
+        route="quote", confidence="high", clarifying_question=None,
+        rationale="ok", quantity=None, country="United States",
+    )
+    resp = _run_cpq_turn_inner(req, object(), route_meta)
+    assert resp["session_data"]["country"] == "United States"
+
+
 def test_route_meta_rejects_a_hallucinated_country(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
@@ -613,8 +647,13 @@ def test_shadow_mode_strips_quantity_and_country_before_the_turn(monkeypatch):
         gs.return_value.cpq_intent_mode = "shadow"
         gs.return_value.cpq_intent_timeout_s = 10.0
         out = api.run_ask(req)
-    # Neither quantity nor country from the (observe-only) router made it
-    # into the actual session -- regex alone decides in shadow mode, and
-    # regex itself misses this exact phrasing (the reproduced bug).
+    # Country from the (observe-only) router never leaks into the actual
+    # session -- regex alone decides in shadow mode, and this codebase
+    # has no deterministic country extractor at all. Quantity DOES land
+    # on 24 here, but legitimately -- via the SAME deterministic
+    # background capture shadow mode always ran (docs/CPQ_QUANTITY_
+    # EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 2 fix: "a couple
+    # dozen" now resolves correctly on its own), not because the
+    # observe-only router's value leaked through.
     assert out["session_data"].get("country") in (None, "")
-    assert out["session_data"].get("product_quantity", 1) == 1
+    assert out["session_data"].get("product_quantity", 1) == 24
