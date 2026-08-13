@@ -2674,7 +2674,7 @@ def _build_show_summary_response(
     handled here, deterministically, before either of those paths runs.
     """
     try:
-        attrs, catalog_prefix = _cpq_engine.load_product_config(
+        attrs, _ = _cpq_engine.load_product_config(
             reader, req.workspace_id, session.product_name,
         )
     except Exception as exc:  # noqa: BLE001 — never crash a turn on this gate
@@ -2682,6 +2682,15 @@ def _build_show_summary_response(
         return None
     if not attrs or not session.display_filled:
         return None
+    # Live-verified bug, 2026-08-13: load_product_config's second return
+    # value is the RESOLVED PRODUCT NAME (its own docstring says so), not
+    # a catalog_prefix -- using it as catalog_prefix below made
+    # load_hiding_rules/load_recommendation_and_constraint_rules load the
+    # WRONG (or empty) rule set, which zeroed out rule_governed_ids and
+    # silently emptied the summary every time, always falling back to the
+    # bare "Quantity → N" line even once the config was complete. Same
+    # pattern _handle_approval/_build_json_preview_response already use.
+    catalog_prefix = attrs[0].catalog_prefix if attrs else ""
     # Never intercept a literal, exact answer to the currently pending
     # question just because it happens to contain a trigger word (e.g. a
     # real option named "Custom Configuration") — an exact case-

@@ -98,6 +98,47 @@ def test_quantity_change_shows_full_summary_when_config_already_complete(monkeyp
     assert resp["tools_called"] == ["cpq_product_quantity()"]
 
 
+def test_build_show_summary_response_derives_catalog_prefix_from_attrs_not_load_product_config(
+    monkeypatch,
+):
+    """Live-verified bug, 2026-08-13: load_product_config's second return
+    value is the RESOLVED PRODUCT NAME (its own docstring says so), never
+    a catalog_prefix. Using it as catalog_prefix silently loaded the
+    WRONG (or empty) hiding/recommendation/constraint rule set every
+    time, zeroing out rule_governed_ids and emptying the summary --
+    always falling back to the bare "Quantity → N" line even once the
+    config was complete. This test fails if that mistake is reintroduced,
+    unlike the other tests above whose mocks ignore the catalog_prefix
+    argument entirely and so can't catch this."""
+    battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
+    attrs = [battery]
+    attrs[0].catalog_prefix = "real_catalog_prefix"
+    # Second element is deliberately NOT a catalog_prefix -- exactly the
+    # real shape (a human-facing resolved product name) that caused the
+    # live bug.
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: (attrs, "APX NEXT Single Band"))
+    seen_prefixes = []
+
+    def _capture_hiding_rules(workspace_id, catalog_prefix):
+        seen_prefixes.append(catalog_prefix)
+        return []
+
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", _capture_hiding_rules)
+    monkeypatch.setattr(api._cpq_engine, "load_recommendation_and_constraint_rules",
+                         lambda *a, **k: ([], []))
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    session = CpqSession(
+        mode="cpq", product_name="APX NEXT Single Band",
+        filled={"batteryType_astro": "STANDARD"},
+        display_filled={"batteryType_astro": "Standard"},
+        filled_source={"batteryType_astro": "user"},
+    )
+    req = AskRequest(question="recap", workspace_id=1, session_data=session.to_dict())
+    _build_show_summary_response(req, session, object())
+    assert seen_prefixes == ["real_catalog_prefix"]
+
+
 def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
