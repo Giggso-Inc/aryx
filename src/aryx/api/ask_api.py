@@ -10453,7 +10453,7 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
         workspace_id=req.workspace_id,
         session_hint="none (cold start)",
         det_is_cpq=det_is_cpq,
-        timeout_s=float(settings.cpq_intent_timeout_s or 10.0),
+        timeout_s=float(settings.cpq_intent_timeout_s or 120.0),
     )
     # N4: mid-session gateway in _run_cpq_turn will no-op this turn.
     mark_top_level_route_used()

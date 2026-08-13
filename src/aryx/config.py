@@ -761,11 +761,19 @@ class Settings(BaseSettings):
         ),
     )
     cpq_intent_timeout_s: float = Field(
-        default=10.0,
+        default=120.0,
         description=(
-            "Hard timeout (seconds) for the top-level intent gateway call. "
-            "On timeout/error, escape hatch falls back to the deterministic "
-            "is_cpq_question path. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
+            "Hard timeout (seconds) for the top-level intent gateway call "
+            "(classify_ask_route). On timeout/error, escape hatch falls "
+            "back to the deterministic is_cpq_question path -- but as of "
+            "docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md, a turn-1 "
+            "timeout ALSO means route_meta.quantity/.country are "
+            "unavailable, surfacing an explicit \"classifier call failed\" "
+            "message rather than a silent regex fallback for those two "
+            "fields specifically -- raised from the original 10s default "
+            "(too tight, live-verified timing out during normal, non-bulk "
+            "traffic) to match cpq_intent_classify_timeout_s below. "
+            "Override with ARYX_CPQ_INTENT_TIMEOUT_S."
         ),
     )
     cpq_intent_classify_timeout_s: float = Field(
