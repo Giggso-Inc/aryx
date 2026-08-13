@@ -74,7 +74,7 @@ def test_run_cpq_turn_end_to_end_resets_and_reports(monkeypatch):
     """Integration-level: _run_cpq_turn itself resets the accumulator and
     applies real usage to whatever _run_cpq_turn_inner returns, without
     needing to touch _run_cpq_turn_inner's own internals at all."""
-    def _fake_inner(req, reader):
+    def _fake_inner(req, reader, route_meta=None):
         # Simulate a real LLM call happening somewhere deep inside this
         # turn (BML Tier-2, an intent classifier, anything) via the same
         # llm_runtime.chat() choke point every real call site uses.
