@@ -9520,6 +9520,23 @@ def _run_cpq_turn_inner(
                 if not result and hint_val_for_attr:
                     result = _cpq_engine.apply_answer(
                         pending_attr, hint_val_for_attr, pending_constrained)
+                if not result:
+                    # No logging previously existed anywhere apply_answer
+                    # gives up on a pending single-select reply -- for a
+                    # large-option attr (e.g. Ultimate Destination Country,
+                    # 251 real values) a miss here silently re-renders the
+                    # same generic "too many options" prompt with nothing
+                    # in the logs showing what was actually tried or how
+                    # many real options existed to match against. Confirmed
+                    # live (2026-08-14): "USA" failed to match a real "US"
+                    # item_value with zero log trace of the attempt.
+                    logger.info(
+                        "cpq_apply_answer_miss attr=%s reply=%r hint=%r "
+                        "n_options=%d run_id=%s",
+                        pending_attr.variable_name, req.question,
+                        hint_val_for_attr, len(pending_attr.options or []),
+                        session.run_id or "-",
+                    )
             # Gap A (Amendment 2): fragment-match found nothing — try the
             # shared Tier-2 LLM fallback before giving up, scoped to only
             # this attr's own options. Single-select only: apply_multi_answer

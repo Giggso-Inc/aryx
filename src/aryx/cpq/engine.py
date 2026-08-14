@@ -375,10 +375,296 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
 # chargerCountryPlug_apcr kept re-asking because "united states" can never be
 # found inside its own "US" option text — the customer had already answered
 # with the country, typed it again for this attribute, and got rejected.
-_COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
-    "united states": ("US", "USA"),
-    "united kingdom": ("UK", "GB"),
-}
+# Superseded by _COUNTRY_ALIAS_GROUPS below (2026-08-14) -- the old dict
+# only supported the full-name -> abbreviation direction (a lookup keyed by
+# the shorthand itself, e.g. `.get("usa", ())`, always returned empty since
+# "usa" was never a dict KEY, only ever a value) and covered exactly 2
+# countries. Confirmed live: a customer typing "USA" (not "US") to answer
+# Ultimate Destination Country failed to match the real "US" option and
+# fell through to the generic "251 options, too many to list" prompt with
+# no matching branch and no log line anywhere in the process.
+#
+# _COUNTRY_ALIAS_GROUPS is data-generated (not hand-typed) from pycountry's
+# ISO 3166-1 tables -- one frozenset per real country containing its
+# common name, official name, alpha-2, and alpha-3 codes -- plus a small,
+# explicit set of colloquial names ISO's own name fields don't carry but
+# real customers type constantly (uk, uae, russia, vatican, ivory coast,
+# swaziland, macedonia, micronesia, burma, turkey, palestine, brunei).
+# pycountry itself is NOT a runtime dependency of this project (adding one
+# needs its own CVE-checked approval, per this repo's library-approval
+# rule) -- it was used ONLY offline, once, to generate this literal, the
+# same way _COUNTRY_TO_REGION above is a hand-maintained static table, not
+# a live library call. Regenerate by re-running the same generation script
+# if pycountry's ISO data is ever updated upstream.
+#
+# Every group is symmetric by construction, closing the one-directional
+# bug above for good: _country_alias_group("usa") and
+# _country_alias_group("us") both return the identical frozenset
+# containing "united states", "us", "usa", "united states of america".
+_COUNTRY_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({'af', 'afg', 'afghanistan', 'islamic republic of afghanistan'}),
+    frozenset({'al', 'alb', 'albania', 'republic of albania'}),
+    frozenset({'algeria', 'dz', 'dza', "people's democratic republic of algeria"}),
+    frozenset({'american samoa', 'as', 'asm'}),
+    frozenset({'ad', 'and', 'andorra', 'principality of andorra'}),
+    frozenset({'ago', 'angola', 'ao', 'republic of angola'}),
+    frozenset({'ai', 'aia', 'anguilla'}),
+    frozenset({'antarctica', 'aq', 'ata'}),
+    frozenset({'ag', 'antigua and barbuda', 'atg'}),
+    frozenset({'ar', 'arg', 'argentina', 'argentine republic'}),
+    frozenset({'am', 'arm', 'armenia', 'republic of armenia'}),
+    frozenset({'abw', 'aruba', 'aw'}),
+    frozenset({'au', 'aus', 'australia'}),
+    frozenset({'at', 'austria', 'aut', 'republic of austria'}),
+    frozenset({'az', 'aze', 'azerbaijan', 'republic of azerbaijan'}),
+    frozenset({'bahamas', 'bhs', 'bs', 'commonwealth of the bahamas'}),
+    frozenset({'bahrain', 'bh', 'bhr', 'kingdom of bahrain'}),
+    frozenset({'bangladesh', 'bd', 'bgd', "people's republic of bangladesh"}),
+    frozenset({'barbados', 'bb', 'brb'}),
+    frozenset({'belarus', 'blr', 'by', 'republic of belarus'}),
+    frozenset({'be', 'bel', 'belgium', 'kingdom of belgium'}),
+    frozenset({'belize', 'blz', 'bz'}),
+    frozenset({'ben', 'benin', 'bj', 'republic of benin'}),
+    frozenset({'bermuda', 'bm', 'bmu'}),
+    frozenset({'bhutan', 'bt', 'btn', 'kingdom of bhutan'}),
+    frozenset({'bo', 'bol', 'bolivia', 'bolivia, plurinational state of', 'plurinational state of bolivia'}),
+    frozenset({'bes', 'bonaire, sint eustatius and saba', 'bq'}),
+    frozenset({'ba', 'bih', 'bosnia and herzegovina', 'republic of bosnia and herzegovina'}),
+    frozenset({'botswana', 'bw', 'bwa', 'republic of botswana'}),
+    frozenset({'bouvet island', 'bv', 'bvt'}),
+    frozenset({'br', 'bra', 'brazil', 'federative republic of brazil'}),
+    frozenset({'british indian ocean territory', 'io', 'iot'}),
+    frozenset({'bn', 'brn', 'brunei', 'brunei darussalam'}),
+    frozenset({'bg', 'bgr', 'bulgaria', 'republic of bulgaria'}),
+    frozenset({'bf', 'bfa', 'burkina faso'}),
+    frozenset({'bdi', 'bi', 'burundi', 'republic of burundi'}),
+    frozenset({'cabo verde', 'cpv', 'cv', 'republic of cabo verde'}),
+    frozenset({'cambodia', 'kh', 'khm', 'kingdom of cambodia'}),
+    frozenset({'cameroon', 'cm', 'cmr', 'republic of cameroon'}),
+    frozenset({'ca', 'can', 'canada'}),
+    frozenset({'cayman islands', 'cym', 'ky'}),
+    frozenset({'caf', 'central african republic', 'cf'}),
+    frozenset({'chad', 'republic of chad', 'tcd', 'td'}),
+    frozenset({'chile', 'chl', 'cl', 'republic of chile'}),
+    frozenset({'china', 'chn', 'cn', "people's republic of china"}),
+    frozenset({'christmas island', 'cx', 'cxr'}),
+    frozenset({'cc', 'cck', 'cocos (keeling) islands'}),
+    frozenset({'co', 'col', 'colombia', 'republic of colombia'}),
+    frozenset({'com', 'comoros', 'km', 'union of the comoros'}),
+    frozenset({'cg', 'cog', 'congo', 'republic of the congo'}),
+    frozenset({'cd', 'cod', 'congo, the democratic republic of the'}),
+    frozenset({'ck', 'cok', 'cook islands'}),
+    frozenset({'costa rica', 'cr', 'cri', 'republic of costa rica'}),
+    frozenset({'croatia', 'hr', 'hrv', 'republic of croatia'}),
+    frozenset({'cu', 'cub', 'cuba', 'republic of cuba'}),
+    frozenset({'curaçao', 'cuw', 'cw'}),
+    frozenset({'cy', 'cyp', 'cyprus', 'republic of cyprus'}),
+    frozenset({'cz', 'cze', 'czech republic', 'czechia'}),
+    frozenset({'ci', 'civ', "côte d'ivoire", 'ivory coast', "republic of côte d'ivoire"}),
+    frozenset({'denmark', 'dk', 'dnk', 'kingdom of denmark'}),
+    frozenset({'dj', 'dji', 'djibouti', 'republic of djibouti'}),
+    frozenset({'commonwealth of dominica', 'dm', 'dma', 'dominica'}),
+    frozenset({'do', 'dom', 'dominican republic'}),
+    frozenset({'ec', 'ecu', 'ecuador', 'republic of ecuador'}),
+    frozenset({'arab republic of egypt', 'eg', 'egy', 'egypt'}),
+    frozenset({'el salvador', 'republic of el salvador', 'slv', 'sv'}),
+    frozenset({'equatorial guinea', 'gnq', 'gq', 'republic of equatorial guinea'}),
+    frozenset({'er', 'eri', 'eritrea', 'the state of eritrea'}),
+    frozenset({'ee', 'est', 'estonia', 'republic of estonia'}),
+    frozenset({'eswatini', 'kingdom of eswatini', 'swaziland', 'swz', 'sz'}),
+    frozenset({'et', 'eth', 'ethiopia', 'federal democratic republic of ethiopia'}),
+    frozenset({'falkland islands (malvinas)', 'fk', 'flk'}),
+    frozenset({'faroe islands', 'fo', 'fro'}),
+    frozenset({'fiji', 'fj', 'fji', 'republic of fiji'}),
+    frozenset({'fi', 'fin', 'finland', 'republic of finland'}),
+    frozenset({'fr', 'fra', 'france', 'french republic'}),
+    frozenset({'french guiana', 'gf', 'guf'}),
+    frozenset({'french polynesia', 'pf', 'pyf'}),
+    frozenset({'atf', 'french southern territories', 'tf'}),
+    frozenset({'ga', 'gab', 'gabon', 'gabonese republic'}),
+    frozenset({'gambia', 'gm', 'gmb', 'republic of the gambia'}),
+    frozenset({'ge', 'geo', 'georgia'}),
+    frozenset({'de', 'deu', 'federal republic of germany', 'germany'}),
+    frozenset({'gh', 'gha', 'ghana', 'republic of ghana'}),
+    frozenset({'gi', 'gib', 'gibraltar'}),
+    frozenset({'gr', 'grc', 'greece', 'hellenic republic'}),
+    frozenset({'gl', 'greenland', 'grl'}),
+    frozenset({'gd', 'grd', 'grenada'}),
+    frozenset({'glp', 'gp', 'guadeloupe'}),
+    frozenset({'gu', 'guam', 'gum'}),
+    frozenset({'gt', 'gtm', 'guatemala', 'republic of guatemala'}),
+    frozenset({'gg', 'ggy', 'guernsey'}),
+    frozenset({'gin', 'gn', 'guinea', 'republic of guinea'}),
+    frozenset({'gnb', 'guinea-bissau', 'gw', 'republic of guinea-bissau'}),
+    frozenset({'guy', 'guyana', 'gy', 'republic of guyana'}),
+    frozenset({'haiti', 'ht', 'hti', 'republic of haiti'}),
+    frozenset({'heard island and mcdonald islands', 'hm', 'hmd'}),
+    frozenset({'holy see (vatican city state)', 'va', 'vat', 'vatican', 'vatican city'}),
+    frozenset({'hn', 'hnd', 'honduras', 'republic of honduras'}),
+    frozenset({'hk', 'hkg', 'hong kong', 'hong kong special administrative region of china'}),
+    frozenset({'hu', 'hun', 'hungary'}),
+    frozenset({'iceland', 'is', 'isl', 'republic of iceland'}),
+    frozenset({'in', 'ind', 'india', 'republic of india'}),
+    frozenset({'id', 'idn', 'indonesia', 'republic of indonesia'}),
+    frozenset({'ir', 'iran', 'iran, islamic republic of', 'irn', 'islamic republic of iran'}),
+    frozenset({'iq', 'iraq', 'irq', 'republic of iraq'}),
+    frozenset({'ie', 'ireland', 'irl'}),
+    frozenset({'im', 'imn', 'isle of man'}),
+    frozenset({'il', 'isr', 'israel', 'state of israel'}),
+    frozenset({'it', 'ita', 'italian republic', 'italy'}),
+    frozenset({'jam', 'jamaica', 'jm'}),
+    frozenset({'japan', 'jp', 'jpn'}),
+    frozenset({'je', 'jersey', 'jey'}),
+    frozenset({'hashemite kingdom of jordan', 'jo', 'jor', 'jordan'}),
+    frozenset({'kaz', 'kazakhstan', 'kz', 'republic of kazakhstan'}),
+    frozenset({'ke', 'ken', 'kenya', 'republic of kenya'}),
+    frozenset({'ki', 'kir', 'kiribati', 'republic of kiribati'}),
+    frozenset({"democratic people's republic of korea", "korea, democratic people's republic of", 'kp', 'north korea', 'prk'}),
+    frozenset({'kor', 'korea, republic of', 'kr', 'south korea'}),
+    frozenset({'kuwait', 'kw', 'kwt', 'state of kuwait'}),
+    frozenset({'kg', 'kgz', 'kyrgyz republic', 'kyrgyzstan'}),
+    frozenset({'la', 'lao', "lao people's democratic republic", 'laos'}),
+    frozenset({'latvia', 'lv', 'lva', 'republic of latvia'}),
+    frozenset({'lb', 'lbn', 'lebanese republic', 'lebanon'}),
+    frozenset({'kingdom of lesotho', 'lesotho', 'ls', 'lso'}),
+    frozenset({'lbr', 'liberia', 'lr', 'republic of liberia'}),
+    frozenset({'lby', 'libya', 'ly'}),
+    frozenset({'li', 'lie', 'liechtenstein', 'principality of liechtenstein'}),
+    frozenset({'lithuania', 'lt', 'ltu', 'republic of lithuania'}),
+    frozenset({'grand duchy of luxembourg', 'lu', 'lux', 'luxembourg'}),
+    frozenset({'mac', 'macao', 'macao special administrative region of china', 'mo'}),
+    frozenset({'madagascar', 'mdg', 'mg', 'republic of madagascar'}),
+    frozenset({'malawi', 'mw', 'mwi', 'republic of malawi'}),
+    frozenset({'malaysia', 'my', 'mys'}),
+    frozenset({'maldives', 'mdv', 'mv', 'republic of maldives'}),
+    frozenset({'mali', 'ml', 'mli', 'republic of mali'}),
+    frozenset({'malta', 'mlt', 'mt', 'republic of malta'}),
+    frozenset({'marshall islands', 'mh', 'mhl', 'republic of the marshall islands'}),
+    frozenset({'martinique', 'mq', 'mtq'}),
+    frozenset({'islamic republic of mauritania', 'mauritania', 'mr', 'mrt'}),
+    frozenset({'mauritius', 'mu', 'mus', 'republic of mauritius'}),
+    frozenset({'mayotte', 'myt', 'yt'}),
+    frozenset({'mex', 'mexico', 'mx', 'united mexican states'}),
+    frozenset({'federated states of micronesia', 'fm', 'fsm', 'micronesia', 'micronesia, federated states of'}),
+    frozenset({'md', 'mda', 'moldova', 'moldova, republic of', 'republic of moldova'}),
+    frozenset({'mc', 'mco', 'monaco', 'principality of monaco'}),
+    frozenset({'mn', 'mng', 'mongolia'}),
+    frozenset({'me', 'mne', 'montenegro'}),
+    frozenset({'montserrat', 'ms', 'msr'}),
+    frozenset({'kingdom of morocco', 'ma', 'mar', 'morocco'}),
+    frozenset({'moz', 'mozambique', 'mz', 'republic of mozambique'}),
+    frozenset({'burma', 'mm', 'mmr', 'myanmar', 'republic of myanmar'}),
+    frozenset({'na', 'nam', 'namibia', 'republic of namibia'}),
+    frozenset({'nauru', 'nr', 'nru', 'republic of nauru'}),
+    frozenset({'federal democratic republic of nepal', 'nepal', 'np', 'npl'}),
+    frozenset({'kingdom of the netherlands', 'netherlands', 'nl', 'nld'}),
+    frozenset({'nc', 'ncl', 'new caledonia'}),
+    frozenset({'new zealand', 'nz', 'nzl'}),
+    frozenset({'ni', 'nic', 'nicaragua', 'republic of nicaragua'}),
+    frozenset({'ne', 'ner', 'niger', 'republic of the niger'}),
+    frozenset({'federal republic of nigeria', 'ng', 'nga', 'nigeria'}),
+    frozenset({'niu', 'niue', 'nu'}),
+    frozenset({'nf', 'nfk', 'norfolk island'}),
+    frozenset({'macedonia', 'mk', 'mkd', 'north macedonia', 'republic of north macedonia'}),
+    frozenset({'commonwealth of the northern mariana islands', 'mnp', 'mp', 'northern mariana islands'}),
+    frozenset({'kingdom of norway', 'no', 'nor', 'norway'}),
+    frozenset({'om', 'oman', 'omn', 'sultanate of oman'}),
+    frozenset({'islamic republic of pakistan', 'pak', 'pakistan', 'pk'}),
+    frozenset({'palau', 'plw', 'pw', 'republic of palau'}),
+    frozenset({'palestine', 'palestine, state of', 'ps', 'pse', 'the state of palestine'}),
+    frozenset({'pa', 'pan', 'panama', 'republic of panama'}),
+    frozenset({'independent state of papua new guinea', 'papua new guinea', 'pg', 'png'}),
+    frozenset({'paraguay', 'pry', 'py', 'republic of paraguay'}),
+    frozenset({'pe', 'per', 'peru', 'republic of peru'}),
+    frozenset({'ph', 'philippines', 'phl', 'republic of the philippines'}),
+    frozenset({'pcn', 'pitcairn', 'pn'}),
+    frozenset({'pl', 'pol', 'poland', 'republic of poland'}),
+    frozenset({'portugal', 'portuguese republic', 'prt', 'pt'}),
+    frozenset({'pr', 'pri', 'puerto rico'}),
+    frozenset({'qa', 'qat', 'qatar', 'state of qatar'}),
+    frozenset({'ro', 'romania', 'rou'}),
+    frozenset({'ru', 'rus', 'russia', 'russian federation'}),
+    frozenset({'rw', 'rwa', 'rwanda', 'rwandese republic'}),
+    frozenset({'re', 'reu', 'réunion'}),
+    frozenset({'bl', 'blm', 'saint barthélemy'}),
+    frozenset({'saint helena, ascension and tristan da cunha', 'sh', 'shn'}),
+    frozenset({'kn', 'kna', 'saint kitts and nevis'}),
+    frozenset({'lc', 'lca', 'saint lucia'}),
+    frozenset({'maf', 'mf', 'saint martin (french part)'}),
+    frozenset({'pm', 'saint pierre and miquelon', 'spm'}),
+    frozenset({'saint vincent and the grenadines', 'vc', 'vct'}),
+    frozenset({'independent state of samoa', 'samoa', 'ws', 'wsm'}),
+    frozenset({'republic of san marino', 'san marino', 'sm', 'smr'}),
+    frozenset({'democratic republic of sao tome and principe', 'sao tome and principe', 'st', 'stp'}),
+    frozenset({'kingdom of saudi arabia', 'sa', 'sau', 'saudi arabia'}),
+    frozenset({'republic of senegal', 'sen', 'senegal', 'sn'}),
+    frozenset({'republic of serbia', 'rs', 'serbia', 'srb'}),
+    frozenset({'republic of seychelles', 'sc', 'seychelles', 'syc'}),
+    frozenset({'republic of sierra leone', 'sierra leone', 'sl', 'sle'}),
+    frozenset({'republic of singapore', 'sg', 'sgp', 'singapore'}),
+    frozenset({'sint maarten (dutch part)', 'sx', 'sxm'}),
+    frozenset({'sk', 'slovak republic', 'slovakia', 'svk'}),
+    frozenset({'republic of slovenia', 'si', 'slovenia', 'svn'}),
+    frozenset({'sb', 'slb', 'solomon islands'}),
+    frozenset({'federal republic of somalia', 'so', 'som', 'somalia'}),
+    frozenset({'republic of south africa', 'south africa', 'za', 'zaf'}),
+    frozenset({'gs', 'sgs', 'south georgia and the south sandwich islands'}),
+    frozenset({'republic of south sudan', 'south sudan', 'ss', 'ssd'}),
+    frozenset({'es', 'esp', 'kingdom of spain', 'spain'}),
+    frozenset({'democratic socialist republic of sri lanka', 'lk', 'lka', 'sri lanka'}),
+    frozenset({'republic of the sudan', 'sd', 'sdn', 'sudan'}),
+    frozenset({'republic of suriname', 'sr', 'sur', 'suriname'}),
+    frozenset({'sj', 'sjm', 'svalbard and jan mayen'}),
+    frozenset({'kingdom of sweden', 'se', 'swe', 'sweden'}),
+    frozenset({'ch', 'che', 'swiss confederation', 'switzerland'}),
+    frozenset({'sy', 'syr', 'syria', 'syrian arab republic'}),
+    frozenset({'taiwan', 'taiwan, province of china', 'tw', 'twn'}),
+    frozenset({'republic of tajikistan', 'tajikistan', 'tj', 'tjk'}),
+    frozenset({'tanzania', 'tanzania, united republic of', 'tz', 'tza', 'united republic of tanzania'}),
+    frozenset({'kingdom of thailand', 'th', 'tha', 'thailand'}),
+    frozenset({'democratic republic of timor-leste', 'timor-leste', 'tl', 'tls'}),
+    frozenset({'tg', 'tgo', 'togo', 'togolese republic'}),
+    frozenset({'tk', 'tkl', 'tokelau'}),
+    frozenset({'kingdom of tonga', 'to', 'ton', 'tonga'}),
+    frozenset({'republic of trinidad and tobago', 'trinidad and tobago', 'tt', 'tto'}),
+    frozenset({'republic of tunisia', 'tn', 'tun', 'tunisia'}),
+    frozenset({'tkm', 'tm', 'turkmenistan'}),
+    frozenset({'tc', 'tca', 'turks and caicos islands'}),
+    frozenset({'tuv', 'tuvalu', 'tv'}),
+    frozenset({'republic of türkiye', 'tr', 'tur', 'turkey', 'türkiye'}),
+    frozenset({'republic of uganda', 'ug', 'uga', 'uganda'}),
+    frozenset({'ua', 'ukr', 'ukraine'}),
+    frozenset({'ae', 'are', 'uae', 'united arab emirates'}),
+    frozenset({'gb', 'gbr', 'uk', 'united kingdom', 'united kingdom of great britain and northern ireland'}),
+    frozenset({'united states', 'united states of america', 'us', 'usa'}),
+    frozenset({'um', 'umi', 'united states minor outlying islands'}),
+    frozenset({'eastern republic of uruguay', 'uruguay', 'ury', 'uy'}),
+    frozenset({'republic of uzbekistan', 'uz', 'uzb', 'uzbekistan'}),
+    frozenset({'republic of vanuatu', 'vanuatu', 'vu', 'vut'}),
+    frozenset({'bolivarian republic of venezuela', 've', 'ven', 'venezuela', 'venezuela, bolivarian republic of'}),
+    frozenset({'socialist republic of viet nam', 'viet nam', 'vietnam', 'vn', 'vnm'}),
+    frozenset({'british virgin islands', 'vg', 'vgb', 'virgin islands, british'}),
+    frozenset({'vi', 'vir', 'virgin islands of the united states', 'virgin islands, u.s.'}),
+    frozenset({'wallis and futuna', 'wf', 'wlf'}),
+    frozenset({'eh', 'esh', 'western sahara'}),
+    frozenset({'republic of yemen', 'ye', 'yem', 'yemen'}),
+    frozenset({'republic of zambia', 'zambia', 'zm', 'zmb'}),
+    frozenset({'republic of zimbabwe', 'zimbabwe', 'zw', 'zwe'}),
+    frozenset({'ala', 'ax', 'åland islands'}),
+)
+
+
+def _country_alias_group(value: str) -> frozenset[str] | None:
+    """The alias group containing `value` (already expected lowercased/
+    stripped), or None if it isn't a recognized country name/code in any
+    of the 249 real ISO entries + colloquial supplements above. Shared by
+    every consumer (auto_fill's hint-priority path, apply_answer's direct-
+    reply path) so a fix here closes the gap everywhere at once, instead
+    of two independently-drifting copies."""
+    for group in _COUNTRY_ALIAS_GROUPS:
+        if value in group:
+            return group
+    return None
 
 # Generic country extraction — captures any proper-noun country name from NL
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
@@ -7032,19 +7318,29 @@ class CpqEngine:
                                 value = opt.item_value
                                 display = opt.display_name
                                 break
-                    # Priority 4: country full-name → abbreviation shorthand.
-                    # Only for the "country" hint key — a full country name
-                    # can never substring-match a shorter code-only option
-                    # (chargerCountryPlug_apcr's "US", not "United States").
+                    # Priority 4: country alias group (bidirectional) —
+                    # a hint value that's ANY known alias for a country
+                    # (full name, official name, alpha-2, alpha-3, or
+                    # common colloquial name) matches an option whose own
+                    # item_value/display_name is any OTHER alias in the
+                    # same group. Fixed 2026-08-14: the old lookup was
+                    # keyed one-directionally (full name -> abbreviation
+                    # only), so a hint value that was ITSELF an
+                    # abbreviation (e.g. "usa") could never look anything
+                    # up — `_COUNTRY_HINT_SHORTHAND.get("usa", ())` always
+                    # returned empty since "usa" was never a dict key.
+                    # _country_alias_group is symmetric, closing that gap
+                    # for real, for all 249 real ISO countries, not just
+                    # the 2 the old dict hand-covered.
                     if not value and hint_key == "country":
-                        for code in _COUNTRY_HINT_SHORTHAND.get(hv_lower, ()):
+                        alias_group = _country_alias_group(hv_lower)
+                        if alias_group:
                             for opt in attr.options:
-                                if opt.item_value.upper() == code or opt.display_name.upper() == code:
+                                if (opt.item_value.lower() in alias_group
+                                        or opt.display_name.lower() in alias_group):
                                     value = opt.item_value
                                     display = opt.display_name
                                     break
-                            if value:
-                                break
                     # Never assign an arbitrary hint string to a boolean-typed
                     # attr just because its name fragment-matched a hint key
                     # (e.g. "country" is a substring of
@@ -9810,6 +10106,32 @@ class CpqEngine:
             if re.search(r"\b" + re.escape(dn_lower) + r"\b", ua):
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
+
+        # Country alias fallback — a direct reply naming a country by a
+        # DIFFERENT alias than the option's own item_value/display_name
+        # (e.g. "USA" replying to an attr whose real option is
+        # item_value="US", display_name="United States") previously fell
+        # through every check above to a hard miss with no logging at all
+        # (confirmed live 2026-08-14: Ultimate Destination Country accepted
+        # "US" via the exact item_value check above but rejected "USA").
+        # Uses _country_alias_group -- the same 249-real-country,
+        # bidirectional alias table auto_fill's hint-priority path uses
+        # (Priority 4 above) -- so a fix to the underlying data closes the
+        # gap in both places at once. Narrow and safe — only fires when
+        # `ua` (the whole trimmed reply) exactly equals a known alias,
+        # never a substring/fuzzy guess.
+        alias_group = _country_alias_group(ua)
+        if alias_group:
+            for opt in options:
+                if (opt.item_value.lower() in alias_group
+                        or opt.display_name.lower() in alias_group):
+                    if _valid(opt.item_value):
+                        logger.info(
+                            "cpq_apply_answer_alias_match attr=%s reply=%r "
+                            "resolved_to=%r",
+                            attr.variable_name, user_answer, opt.item_value,
+                        )
+                        return opt.item_value, opt.display_name
 
         # Free-text field
         if not attr.options and allowed is None and _valid(user_answer):
