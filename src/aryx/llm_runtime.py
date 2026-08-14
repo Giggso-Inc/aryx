@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
+import time
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
@@ -116,7 +117,6 @@ def chat(role: str, system: str, user: str,
          workspace_id: int = 1) -> tuple[str, int, int]:
     """Run a completion for 'menial' or 'answer' using the configured model."""
     model = _state["menial_model"] if role == "menial" else _state["answer_model"]
-    import time
     start = time.monotonic()
     # Log BEFORE the network call, not just after -- this is the single
     # choke point every LLM call in the codebase goes through (BML Tier-2
