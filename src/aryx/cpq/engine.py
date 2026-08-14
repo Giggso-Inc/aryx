@@ -3162,6 +3162,21 @@ class CpqEngine:
                 logger.debug("cpq: skipping noise attr %r", var_name)
                 continue
 
+            # docs/CPQ_CONFIG_ATTR_STATUS_FILTERING_ROOT_CAUSE_AND_FIX_
+            # PLAN_2026-08-14.md — BmConfigAttr rows carry the same
+            # status=1 (active) / status=3 (inactive) convention already
+            # relied on for BmConfigRule (see fetch_rules/fetch_value_
+            # rules' active_only). Confirmed live: 15 real status=3
+            # attribute rows exist (workspace 19) and were loaded
+            # unconditionally — a deactivated/deleted attribute could
+            # still be shown/asked to the customer. status is present on
+            # every real BmConfigAttr row across both real workspaces
+            # (verified — no attr lacks the field), so this never
+            # accidentally excludes a legitimately-untracked attr.
+            if str(pg.get("status", "")).strip() == "3":
+                logger.debug("cpq: skipping inactive (status=3) attr %r", var_name)
+                continue
+
             display = str(pg.get("name") or ent.get("name") or var_name).strip()
             required_raw = str(pg.get("required") or "0").strip().lower()
             required = required_raw in ("1", "true", "yes")
