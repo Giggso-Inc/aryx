@@ -321,10 +321,21 @@ def test_change_request_rejected_by_gateway_never_executes(monkeypatch):
 # recognized as a country-change request.
 # ═══════════════════════════════════════════════════════════════════════
 
-def _confirm_country_change(monkeypatch) -> None:
+def _confirm_country_change(monkeypatch, country: str = "United States") -> None:
+    """docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md: the country-change
+    gate now extracts the VALUE from this same call's `country_text`,
+    never from the deterministic regex's own capture -- the mock must
+    supply a real `country_text` matching what the test expects, exactly
+    like quantity_text had to for the quantity-checkpoint tests."""
     monkeypatch.setattr(
         api, "gateway_classify_intent",
-        lambda *a, **k: _confirming_decision(IntentCategory.COUNTRY_CHANGE),
+        lambda *a, **k: GatewayDecision(
+            action="dispatch",
+            result=GatewayIntentResult(
+                intent_category=IntentCategory.COUNTRY_CHANGE, confidence=Confidence.HIGH,
+                country_text=country, evidence_span="", rationale="test-confirm",
+            ),
+        ),
     )
 
 
@@ -354,7 +365,7 @@ def test_country_change_confirmed_by_gateway_updates_session(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "load_product_config",
                          lambda *a, **k: ([], "aSTRO25_bom"))
-    _confirm_country_change(monkeypatch)
+    _confirm_country_change(monkeypatch, country="Canada")
     session = CpqSession(mode="cpq", product_name="aSTRO25_bom")
     req = AskRequest(question="please change my country to Canada", workspace_id=1,
                       session_data=session.to_dict())

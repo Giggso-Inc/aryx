@@ -457,10 +457,16 @@ def test_show_summary_catalog_load_failure_falls_through_safely(monkeypatch):
 # Issue 5 — country regex + Turn-1 unified extraction (classify_ask_route)
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_extract_hints_country_still_fails_on_article_between_preposition_and_name():
+def test_extract_hints_country_now_succeeds_with_an_article_between_preposition_and_name():
+    """docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md review finding:
+    _mine_history_for_cpq_context has no LLM call to route through (it
+    recovers a country from an earlier, non-CPQ turn), so _COUNTRY_PREP
+    itself needed hardening as a fallback-path fix -- an optional "the"
+    between the preposition and the country name. This used to fail
+    outright; it must succeed now."""
     hints = api._cpq_engine.extract_hints(
         "I need pricing for a dozen APX NEXT standard models in the United States")
-    assert "country" not in hints
+    assert hints.get("country") == "United States"
 
 
 def test_extract_hints_country_succeeds_without_the_article():
@@ -511,7 +517,25 @@ def test_route_meta_quantity_and_country_seed_the_turn_before_step_1(monkeypatch
     assert resp["session_data"]["product_quantity"] == 12
 
 
-def test_regex_extracted_values_are_not_overwritten_by_the_router(monkeypatch):
+def test_router_country_wins_even_over_a_correct_regex_reading(monkeypatch):
+    """docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md: superseded this
+    file's own former "regex-extracted values are not overwritten by the
+    router" test -- that was the OLD precedence (regex first, LLM only a
+    fallback when regex was invalid). Owner directive, 2026-08-13: "I
+    don't need regex to decide country at any point, llm should do
+    that" -- `route_meta.country` (the LLM's turn-1 read) is now
+    authoritative for country regardless of what the regex would have
+    found, accepting the trade-off that a hallucinated LLM country wins
+    over a correct regex one, in exchange for eliminating every regex-
+    shaped country bug (missing prepositions, definite articles, ALLCAPS
+    word-boundary bugs, leftmost-match artifacts, etc.) documented in
+    docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md and the QA
+    sheet triage the same day. Quantity keeps its OWN, separate
+    confirm-and-extract/fallback design (docs/CPQ_QUANTITY_EXTRACTION_
+    DEFECTS_PLAN_2026_08_13.md) -- unaffected by this change, still
+    resolves from the deterministic regex here since it found a real
+    value and no change-verb LLM call is triggered for a plain order
+    statement."""
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "list_ingested_families", lambda *a, **k: [])
     monkeypatch.setattr(api._cpq_engine, "resolve_product_hint", lambda *a, **k: None)
@@ -525,7 +549,7 @@ def test_regex_extracted_values_are_not_overwritten_by_the_router(monkeypatch):
         rationale="ok", quantity=999, country="Germany",
     )
     resp = _run_cpq_turn_inner(req, object(), route_meta)
-    assert resp["session_data"]["country"] == "Canada"
+    assert resp["session_data"]["country"] == "Germany"
     assert resp["session_data"]["product_quantity"] == 50
 
 

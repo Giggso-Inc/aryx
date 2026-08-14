@@ -639,7 +639,7 @@ def classify_intent(
     candidate_vns = {b.attr.variable_name for b in bundles}
     value_counts = {b.attr.variable_name: len(b.values) for b in bundles}
 
-    timeout = float(getattr(settings, "cpq_intent_classify_timeout_s", 10.0) or 10.0)
+    timeout = float(getattr(settings, "cpq_intent_classify_timeout_s", 120.0) or 120.0)
 
     def _classify_with_timeout(
         repair_hint: str = "",
@@ -997,7 +997,7 @@ def classify_ask_route(
     settings = get_settings()
     model_id = settings.cpq_intent_gemini_model
     timeout = timeout_s if timeout_s is not None else float(
-        getattr(settings, "cpq_intent_timeout_s", 10.0) or 10.0,
+        getattr(settings, "cpq_intent_timeout_s", 120.0) or 120.0,
     )
     run_id = get_run_id() or "-"
 

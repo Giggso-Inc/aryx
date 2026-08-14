@@ -761,11 +761,34 @@ class Settings(BaseSettings):
         ),
     )
     cpq_intent_timeout_s: float = Field(
-        default=10.0,
+        default=120.0,
         description=(
-            "Hard timeout (seconds) for the top-level intent gateway call. "
-            "On timeout/error, escape hatch falls back to the deterministic "
-            "is_cpq_question path. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
+            "Hard timeout (seconds) for the top-level intent gateway call "
+            "(classify_ask_route). On timeout/error, escape hatch falls "
+            "back to the deterministic is_cpq_question path -- but as of "
+            "docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md, a turn-1 "
+            "timeout ALSO means route_meta.quantity/.country are "
+            "unavailable, surfacing an explicit \"classifier call failed\" "
+            "message rather than a silent regex fallback for those two "
+            "fields specifically -- raised from the original 10s default "
+            "(too tight, live-verified timing out during normal, non-bulk "
+            "traffic) to match cpq_intent_classify_timeout_s below. "
+            "OPERATIONAL WARNING (review finding, 2026-08-13): this is a "
+            "hard timeout on a SYNCHRONOUS, user-facing HTTP request -- "
+            "before this value elapses, a slow/degraded LLM backend holds "
+            "the /ask request open. If any upstream reverse proxy, load "
+            "balancer, or API gateway in front of this service has a "
+            "shorter idle/request timeout than this value (many common "
+            "defaults are 30-60s), the CUSTOMER will see a generic "
+            "502/504 from that layer instead of the graceful \"classifier "
+            "call failed, try again\" message this design is meant to "
+            "guarantee -- the reject-on-failure UX this PR ships can only "
+            "ever fire if this value is reached before any shorter upstream "
+            "timeout is. Confirm the deployment's full upstream timeout "
+            "chain comfortably exceeds this value before relying on the "
+            "default; lower it here if it doesn't, accepting the original "
+            "too-tight-for-normal-traffic tradeoff at a smaller scale "
+            "instead. Override with ARYX_CPQ_INTENT_TIMEOUT_S."
         ),
     )
     cpq_intent_classify_timeout_s: float = Field(

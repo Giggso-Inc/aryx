@@ -419,12 +419,27 @@ _COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
 # preposition, so the country was silently dropped and re-asked despite
 # being stated. Added "destination country as"/"country as" alongside the
 # existing "is" variants.
+# Fallback-path hardening, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_
+# 2026_08_13.md review finding: `_mine_history_for_cpq_context`, which
+# recovers a country stated on an EARLIER non-CPQ turn, has no LLM call
+# to route through -- those historical texts were never classified at
+# all, so this regex remains the only mechanism there. Two fixes:
+# (1) an optional "the" between the preposition and the country name
+# ("in the United States") -- the capture group previously had to start
+# IMMEDIATELY after the preposition, and a lowercase "the" broke the
+# match outright; (2) a trailing `\b` on the `[A-Z]{2}` alternative so
+# it can never again grab a 2-letter fragment of a longer ALLCAPS token
+# ("APXNET" -> "AP"). The leftmost-match-wins failure mode (a bad match
+# earlier in the sentence shadowing a real country later on) is fixed
+# at the call site in `extract_hints` below, not here in the pattern
+# itself.
 _COUNTRY_PREP = re.compile(
     r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|"
     r"destination\s+country\s+is|destination\s+country\s+as|"
     r"destination\s+country|"
     r"whose\s+destination\s+country\s+is|country\s+is|country\s+as)\s+)"
-    r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
+    r"(?:the\s+)?"
+    r"((?:[A-Z]{2,}\b|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
 )
 
 # Verb-anchored country CHANGE command, mirroring _QUANTITY_CHANGE_VERB_RE's
@@ -1470,6 +1485,21 @@ class CpqEngine:
 
         Returns {attr_key_fragment: hint_value} where hint_value is matched
         word-boundary against DB option display names — no hardcoded country list.
+
+        Contract callers must honor for `hints["country"]` specifically
+        (review finding, docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md):
+        this is a raw, UNVALIDATED regex candidate, not a confirmed country.
+        When no `_COUNTRY_PREP` match in the sentence is a real, recognized
+        country, this still returns the leftmost match anyway (so a caller
+        that wants to reject explicitly has something to reject, rather than
+        a silent absence indistinguishable from "no country mentioned at
+        all"). Every caller MUST re-validate via `is_recognized_country`
+        before trusting this value for anything — never assign it to
+        `session.country` (or equivalent) directly. Both current callers
+        (`ask_api.py`'s turn-1 hint block and `_mine_history_for_cpq_
+        context`) already do this; a new caller that reads `hints.get(
+        "country")` without the same check would silently reintroduce the
+        exact bug class this whole plan closes.
         """
         hints: dict[str, str] = {}
 
@@ -1481,10 +1511,32 @@ class CpqEngine:
 
         # Generic country extraction: "customer in Australia", "located in New Zealand"
         # Captures the proper-noun after a preposition and matches it against DB display names.
+        #
+        # Tries every match in the sentence, not just the first -- fallback-
+        # path hardening, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_
+        # 08_13.md review finding). `re.search` only ever returns the
+        # LEFTMOST match; a bogus earlier trigger ("for APX Next" -> "AP")
+        # used to shadow a real, later, correctly-stated country in the
+        # same sentence ("...in the United States") because nothing ever
+        # looked past the first hit. Prefers the first candidate that's a
+        # real, recognized country; falls back to the plain leftmost match
+        # (this method's original behavior) only when NONE of them
+        # validate, so callers that intend to validate downstream
+        # themselves still get a candidate to reject, not a silent None.
         if "country" not in hints:
-            m = _COUNTRY_PREP.search(question)
-            if m:
-                hints["country"] = m.group(1).strip().title()
+            valid_match = None
+            first_match = None
+            for m in _COUNTRY_PREP.finditer(question):
+                candidate = m.group(1).strip().title()
+                if first_match is None:
+                    first_match = candidate
+                if self.is_recognized_country(candidate):
+                    valid_match = candidate
+                    break
+            if valid_match is not None:
+                hints["country"] = valid_match
+            elif first_match is not None:
+                hints["country"] = first_match
 
         # Region hints (abbreviations)
         if "region" not in hints:

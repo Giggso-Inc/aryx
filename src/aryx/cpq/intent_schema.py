@@ -366,12 +366,22 @@ GATEWAY_INTENT_JSON_SCHEMA: dict = {
             "type": ["string", "null"],
             "description": (
                 "COUNTRY_CHANGE only -- the destination country as stated "
-                "by the user, plain text (e.g. \"United States\"). Only "
-                "set this when the user is actually asking to CHANGE the "
-                "country to this value, never when a country name merely "
-                "appears elsewhere in the message (e.g. describing where "
-                "a customer is already located, or inside a conditional "
-                "clause). Null for every other category."
+                "by the user, plain text (e.g. \"United States\"). Set "
+                "this whenever the user states a destination country for "
+                "the order -- an explicit change command (\"change "
+                "country to Canada\", \"set country to Canada\") AND a "
+                "plain destination statement with no change verb at all "
+                "(\"ship to Canada\", \"deliver to Canada\") both count "
+                "equally; do not require change-framing wording. ALWAYS "
+                "put the country here as plain text -- never select this "
+                "via variable_name/value_ref instead, even when a "
+                "similarly-named catalog attribute (e.g. an \"ultimate "
+                "destination country\" field) appears in the candidate "
+                "list; country_text is the one and only way to report a "
+                "destination country. Never set this when a country name "
+                "merely appears elsewhere in the message (e.g. describing "
+                "where a customer is already located, or inside a "
+                "conditional clause). Null for every other category."
             ),
         },
         "evidence_span": {

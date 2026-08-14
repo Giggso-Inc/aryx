@@ -24,13 +24,21 @@ from aryx.cpq.engine import CpqEngine
 
 
 def test_apx_next_no_longer_extracted_as_a_country_hint():
-    """The exact real sentence that produced the bug live."""
+    """The exact real sentence that produced the bug live.
+
+    docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md review finding hardened
+    `_COUNTRY_PREP`'s ALLCAPS branch to consume the FULL uppercase run
+    (word-bounded) instead of truncating to its first 2 letters -- "APX
+    Next" is now captured whole ("Apx Next") rather than mangled into
+    "Ap". Still just as unrecognized as a country either way; this test
+    now locks in the fuller, still-safe capture instead of the old
+    truncated one."""
     eng = CpqEngine()
     hints = eng.extract_hints("I need a quote for APX Next")
-    # extract_hints itself is unchanged -- it still produces the raw,
-    # unvalidated candidate. The fix lives at the session.country
-    # assignment sites (is_recognized_country), not here.
-    assert hints.get("country") == "Ap"
+    # extract_hints itself still produces only a raw, unvalidated
+    # candidate -- the actual protection is is_recognized_country at the
+    # session.country assignment sites (ask_api.py), not here.
+    assert hints.get("country") == "Apx Next"
     assert not eng.is_recognized_country(hints["country"])
 
 
