@@ -33,7 +33,7 @@ class _FakeRdb:
         self._scripts = scripts or {}
         self._hiding_rules = list(hiding_rules)
 
-    def fetch_value_rules(self, workspace_id, catalog_prefix=""):
+    def fetch_value_rules(self, workspace_id, catalog_prefix="", active_only=False):
         return self._value_rules
 
     def fetch_rule_inputs(self, workspace_id, catalog_prefix=""):

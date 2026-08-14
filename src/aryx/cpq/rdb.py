@@ -220,6 +220,7 @@ class PostgresCpqRdb:
 
     def fetch_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
+        active_only: bool = False,
     ) -> list[tuple[int, int | None, str, str, int]]:
         """All BmConfigRule entities EXCEPT hiding rules (rule_type=11).
 
@@ -233,9 +234,19 @@ class PostgresCpqRdb:
         handled separately by fetch_rules(); everything else is fetched
         here and classified downstream by inspecting each rule's actions
         (see CpqEngine._load_value_rules).
+
+        active_only — when True, restricts to status='1' (active) rules,
+        same convention/reason as fetch_rules(): BigMachines exports
+        routinely carry dead/superseded recommendation/constraint rules
+        (status=3) alongside the live one, and without this filter a
+        disabled rule is indistinguishable from an active one (see
+        docs/CPQ_RULE_STATUS_AND_CONSTRAINT_DISPATCH_ROOT_CAUSE_AND_FIX_
+        PLAN_2026-08-14.md). Defaults to False so any other caller is
+        byte-for-byte unaffected.
         """
         rows: list[tuple[int, int | None, str, str, int]] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
+        status_clause = " AND (attributes->>'status') = '1'" if active_only else ""
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -250,7 +261,7 @@ class PostgresCpqRdb:
                         WHERE workspace_id = %s
                           AND replace(lower(ontology_type), '_', '') LIKE %s
                           AND (attributes->>'rule_type') IS DISTINCT FROM '11'
-                        """,
+                        """ + status_clause,
                         (workspace_id, type_pattern),
                     )
                     for eid, src_id, name, rule_type, fn_id in cur.fetchall():
@@ -676,9 +687,13 @@ class OracleCpqRdb(PostgresCpqRdb):
 
     def fetch_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
+        active_only: bool = False,
     ) -> list[tuple[int, int | None, str, str, int]]:
         rows: list[tuple[int, int | None, str, str, int]] = []
         type_pattern = _type_pattern(catalog_prefix, "bmconfigrule")
+        status_clause = (
+            " AND JSON_VALUE(attributes, '$.status') = '1'" if active_only else ""
+        )
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -694,7 +709,7 @@ class OracleCpqRdb(PostgresCpqRdb):
                           AND REPLACE(LOWER(ontology_type), '_', '') LIKE :2
                           AND (JSON_VALUE(attributes, '$.rule_type') IS NULL
                                OR JSON_VALUE(attributes, '$.rule_type') != '11')
-                        """,
+                        """ + status_clause,
                         (workspace_id, type_pattern),
                     )
                     for eid, src_id, name, rule_type, fn_id in cur.fetchall():
