@@ -127,6 +127,77 @@ def test_answered_constraint_becomes_constraint_rule():
     assert rule.allowed_values == ["UHF", "VHF", "700/800 MHZ"]
 
 
+def test_answered_constraint_is_case_and_whitespace_insensitive():
+    """Raven review of PR #198 -- an answer of 'Constraint' (or with stray
+    whitespace) must still resolve correctly, not fall through to the
+    unrecognized-answer path just because of case/whitespace."""
+    fake_rdb = _FakeRdb(
+        value_rules=[(500, 500, "Default Frequency Band MSL if Multi Band Selected", "1", -1)],
+        inputs=[(500, 1, "APX NEXT MULTI")],
+        actions=[(500, 2, 1, "UHF~VHF~700/800 MHZ", -1, 2, "System recommendation")],
+    )
+    existing = [{
+        "job_id": "cpq-rule-500-2-constraint-or-default",
+        "status": "answered", "answer": "  Constraint  ",
+    }]
+    (rec_rules, con_rules, _val, _hid), store = _load(fake_rdb, existing)
+    assert rec_rules == []
+    assert len(con_rules) == 1
+    assert con_rules[0].allowed_values == ["UHF", "VHF", "700/800 MHZ"]
+    assert not hasattr(store, "last_enqueue")
+
+
+def test_unrecognized_answer_auto_requeues_a_fresh_question():
+    """Raven review of PR #198 -- a malformed/garbage answer (not
+    'constraint' or 'assign_all') must NOT permanently strand the rule with
+    only a manual DB fix as recovery. A fresh, distinctly-numbered question
+    must be automatically enqueued so the rule remains answerable, without
+    touching or reusing the stale answered row."""
+    fake_rdb = _FakeRdb(
+        value_rules=[(500, 500, "Default Frequency Band MSL if Multi Band Selected", "1", -1)],
+        inputs=[(500, 1, "APX NEXT MULTI")],
+        actions=[(500, 2, 1, "UHF~VHF~700/800 MHZ", -1, 2, "System recommendation")],
+    )
+    existing = [{
+        "job_id": "cpq-rule-500-2-constraint-or-default",
+        "status": "answered", "answer": "maybe??",
+    }]
+    (rec_rules, con_rules, _val, _hid), store = _load(fake_rdb, existing)
+    assert rec_rules == []
+    assert con_rules == []
+    assert hasattr(store, "last_enqueue"), (
+        "an unrecognized answer must trigger a fresh, pending question -- "
+        "not leave the rule permanently stuck"
+    )
+    enq = store.last_enqueue
+    assert enq["job_id"] == "cpq-rule-500-2-constraint-or-default-r2", (
+        "the fresh question must use a distinct job_id in the same chain, "
+        "never the stale answered one"
+    )
+    assert enq["kind"] == "cpq_multivalue_constraint_or_default"
+
+
+def test_unrecognized_answer_on_a_retry_requeues_the_next_one_in_chain():
+    """If the LATEST question in the chain (not just the original) was also
+    answered with garbage, the next chain link gets minted -- not a
+    collision back onto an already-stuck job_id."""
+    fake_rdb = _FakeRdb(
+        value_rules=[(500, 500, "Default Frequency Band MSL if Multi Band Selected", "1", -1)],
+        inputs=[(500, 1, "APX NEXT MULTI")],
+        actions=[(500, 2, 1, "UHF~VHF~700/800 MHZ", -1, 2, "System recommendation")],
+    )
+    existing = [
+        {"job_id": "cpq-rule-500-2-constraint-or-default",
+         "status": "answered", "answer": "nope"},
+        {"job_id": "cpq-rule-500-2-constraint-or-default-r2",
+         "status": "answered", "answer": "still wrong"},
+    ]
+    (rec_rules, con_rules, _val, _hid), store = _load(fake_rdb, existing)
+    assert rec_rules == []
+    assert con_rules == []
+    assert store.last_enqueue["job_id"] == "cpq-rule-500-2-constraint-or-default-r3"
+
+
 def test_answered_assign_all_is_blocked_not_applied():
     """A human answering 'assign_all' must NOT produce a RecommendationRule
     -- RecommendationRule.recommended_value is single-valued (state.py:111),

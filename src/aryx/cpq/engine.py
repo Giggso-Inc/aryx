@@ -4221,6 +4221,7 @@ class CpqEngine:
         script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
         assign_all_answers_blocked = 0
+        unrecognized_answers_requeued = 0
         validation_collisions_skipped = 0
         constraint_collisions_skipped = 0
         recommendation_collisions_skipped = 0
@@ -4445,10 +4446,26 @@ class CpqEngine:
                         # answer under the old (wrong) question semantics —
                         # confirmed live that none of the 62 real rows were
                         # ever answered, so this is a clean cutover.
-                        job_id = f"cpq-rule-{eid}-{aid}-constraint-or-default"
+                        # Raven review of PR #198 — a malformed/case-mismatched
+                        # answer (e.g. "Constraint", stray whitespace) must
+                        # never permanently strand the rule with only a
+                        # manual DB fix as recovery. Normalize before
+                        # comparing, and if the LATEST question in this
+                        # rule's job_id chain was answered with neither
+                        # recognized value, mint the NEXT one in the chain so
+                        # a fresh, pending, answerable question appears
+                        # automatically — the stale answered row is left
+                        # alone (harmless history), never re-used or deleted.
+                        base_job_id = f"cpq-rule-{eid}-{aid}-constraint-or-default"
+                        job_id = base_job_id
+                        chain_n = 2
+                        while f"{base_job_id}-r{chain_n}" in existing_questions:
+                            job_id = f"{base_job_id}-r{chain_n}"
+                            chain_n += 1
                         existing = existing_questions.get(job_id)
+                        answered_unrecognized = False
                         if existing and existing.get("status") == "answered":
-                            answer = (existing.get("answer") or "").strip()
+                            answer = (existing.get("answer") or "").strip().lower()
                             if answer == "constraint":
                                 restrict_by_target.setdefault(aid, []).extend(parts)
                                 continue
@@ -4468,17 +4485,24 @@ class CpqEngine:
                                     "supported yet — blocked pending a "
                                     "separate fix", rule_name, aid, parts)
                                 continue
+                            # Unrecognized answer — mint the next job_id in
+                            # the chain so the enqueue below creates a fresh,
+                            # pending question instead of leaving this rule
+                            # permanently stuck behind an unusable answer.
+                            answered_unrecognized = True
+                            unrecognized_answers_requeued += 1
+                            job_id = f"{base_job_id}-r{chain_n}"
+                            existing = None
                         ambiguous_recommendations_skipped += 1
-                        answered_unrecognized = bool(
-                            existing and existing.get("status") == "answered")
                         logger.info(
                             "cpq: rule %r has a multi-value action "
                             "(set_type=%r) for target=%d (%r) — no "
                             "structural signal distinguishes constraint "
                             "from assign-all, %s", rule_name, set_type, aid,
                             parts,
-                            "answered with an unrecognized value — expected "
-                            "'constraint' or 'assign_all'" if answered_unrecognized
+                            "prior answer was unrecognized (expected "
+                            "'constraint' or 'assign_all') — a fresh "
+                            "question has been queued" if answered_unrecognized
                             else "awaiting human answer (already queued)" if existing
                             else "queued for human answer")
                         if not existing and ingest_store is not None:
@@ -4572,13 +4596,14 @@ class CpqEngine:
             "%d script-condition rules skipped, %d multi-value actions "
             "awaiting a constraint-or-assign-all human answer, %d 'assign_all' "
             "answers blocked (multi-value recommendation not yet supported), "
+            "%d unrecognized answers auto-requeued with a fresh question, "
             "%d/%d/%d recommendation/constraint/hide skipped: same-attribute "
             "operator collision, "
             "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
             len(rec_rules), len(con_rules), len(hiding_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
             cond_script_skipped, ambiguous_recommendations_skipped,
-            assign_all_answers_blocked,
+            assign_all_answers_blocked, unrecognized_answers_requeued,
             recommendation_collisions_skipped, constraint_collisions_skipped,
             hiding_collisions_skipped)
         logger.info(
