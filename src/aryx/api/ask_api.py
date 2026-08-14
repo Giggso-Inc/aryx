@@ -7376,6 +7376,7 @@ def _run_cpq_turn_inner(
     ):
         session.product_anchor_question = req.question
 
+    logger.info("cpq_step: mid_session_product_switch_gate enter run_id=%s", session.run_id)
     # ── Mid-session product-switch gate ───────────────────────────────────────
     # A PRIOR turn detected a different product than session.product_name and
     # asked the user to confirm before discarding the in-progress config. THIS
@@ -7736,7 +7737,9 @@ def _run_cpq_turn_inner(
     # must only run for messages sent to an already-anchored session, never
     # on the very message that anchored it.
     product_was_anchored = bool(session.product_name)
+    _step1_t0 = time.monotonic()
     if not session.product_name:
+        logger.info("cpq_step: step1_anchor_gate start run_id=%s", session.run_id)
         # Intent-first gate (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 1): check
         # whether this message reads as a genuine question BEFORE trusting
         # any anchor-detection result at all — not just in the blind-accept
@@ -7951,8 +7954,14 @@ def _run_cpq_turn_inner(
         ):
             session.product_anchor_question = req.question
         logger.info("cpq_switch: product anchored turn=%s product=%r", session.turn, detected)
+        logger.info(
+            "cpq_step: step1_anchor_gate done run_id=%s elapsed_s=%.3f",
+            session.run_id, time.monotonic() - _step1_t0,
+        )
 
     # ── STEP 2: Resolve product name → item_value mapping ────────────────────
+    _step2_t0 = time.monotonic()
+    logger.info("cpq_step: step2_product_resolution start run_id=%s", session.run_id)
     # session.product_name is always set by this point (Step 1 guarantees
     # it) — load_product_config below may still overwrite it with the
     # graph-resolved canonical name once the product is actually loaded.
@@ -7963,6 +7972,10 @@ def _run_cpq_turn_inner(
     )
     if resolved_name:
         session.product_name = resolved_name
+    logger.info(
+        "cpq_step: step2_product_resolution done run_id=%s elapsed_s=%.3f attrs=%d",
+        session.run_id, time.monotonic() - _step2_t0, len(attrs),
+    )
 
     # Read-only intent-count diagnostic (docs/CPQ_LLM_INTENT_FIRST_PLAN.md
     # Fix 4, incremental first step) — measures how many distinct intents
@@ -8483,11 +8496,21 @@ def _run_cpq_turn_inner(
                 }
 
     # ── Load all rule sets (needed for Step 3, 5, 6, 7) ───────────────────────
+    # Each of these 4 calls now logs its own cpq_step start/done pair
+    # (engine.py load_hiding_rules / _load_value_rules / build_bml_evaluator)
+    # -- this pair just brackets the whole preamble so a hang shows which
+    # of the 4 it's stuck in without having to correlate 4 separate spans.
+    _rule_load_t0 = time.monotonic()
+    logger.info("cpq_step: load_all_rule_sets start run_id=%s", session.run_id)
     hiding_rules = _cpq_engine.load_hiding_rules(req.workspace_id, catalog_prefix)
     rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
         req.workspace_id, catalog_prefix)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
     bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+    logger.info(
+        "cpq_step: load_all_rule_sets done run_id=%s elapsed_s=%.3f",
+        session.run_id, time.monotonic() - _rule_load_t0,
+    )
 
     # Resolve a pending "which value?" clarifying question from a previous
     # turn's valueless change request (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md
@@ -8678,6 +8701,10 @@ def _run_cpq_turn_inner(
         if _llm_first_universal_result is not None:
             return _llm_first_universal_result
 
+    logger.info(
+        "cpq_step: step6_7_8_routing_gate enter run_id=%s status=%s",
+        session.run_id, session.status,
+    )
     # ── STEP 6 / 7 / 8 routing: awaiting_approval / post_approval status ────
     # "approved" is a legacy dead-end value (pre-
     # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D1) that used to be set once
@@ -9201,6 +9228,7 @@ def _run_cpq_turn_inner(
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
 
+    logger.info("cpq_step: step7_qa_gate enter run_id=%s", session.run_id)
     # ── STEP 7: Q&A during active config (strict — only ? or Q&A keywords) ───
     # `and not mode_request`: an explicit JSON/batch request must win here too,
     # same as it does over Step 5 below — otherwise a batch request starting
@@ -9269,6 +9297,7 @@ def _run_cpq_turn_inner(
             # stuck forever asking the same disambiguation prompt.
             session.pending_label_collision_vns = []
 
+    logger.info("cpq_step: mid_config_change_request_gate enter run_id=%s", session.run_id)
     # ── Mid-configuration change request (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md) ──
     # Change-request handling used to be wired ONLY into the awaiting_approval/
     # post_approval block above — a message like "change Is FedRamp or CCCS
@@ -9330,6 +9359,7 @@ def _run_cpq_turn_inner(
                 _persist_cpq_history(req.workspace_id, req.question, _mc_nv_result["answer"])
                 return _mc_nv_result
 
+    logger.info("cpq_step: step5_lock_answer_gate enter run_id=%s", session.run_id)
     # ── STEP 5: Lock user's answer from previous turn ────────────────────────
     # pending_var must be bound regardless of whether this branch runs — the
     # STEP 5 convergence block later in this turn (clear_queue_vn) references
@@ -9712,6 +9742,7 @@ def _run_cpq_turn_inner(
                     "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
                 }
 
+    logger.info("cpq_step: step5b_blocked_removal_gate enter run_id=%s", session.run_id)
     # ── STEP 5b: removal while blocked with no pending question ──────────────
     # `session.pending_variables` is empty whenever the previous turn ended
     # on unresolved_grid_quantity_options' block (a selected grid option has
@@ -9758,6 +9789,8 @@ def _run_cpq_turn_inner(
                         hiding_rules, rec_rules, con_rules,
                     )
 
+    _step3_t0 = time.monotonic()
+    logger.info("cpq_step: step3_rule_eval start run_id=%s", session.run_id)
     # ── STEP 3: Rule evaluation loop (hide → recommend → constrain) ──────────
     prev_filled_snapshot = dict(session.filled)
     # Also snapshotted for dropped_note's wording below — distinguishes a
@@ -9932,12 +9965,22 @@ def _run_cpq_turn_inner(
                 "rule": session.filled_source.get(var, ""), "turn": session.turn,
             })
 
+    logger.info(
+        "cpq_step: step3_rule_eval done run_id=%s elapsed_s=%.3f",
+        session.run_id, time.monotonic() - _step3_t0,
+    )
+
     # Multi-target intent queue drain (STEP 5 convergence): the attr just
     # answered is `pending_var` (captured at lock time). Clear it from the
     # queue, then force the next queue head to the front of pending.
     clear_queue_vn(session, pending_var)
     pending = drain_intent_queue_into_pending(session, pending, visible_attrs)
 
+    _step_format_t0 = time.monotonic()
+    logger.info(
+        "cpq_step: step6_4_response_formatting start run_id=%s pending=%d",
+        session.run_id, len(pending),
+    )
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
     if not pending and unresolved_grid_gaps:
@@ -10070,6 +10113,10 @@ def _run_cpq_turn_inner(
                     session, next_attr, constrained_vals, req.question,
                 )
 
+    logger.info(
+        "cpq_step: step6_4_response_formatting done run_id=%s elapsed_s=%.3f",
+        session.run_id, time.monotonic() - _step_format_t0,
+    )
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer,

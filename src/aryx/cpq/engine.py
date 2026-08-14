@@ -3909,6 +3909,11 @@ class CpqEngine:
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
+        _t0 = time.monotonic()
+        logger.info(
+            "cpq_step: load_hiding_rules start workspace_id=%s catalog_prefix=%r",
+            workspace_id, catalog_prefix,
+        )
         rules: list[HidingRule] = []
         script_missing = 0
         unresolved = 0
@@ -3994,9 +3999,9 @@ class CpqEngine:
             "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
             "%d missing script, %d unresolved, %d skipped: same-attribute "
             "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
-            "PLAN_2026_08_05.md)",
+            "PLAN_2026_08_05.md) elapsed_s=%.3f",
             len(rules), len(rules) - script_backed, script_backed,
-            script_missing, unresolved, operator_collisions)
+            script_missing, unresolved, operator_collisions, time.monotonic() - _t0)
 
         # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
         # real, separate class of "hide" rule authored OUTSIDE rule_type=11
@@ -4017,6 +4022,10 @@ class CpqEngine:
         if extra_hiding:
             logger.info("cpq: loaded %d additional value-less-action hiding rules",
                         len(extra_hiding))
+        logger.info(
+            "cpq_step: load_hiding_rules done elapsed_s=%.3f total_rules=%d",
+            time.monotonic() - _t0, len(rules) + len(extra_hiding),
+        )
         return rules + extra_hiding
 
     @staticmethod
@@ -4211,6 +4220,11 @@ class CpqEngine:
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
+        _t0 = time.monotonic()
+        logger.info(
+            "cpq_step: _load_value_rules (rec/con/validation) start "
+            "workspace_id=%s catalog_prefix=%r", workspace_id, catalog_prefix,
+        )
         rec_rules: list[RecommendationRule] = []
         con_rules: list[ConstraintRule] = []
         validation_rules: list[ValidationRule] = []
@@ -4535,6 +4549,12 @@ class CpqEngine:
             "(%d skipped: same-attribute operator collision, "
             "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
             len(validation_rules), validation_collisions_skipped)
+        logger.info(
+            "cpq_step: _load_value_rules done elapsed_s=%.3f rec=%d con=%d "
+            "validation=%d extra_hiding=%d",
+            time.monotonic() - _t0, len(rec_rules), len(con_rules),
+            len(validation_rules), len(hiding_rules),
+        )
         return rec_rules, con_rules, validation_rules, hiding_rules
 
     def load_recommendation_and_constraint_rules(
@@ -4913,11 +4933,20 @@ class CpqEngine:
         Tier-2 LLM fallback is gated by settings.bml_use_llm (default
         False) — see that field's docstring for why it's off by default.
         """
+        _t0 = time.monotonic()
+        logger.info(
+            "cpq_step: build_bml_evaluator start workspace_id=%s catalog_prefix=%r",
+            workspace_id, catalog_prefix,
+        )
         try:
             scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
         except Exception:  # noqa: BLE001
             logger.debug("cpq: function script fetch failed", exc_info=True)
             scripts = {}
+        logger.info(
+            "cpq_step: build_bml_evaluator done elapsed_s=%.3f scripts=%d",
+            time.monotonic() - _t0, len(scripts),
+        )
         return BmlEvaluator(
             scripts, use_llm=get_settings().bml_use_llm,
             workspace_id=workspace_id, catalog_prefix=catalog_prefix,
@@ -5336,6 +5365,13 @@ class CpqEngine:
         # §11-§12 for the live-measured cost of the uncached version.
         dt_cache: dict[tuple[int, str], tuple] = {}
 
+        # cpq_step start/done — the per-pass "cpq_perf: pass N total ...s"
+        # lines below already cover per-pass granularity; this brackets the
+        # WHOLE fixed-point loop (all up to _MAX_LOOPS=8 passes) so a hang
+        # anywhere inside shows up as "start" with no matching "done" for
+        # this run_id, rather than only inferring it from a missing pass log.
+        _loop_t0 = time.monotonic()
+        logger.info("cpq_step: evaluate_rules_loop start max_passes=%d", _MAX_LOOPS)
         for pass_num in range(_MAX_LOOPS):
             _pass_t0 = time.monotonic()
             rule_trace.bind_pass(pass_num)
@@ -5565,6 +5601,10 @@ class CpqEngine:
                     and {a.entity_id for a in attrs} == prev_visible_ids):
                 break
 
+        logger.info(
+            "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",
+            time.monotonic() - _loop_t0, pass_num + 1,
+        )
         return attrs, filled, display_filled, constrained_opts
 
     @staticmethod
