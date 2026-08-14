@@ -4309,7 +4309,7 @@ class CpqEngine:
                 workspace_id, catalog_prefix)
             scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
             for eid, src_id, rule_name, _rule_type, fn_id in rdb.fetch_value_rules(
-                workspace_id, catalog_prefix,
+                workspace_id, catalog_prefix, active_only=True,
             ):
                 key = self._rule_key(eid, src_id, inputs, actions)
                 inp_list = inputs.get(key)
