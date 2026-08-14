@@ -177,6 +177,13 @@ def ask_thread_router() -> APIRouter:
                     "Unable to save the prompt, so Aryx Ask was not called.",
                 ) from exc
 
+            # _t0 must be set BEFORE the try block -- the except clause below
+            # references it unconditionally, and conversation_history() (the
+            # first call inside try) can itself raise before _t0 would
+            # otherwise be assigned, which previously turned a cleanly-handled
+            # failure into an unhandled UnboundLocalError on this exact
+            # endpoint (caught in PR #200 review).
+            _t0 = time.monotonic()
             try:
                 history = [
                     Turn(role=entry["role"], text=entry["text"])
@@ -187,7 +194,6 @@ def ask_thread_router() -> APIRouter:
                 # minutes (a hung LLM call has no intermediate log output of
                 # its own), confirmed live 2026-08-14: a POST here took 15
                 # min with zero cpq.engine/ask_api log lines in that window.
-                _t0 = time.monotonic()
                 logger.info(
                     "ask_run_start thread_id=%s request_id=%s workspace_id=%s",
                     req.thread_id, req.request_id, req.workspace_id,

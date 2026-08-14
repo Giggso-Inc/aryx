@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from contextlib import asynccontextmanager
 
@@ -87,8 +88,6 @@ class _RequestTimingMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-
-        import time
 
         method = scope.get("method", "?")
         path = scope.get("path", "?")

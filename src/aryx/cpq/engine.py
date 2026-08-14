@@ -5372,6 +5372,11 @@ class CpqEngine:
         # this run_id, rather than only inferring it from a missing pass log.
         _loop_t0 = time.monotonic()
         logger.info("cpq_step: evaluate_rules_loop start max_passes=%d", _MAX_LOOPS)
+        # pass_num pre-seeded defensively -- the "done" log below reads it
+        # after the loop, which is only safe today because _MAX_LOOPS is a
+        # positive constant guaranteeing at least one iteration (PR #200
+        # review flagged this as fragile, not currently broken).
+        pass_num = -1
         for pass_num in range(_MAX_LOOPS):
             _pass_t0 = time.monotonic()
             rule_trace.bind_pass(pass_num)
