@@ -42,6 +42,11 @@ class GraphReader:
                             port=parsed.port or 6379)
         self._graph = self._db.select_graph(graph)
 
+    @property
+    def graph_name(self) -> str:
+        """The workspace-scoped graph key this reader selects — cache-key-safe."""
+        return self._graph.name
+
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
         """Execute a Cypher query and return its result rows.
 
