@@ -1685,6 +1685,84 @@ def test_llm_first_bulk_quantity_change_rejects_a_non_numeric_quantity():
     assert resp is None
 
 
+def test_llm_first_product_quantity_change_dispatches_a_negative_value_for_rejection(monkeypatch):
+    """Review finding, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_
+    13.md follow-up): `quantity_description` here is `gw.quantity_text`
+    copied verbatim by `_gateway_to_intent_result` -- the exact value
+    `validate_gateway_quarantine` already accepts via `_is_signed_digit_
+    quantity_text` (docs/CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_
+    13.md). The old plain `.isdigit()` check here rejected "-5" outright
+    (returning None, a silent fallthrough) instead of routing it to
+    `_build_product_quantity_change_response`, which is exactly the
+    function that gives the customer a clear "-5 isn't a valid quantity"
+    message. Unlike BULK_QUANTITY_CHANGE, this builder DOES validate
+    range itself, so it's safe to let the signed value through to it."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", product_quantity=10)
+    req = AskRequest(question="change the quantity to minus 5", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.PRODUCT_QUANTITY_CHANGE,
+        confidence=Confidence.MEDIUM, quantity_description="-5", rationale="qty",
+    )
+    resp = _dispatch_intent_result(req, session, [], result, [], [], [], None)
+    assert resp is not None, "must dispatch to the validating builder, not silently fall through"
+    assert resp["tools_called"] == ["cpq_product_quantity_rejected()"]
+    assert "isn't a valid quantity" in resp["answer"]
+    assert session.product_quantity == 10, "the invalid value must never be applied"
+
+
+def test_llm_first_bulk_quantity_change_rejects_a_negative_quantity():
+    """Review finding, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_
+    13.md follow-up): the old `.isdigit()` check rejected this too, but
+    only by accident (it rejects any leading "-", the same bug class
+    `_is_signed_digit_quantity_text` fixes elsewhere). `_handle_bulk_
+    quantity_change` never validates its own `new_qty` -- naively
+    swapping in `_is_signed_digit_quantity_text` here without also
+    range-checking would have let "-5" through to be written straight
+    into the grid rows' filled values, unvalidated. Must still reject,
+    but for the right reason (out of range), not by regex accident."""
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom",
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]},
+        status="awaiting_approval",
+    )
+    req = AskRequest(question="change the mounting type quantity to -5", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="-5", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+    assert "mountingTypeShirtMagneticMountQuantity_viSoln" not in session.filled
+
+
+def test_llm_first_bulk_quantity_change_rejects_zero():
+    """Latent bug this same fix closes: "0" IS a digit string, so the old
+    `.isdigit()` check let it through to be written unvalidated into the
+    grid rows -- 0 is below MIN_PRODUCT_QUANTITY and was never a
+    legitimate bulk quantity."""
+    attrs = _mount_attrs_for_bulk_qty()
+    session = CpqSession(
+        mode="cpq", product_name="viSoln_bom",
+        filled_multi={"mountingTypeArray_viSoln": ["Shirt Magnetic Mount"]},
+        status="awaiting_approval",
+    )
+    req = AskRequest(question="change the mounting type quantity to 0", workspace_id=1,
+                      session_data=session.to_dict())
+    result = IntentResult(
+        category=IntentCategory.BULK_QUANTITY_CHANGE, confidence=Confidence.MEDIUM,
+        target=ChangeTarget(target_description="Mounting Type Array"),
+        quantity_description="0", rationale="bulk qty",
+    )
+    resp = _dispatch_intent_result(req, session, attrs, result, [], [], [], None)
+    assert resp is None
+    assert "mountingTypeShirtMagneticMountQuantity_viSoln" not in session.filled
+
+
 def test_confirm_is_idempotent_when_already_post_approval(monkeypatch):
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())

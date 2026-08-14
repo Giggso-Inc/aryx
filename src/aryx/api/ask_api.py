@@ -4939,17 +4939,30 @@ def _dispatch_intent_result(
     # PRODUCT_QUANTITY_CHANGE / COUNTRY_CHANGE (docs/CPQ_LLM_INTENT_FIRST_
     # UNIVERSAL_PLAN.md §8 Phase 4): both session-level, no-target
     # categories -- quantity_description/country_description are already
-    # validated (digits-only / is_recognized_country) by
+    # validated (signed-digits-only / is_recognized_country) by
     # validate_gateway_quarantine before this function ever sees them, so
     # no further resolution step is needed, unlike attribute-targeting
     # categories. Shares the exact same response-building helpers the
     # deterministic gates (ask_api.py, mid-turn) already use.
+    #
+    # Review finding, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_
+    # 13.md follow-up): this used to check `_qty.isdigit()`, which rejects
+    # a leading "-" -- the exact bug `_is_signed_digit_quantity_text` was
+    # introduced to fix in `validate_gateway_quarantine` (docs/CPQ_
+    # QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md). Quarantine already
+    # allows a genuinely negative `quantity_text` through (so
+    # `is_valid_product_quantity` can reject it with a clear message
+    # rather than the LLM's answer being silently discarded), but this
+    # duplicate check downstream still used the plain built-in, silently
+    # dropping a confirmed negative-quantity dispatch instead of routing
+    # it to `_build_product_quantity_change_response`'s own range
+    # rejection message.
     if (
         result.category == IntentCategory.PRODUCT_QUANTITY_CHANGE
         and result.quantity_description
     ):
         _qty = result.quantity_description.strip()
-        if not _qty.isdigit():
+        if not _is_signed_digit_quantity_text(_qty):
             return None
         return _with_classify_usage(
             _build_product_quantity_change_response(
@@ -5162,8 +5175,8 @@ def _dispatch_intent_result(
     # the target must resolve to a real array-grid selector (never a
     # plain single-select sibling sharing its display_label), it must
     # have at least one currently-selected, quantity-resolvable row, and
-    # the stated quantity must be digits-only — never guessed at, never
-    # applied to an unselected or unresolvable row.
+    # the stated quantity must be a real, in-range quantity — never
+    # guessed at, never applied to an unselected or unresolvable row.
     if (
         result.category == IntentCategory.BULK_QUANTITY_CHANGE
         and result.target
@@ -5183,8 +5196,29 @@ def _dispatch_intent_result(
         ]
         if not _resolvable:
             return None
+        # Review finding, 2026-08-13: was a plain `_qty.isdigit()` check.
+        # Two distinct problems that shape fixed together:
+        #  1. `.isdigit()` rejects a leading "-", the same bug class
+        #     `_is_signed_digit_quantity_text` exists to fix elsewhere.
+        #  2. Unlike PRODUCT_QUANTITY_CHANGE's builder, `_handle_bulk_
+        #     quantity_change` below does NOT validate `new_qty` at all —
+        #     it writes it straight into `session.filled`/`display_filled`
+        #     for every resolved row. Simply swapping in `_is_signed_
+        #     digit_quantity_text` here (accepting "-5") would therefore
+        #     have traded a silent-fallthrough bug for a worse one: an
+        #     unvalidated negative quantity written directly into session
+        #     state with no rejection message at all.
+        # Explicitly checking `is_valid_product_quantity` here — not
+        # inside `_handle_bulk_quantity_change`, which the deterministic
+        # `detect_bulk_quantity_change` call site also feeds and is out
+        # of scope for this fix — keeps this dispatch site's behavior
+        # unchanged for negative values (still falls through, same as
+        # before) while additionally closing a real latent gap: "0" is a
+        # digit string `.isdigit()` accepted but is BELOW
+        # MIN_PRODUCT_QUANTITY, so it used to be written into a grid row
+        # completely unvalidated; it now correctly falls through instead.
         _qty = result.quantity_description.strip()
-        if not _qty.isdigit():
+        if not _is_signed_digit_quantity_text(_qty) or not is_valid_product_quantity(int(_qty)):
             return None
         return _with_classify_usage(
             _handle_bulk_quantity_change(
