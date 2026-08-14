@@ -10,9 +10,11 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
+import time
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
+from aryx.cpq.logging_context import get_run_id
 from aryx.llm import complete_text
 from aryx.queries import load
 from aryx.store.pool import get_pool
@@ -115,10 +117,23 @@ def chat(role: str, system: str, user: str,
          workspace_id: int = 1) -> tuple[str, int, int]:
     """Run a completion for 'menial' or 'answer' using the configured model."""
     model = _state["menial_model"] if role == "menial" else _state["answer_model"]
-    import time
     start = time.monotonic()
+    # Log BEFORE the network call, not just after -- this is the single
+    # choke point every LLM call in the codebase goes through (BML Tier-2
+    # script evaluation, every ask_api.py `_llm_*` classifier, general Ask
+    # synthesis), so a silent hang anywhere in here previously produced
+    # zero log output until (if ever) complete_text returned. Mirrors the
+    # same before/after fix already applied to cpq.intent_gateway._pinned_chat.
+    logger.info(
+        "cpq_llm_runtime_start: role=%s model=%s run_id=%s",
+        role, model, get_run_id() or "-",
+    )
     text, pt, ct = complete_text(_broker_for(model), "cheap", system, user, think=False)
     ms = int((time.monotonic() - start) * 1000)
+    logger.info(
+        "cpq_llm_runtime: role=%s model=%s run_id=%s tokens=(%d,%d) elapsed_s=%.3f",
+        role, model, get_run_id() or "-", pt, ct, ms / 1000.0,
+    )
     _log_call(role, model, pt, ct, ms, "", workspace_id=workspace_id)
     turn_usage = _turn_usage.get()
     if turn_usage is not None:

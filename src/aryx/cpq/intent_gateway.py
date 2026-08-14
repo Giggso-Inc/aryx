@@ -271,6 +271,15 @@ def _pinned_chat(
 
     broker = Broker(registry, TokenGovernor({}), secrets=_Secrets())
     start = time.monotonic()
+    # Log BEFORE the network call, not just after — confirmed live
+    # (2026-08-14 incident) a request can sit here for the full
+    # ARYX_LLM_TIMEOUT window (900s default, docker-compose.yml) with
+    # nothing in the logs to show an LLM call was even in flight, only the
+    # eventual latency_ms line below IF/when it returns at all.
+    logger.info(
+        "cpq_intent_gateway_start: model=%s provider=%s run_id=%s",
+        model_id, provider, get_run_id() or "-",
+    )
     text, pt, ct = complete_text(broker, "frontier", system, user, think=False)
     ms = int((time.monotonic() - start) * 1000)
     logger.info(

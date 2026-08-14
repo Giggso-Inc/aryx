@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -176,11 +177,27 @@ def ask_thread_router() -> APIRouter:
                     "Unable to save the prompt, so Aryx Ask was not called.",
                 ) from exc
 
+            # _t0 must be set BEFORE the try block -- the except clause below
+            # references it unconditionally, and conversation_history() (the
+            # first call inside try) can itself raise before _t0 would
+            # otherwise be assigned, which previously turned a cleanly-handled
+            # failure into an unhandled UnboundLocalError on this exact
+            # endpoint (caught in PR #200 review).
+            _t0 = time.monotonic()
             try:
                 history = [
                     Turn(role=entry["role"], text=entry["text"])
                     for entry in store.conversation_history(req.thread_id, req.request_id)
                 ]
+                # Explicit start/elapsed markers around run_ask — this is the
+                # one call in this endpoint that can silently block for
+                # minutes (a hung LLM call has no intermediate log output of
+                # its own), confirmed live 2026-08-14: a POST here took 15
+                # min with zero cpq.engine/ask_api log lines in that window.
+                logger.info(
+                    "ask_run_start thread_id=%s request_id=%s workspace_id=%s",
+                    req.thread_id, req.request_id, req.workspace_id,
+                )
                 result = run_ask(
                     AskRequest(
                         question=question,
@@ -189,8 +206,15 @@ def ask_thread_router() -> APIRouter:
                         session_data=req.session_data,
                     )
                 )
+                logger.info(
+                    "ask_run_end thread_id=%s request_id=%s elapsed_s=%.3f",
+                    req.thread_id, req.request_id, time.monotonic() - _t0,
+                )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("ask run failed: %s", exc)
+                logger.warning(
+                    "ask run failed thread_id=%s request_id=%s elapsed_s=%.3f: %s",
+                    req.thread_id, req.request_id, time.monotonic() - _t0, exc,
+                )
                 answer = "Aryx Ask could not complete this response. Please try again."
                 result = {
                     "answer": answer,
