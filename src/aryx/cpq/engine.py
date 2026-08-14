@@ -1485,6 +1485,21 @@ class CpqEngine:
 
         Returns {attr_key_fragment: hint_value} where hint_value is matched
         word-boundary against DB option display names — no hardcoded country list.
+
+        Contract callers must honor for `hints["country"]` specifically
+        (review finding, docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md):
+        this is a raw, UNVALIDATED regex candidate, not a confirmed country.
+        When no `_COUNTRY_PREP` match in the sentence is a real, recognized
+        country, this still returns the leftmost match anyway (so a caller
+        that wants to reject explicitly has something to reject, rather than
+        a silent absence indistinguishable from "no country mentioned at
+        all"). Every caller MUST re-validate via `is_recognized_country`
+        before trusting this value for anything — never assign it to
+        `session.country` (or equivalent) directly. Both current callers
+        (`ask_api.py`'s turn-1 hint block and `_mine_history_for_cpq_
+        context`) already do this; a new caller that reads `hints.get(
+        "country")` without the same check would silently reintroduce the
+        exact bug class this whole plan closes.
         """
         hints: dict[str, str] = {}
 

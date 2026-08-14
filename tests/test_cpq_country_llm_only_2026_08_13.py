@@ -20,7 +20,12 @@ from aryx.api.ask_api import (
 )
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_gateway import AskRouteDecision, GatewayDecision
-from aryx.cpq.intent_schema import Confidence, GatewayIntentResult, IntentCategory
+from aryx.cpq.intent_schema import (
+    Confidence,
+    GatewayIntentResult,
+    IntentCategory,
+    validate_gateway_quarantine,
+)
 from aryx.cpq.state import CpqSession
 
 
@@ -50,52 +55,78 @@ def test_extract_returns_the_llms_own_country():
         api, "gateway_classify_intent",
         return_value=_country_decision(IntentCategory.COUNTRY_CHANGE, "Canada"),
     ):
-        confirmed, country = _llm_confirm_and_extract_country(
+        confirmed, country, call_failed = _llm_confirm_and_extract_country(
             req, session, [], hiding_rules=[], rec_rules=[], con_rules=[],
             bml_eval=None, catalog_prefix="",
         )
-    assert (confirmed, country) == (True, "Canada")
+    assert (confirmed, country, call_failed) == (True, "Canada", False)
 
 
 def test_extract_rejects_on_category_disagreement():
+    """A real, successful classification into a DIFFERENT category is a
+    disagreement, not a failure -- call_failed must stay False so the
+    caller falls through to normal processing, not the explicit
+    "classifier call failed" message (review finding, 2026-08-13)."""
     req, session = _base_req_session()
     with patch.object(
         api, "gateway_classify_intent",
         return_value=_country_decision(IntentCategory.AMBIGUOUS),
     ):
-        confirmed, country = _llm_confirm_and_extract_country(
+        confirmed, country, call_failed = _llm_confirm_and_extract_country(
             req, session, [], hiding_rules=[], rec_rules=[], con_rules=[],
             bml_eval=None, catalog_prefix="",
         )
-    assert (confirmed, country) == (False, None)
+    assert (confirmed, country, call_failed) == (False, None, False)
 
 
 def test_extract_rejects_on_gateway_exception():
+    """An exception from the gateway call itself IS a failure -- must
+    surface call_failed=True so the caller shows the explicit
+    "classifier call failed" message (review finding, 2026-08-13: this
+    used to be indistinguishable from a normal disagreement)."""
     req, session = _base_req_session()
     with patch.object(
         api, "gateway_classify_intent", side_effect=TimeoutError("llm unreachable"),
     ):
-        confirmed, country = _llm_confirm_and_extract_country(
+        confirmed, country, call_failed = _llm_confirm_and_extract_country(
             req, session, [], hiding_rules=[], rec_rules=[], con_rules=[],
             bml_eval=None, catalog_prefix="",
         )
-    assert (confirmed, country) == (False, None)
+    assert (confirmed, country, call_failed) == (False, None, True)
+
+
+def test_extract_reports_call_failed_on_a_reason_based_timeout():
+    """Same failure signal as the exception path, but via a `fallback`
+    decision with reason="timeout" -- classify_intent's own reject-on-
+    failure path (never raises TimeoutError itself, per its docstring),
+    so call_failed detection can't rely on catching an exception alone."""
+    req, session = _base_req_session()
+    with patch.object(
+        api, "gateway_classify_intent",
+        return_value=GatewayDecision(action="fallback", result=None, reason="timeout"),
+    ):
+        confirmed, country, call_failed = _llm_confirm_and_extract_country(
+            req, session, [], hiding_rules=[], rec_rules=[], con_rules=[],
+            bml_eval=None, catalog_prefix="",
+        )
+    assert (confirmed, country, call_failed) == (False, None, True)
 
 
 def test_extract_rejects_an_unrecognized_country_defensively():
     """Quarantine should already prevent this, but the checkpoint itself
     never trusts an unrecognized country_text either -- belt and
-    suspenders, no regex fallback."""
+    suspenders, no regex fallback. Not a call failure either -- the call
+    succeeded, it just didn't produce anything usable."""
     req, session = _base_req_session()
     with patch.object(
         api, "gateway_classify_intent",
         return_value=_country_decision(IntentCategory.COUNTRY_CHANGE, "Wakanda"),
     ):
-        confirmed, country = _llm_confirm_and_extract_country(
+        confirmed, country, call_failed = _llm_confirm_and_extract_country(
             req, session, [], hiding_rules=[], rec_rules=[], con_rules=[],
             bml_eval=None, catalog_prefix="",
         )
-    assert (confirmed, country) == (False, None)
+    assert (confirmed, country, call_failed) == (False, None, False)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -217,6 +248,35 @@ def test_router_timeout_surfaces_an_explicit_failure_message_not_a_generic_reask
     assert "try again" in resp["answer"].lower()
 
 
+def test_mid_conversation_gateway_timeout_also_surfaces_the_explicit_failure_message(
+    monkeypatch,
+):
+    """Review finding, 2026-08-13: a mid-conversation "change country to
+    X" command whose gateway call times out used to be indistinguishable
+    from a normal disagreement (both collapsed to confirmed=False), so it
+    silently fell through to the generic hint/attribute re-ask instead of
+    the explicit "classifier call failed" message turn-1 already
+    guarantees. Must now surface the same explicit message here too."""
+    monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([], "aSTRO25_bom"))
+    session = CpqSession(mode="cpq", product_name="aSTRO25_bom", country="Canada")
+    req = AskRequest(
+        question="please change my country to Germany", workspace_id=1,
+        session_data=session.to_dict(),
+    )
+    with patch.object(
+        api, "gateway_classify_intent",
+        return_value=GatewayDecision(action="fallback", result=None, reason="timeout"),
+    ):
+        resp = _run_cpq_turn_inner(req, object())
+    assert resp["tools_called"] == ["cpq_llm_call_failed()"]
+    assert "try again" in resp["answer"].lower()
+    # The old country must never be silently discarded or changed on a
+    # call failure -- it simply wasn't touched this turn.
+    assert resp["session_data"]["country"] == "Canada"
+
+
 def test_turn1_no_country_stated_at_all_still_asks_normally(monkeypatch):
     """Distinguishes "the LLM call failed" from "the LLM succeeded and
     correctly found no country" -- the latter must still ask normally,
@@ -283,3 +343,56 @@ def test_mine_history_never_latches_a_bogus_product_fragment_as_a_country():
     ]
     _mine_history_for_cpq_context(session, history, CpqEngine())
     assert not session.country
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Quarantine structural safety for a malformed COUNTRY_CHANGE result
+# (review finding, 2026-08-13). The concern raised: nothing structurally
+# stops the LLM from populating variable_name/value_ref instead of
+# country_text for this no-target category (the exact shape of the
+# "deliver to Canada" bug the country_text schema-description fix
+# closed). These tests confirm `validate_gateway_quarantine` already
+# fails CLOSED (downgrades to AMBIGUOUS) for this shape regardless of
+# what variable_name holds -- country_text being missing/unrecognized is
+# the ONE thing this quarantine actually requires for COUNTRY_CHANGE, so
+# a malformed result can never silently reach `_llm_confirm_and_extract_
+# country`'s caller as if it were a real, usable country.
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_quarantine_rejects_country_change_missing_country_text_even_with_a_real_variable_name():
+    """The LLM populated a REAL, injected catalog attribute's variable_
+    name instead of country_text -- exactly what a schema mix-up like the
+    live "deliver to Canada" bug looked like before the country_text
+    description was strengthened. Must still downgrade to AMBIGUOUS: a
+    real variable_name doesn't make a no-target category's missing value
+    field acceptable."""
+    result = GatewayIntentResult(
+        intent_category=IntentCategory.COUNTRY_CHANGE,
+        confidence=Confidence.HIGH,
+        variable_name="ultimateDestinationCountry_astro",
+        country_text=None,
+        evidence_span="", rationale="test",
+    )
+    out = validate_gateway_quarantine(
+        result, "deliver to Canada",
+        candidate_vns={"ultimateDestinationCountry_astro"}, value_counts={},
+    )
+    assert out.intent_category == IntentCategory.AMBIGUOUS
+
+
+def test_quarantine_rejects_country_change_with_variable_name_and_unrecognized_country_text():
+    """Even when country_text IS populated, an unrecognized value must
+    still reject -- a real variable_name alongside it doesn't lower the
+    bar."""
+    result = GatewayIntentResult(
+        intent_category=IntentCategory.COUNTRY_CHANGE,
+        confidence=Confidence.HIGH,
+        variable_name="ultimateDestinationCountry_astro",
+        country_text="Wakanda",
+        evidence_span="", rationale="test",
+    )
+    out = validate_gateway_quarantine(
+        result, "deliver to Wakanda",
+        candidate_vns={"ultimateDestinationCountry_astro"}, value_counts={},
+    )
+    assert out.intent_category == IntentCategory.AMBIGUOUS
