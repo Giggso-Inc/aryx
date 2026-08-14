@@ -13,10 +13,9 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from falkordb import FalkorDB
-
 from aryx.config import get_settings
 from aryx.display_name import _GENERIC_NAMES, _NAME_KEYS, display_name as _dn
+from aryx.graph.client_pool import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +183,7 @@ class FalkorStore:
             graph: Graph key to write into.
         """
         parsed = urlparse(url)
-        self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379)
+        self._db = get_client(parsed.hostname or "localhost", parsed.port or 6379)
         self._graph = self._db.select_graph(graph)
         # Index-worthy property names observed while writing entities; flushed
         # to CREATE INDEX statements by ensure_indexes().

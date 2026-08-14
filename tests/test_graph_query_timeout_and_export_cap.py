@@ -66,7 +66,9 @@ class TestGraphQueryTimeout:
         mock_graph = MagicMock()
         mock_graph.query.return_value = _mock_query_result([])
 
-        with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+        from aryx.graph import client_pool
+        client_pool._clients.clear()
+        with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
              patch("aryx.graph.reader.get_settings") as mock_cfg:
             mock_cfg.return_value.graph_query_timeout = 30_000
             MockDB.return_value.select_graph.return_value = mock_graph
@@ -84,7 +86,9 @@ class TestGraphQueryTimeout:
         mock_graph = MagicMock()
         mock_graph.query.return_value = _mock_query_result([])
 
-        with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+        from aryx.graph import client_pool
+        client_pool._clients.clear()
+        with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
              patch("aryx.graph.reader.get_settings") as mock_cfg:
             mock_cfg.return_value.graph_query_timeout = 0
             MockDB.return_value.select_graph.return_value = mock_graph
@@ -102,7 +106,9 @@ class TestGraphQueryTimeout:
         mock_graph = MagicMock()
         mock_graph.query.return_value = _mock_query_result([])
 
-        with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+        from aryx.graph import client_pool
+        client_pool._clients.clear()
+        with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
              patch("aryx.graph.reader.get_settings") as mock_cfg:
             mock_cfg.return_value.graph_query_timeout = 120_000
             MockDB.return_value.select_graph.return_value = mock_graph

@@ -14,9 +14,8 @@ from collections import Counter
 from typing import Any
 from urllib.parse import urlparse
 
-from falkordb import FalkorDB
-
 from aryx.config import get_settings
+from aryx.graph.client_pool import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +37,13 @@ class GraphReader:
             graph: Graph key to read from.
         """
         parsed = urlparse(url)
-        self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379)
+        self._db = get_client(parsed.hostname or "localhost", parsed.port or 6379)
         self._graph = self._db.select_graph(graph)
+
+    @property
+    def graph_name(self) -> str:
+        """The workspace-scoped graph key this reader selects — cache-key-safe."""
+        return self._graph.name
 
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
         """Execute a Cypher query and return its result rows.

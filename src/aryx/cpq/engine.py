@@ -2559,7 +2559,7 @@ class CpqEngine:
             return []
         attr_pg = self._batch_fetch([e["id"] for e in attr_ents], workspace_id)
         target_id = None
-        fallback_candidates: list[tuple[int, int]] = []  # (entity_id, option_count)
+        fallback_ids: list[int] = []
         for ent in attr_ents:
             pg = attr_pg.get(ent["id"], {})
             vn = str(
@@ -2570,13 +2570,20 @@ class CpqEngine:
                 break
             if (self._PRODUCT_FIELD_FALLBACK_RE.search(vn)
                     and self._PRODUCT_FIELD_FALLBACK_HINT_RE.search(vn)):
-                try:
-                    neighbor_count = len(reader.neighbors(ent["id"]))
-                except Exception:
-                    neighbor_count = 0
-                fallback_candidates.append((ent["id"], neighbor_count))
-        if target_id is None and fallback_candidates:
-            target_id = max(fallback_candidates, key=lambda c: c[1])[0]
+                fallback_ids.append(ent["id"])
+        if target_id is None and fallback_ids:
+            # One batched call instead of one reader.neighbors() per
+            # candidate — was up to hundreds of round-trips on catalogs with
+            # many attrs matching the fallback regex (mirrors the
+            # neighbors_batch() fix already applied to load_product_config's
+            # own attribute-neighbor loop a few hundred lines below).
+            try:
+                neighbors_by_id = reader.neighbors_batch(fallback_ids)
+            except Exception:
+                neighbors_by_id = {}
+            target_id = max(
+                fallback_ids, key=lambda eid: len(neighbors_by_id.get(eid, []))
+            )
         if target_id is None:
             return []
         try:

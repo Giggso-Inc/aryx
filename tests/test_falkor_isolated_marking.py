@@ -15,7 +15,13 @@ from aryx.graph.falkor_store import FalkorStore
 
 
 def _store() -> FalkorStore:
-    with patch("aryx.graph.falkor_store.FalkorDB") as MockDB:
+    from aryx.graph import client_pool
+
+    # client_pool caches one FalkorDB client per (host, port) process-wide
+    # (aryx.graph.client_pool, G-FalkorDB-pool) — clear it so each test gets
+    # a fresh mock instead of a previous test's cached client/select_graph.
+    client_pool._clients.clear()
+    with patch("aryx.graph.client_pool.FalkorDB") as MockDB:
         mock_graph = MagicMock()
         MockDB.return_value.select_graph.return_value = mock_graph
         store = FalkorStore("redis://localhost:6379", graph="aryx_test")

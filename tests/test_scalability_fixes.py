@@ -886,7 +886,9 @@ class TestGraphReaderCap:
         mock_graph.query.return_value.result_set = []
 
         try:
-            with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+            from aryx.graph import client_pool
+            client_pool._clients.clear()
+            with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
                  patch("aryx.graph.reader.get_settings") as mock_cfg:
                 mock_cfg.return_value.graph_query_limit = 10
                 MockDB.return_value.select_graph.return_value = mock_graph
@@ -905,7 +907,9 @@ class TestGraphReaderCap:
         mock_graph = MagicMock()
         mock_graph.query.return_value.result_set = []
 
-        with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+        from aryx.graph import client_pool
+        client_pool._clients.clear()
+        with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
              patch("aryx.graph.reader.get_settings") as mock_cfg:
             mock_cfg.return_value.graph_query_limit = 500
             MockDB.return_value.select_graph.return_value = mock_graph

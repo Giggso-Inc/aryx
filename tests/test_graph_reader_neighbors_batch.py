@@ -15,11 +15,16 @@ def _mock_query_result(rows):
 
 
 def _make_reader(rows):
+    from aryx.graph import client_pool
     from aryx.graph.reader import GraphReader
 
+    # client_pool caches one FalkorDB client per (host, port) process-wide
+    # (aryx.graph.client_pool, G-FalkorDB-pool) — clear it so each test gets
+    # a fresh mock instead of a previous test's cached client/select_graph.
+    client_pool._clients.clear()
     mock_graph = MagicMock()
     mock_graph.query.return_value = _mock_query_result(rows)
-    with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+    with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
          patch("aryx.graph.reader.get_settings") as mock_cfg:
         mock_cfg.return_value.graph_query_timeout = 30_000
         MockDB.return_value.select_graph.return_value = mock_graph

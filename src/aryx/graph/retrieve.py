@@ -12,6 +12,7 @@ drift apart.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from aryx.ask.evidence import RetrievedEntity
@@ -19,10 +20,32 @@ from aryx.graph.reader import GraphReader
 
 __all__ = ["RetrievedEntity", "all_types", "gather", "render_context", "retrieve"]
 
+# Module-level TTL cache for all_types() — one entry per graph name.
+# all_types() runs on nearly every /ask call (fast attribute-options path is
+# the only one that skips it), but entity types only change on ingestion, not
+# per question, so a short TTL collapses repeated calls to 0 queries.
+_types_cache: dict[str, tuple[float, list[str]]] = {}
+_TYPES_TTL: float = 30.0
+
 
 def all_types(reader: GraphReader) -> list[str]:
-    """Distinct ontology types present — helps the parser pick search terms."""
-    return sorted({e["type"] for e in reader.find_entities(limit=500)})
+    """Distinct ontology types present — helps the parser pick search terms.
+
+    Uses reader.distinct_types() (a single `RETURN DISTINCT e.type` query)
+    rather than find_entities(limit=500), which ran a 500-row MATCH scan
+    returning the full properties() map per row just to read off `type` —
+    500x more data transfer than this needs.
+    """
+    cache_key = reader.graph_name
+    now = time.monotonic()
+    cached = _types_cache.get(cache_key)
+    if cached is not None:
+        ts, types = cached
+        if now - ts < _TYPES_TTL:
+            return types
+    types = sorted(reader.distinct_types())
+    _types_cache[cache_key] = (now, types)
+    return types
 
 
 def _lookup(reader: GraphReader, term: str) -> list[dict]:

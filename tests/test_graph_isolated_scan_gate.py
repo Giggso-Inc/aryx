@@ -51,7 +51,9 @@ def _run_subgraph(iso_rows: list, graph_name: str):
 
     mock_graph.query.side_effect = _query_side_effect
 
-    with patch("aryx.graph.reader.FalkorDB") as MockDB, \
+    from aryx.graph import client_pool
+    client_pool._clients.clear()
+    with patch("aryx.graph.client_pool.FalkorDB") as MockDB, \
          patch("aryx.graph.reader.get_settings") as mock_cfg:
         mock_cfg.return_value.graph_query_limit = 2000
         mock_cfg.return_value.graph_query_timeout = 30_000
