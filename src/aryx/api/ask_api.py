@@ -2087,7 +2087,7 @@ def _handle_cascade(
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
-    _, _, pending = _cpq_engine.auto_fill(
+    filled, display_filled, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
@@ -2130,7 +2130,17 @@ def _handle_cascade(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
     # Multi-target intent queue drain: every change-request entry point
@@ -2395,7 +2405,7 @@ def _handle_multi_select_removal(
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
-    _, _, pending = _cpq_engine.auto_fill(
+    filled, display_filled, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
@@ -2430,7 +2440,17 @@ def _handle_multi_select_removal(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
@@ -2558,7 +2578,7 @@ def _handle_attr_activation(
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
-    _, _, pending = _cpq_engine.auto_fill(
+    filled, display_filled, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
@@ -2620,7 +2640,17 @@ def _handle_attr_activation(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
     if pending:
@@ -2741,7 +2771,7 @@ def _handle_attr_clear(
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
-    _, _, pending = _cpq_engine.auto_fill(
+    filled, display_filled, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
@@ -2777,7 +2807,17 @@ def _handle_attr_clear(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
     if pending:
@@ -2995,7 +3035,7 @@ def _handle_bulk_quantity_change(
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
-    _, _, pending = _cpq_engine.auto_fill(
+    filled, display_filled, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
@@ -3030,7 +3070,17 @@ def _handle_bulk_quantity_change(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
@@ -3264,7 +3314,7 @@ def _handle_cascade_multi(
     governed_ids = _cpq_engine.governed_target_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     rule_ids = _cpq_engine.rule_governed_ids(visible_attrs, hiding_rules, rec_rules, con_rules)
     validation_rules = _cpq_engine.load_validation_rules(req.workspace_id, catalog_prefix)
-    _, _, pending = _cpq_engine.auto_fill(
+    filled, display_filled, pending = _cpq_engine.auto_fill(
         visible_attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
         governed_ids=governed_ids, already_filled_multi=session.filled_multi,
         dropped_multi=dropped_multi, country=session.country, rule_governed_ids=rule_ids,
@@ -3307,7 +3357,17 @@ def _handle_cascade_multi(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
     # D1, docs/CPQ_USER_VALUE_PRECEDENCE_PLAN.md: check every single-select
@@ -7063,6 +7123,12 @@ def _run_cpq_turn_inner(
     set_run_id(session.run_id)
     session.turn += 1
     record_utterance(session, req.question)
+    logger.warning(
+        "TEMP_DEBUG turn=%s question=%r entry filled_multi.Msl=%r filled_multi_keys=%s",
+        session.turn, req.question,
+        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
+        sorted(session.filled_multi.keys()),
+    )
     # Snapshot BEFORE any anchor-resolution logic below mutates it — the
     # universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
     # PLAN.md §8 Phase 4) needs to know whether THIS turn started out
@@ -9999,7 +10065,7 @@ def _run_cpq_turn_inner(
         )
         g_ids = _cpq_engine.governed_target_ids(v_attrs, hiding_rules, rec_rules, con_rules)
         r_ids = _cpq_engine.rule_governed_ids(v_attrs, hiding_rules, rec_rules, con_rules)
-        _, _, p = _cpq_engine.auto_fill(
+        f, d_filled, p = _cpq_engine.auto_fill(
             v_attrs, cur_hints, already_filled=f, constrained_opts=c_opts,
             governed_ids=g_ids, already_filled_multi=session.filled_multi,
             dropped_multi=dropped_multi, rule_governed_ids=r_ids, country=session.country,
@@ -10033,6 +10099,13 @@ def _run_cpq_turn_inner(
 
     visible_attrs, filled, display_filled, pending, constrained_opts, rule_ids = (
         _recompute_pending(hints))
+    logger.warning(
+        "TEMP_DEBUG turn=%s after _recompute_pending session.filled_multi.Msl=%r "
+        "pending_vns=%s",
+        session.turn,
+        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
+        [a.variable_name for a in pending],
+    )
 
     # Issue 5 (docs/config_consistency_issues_2026-07-30.md): a generic,
     # catalog-agnostic gap — two attrs sharing the same real-world concept
@@ -10044,6 +10117,13 @@ def _run_cpq_turn_inner(
     pending = _cpq_engine.enforce_exclusive_sibling_families(
         visible_attrs, filled, session.filled_multi, session.filled_source,
         display_filled, pending, all_attrs=attrs,
+    )
+    logger.warning(
+        "TEMP_DEBUG turn=%s after enforce_exclusive_sibling_families "
+        "session.filled_multi.Msl=%r pending_vns=%s",
+        session.turn,
+        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
+        [a.variable_name for a in pending],
     )
 
     # Amendment 17 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): Tier-1's
@@ -10103,6 +10183,16 @@ def _run_cpq_turn_inner(
         )
         dropped_note = ""
 
+    logger.warning(
+        "TEMP_DEBUG turn=%s pre-filter session.filled_multi.Msl=%r "
+        "Msl_in_visible_attrs=%s Msl_in_dropped_multi=%s Msl_in_attrs=%s dropped_multi_keys=%s",
+        session.turn,
+        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
+        any(a.variable_name == "modelSelectionFrequencyBandMsl_astro" for a in visible_attrs),
+        "modelSelectionFrequencyBandMsl_astro" in dropped_multi,
+        any(a.variable_name == "modelSelectionFrequencyBandMsl_astro" for a in attrs),
+        sorted(dropped_multi.keys()),
+    )
     session.filled = filled
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
@@ -10112,8 +10202,25 @@ def _run_cpq_turn_inner(
     }
     session.filled_multi = {
         k: v for k, v in session.filled_multi.items()
-        if any(a.variable_name == k for a in visible_attrs)
+        # Keep a value dormant rather than purge it just because it isn't
+        # part of THIS turn's visible set — a multi-select auto-defaulted
+        # before an upstream required attr (Product, Base Model, ...) is
+        # answered gets hidden by "if Product is blank"-style rules for
+        # exactly that one turn, then never re-populated once it becomes
+        # visible again since nothing re-triggers the original default-pick
+        # a second time. Only drop entries the cascade explicitly
+        # invalidated this turn (`dropped_multi`, real conflicts, already
+        # surfaced to the customer) or that no longer exist in the catalog
+        # at all — never a value that's merely temporarily hidden.
+        if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
+    logger.warning(
+        "TEMP_DEBUG turn=%s post-filter session.filled_multi.Msl=%r "
+        "filled_multi_keys=%s",
+        session.turn,
+        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
+        sorted(session.filled_multi.keys()),
+    )
     # Cascade delta log (§7): record every value this pass introduced or
     # changed, tagged with its provenance, so later turns can explain "why"
     # from what actually happened rather than re-deriving it from the
@@ -10362,8 +10469,10 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
         product_quantity=session.product_quantity)
     result["json_response"] = payload
     result["json_button_flag"] = True
-    result["beautify"] = _cpq_engine.beautify_text(session.product_name, session.display_filled, attrs)
-    result["beautify_rows"] = _cpq_engine.beautify_rows(session.product_name, session.display_filled, attrs)
+    result["beautify"] = _cpq_engine.beautify_text(
+        session.product_name, session.display_filled, attrs, session.filled_source)
+    result["beautify_rows"] = _cpq_engine.beautify_rows(
+        session.product_name, session.display_filled, attrs, session.filled_source)
     result["beautify_button_flag"] = True
     result["api_share"] = payload if session.status != "configuring" else {}
     result["api_share_button_flag"] = session.status != "configuring"

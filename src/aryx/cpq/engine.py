@@ -1463,6 +1463,69 @@ _NEVER_SUPPRESS_FRAGMENTS: frozenset[str] = frozenset({
     "basemodel", "product", "country", "region", "hwversion", "hardwareversion",
 })
 
+# The exact (not fragment-matched) variable names of this catalog's real
+# decision anchors -- used by evaluate_rules_loop to tell "hidden because an
+# anchor is still blank" (merely gating, values dormant/preserved) apart
+# from "hidden with every anchor already answered" (a real, current-state
+# conflict, values stripped exactly as before). See the strip-vs-preserve
+# comment at its one call site for the live-confirmed regression this
+# narrower, exact-name check exists to avoid repeating.
+_DECISION_ANCHOR_VNS: tuple[str, ...] = (
+    "ultimateDestinationCountry", "hWVersion_astro",
+    "productSelectionProduct_all", "modelSelectionbaseModel_astro",
+)
+
+# Attrs confirmed live (2026-08-16, cross-checked against real native-UI
+# screenshots for APX NEXT Enhanced/XE 4G LTE+5G) to be orphaned/legacy --
+# they have ZERO attrSequence rows anywhere in the workspace (any CPQModel,
+# any base model), so _suppress_ungoverned_attrs's "total silence, not a
+# confident exclusion" carve-out normally leaves them visible. For these
+# specific, verified-dead attrs that default is wrong: native CPQ never
+# renders modelSelectionFrequencyBands_astro (20-option legacy single-
+# select) or modelSelectionFrequencyBandPlus_astro for any APX NEXT
+# product -- modelSelectionFrequencyBandMsl_astro is the real, attrSequence-
+# governed control. Narrow allowlist, not a change to the general silence
+# carve-out, since most attrs with zero attrSequence coverage genuinely are
+# ambiguous rather than confirmed-dead.
+_CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
+    "modelSelectionFrequencyBands_astro",
+    "modelSelectionFrequencyBandPlus_astro",
+})
+
+# Multi-select attrs confirmed live (2026-08-16) to default to EVERY
+# Whitelist/Data-Table-confirmed-legal option checked, not just one --
+# real-world meaning is "which of these apply" (coverage), not "pick one
+# among many". See the one call site (auto_fill's narrowed-legal-values
+# branch) for why this is a narrow, named allowlist rather than a change
+# to that branch's default behavior for every multi-select.
+_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: frozenset[str] = frozenset({
+    "modelSelectionFrequencyBandMsl_astro",
+})
+
+# Attrs confirmed live (2026-08-16) to have NO real basis for an auto-fill
+# guess at all -- required=False, no real default_value, and ZERO
+# recommendation rules ever targeting them (verified via
+# CpqEngine.load_recommendation_and_constraint_rules), yet governed_target_
+# ids' blanket "any required=False attr is blind-fill-eligible" rule
+# (widened for the APX NEXT catalog's <=3-prompt turn-count requirement)
+# swept them in anyway. Two have zero attrSequence coverage for ANY
+# CPQModel workspace-wide (accessoriesSolutionSet_astro,
+# relatedServicesType_astro -- same orphaned-with-real-catalog-entry shape
+# as _CONFIRMED_DEAD_ATTRS, just multi-select); the other two
+# (selectEndUserType_astro, agencyHasMotorolaEvidenceSolution_astro) DO
+# have real attrSequence coverage but are genuinely customer-specific facts
+# (end-user type, whether the agency already has a Motorola Evidence
+# solution) no rule anywhere recommends a value for -- silently guessing
+# one is a real business answer, not a cosmetic default, so these fall
+# through to `pending` and get asked instead.
+_NEVER_BLIND_FILL_VNS: frozenset[str] = frozenset({
+    "additionalSystemEnhancementFeatureType_astro",
+    "accessoriesSolutionSet_astro",
+    "relatedServicesType_astro",
+    "selectEndUserType_astro",
+    "agencyHasMotorolaEvidenceSolution_astro",
+})
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -1554,6 +1617,88 @@ def _cpq_model_candidates(
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
     return primary + extra if extra else primary
+
+
+# Matches `put(<dictVar>,"Attribute Variable Name","<attrName>")` -- the
+# real BML idiom rule scripts use to name their own target attribute.
+# Case/quote-style-tolerant since real scripts vary ("inputparam" vs
+# "inputParam", "Attribute Variable Name" is always this exact label
+# though -- confirmed across every traced rule).
+_UTIL_ATTR_VAR_NAME_RE = re.compile(
+    r'put\(\s*\w+\s*,\s*"Attribute Variable Name"\s*,\s*"([^"]+)"\s*\)',
+)
+# Matches the actual `util.getConstraintVals(<dictVar>, <listVar>)` call
+# site to replace -- same idiom every real constraint-rule script uses
+# (docs/CPQ_UTIL_LIBRARY_FUNCTION_INVENTORY_2026_08_13.md). This is a
+# NATIVE, compiled Oracle Java platform function with no BML source in
+# any export ever seen -- the BML evaluator correctly can't execute it and
+# returns "unknown" (never guess), which is why a constraint rule calling
+# it silently narrows nothing instead of erroring. Confirmed live
+# (2026-08-14): "Restrict Model Selection Attributes (Portable)" targeting
+# modelSelectionFrequencyBands_astro returns None from
+# BmlEvaluator.allowed_values_for_script for exactly this reason, leaving
+# the raw catalog menu unfiltered instead of the real, narrowed legal set.
+_UTIL_GET_CONSTRAINT_VALS_CALL_RE = re.compile(
+    r'util\.getConstraintVals\s*\(\s*\w+\s*,\s*\w+\s*\)',
+)
+
+
+def _substitute_util_get_constraint_vals(
+    script: str, filled: dict[str, str],
+    workspace_id: int | None, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+) -> str:
+    """Precompute `util.getConstraintVals(...)` and splice the real,
+    ingested legal-value set into `script` as a pipe-delimited string
+    literal (the same delimiter convention BmlEvaluator's own Tier-2
+    prompt already documents: "determine which values the script allows
+    (its returnVal, split on '|')"), so the shared Tier-1/Tier-2 evaluator
+    sees a script with NO `util.` reference left and can parse the
+    surrounding if/elif chain (or, for the common single-statement idiom,
+    the bare `return "<literal>"`) normally instead of being forced to
+    Tier-2 LLM guessing purely because of this one call.
+
+    `util.getConstraintVals`'s real backing data (docs/CPQ_UTIL_LIBRARY_
+    FUNCTION_INVENTORY_2026_08_13.md) is the same already-ingested
+    constraint-shaped Data Table `resolve_whitelist_values` already
+    queries for the narrowed-ask/blind-pick paths elsewhere in this file
+    (the "Constrain Master String" the real script reads from is itself
+    built from these same rows) -- reused directly here rather than
+    reimplementing the AND-condition matching a second time.
+
+    Deliberately narrow: only substitutes when (a) the call is present at
+    all, (b) the script's own "Attribute Variable Name" param names the
+    real target attr, (c) CPQModel/base model both resolve from `filled`,
+    and (d) `resolve_whitelist_values` finds real ingested rows for this
+    exact (cpq_model, base_model, attr_var_name) combination -- `None` (no
+    rows at all, e.g. the confirmed-live APX NEXT Enhanced/Frequency Bands
+    gap) leaves the script unchanged, still falling through to Tier-2
+    exactly as before; only a genuine `None`-vs-list distinction changes
+    behavior, never a guess. An empty list (`[]`, real rows exist but none
+    match the current filled context) still substitutes -- a confirmed
+    "nothing legal right now" is real information, not an unknown.
+    """
+    if "util.getConstraintVals" not in script or workspace_id is None:
+        return script
+    attr_match = _UTIL_ATTR_VAR_NAME_RE.search(script)
+    if not attr_match:
+        return script
+    attr_var_name = attr_match.group(1)
+    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    product = filled.get("productSelectionProduct_all", "")
+    if not base_model:
+        return script
+    for cpq_model in _cpq_model_candidates(
+        product, workspace_id, catalog_prefix, cache, base_model=base_model,
+    ):
+        values = dt_resolve_whitelist_values(
+            cpq_model, base_model, attr_var_name, filled, workspace_id, catalog_prefix, cache,
+        )
+        if values is not None:
+            joined = "|".join(values)
+            escaped = joined.replace("\\", "\\\\").replace('"', '\\"')
+            return _UTIL_GET_CONSTRAINT_VALS_CALL_RE.sub(f'"{escaped}"', script)
+    return script
 
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
@@ -5395,6 +5540,9 @@ class CpqEngine:
         filled: dict[str, str],
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> dict[int, list[str]]:
         """Return {attr_entity_id: [allowed_item_values]} for attrs with active constraints.
 
@@ -5479,7 +5627,10 @@ class CpqEngine:
             if rule.script is not None:
                 if bml_eval is None:
                     continue
-                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                _script = _substitute_util_get_constraint_vals(
+                    rule.script, filled, workspace_id, catalog_prefix, _dt_cache,
+                )
+                allowed = bml_eval.allowed_values_for_script(_script, filled)
                 if allowed:
                     _intersect(target, allowed, frozenset({f"script:{rule.rule_name}"}))
                     rule_trace.record_fire(
@@ -5877,15 +6028,39 @@ class CpqEngine:
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
                 attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=multi)
 
-            # Strip values ONLY for attrs an explicit hiding rule removed from
-            # view. Popping everything not currently visible (the old
-            # behaviour) also destroyed confirmed answers whose attr merely
-            # wasn't part of this load — dropping user data from the payload.
-            for k in hidden_vns:
-                filled.pop(k, None)
-                display_filled.pop(k, None)
-                sources.pop(k, None)
-                multi.pop(k, None)
+            # docs/CPQ_HIDDEN_VALUE_TEMPORARY_VS_CONFIRMED_PLAN_2026_08_16.md
+            # -- strip filled/multi for `hidden_vns` UNLESS a core decision
+            # anchor (Product, Base Model, Hardware Version, Country) is
+            # still unanswered. That's the one narrow window where a hide
+            # is merely gating ("Hide all attributes if Product is Blank")
+            # rather than a real invalidation -- e.g.
+            # modelSelectionFrequencyBandMsl_astro's default-picked
+            # '700/800 MHZ' got permanently wiped the moment Hardware
+            # Version was answered but Product was still blank, and never
+            # returned once Product was answered the next turn, even
+            # though nothing about the value itself was ever wrong.
+            #
+            # An EARLIER version of this fix stopped stripping on
+            # `hidden_vns` unconditionally, for ANY reason -- live-
+            # confirmed regression: once every anchor IS answered, a hide
+            # almost always means a REAL, current-state conflict (Package
+            # Type vs. the just-chosen Product, a carrier no longer valid
+            # for the resolved Base Model, ...), and leaving those stale
+            # values in `filled`/`multi` let them keep colliding with new
+            # answers turn after turn -- rule-consistency issue count grew
+            # 6 -> 10 -> 12 -> 13 -> 16 across one session, and Package
+            # Type/Product got stuck re-invalidating each other in a loop.
+            # Restricting the skip to "an anchor is still blank" keeps the
+            # original fix for the one case that actually needs it while
+            # restoring the old, safe strip for every later-stage conflict.
+            if all(
+                filled.get(_anchor_vn) for _anchor_vn in _DECISION_ANCHOR_VNS
+            ):
+                for k in hidden_vns:
+                    filled.pop(k, None)
+                    display_filled.pop(k, None)
+                    sources.pop(k, None)
+                    multi.pop(k, None)
 
             # Real Oracle CPQ attrSequence Data Table narrowing -- an attr
             # confidently NOT part of the active base model per real
@@ -6022,6 +6197,7 @@ class CpqEngine:
 
             constrained_opts = self.apply_constraint_rules(
                 attrs, con_rules, filled, bml_eval=bml_eval, filled_multi=multi,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
             )
             _t0 = time.monotonic()
             self._apply_series_mapping_exclusions(
@@ -6439,6 +6615,17 @@ class CpqEngine:
             if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
                 continue
             governed.add(attr.entity_id)
+        # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_
+        # 10.md follow-up (2026-08-16): the widening above sweeps in ANY
+        # required=False attr regardless of whether anything actually
+        # justifies a guess. `_NEVER_BLIND_FILL_VNS` is a narrow, confirmed-
+        # live exception list -- removed unconditionally here (not just
+        # skipped in the loop above) so it wins even if one of them were
+        # ever also swept in via `rule_governed_ids`.
+        governed -= {
+            attr.entity_id for attr in attrs
+            if attr.variable_name in _NEVER_BLIND_FILL_VNS
+        }
         return governed
 
     @staticmethod
@@ -6619,6 +6806,10 @@ class CpqEngine:
                 visible.append(attr)
             elif vn in governed_names:
                 visible.append(attr)
+            elif vn in _CONFIRMED_DEAD_ATTRS:
+                # Verified-dead override -- skip the "total silence" carve-
+                # out below for these specific, cross-checked attrs.
+                suppressed.add(vn)
             elif not any(
                 dt_attr_ever_governed_for_cpq_model(cm, vn, workspace_id, catalog_prefix, cache)
                 for cm in cands
@@ -8089,6 +8280,7 @@ class CpqEngine:
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
+                and vn not in _NEVER_BLIND_FILL_VNS
             ):
                 # A multi-select that reached here (no single-remaining-
                 # option, not required=1 in the raw XML) has nothing
@@ -8260,10 +8452,34 @@ class CpqEngine:
                         if _dt_legal is not None else candidate_opts
                     )
                     if _narrowed_opts:
-                        first_opt = _narrowed_opts[0]
-                        filled_multi[vn] = [first_opt.item_value]
-                        display_filled[vn] = first_opt.display_name
-                        sources.setdefault(vn, "default_first_available")
+                        if vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS:
+                            # Live-confirmed (2026-08-16): native CPQ UI
+                            # checks EVERY Whitelist-confirmed-legal option
+                            # by default for these specific attrs (real-
+                            # world meaning is "which of these does this
+                            # unit support", e.g. Frequency Band coverage)
+                            # -- picking only _narrowed_opts[0] silently
+                            # dropped 2 of 3 real, legal, native-UI-checked
+                            # values (modelSelectionFrequencyBandMsl_astro:
+                            # only '700/800 MHZ' ever reached the payload,
+                            # never 'VHF'/'UHF'). Deliberately a narrow,
+                            # named allowlist, NOT a blanket change to this
+                            # branch -- carrierSelectionMultiSelect_astro
+                            # hits this exact same code path and genuinely
+                            # needs the OPPOSITE behavior (native UI leaves
+                            # it unresolved/"Invalid selection" rather than
+                            # auto-checking every legal carrier), so
+                            # defaulting to "select all" here for every
+                            # attr would be a regression, not a fix.
+                            filled_multi[vn] = [o.item_value for o in _narrowed_opts]
+                            display_filled[vn] = ", ".join(
+                                o.display_name for o in _narrowed_opts)
+                            sources.setdefault(vn, "default_first_available")
+                        else:
+                            first_opt = _narrowed_opts[0]
+                            filled_multi[vn] = [first_opt.item_value]
+                            display_filled[vn] = first_opt.display_name
+                            sources.setdefault(vn, "default_first_available")
                     else:
                         # Real Data Table confirms ZERO legal values for
                         # this exact context (`_dt_legal == []`) -- a
@@ -10415,6 +10631,39 @@ class CpqEngine:
         )
         return payload, unresolved
 
+    def _is_mandatory_input_attr(
+        self, vn: str, attr: "ConfigAttr | None", source: str | None,
+    ) -> bool:
+        """Tier A/B scoping key (docs/CPQ_GOVERNED_BLINDPICK_AND_CONFIGDATA_
+        BEAUTIFY_FIX_PLAN_2026_08_14.md Fix 2, extended for beautify's
+        Mandatory/System split) — True only for structurally-required
+        decision anchors (Hardware Version, exact productSelectionProduct_
+        all match, "basemodel"/"selectmodel"-named attrs) and attributes
+        the customer directly answered (source=="user"). Shared by
+        `build_payload` (scopes `config_data` to this set) and
+        `beautify_rows`/`beautify_text` (splits their output into a
+        "Mandatory User Input" section using this same signal vs. a
+        "System-Configured / Recommended" section for everything else) —
+        one scoping key, two consumers, so the two views can never silently
+        drift apart on what counts as "genuinely required."
+
+        `attr` may be `None` (no ConfigAttr resolved for this key) — such a
+        key can never be a structural anchor, so only the `source=="user"`
+        fallback can include it.
+        """
+        vn_flat = vn.lower().replace("_", "")
+        tier_a = attr is not None and (
+            vn == "productSelectionProduct_all"
+            or self._is_hardware_version_attr(attr)
+            or "basemodel" in vn_flat
+            or "selectmodel" in vn_flat
+        )
+        tier_b = (
+            any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+            and source == "user"
+        )
+        return tier_a or tier_b or source == "user"
+
     def build_payload(
         self,
         filled: dict[str, str],
@@ -10425,8 +10674,20 @@ class CpqEngine:
         rules: list[Any] | None = None,
         display_order: dict[str, int] | None = None,
         product_quantity: int | None = None,
+        scope_required_and_edited: bool = False,
     ) -> dict[str, Any]:
         """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
+
+        scope_required_and_edited — opt-in (default False, preserving every
+        existing caller's behavior byte-for-byte). When True, restricts
+        config_data to only `_is_mandatory_input_attr`'s Tier A/B set —
+        structurally-required decision anchors plus attributes the
+        customer directly answered. Everything else (cosmetic auto-fills,
+        blind-picked defaults) is excluded from config_data, though it
+        still exists in `filled`/`filled_multi` for beautify/summary
+        purposes elsewhere. Deliberately NOT wired into the real-submission
+        call path — only the JSON-preview response should ever pass True;
+        a real BOM submission must stay unscoped/full.
 
         product_quantity — the session-level order quantity, added as a
         top-level ``"quantity"`` key SIBLING to ``configData`` (never
@@ -10617,6 +10878,10 @@ class CpqEngine:
                 # not ALSO ship as a separate flat top-level key.
                 continue
             attr = attr_by_vn.get(k)
+            if scope_required_and_edited and not self._is_mandatory_input_attr(
+                k, attr, sources.get(k),
+            ):
+                continue
             if attr is not None and attr.hide_in_trans:
                 continue
             if attr is not None and attr.is_array_control:
@@ -10715,6 +10980,10 @@ class CpqEngine:
             if k in hidden or not vals or self._is_noise_var(k):
                 continue
             attr = attr_by_vn.get(k)
+            if scope_required_and_edited and not self._is_mandatory_input_attr(
+                k, attr, sources.get(k),
+            ):
+                continue
             if attr is not None and attr.hide_in_trans:
                 continue
             if (attr is not None and attr.array_set_id is not None
@@ -11386,11 +11655,57 @@ class CpqEngine:
                 return category
         return _SUMMARY_FALLBACK_CATEGORY
 
+    _BEAUTIFY_MANDATORY_SECTION = "Mandatory User Input"
+    _BEAUTIFY_SYSTEM_SECTION = "System-Configured / Recommended"
+
+    def _beautify_sectioned_rows(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None,
+        filled_source: dict[str, str] | None,
+    ) -> list[tuple[str, str, str]]:
+        """Shared (section, label, value) rows for beautify_text/beautify_rows.
+
+        When `filled_source` is supplied, splits the output into two
+        sections using the SAME `_is_mandatory_input_attr` signal
+        `build_payload`'s `scope_required_and_edited` uses to scope
+        `config_data` — one scoping key, two consumers (docs/CPQ_
+        GOVERNED_BLINDPICK_AND_CONFIGDATA_BEAUTIFY_FIX_PLAN_2026_08_14.md).
+        This matches native Oracle CPQ's own "Mandatory User Input" box vs.
+        everything else, instead of one flat, undifferentiated list.
+
+        `filled_source=None` (the default, for existing callers that don't
+        pass it) preserves the original single-section behavior exactly —
+        every row lands in the Mandatory section so the flat "Product +
+        every substantive field" list callers already depend on is
+        byte-for-byte unchanged; only callers that opt in by passing
+        `filled_source` get the two-section split.
+        """
+        triples = self._filled_summary_triples(display_filled, attrs)
+        attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
+        rows: list[tuple[str, str, str]] = [
+            (self._BEAUTIFY_MANDATORY_SECTION, "Product", product_name),
+        ]
+        for var, label, value in triples:
+            if filled_source is None:
+                section = self._BEAUTIFY_MANDATORY_SECTION
+            else:
+                attr = attr_by_vn.get(var)
+                section = (
+                    self._BEAUTIFY_MANDATORY_SECTION
+                    if self._is_mandatory_input_attr(var, attr, filled_source.get(var))
+                    else self._BEAUTIFY_SYSTEM_SECTION
+                )
+            rows.append((section, label, value))
+        return rows
+
     def beautify_text(
         self,
         product_name: str,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> str:
         """Human-readable ``Label : Value`` block for the Beautify button.
 
@@ -11400,24 +11715,56 @@ class CpqEngine:
         Used as-is by clients that display plain text (e.g. Streamlit's
         st.code). Clients that render a real table use
         beautify_rows()'s structured pairs instead of parsing this string.
+
+        filled_source — optional (default None, preserving the original
+        flat single-list output exactly). When supplied, renders TWO
+        headed sections — "Mandatory User Input" then "System-Configured
+        / Recommended" — using `_is_mandatory_input_attr`'s Tier A/B
+        signal, matching native Oracle CPQ's own visual grouping instead
+        of one undifferentiated list.
         """
-        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        width = max(len(label) for label, _ in pairs)
-        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+        rows = self._beautify_sectioned_rows(product_name, display_filled, attrs, filled_source)
+        if filled_source is None:
+            pairs = [(label, value) for _section, label, value in rows]
+            width = max(len(label) for label, _ in pairs)
+            return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+        width = max(len(label) for _section, label, _value in rows)
+        lines: list[str] = []
+        for section in (self._BEAUTIFY_MANDATORY_SECTION, self._BEAUTIFY_SYSTEM_SECTION):
+            section_rows = [(label, value) for sec, label, value in rows if sec == section]
+            if not section_rows:
+                continue
+            lines.append(f"**{section}:**")
+            lines.extend(f"{label.ljust(width)} : {value}" for label, value in section_rows)
+            lines.append("")
+        return "\n".join(lines).rstrip("\n")
 
     def beautify_rows(
         self,
         product_name: str,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> list[dict[str, str]]:
-        """Structured [{label, value}, ...] pairs for clients that render a
-        real tabular UI (e.g. the Next.js Beautify panel) instead of plain
-        text — same data and filtering as beautify_text(), just not
-        flattened into a display string. No LLM call.
+        """Structured [{label, value, section}, ...] pairs for clients that
+        render a real tabular UI (e.g. the Next.js Beautify panel) instead
+        of plain text — same data and filtering as beautify_text(), just
+        not flattened into a display string. No LLM call.
+
+        filled_source — optional (default None). When supplied, each row
+        carries a `"section"` key — "Mandatory User Input" or "System-
+        Configured / Recommended" — via `_is_mandatory_input_attr`'s Tier
+        A/B signal, the SAME one `build_payload`'s `scope_required_and_
+        edited` uses to scope `config_data`, so the two views can never
+        silently drift apart on what counts as "genuinely required."
+        When `filled_source` is omitted, every row's `"section"` is the
+        Mandatory label (a harmless, additive key existing callers that
+        only read `label`/`value` can safely ignore) — output shape and
+        row set are otherwise byte-for-byte identical to before this
+        parameter existed.
         """
-        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        return [{"label": label, "value": value} for label, value in pairs]
+        rows = self._beautify_sectioned_rows(product_name, display_filled, attrs, filled_source)
+        return [{"section": section, "label": label, "value": value} for section, label, value in rows]
 
     def render_filled_summary(
         self,
