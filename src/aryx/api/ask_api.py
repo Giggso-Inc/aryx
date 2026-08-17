@@ -5866,7 +5866,8 @@ def _build_json_preview_response(
         hidden_vns=hidden_for_payload,
         rules=[*hiding_rules, *rec_rules, *con_rules],
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
-        product_quantity=session.product_quantity)
+        product_quantity=session.product_quantity,
+        scope_required_and_edited=True)
     rule_ids_preview = _cpq_engine.rule_governed_ids(
         attrs, hiding_rules, rec_rules, con_rules)
     summary = _cpq_summary_text(
@@ -10329,7 +10330,8 @@ def _run_cpq_turn_inner(
                 hidden_vns=_hidden_now,
                 rules=[*hiding_rules, *rec_rules, *con_rules],
                 display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
-                product_quantity=session.product_quantity)
+                product_quantity=session.product_quantity,
+                scope_required_and_edited=True)
             summary = _cpq_summary_text(
                 display_filled, visible_attrs, rule_ids,
                 session.product_name, req.workspace_id, sources=session.filled_source,
@@ -10466,7 +10468,8 @@ def _attach_share_flags(result: dict[str, Any], req: "AskRequest", reader: Any) 
         hidden_vns=flow_exclusions,
         rules=[*hiding_rules_preview, *rec_rules_preview, *con_rules_preview],
         display_order=_cpq_engine.load_layout_display_order(req.workspace_id, catalog_prefix),
-        product_quantity=session.product_quantity)
+        product_quantity=session.product_quantity,
+        scope_required_and_edited=True)
     result["json_response"] = payload
     result["json_button_flag"] = True
     result["beautify"] = _cpq_engine.beautify_text(

@@ -1518,6 +1518,22 @@ _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: frozenset[str] = frozenset({
 # solution) no rule anywhere recommends a value for -- silently guessing
 # one is a real business answer, not a cosmetic default, so these fall
 # through to `pending` and get asked instead.
+#
+# Refined 2026-08-16 (same day): NOT excluded from `governed_target_ids`
+# -- an earlier version did that, which also blocked these attrs' own
+# confident "a real constraint narrowed this to exactly one legal value"
+# auto-fill path (e.g. once Oracle_BomItemMap/Oracle_BomItemDef are
+# ingested, accessoriesSolutionSet_astro's constraint could legitimately
+# resolve to a single real category, which SHOULD auto-fill same as any
+# other attr). Instead this set is checked at the specific auto_fill call
+# sites that had NO other real-data guard at all: the unconditional
+# multi-select "nothing to justify a subset" fallback, and the two
+# single-select first-by-order fallbacks (display-order-based and the
+# final bare-menu-order one). Every earlier, more specific branch in the
+# same method (satisfied recommendation, Data Table single-match,
+# confirmed-valid default under an active constraint, exactly-one-
+# remaining-option) is left completely untouched and still fires
+# normally for these attrs whenever real data actually supports it.
 _NEVER_BLIND_FILL_VNS: frozenset[str] = frozenset({
     "additionalSystemEnhancementFeatureType_astro",
     "accessoriesSolutionSet_astro",
@@ -6616,16 +6632,19 @@ class CpqEngine:
                 continue
             governed.add(attr.entity_id)
         # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_
-        # 10.md follow-up (2026-08-16): the widening above sweeps in ANY
-        # required=False attr regardless of whether anything actually
-        # justifies a guess. `_NEVER_BLIND_FILL_VNS` is a narrow, confirmed-
-        # live exception list -- removed unconditionally here (not just
-        # skipped in the loop above) so it wins even if one of them were
-        # ever also swept in via `rule_governed_ids`.
-        governed -= {
-            attr.entity_id for attr in attrs
-            if attr.variable_name in _NEVER_BLIND_FILL_VNS
-        }
+        # 10.md follow-up (2026-08-16, refined same day): `_NEVER_BLIND_
+        # FILL_VNS` attrs are DELIBERATELY left in `governed` here -- an
+        # earlier version of this method unconditionally excluded them,
+        # which also blocked their own confident "a real constraint
+        # narrowed this to exactly one legal value" auto-fill path (e.g.
+        # once Oracle_BomItemMap/Oracle_BomItemDef are ingested,
+        # accessoriesSolutionSet_astro's constraint could legitimately
+        # resolve to a single real category). The actual "nothing
+        # justifies a guess" case is blocked at its specific, narrower
+        # call sites instead (auto_fill's unconditional multi-select and
+        # single-select first-by-order fallbacks) -- see
+        # `_NEVER_BLIND_FILL_VNS`'s own docstring for exactly which two
+        # sites and why each needed its own guard rather than one here.
         return governed
 
     @staticmethod
@@ -8162,7 +8181,10 @@ class CpqEngine:
                                 value = match.item_value
                                 display = match.display_name
                                 source = "default"
-                        elif display_order is not None and vn in display_order:
+                        elif (
+                            display_order is not None and vn in display_order
+                            and vn not in _NEVER_BLIND_FILL_VNS
+                        ):
                             # §2f, superseded by explicit instruction
                             # (2026-08-09): governed (some rule targets this
                             # attr) but nothing -- no active constraint, no
@@ -8206,7 +8228,7 @@ class CpqEngine:
                             # skips it, since it's neither a decision attr
                             # nor a grid selector).
                             pass
-                        else:
+                        elif vn not in _NEVER_BLIND_FILL_VNS:
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
                             # states) and safe here because a rule REQUIRES this
@@ -8214,6 +8236,12 @@ class CpqEngine:
                             value = valid_opts[0].item_value
                             display = valid_opts[0].display_name
                             source = governed_source
+                        # else (vn in _NEVER_BLIND_FILL_VNS): nothing above
+                        # (rec/data-table/confirmed-default) justified a
+                        # value for this specific, confirmed-no-real-basis
+                        # attr -- leave unset rather than guess first-by-
+                        # order, same principle as the multi-select guard
+                        # below.
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif (
                 not value and is_governed and not is_decision_attr
