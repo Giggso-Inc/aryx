@@ -666,6 +666,41 @@ def _country_alias_group(value: str) -> frozenset[str] | None:
             return group
     return None
 
+
+def _normalize_country_candidate(value: str) -> str:
+    """Lowercase/strip a raw country candidate and collapse the specific
+    punctuation ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_
+    2026_08_17.md) identified as the live bug class -- periods used as
+    abbreviation markers ("U.S.A", "US.A", "U.K", "U.A.E") -- down to the
+    same plain token `_COUNTRY_ALIAS_GROUPS` already keys on (e.g. "usa",
+    "uk", "uae"). Deliberately generic string normalization only (case,
+    periods, whitespace) -- never a per-country substitution list, so it
+    applies identically to all 249 real countries above, not just the
+    US/UK/UAE examples the bug was originally reported against."""
+    collapsed = value.strip().lower().replace(".", "")
+    return re.sub(r"\s+", " ", collapsed).strip()
+
+
+def _country_canonical_name(group: frozenset[str]) -> str:
+    """Pick a human-readable canonical common name out of an alias group,
+    generically -- never a per-country hardcoded lookup table.
+
+    Every group is a flat, unordered frozenset mixing alpha-2 (2 chars),
+    alpha-3 (3 chars), common name, and official name -- the original
+    pycountry generation order (engine.py:387+ comment) isn't preserved
+    once the data became a frozenset. Codes are always <=3 chars by ISO
+    3166-1 construction; every common/official name in this table is
+    longer than that. Among whatever's left after dropping the codes,
+    the common name is reliably the SHORTEST remaining member, since
+    official names are always longer superset phrasings of the common
+    form ("republic of X", "kingdom of X", "X of America", ...).
+    Verified against every group in `_COUNTRY_ALIAS_GROUPS` above (e.g.
+    "united states" beats "united states of america"; "south korea"
+    beats "korea, republic of"; "ivory coast" beats "republic of côte
+    d'ivoire") -- this function's logic never names a specific country."""
+    candidates = [member for member in group if len(member) > 3] or list(group)
+    return min(candidates, key=len).title()
+
 # Generic country extraction — captures any proper-noun country name from NL
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
 # The extracted name is matched word-boundary against DB option display names,
@@ -6442,9 +6477,32 @@ class CpqEngine:
         return governed
 
     @staticmethod
-    def is_recognized_country(value: str) -> bool:
-        """True when `value` is a real country name/abbreviation this
-        engine can resolve a region for (a key in `_COUNTRY_TO_REGION`).
+    def is_recognized_country(value: str) -> str | None:
+        """The canonical common name (e.g. "United States") when `value`
+        is a real, recognized country -- by common name, official name,
+        ISO alpha-2/alpha-3 code, or a punctuation/abbreviation variant
+        of any of those ("US.A", "U.K", "U.A.E") -- else None.
+
+        ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
+        17.md): previously checked membership in `_COUNTRY_TO_REGION` --
+        a small, hand-typed dict of exact strings covering a narrow
+        subset of countries, with none of their punctuation/abbreviation
+        variants ("us.a" was never a key). Now normalizes the candidate
+        (`_normalize_country_candidate`) and checks it against
+        `_country_alias_group` -- the comprehensive, symmetric, 249-real-
+        country alias table already built for exactly this purpose
+        (`engine.py:404+`) -- so any real alias/punctuation/abbreviation
+        form of any of the 249 countries resolves here, not just the
+        handful the old dict happened to spell out.
+
+        Returns `str | None` rather than the old bare `bool` because this
+        is the single shared validation gate for THREE call sites (Path
+        B's bare-anchor-reply hint validation, Path C's change-command
+        gate, and Path C's downstream LLM-result validation) that all
+        need the RESOLVED canonical value, not just a yes/no -- a caller
+        that only ever needed the boolean keeps working unmodified, since
+        a non-empty string is truthy and `None` is falsy, identical to
+        the old bool contract.
 
         Guards `session.country`'s own assignment (ask_api.py) against a
         real, confirmed live bug: `extract_hints`' generic
@@ -6458,12 +6516,30 @@ class CpqEngine:
         this early permanently blocks `derive_region` for the rest of the
         session with no way to self-correct. Since `session.country`'s
         only consumer is `derive_region`, and `derive_region` itself
-        already returns None for anything not in `_COUNTRY_TO_REGION`,
+        already returns None for anything it can't resolve a region for,
         rejecting an unrecognized candidate BEFORE it's stored costs
         nothing today and stops it from calcifying into a wrong value
         that can never be replaced by a later, correct hint.
+
+        A candidate that exactly matches one of THIS system's own region
+        codes (`_COUNTRY_TO_REGION`'s values -- "NA"/"EMEA"/"ME"/"APAC"/
+        "LA", not a new hardcoded list) is rejected before the alias-group
+        check runs, regardless of whether it also happens to be a real
+        country's ISO alpha-2 code -- confirmed live: "NA" is genuinely
+        BOTH this codebase's own "North America" region token AND
+        Namibia's real alpha-2 code, and in this system a bare region
+        token was never meant to be accepted as a country
+        (test_garbage_and_product_fragments_not_recognized, predates this
+        fix). Reuses this file's own pre-existing region-code vocabulary
+        generically -- never a new per-country exclusion.
         """
-        return value.strip().lower() in _COUNTRY_TO_REGION
+        _normalized = _normalize_country_candidate(value)
+        if _normalized.upper() in _COUNTRY_TO_REGION.values():
+            return None
+        group = _country_alias_group(_normalized)
+        if group is None:
+            return None
+        return _country_canonical_name(group)
 
     @staticmethod
     def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
@@ -6476,10 +6552,32 @@ class CpqEngine:
         country with no mapping, or a catalog whose Region attr doesn't
         offer the derived code, returns None so the caller falls back to
         asking rather than guessing.
+
+        ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
+        17.md): `country` may legitimately arrive as any real alias of a
+        country (official name, alpha-2/alpha-3 code, a punctuation
+        variant like "us.a" normalized upstream to "United States", ...)
+        rather than one of the handful of literal strings
+        `_COUNTRY_TO_REGION` happens to spell out as keys. The direct
+        lookup below is tried first (fast path, unchanged behavior for
+        the exact forms that already worked); only when that misses does
+        this resolve `country` to its full alias group and retry the
+        lookup against every member of that group -- generic for all 249
+        real countries, never a per-country special case -- since
+        `_COUNTRY_TO_REGION`'s own keys are already just a few of a
+        country's many real aliases (e.g. "us"/"usa"/"united states" are
+        all present for the US entry today).
         """
         if not country:
             return None
         region_code = _COUNTRY_TO_REGION.get(country.strip().lower())
+        if not region_code:
+            group = _country_alias_group(_normalize_country_candidate(country))
+            if group:
+                for alias in group:
+                    region_code = _COUNTRY_TO_REGION.get(alias)
+                    if region_code:
+                        break
         if not region_code:
             return None
         for opt in attr.options:
@@ -9054,6 +9152,37 @@ class CpqEngine:
     def detect_approval(self, question: str) -> bool:
         """True when the user is approving/confirming the configuration (Step 8)."""
         return bool(self._APPROVAL_RE.search(question.strip()))
+
+    # Decline keywords — user is explicitly rejecting the awaiting-approval
+    # configuration (ISSUE-002, docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_
+    # PLAN_2026_08_17.md). Anchored at the start of the message exactly like
+    # _APPROVAL_RE above, deliberately NOT a bare substring search — a
+    # substring match on "no" would false-positive on ordinary attribute
+    # answers that happen to start with a negative word (e.g. "no carry
+    # solution" as a value), which this detector must never be consulted
+    # for anyway (callers only invoke it in awaiting-approval-adjacent
+    # dispatch), but the anchored shape keeps the regex itself conservative
+    # regardless of call site.
+    _DECLINE_RE = re.compile(
+        r"^no+\b[\s,!.]*$|"  # bare "no"/"noo" (optionally with trailing punctuation) alone
+        r"^(?:no+\b[\s,!.]*)?"
+        r"(?:i\s+(?:hereby\s+|just\s+|really\s+)?)?"
+        r"(nope|declin(?:e|ed|ing)|reject(?:ed|ing)?|cancel(?:led|ing)?|"
+        r"don'?t\s+(?:approve|submit|confirm|finali[sz]e|send\s+it|go\s+ahead)|"
+        r"do\s+not\s+(?:approve|submit|confirm|finali[sz]e|send\s+it|go\s+ahead)|"
+        r"not\s+(?:yet|now|ready)|hold\s+on|wait|"
+        r"that'?s?\s+(?:wrong|not\s+(?:right|correct))|go\s+back)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_decline(self, question: str) -> bool:
+        """True when the user is explicitly rejecting the awaiting-approval
+        configuration (Step 8 rejection). See ISSUE-002 fix plan for the
+        production bug this closes: an explicit "no, decline that" was being
+        misdispatched as an approval because no deterministic decline
+        detector existed at all.
+        """
+        return bool(self._DECLINE_RE.search(question.strip()))
 
     # "give/show me the (final) summary/configuration", "recap", "what do
     # I have so far" — a request to RE-SHOW the current configuration, not

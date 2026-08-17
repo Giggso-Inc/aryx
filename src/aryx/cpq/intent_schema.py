@@ -64,6 +64,16 @@ class IntentCategory(str, Enum):
     # at all and fell through to generic attribute disambiguation instead.
     COUNTRY_CHANGE = "country_change"
     APPROVAL = "approval"                               # detect_approval
+    # Explicit rejection of an awaiting-approval configuration — added
+    # 2026-08-17 (ISSUE-002, docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_
+    # PLAN_2026_08_17.md). Before this category existed, an explicit "no,
+    # decline that" had nowhere to land other than APPROVAL/AMBIGUOUS, and
+    # since APPROVAL was excluded from the deterministic cross-check every
+    # other mutating category gets, a confident-but-wrong LLM "approval"
+    # classification of decline language dispatched straight to the BOM
+    # approval handler. Maps to the new detect_decline detector (engine.py,
+    # _DECLINE_RE, next to detect_approval).
+    DECLINE = "decline"                                 # detect_decline
     QA_QUESTION = "qa_question"                         # detect_qa_question
     CHANGE_REQUEST = "change_request"                   # detect_change_request
     CHANGE_TARGET_WITHOUT_VALUE = "change_target_without_value"  # detect_change_target_without_value
@@ -397,6 +407,10 @@ GATEWAY_INTENT_JSON_SCHEMA: dict = {
 # Categories that do not require a variable_name target.
 _GATEWAY_NO_TARGET_CATEGORIES = frozenset({
     IntentCategory.APPROVAL,
+    # Explicit rejection of an awaiting-approval configuration -- a pure
+    # session-state transition, exactly like APPROVAL just above, with no
+    # catalog attribute to select (ISSUE-002 fix, 2026-08-17).
+    IntentCategory.DECLINE,
     IntentCategory.RESPONSE_MODE_REQUEST,
     IntentCategory.QA_QUESTION,
     IntentCategory.OUT_OF_SCOPE,
