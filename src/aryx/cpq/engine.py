@@ -1549,6 +1549,37 @@ _BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
     "accessoriesSolutionSet_astro",
 })
 
+# Catalog-agnostic "this is the opt-out choice" phrasing -- an attr with
+# no real fill justification (`_no_real_fill_justification`) still has a
+# safe, non-guessed answer available when exactly one of its menu options
+# itself says "nothing needed here" (e.g. preSalesEnggAcknowledgement_
+# astro's "Add-on sale, new system components or SI services are not
+# required"). This is fundamentally different from blind-picking among
+# several real business choices (_BLIND_FILL_RISK_ACCEPTED_VNS) -- it's
+# recognizing the customer's own catalog already offers a declared
+# "skip" answer, the same concept next_question_prompt's own "(Optional
+# — say 'skip' or 'none needed')" hint already surfaces conversationally.
+# Deliberately requires EXACTLY one match -- 2+ matches means the menu's
+# phrasing is ambiguous about which is the real opt-out, and guessing
+# between them would be exactly the guess-risk this whole mechanism
+# exists to avoid, so it falls through to asking instead.
+_OPT_OUT_OPTION_RE = re.compile(
+    r"\bnot\s+(?:required|needed|applicable)\b"
+    r"|\bnone\s+(?:needed|required)\b"
+    r"|\bn/?a\b"
+    r"|\bno(?:t)?\s+(?:action|service|item)s?\s+(?:required|needed)\b",
+    re.IGNORECASE,
+)
+
+
+def _sole_opt_out_option(valid_opts: list[Any]) -> Any | None:
+    matches = [
+        o for o in valid_opts
+        if _OPT_OUT_OPTION_RE.search(o.display_name or "")
+        or _OPT_OUT_OPTION_RE.search(o.item_value or "")
+    ]
+    return matches[0] if len(matches) == 1 else None
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -3369,6 +3400,11 @@ class CpqEngine:
             if e["id"] not in neighbor_map
             and str(attr_pg.get(e["id"], {}).get("menu_type") or "") == "1"
         ]
+        # Shared lazily-built pool for the override FK fallback below (step
+        # 3c) -- reused from step 3b's fk_menu_pg when that fallback already
+        # ran this call, since both need the same "every menu-item row in
+        # this catalog, keyed by graph entity id" data.
+        _fk_menu_pool: dict[int, dict] | None = None
         if orphan_eids:
             # A real BM native id can legitimately own more than one graph
             # entity_id (confirmed live: SL3500e ingested
@@ -3407,6 +3443,7 @@ class CpqEngine:
                         offset += page_size
                 fk_menu_pg = self._batch_fetch(
                     [m["id"] for m in fk_menu_ents], workspace_id)
+                _fk_menu_pool = fk_menu_pg
                 for mid, mdata in fk_menu_pg.items():
                     owner_eids = orphan_real_ids.get(str(mdata.get("bm_config_attr_id") or ""))
                     if not owner_eids:
@@ -3490,7 +3527,50 @@ class CpqEngine:
                              or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix)
                     ]
                     if not override_menu_ids:
-                        continue
+                        # FK fallback (2026-08-17, live-confirmed): same class
+                        # of gap as the base-attr orphan_eids fallback above,
+                        # but for override entities -- a bm_config_att_override
+                        # can have a real Postgres row and real bm_menu_item
+                        # children correctly linked via the ref_id property,
+                        # yet zero graph edges (confirmed live: override
+                        # entity 2251385 for productSelectionProduct_all has
+                        # 325 real menu items keyed by ref_id == its own
+                        # native id, but reader.neighbors() returns empty,
+                        # silently dropping "APX NEXT XE 4G LTE PLUS 5G" from
+                        # the Product menu). Detected structurally (empty
+                        # graph neighbors on an override row that exists in
+                        # Postgres), never by attr/catalog name, so it
+                        # self-heals for any override hitting the same gap.
+                        # Reuses the same menu-item pool as the base-attr
+                        # fallback (fetched lazily here if that fallback
+                        # didn't already run this call).
+                        if _fk_menu_pool is None:
+                            _fk_menu_pool = {}
+                            _menu_types_all = [
+                                t for t in all_type_names
+                                if _norm(t).endswith("menuitem")
+                                and (not resolved_catalog_prefix
+                                     or _catalog_prefix(t) == resolved_catalog_prefix)
+                            ]
+                            _fk_menu_ents_all: list[dict] = []
+                            for mt in _menu_types_all:
+                                _off = 0
+                                while True:
+                                    _page = reader.find_entities(
+                                        ontology_type=mt, limit=2000, offset=_off)
+                                    _fk_menu_ents_all.extend(_page)
+                                    if len(_page) < 2000:
+                                        break
+                                    _off += 2000
+                            _fk_menu_pool = self._batch_fetch(
+                                [m["id"] for m in _fk_menu_ents_all], workspace_id)
+                        override_native_id = str(override_pg.get(oeid, {}).get("id") or "")
+                        override_menu_ids = [
+                            mid for mid, mdata in _fk_menu_pool.items()
+                            if str(mdata.get("ref_id") or "") == override_native_id
+                        ]
+                        if not override_menu_ids:
+                            continue
                     for owner_eid in owner_eids:
                         # Prepended, not appended: the override is BM's
                         # authoritative, catalog-specific replacement for
@@ -7978,13 +8058,61 @@ class CpqEngine:
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
                 )
+                if allowed_for_attr is not None:
+                    # A constraint is a source of truth for VALIDITY, not
+                    # catalog spelling. If it names a legal value with no
+                    # literal item_value match in the real catalog (live-
+                    # confirmed: productSelectionProduct_all's constraint
+                    # returns 'APX NEXT XE 4G LTE PLUS 5G', which no real
+                    # option equals), keeping the phantom value in the
+                    # allowed set is harmless (nothing matches it anyway)
+                    # but discarding the WHOLE set back to unconstrained
+                    # over one bad value throws away the legitimate,
+                    # real-matching values too (live-confirmed regression:
+                    # Product went from a flip-flopping 1-2 option menu to
+                    # showing all 325 raw options). Drop only the phantom
+                    # entries -- keep whichever real values the constraint
+                    # did correctly narrow to. Falls back to fully
+                    # unconstrained only if EVERY value was phantom (an
+                    # empty allowed set would otherwise wrongly zero out
+                    # valid_opts entirely).
+                    real_item_values = {o.item_value for o in attr.options}
+                    narrowed = allowed_for_attr & real_item_values
+                    allowed_for_attr = narrowed or None
                 valid_opts = [
                     o for o in attr.options
                     if _valid(o.item_value)
                     and (allowed_for_attr is None or o.item_value in allowed_for_attr)
                 ]
-                if len(valid_opts) == 1 and attr.entity_id not in user_answered_dropped_ids:
+                if (
+                    len(valid_opts) == 1 and not is_decision_attr
+                    and attr.entity_id not in user_answered_dropped_ids
+                ):
                     # Exactly one choice — auto-fill, no user decision needed.
+                    #
+                    # EXCLUDED for is_decision_attr (2026-08-17, live-
+                    # confirmed): a constraint script can resolve a legal
+                    # value that has NO literal match in attr.options at
+                    # all (confirmed live: productSelectionProduct_all's
+                    # "Restrict APX Next Product Selection based on HW
+                    # Version" constraint correctly returned 2 legal
+                    # values, {'APX NEXT ENHANCED', 'APX NEXT XE 4G LTE
+                    # PLUS 5G'}, but the real catalog menu has no option
+                    # whose item_value literally equals the second string
+                    # at all -- only 'APX NEXT XE MULTI'/'APX NEXT XE
+                    # SINGLE BAND' exist). Intersecting against the real
+                    # menu then silently drops the phantom entry, leaving
+                    # "exactly 1" as a false positive from a script/
+                    # catalog mismatch, not a genuine single-choice
+                    # situation -- and Product got auto-filled without
+                    # ever asking. Depends on Tier-2 LLM evaluation timing
+                    # (whether the constraint script gets a slot before
+                    # the per-turn cap), so it doesn't reproduce every
+                    # turn -- non-decision attrs keep the original
+                    # shortcut; decision-required ones (Country/Region/
+                    # Hardware Version/Product) never take it, same
+                    # protection this whole function already gives them
+                    # everywhere else.
                     #
                     # EXCLUDED when this attr's only-one-option state exists
                     # because a constraint just rejected the CUSTOMER'S OWN
@@ -8189,6 +8317,21 @@ class CpqEngine:
                                 display = match.display_name
                                 source = "default"
                         elif (
+                            _no_real_fill_justification(attr, rec_by_target)
+                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                            and (opt_out_match := _sole_opt_out_option(valid_opts))
+                        ):
+                            # Nothing justifies picking among the REAL choices
+                            # here, but the menu itself declares one option as
+                            # the explicit "nothing needed" answer -- filling
+                            # that isn't a guess among business alternatives,
+                            # it's recognizing a choice the catalog already
+                            # made for the customer. See
+                            # `_sole_opt_out_option`'s own docstring.
+                            value = opt_out_match.item_value
+                            display = opt_out_match.display_name
+                            source = "opt_out_default"
+                        elif (
                             display_order is not None and vn in display_order
                             and not (
                                 _no_real_fill_justification(attr, rec_by_target)
@@ -8317,6 +8460,23 @@ class CpqEngine:
                             rule_type="auto_fill", rule_id=f"auto_fill:{source}",
                             attr=vn, outcome=f"set={value}",
                         )
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
+                and _no_real_fill_justification(attr, rec_by_target)
+                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                and (opt_out_match := _sole_opt_out_option(
+                    [o for o in attr.options if _valid(o.item_value)]
+                ))
+            ):
+                # Same "the menu itself declares a safe opt-out" case as
+                # the single-select branch above, just for multi-select's
+                # separate fallback (valid_opts isn't reliably in scope
+                # here -- see the sibling elif's own comment on that).
+                filled_multi[vn] = [opt_out_match.item_value]
+                display_filled[vn] = opt_out_match.display_name
+                sources.setdefault(vn, "opt_out_default")
+                filled_multi_now = True
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
@@ -10391,6 +10551,23 @@ class CpqEngine:
           not supplied (default), same opt-out convention as bml_eval=None
           elsewhere — never guesses a constraint that can't be described.
         """
+        # A constraint is a source of truth for VALIDITY, not catalog
+        # spelling. If it names a legal value with no literal item_value
+        # match in the real catalog (live-confirmed: productSelectionProduct
+        # _all's constraint returns 'APX NEXT XE 4G LTE PLUS 5G', which no
+        # real option equals), discarding the WHOLE constrained set back to
+        # unconstrained (first attempt at this fix) throws away the
+        # legitimate, real-matching values too -- live-confirmed regression:
+        # Product went from a flip-flopping 1-2 option menu to showing all
+        # 325 raw options. Drop only the phantom entries instead, same as
+        # auto_fill's valid_opts computation -- keep whichever real values
+        # the constraint did correctly narrow to. Falls back to fully
+        # unconstrained only if EVERY value was phantom.
+        if constrained_item_values is not None:
+            real_item_values = {o.item_value for o in attr.options}
+            narrowed = set(constrained_item_values) & real_item_values
+            constrained_item_values = sorted(narrowed) if narrowed else None
+
         # Use _presentable (not _valid) so codes like "NA" (North America) appear
         # in the numbered list even though _valid("NA")=False prevents auto-fill.
         effective_opts = [
