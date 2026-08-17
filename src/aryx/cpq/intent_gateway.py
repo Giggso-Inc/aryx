@@ -31,6 +31,7 @@ from typing import Any, Literal
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
+from aryx.cpq.engine import CpqEngine
 from aryx.cpq.intent_schema import (
     GATEWAY_INTENT_JSON_SCHEMA,
     Confidence,
@@ -60,6 +61,22 @@ MUTATING_CATEGORIES = frozenset({
     IntentCategory.ATTR_CLEAR,
     IntentCategory.ATTR_ACTIVATION,
     IntentCategory.BULK_QUANTITY_CHANGE,
+    # ISSUE-002 fix (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md),
+    # revised per PR #205 review (High finding #2): DECLINE has no
+    # `variable_name` at all (a pure session-state transition, not a
+    # catalog attribute target), so `_mutating_agrees` special-cases it to
+    # check the real boolean regex detector `detect_decline` instead of
+    # the variable_name-matching logic every other member of this set
+    # uses. APPROVAL is deliberately NOT in this set: the LLM was already
+    # correctly classifying genuine approvals before this fix (that was
+    # never the bug) — requiring `detect_approval()`'s hand-written regex
+    # to also positively agree would reject any approval phrasing the LLM
+    # correctly recognizes but the regex doesn't happen to cover, trading
+    # the decline-misdispatch bug for a new false-negative-on-approval
+    # bug. Instead, `_mutating_agrees` applies a DECLINE-only veto to
+    # APPROVAL below (real conflict signal in one direction only), not a
+    # requirement for positive agreement in the other.
+    IntentCategory.DECLINE,
 })
 
 _VALUE_CAP = 40
@@ -327,6 +344,17 @@ def _llm_classify_once(
         "\"ambiguous\" with a specific clarifying_question.\n"
         "5. confidence=\"low\" means the caller will not act — prefer "
         "ambiguous when between two plausible options.\n"
+        "6. \"approval\" vs \"decline\" (ISSUE-002 — do not confuse these): "
+        "\"approval\" is ONLY for the customer confirming/accepting the "
+        "configuration as-is so it can be submitted -- \"yes\", \"confirm\", "
+        "\"looks good, submit\", \"go ahead\", \"that's correct\". "
+        "\"decline\" is for the customer explicitly rejecting/refusing to "
+        "submit -- \"no, decline that\", \"don't submit yet\", \"cancel\", "
+        "\"reject\", \"not ready\", \"hold on\". A bare negative word or a "
+        "message that says no/don't/not is NEVER \"approval\" -- when in "
+        "doubt between the two, prefer \"decline\" (an unwanted decline is "
+        "recoverable by asking again; an unwanted approval submits a real "
+        "order the customer did not agree to).\n"
     )
     if repair_hint:
         sys += f"\nPREVIOUS ATTEMPT FAILED VALIDATION: {repair_hint}\nFix the JSON.\n"
@@ -499,6 +527,8 @@ def _mutating_agrees(
     result: GatewayIntentResult,
     det_signals: dict[str, set[str]],
     last_qa_variables: list[str] | None = None,
+    question: str = "",
+    engine: Any = None,
 ) -> bool:
     """True when deterministic detectors agree on category + variable_name.
 
@@ -514,7 +544,21 @@ def _mutating_agrees(
     A list, not a single value (docs/config_consistency_issues_2026-07-30.md
     Issue 12) — a compound options query can put more than one attribute
     into conversational recency at once.
+
+    `question`/`engine` (ISSUE-002 fix, both default to a safe no-op value
+    so every pre-existing call site that doesn't pass them keeps working
+    unchanged — same "None keeps existing behavior unchanged" convention
+    used everywhere else in this file): APPROVAL and DECLINE are pure
+    session-state transitions with NO `variable_name` at all, so the
+    variable_name-matching logic below (`if not result.variable_name:
+    return False`) would always reject them if they fell through to it —
+    naively adding them to MUTATING_CATEGORIES without this special case
+    would silently break approval entirely. Checked FIRST, before any of
+    the existing variable_name-based logic, which stays completely
+    unchanged for every other category.
     """
+    if result.intent_category == IntentCategory.DECLINE:
+        return bool(engine is not None and engine.detect_decline(question))
     if result.intent_category not in MUTATING_CATEGORIES:
         return True
     cat = result.intent_category.value
@@ -758,9 +802,61 @@ def classify_intent(
             reason=quarantined.rationale,
         )
 
+    # PR #205 review fix (High finding #2): APPROVAL is NOT in
+    # MUTATING_CATEGORIES and never requires `detect_approval()` to
+    # positively agree — the LLM was already correctly classifying
+    # genuine approvals before ISSUE-002's fix; gating on regex agreement
+    # would reject any approval phrasing the LLM correctly recognizes but
+    # the hand-written regex doesn't happen to cover, trading one bug for
+    # another. Instead, a DECLINE-only veto: if the deterministic decline
+    # detector ALSO fires on this exact text, that's a genuine conflict
+    # signal (the customer's own words read as a rejection even though
+    # the LLM called it an approval) worth clarifying over, in the one
+    # direction where a wrong guess is costly (approving a decline).
+    if (
+        quarantined.intent_category == IntentCategory.APPROVAL
+        and engine is not None
+        and engine.detect_decline(question)
+    ):
+        clarify = GatewayIntentResult(
+            intent_category=IntentCategory.AMBIGUOUS,
+            confidence=Confidence.LOW,
+            evidence_span=quarantined.evidence_span,
+            clarifying_question=(
+                "Just to confirm — would you like me to submit this "
+                "configuration, or were you declining it?"
+            ),
+            rationale=(
+                "approval_decline_conflict: LLM classified approval but "
+                "detect_decline() also matched this text"
+            ),
+        )
+        log_divergence(DivergenceRecord(
+            run_id=run_id,
+            llm_intent=quarantined.intent_category.value,
+            deterministic_intent=det_label,
+            agreement=False,
+            model_id=model_id,
+            variable_name=quarantined.variable_name,
+            rejected=[clarify.rationale],
+            reason="approval_decline_conflict",
+        ))
+        logger.info(
+            "cpq_intent_gateway: approval_decline_conflict run_id=%s → clarify",
+            run_id,
+        )
+        return GatewayDecision(
+            action="clarify", result=clarify,
+            prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
+            reason="approval_decline_conflict",
+        )
+
     # Mutating intents: require deterministic agreement
     if quarantined.intent_category in MUTATING_CATEGORIES:
-        if not _mutating_agrees(quarantined, signals, session.last_qa_variables):
+        if not _mutating_agrees(
+            quarantined, signals, session.last_qa_variables,
+            question=question, engine=engine,
+        ):
             clarify = GatewayIntentResult(
                 intent_category=IntentCategory.AMBIGUOUS,
                 confidence=Confidence.LOW,
@@ -966,6 +1062,21 @@ def _parse_route(raw: dict | None) -> AskRouteDecision | None:
     quantity = qty_raw if isinstance(qty_raw, int) and not isinstance(qty_raw, bool) else None
     country_raw = raw.get("country")
     country = country_raw.strip() if isinstance(country_raw, str) and country_raw.strip() else None
+    # ISSUE-007 fix #3 (secondary backstop, docs/CPQ_E2E_ISSUES_001_002_
+    # 003_004_FIX_PLAN_2026_08_17.md): normalize whatever the model
+    # extracted through the SAME generic alias-group resolution every
+    # other country-validation call site uses (`CpqEngine.
+    # is_recognized_country` -> `_country_alias_group`), so route_meta.
+    # country itself carries the clean canonical form forward (e.g. an
+    # LLM that copied "US.A" verbatim into its own JSON still resolves
+    # to "United States" here) rather than relying only on the
+    # downstream `is_recognized_country` re-check to catch it. Falls
+    # back to the model's raw string when it isn't alias-recognized (a
+    # genuine miss, or free-text noise) — real semantic
+    # accept/reject is still the CALLER's job, this only cleans up a
+    # value that IS a real country into its canonical spelling.
+    if country:
+        country = CpqEngine.is_recognized_country(country) or country
     if conf == "low" and route in ("quote", "qa"):
         # Low confidence → force clarify rather than wrong path
         return AskRouteDecision(
@@ -1053,6 +1164,21 @@ def classify_ask_route(
         "'a dozen', an article between a preposition and the country "
         "name). Never invent a value that isn't genuinely there — leave "
         "the field null instead.\n"
+        "6. Recognize a stated country regardless of punctuation, "
+        "spacing, letter case, or which real-world form the customer "
+        "used — common name, official name, ISO alpha-2/alpha-3 code, or "
+        "a well-known colloquial short form. Always output the plain "
+        "common name once recognized, e.g. as a PATTERN to generalize to "
+        "any country, not an exhaustive list:\n"
+        "   - 'US' / 'U.S.' / 'U.S.A.' / 'USA' / 'US.A' / 'America' -> United States\n"
+        "   - 'UK' / 'U.K.' -> United Kingdom\n"
+        "   - 'UAE' / 'U.A.E' -> United Arab Emirates\n"
+        "   - 'S. Korea' / 'South Korea' -> South Korea\n"
+        "   - 'Ivory Coast' / \"Côte d'Ivoire\" -> Ivory Coast\n"
+        "  Apply this same normalization to every real country, not just "
+        "the five shown above — never leave the country field null just "
+        "because the exact spelling/punctuation looks unfamiliar, as "
+        "long as it plausibly names a real country.\n"
     )
     session_block = (
         f"SESSION HINT: {session_hint}\n" if session_hint else "SESSION HINT: none (cold start)\n"

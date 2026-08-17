@@ -92,6 +92,13 @@ def test_run_cpq_turn_mines_history_before_country_gate() -> None:
     with patch.object(mod, "_cpq_engine") as eng:
         real = CpqEngine()
         eng.extract_hints = real.extract_hints
+        # ISSUE-007: _mine_history_for_cpq_context now calls
+        # is_recognized_country() and stores its resolved canonical value
+        # (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md) --
+        # wire the real implementation through, same technique as
+        # extract_hints above, so this stays a realistic mock instead of
+        # an unconfigured MagicMock silently landing in session.country.
+        eng.is_recognized_country = real.is_recognized_country
         eng.detect_product_mention = MagicMock(return_value="aSTRO25_bom")
         eng.resolve_product_hint = MagicMock(return_value=None)
         eng.list_ingested_families = MagicMock(return_value=["aSTRO25_bom"])

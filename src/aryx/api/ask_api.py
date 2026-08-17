@@ -25,7 +25,7 @@ from aryx.cpq.engine import (
     CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY,
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, detect_country_change_request,
     extract_quantity_hint, is_valid_product_quantity, question_mentions_quantity,
-    quantity_turn_precheck,
+    quantity_turn_precheck, variable_name_words,
 )
 from aryx.cpq.bom_gate import (
     find_missing_required_fields, recheck_constraints, validate_before_payload,
@@ -214,11 +214,19 @@ def _mine_history_for_cpq_context(
     # Newest country mention wins (scan history newest-first).
     for text in reversed(texts):
         country = engine.extract_hints(text).get("country")
-        if country and engine.is_recognized_country(country):
-            session.country = country
+        # ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
+        # 17.md): `is_recognized_country` now returns the resolved
+        # canonical name (e.g. "United States"), not a bare bool — store
+        # THAT, not the raw historical text, so a mined "US.A"/"USA"/etc.
+        # lands in session.country the same clean form a fresh turn-1 hit
+        # would produce, not whatever punctuation/case the customer
+        # happened to type several turns ago.
+        canonical_country = country and engine.is_recognized_country(country)
+        if canonical_country:
+            session.country = canonical_country
             logger.info(
                 "cpq: mined country=%r from Ask history (pre-CPQ turn)",
-                country,
+                canonical_country,
             )
             return
 
@@ -4644,8 +4652,17 @@ def _llm_confirm_and_extract_country(
     result = decision.result
     if result is None or result.intent_category != IntentCategory.COUNTRY_CHANGE:
         return False, None, False
-    if result.country_text and _cpq_engine.is_recognized_country(result.country_text):
-        return True, result.country_text, False
+    # ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md):
+    # `is_recognized_country` now returns the resolved canonical name (e.g.
+    # "United States") instead of a bare bool — return THAT, not the LLM's
+    # raw `country_text`, so a punctuation/abbreviation variant the LLM
+    # copied verbatim ("U.S.A") still lands in session.country in clean
+    # canonical form, same as every other resolution path.
+    canonical_country = result.country_text and _cpq_engine.is_recognized_country(
+        result.country_text,
+    )
+    if canonical_country:
+        return True, canonical_country, False
     return False, None, False
 
 
@@ -5020,9 +5037,25 @@ def _dispatch_intent_result(
         result.category == IntentCategory.COUNTRY_CHANGE
         and result.country_description
     ):
+        # ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
+        # 17.md): a 4th, previously-unidentified country-setting path --
+        # distinct from `_llm_confirm_and_extract_country` (the one this
+        # plan's Path C originally targeted) and only reachable when
+        # `detect_country_change_request`'s regex fails to structurally
+        # match at all (confirmed live: "change country to U.S.A" -- the
+        # periods break both of `_COUNTRY_CHANGE_RE`'s capture
+        # alternatives, so that gate never even fires, and THIS universal
+        # LLM-first dispatcher handles it instead). Canonicalize here too,
+        # via the same generic alias-group resolution every other country
+        # path now uses, so this path can't reintroduce the "US.A"/
+        # "U.S.A"-class bug through its own separate route.
+        _canonical_country_description = (
+            _cpq_engine.is_recognized_country(result.country_description)
+            or result.country_description
+        )
         return _with_classify_usage(
             _build_country_change_response(
-                req, session, result.country_description,
+                req, session, _canonical_country_description, reader=reader,
             ),
             classify_prompt_tokens, classify_completion_tokens,
         )
@@ -5366,6 +5399,26 @@ def _dispatch_intent_result(
             classify_prompt_tokens, classify_completion_tokens,
         )
 
+    # ISSUE-002 fix (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md):
+    # DECLINE is now in MUTATING_CATEGORIES (intent_gateway.py), so `result`
+    # here already passed `_mutating_agrees`'s `detect_decline()` cross-check
+    # inside `classify_intent` before this function was ever called — this
+    # is the SAME classification pass, not a second, unchecked path (traced
+    # via `_llm_first_gateway_turn`: `_gw = gateway_classify_intent(...)` ->
+    # `_mapped = _gateway_to_intent_result(_gw.result, ...)` ->
+    # `_dispatch_intent_result(req, session, attrs, _mapped, ...)`, and
+    # `_dispatch_intent_result` has exactly this one call site). Same
+    # Confidence.HIGH gate as APPROVAL above for symmetry/consistency, even
+    # though the mutating-agreement check already ran upstream.
+    if (
+        result.category == IntentCategory.DECLINE
+        and result.confidence == Confidence.HIGH
+    ):
+        return _with_classify_usage(
+            _handle_decline(req, session),
+            classify_prompt_tokens, classify_completion_tokens,
+        )
+
     return None
 
 
@@ -5447,19 +5500,141 @@ def _build_product_quantity_change_response(
 
 
 def _build_country_change_response(
-    req: "AskRequest", session: Any, new_country: str,
+    req: "AskRequest", session: Any, new_country: str, reader: Any = None,
 ) -> dict[str, Any]:
     """Apply a confirmed country change (or report a no-op when it already
     matches) and build the response. Factored out of the mid-turn
     country-change gate (Issue 7, docs/CPQ_QUANTITY_COUNTRY_SUMMARY_
     FIXES_2026_08_13.md) so the LLM-first dispatcher's COUNTRY_CHANGE
     branch (§8 Phase 4) shares the exact same logic.
+
+    ISSUE-004 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md):
+    the display-only update below (`session.country = new_country`) used to
+    be the entire function — it never touched `session.filled`'s
+    country-mirror attrs (CRM_BILL_COUNTRY/CRM_SHIP_COUNTRY/
+    ultimateDestinationCountry/packageRegion), which stayed frozen at
+    whatever the INITIAL quote load derived, even across repeated confirmed
+    changes (live-confirmed: "change country to Germany" then "...to
+    Canada" left `ultimateDestinationCountry` reading "US"). `auto_fill`'s
+    own "never override an already-filled value" contract
+    (`engine.py:6908`) means simply re-calling it with the new country does
+    nothing unless these 4 mirror keys are cleared first, so that's done
+    below before the re-derivation. `reader` is accepted (both call sites
+    already have it in scope — `_dispatch_intent_result`'s own param at
+    `ask_api.py:4806`, `_run_cpq_turn_inner`'s own param at
+    `ask_api.py:7047`) purely so this function can independently reload
+    `session.product_name`'s catalog via `load_product_config`, since
+    neither call site is guaranteed to already hold attrs/rules loaded for
+    THIS session's product at the point it detects a country change.
     """
     if session.country and session.country.strip().lower() == new_country.strip().lower():
         answer = f"Country is already set to **{session.country}** — no change made."
     else:
         session.country = new_country
         answer = f"Country → {session.country}"
+        # Clear every frozen country/region-derived attr so the
+        # re-derivation below isn't blocked by auto_fill's "already
+        # filled -> never override" rule. Originally hardcoded to just
+        # CRM_BILL_COUNTRY/CRM_SHIP_COUNTRY/ultimateDestinationCountry/
+        # packageRegion, but live-verified that's incomplete: packageRegion
+        # is itself cascade-filled from whichever sibling attr matches the
+        # "region" decision-key fragment (engine.py:8577,
+        # `_DECISION_REQUIRED_KEYS`) — e.g. modelSelectionRegion_astro,
+        # which stayed at its stale value since it was never cleared, so
+        # packageRegion kept re-copying the OLD region every time (US->
+        # Germany left packageRegion="NA" instead of moving to EMEA).
+        # Reusing the same "this is a country/region-shaped attr" signal
+        # this engine already uses elsewhere, instead of hardcoding one
+        # more catalog-specific name that the next catalog would miss too.
+        #
+        # PR #205 review fix (Medium finding #5): the original version
+        # used a raw substring test (`"region" in vn.lower()`), which
+        # would also match a hypothetical unrelated attr like
+        # "RegionalDiscountCode" (contains "region" as a substring) and
+        # silently clear a correct, unrelated answer. Split each
+        # variable_name into its real camelCase/underscore word segments
+        # (`variable_name_words`, the same helper detect_attr_query
+        # already uses for word-level attribute matching) and require an
+        # EXACT segment match instead — "RegionalDiscountCode" splits to
+        # ["regional", "discount", "code"], and "regional" != "region", so
+        # it correctly does NOT match, while "modelSelectionRegion_astro"
+        # splits to [..., "region", "astro"] and correctly does.
+        for _mirror_vn in list(session.filled.keys()):
+            _vn_words = set(variable_name_words(_mirror_vn))
+            if _vn_words & DECISION_REQUIRED_KEYS:
+                session.filled.pop(_mirror_vn, None)
+                session.display_filled.pop(_mirror_vn, None)
+                session.filled_source.pop(_mirror_vn, None)
+        # Re-derive every country/region-derived attr AND re-validate every
+        # constraint-governed attr against the new country, ONLY if a quote
+        # is actually in progress — with no product selected there's no
+        # catalog to reload and nothing to re-derive/re-validate. Never let
+        # a failure here break the country-change response itself; the
+        # display update above must always succeed regardless.
+        #
+        # Uses the SAME full hide->recommend->constrain->auto-fill loop
+        # (evaluate_rules_loop) every other mutating turn in this file
+        # already uses (e.g. _handle_cascade, ask_api.py:2077) instead of a
+        # single standalone auto_fill call -- live-verified a bare auto_fill
+        # call isn't enough: at least one real boolean attr in this catalog
+        # (a country==Canada flag) is only ever set correctly by a script-
+        # backed RECOMMENDATION rule evaluated via BmlEvaluator, which only
+        # runs inside this full loop, not a lone auto_fill pass. The loop's
+        # own returned `constrained_opts` is then checked against every
+        # currently-filled attr generically (never hardcoding a specific
+        # attribute name like "productSelectionProduct_all") so any attr a
+        # catalog author has constrained by country/region -- confirmed
+        # live for Product via 3 active ConstraintRules, but not assumed to
+        # be the only one -- gets cleared and re-asked if the new country
+        # invalidates its current value.
+        if session.product_name:
+            try:
+                attrs, _resolved_name = _cpq_engine.load_product_config(
+                    reader, req.workspace_id, session.product_name,
+                )
+                if attrs:
+                    catalog_prefix = attrs[0].catalog_prefix
+                    hiding_rules = _cpq_engine.load_hiding_rules(
+                        req.workspace_id, catalog_prefix)
+                    rec_rules, con_rules = _cpq_engine.load_recommendation_and_constraint_rules(
+                        req.workspace_id, catalog_prefix)
+                    bml_eval = _cpq_engine.build_bml_evaluator(req.workspace_id, catalog_prefix)
+                    skip_always_ask = _cpq_engine.resolve_always_ask_skips(
+                        req.workspace_id, catalog_prefix, attrs)
+                    _visible_attrs, session.filled, session.display_filled, _constrained_opts = (
+                        _cpq_engine.evaluate_rules_loop(
+                            attrs, {"country": new_country}, session.filled,
+                            hiding_rules, rec_rules, con_rules,
+                            bml_eval=bml_eval, filled_source=session.filled_source,
+                            filled_multi=session.filled_multi,
+                            country=new_country, skip_always_ask=skip_always_ask,
+                            workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+                        )
+                    )
+                    for _attr in attrs:
+                        _current_val = session.filled.get(_attr.variable_name)
+                        if not _current_val:
+                            continue
+                        _allowed_vals = _constrained_opts.get(_attr.entity_id)
+                        if _allowed_vals is not None and _current_val not in _allowed_vals:
+                            logger.info(
+                                "cpq_country_change_invalidated_attr: "
+                                "turn=%s attr=%s value=%r no longer valid "
+                                "for country=%r (allowed=%r) — clearing for re-ask",
+                                session.turn, _attr.variable_name, _current_val,
+                                new_country, _allowed_vals,
+                            )
+                            session.filled.pop(_attr.variable_name, None)
+                            session.display_filled.pop(_attr.variable_name, None)
+                            session.filled_source.pop(_attr.variable_name, None)
+            except Exception:
+                logger.warning(
+                    "cpq_country_change_rederive_failed: turn=%s "
+                    "product=%r new_country=%r — mirror attrs/Product "
+                    "re-validation skipped, display update still applied",
+                    session.turn, session.product_name, new_country,
+                    exc_info=True,
+                )
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_country_change()"],
@@ -5991,6 +6166,40 @@ def _handle_approval(
     }
 
 
+def _handle_decline(
+    req: "AskRequest", session: Any,
+) -> dict[str, Any]:
+    """ISSUE-002 fix (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md)
+    — explicit rejection of an awaiting-approval configuration.
+
+    Deliberately much simpler than `_handle_approval`: no BOM generation,
+    no constraint re-run, no `rule_trace.seal`/`build_payload` — a decline
+    is a pure session-state rollback, not a mutating action against the
+    catalog. Returns the session to `configuring` (only if it isn't
+    already there — a decline sent from any other status is still an
+    honest no-op acknowledgment, never an error) so the very next turn
+    re-enters the normal configuring flow instead of staying stuck
+    re-offering the same awaiting-approval prompt.
+
+    Uses a distinct `cpq_decline()` tool name (never `cpq_payload_approved()`
+    or any other BOM-generating tool) specifically so this path is
+    traceable in logs/telemetry as the opposite outcome from approval —
+    this is the exact bug being fixed: an explicit decline was previously
+    misdispatched to `_handle_approval` and logged as `cpq_payload_approved()`.
+    """
+    if session.status != "configuring":
+        session.status = "configuring"
+    session.complete = False
+    answer = "Understood — not submitting yet. What would you like to change?"
+    _persist_cpq_history(req.workspace_id, req.question, answer)
+    return {
+        "answer": answer, "terms": [], "tools_called": ["cpq_decline()"],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                  "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+        "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+    }
+
+
 def _llm_extract_quantity(question: str, workspace_id: int) -> int | None:
     """Narrow extraction fallback for a stated quantity `extract_quantity_
     hint`'s regex/word-number patterns can't parse at all (docs/CPQ_REGEX_
@@ -6027,6 +6236,65 @@ def _llm_extract_quantity(question: str, workspace_id: int) -> int | None:
         if not isinstance(val, int) or isinstance(val, bool):
             return None
         return val
+
+    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
+
+
+def _llm_resolve_bare_country_reply(question: str, workspace_id: int) -> str | None:
+    """Narrow last-resort escalation for Path B of ISSUE-007 (docs/CPQ_
+    E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md): a bare reply to
+    the "what's the destination country?" anchor question that the
+    deterministic, free `CpqEngine.is_recognized_country`/
+    `_country_alias_group` alias-table lookup could NOT resolve.
+
+    Deliberately NOT `classify_ask_route`/`gateway_classify_intent` —
+    those classify an entire turn's intent CATEGORY (quote vs qa vs
+    change-command, etc.); this is a single, much narrower question
+    ("is this text a country name at all, and if so which one") asked
+    only after the alias table has already failed, so it never taxes the
+    common case (a plain "Canada" resolves via the alias table alone,
+    with zero LLM calls — see the call site). Copies `_llm_extract_
+    quantity`'s calling convention (same file, same shape): a tiny
+    single-purpose system/user prompt through the shared `_llm_classify_
+    intent_core` skeleton, reject-on-any-failure (parse error, timeout,
+    exception) rather than ever guessing.
+
+    Catches a DIFFERENT failure class than the alias table: genuine
+    misspellings ("Untied States", "Grmany") that no static punctuation/
+    abbreviation table could ever enumerate — not the punctuation/
+    abbreviation variants ("US.A", "U.A.E") the alias table already
+    closes for free.
+
+    Returns the country's plain common name (e.g. "United States"), or
+    None when the text isn't recognizable as any real country at all
+    (a fabricated place like "Wakanda" MUST return None here — the
+    caller falls back to the existing honest re-ask, never a guess).
+    """
+    sys = (
+        "A customer was asked \"what's the destination country?\" and "
+        "gave a short reply that a deterministic lookup table couldn't "
+        "match to any of the world's real countries — most likely "
+        "because they misspelled it. Identify which real country (if "
+        "any) they most plausibly meant, and reply with its plain common "
+        "name (e.g. \"United States\", \"Germany\", \"South Korea\"). If "
+        "the reply doesn't plausibly name any real country at all (a "
+        "fictional place, an unrelated word, gibberish), say so — never "
+        "guess a country that isn't genuinely what they meant."
+    )
+    user = (
+        f"CUSTOMER REPLY: {question}\n\n"
+        'Reply ONLY as JSON: {"country": <plain common name string> | null}'
+    )
+
+    def _validate(parsed: dict) -> str | None:
+        val = parsed.get("country")
+        if not isinstance(val, str) or not val.strip():
+            return None
+        # Never trust the LLM's own spelling of the name blindly — run it
+        # back through the SAME alias-group validation every other path
+        # uses, so a hallucinated non-country string still can't slip
+        # through this escalation step.
+        return CpqEngine.is_recognized_country(val)
 
     return _llm_classify_intent_core(sys, user, workspace_id, _validate)
 
@@ -7425,7 +7693,7 @@ def _run_cpq_turn_inner(
             )
         )
         if _country_confirmed:
-            return _build_country_change_response(req, session, _country_value)
+            return _build_country_change_response(req, session, _country_value, reader=reader)
         if _country_call_failed:
             # Review finding, 2026-08-13: previously indistinguishable
             # from a normal disagreement, so a mid-conversation timeout
@@ -7451,7 +7719,39 @@ def _run_cpq_turn_inner(
     # customer's entire message answers the exact question just asked
     # (CPQ_CASCADE_CONVERSATION_PLAN.md D1).
     if session.pending_anchor == "country":
-        hints["country"] = req.question.strip()
+        # ISSUE-007 Path B (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_
+        # 2026_08_17.md), Drama-round-resolved design — deterministic
+        # first, LLM as a scoped last resort, never the other way around:
+        # this fires on effectively every quote conversation (a hot
+        # path), so an unconditional LLM call here would tax every normal
+        # reply with latency/cost just to solve a problem the alias table
+        # already closes for free.
+        #   1. Try the free/fast alias-table resolution first
+        #      (`is_recognized_country` -> `_country_alias_group`) --
+        #      closes the reported bug class ("US.A", "U.K", "U.A.E", ...)
+        #      with zero added latency. A plain "Canada" reply resolves
+        #      HERE alone -- no LLM call at all, verified by this being a
+        #      straight-line `if not match: escalate` with no unconditional
+        #      call above it.
+        #   2. ONLY when that returns no match, escalate to
+        #      `_llm_resolve_bare_country_reply` -- a single, narrowly-
+        #      scoped call ("is this text a country name — if so, which
+        #      one?"), catching genuine misspellings ("Untied States") the
+        #      alias table can't enumerate, a different failure class than
+        #      punctuation/abbreviation variants.
+        #   3. If the escalation ALSO returns nothing (e.g. "Wakanda" —
+        #      not a real country), `hints["country"]` keeps the raw
+        #      reply text so the existing validation check below rejects
+        #      it exactly as it always has, falling through to the
+        #      existing honest re-ask unchanged — never a fabricated
+        #      country.
+        _bare_country_reply = req.question.strip()
+        _resolved_bare_country = _cpq_engine.is_recognized_country(_bare_country_reply)
+        if not _resolved_bare_country:
+            _resolved_bare_country = _llm_resolve_bare_country_reply(
+                _bare_country_reply, req.workspace_id,
+            )
+        hints["country"] = _resolved_bare_country or _bare_country_reply
     elif route_meta is not None:
         # The turn-1 unified LLM extraction (`route_meta.country`, from
         # `classify_ask_route`'s single per-turn call, never a second/
@@ -7459,7 +7759,20 @@ def _run_cpq_turn_inner(
         # statement -- no regex fallback, per the directive that regex
         # must never decide this value, at any point.
         if route_meta.country:
-            hints["country"] = route_meta.country
+            # ISSUE-007 fix #3 (secondary backstop) — normalize whatever
+            # the turn-1 LLM extracted through the SAME alias-group
+            # resolution every other path uses, so `route_meta.country`
+            # itself carries the clean canonical form forward (e.g. an
+            # LLM that copied "US.A" verbatim into its `country` field
+            # still lands here as "United States") rather than relying
+            # only on the validation check below to catch it. Falls back
+            # to the raw LLM string when it isn't alias-recognized (e.g.
+            # a genuine miss) so the existing validation/rejection below
+            # behaves exactly as before for that case.
+            hints["country"] = (
+                _cpq_engine.is_recognized_country(route_meta.country)
+                or route_meta.country
+            )
         elif route_meta.timed_out or route_meta.error:
             # The one call that could have told us the country
             # demonstrably failed -- never silently proceed as if the
@@ -7468,6 +7781,17 @@ def _run_cpq_turn_inner(
             # "ask for country" fallback below, only if we actually end
             # up needing to say something because no country resolved.
             _country_llm_call_failed = True
+    # ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md):
+    # `is_recognized_country` now returns the resolved canonical name (or
+    # None), not a bare bool — capture it ONCE here and store THAT into
+    # session.country below, rather than the possibly-raw `hints["country"]`
+    # text, so this permanent "first hint wins, never re-derived" field
+    # always carries the clean canonical form regardless of which upstream
+    # branch (Path B's alias/LLM resolution, Path A's route_meta
+    # normalization, or an older carried-over hint) populated the hint.
+    _recognized_country = hints.get("country") and _cpq_engine.is_recognized_country(
+        hints["country"],
+    )
     if (
         "country" in hints and not session.country
         # Real, confirmed live bug: extract_hints' generic preposition
@@ -7479,9 +7803,9 @@ def _run_cpq_turn_inner(
         # assignment is guarded — hints["country"] itself is untouched,
         # so filling the real country attribute via menu-option matching
         # is unaffected either way.
-        and _cpq_engine.is_recognized_country(hints["country"])
+        and _recognized_country
     ):
-        session.country = hints["country"]
+        session.country = _recognized_country
     elif (session.country and "country" not in hints
           and session.pending_anchor != "switch_country"):
         # A country confirmed on an EARLIER turn must keep filling
@@ -8193,6 +8517,15 @@ def _run_cpq_turn_inner(
                 _match = _cpq_engine.apply_answer(_product_attr, _candidate_text)
                 if _match:
                     _item_value, _display_name = _match
+                    # PR #205 review fix (High finding #4): this seeds a
+                    # genuine first-time fill of Product from anchor text,
+                    # one of the `apply_answer` sites the ISSUE-003 fix
+                    # plan flagged for the same undo-snapshot audit. Not
+                    # covered by any enclosing cascade handler's own
+                    # snapshot (unlike the `_handle_cascade`/`_handle_
+                    # cascade_multi` sites, which already push one at their
+                    # own top) — genuinely uncovered until now.
+                    push_snapshot(session, reason="product_anchor_seed")
                     session.filled["productSelectionProduct_all"] = _item_value
                     session.display_filled["productSelectionProduct_all"] = _display_name
                     session.filled_source["productSelectionProduct_all"] = "product_anchor"
@@ -9734,6 +10067,12 @@ def _run_cpq_turn_inner(
             if result:
                 clear_pending_scope(session)
                 iv, disp = result
+                # ISSUE-003: a plain first-time fill never invalidates
+                # anything, so it never reached any of the cascade/reask
+                # push_snapshot() sites — undo silently reported "nothing
+                # to undo" even after a real answer was just recorded.
+                # Snapshot here too so every mutating fill is restorable.
+                push_snapshot(session, reason="attr_fill")
                 if pending_attr.select_type == "multi":
                     # Every option apply_multi_answer() found in this answer
                     # is a real selection — store as a single-item list in
@@ -10560,7 +10899,28 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     reader = _reader(req.workspace_id)
     settings = get_settings()
     mode = (settings.cpq_intent_mode or "shadow").strip().lower()
-    live_session = req.session_data.get("mode") == "cpq"
+    # ISSUE-001: `mode == "cpq"` is a dataclass default on EVERY CpqSession,
+    # including one where nothing was ever selected (state.py CpqSession.mode
+    # defaults to "cpq" unconditionally) -- a QA-only turn 1 echoes this back
+    # and made turn 2 look "live" even though no quote had actually started,
+    # skipping classify_ask_route() and dropping a country stated in that
+    # turn's own message. `product_name` is only ever set once a real quote
+    # begins, so it's the genuine "is a quote actually in progress" signal.
+    #
+    # PR #205 review fix (High finding #3): `product_name` alone missed a
+    # real, code-reachable state -- `session.pending_anchor = "product"`
+    # is set at the exact point product-family detection FAILS (ask_api.py
+    # "did you mean family X?" disambiguation), i.e. precisely when
+    # `product_name` is NOT yet set. A customer's reply to that
+    # disambiguation would have been misrouted as a fresh cold-start turn
+    # instead of the live, in-flight session it actually is.
+    # `pending_anchor` defaults to `""` (falsy) on a genuinely fresh
+    # session (state.py:343), so it's a safe, zero-cost addition: any
+    # non-empty pending_anchor means SOME multi-turn flow is already
+    # actively waiting on this exact reply, live or not.
+    live_session = bool(req.session_data.get("product_name")) or bool(
+        req.session_data.get("pending_anchor"),
+    )
 
     # ── Live session: always CPQ turn (engine owns switch/undo/cascade) ─────
     # N3: switch confirmation stays inside _run_cpq_turn — log explicit hint.
