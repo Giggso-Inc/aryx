@@ -39,7 +39,9 @@ class GraphReader:
         """
         parsed = urlparse(url)
         self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379)
+                            port=parsed.port or 6379,
+                            username=parsed.username or None,
+                            password=parsed.password or None)
         self._graph = self._db.select_graph(graph)
 
     @property
