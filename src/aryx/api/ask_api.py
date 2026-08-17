@@ -25,7 +25,7 @@ from aryx.cpq.engine import (
     CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY,
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, detect_country_change_request,
     extract_quantity_hint, is_valid_product_quantity, question_mentions_quantity,
-    quantity_turn_precheck, variable_name_words,
+    question_names_quantity_attr, quantity_turn_precheck, variable_name_words,
 )
 from aryx.cpq.bom_gate import (
     find_missing_required_fields, recheck_constraints, validate_before_payload,
@@ -5902,60 +5902,6 @@ def _llm_first_gateway_turn(
     return None
 
 
-def _llm_resolve_quantity_target(
-    question: str, candidates: list, session: Any, workspace_id: int,
-) -> str | None:
-    """Which quantity the customer means, tried only when
-    CpqEngine.quantity_turn_precheck already found the message quantity-
-    related AND at least one real catalog quantity attribute exists
-    alongside the overall product quantity (docs/CPQ_QUANTITY_SLOTFILLING_
-    AND_UI_ISSUES_PLAN_2026_08_11.md step 3) -- with no competing catalog
-    attribute, the caller resolves directly with no LLM call at all.
-
-    "Which target does this message mean" is a real judgment call, not a
-    keyword-matchable one — the big intent gateway (classify_intent) can't
-    express this either, since its schema only ever names real ConfigAttr
-    variable_names, never the session-level product quantity. A small,
-    single-purpose helper here matches this file's own established
-    pattern (_llm_resolve_label_collision, _llm_split_compound_change_and_
-    question) rather than extending the gateway's schema/cache/quarantine
-    machinery for one narrow case.
-
-    Returns "product", a candidate's exact variable_name, or None
-    (genuinely ambiguous or the LLM call/parse failed) — a None result
-    means the caller must ask the customer directly, never guess.
-    """
-    catalog_lines = [
-        f"- {a.variable_name} ({a.display_label}): "
-        f"current={session.filled.get(a.variable_name, 'unset')!r}"
-        for a in candidates
-    ]
-    sys = (
-        "You resolve which \"quantity\" a user means in a product-configuration "
-        "chat: the OVERALL product quantity (how many of the whole product they "
-        "want), or one of several specific per-item catalog quantity fields. "
-        "Only use variable_names from the candidate list, or the literal string "
-        "\"product\" for the overall quantity — never invent a name. If the "
-        "message doesn't clearly point to exactly one, say ambiguous."
-    )
-    user = (
-        f"OVERALL PRODUCT QUANTITY: currently {session.product_quantity}\n\n"
-        "CANDIDATE PER-ITEM QUANTITY FIELDS (variable_name (label)):\n"
-        + "\n".join(catalog_lines)
-        + f"\n\nUSER MESSAGE: {question}\n\n"
-        'Reply ONLY as JSON: {"target": "product" | "<exact variable_name>" | "ambiguous"}'
-    )
-    valid_targets = {"product", "ambiguous"} | {a.variable_name for a in candidates}
-
-    def _validate(parsed: dict) -> str | None:
-        target = parsed.get("target") or ""
-        if target not in valid_targets or target == "ambiguous":
-            return None
-        return target
-
-    return _llm_classify_intent_core(sys, user, workspace_id, _validate)
-
-
 def _build_json_preview_response(
     req: "AskRequest", session: Any, attrs: list,
     hiding_rules: list, rec_rules: list, con_rules: list, bml_eval: Any,
@@ -6318,8 +6264,8 @@ def _llm_detect_pending_topic_switch(
     pending-answer lock and were misread as failed attempts to answer the
     pending question, looping the same re-ask forever.
 
-    Same narrow-helper pattern as `_llm_resolve_quantity_target` /
-    `_llm_resolve_label_collision`: only ever returns an exact
+    Same narrow-helper pattern as `_llm_resolve_label_collision`: only
+    ever returns an exact
     `other_attrs` variable_name or None — never invents one, never
     guesses when ambiguous. A None result means the caller must keep
     treating this as a plain answer attempt to the pending question.
@@ -7576,20 +7522,48 @@ def _run_cpq_turn_inner(
             # to attrs that already carry a real value in session.filled
             # (single-select-shaped) or session.filled_multi
             # (multi-select-shaped array-set members).
-            _qty_candidates = [
+            _qty_present = [
                 a for a in _qty_pre["candidates"]
                 if a.variable_name in session.filled
                 or a.variable_name in session.filled_multi
             ]
+            # docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md --
+            # live bug: a catalog quantity attr silently auto-filled as a
+            # side effect of an earlier, unrelated Product-switch cascade
+            # (never seen or chosen by the customer) was treated as an
+            # equally real competitor for a bare "change that quantity"
+            # message, and an under-contexted LLM call guessed the
+            # never-mentioned attr over the quantity the customer had
+            # just been shown. Explicit naming always wins regardless of
+            # provenance -- the customer stated it, this is a lookup, not
+            # a guess. Only once nothing is explicitly named does
+            # provenance decide whether an attr may even compete with the
+            # overall product quantity: a bare/generic reference can only
+            # be contested by a genuinely customer-set value
+            # (filled_source == "user"), and real remaining ambiguity is
+            # asked about directly -- no LLM guess needed for either
+            # branch.
+            _qty_named = [
+                a for a in _qty_present
+                if question_names_quantity_attr(req.question, a)
+            ]
             _qty_target: str | None
-            if not _qty_candidates:
-                # Nothing to disambiguate against — unambiguous by
-                # construction, no LLM call needed.
-                _qty_target = "product"
+            if len(_qty_named) == 1:
+                _qty_candidates = _qty_named
+                _qty_target = _qty_named[0].variable_name
+            elif _qty_named:
+                # Named, but ambiguously among 2+ real candidates -- ask,
+                # never guess which named one was meant.
+                _qty_candidates = _qty_named
+                _qty_target = None
             else:
-                _qty_target = _llm_resolve_quantity_target(
-                    req.question, _qty_candidates, session, req.workspace_id,
-                )
+                _qty_candidates = [
+                    a for a in _qty_present
+                    if session.filled_source.get(a.variable_name) == "user"
+                ]
+                # Nothing left to disambiguate against — unambiguous by
+                # construction, no LLM call needed.
+                _qty_target = "product" if not _qty_candidates else None
             if _qty_target == "product":
                 # Blanket LLM-as-final-verdict checkpoint (docs/CPQ_
                 # QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up,

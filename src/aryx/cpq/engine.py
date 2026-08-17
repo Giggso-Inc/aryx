@@ -1177,13 +1177,13 @@ def extract_quantity_hint(text: str) -> int | None:
 # Any mention of the word "quantity"/"qty"/"how many" at all -- the cheap,
 # deterministic pre-filter for even bothering to consider quantity routing.
 # Purely a "is it worth looking at this turn at all" gate, not a judgment
-# call -- the actual product-vs-catalog-attribute disambiguation (a real
-# judgment call, not something a keyword list can reliably make) is an LLM
-# decision, made in ask_api.py's _llm_resolve_quantity_target, mirroring
-# this file's other single-purpose LLM helpers rather than the big
-# generic intent gateway (whose schema has no way to represent "the
-# overall product quantity" at all -- it only ever names real ConfigAttr
-# variable_names).
+# call -- the actual product-vs-catalog-attribute disambiguation is fully
+# deterministic too (docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md):
+# an explicit mention of a specific catalog attribute's name always wins
+# (question_names_quantity_attr); otherwise only a genuinely
+# customer-set candidate (filled_source == "user") is allowed to compete
+# with the overall product quantity, and real remaining ambiguity is
+# asked about directly rather than guessed at by an LLM.
 _QUANTITY_WORD_RE = re.compile(r"(?i:\bqty\b|\bquantity\b|\bhow\s+many\b)")
 # "change/set/update the quantity to N" vs. a plain question ("what's my
 # quantity") -- deterministic, not a judgment call: these are unambiguous
@@ -1224,6 +1224,40 @@ def find_catalog_quantity_attrs(attrs: list[ConfigAttr]) -> list[ConfigAttr]:
     return out
 
 
+# Words stripped from a candidate's own display label before checking
+# whether a message "names" it -- purely quantity-boilerplate, never a
+# word that could itself distinguish one catalog attribute from another.
+_QTY_GENERIC_LABEL_WORDS = frozenset({"quantity", "qty", "of", "the", "a", "an", "for"})
+
+
+def question_names_quantity_attr(question: str, attr: ConfigAttr) -> bool:
+    """Does `question` explicitly name this specific catalog quantity
+    attribute (e.g. "the VX650 item type quantity"), as opposed to a
+    bare, generic reference ("that quantity", "the quantity")?
+
+    Catalog-agnostic: strips only quantity-boilerplate words from the
+    attr's own display label, then requires the label's DISTINCTIVE
+    remainder to appear in the question. Same "never guess off a single
+    coincidental word" convention `extract_catalog_hints` already uses
+    elsewhere in this file: a word containing a digit (a model-code-like
+    identifier, e.g. "vx650") is trusted alone; without one, every
+    remaining word must appear, since a single plain dictionary word
+    ("spares") is too easy a coincidence on its own. A label with no
+    distinctive words left at all (nothing to go on) never matches.
+    """
+    label_words = [
+        w for w in re.findall(r"[a-z0-9]+", attr.display_label.lower())
+        if w not in _QTY_GENERIC_LABEL_WORDS
+    ]
+    if not label_words:
+        return False
+    question_words = set(re.findall(r"[a-z0-9]+", question.lower()))
+    digit_words = {w for w in label_words if any(ch.isdigit() for ch in w)}
+    if digit_words:
+        return bool(digit_words & question_words)
+    return set(label_words).issubset(question_words)
+
+
 def quantity_turn_precheck(question: str, attrs: list[ConfigAttr]) -> dict[str, Any] | None:
     """Cheap, deterministic first pass for a quantity-related turn -- None
     when the message isn't about quantity at all (caller falls through to
@@ -1239,9 +1273,10 @@ def quantity_turn_precheck(question: str, attrs: list[ConfigAttr]) -> dict[str, 
     quoting the real decimal text instead of silently doing nothing.
 
     Deliberately does NOT decide "which quantity does the customer mean" --
-    that's a real judgment call once `candidates` is non-empty, made by an
-    LLM (ask_api._llm_resolve_quantity_target), not a keyword heuristic
-    (docs/CPQ_QUANTITY_SLOTFILLING_AND_UI_ISSUES_PLAN_2026_08_11.md step 3).
+    that's the caller's job once `candidates` is non-empty, via
+    `question_names_quantity_attr` plus each candidate's `filled_source`
+    (docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md), not a
+    keyword heuristic here.
     """
     if not _QUANTITY_WORD_RE.search(question):
         return None
