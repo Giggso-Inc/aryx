@@ -52,7 +52,7 @@ services:
     # not the host, causing "connection refused" on every startup migration.
     environment:
       - ARYX_RDB_DSN=postgresql://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      - ARYX_GRAPH_URL=redis://falkordb:6379
+      - ARYX_GRAPH_URL=redis://:${FALKORDB_PASSWORD}@falkordb:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -101,7 +101,7 @@ services:
       # container, where "localhost" means the container itself, not the
       # host, causing "connection refused" on every startup migration.
       - ARYX_RDB_DSN=postgresql://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      - ARYX_GRAPH_URL=redis://falkordb:6379
+      - ARYX_GRAPH_URL=redis://:${FALKORDB_PASSWORD}@falkordb:6379
       - ARYX_LLM_BASE_URL=${ARYX_LLM_BASE_URL:-http://ollama:11434}
       - ARYX_LLM_PROVIDER=${ARYX_LLM_PROVIDER:-ollama}
       - ARYX_LLM_MENIAL_MODEL=${ARYX_LLM_MENIAL_MODEL:-llama3.2:3b}
@@ -199,7 +199,7 @@ services:
     environment:
       # Same docker-network override as the api service above.
       - ARYX_RDB_DSN=postgresql://aryx:${POSTGRES_PASSWORD}@postgres:5432/aryx
-      - ARYX_GRAPH_URL=redis://falkordb:6379
+      - ARYX_GRAPH_URL=redis://:${FALKORDB_PASSWORD}@falkordb:6379
       - ARYX_API_URL=http://api:8000
     ports:
       - "127.0.0.1:8765:8765"
