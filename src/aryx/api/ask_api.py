@@ -7124,12 +7124,6 @@ def _run_cpq_turn_inner(
     set_run_id(session.run_id)
     session.turn += 1
     record_utterance(session, req.question)
-    logger.warning(
-        "TEMP_DEBUG turn=%s question=%r entry filled_multi.Msl=%r filled_multi_keys=%s",
-        session.turn, req.question,
-        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
-        sorted(session.filled_multi.keys()),
-    )
     # Snapshot BEFORE any anchor-resolution logic below mutates it — the
     # universal LLM-first cutover (docs/CPQ_LLM_INTENT_FIRST_UNIVERSAL_
     # PLAN.md §8 Phase 4) needs to know whether THIS turn started out
@@ -10100,13 +10094,6 @@ def _run_cpq_turn_inner(
 
     visible_attrs, filled, display_filled, pending, constrained_opts, rule_ids = (
         _recompute_pending(hints))
-    logger.warning(
-        "TEMP_DEBUG turn=%s after _recompute_pending session.filled_multi.Msl=%r "
-        "pending_vns=%s",
-        session.turn,
-        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
-        [a.variable_name for a in pending],
-    )
 
     # Issue 5 (docs/config_consistency_issues_2026-07-30.md): a generic,
     # catalog-agnostic gap — two attrs sharing the same real-world concept
@@ -10118,13 +10105,6 @@ def _run_cpq_turn_inner(
     pending = _cpq_engine.enforce_exclusive_sibling_families(
         visible_attrs, filled, session.filled_multi, session.filled_source,
         display_filled, pending, all_attrs=attrs,
-    )
-    logger.warning(
-        "TEMP_DEBUG turn=%s after enforce_exclusive_sibling_families "
-        "session.filled_multi.Msl=%r pending_vns=%s",
-        session.turn,
-        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
-        [a.variable_name for a in pending],
     )
 
     # Amendment 17 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): Tier-1's
@@ -10184,16 +10164,6 @@ def _run_cpq_turn_inner(
         )
         dropped_note = ""
 
-    logger.warning(
-        "TEMP_DEBUG turn=%s pre-filter session.filled_multi.Msl=%r "
-        "Msl_in_visible_attrs=%s Msl_in_dropped_multi=%s Msl_in_attrs=%s dropped_multi_keys=%s",
-        session.turn,
-        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
-        any(a.variable_name == "modelSelectionFrequencyBandMsl_astro" for a in visible_attrs),
-        "modelSelectionFrequencyBandMsl_astro" in dropped_multi,
-        any(a.variable_name == "modelSelectionFrequencyBandMsl_astro" for a in attrs),
-        sorted(dropped_multi.keys()),
-    )
     session.filled = filled
     session.display_filled = display_filled
     session.pending_variables = [a.variable_name for a in pending]
@@ -10215,13 +10185,6 @@ def _run_cpq_turn_inner(
         # at all — never a value that's merely temporarily hidden.
         if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
-    logger.warning(
-        "TEMP_DEBUG turn=%s post-filter session.filled_multi.Msl=%r "
-        "filled_multi_keys=%s",
-        session.turn,
-        session.filled_multi.get("modelSelectionFrequencyBandMsl_astro"),
-        sorted(session.filled_multi.keys()),
-    )
     # Cascade delta log (§7): record every value this pass introduced or
     # changed, tagged with its provenance, so later turns can explain "why"
     # from what actually happened rather than re-deriving it from the
