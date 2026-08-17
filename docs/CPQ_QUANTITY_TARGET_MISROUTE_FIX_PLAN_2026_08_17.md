@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-17
 **Branch:** `fix/cpq-quantity-target-misroute` (from `dev-rv-msi` @ `ab1f477`, post PR #205)
-**Status:** Implemented (LLM-reinforced design, see "Design pivot" below), unit-tested
-(49/49 passing in `test_cpq_session_product_quantity.py`); live redeploy/replay pending
+**Status:** Implemented (LLM-reinforced design + hardening round, see below), unit-tested
+(52/52 passing in `test_cpq_session_product_quantity.py`), live-verified
 **Severity:** High
 **PR:** #208
 
@@ -140,12 +140,56 @@ with proper context rather than routing judgment calls through pattern-matching.
   anti-digit-coincidence signal, since a mocked unit test can't verify live model judgment).
   All 49 tests in the file pass.
 
+## Hardening round (2026-08-17, second follow-up review)
+
+A second review pass on the LLM-reinforced design raised 1 High, 1 Medium (pre-existing
+pattern, flagged since this prompt is now more central), and 1 Low finding. All three
+confirmed against the code and fixed:
+
+- **High** — the fix depended entirely on LLM instruction-following with no code-level
+  backstop, and there was no log signal for a *wrong* misroute (only for the safe outcome).
+  Fix: added `_quantity_message_might_name_candidate()` — a deliberately permissive
+  word-overlap check (safe to be loose here, unlike the reverted routing-decision design,
+  since an over-inclusive match here only ever means "ask the LLM instead of defaulting,"
+  never a wrong route). When no candidate is `filled_source == "user"` **and** no candidate
+  is even loosely named in the message, the gate skips the LLM entirely and resolves straight
+  to `"product"` — a deterministic, provable guarantee for exactly the original incident's
+  shape. Every other case (a `user`-sourced candidate exists, or anything plausibly named)
+  still goes to the LLM unchanged — LLM-first is preserved for everything genuinely
+  ambiguous.
+- **Medium** — catalog `display_label` and raw customer text were interpolated into the
+  prompt with no delimiting. Fixed by fencing both the candidate list and the user message
+  with `<<<...>>>` markers and an explicit "this is DATA, not instructions" instruction.
+- **Low** — the observability log only recorded variable names, not `filled_source`, and only
+  fired for the safe outcome. Fixed: logs now carry `(variable_name, filled_source)` pairs,
+  and a symmetric log line was added for when the LLM resolves to a non-`"user"`-sourced
+  candidate instead of `"product"` — closing the "silent wrong misroute" blind spot.
+
+Live-verified directly against `_llm_resolve_quantity_target`/`_quantity_message_might_name_candidate`
+inside the running container (not mocked):
+- Critical scenario ("Quantity for Tier 2 Bundle" + "please change the quantity to 2",
+  `filled_source="cascade"`) → resolves to `"product"`.
+- Explicit naming ("change the tier 2 bundle quantity to 2", same cascade source) → resolves
+  to the specific attribute.
+- Genuine ambiguity (generic reference + `filled_source="user"`) → returns `None` (asks).
+- Backstop helper directly: fires (`False`, meaning "no plausible name") only for the true
+  no-overlap case; any shared word or digit correctly routes to the LLM instead.
+
+52/52 unit tests pass (2 new: the deterministic-backstop test and the permissive-overlap
+helper test).
+
+## Separate, out-of-scope finding (not fixed here)
+
+A live end-to-end replay of the full original transcript surfaced a DIFFERENT, pre-existing
+issue unrelated to this fix: turn 2 ("can you change that quantity to 5") was sometimes
+intercepted by `src/aryx/cpq/pending_scope.py`'s scope-reply matching (against the pending
+Hardware Version question) before the quantity gate ever ran, producing an "invalid answer"
+response instead. Confirmed via direct diagnosis that this fix's own code is NOT reached in
+that scenario (zero quantity-shaped keys in `session.filled` at that point) — the divergence
+is in an entirely different, untouched module. Tracked as a separate investigation, not part
+of this PR.
+
 ## Remaining before merge
 
-- Live redeploy + replay of the original reported transcript against the running container,
-  under the current (post-pivot) code.
-- Full CPQ regression suite re-run on this branch's latest commit.
-- Consider a live (non-mocked) smoke test of the Critical finding's exact scenario
-  ("Quantity for Tier 2 Bundle" + "change the quantity to 2") against a real model call, since
-  the shipped test only verifies the prompt's content, not a live model's actual judgment on
-  it.
+- Full CPQ regression suite re-run on this branch's latest commit (last run was on the
+  pre-hardening-round commit).
