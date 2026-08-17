@@ -21,3 +21,19 @@ def _clear_rule_join_data_cache_between_tests():
     _clear_rule_join_data_cache()
     yield
     _clear_rule_join_data_cache()
+
+
+@pytest.fixture(autouse=True)
+def _clear_graph_pool_between_tests():
+    """docs/FALKORDB_QUERY_EXHAUSTION_2026_08_14.md (F1) — Container.graph_reader()/
+    .graph_store() now cache one adapter instance per (url, graph) at module
+    scope (aryx.graph.pool). Same leak risk as the rule-join-data cache above:
+    test_ports_seam.py's env-var adapter swaps construct a *different* class
+    for the same (url, graph) key than a prior test's — an uncleared cache
+    would hand back the stale instance instead of the freshly swapped one.
+    """
+    from aryx.graph.pool import clear_all
+
+    clear_all()
+    yield
+    clear_all()
