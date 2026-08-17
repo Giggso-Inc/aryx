@@ -11988,13 +11988,14 @@ class CpqEngine:
         A/B signal, the SAME one `build_payload`'s `scope_required_and_
         edited` uses to scope `config_data`, so the two views can never
         silently drift apart on what counts as "genuinely required."
-        When `filled_source` is omitted, every row's `"section"` is the
-        Mandatory label (a harmless, additive key existing callers that
-        only read `label`/`value` can safely ignore) — output shape and
-        row set are otherwise byte-for-byte identical to before this
-        parameter existed.
+        When `filled_source` is omitted, rows carry no `"section"` key at
+        all — output shape and row set are byte-for-byte identical to
+        before this parameter existed (same convention `beautify_text`
+        already uses for its own `filled_source is None` case).
         """
         rows = self._beautify_sectioned_rows(product_name, display_filled, attrs, filled_source)
+        if filled_source is None:
+            return [{"label": label, "value": value} for _section, label, value in rows]
         return [{"section": section, "label": label, "value": value} for section, label, value in rows]
 
     def render_filled_summary(
