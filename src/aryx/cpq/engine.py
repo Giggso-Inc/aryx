@@ -1502,44 +1502,51 @@ _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: frozenset[str] = frozenset({
     "modelSelectionFrequencyBandMsl_astro",
 })
 
-# Attrs confirmed live (2026-08-16) to have NO real basis for an auto-fill
-# guess at all -- required=False, no real default_value, and ZERO
-# recommendation rules ever targeting them (verified via
-# CpqEngine.load_recommendation_and_constraint_rules), yet governed_target_
-# ids' blanket "any required=False attr is blind-fill-eligible" rule
-# (widened for the APX NEXT catalog's <=3-prompt turn-count requirement)
-# swept them in anyway. Two have zero attrSequence coverage for ANY
-# CPQModel workspace-wide (accessoriesSolutionSet_astro,
-# relatedServicesType_astro -- same orphaned-with-real-catalog-entry shape
-# as _CONFIRMED_DEAD_ATTRS, just multi-select); the other two
-# (selectEndUserType_astro, agencyHasMotorolaEvidenceSolution_astro) DO
-# have real attrSequence coverage but are genuinely customer-specific facts
-# (end-user type, whether the agency already has a Motorola Evidence
-# solution) no rule anywhere recommends a value for -- silently guessing
-# one is a real business answer, not a cosmetic default, so these fall
-# through to `pending` and get asked instead.
-#
-# Refined 2026-08-16 (same day): NOT excluded from `governed_target_ids`
-# -- an earlier version did that, which also blocked these attrs' own
-# confident "a real constraint narrowed this to exactly one legal value"
-# auto-fill path (e.g. once Oracle_BomItemMap/Oracle_BomItemDef are
-# ingested, accessoriesSolutionSet_astro's constraint could legitimately
-# resolve to a single real category, which SHOULD auto-fill same as any
-# other attr). Instead this set is checked at the specific auto_fill call
-# sites that had NO other real-data guard at all: the unconditional
-# multi-select "nothing to justify a subset" fallback, and the two
-# single-select first-by-order fallbacks (display-order-based and the
-# final bare-menu-order one). Every earlier, more specific branch in the
-# same method (satisfied recommendation, Data Table single-match,
-# confirmed-valid default under an active constraint, exactly-one-
-# remaining-option) is left completely untouched and still fires
-# normally for these attrs whenever real data actually supports it.
-_NEVER_BLIND_FILL_VNS: frozenset[str] = frozenset({
-    "additionalSystemEnhancementFeatureType_astro",
+# Live-confirmed (2026-08-16): additionalSystemEnhancementFeatureType_
+# astro got blind-picked to its first menu option with NOTHING in the
+# catalog behind it -- required=False, no real default_value, zero
+# recommendation rules ever targeting it -- and that guess silently
+# cascaded into narrowing an unrelated, real question (Application
+# Services) down to the wrong 5-option set. `_no_real_fill_justification`
+# is the dynamic, catalog-agnostic test for this exact shape, computed
+# per-attribute at call time rather than a hardcoded attribute-name list
+# -- any attribute anywhere in this (or another) catalog with the same
+# profile gets the same protection automatically, with no code change
+# needed to name it. Checked at the two specific auto_fill call sites
+# that had no other real-data guard at all: the unconditional multi-
+# select "nothing to justify a subset" fallback, and the two single-
+# select first-by-order fallbacks (display-order-based and the final
+# bare-menu-order one). Every earlier, more specific branch in the same
+# method (satisfied recommendation, Data Table single-match, confirmed-
+# valid default under an active constraint, exactly-one-remaining-
+# option) is left completely untouched and still fires normally for any
+# attr whenever real data actually supports it -- this only blocks the
+# LAST-resort "guess from the whole unconstrained menu" step.
+def _no_real_fill_justification(
+    attr: "ConfigAttr", rec_by_target: dict[int, list[Any]],
+) -> bool:
+    if attr.required:
+        return False
+    if _valid(attr.default_value):
+        return False
+    if rec_by_target.get(attr.entity_id) or rec_by_target.get(attr.source_id):
+        return False
+    return True
+
+# Explicit, named business-accepted exceptions to the dynamic check
+# above -- NOT a technical classification, a deliberate product decision
+# to trade guess-risk for fewer prompts on ONE specific attribute.
+# accessoriesSolutionSet_astro (2026-08-16): its real constraint
+# ("Constraint solution set based on product") depends on Oracle_
+# BomItemMap/Oracle_BomItemDef, not yet ingested -- until they are, it
+# blind-picks the first menu option instead of asking. No further change
+# needed once ingestion lands: the confident branches this exception
+# doesn't touch (recommendation match, Data Table single-match, exactly-
+# one-remaining-option) all run BEFORE the blind-pick fallback, so a
+# real constraint narrowing this to one legal category will auto-fill
+# through one of those first and the blind guess simply stops firing.
+_BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
     "accessoriesSolutionSet_astro",
-    "relatedServicesType_astro",
-    "selectEndUserType_astro",
-    "agencyHasMotorolaEvidenceSolution_astro",
 })
 
 # Product-line selectors that list the full multi-family portfolio (~325
@@ -6632,18 +6639,18 @@ class CpqEngine:
                 continue
             governed.add(attr.entity_id)
         # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_
-        # 10.md follow-up (2026-08-16, refined same day): `_NEVER_BLIND_
-        # FILL_VNS` attrs are DELIBERATELY left in `governed` here -- an
-        # earlier version of this method unconditionally excluded them,
-        # which also blocked their own confident "a real constraint
-        # narrowed this to exactly one legal value" auto-fill path (e.g.
-        # once Oracle_BomItemMap/Oracle_BomItemDef are ingested,
-        # accessoriesSolutionSet_astro's constraint could legitimately
-        # resolve to a single real category). The actual "nothing
-        # justifies a guess" case is blocked at its specific, narrower
-        # call sites instead (auto_fill's unconditional multi-select and
-        # single-select first-by-order fallbacks) -- see
-        # `_NEVER_BLIND_FILL_VNS`'s own docstring for exactly which two
+        # 10.md follow-up (2026-08-16, refined same day): attrs with no
+        # real fill justification are DELIBERATELY left in `governed`
+        # here -- an earlier version of this method unconditionally
+        # excluded them by name, which also blocked their own confident
+        # "a real constraint narrowed this to exactly one legal value"
+        # auto-fill path (e.g. once Oracle_BomItemMap/Oracle_BomItemDef
+        # are ingested, accessoriesSolutionSet_astro's constraint could
+        # legitimately resolve to a single real category). The actual
+        # "nothing justifies a guess" case is checked dynamically instead
+        # at its specific, narrower call sites (auto_fill's unconditional
+        # multi-select and single-select first-by-order fallbacks) -- see
+        # `_no_real_fill_justification`'s own docstring for exactly which
         # sites and why each needed its own guard rather than one here.
         return governed
 
@@ -8183,7 +8190,10 @@ class CpqEngine:
                                 source = "default"
                         elif (
                             display_order is not None and vn in display_order
-                            and vn not in _NEVER_BLIND_FILL_VNS
+                            and not (
+                                _no_real_fill_justification(attr, rec_by_target)
+                                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                            )
                         ):
                             # §2f, superseded by explicit instruction
                             # (2026-08-09): governed (some rule targets this
@@ -8228,7 +8238,10 @@ class CpqEngine:
                             # skips it, since it's neither a decision attr
                             # nor a grid selector).
                             pass
-                        elif vn not in _NEVER_BLIND_FILL_VNS:
+                        elif not (
+                            _no_real_fill_justification(attr, rec_by_target)
+                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                        ):
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
                             # states) and safe here because a rule REQUIRES this
@@ -8236,12 +8249,11 @@ class CpqEngine:
                             value = valid_opts[0].item_value
                             display = valid_opts[0].display_name
                             source = governed_source
-                        # else (vn in _NEVER_BLIND_FILL_VNS): nothing above
-                        # (rec/data-table/confirmed-default) justified a
-                        # value for this specific, confirmed-no-real-basis
-                        # attr -- leave unset rather than guess first-by-
-                        # order, same principle as the multi-select guard
-                        # below.
+                        # else: nothing above (rec/data-table/confirmed-
+                        # default) justified a value for this specific,
+                        # confirmed-no-real-basis attr -- leave unset
+                        # rather than guess first-by-order, same principle
+                        # as the multi-select guard below.
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif (
                 not value and is_governed and not is_decision_attr
@@ -8308,7 +8320,10 @@ class CpqEngine:
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
-                and vn not in _NEVER_BLIND_FILL_VNS
+                and not (
+                    _no_real_fill_justification(attr, rec_by_target)
+                    and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                )
             ):
                 # A multi-select that reached here (no single-remaining-
                 # option, not required=1 in the raw XML) has nothing
