@@ -32,6 +32,7 @@ services:
     restart: unless-stopped
     environment:
       FALKORDB_ARGS: MAX_QUEUED_QUERIES 250 TIMEOUT 5000 RESULTSET_SIZE 10000
+      REDIS_ARGS: "--requirepass ${FALKORDB_PASSWORD}"
     ports:
       - "6379:6379"
     volumes:
