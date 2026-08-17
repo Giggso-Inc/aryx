@@ -317,6 +317,17 @@ def _variable_words(variable_name: str) -> list[str]:
     return [w for w in words if len(w) > 1 and w not in _GENERIC_ATTR_WORDS]
 
 
+# Public alias so ask_api can access it without importing a private name
+# (same convention as DECISION_REQUIRED_KEYS above). Used by the ISSUE-004
+# country-change fix (PR #205 review, Medium finding #5) to replace a raw
+# substring test with a real word-segment match — "region" as a substring
+# would incorrectly match a hypothetical "RegionalDiscountCode" (segment
+# "regional" != "region"); splitting into real camelCase/underscore words
+# first and requiring an EXACT segment match avoids that false positive
+# while staying fully generic (no hardcoded attribute names).
+variable_name_words = _variable_words
+
+
 # ── CPQ intent detection ───────────────────────────────────────────────────────
 # Generic CPQ-domain vocabulary only — the English words customers use to
 # signal configuration intent ("quote", "configure", "bom", ...) are a fixed
@@ -6521,20 +6532,26 @@ class CpqEngine:
         nothing today and stops it from calcifying into a wrong value
         that can never be replaced by a later, correct hint.
 
-        A candidate that exactly matches one of THIS system's own region
-        codes (`_COUNTRY_TO_REGION`'s values -- "NA"/"EMEA"/"ME"/"APAC"/
-        "LA", not a new hardcoded list) is rejected before the alias-group
-        check runs, regardless of whether it also happens to be a real
-        country's ISO alpha-2 code -- confirmed live: "NA" is genuinely
-        BOTH this codebase's own "North America" region token AND
-        Namibia's real alpha-2 code, and in this system a bare region
-        token was never meant to be accepted as a country
-        (test_garbage_and_product_fragments_not_recognized, predates this
-        fix). Reuses this file's own pre-existing region-code vocabulary
-        generically -- never a new per-country exclusion.
+        PR #205 review fix: an earlier version of this exclusion rejected
+        ANY candidate matching one of this system's own region codes
+        ("NA"/"EMEA"/"ME"/"APAC"/"LA") -- but "ME" is genuinely Montenegro's
+        real ISO alpha-2 code and "LA" is genuinely Laos's, so that blanket
+        rule silently reintroduced the exact same collision bug for two
+        more real countries. The blanket exclusion was never actually
+        needed for "EMEA"/"ME"/"APAC"/"LA" in the first place: none of
+        those four strings appear in any real country's alias group
+        (`_COUNTRY_ALIAS_GROUPS`) as anything OTHER than Montenegro's/
+        Laos's own codes, so the alias-group lookup below already returns
+        None for "EMEA"/"APAC" on its own -- only "NA" is a genuine,
+        confirmed double meaning (this system's own "North America" token
+        AND Namibia's real alpha-2 code, confirmed live and locked in by
+        test_garbage_and_product_fragments_not_recognized, which predates
+        this fix and only exercises "NA"/"APAC", never "ME"/"LA"). Scoped
+        to the literal, documented single collision instead of a blanket
+        rule across this system's whole region-code namespace.
         """
         _normalized = _normalize_country_candidate(value)
-        if _normalized.upper() in _COUNTRY_TO_REGION.values():
+        if _normalized.upper() == "NA":
             return None
         group = _country_alias_group(_normalized)
         if group is None:

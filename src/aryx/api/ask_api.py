@@ -25,7 +25,7 @@ from aryx.cpq.engine import (
     CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY,
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, detect_country_change_request,
     extract_quantity_hint, is_valid_product_quantity, question_mentions_quantity,
-    quantity_turn_precheck,
+    quantity_turn_precheck, variable_name_words,
 )
 from aryx.cpq.bom_gate import (
     find_missing_required_fields, recheck_constraints, validate_before_payload,
@@ -5543,13 +5543,25 @@ def _build_country_change_response(
         # which stayed at its stale value since it was never cleared, so
         # packageRegion kept re-copying the OLD region every time (US->
         # Germany left packageRegion="NA" instead of moving to EMEA).
-        # Reusing the same fragment-match convention this engine already
-        # uses everywhere else to mean "this is a country/region-shaped
-        # attr" closes that gap generically, instead of hardcoding one
+        # Reusing the same "this is a country/region-shaped attr" signal
+        # this engine already uses elsewhere, instead of hardcoding one
         # more catalog-specific name that the next catalog would miss too.
+        #
+        # PR #205 review fix (Medium finding #5): the original version
+        # used a raw substring test (`"region" in vn.lower()`), which
+        # would also match a hypothetical unrelated attr like
+        # "RegionalDiscountCode" (contains "region" as a substring) and
+        # silently clear a correct, unrelated answer. Split each
+        # variable_name into its real camelCase/underscore word segments
+        # (`variable_name_words`, the same helper detect_attr_query
+        # already uses for word-level attribute matching) and require an
+        # EXACT segment match instead — "RegionalDiscountCode" splits to
+        # ["regional", "discount", "code"], and "regional" != "region", so
+        # it correctly does NOT match, while "modelSelectionRegion_astro"
+        # splits to [..., "region", "astro"] and correctly does.
         for _mirror_vn in list(session.filled.keys()):
-            _vn_flat = _mirror_vn.lower().replace("_", "")
-            if any(_dk in _vn_flat for _dk in DECISION_REQUIRED_KEYS):
+            _vn_words = set(variable_name_words(_mirror_vn))
+            if _vn_words & DECISION_REQUIRED_KEYS:
                 session.filled.pop(_mirror_vn, None)
                 session.display_filled.pop(_mirror_vn, None)
                 session.filled_source.pop(_mirror_vn, None)
@@ -8505,6 +8517,15 @@ def _run_cpq_turn_inner(
                 _match = _cpq_engine.apply_answer(_product_attr, _candidate_text)
                 if _match:
                     _item_value, _display_name = _match
+                    # PR #205 review fix (High finding #4): this seeds a
+                    # genuine first-time fill of Product from anchor text,
+                    # one of the `apply_answer` sites the ISSUE-003 fix
+                    # plan flagged for the same undo-snapshot audit. Not
+                    # covered by any enclosing cascade handler's own
+                    # snapshot (unlike the `_handle_cascade`/`_handle_
+                    # cascade_multi` sites, which already push one at their
+                    # own top) — genuinely uncovered until now.
+                    push_snapshot(session, reason="product_anchor_seed")
                     session.filled["productSelectionProduct_all"] = _item_value
                     session.display_filled["productSelectionProduct_all"] = _display_name
                     session.filled_source["productSelectionProduct_all"] = "product_anchor"
@@ -10885,7 +10906,21 @@ def run_ask(req: AskRequest) -> dict[str, Any]:
     # skipping classify_ask_route() and dropping a country stated in that
     # turn's own message. `product_name` is only ever set once a real quote
     # begins, so it's the genuine "is a quote actually in progress" signal.
-    live_session = bool(req.session_data.get("product_name"))
+    #
+    # PR #205 review fix (High finding #3): `product_name` alone missed a
+    # real, code-reachable state -- `session.pending_anchor = "product"`
+    # is set at the exact point product-family detection FAILS (ask_api.py
+    # "did you mean family X?" disambiguation), i.e. precisely when
+    # `product_name` is NOT yet set. A customer's reply to that
+    # disambiguation would have been misrouted as a fresh cold-start turn
+    # instead of the live, in-flight session it actually is.
+    # `pending_anchor` defaults to `""` (falsy) on a genuinely fresh
+    # session (state.py:343), so it's a safe, zero-cost addition: any
+    # non-empty pending_anchor means SOME multi-turn flow is already
+    # actively waiting on this exact reply, live or not.
+    live_session = bool(req.session_data.get("product_name")) or bool(
+        req.session_data.get("pending_anchor"),
+    )
 
     # ── Live session: always CPQ turn (engine owns switch/undo/cascade) ─────
     # N3: switch confirmation stays inside _run_cpq_turn — log explicit hint.

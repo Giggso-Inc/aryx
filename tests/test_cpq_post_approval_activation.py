@@ -276,3 +276,32 @@ def test_detect_approval_still_rejects_great_as_a_pleasantry():
     engine = CpqEngine()
     for text in ("great question about mounting", "greatly appreciated"):
         assert not engine.detect_approval(text), f"must not approve: {text!r}"
+
+
+# ── detect_decline defensive test (PR #205 review, Low finding #7) ─────────
+# `_DECLINE_RE`'s optional prefix groups (`(?:no+\b...)?`, `(?:i\s+...)?`)
+# can both match empty, meaning the core keyword group is the real
+# determinant — the pattern is fully `^`-anchored, so it can only ever
+# fire when a message STARTS WITH one of the keyword phrases (never
+# mid-sentence), but nothing requires an actual "no"/"i" to precede that
+# phrase. Confirmed live-safe against ordinary attribute VALUES that don't
+# happen to start with a trigger word (the overwhelmingly common case,
+# since this detector only ever fires in awaiting-approval-adjacent
+# dispatch to begin with) — a value that happens to literally START with
+# "wait"/"cancel"/"not ready" etc. is a known, accepted, low-risk edge
+# case per the review, not asserted against here since it's a real
+# ambiguity (e.g. a genuine "Wait List Priority" option name vs. an actual
+# decline both start identically) rather than a bug with one correct
+# answer.
+def test_detect_decline_does_not_false_positive_on_ordinary_attribute_values():
+    engine = CpqEngine()
+    for text in ("Plastic Holster with 2.5 Inch Belt Clip (Standard)",
+                 "AT&T wait-list enrollment status", "700/800 MHz"):
+        assert not engine.detect_decline(text), f"must not decline: {text!r}"
+
+
+def test_detect_decline_accepts_real_decline_phrasing():
+    engine = CpqEngine()
+    for text in ("no, decline that", "no", "nope", "cancel", "don't submit",
+                 "not ready", "hold on"):
+        assert engine.detect_decline(text), f"must decline: {text!r}"

@@ -61,17 +61,21 @@ MUTATING_CATEGORIES = frozenset({
     IntentCategory.ATTR_CLEAR,
     IntentCategory.ATTR_ACTIVATION,
     IntentCategory.BULK_QUANTITY_CHANGE,
-    # ISSUE-002 fix (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md):
-    # APPROVAL was previously excluded from this cross-check entirely — a
-    # confidently-wrong LLM "approval" classification of decline language
-    # ("no, decline that") dispatched straight to the BOM-generating
-    # handler with zero sanity check. Both APPROVAL and DECLINE have no
-    # `variable_name` at all (pure session-state transitions, not catalog
-    # attribute targets), so `_mutating_agrees` special-cases them to
-    # check a real boolean regex detector (`detect_approval`/
-    # `detect_decline`) instead of the variable_name-matching logic every
-    # other member of this set uses.
-    IntentCategory.APPROVAL,
+    # ISSUE-002 fix (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md),
+    # revised per PR #205 review (High finding #2): DECLINE has no
+    # `variable_name` at all (a pure session-state transition, not a
+    # catalog attribute target), so `_mutating_agrees` special-cases it to
+    # check the real boolean regex detector `detect_decline` instead of
+    # the variable_name-matching logic every other member of this set
+    # uses. APPROVAL is deliberately NOT in this set: the LLM was already
+    # correctly classifying genuine approvals before this fix (that was
+    # never the bug) — requiring `detect_approval()`'s hand-written regex
+    # to also positively agree would reject any approval phrasing the LLM
+    # correctly recognizes but the regex doesn't happen to cover, trading
+    # the decline-misdispatch bug for a new false-negative-on-approval
+    # bug. Instead, `_mutating_agrees` applies a DECLINE-only veto to
+    # APPROVAL below (real conflict signal in one direction only), not a
+    # requirement for positive agreement in the other.
     IntentCategory.DECLINE,
 })
 
@@ -553,8 +557,6 @@ def _mutating_agrees(
     the existing variable_name-based logic, which stays completely
     unchanged for every other category.
     """
-    if result.intent_category == IntentCategory.APPROVAL:
-        return bool(engine is not None and engine.detect_approval(question))
     if result.intent_category == IntentCategory.DECLINE:
         return bool(engine is not None and engine.detect_decline(question))
     if result.intent_category not in MUTATING_CATEGORIES:
@@ -798,6 +800,55 @@ def classify_intent(
             action="clarify", result=quarantined,
             prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
             reason=quarantined.rationale,
+        )
+
+    # PR #205 review fix (High finding #2): APPROVAL is NOT in
+    # MUTATING_CATEGORIES and never requires `detect_approval()` to
+    # positively agree — the LLM was already correctly classifying
+    # genuine approvals before ISSUE-002's fix; gating on regex agreement
+    # would reject any approval phrasing the LLM correctly recognizes but
+    # the hand-written regex doesn't happen to cover, trading one bug for
+    # another. Instead, a DECLINE-only veto: if the deterministic decline
+    # detector ALSO fires on this exact text, that's a genuine conflict
+    # signal (the customer's own words read as a rejection even though
+    # the LLM called it an approval) worth clarifying over, in the one
+    # direction where a wrong guess is costly (approving a decline).
+    if (
+        quarantined.intent_category == IntentCategory.APPROVAL
+        and engine is not None
+        and engine.detect_decline(question)
+    ):
+        clarify = GatewayIntentResult(
+            intent_category=IntentCategory.AMBIGUOUS,
+            confidence=Confidence.LOW,
+            evidence_span=quarantined.evidence_span,
+            clarifying_question=(
+                "Just to confirm — would you like me to submit this "
+                "configuration, or were you declining it?"
+            ),
+            rationale=(
+                "approval_decline_conflict: LLM classified approval but "
+                "detect_decline() also matched this text"
+            ),
+        )
+        log_divergence(DivergenceRecord(
+            run_id=run_id,
+            llm_intent=quarantined.intent_category.value,
+            deterministic_intent=det_label,
+            agreement=False,
+            model_id=model_id,
+            variable_name=quarantined.variable_name,
+            rejected=[clarify.rationale],
+            reason="approval_decline_conflict",
+        ))
+        logger.info(
+            "cpq_intent_gateway: approval_decline_conflict run_id=%s → clarify",
+            run_id,
+        )
+        return GatewayDecision(
+            action="clarify", result=clarify,
+            prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
+            reason="approval_decline_conflict",
         )
 
     # Mutating intents: require deterministic agreement

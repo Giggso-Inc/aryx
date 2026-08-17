@@ -57,6 +57,19 @@ def test_garbage_and_product_fragments_not_recognized():
         assert not eng.is_recognized_country(value), f"{value!r} should NOT be recognized"
 
 
+def test_montenegro_and_laos_still_recognized_despite_region_code_collision():
+    """PR #205 review finding (Critical): an earlier version of the "NA"
+    region-code exclusion above blanket-rejected EVERY one of this
+    system's own region codes ("NA"/"EMEA"/"ME"/"APAC"/"LA"), not just
+    "NA" -- but "ME" is genuinely Montenegro's real ISO alpha-2 code and
+    "LA" is genuinely Laos's, so that blanket rule reintroduced the exact
+    same collision bug for two more real countries. Only the literal,
+    confirmed "NA"/Namibia collision should ever be excluded."""
+    eng = CpqEngine()
+    for value in ("ME", "Montenegro", "LA", "Laos"):
+        assert eng.is_recognized_country(value), f"{value!r} should be recognized"
+
+
 def test_full_real_sentence_still_extracts_the_real_country():
     """Regression: the fix must not break genuine country extraction from
     a real, full sentence containing an explicit destination-country
