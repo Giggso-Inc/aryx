@@ -2841,6 +2841,8 @@ class CpqEngine:
         con_rules: list["ConstraintRule"],
         filled: dict[str, str],
         bml_eval: BmlEvaluator,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> bool:
         """Is the country in `filled` compatible with this catalog's
         product line (variable_name "productSelectionProduct_all" —
@@ -2878,7 +2880,10 @@ class CpqEngine:
         )
         if selector is None:
             return True
-        constrained = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        constrained = self.apply_constraint_rules(
+            attrs, con_rules, filled, bml_eval,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        )
         allowed = constrained.get(selector.entity_id)
         if allowed is None:
             return True
@@ -5871,6 +5876,8 @@ class CpqEngine:
         bml_eval: BmlEvaluator | None = None,
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> list[dict[str, Any]]:
         """Cross-check `filled` against each rule type's OWN independently
         computed result — NOT a self-referential re-derivation of the same
@@ -5912,7 +5919,8 @@ class CpqEngine:
                 })
 
         constrained_opts = self.apply_constraint_rules(
-            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi)
+            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix)
         for vn, value in filled.items():
             attr = by_vn.get(vn)
             allowed = constrained_opts.get(attr.entity_id) if attr else None
@@ -9354,6 +9362,8 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
         bml_eval: BmlEvaluator | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> ConfigAttr | None:
         """Detect "clear X"/"unset X" nullifying an optional single-select
         attribute's CURRENT value back to blank (D4) — never a required
@@ -9385,7 +9395,8 @@ class CpqEngine:
             if vn in rec_fires:
                 continue  # a recommendation would immediately refill it
             constrained = self.apply_constraint_rules(
-                attrs, con_rules, trial_filled, bml_eval=bml_eval)
+                attrs, con_rules, trial_filled, bml_eval=bml_eval,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix)
             allowed = constrained.get(attr.entity_id)
             if allowed is not None:
                 valid_opts = [o for o in attr.options if o.item_value in allowed]

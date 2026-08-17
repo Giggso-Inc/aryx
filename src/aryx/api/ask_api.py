@@ -7714,6 +7714,7 @@ def _run_cpq_turn_inner(
         )
         return _cpq_engine.check_country_availability(
             new_attrs, new_con_rules, sim_filled, new_bml_eval,
+            workspace_id=req.workspace_id, catalog_prefix=new_prefix,
         )
 
     if session.pending_anchor == "switch_country":
@@ -8854,7 +8855,8 @@ def _run_cpq_turn_inner(
     # is a separate, not-yet-built follow-up.
     _rule_issues = _cpq_engine.find_rule_inconsistencies(
         session.filled, attrs, hiding_rules, con_rules, rec_rules, bml_eval,
-        filled_source=session.filled_source, filled_multi=session.filled_multi)
+        filled_source=session.filled_source, filled_multi=session.filled_multi,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix)
     if _rule_issues:
         logger.info(
             "cpq: rule-consistency check found %d issue(s): %s",
@@ -9177,6 +9179,7 @@ def _run_cpq_turn_inner(
         # priority position as activation.
         _clear_match = _cpq_engine.detect_attr_clear(
             req.question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
+            workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
         )
         if _clear_match and _llm_confirm_deterministic_intent(
             req, session, attrs, IntentCategory.ATTR_CLEAR,

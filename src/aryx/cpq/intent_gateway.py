@@ -483,6 +483,7 @@ def _deterministic_mutating_signals(
             return
         cleared = engine.detect_attr_clear(
             question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
         )
         if cleared:
             out[IntentCategory.ATTR_CLEAR.value].add(cleared.variable_name)
