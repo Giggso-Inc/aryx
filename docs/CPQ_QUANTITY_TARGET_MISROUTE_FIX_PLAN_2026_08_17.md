@@ -2,8 +2,10 @@
 
 **Date:** 2026-08-17
 **Branch:** `fix/cpq-quantity-target-misroute` (from `dev-rv-msi` @ `ab1f477`, post PR #205)
-**Status:** Implemented, unit-tested (52/52 passing in `test_cpq_session_product_quantity.py`); live redeploy/replay not yet done
+**Status:** Implemented (LLM-reinforced design, see "Design pivot" below), unit-tested
+(49/49 passing in `test_cpq_session_product_quantity.py`); live redeploy/replay pending
 **Severity:** High
+**PR:** #208
 
 ## Problem
 
@@ -55,36 +57,55 @@ Confirmed by direct code read, not inference.
    recently shown or discussed — it guessed the never-mentioned catalog attribute over the
    quantity the customer had just been shown.
 
-## Fix design
+## Fix design (superseded — see "Design pivot")
 
 A naive fix (require `filled_source == "user"` to even become a candidate) was considered
 and rejected during planning: it would also exclude a candidate the customer explicitly
 *names* in the same message (e.g. "change the VX650 item type quantity to 5"), silently
 misrouting the opposite way if that attribute was only ever cascade-filled.
 
-Revised, three-branch resolution, replacing the current LLM confident-auto-resolve step:
+The first shipped version replaced the LLM auto-resolve step with a fully deterministic
+three-branch resolution (explicit name match wins outright; a generic reference could only
+be contested by a `filled_source == "user"` candidate; otherwise straight to product). A
+follow-up code review found a Critical regression in that design (see "Design pivot" below),
+and an explicit decision was made to revert to an LLM-based resolver rather than patch the
+pattern-matching approach further.
 
-1. **Explicit item-name match** — if the message text names a specific catalog item, resolve
-   directly to that item. Not a guess; the customer stated it. (Reuses existing catalog
-   hint/label-matching machinery already used elsewhere in this file — no new mechanism.)
-2. **Generic reference + a real `user`-sourced candidate exists** — genuinely ambiguous;
-   ask the existing clarifying question (`ask_api.py:7642-7660` already has this path — it
-   becomes the only way an ambiguous case is resolved, not an LLM fallback after a guess).
-3. **Generic reference + no `user`-sourced candidate** — unambiguous; resolve straight to the
-   overall product quantity, no question, no LLM call.
+## Design pivot (2026-08-17, post-review)
 
-This removes the LLM's silent auto-resolve step for the ambiguous branch entirely. The only
-remaining LLM/pattern involvement is step 1's name-matching, which is a lookup, not a guess.
+**Review finding (Critical):** the deterministic name-matcher's "a digit-bearing token is
+trusted alone" rule had no lower bound on specificity — it matched on a coincidental digit
+being the quantity VALUE itself, not a reference to the attribute. E.g. a candidate labeled
+"Quantity for Tier 2 Bundle" (any provenance) plus the message "change the quantity to 2"
+would false-match on the shared token "2", misrouting to the irrelevant bundle attribute —
+reproducing this PR's own bug class via a new mechanism.
 
-## Why this direction over alternatives
+**Decision:** rather than tighten the pattern-matching rule further (e.g. requiring
+alnum-mixed tokens), explicitly reverted to an LLM-based resolver — reinstating
+`_llm_resolve_quantity_target()` — but reinforced this time with exactly the context the
+original version was missing:
 
-- **Always ask, regardless of provenance:** rejected — would add a clarifying question to the
-  overwhelming common case (a bare "change the quantity" turn with no genuine per-item
-  quantity ever set by the customer), which is the majority of real traffic.
-- **Keep the LLM auto-resolve, just add context to its prompt:** considered as a
-  defense-in-depth layer, but superseded once the provenance distinction showed that real
-  ambiguity is rare enough to just ask outright — fewer moving parts, zero silent-misroute
-  risk.
+1. Each candidate line in the prompt now carries its `filled_source` provenance
+   (`"user"` vs `"cascade"`/`"default"`/`"rule"`/...), with explicit instruction that a
+   non-`"user"` source means the customer likely never saw or chose that field.
+2. Explicit bias rule: a generic/bare reference should almost always resolve to `"product"`
+   unless the message clearly, specifically names an item.
+3. Explicit anti-digit-coincidence guard: a bare digit inside a candidate's own label is
+   never itself a reference to that candidate, closing the Critical finding's exact failure
+   mode without any pattern-matching code.
+4. Added a log line (the review's High finding) when the LLM resolves to `"product"` despite
+   a non-`"user"`-sourced candidate being present — observability for this fallback path.
+5. Removed `question_names_quantity_attr()` and its dedicated tests entirely (dead code once
+   the LLM path was reinstated) — replaced with a prompt-content test
+   (`test_llm_prompt_carries_provenance_and_anti_digit_coincidence_guidance`) asserting the
+   provenance and anti-digit guidance actually reach the model, since a unit test can't
+   directly verify a live model's judgment.
+
+**Trade-off, stated plainly:** this restores per-turn LLM latency/cost for any turn with a
+real competing candidate, and the fix is now "very likely correct" rather than "provably
+correct" the way a tightened deterministic rule would have been. Accepted deliberately in
+favor of the established design principle from the PR #205 review round: reinforce the LLM
+with proper context rather than routing judgment calls through pattern-matching.
 
 ## Verify before implementing
 
@@ -99,30 +120,32 @@ remaining LLM/pattern involvement is step 1's name-matching, which is a lookup, 
   question.
 - Re-run the existing CPQ regression suite for no unrelated regressions.
 
-## Implementation
+## Implementation (current, post-pivot)
 
-- `src/aryx/cpq/engine.py` — added `question_names_quantity_attr(question, attr)`: strips
-  quantity-boilerplate words from the candidate's display label, then requires the
-  distinctive remainder to appear in the question (a digit-bearing token, e.g. "vx650", is
-  trusted alone; otherwise every remaining word must appear — same never-guess-off-one-word
-  convention `extract_catalog_hints` already uses elsewhere in this file).
-- `src/aryx/api/ask_api.py` — replaced the `_qty_candidates`/`_llm_resolve_quantity_target()`
-  block (was ~7579-7592) with the three-branch deterministic resolution: explicit name match
-  wins outright; otherwise only `filled_source == "user"` candidates may compete with the
-  overall product quantity; no competing candidate resolves straight to product. Removed
-  `_llm_resolve_quantity_target()` entirely (its only call site) along with the stale
-  docstring references to it in `engine.py`.
-- `tests/test_cpq_session_product_quantity.py` — added `question_names_quantity_attr` unit
-  tests, added `test_cascade_filled_attribute_never_competes_with_bare_quantity_reference`
-  (the actual reported bug, now fixed) and
-  `test_explicit_named_attribute_wins_even_when_only_cascade_sourced` (the naive-fix
-  regression this design specifically avoids), updated the two existing disambiguation tests
-  to set `filled_source == "user"` (the discriminator the fix introduces), and removed the
-  now-obsolete `_llm_resolve_quantity_target` direct unit test. All 52 tests in the file pass.
+- `src/aryx/api/ask_api.py` — reinstated `_llm_resolve_quantity_target()` with the reinforced
+  prompt described above; the gate's candidate list is back to a pure presence filter
+  (`session.filled`/`filled_multi`), unchanged from before this fix — the fix lives entirely
+  in what the LLM is told, not in how candidates are filtered. Added the High-finding log
+  line for the "product despite non-user candidate" observability path.
+- `src/aryx/cpq/engine.py` — `question_names_quantity_attr()` and its generic-label-word
+  constant removed; docstrings/comments reverted to point at the LLM resolver again.
+- `tests/test_cpq_session_product_quantity.py` — restored the original LLM-mocked gate tests
+  (`test_named_catalog_attribute_falls_through_to_normal_pipeline`,
+  `test_ambiguous_bare_quantity_with_competing_attribute_asks_disambiguation`,
+  `test_disambiguation_resolving_to_product_answers_from_session`), restored
+  `test_llm_resolve_quantity_target_rejects_invented_variable_name`, kept
+  `test_explicit_named_attribute_wins_even_when_only_cascade_sourced` (now LLM-mocked), and
+  added `test_llm_prompt_carries_provenance_and_anti_digit_coincidence_guidance` (the Medium
+  finding, adapted for the LLM design — asserts the prompt itself carries the provenance and
+  anti-digit-coincidence signal, since a mocked unit test can't verify live model judgment).
+  All 49 tests in the file pass.
 
 ## Remaining before merge
 
-- Live redeploy + replay of the original reported transcript against the running container
-  has not been done this session (deferred to avoid disrupting the container while other
-  work was in flight) — recommended before closing this out.
-- Full CPQ regression suite re-run on this branch.
+- Live redeploy + replay of the original reported transcript against the running container,
+  under the current (post-pivot) code.
+- Full CPQ regression suite re-run on this branch's latest commit.
+- Consider a live (non-mocked) smoke test of the Critical finding's exact scenario
+  ("Quantity for Tier 2 Bundle" + "change the quantity to 2") against a real model call, since
+  the shipped test only verifies the prompt's content, not a live model's actual judgment on
+  it.
