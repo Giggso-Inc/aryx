@@ -8450,6 +8450,22 @@ class CpqEngine:
                             # allowlist. See _BLIND_FILL_RISK_ACCEPTED_VNS'
                             # own comment for the historical "never guess a
                             # real business choice" rationale this overrides.
+                            #
+                            # 2026-08-18 regression fix: EXCLUDES an attr
+                            # whose only real governance is a hiding rule
+                            # confirmed to depend on a data table absent from
+                            # every ingested catalog (_missing_data_target_ids,
+                            # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_
+                            # PICK_PLAN_2026_08_10.md Group 1). Without this,
+                            # the universal blind-fill above silently defeated
+                            # Group 1's warn-and-skip before it ever ran
+                            # (confirmed live via regression test: cBPQRCode_
+                            # astro got blind-picked "A" instead of being
+                            # skipped) -- this branch must never claim an attr
+                            # Group 1 (a few lines below, in the sibling outer
+                            # elif) is specifically responsible for.
+                            and attr.entity_id not in _missing_data_target_ids
+                            and attr.source_id not in _missing_data_target_ids
                         ):
                             # §2f, superseded by explicit instruction
                             # (2026-08-09): governed (some rule targets this
@@ -8494,7 +8510,10 @@ class CpqEngine:
                             # skips it, since it's neither a decision attr
                             # nor a grid selector).
                             pass
-                        else:
+                        elif (
+                            attr.entity_id not in _missing_data_target_ids
+                            and attr.source_id not in _missing_data_target_ids
+                        ):
                             # 2026-08-18: was `elif not (_no_real_fill_
                             # justification(...) and vn not in
                             # _BLIND_FILL_RISK_ACCEPTED_VNS)` -- now
@@ -8504,6 +8523,13 @@ class CpqEngine:
                             # menu order — well-defined for boolean (only two
                             # states) and safe here because a rule REQUIRES this
                             # attr to be resolved for the cascade to proceed.
+                            #
+                            # 2026-08-18 regression fix: same Group 1 exclusion
+                            # as the display_order branch above -- an attr
+                            # whose only governance is a hiding rule that can
+                            # never resolve (confirmed-missing data table)
+                            # must reach Group 1's warn-and-skip below, not
+                            # get blind-picked here first.
                             value = valid_opts[0].item_value
                             display = valid_opts[0].display_name
                             source = governed_source
