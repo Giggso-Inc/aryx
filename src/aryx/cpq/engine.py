@@ -1372,27 +1372,96 @@ def _clear_rule_join_data_cache() -> None:
 
 
 # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_10.md -- a
-# small, explicit registry of data tables CONFIRMED absent from every
-# ingested catalog (not attribute names -- a hiding rule anywhere, for any
-# attribute, that structurally depends on one of these tables can never
-# resolve, so auto_fill warns and skips rather than asking forever). Extend
-# this tuple if another confirmed-missing table surfaces; never hardcode
-# which attributes are affected -- that's derived generically from which
-# hiding rules reference the table.
+# CANDIDATE registry of data tables known to be missing from AT LEAST ONE
+# ingested workspace historically (not attribute names -- a hiding rule
+# anywhere, for any attribute, that structurally depends on one of these
+# tables can never resolve THERE, so auto_fill warns and skips rather than
+# asking forever). Extend this tuple if another candidate-missing table
+# surfaces; never hardcode which attributes are affected -- that's derived
+# generically from which hiding rules reference the table.
+#
+# 2026-08-18 (Raven PR #211 review, finding #4): this was briefly emptied
+# to `()` on a single-workspace verification (workspace 93 -- 511
+# UserGroupMapping rows confirmed ingested there). Cross-workspace check
+# (docs/CPQ_MULTISELECT_AUTOFILL_AND_COUNTRY_CONFIGDATA_PLAN_2026_08_18.md)
+# found UserGroupMapping ingested ONLY for workspace 93 -- 16 other live
+# workspaces (1, 27, 28, 29, 31, 38, 51, 61, 63, 64, 73, 85, 88, 90, 91, 92)
+# have ZERO UserGroupMapping rows. Emptying this constant globally would
+# have silently defeated Group 1's skip for every one of those workspaces --
+# `dHSAssetTagLabel_astro`/`cBPQRCode_astro`/`fedQRCode_astro` would blind-
+# pick a wrong value there instead of correctly staying skipped. Fixed
+# properly instead: this list is now just the CANDIDATE names to check --
+# `_hiding_rule_needs_missing_data_table` verifies actual ingestion PER
+# WORKSPACE (live query, cached) rather than assuming one workspace's
+# ingestion status applies globally.
 _KNOWN_MISSING_DATA_TABLES = ("UserGroupMapping",)
 
+# workspace_id -> {table_name.lower(): is_ingested_bool}, short-TTL so a
+# newly-completed ingestion run is picked up without a process restart,
+# same convention as this file's other per-workspace caches (_DT_CACHE,
+# _LAYOUT_*_CACHE).
+_TABLE_INGESTED_CACHE: dict[int, dict[str, bool]] = {}
+_TABLE_INGESTED_CACHE_TTL_SECONDS = 300.0
+_TABLE_INGESTED_CACHE_TS: dict[int, float] = {}
 
-def _hiding_rule_needs_missing_data_table(rule: "HidingRule") -> bool:
+
+def _table_ingested_for_workspace(table_name: str, workspace_id: int | None) -> bool:
+    """True if `table_name` has at least one real ingested entity in
+    `workspace_id`. `workspace_id=None` (no workspace context available,
+    e.g. an offline/unit-test caller) conservatively returns False -- same
+    "assume missing, never assume present" default `_KNOWN_MISSING_DATA_
+    TABLES` always used before this was workspace-scoped."""
+    if workspace_id is None:
+        return False
+    key = table_name.lower()
+    now = time.monotonic()
+    cached_ts = _TABLE_INGESTED_CACHE_TS.get(workspace_id, 0.0)
+    if now - cached_ts >= _TABLE_INGESTED_CACHE_TTL_SECONDS:
+        _TABLE_INGESTED_CACHE.pop(workspace_id, None)
+    per_ws = _TABLE_INGESTED_CACHE.setdefault(workspace_id, {})
+    if key in per_ws:
+        return per_ws[key]
+    try:
+        rows = get_cpq_rdb().fetch_entities_by_type(workspace_id, table_name)
+        ingested = bool(rows)
+    except Exception:
+        logger.debug(
+            "cpq: table-ingestion check failed for %r ws=%s -- assuming "
+            "not ingested (never assume present on a lookup failure)",
+            table_name, workspace_id, exc_info=True,
+        )
+        ingested = False
+    per_ws[key] = ingested
+    _TABLE_INGESTED_CACHE_TS[workspace_id] = now
+    return ingested
+
+
+def _hiding_rule_needs_missing_data_table(
+    rule: "HidingRule", workspace_id: int | None = None,
+) -> bool:
     """True if `rule`'s script (declarative or condition-script form)
-    references a data table confirmed absent from every ingested catalog --
-    see `_KNOWN_MISSING_DATA_TABLES`. Such a rule can never resolve to a
-    real hide/show outcome, so its target should never be silently asked
-    about forever."""
+    references a data table that is NOT ingested for `workspace_id` -- see
+    `_KNOWN_MISSING_DATA_TABLES` for the candidate list and
+    `_table_ingested_for_workspace` for the per-workspace check. Such a
+    rule can never resolve to a real hide/show outcome in THIS workspace,
+    so its target should never be silently asked about forever here --
+    even though the exact same table may be genuinely ingested (and this
+    same rule shape genuinely resolvable) in a different workspace.
+
+    `workspace_id=None` (no caller passes it) preserves the original,
+    fully conservative behavior: every candidate table is treated as
+    missing everywhere, identical to today's behavior for any caller that
+    doesn't supply a workspace.
+    """
     script = (rule.script or "") + (getattr(rule, "condition_script", None) or "")
     if not script:
         return False
     script_lower = script.lower()
-    return any(table.lower() in script_lower for table in _KNOWN_MISSING_DATA_TABLES)
+    return any(
+        table.lower() in script_lower
+        and not _table_ingested_for_workspace(table, workspace_id)
+        for table in _KNOWN_MISSING_DATA_TABLES
+    )
 
 
 def _parenthetical_suffix(text: str) -> str | None:
@@ -7692,7 +7761,7 @@ class CpqEngine:
         # behavior for every existing call site.
         _missing_data_target_ids: set[int] = {
             rule.target_attr_id for rule in (hiding_rules or [])
-            if _hiding_rule_needs_missing_data_table(rule)
+            if _hiding_rule_needs_missing_data_table(rule, workspace_id)
         }
 
         # Two "optional"-tier attrs (no rule, no default — eligible only via
@@ -7958,7 +8027,27 @@ class CpqEngine:
             # resolved the attribute so nothing was pending) that a
             # separate BOM-gate consistency check caught one full turn
             # later, only once the customer said "confirm".
-            if not value and rec_by_target and attr.options:
+            # 2026-08-18 fix (confirmed live via direct repro): a decision-
+            # anchor attr (country/region/hardware version/product --
+            # _DECISION_ANCHOR_VNS) whose CUSTOMER-CONFIRMED value was just
+            # dropped THIS SAME pass (a few lines above, because a real
+            # constraint narrowed it away) must never be silently reasserted
+            # to a DIFFERENT value by a recommendation rule here -- that
+            # silently overwrites a real customer decision with no re-ask,
+            # no warning, and no trace of what happened to their answer.
+            # Skipping this branch lets the attr fall through to `pending`
+            # instead, so the customer is asked to re-confirm -- same
+            # "never silently reguess a real decision" principle
+            # `user_answered_dropped_ids` already enforces for the blind-
+            # pick paths later in this function, extended here to close the
+            # one place it didn't yet cover. Every OTHER attr (not a
+            # decision anchor, or not dropped this pass) is unaffected --
+            # this is a narrow, targeted exclusion, not a change to how
+            # recommendation rules resolve in general.
+            if (
+                not value and rec_by_target and attr.options
+                and not (vn in _DECISION_ANCHOR_VNS and attr.entity_id in user_answered_dropped_ids)
+            ):
                 _allowed_for_rec = (
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
@@ -8727,12 +8816,30 @@ class CpqEngine:
                     # this branch was never meant to block for an attr the
                     # catalog's own data proves is governed. The
                     # CONSTRAINED-but-ambiguous case (is_unconstrained=
-                    # False) still lands here and correctly stays
-                    # untouched -- unchanged, matching the explicit HITL
-                    # "default-or-empty, never guess among rule-narrowed
-                    # options" decision this file's own multiselect
-                    # over-selection tests already lock in.
-                    pass
+                    # False): 2026-08-18 explicit override (HITL-confirmed
+                    # after the "never guess among rule-narrowed options"
+                    # rationale was re-cited in full) -- select ALL options
+                    # a real rule has currently narrowed this attr to,
+                    # instead of leaving it empty. Distinct from the
+                    # single-select blind-fill override above (which picks
+                    # ONE first-eligible value): for multi-select the
+                    # requested behavior is "check every currently-allowed
+                    # box", not "guess one of them". `candidate_opts` here
+                    # is already filtered to `current_allowed` (the real
+                    # constraint's narrowed set) a few lines up, so this
+                    # never selects an option the active rule has excluded.
+                    if candidate_opts:
+                        filled_multi[vn] = [o.item_value for o in candidate_opts]
+                        display_filled[vn] = ", ".join(
+                            o.display_name for o in candidate_opts)
+                        sources.setdefault(vn, "auto_all_constrained")
+                        logger.info(
+                            "cpq: multi-select %r constrained to %d option(s) "
+                            "with no rule/default resolving a subset -- "
+                            "auto-selected all of them instead of leaving "
+                            "empty (2026-08-18 override of the prior "
+                            "leave-empty default)", vn, len(candidate_opts),
+                        )
                 elif default_opt:
                     filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
