@@ -5550,6 +5550,34 @@ def _build_product_quantity_change_response(
             _qty_summary_resp["tools_called"] = ["cpq_product_quantity()"]
             return _qty_summary_resp
     answer = f"**Quantity** → {session.product_quantity}"
+    # docs/CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md follow-up: a
+    # customer applying a quantity change while a different question is
+    # still pending (e.g. Hardware Version, never answered) got no
+    # reminder at all that it's still awaiting a reply -- unlike every
+    # QA-answer path (_handle_cpq_qa), which always appends this same
+    # "Resuming your configuration..." block when something is pending.
+    # Silently losing track of a pending question is worse than a QA
+    # answer never mentioning it, so this mirrors that existing,
+    # already-battle-tested resume block exactly rather than inventing a
+    # second wording. Never let a lookup failure here block the quantity
+    # change itself -- the change is already applied above.
+    if session.pending_variables:
+        try:
+            _qty_resume_attrs, _ = _cpq_engine.load_product_config(
+                reader, req.workspace_id, session.product_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cpq quantity resume-reminder: load_product_config failed: %r", exc)
+            _qty_resume_attrs = []
+        _qty_pending_attr = next(
+            (a for a in _qty_resume_attrs if a.variable_name == session.pending_variables[0]),
+            None,
+        )
+        if _qty_pending_attr is not None:
+            answer += (
+                "\n\n---\n\n*Resuming your configuration...*\n\n"
+                + _cpq_engine.next_question_prompt(_qty_pending_attr)
+            )
     _persist_cpq_history(req.workspace_id, req.question, answer)
     return {
         "answer": answer, "terms": [], "tools_called": ["cpq_product_quantity()"],
