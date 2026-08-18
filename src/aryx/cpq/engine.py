@@ -1509,6 +1509,123 @@ _NEVER_SUPPRESS_FRAGMENTS: frozenset[str] = frozenset({
     "basemodel", "product", "country", "region", "hwversion", "hardwareversion",
 })
 
+# The exact (not fragment-matched) variable names of this catalog's real
+# decision anchors -- used by evaluate_rules_loop to tell "hidden because an
+# anchor is still blank" (merely gating, values dormant/preserved) apart
+# from "hidden with every anchor already answered" (a real, current-state
+# conflict, values stripped exactly as before). See the strip-vs-preserve
+# comment at its one call site for the live-confirmed regression this
+# narrower, exact-name check exists to avoid repeating.
+_DECISION_ANCHOR_VNS: tuple[str, ...] = (
+    "ultimateDestinationCountry", "hWVersion_astro",
+    "productSelectionProduct_all", "modelSelectionbaseModel_astro",
+)
+
+# Attrs confirmed live (2026-08-16, cross-checked against real native-UI
+# screenshots for APX NEXT Enhanced/XE 4G LTE+5G) to be orphaned/legacy --
+# they have ZERO attrSequence rows anywhere in the workspace (any CPQModel,
+# any base model), so _suppress_ungoverned_attrs's "total silence, not a
+# confident exclusion" carve-out normally leaves them visible. For these
+# specific, verified-dead attrs that default is wrong: native CPQ never
+# renders modelSelectionFrequencyBands_astro (20-option legacy single-
+# select) or modelSelectionFrequencyBandPlus_astro for any APX NEXT
+# product -- modelSelectionFrequencyBandMsl_astro is the real, attrSequence-
+# governed control. Narrow allowlist, not a change to the general silence
+# carve-out, since most attrs with zero attrSequence coverage genuinely are
+# ambiguous rather than confirmed-dead.
+_CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
+    "modelSelectionFrequencyBands_astro",
+    "modelSelectionFrequencyBandPlus_astro",
+})
+
+# Multi-select attrs confirmed live (2026-08-16) to default to EVERY
+# Whitelist/Data-Table-confirmed-legal option checked, not just one --
+# real-world meaning is "which of these apply" (coverage), not "pick one
+# among many". See the one call site (auto_fill's narrowed-legal-values
+# branch) for why this is a narrow, named allowlist rather than a change
+# to that branch's default behavior for every multi-select.
+_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: frozenset[str] = frozenset({
+    "modelSelectionFrequencyBandMsl_astro",
+})
+
+# Live-confirmed (2026-08-16): additionalSystemEnhancementFeatureType_
+# astro got blind-picked to its first menu option with NOTHING in the
+# catalog behind it -- required=False, no real default_value, zero
+# recommendation rules ever targeting it -- and that guess silently
+# cascaded into narrowing an unrelated, real question (Application
+# Services) down to the wrong 5-option set. `_no_real_fill_justification`
+# is the dynamic, catalog-agnostic test for this exact shape, computed
+# per-attribute at call time rather than a hardcoded attribute-name list
+# -- any attribute anywhere in this (or another) catalog with the same
+# profile gets the same protection automatically, with no code change
+# needed to name it. Checked at the two specific auto_fill call sites
+# that had no other real-data guard at all: the unconditional multi-
+# select "nothing to justify a subset" fallback, and the two single-
+# select first-by-order fallbacks (display-order-based and the final
+# bare-menu-order one). Every earlier, more specific branch in the same
+# method (satisfied recommendation, Data Table single-match, confirmed-
+# valid default under an active constraint, exactly-one-remaining-
+# option) is left completely untouched and still fires normally for any
+# attr whenever real data actually supports it -- this only blocks the
+# LAST-resort "guess from the whole unconstrained menu" step.
+def _no_real_fill_justification(
+    attr: "ConfigAttr", rec_by_target: dict[int, list[Any]],
+) -> bool:
+    if attr.required:
+        return False
+    if _valid(attr.default_value):
+        return False
+    if rec_by_target.get(attr.entity_id) or rec_by_target.get(attr.source_id):
+        return False
+    return True
+
+# Explicit, named business-accepted exceptions to the dynamic check
+# above -- NOT a technical classification, a deliberate product decision
+# to trade guess-risk for fewer prompts on ONE specific attribute.
+# accessoriesSolutionSet_astro (2026-08-16): its real constraint
+# ("Constraint solution set based on product") depends on Oracle_
+# BomItemMap/Oracle_BomItemDef, not yet ingested -- until they are, it
+# blind-picks the first menu option instead of asking. No further change
+# needed once ingestion lands: the confident branches this exception
+# doesn't touch (recommendation match, Data Table single-match, exactly-
+# one-remaining-option) all run BEFORE the blind-pick fallback, so a
+# real constraint narrowing this to one legal category will auto-fill
+# through one of those first and the blind guess simply stops firing.
+_BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
+    "accessoriesSolutionSet_astro",
+})
+
+# Catalog-agnostic "this is the opt-out choice" phrasing -- an attr with
+# no real fill justification (`_no_real_fill_justification`) still has a
+# safe, non-guessed answer available when exactly one of its menu options
+# itself says "nothing needed here" (e.g. preSalesEnggAcknowledgement_
+# astro's "Add-on sale, new system components or SI services are not
+# required"). This is fundamentally different from blind-picking among
+# several real business choices (_BLIND_FILL_RISK_ACCEPTED_VNS) -- it's
+# recognizing the customer's own catalog already offers a declared
+# "skip" answer, the same concept next_question_prompt's own "(Optional
+# — say 'skip' or 'none needed')" hint already surfaces conversationally.
+# Deliberately requires EXACTLY one match -- 2+ matches means the menu's
+# phrasing is ambiguous about which is the real opt-out, and guessing
+# between them would be exactly the guess-risk this whole mechanism
+# exists to avoid, so it falls through to asking instead.
+_OPT_OUT_OPTION_RE = re.compile(
+    r"\bnot\s+(?:required|needed|applicable)\b"
+    r"|\bnone\s+(?:needed|required)\b"
+    r"|\bn/?a\b"
+    r"|\bno(?:t)?\s+(?:action|service|item)s?\s+(?:required|needed)\b",
+    re.IGNORECASE,
+)
+
+
+def _sole_opt_out_option(valid_opts: list[Any]) -> Any | None:
+    matches = [
+        o for o in valid_opts
+        if _OPT_OUT_OPTION_RE.search(o.display_name or "")
+        or _OPT_OUT_OPTION_RE.search(o.item_value or "")
+    ]
+    return matches[0] if len(matches) == 1 else None
+
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
 # catalogs — otherwise next_question_prompt dumps the unconstrained list.
@@ -1600,6 +1717,88 @@ def _cpq_model_candidates(
     )
     extra = tuple(cm for cm in discovered if cm not in primary)
     return primary + extra if extra else primary
+
+
+# Matches `put(<dictVar>,"Attribute Variable Name","<attrName>")` -- the
+# real BML idiom rule scripts use to name their own target attribute.
+# Case/quote-style-tolerant since real scripts vary ("inputparam" vs
+# "inputParam", "Attribute Variable Name" is always this exact label
+# though -- confirmed across every traced rule).
+_UTIL_ATTR_VAR_NAME_RE = re.compile(
+    r'put\(\s*\w+\s*,\s*"Attribute Variable Name"\s*,\s*"([^"]+)"\s*\)',
+)
+# Matches the actual `util.getConstraintVals(<dictVar>, <listVar>)` call
+# site to replace -- same idiom every real constraint-rule script uses
+# (docs/CPQ_UTIL_LIBRARY_FUNCTION_INVENTORY_2026_08_13.md). This is a
+# NATIVE, compiled Oracle Java platform function with no BML source in
+# any export ever seen -- the BML evaluator correctly can't execute it and
+# returns "unknown" (never guess), which is why a constraint rule calling
+# it silently narrows nothing instead of erroring. Confirmed live
+# (2026-08-14): "Restrict Model Selection Attributes (Portable)" targeting
+# modelSelectionFrequencyBands_astro returns None from
+# BmlEvaluator.allowed_values_for_script for exactly this reason, leaving
+# the raw catalog menu unfiltered instead of the real, narrowed legal set.
+_UTIL_GET_CONSTRAINT_VALS_CALL_RE = re.compile(
+    r'util\.getConstraintVals\s*\(\s*\w+\s*,\s*\w+\s*\)',
+)
+
+
+def _substitute_util_get_constraint_vals(
+    script: str, filled: dict[str, str],
+    workspace_id: int | None, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+) -> str:
+    """Precompute `util.getConstraintVals(...)` and splice the real,
+    ingested legal-value set into `script` as a pipe-delimited string
+    literal (the same delimiter convention BmlEvaluator's own Tier-2
+    prompt already documents: "determine which values the script allows
+    (its returnVal, split on '|')"), so the shared Tier-1/Tier-2 evaluator
+    sees a script with NO `util.` reference left and can parse the
+    surrounding if/elif chain (or, for the common single-statement idiom,
+    the bare `return "<literal>"`) normally instead of being forced to
+    Tier-2 LLM guessing purely because of this one call.
+
+    `util.getConstraintVals`'s real backing data (docs/CPQ_UTIL_LIBRARY_
+    FUNCTION_INVENTORY_2026_08_13.md) is the same already-ingested
+    constraint-shaped Data Table `resolve_whitelist_values` already
+    queries for the narrowed-ask/blind-pick paths elsewhere in this file
+    (the "Constrain Master String" the real script reads from is itself
+    built from these same rows) -- reused directly here rather than
+    reimplementing the AND-condition matching a second time.
+
+    Deliberately narrow: only substitutes when (a) the call is present at
+    all, (b) the script's own "Attribute Variable Name" param names the
+    real target attr, (c) CPQModel/base model both resolve from `filled`,
+    and (d) `resolve_whitelist_values` finds real ingested rows for this
+    exact (cpq_model, base_model, attr_var_name) combination -- `None` (no
+    rows at all, e.g. the confirmed-live APX NEXT Enhanced/Frequency Bands
+    gap) leaves the script unchanged, still falling through to Tier-2
+    exactly as before; only a genuine `None`-vs-list distinction changes
+    behavior, never a guess. An empty list (`[]`, real rows exist but none
+    match the current filled context) still substitutes -- a confirmed
+    "nothing legal right now" is real information, not an unknown.
+    """
+    if "util.getConstraintVals" not in script or workspace_id is None:
+        return script
+    attr_match = _UTIL_ATTR_VAR_NAME_RE.search(script)
+    if not attr_match:
+        return script
+    attr_var_name = attr_match.group(1)
+    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    product = filled.get("productSelectionProduct_all", "")
+    if not base_model:
+        return script
+    for cpq_model in _cpq_model_candidates(
+        product, workspace_id, catalog_prefix, cache, base_model=base_model,
+    ):
+        values = dt_resolve_whitelist_values(
+            cpq_model, base_model, attr_var_name, filled, workspace_id, catalog_prefix, cache,
+        )
+        if values is not None:
+            joined = "|".join(values)
+            escaped = joined.replace("\\", "\\\\").replace('"', '\\"')
+            return _UTIL_GET_CONSTRAINT_VALS_CALL_RE.sub(f'"{escaped}"', script)
+    return script
 
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
@@ -2688,6 +2887,8 @@ class CpqEngine:
         con_rules: list["ConstraintRule"],
         filled: dict[str, str],
         bml_eval: BmlEvaluator,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> bool:
         """Is the country in `filled` compatible with this catalog's
         product line (variable_name "productSelectionProduct_all" —
@@ -2725,7 +2926,10 @@ class CpqEngine:
         )
         if selector is None:
             return True
-        constrained = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        constrained = self.apply_constraint_rules(
+            attrs, con_rules, filled, bml_eval,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        )
         allowed = constrained.get(selector.entity_id)
         if allowed is None:
             return True
@@ -3247,6 +3451,11 @@ class CpqEngine:
             if e["id"] not in neighbor_map
             and str(attr_pg.get(e["id"], {}).get("menu_type") or "") == "1"
         ]
+        # Shared lazily-built pool for the override FK fallback below (step
+        # 3c) -- reused from step 3b's fk_menu_pg when that fallback already
+        # ran this call, since both need the same "every menu-item row in
+        # this catalog, keyed by graph entity id" data.
+        _fk_menu_pool: dict[int, dict] | None = None
         if orphan_eids:
             # A real BM native id can legitimately own more than one graph
             # entity_id (confirmed live: SL3500e ingested
@@ -3285,6 +3494,7 @@ class CpqEngine:
                         offset += page_size
                 fk_menu_pg = self._batch_fetch(
                     [m["id"] for m in fk_menu_ents], workspace_id)
+                _fk_menu_pool = fk_menu_pg
                 for mid, mdata in fk_menu_pg.items():
                     owner_eids = orphan_real_ids.get(str(mdata.get("bm_config_attr_id") or ""))
                     if not owner_eids:
@@ -3368,7 +3578,50 @@ class CpqEngine:
                              or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix)
                     ]
                     if not override_menu_ids:
-                        continue
+                        # FK fallback (2026-08-17, live-confirmed): same class
+                        # of gap as the base-attr orphan_eids fallback above,
+                        # but for override entities -- a bm_config_att_override
+                        # can have a real Postgres row and real bm_menu_item
+                        # children correctly linked via the ref_id property,
+                        # yet zero graph edges (confirmed live: override
+                        # entity 2251385 for productSelectionProduct_all has
+                        # 325 real menu items keyed by ref_id == its own
+                        # native id, but reader.neighbors() returns empty,
+                        # silently dropping "APX NEXT XE 4G LTE PLUS 5G" from
+                        # the Product menu). Detected structurally (empty
+                        # graph neighbors on an override row that exists in
+                        # Postgres), never by attr/catalog name, so it
+                        # self-heals for any override hitting the same gap.
+                        # Reuses the same menu-item pool as the base-attr
+                        # fallback (fetched lazily here if that fallback
+                        # didn't already run this call).
+                        if _fk_menu_pool is None:
+                            _fk_menu_pool = {}
+                            _menu_types_all = [
+                                t for t in all_type_names
+                                if _norm(t).endswith("menuitem")
+                                and (not resolved_catalog_prefix
+                                     or _catalog_prefix(t) == resolved_catalog_prefix)
+                            ]
+                            _fk_menu_ents_all: list[dict] = []
+                            for mt in _menu_types_all:
+                                _off = 0
+                                while True:
+                                    _page = reader.find_entities(
+                                        ontology_type=mt, limit=2000, offset=_off)
+                                    _fk_menu_ents_all.extend(_page)
+                                    if len(_page) < 2000:
+                                        break
+                                    _off += 2000
+                            _fk_menu_pool = self._batch_fetch(
+                                [m["id"] for m in _fk_menu_ents_all], workspace_id)
+                        override_native_id = str(override_pg.get(oeid, {}).get("id") or "")
+                        override_menu_ids = [
+                            mid for mid, mdata in _fk_menu_pool.items()
+                            if str(mdata.get("ref_id") or "") == override_native_id
+                        ]
+                        if not override_menu_ids:
+                            continue
                     for owner_eid in owner_eids:
                         # Prepended, not appended: the override is BM's
                         # authoritative, catalog-specific replacement for
@@ -5441,6 +5694,9 @@ class CpqEngine:
         filled: dict[str, str],
         bml_eval: BmlEvaluator | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
     ) -> dict[int, list[str]]:
         """Return {attr_entity_id: [allowed_item_values]} for attrs with active constraints.
 
@@ -5525,7 +5781,10 @@ class CpqEngine:
             if rule.script is not None:
                 if bml_eval is None:
                     continue
-                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                _script = _substitute_util_get_constraint_vals(
+                    rule.script, filled, workspace_id, catalog_prefix, _dt_cache,
+                )
+                allowed = bml_eval.allowed_values_for_script(_script, filled)
                 if allowed:
                     _intersect(target, allowed, frozenset({f"script:{rule.rule_name}"}))
                     rule_trace.record_fire(
@@ -5663,6 +5922,8 @@ class CpqEngine:
         bml_eval: BmlEvaluator | None = None,
         filled_source: dict[str, str] | None = None,
         filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> list[dict[str, Any]]:
         """Cross-check `filled` against each rule type's OWN independently
         computed result — NOT a self-referential re-derivation of the same
@@ -5704,7 +5965,8 @@ class CpqEngine:
                 })
 
         constrained_opts = self.apply_constraint_rules(
-            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi)
+            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix)
         for vn, value in filled.items():
             attr = by_vn.get(vn)
             allowed = constrained_opts.get(attr.entity_id) if attr else None
@@ -5923,15 +6185,39 @@ class CpqEngine:
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
                 attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=multi)
 
-            # Strip values ONLY for attrs an explicit hiding rule removed from
-            # view. Popping everything not currently visible (the old
-            # behaviour) also destroyed confirmed answers whose attr merely
-            # wasn't part of this load — dropping user data from the payload.
-            for k in hidden_vns:
-                filled.pop(k, None)
-                display_filled.pop(k, None)
-                sources.pop(k, None)
-                multi.pop(k, None)
+            # docs/CPQ_HIDDEN_VALUE_TEMPORARY_VS_CONFIRMED_PLAN_2026_08_16.md
+            # -- strip filled/multi for `hidden_vns` UNLESS a core decision
+            # anchor (Product, Base Model, Hardware Version, Country) is
+            # still unanswered. That's the one narrow window where a hide
+            # is merely gating ("Hide all attributes if Product is Blank")
+            # rather than a real invalidation -- e.g.
+            # modelSelectionFrequencyBandMsl_astro's default-picked
+            # '700/800 MHZ' got permanently wiped the moment Hardware
+            # Version was answered but Product was still blank, and never
+            # returned once Product was answered the next turn, even
+            # though nothing about the value itself was ever wrong.
+            #
+            # An EARLIER version of this fix stopped stripping on
+            # `hidden_vns` unconditionally, for ANY reason -- live-
+            # confirmed regression: once every anchor IS answered, a hide
+            # almost always means a REAL, current-state conflict (Package
+            # Type vs. the just-chosen Product, a carrier no longer valid
+            # for the resolved Base Model, ...), and leaving those stale
+            # values in `filled`/`multi` let them keep colliding with new
+            # answers turn after turn -- rule-consistency issue count grew
+            # 6 -> 10 -> 12 -> 13 -> 16 across one session, and Package
+            # Type/Product got stuck re-invalidating each other in a loop.
+            # Restricting the skip to "an anchor is still blank" keeps the
+            # original fix for the one case that actually needs it while
+            # restoring the old, safe strip for every later-stage conflict.
+            if all(
+                filled.get(_anchor_vn) for _anchor_vn in _DECISION_ANCHOR_VNS
+            ):
+                for k in hidden_vns:
+                    filled.pop(k, None)
+                    display_filled.pop(k, None)
+                    sources.pop(k, None)
+                    multi.pop(k, None)
 
             # Real Oracle CPQ attrSequence Data Table narrowing -- an attr
             # confidently NOT part of the active base model per real
@@ -6068,6 +6354,7 @@ class CpqEngine:
 
             constrained_opts = self.apply_constraint_rules(
                 attrs, con_rules, filled, bml_eval=bml_eval, filled_multi=multi,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
             )
             _t0 = time.monotonic()
             self._apply_series_mapping_exclusions(
@@ -6485,6 +6772,20 @@ class CpqEngine:
             if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
                 continue
             governed.add(attr.entity_id)
+        # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_
+        # 10.md follow-up (2026-08-16, refined same day): attrs with no
+        # real fill justification are DELIBERATELY left in `governed`
+        # here -- an earlier version of this method unconditionally
+        # excluded them by name, which also blocked their own confident
+        # "a real constraint narrowed this to exactly one legal value"
+        # auto-fill path (e.g. once Oracle_BomItemMap/Oracle_BomItemDef
+        # are ingested, accessoriesSolutionSet_astro's constraint could
+        # legitimately resolve to a single real category). The actual
+        # "nothing justifies a guess" case is checked dynamically instead
+        # at its specific, narrower call sites (auto_fill's unconditional
+        # multi-select and single-select first-by-order fallbacks) -- see
+        # `_no_real_fill_justification`'s own docstring for exactly which
+        # sites and why each needed its own guard rather than one here.
         return governed
 
     @staticmethod
@@ -6734,6 +7035,10 @@ class CpqEngine:
                 visible.append(attr)
             elif vn in governed_names:
                 visible.append(attr)
+            elif vn in _CONFIRMED_DEAD_ATTRS:
+                # Verified-dead override -- skip the "total silence" carve-
+                # out below for these specific, cross-checked attrs.
+                suppressed.add(vn)
             elif not any(
                 dt_attr_ever_governed_for_cpq_model(cm, vn, workspace_id, catalog_prefix, cache)
                 for cm in cands
@@ -7876,13 +8181,61 @@ class CpqEngine:
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
                 )
+                if allowed_for_attr is not None:
+                    # A constraint is a source of truth for VALIDITY, not
+                    # catalog spelling. If it names a legal value with no
+                    # literal item_value match in the real catalog (live-
+                    # confirmed: productSelectionProduct_all's constraint
+                    # returns 'APX NEXT XE 4G LTE PLUS 5G', which no real
+                    # option equals), keeping the phantom value in the
+                    # allowed set is harmless (nothing matches it anyway)
+                    # but discarding the WHOLE set back to unconstrained
+                    # over one bad value throws away the legitimate,
+                    # real-matching values too (live-confirmed regression:
+                    # Product went from a flip-flopping 1-2 option menu to
+                    # showing all 325 raw options). Drop only the phantom
+                    # entries -- keep whichever real values the constraint
+                    # did correctly narrow to. Falls back to fully
+                    # unconstrained only if EVERY value was phantom (an
+                    # empty allowed set would otherwise wrongly zero out
+                    # valid_opts entirely).
+                    real_item_values = {o.item_value for o in attr.options}
+                    narrowed = allowed_for_attr & real_item_values
+                    allowed_for_attr = narrowed or None
                 valid_opts = [
                     o for o in attr.options
                     if _valid(o.item_value)
                     and (allowed_for_attr is None or o.item_value in allowed_for_attr)
                 ]
-                if len(valid_opts) == 1 and attr.entity_id not in user_answered_dropped_ids:
+                if (
+                    len(valid_opts) == 1 and not is_decision_attr
+                    and attr.entity_id not in user_answered_dropped_ids
+                ):
                     # Exactly one choice — auto-fill, no user decision needed.
+                    #
+                    # EXCLUDED for is_decision_attr (2026-08-17, live-
+                    # confirmed): a constraint script can resolve a legal
+                    # value that has NO literal match in attr.options at
+                    # all (confirmed live: productSelectionProduct_all's
+                    # "Restrict APX Next Product Selection based on HW
+                    # Version" constraint correctly returned 2 legal
+                    # values, {'APX NEXT ENHANCED', 'APX NEXT XE 4G LTE
+                    # PLUS 5G'}, but the real catalog menu has no option
+                    # whose item_value literally equals the second string
+                    # at all -- only 'APX NEXT XE MULTI'/'APX NEXT XE
+                    # SINGLE BAND' exist). Intersecting against the real
+                    # menu then silently drops the phantom entry, leaving
+                    # "exactly 1" as a false positive from a script/
+                    # catalog mismatch, not a genuine single-choice
+                    # situation -- and Product got auto-filled without
+                    # ever asking. Depends on Tier-2 LLM evaluation timing
+                    # (whether the constraint script gets a slot before
+                    # the per-turn cap), so it doesn't reproduce every
+                    # turn -- non-decision attrs keep the original
+                    # shortcut; decision-required ones (Country/Region/
+                    # Hardware Version/Product) never take it, same
+                    # protection this whole function already gives them
+                    # everywhere else.
                     #
                     # EXCLUDED when this attr's only-one-option state exists
                     # because a constraint just rejected the CUSTOMER'S OWN
@@ -8086,7 +8439,28 @@ class CpqEngine:
                                 value = match.item_value
                                 display = match.display_name
                                 source = "default"
-                        elif display_order is not None and vn in display_order:
+                        elif (
+                            _no_real_fill_justification(attr, rec_by_target)
+                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                            and (opt_out_match := _sole_opt_out_option(valid_opts))
+                        ):
+                            # Nothing justifies picking among the REAL choices
+                            # here, but the menu itself declares one option as
+                            # the explicit "nothing needed" answer -- filling
+                            # that isn't a guess among business alternatives,
+                            # it's recognizing a choice the catalog already
+                            # made for the customer. See
+                            # `_sole_opt_out_option`'s own docstring.
+                            value = opt_out_match.item_value
+                            display = opt_out_match.display_name
+                            source = "opt_out_default"
+                        elif (
+                            display_order is not None and vn in display_order
+                            and not (
+                                _no_real_fill_justification(attr, rec_by_target)
+                                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                            )
+                        ):
                             # §2f, superseded by explicit instruction
                             # (2026-08-09): governed (some rule targets this
                             # attr) but nothing -- no active constraint, no
@@ -8130,7 +8504,10 @@ class CpqEngine:
                             # skips it, since it's neither a decision attr
                             # nor a grid selector).
                             pass
-                        else:
+                        elif not (
+                            _no_real_fill_justification(attr, rec_by_target)
+                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                        ):
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
                             # states) and safe here because a rule REQUIRES this
@@ -8138,6 +8515,11 @@ class CpqEngine:
                             value = valid_opts[0].item_value
                             display = valid_opts[0].display_name
                             source = governed_source
+                        # else: nothing above (rec/data-table/confirmed-
+                        # default) justified a value for this specific,
+                        # confirmed-no-real-basis attr -- leave unset
+                        # rather than guess first-by-order, same principle
+                        # as the multi-select guard below.
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
             elif (
                 not value and is_governed and not is_decision_attr
@@ -8204,6 +8586,27 @@ class CpqEngine:
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
+                and _no_real_fill_justification(attr, rec_by_target)
+                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                and (opt_out_match := _sole_opt_out_option(
+                    [o for o in attr.options if _valid(o.item_value)]
+                ))
+            ):
+                # Same "the menu itself declares a safe opt-out" case as
+                # the single-select branch above, just for multi-select's
+                # separate fallback (valid_opts isn't reliably in scope
+                # here -- see the sibling elif's own comment on that).
+                filled_multi[vn] = [opt_out_match.item_value]
+                display_filled[vn] = opt_out_match.display_name
+                sources.setdefault(vn, "opt_out_default")
+                filled_multi_now = True
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
+                and not (
+                    _no_real_fill_justification(attr, rec_by_target)
+                    and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                )
             ):
                 # A multi-select that reached here (no single-remaining-
                 # option, not required=1 in the raw XML) has nothing
@@ -8375,10 +8778,34 @@ class CpqEngine:
                         if _dt_legal is not None else candidate_opts
                     )
                     if _narrowed_opts:
-                        first_opt = _narrowed_opts[0]
-                        filled_multi[vn] = [first_opt.item_value]
-                        display_filled[vn] = first_opt.display_name
-                        sources.setdefault(vn, "default_first_available")
+                        if vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS:
+                            # Live-confirmed (2026-08-16): native CPQ UI
+                            # checks EVERY Whitelist-confirmed-legal option
+                            # by default for these specific attrs (real-
+                            # world meaning is "which of these does this
+                            # unit support", e.g. Frequency Band coverage)
+                            # -- picking only _narrowed_opts[0] silently
+                            # dropped 2 of 3 real, legal, native-UI-checked
+                            # values (modelSelectionFrequencyBandMsl_astro:
+                            # only '700/800 MHZ' ever reached the payload,
+                            # never 'VHF'/'UHF'). Deliberately a narrow,
+                            # named allowlist, NOT a blanket change to this
+                            # branch -- carrierSelectionMultiSelect_astro
+                            # hits this exact same code path and genuinely
+                            # needs the OPPOSITE behavior (native UI leaves
+                            # it unresolved/"Invalid selection" rather than
+                            # auto-checking every legal carrier), so
+                            # defaulting to "select all" here for every
+                            # attr would be a regression, not a fix.
+                            filled_multi[vn] = [o.item_value for o in _narrowed_opts]
+                            display_filled[vn] = ", ".join(
+                                o.display_name for o in _narrowed_opts)
+                            sources.setdefault(vn, "default_first_available")
+                        else:
+                            first_opt = _narrowed_opts[0]
+                            filled_multi[vn] = [first_opt.item_value]
+                            display_filled[vn] = first_opt.display_name
+                            sources.setdefault(vn, "default_first_available")
                     else:
                         # Real Data Table confirms ZERO legal values for
                         # this exact context (`_dt_legal == []`) -- a
@@ -9050,6 +9477,8 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         con_rules: list[ConstraintRule],
         bml_eval: BmlEvaluator | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> ConfigAttr | None:
         """Detect "clear X"/"unset X" nullifying an optional single-select
         attribute's CURRENT value back to blank (D4) — never a required
@@ -9081,7 +9510,8 @@ class CpqEngine:
             if vn in rec_fires:
                 continue  # a recommendation would immediately refill it
             constrained = self.apply_constraint_rules(
-                attrs, con_rules, trial_filled, bml_eval=bml_eval)
+                attrs, con_rules, trial_filled, bml_eval=bml_eval,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix)
             allowed = constrained.get(attr.entity_id)
             if allowed is not None:
                 valid_opts = [o for o in attr.options if o.item_value in allowed]
@@ -10278,6 +10708,23 @@ class CpqEngine:
           not supplied (default), same opt-out convention as bml_eval=None
           elsewhere — never guesses a constraint that can't be described.
         """
+        # A constraint is a source of truth for VALIDITY, not catalog
+        # spelling. If it names a legal value with no literal item_value
+        # match in the real catalog (live-confirmed: productSelectionProduct
+        # _all's constraint returns 'APX NEXT XE 4G LTE PLUS 5G', which no
+        # real option equals), discarding the WHOLE constrained set back to
+        # unconstrained (first attempt at this fix) throws away the
+        # legitimate, real-matching values too -- live-confirmed regression:
+        # Product went from a flip-flopping 1-2 option menu to showing all
+        # 325 raw options. Drop only the phantom entries instead, same as
+        # auto_fill's valid_opts computation -- keep whichever real values
+        # the constraint did correctly narrow to. Falls back to fully
+        # unconstrained only if EVERY value was phantom.
+        if constrained_item_values is not None:
+            real_item_values = {o.item_value for o in attr.options}
+            narrowed = set(constrained_item_values) & real_item_values
+            constrained_item_values = sorted(narrowed) if narrowed else None
+
         # Use _presentable (not _valid) so codes like "NA" (North America) appear
         # in the numbered list even though _valid("NA")=False prevents auto-fill.
         effective_opts = [
@@ -10561,6 +11008,39 @@ class CpqEngine:
         )
         return payload, unresolved
 
+    def _is_mandatory_input_attr(
+        self, vn: str, attr: "ConfigAttr | None", source: str | None,
+    ) -> bool:
+        """Tier A/B scoping key (docs/CPQ_GOVERNED_BLINDPICK_AND_CONFIGDATA_
+        BEAUTIFY_FIX_PLAN_2026_08_14.md Fix 2, extended for beautify's
+        Mandatory/System split) — True only for structurally-required
+        decision anchors (Hardware Version, exact productSelectionProduct_
+        all match, "basemodel"/"selectmodel"-named attrs) and attributes
+        the customer directly answered (source=="user"). Shared by
+        `build_payload` (scopes `config_data` to this set) and
+        `beautify_rows`/`beautify_text` (splits their output into a
+        "Mandatory User Input" section using this same signal vs. a
+        "System-Configured / Recommended" section for everything else) —
+        one scoping key, two consumers, so the two views can never silently
+        drift apart on what counts as "genuinely required."
+
+        `attr` may be `None` (no ConfigAttr resolved for this key) — such a
+        key can never be a structural anchor, so only the `source=="user"`
+        fallback can include it.
+        """
+        vn_flat = vn.lower().replace("_", "")
+        tier_a = attr is not None and (
+            vn == "productSelectionProduct_all"
+            or self._is_hardware_version_attr(attr)
+            or "basemodel" in vn_flat
+            or "selectmodel" in vn_flat
+        )
+        tier_b = (
+            any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+            and source == "user"
+        )
+        return tier_a or tier_b or source == "user"
+
     def build_payload(
         self,
         filled: dict[str, str],
@@ -10571,8 +11051,20 @@ class CpqEngine:
         rules: list[Any] | None = None,
         display_order: dict[str, int] | None = None,
         product_quantity: int | None = None,
+        scope_required_and_edited: bool = False,
     ) -> dict[str, Any]:
         """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
+
+        scope_required_and_edited — opt-in (default False, preserving every
+        existing caller's behavior byte-for-byte). When True, restricts
+        config_data to only `_is_mandatory_input_attr`'s Tier A/B set —
+        structurally-required decision anchors plus attributes the
+        customer directly answered. Everything else (cosmetic auto-fills,
+        blind-picked defaults) is excluded from config_data, though it
+        still exists in `filled`/`filled_multi` for beautify/summary
+        purposes elsewhere. Deliberately NOT wired into the real-submission
+        call path — only the JSON-preview response should ever pass True;
+        a real BOM submission must stay unscoped/full.
 
         product_quantity — the session-level order quantity, added as a
         top-level ``"quantity"`` key SIBLING to ``configData`` (never
@@ -10763,6 +11255,10 @@ class CpqEngine:
                 # not ALSO ship as a separate flat top-level key.
                 continue
             attr = attr_by_vn.get(k)
+            if scope_required_and_edited and not self._is_mandatory_input_attr(
+                k, attr, sources.get(k),
+            ):
+                continue
             if attr is not None and attr.hide_in_trans:
                 continue
             if attr is not None and attr.is_array_control:
@@ -10861,6 +11357,10 @@ class CpqEngine:
             if k in hidden or not vals or self._is_noise_var(k):
                 continue
             attr = attr_by_vn.get(k)
+            if scope_required_and_edited and not self._is_mandatory_input_attr(
+                k, attr, sources.get(k),
+            ):
+                continue
             if attr is not None and attr.hide_in_trans:
                 continue
             if (attr is not None and attr.array_set_id is not None
@@ -11532,11 +12032,57 @@ class CpqEngine:
                 return category
         return _SUMMARY_FALLBACK_CATEGORY
 
+    _BEAUTIFY_MANDATORY_SECTION = "Mandatory User Input"
+    _BEAUTIFY_SYSTEM_SECTION = "System-Configured / Recommended"
+
+    def _beautify_sectioned_rows(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None,
+        filled_source: dict[str, str] | None,
+    ) -> list[tuple[str, str, str]]:
+        """Shared (section, label, value) rows for beautify_text/beautify_rows.
+
+        When `filled_source` is supplied, splits the output into two
+        sections using the SAME `_is_mandatory_input_attr` signal
+        `build_payload`'s `scope_required_and_edited` uses to scope
+        `config_data` — one scoping key, two consumers (docs/CPQ_
+        GOVERNED_BLINDPICK_AND_CONFIGDATA_BEAUTIFY_FIX_PLAN_2026_08_14.md).
+        This matches native Oracle CPQ's own "Mandatory User Input" box vs.
+        everything else, instead of one flat, undifferentiated list.
+
+        `filled_source=None` (the default, for existing callers that don't
+        pass it) preserves the original single-section behavior exactly —
+        every row lands in the Mandatory section so the flat "Product +
+        every substantive field" list callers already depend on is
+        byte-for-byte unchanged; only callers that opt in by passing
+        `filled_source` get the two-section split.
+        """
+        triples = self._filled_summary_triples(display_filled, attrs)
+        attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
+        rows: list[tuple[str, str, str]] = [
+            (self._BEAUTIFY_MANDATORY_SECTION, "Product", product_name),
+        ]
+        for var, label, value in triples:
+            if filled_source is None:
+                section = self._BEAUTIFY_MANDATORY_SECTION
+            else:
+                attr = attr_by_vn.get(var)
+                section = (
+                    self._BEAUTIFY_MANDATORY_SECTION
+                    if self._is_mandatory_input_attr(var, attr, filled_source.get(var))
+                    else self._BEAUTIFY_SYSTEM_SECTION
+                )
+            rows.append((section, label, value))
+        return rows
+
     def beautify_text(
         self,
         product_name: str,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> str:
         """Human-readable ``Label : Value`` block for the Beautify button.
 
@@ -11546,24 +12092,57 @@ class CpqEngine:
         Used as-is by clients that display plain text (e.g. Streamlit's
         st.code). Clients that render a real table use
         beautify_rows()'s structured pairs instead of parsing this string.
+
+        filled_source — optional (default None, preserving the original
+        flat single-list output exactly). When supplied, renders TWO
+        headed sections — "Mandatory User Input" then "System-Configured
+        / Recommended" — using `_is_mandatory_input_attr`'s Tier A/B
+        signal, matching native Oracle CPQ's own visual grouping instead
+        of one undifferentiated list.
         """
-        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        width = max(len(label) for label, _ in pairs)
-        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+        rows = self._beautify_sectioned_rows(product_name, display_filled, attrs, filled_source)
+        if filled_source is None:
+            pairs = [(label, value) for _section, label, value in rows]
+            width = max(len(label) for label, _ in pairs)
+            return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+        width = max(len(label) for _section, label, _value in rows)
+        lines: list[str] = []
+        for section in (self._BEAUTIFY_MANDATORY_SECTION, self._BEAUTIFY_SYSTEM_SECTION):
+            section_rows = [(label, value) for sec, label, value in rows if sec == section]
+            if not section_rows:
+                continue
+            lines.append(f"**{section}:**")
+            lines.extend(f"{label.ljust(width)} : {value}" for label, value in section_rows)
+            lines.append("")
+        return "\n".join(lines).rstrip("\n")
 
     def beautify_rows(
         self,
         product_name: str,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        filled_source: dict[str, str] | None = None,
     ) -> list[dict[str, str]]:
-        """Structured [{label, value}, ...] pairs for clients that render a
-        real tabular UI (e.g. the Next.js Beautify panel) instead of plain
-        text — same data and filtering as beautify_text(), just not
-        flattened into a display string. No LLM call.
+        """Structured [{label, value, section}, ...] pairs for clients that
+        render a real tabular UI (e.g. the Next.js Beautify panel) instead
+        of plain text — same data and filtering as beautify_text(), just
+        not flattened into a display string. No LLM call.
+
+        filled_source — optional (default None). When supplied, each row
+        carries a `"section"` key — "Mandatory User Input" or "System-
+        Configured / Recommended" — via `_is_mandatory_input_attr`'s Tier
+        A/B signal, the SAME one `build_payload`'s `scope_required_and_
+        edited` uses to scope `config_data`, so the two views can never
+        silently drift apart on what counts as "genuinely required."
+        When `filled_source` is omitted, rows carry no `"section"` key at
+        all — output shape and row set are byte-for-byte identical to
+        before this parameter existed (same convention `beautify_text`
+        already uses for its own `filled_source is None` case).
         """
-        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        return [{"label": label, "value": value} for label, value in pairs]
+        rows = self._beautify_sectioned_rows(product_name, display_filled, attrs, filled_source)
+        if filled_source is None:
+            return [{"label": label, "value": value} for _section, label, value in rows]
+        return [{"section": section, "label": label, "value": value} for section, label, value in rows]
 
     def render_filled_summary(
         self,
