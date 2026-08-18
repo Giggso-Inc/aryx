@@ -180,3 +180,74 @@ def test_country_change_dispatches_through_the_universal_gateway(monkeypatch):
     ):
         resp = _run_cpq_turn_inner(req, object())
     assert resp["session_data"]["country"] == "Canada"
+
+
+def test_bare_reply_matching_pending_multiselect_option_skips_the_gateway(monkeypatch):
+    """Live bug: a customer picking "SmartLocate" from a pending
+    promoApplicationServices_astro-shaped multi-select was sent to the
+    LLM gateway for fresh classification (no change-verb, so the
+    deterministic topic-switch check said "not a switch" but nothing
+    else short-circuited the gateway) -- the LLM then reinterpreted the
+    bare item name as a change-intent against an unrelated attribute.
+    A bare reply that verbatim matches one of the PENDING attr's own
+    real menu options must never reach the gateway at all."""
+    _setup(monkeypatch, universal_enabled=True)
+    promo = _attr(
+        1, "promoApplicationServices_astro", "Promo Application Services",
+        options=_opt("SmartProgramming", "SmartConnect", "SmartLocate",
+                     "SmartMapping", "SmartMessaging", "ViQi Virtual Partner"),
+        select_type="multi", required=False,
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([promo], "aSTRO25_bom"))
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        status="configuring", turn=3,
+        pending_variables=["promoApplicationServices_astro"],
+    )
+    req = AskRequest(question="SmartLocate", workspace_id=1,
+                      session_data=session.to_dict())
+    with patch.object(api, "gateway_classify_intent") as mock_gw:
+        _run_cpq_turn_inner(req, object())
+    mock_gw.assert_not_called()
+
+
+def test_change_verb_topic_switch_during_pending_multiselect_still_uses_gateway(monkeypatch):
+    """Sibling regression guard: the fix only short-circuits BARE menu-
+    option replies. A genuine "change X to Y" topic switch during the
+    same pending multi-select must still reach the gateway unchanged --
+    the change-verb phrasing never matches the pending attr's own
+    options, so `apply_answer` returns None and the existing
+    topic-switch path still runs."""
+    _setup(monkeypatch, universal_enabled=True)
+    promo = _attr(
+        1, "promoApplicationServices_astro", "Promo Application Services",
+        options=_opt("SmartProgramming", "SmartConnect", "SmartLocate"),
+        select_type="multi", required=False,
+    )
+    solution = _attr(2, "solutionTypeDevices_astro", "Solution Type",
+                      options=_opt("RadioCentral", "CloudRC"))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([promo, solution], "aSTRO25_bom"))
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        status="configuring", turn=3,
+        pending_variables=["promoApplicationServices_astro"],
+        filled={"solutionTypeDevices_astro": "RadioCentral"},
+        display_filled={"solutionTypeDevices_astro": "RadioCentral"},
+    )
+    req = AskRequest(question="change solution type to CloudRC", workspace_id=1,
+                      session_data=session.to_dict())
+    with patch.object(
+        api, "gateway_classify_intent",
+        return_value=_confirming_decision(
+            IntentCategory.CHANGE_REQUEST, variable_name="solutionTypeDevices_astro",
+        ),
+    ) as mock_gw:
+        _run_cpq_turn_inner(req, object())
+    # A pre-existing, unrelated double-dispatch quirk affects some
+    # CHANGE_REQUEST-category flows in this harness (reproduces
+    # identically without Issue A's fix applied at all) -- this test only
+    # needs to prove the gateway is NOT skipped for a genuine topic
+    # switch, not pin the exact call count that quirk affects.
+    assert mock_gw.called, "a genuine change-verb topic switch must still reach the gateway"

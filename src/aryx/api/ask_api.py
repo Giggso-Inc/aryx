@@ -1891,6 +1891,26 @@ def _reask_stale_constraint_violations(
     session.complete = False
     first = stale[0]
     prompt = _cpq_engine.next_question_prompt(first.attr, constrained_item_values=first.allowed)
+    # 2026-08-18 fix (sibling gap to _reask_confirmed_data_table_conflict's
+    # own fix): sync pending_scope to the narrowed list just shown above,
+    # or the next reply gets validated against whatever candidates were
+    # left over from BEFORE this re-ask -- same "stale scope rejects a
+    # verbatim answer" bug, just harder to trigger here since it only
+    # shows when `first.allowed` narrows to 2+ options (a 1-option case,
+    # the common shape for this branch, can't expose it since any answer
+    # either matches the sole option or doesn't).
+    _allowed_set = set(first.allowed or ())
+    set_pending_scope(
+        session,
+        kind="attr_options",
+        candidates=[
+            o.display_name for o in first.attr.options
+            if not _allowed_set or o.item_value in _allowed_set
+        ],
+        origin_question=prompt,
+        attr_vn=first.attr.variable_name,
+        asked_turn=session.turn,
+    )
     first_label = _cpq_engine.disambiguated_label(first.attr, attrs)
     rest_labels = [_cpq_engine.disambiguated_label(v.attr, attrs) for v in stale[1:]]
     also_note = (
@@ -5750,11 +5770,35 @@ def _llm_first_gateway_turn(
         _pending_attr_for_gate = next(
             (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
         )
+    # 2026-08-18 fix: a bare reply that verbatim (or near-verbatim) matches
+    # one of the PENDING attr's own real menu options is answering that
+    # question -- never send it to the LLM gateway for fresh
+    # classification first. Confirmed live: a customer picking "SmartLocate"
+    # from a pending promoApplicationServices_astro multi-select had no
+    # change-verb, so _pending_reply_is_topic_switch's deterministic check
+    # correctly said "not a topic switch" -- but with nothing ELSE checked,
+    # the gateway still ran and the LLM reinterpreted the bare item name as
+    # a change-intent against an unrelated attribute, inventing a "which
+    # value for SmartLocate?" follow-up with no basis in real catalog
+    # structure (no such per-item attr exists). Reuses `apply_answer`'s own
+    # already-trusted matcher (exact item_value/display-name, numeric
+    # selection, substring/word-boundary) -- no new matching logic. Cannot
+    # suppress a genuine topic switch: those are always phrased with a
+    # change-verb/arrow, which never matches a bare menu option here, so
+    # they still fall through to the existing topic-switch check below.
+    _pending_reply_matches_own_options = bool(
+        _pending_attr_for_gate is not None
+        and _pending_attr_for_gate.options
+        and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
+    )
     _defer_gateway_to_pending_answer = (
         _pending_attr_for_gate is not None
-        and not _pending_reply_is_topic_switch(
-            req.question, _pending_attr_for_gate, attrs,
-            session.filled, session.filled_multi, req.workspace_id,
+        and (
+            _pending_reply_matches_own_options
+            or not _pending_reply_is_topic_switch(
+                req.question, _pending_attr_for_gate, attrs,
+                session.filled, session.filled_multi, req.workspace_id,
+            )
         )
     )
 
