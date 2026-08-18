@@ -86,28 +86,43 @@ Per the target payload above, `ultimateDestinationCountry` must always appear wh
 it directly (turn 1: "USA"). In observed transcripts it sometimes does not survive into later turns'
 `config_data`.
 
-### Root cause — **not fully confirmed**, two candidate mechanisms traced
-1. **Constraint invalidation + rule reassert (code path exists, not proven live):** if
-   `constrained_opts` narrows this attr's allowed set and the customer's stored value falls outside it
-   (`engine.py:7738`), the value is dropped and the recurring script-backed recommendation rule
-   (`'Recommendation rule to set ultimateDestinationCountry'`, confirmed firing every turn in live logs)
-   re-fills it with `source="rule"` — silently losing the `source="user"` tag that
-   `_is_mandatory_input_attr` needs to keep it in scoped `config_data`.
-2. **Hiding rule (no live evidence found):** `build_payload`'s `hidden_vns` exclusion is unconditional
-   ("even if present in filled") — checked, no hiding-rule log line ever named this attr in the sampled
-   window.
+### Root cause — CONFIRMED 2026-08-18 via a minimal, direct reproduction against
+`CpqEngine.auto_fill()` (real engine code, no mocks):
 
-Neither mechanism was caught actually firing on this attribute in the 24h log sample. `_is_noise_var`
-was ruled out (returns `False` for this name).
+1. Turn 1: customer answers country = "US". `filled["ultimateDestinationCountry"]="US"`,
+   `filled_source["ultimateDestinationCountry"]="user"`.
+2. A later turn: some other rule's side effect narrows `constrained_opts` for this attr to a set that
+   no longer includes "US" (`engine.py:7738`). The stored value and its `source="user"` tag are both
+   dropped — correct, defensive behavior on its own.
+3. THE BUG: the recurring script-backed recommendation rule targeting this attr (confirmed firing every
+   turn in live logs, `'Recommendation rule to set ultimateDestinationCountry'`) has its condition
+   satisfied on this same pass. It silently refills the attr with a DIFFERENT value (repro used
+   "Canada", overwriting the real "US" answer) and tags `source="rule"`.
+4. `_is_mandatory_input_attr` requires `source=="user"` (country has no tier-A structural match) — the
+   now-`"rule"`-sourced value is excluded from scoped `config_data`, and the customer's actual answer is
+   gone with no re-ask, no warning.
 
-### Classification: **likely code bug, not confirmed** — leaning toward mechanism (1), a code-level
-provenance-tracking gap, not missing catalog data (the recommendation rule and the customer's answer
-both exist and are both real).
+**Repro:** `ConfigAttr` "ultimateDestinationCountry", `already_filled={"...": "US"}`,
+`filled_source={"...": "user"}`, a `RecommendationRule` targeting it with a satisfied condition, and
+`constrained_opts` narrowing its allowed set away from "US". Returned `filled` comes back
+`{"ultimateDestinationCountry": "Canada"}` with `filled_source[...] == "rule"`. Confirmed distinct from
+the (correct) case where no recommendation condition is satisfied — that case correctly drops to
+`pending` (re-asks). It is specifically an active, SATISFIED recommendation rule silently overwriting an
+already-confirmed customer answer that makes this a bug — worse than a config_data-scoping gap: the
+customer's real answer is replaced without their knowledge.
 
-### Fix — not yet applied, blocked on confirmation
-Add a temporary DEBUG log of `filled_source.get("ultimateDestinationCountry")` and
-`constrained_opts.get(<its entity_id>)` immediately before `build_payload` runs, then reproduce live to
-catch the exact turn where `source` flips away from `"user"`.
+### Classification: **Confirmed code bug.** Not a data gap — the recommendation rule, the constraint,
+and the customer's answer are all real and individually correct; the gap is that losing a
+customer-confirmed decision-anchor value to a same-turn recommendation reassert is never flagged or
+re-confirmed, unlike every other place in this file where invalidating a `source="user"` value is
+treated as consequential (`user_answered_dropped_ids`, re-ask instead of reguess, etc.).
+
+### Fix — proposed, not yet applied
+When a `source="user"` value on a decision-anchor attr (country/region/hardware version/product — the
+same tier-A set `_is_mandatory_input_attr` already uses) is dropped by a narrowed constraint AND a
+recommendation rule is about to silently refill it with a DIFFERENT value than what the customer
+confirmed, treat it like `user_answered_dropped_ids` treats other blind-pick paths: re-ask instead of
+silently reasserting. Needs a decision on exact behavior before implementing.
 
 ```mermaid
 flowchart TD
@@ -116,12 +131,15 @@ flowchart TD
     C --> D{"vn in filled AND\nsources.get(vn)=='user'?"}
     D -- yes --> E["engine.py:7771 else-branch\ncontinue -- value protected, unchanged"]
     D -- "no (dropped first)" --> F{"constrained_opts narrowed\nthis attr AND stored value\nno longer in allowed set?\n(engine.py:7738)"}
-    F -- yes --> G["value dropped, source cleared\nfalls through to recommendation rule"]
-    G --> H["script-backed 'set ultimateDestinationCountry'\nrule re-fills it, source='rule'"]
-    H --> I["_is_mandatory_input_attr:\nsource != 'user' AND no tier-A match\n=> EXCLUDED from scoped config_data"]
-    F -- "no (not observed live)" --> J["value should stay protected --\ngap NOT YET reproduced with evidence"]
+    F -- yes --> G["value + source='user' dropped\nfalls through to recommendation rule"]
+    G --> H{"recommendation rule's\ncondition satisfied THIS pass?"}
+    H -- "yes (CONFIRMED via repro)" --> I["silently refilled with a DIFFERENT\nvalue, source='rule' -- customer's\nreal answer overwritten, no re-ask"]
+    I --> J["_is_mandatory_input_attr:\nsource != 'user' AND no tier-A match\n=> EXCLUDED from scoped config_data"]
+    H -- no --> K["correctly falls to pending (re-ask)\n-- NOT a bug, working as intended"]
     style I fill:#f66,stroke:#900
+    style J fill:#f66,stroke:#900
     style E fill:#6c6,stroke:#060
+    style K fill:#6c6,stroke:#060
 ```
 
 ---
@@ -220,6 +238,6 @@ flowchart TD
 | # | Issue | Classification | Status |
 |---|-------|-----------------|--------|
 | 1 | Multi-select CONSTRAINED-ambiguous left empty (`packageTypeBundles_astro`) | Code bug (policy override) | Fixed, not deployed |
-| 2 | `ultimateDestinationCountry` dropped from scoped config_data | Code bug (unconfirmed mechanism) | Traced, not fixed |
+| 2 | `ultimateDestinationCountry` dropped from scoped config_data | Code bug — CONFIRMED via direct repro: a satisfied recommendation rule silently overwrites a customer-confirmed value after a constraint drops it | Root cause confirmed, fix proposed, not implemented |
 | 3 | Service Type / Promo Application Services still asking | Code bug — same root cause as #1 | Covered by #1's fix |
 | 4 | Package Type re-ask rejects verbatim answer | Code bug — missing `set_pending_scope` call | Fixed, not deployed |

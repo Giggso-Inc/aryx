@@ -15,6 +15,13 @@ ask_api.py) now calls `set_pending_scope()` with the freshly-expanded
 option list it just showed the customer, so the customer's next reply is
 validated against that list instead of whatever `pending_scope_candidates`
 held from a prior, narrower turn.
+
+Issue 2 — a decision-anchor attr (country/region/hardware version/
+product) whose customer-confirmed value was dropped THIS SAME pass
+(a real constraint narrowed it away) no longer gets silently reasserted
+to a DIFFERENT value by a same-turn satisfied recommendation rule --
+falls through to `pending` (re-ask) instead of overwriting the
+customer's real answer with no re-ask and no warning.
 """
 from __future__ import annotations
 
@@ -195,3 +202,80 @@ def test_confirmed_conflict_reask_syncs_pending_scope_to_expanded_options():
     assert "Single XE" in session.pending_scope_candidates
     assert len(session.pending_scope_candidates) == 8
     assert session.pending_scope_kind == "attr_options"
+
+
+# ── Issue 2 ───────────────────────────────────────────────────────────────
+
+def test_decision_anchor_dropped_value_is_reasked_not_silently_reassigned():
+    """Live bug, confirmed via direct repro: after a real constraint drops
+    a customer-confirmed decision-anchor value (country/region/hardware
+    version/product), a same-turn SATISFIED recommendation rule must not
+    silently refill it with a DIFFERENT value -- the customer's real
+    answer must be re-asked, not overwritten with no warning."""
+    country_attr = ConfigAttr(
+        entity_id=1, variable_name="ultimateDestinationCountry",
+        display_label="Ultimate Destination Country", required=False,
+        default_value="", select_type="single",
+        options=_menu("US", "Canada", "Mexico"),
+    )
+    cond_attr = ConfigAttr(
+        entity_id=2, variable_name="cond", display_label="Cond",
+        required=False, default_value="", select_type="single",
+        options=_menu("X"),
+    )
+    rec_rule = RecommendationRule(
+        rule_name="Recommendation rule to set ultimateDestinationCountry",
+        condition_attr_id=2, condition_value="X", target_attr_id=1,
+        conditions=[(2, "X", "4")], recommended_value="Canada",
+    )
+    eng = CpqEngine()
+    filled = {"ultimateDestinationCountry": "US", "cond": "X"}
+    filled_source = {"ultimateDestinationCountry": "user", "cond": "user"}
+
+    ret_filled, _display, pending = eng.auto_fill(
+        [country_attr, cond_attr], {}, already_filled=filled, filled_source=filled_source,
+        constrained_opts={1: ["Canada", "Mexico"]},  # "US" no longer allowed
+        rec_rules=[rec_rule],
+    )
+
+    assert "ultimateDestinationCountry" not in ret_filled, (
+        "customer's dropped answer must not be silently reassigned to a "
+        "different value by the recommendation rule"
+    )
+    assert any(a.variable_name == "ultimateDestinationCountry" for a in pending), (
+        "must be re-asked instead of silently overwritten"
+    )
+
+
+def test_non_anchor_attr_recommendation_reassert_is_unaffected():
+    """Sibling regression guard: the fix is narrowly scoped to decision-
+    anchor attrs (_DECISION_ANCHOR_VNS) -- an ordinary governed attr whose
+    dropped value gets reasserted by a satisfied recommendation rule must
+    still fill normally, unaffected by Issue 2's fix."""
+    ordinary_attr = ConfigAttr(
+        entity_id=1, variable_name="someOrdinaryAttr_astro",
+        display_label="Some Ordinary Attr", required=False,
+        default_value="", select_type="single",
+        options=_menu("A", "B", "C"),
+    )
+    cond_attr = ConfigAttr(
+        entity_id=2, variable_name="cond", display_label="Cond",
+        required=False, default_value="", select_type="single",
+        options=_menu("X"),
+    )
+    rec_rule = RecommendationRule(
+        rule_name="Set someOrdinaryAttr_astro",
+        condition_attr_id=2, condition_value="X", target_attr_id=1,
+        conditions=[(2, "X", "4")], recommended_value="B",
+    )
+    eng = CpqEngine()
+    filled = {"someOrdinaryAttr_astro": "A", "cond": "X"}
+    filled_source = {"someOrdinaryAttr_astro": "user", "cond": "user"}
+
+    ret_filled, _display, _pending = eng.auto_fill(
+        [ordinary_attr, cond_attr], {}, already_filled=filled, filled_source=filled_source,
+        constrained_opts={1: ["B", "C"]},
+        rec_rules=[rec_rule],
+    )
+
+    assert ret_filled.get("someOrdinaryAttr_astro") == "B"

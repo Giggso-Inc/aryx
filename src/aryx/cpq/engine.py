@@ -7940,7 +7940,27 @@ class CpqEngine:
             # resolved the attribute so nothing was pending) that a
             # separate BOM-gate consistency check caught one full turn
             # later, only once the customer said "confirm".
-            if not value and rec_by_target and attr.options:
+            # 2026-08-18 fix (confirmed live via direct repro): a decision-
+            # anchor attr (country/region/hardware version/product --
+            # _DECISION_ANCHOR_VNS) whose CUSTOMER-CONFIRMED value was just
+            # dropped THIS SAME pass (a few lines above, because a real
+            # constraint narrowed it away) must never be silently reasserted
+            # to a DIFFERENT value by a recommendation rule here -- that
+            # silently overwrites a real customer decision with no re-ask,
+            # no warning, and no trace of what happened to their answer.
+            # Skipping this branch lets the attr fall through to `pending`
+            # instead, so the customer is asked to re-confirm -- same
+            # "never silently reguess a real decision" principle
+            # `user_answered_dropped_ids` already enforces for the blind-
+            # pick paths later in this function, extended here to close the
+            # one place it didn't yet cover. Every OTHER attr (not a
+            # decision anchor, or not dropped this pass) is unaffected --
+            # this is a narrow, targeted exclusion, not a change to how
+            # recommendation rules resolve in general.
+            if (
+                not value and rec_by_target and attr.options
+                and not (vn in _DECISION_ANCHOR_VNS and attr.entity_id in user_answered_dropped_ids)
+            ):
                 _allowed_for_rec = (
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
