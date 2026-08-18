@@ -1183,7 +1183,10 @@ def extract_quantity_hint(text: str) -> int | None:
 # this file's other single-purpose LLM helpers rather than the big
 # generic intent gateway (whose schema has no way to represent "the
 # overall product quantity" at all -- it only ever names real ConfigAttr
-# variable_names).
+# variable_names). docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md:
+# that prompt is reinforced with each candidate's filled_source
+# provenance and explicit anti-digit-coincidence guidance, rather than
+# routing this decision through pattern-matching instead.
 _QUANTITY_WORD_RE = re.compile(r"(?i:\bqty\b|\bquantity\b|\bhow\s+many\b)")
 # "change/set/update the quantity to N" vs. a plain question ("what's my
 # quantity") -- deterministic, not a judgment call: these are unambiguous

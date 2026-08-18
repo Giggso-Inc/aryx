@@ -610,6 +610,7 @@ def test_ambiguous_bare_quantity_with_competing_attribute_asks_disambiguation(mo
     # accessories the customer never chose at all).
     session = _base_session(product_quantity=3)
     session.filled[qty_attr.variable_name] = "2"
+    session.filled_source[qty_attr.variable_name] = "user"
     req = AskRequest(question="what's the quantity", workspace_id=1,
                       session_data=session.to_dict())
     fake_reply = '{"target": "ambiguous"}'
@@ -638,6 +639,158 @@ def test_disambiguation_resolving_to_product_answers_from_session(monkeypatch):
         resp = _run_cpq_turn(req, object())
     assert resp["tools_called"] == ["cpq_product_quantity()"]
     assert "12" in resp["answer"]
+
+
+def test_deterministic_backstop_skips_llm_when_no_user_sourced_or_named_candidate(monkeypatch):
+    """docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md follow-up
+    review, High finding: the exact shape of the original live incident --
+    a candidate exists but was never a genuine customer decision, and the
+    message doesn't even loosely name it -- must resolve straight to
+    product WITHOUT an LLM call at all, not just correctly via one. This
+    is what makes the fix provable for the common/original-incident case
+    rather than dependent on LLM instruction-following."""
+    qty_attr = _vx650_qty_attr()
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([qty_attr], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=1)
+    session.filled[qty_attr.variable_name] = "1"
+    session.filled_source[qty_attr.variable_name] = "cascade"
+    req = AskRequest(question="can you change that quantity to 5", workspace_id=1,
+                      session_data=session.to_dict())
+    with patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
+        _confirm_product_quantity_change(monkeypatch, quantity_text="5")
+        resp = _run_cpq_turn(req, object())
+    mock_chat.assert_not_called()
+    assert resp["tools_called"] == ["cpq_product_quantity()"]
+    assert resp["session_data"]["product_quantity"] == 5
+
+
+def test_deterministic_backstop_does_not_fire_when_candidate_plausibly_named(monkeypatch):
+    """The backstop must be permissive about what counts as "plausibly
+    named" -- any candidate with even a loose word-overlap with the
+    message must still go to the LLM, never get silently defaulted to
+    product just because it isn't `user`-sourced.
+
+    Resolves to the named attr and falls through to the real turn
+    pipeline (same as test_named_catalog_attribute_falls_through_to_
+    normal_pipeline) -- needs the same broad mocking to avoid a real
+    Postgres-backed rules/BML load."""
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules", lambda *a, **k: ([], []),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "extract_flag_hints", lambda *a, **k: {})
+    qty_attr = _vx650_qty_attr()
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([qty_attr], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=1)
+    session.filled[qty_attr.variable_name] = "1"
+    session.filled_source[qty_attr.variable_name] = "cascade"
+    req = AskRequest(question="how many VX650 mics do I have", workspace_id=1,
+                      session_data=session.to_dict())
+    fake_reply = '{"target": "quantityVX650ItemType_astro"}'
+    with patch(
+        "aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 5, 3),
+    ) as mock_chat:
+        _run_cpq_turn(req, object())
+    mock_chat.assert_called()
+
+
+def test_quantity_message_might_name_candidate_is_permissively_inclusive():
+    """Unlike the reverted deterministic-routing design, this check is
+    allowed to be loose -- an over-inclusive match only means "ask the
+    LLM," never a wrong route. A bare digit shared between a label and
+    the message (the Critical finding's exact shape) is fine to count
+    here, since it only routes to the LLM, not to the candidate."""
+    tier2_bundle = ConfigAttr(
+        entity_id=12, variable_name="quantityForTier2Bundle_astro",
+        display_label="Quantity for Tier 2 Bundle", required=False,
+        default_value="", select_type="integer", options=[],
+    )
+    assert api._quantity_message_might_name_candidate(
+        "please change the quantity to 2", tier2_bundle,
+    ) is True
+    assert api._quantity_message_might_name_candidate(
+        "can you change that quantity to 5", tier2_bundle,
+    ) is False
+
+
+def test_llm_prompt_carries_provenance_and_anti_digit_coincidence_guidance():
+    """docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md follow-up
+    review: the original prompt gave the model bare variable_name/label
+    pairs with no signal about which candidate the customer ever actually
+    interacted with, and no guard against a label's own bare digit (e.g.
+    "Tier 2 Bundle") being confused with the quantity VALUE the customer
+    just typed. Asserts the reinforced prompt actually carries both
+    signals -- this is what makes the LLM capable of getting the Critical
+    finding's scenario right, since a unit test can't verify a live
+    model's judgment directly."""
+    tier2_bundle = ConfigAttr(
+        entity_id=11, variable_name="quantityForTier2Bundle_astro",
+        display_label="Quantity for Tier 2 Bundle", required=False,
+        default_value="", select_type="integer", options=[],
+    )
+    session = _base_session(product_quantity=1)
+    session.filled[tier2_bundle.variable_name] = "1"
+    session.filled_source[tier2_bundle.variable_name] = "cascade"
+    with patch(
+        "aryx.api.ask_api.llm_runtime.chat",
+        return_value=('{"target": "product"}', 5, 3),
+    ) as mock_chat:
+        result = _llm_resolve_quantity_target(
+            "please change the quantity to 2", [tier2_bundle], session, workspace_id=1,
+        )
+    assert result == "product"
+    _role, sys_prompt, user_prompt = mock_chat.call_args.args
+    # Provenance is actually in the prompt the model sees.
+    assert "cascade" in user_prompt
+    assert "source=" in user_prompt
+    # The anti-digit-coincidence guard is actually in the instructions.
+    assert "digit" in sys_prompt.lower()
+    assert "Tier 2" in sys_prompt or "label" in sys_prompt.lower()
+
+
+def test_explicit_named_attribute_wins_even_when_only_cascade_sourced(monkeypatch):
+    """A message that explicitly NAMES a specific catalog item should
+    resolve to it regardless of provenance -- naming is a statement the
+    LLM can read directly off the message text, not something a
+    cascade-vs-user distinction should override."""
+    monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
+    monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
+    monkeypatch.setattr(api._cpq_engine, "load_hiding_rules", lambda *a, **k: [])
+    monkeypatch.setattr(
+        api._cpq_engine, "load_recommendation_and_constraint_rules", lambda *a, **k: ([], []),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_validation_rules", lambda *a, **k: [])
+    monkeypatch.setattr(api._cpq_engine, "extract_flag_hints", lambda *a, **k: {})
+    qty_attr = _vx650_qty_attr()
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([qty_attr], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=3)
+    session.filled[qty_attr.variable_name] = "2"
+    session.filled_source[qty_attr.variable_name] = "cascade"
+    req = AskRequest(
+        question="change the VX650 item type quantity to 5", workspace_id=1,
+        session_data=session.to_dict(),
+    )
+    fake_reply = '{"target": "quantityVX650ItemType_astro"}'
+    with patch(
+        "aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 5, 3),
+    ):
+        resp = _run_cpq_turn(req, object())
+    # Fell through to the normal attribute pipeline for the named attr --
+    # did NOT short-circuit to the overall product quantity.
+    assert "cpq_product_quantity()" not in resp["tools_called"]
+    assert "cpq_quantity_disambiguation()" not in resp["tools_called"]
 
 
 def test_unselected_catalog_quantity_attrs_are_never_offered_as_candidates(monkeypatch):
@@ -759,3 +912,5 @@ def test_llm_resolve_quantity_target_rejects_invented_variable_name():
             "what's the quantity", [qty_attr], session, workspace_id=1,
         )
     assert result is None
+
+
