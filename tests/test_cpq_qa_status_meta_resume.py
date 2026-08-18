@@ -154,6 +154,32 @@ def test_detector_matches_the_reported_and_repro_d_phrasings():
     assert not _is_session_status_meta_question("what is the current country")
 
 
+def test_stale_pending_variable_not_in_attrs_falls_through_to_normal_qa(monkeypatch):
+    """Negative case: session.pending_variables[0] doesn't resolve against
+    any attr actually passed in (a stale/mismatched pending reference --
+    e.g. attrs list scoped differently than when pending was set). The
+    short-circuit must not return a broken/empty answer here -- it must
+    fall through to the normal graph-QA path exactly as before this fix."""
+    _qa_common_mocks(monkeypatch)
+    session = CpqSession(mode="cpq", product_name="astro")
+    session.pending_variables = ["someAttrNotInAttrsList_astro"]
+    req = AskRequest(question="what is the next step for configuration", workspace_id=1,
+                      session_data=session.to_dict())
+
+    with patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_api.gather", return_value=([], [])), \
+         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_api.render_context", return_value=""), \
+         patch("aryx.api.ask_api._synthesise",
+               return_value=("Fell through to normal QA.", 20, 15, 0)) as mock_synth, \
+         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+        resp = _handle_cpq_qa(req, session, [], object())
+
+    mock_synth.assert_called_once()
+    assert resp["tools_called"] != ["cpq_qa_status()"]
+    assert "Fell through to normal QA." in resp["answer"]
+
+
 def test_resume_review_path_is_never_short_circuited(monkeypatch):
     """resume_review=True (the review-summary caller) is a distinct,
     deliberate resume path -- the new short-circuit must never intercept
