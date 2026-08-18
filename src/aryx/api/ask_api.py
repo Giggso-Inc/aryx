@@ -953,6 +953,33 @@ def _resolve_split_change_text(
     return _cpq_engine.detect_change_request(text, attrs, filled, filled_multi)
 
 
+# docs/CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md — catalog-agnostic,
+# phrase-specific patterns for a question ABOUT the conversation/process
+# itself, never about catalog content. Deliberately not a bare "next"
+# keyword match: "what's the next hardware version" must NOT match this.
+_SESSION_STATUS_META_QUESTION_PATTERNS = [
+    r"\bwhat(?:'s| is) (?:the )?next step\b",
+    r"\bwhat(?:'s| is) next\b",
+    r"\bwhat should i do next\b",
+    r"\bwhat should i do now\b",
+    r"\bwhere am i\b",
+    r"\bwhat do you need from me\b",
+    r"\bwhat(?:'s| is) the status\b",
+]
+
+
+def _is_session_status_meta_question(question: str) -> bool:
+    """True for a session-status/meta-question ("what's next", "where am I")
+    asked about the conversation itself, not the catalog. Used to short-
+    circuit `_handle_cpq_qa`'s generic graph-QA synthesis (which has no
+    awareness of what's still pending and otherwise produces an irrelevant,
+    hallucinated answer glued to the correct resume reminder — docs/
+    CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md).
+    """
+    q = question.strip().lower()
+    return any(re.search(pat, q) for pat in _SESSION_STATUS_META_QUESTION_PATTERNS)
+
+
 def _handle_cpq_qa(
     req: "AskRequest",
     session: Any,
@@ -966,6 +993,29 @@ def _handle_cpq_qa(
     answer, then appends the current config resume prompt so the user knows where
     they were. The session state is preserved unchanged.
     """
+    # docs/CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md — a session-status
+    # meta-question ("what's next") while something is genuinely pending IS
+    # answered by the pending question itself; querying the graph for it
+    # only produces irrelevant, hallucinated noise glued to the correct
+    # resume reminder (live-confirmed). Skip the graph-QA path entirely in
+    # this narrow case — everything else below is unchanged.
+    if not resume_review and session.pending_variables and _is_session_status_meta_question(req.question):
+        _meta_pending_attr = next(
+            (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+        )
+        if _meta_pending_attr:
+            answer = (
+                "*Resuming your configuration...*\n\n"
+                + _cpq_engine.next_question_prompt(_meta_pending_attr)
+            )
+            _persist_cpq_history(req.workspace_id, req.question, answer)
+            return {
+                "answer": answer, "terms": [], "tools_called": ["cpq_qa_status()"],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0,
+                          "menial_model": "cpq-engine", "answer_model": "cpq-engine"},
+                "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+            }
+
     # Label collision check first — a shared display_label across 2+ distinct
     # attrs (real BigMachines source-data reuse, docs/CPQ_SESSION_2_OPEN_ISSUES.md
     # item 2) must be disambiguated, never silently resolved to whichever
