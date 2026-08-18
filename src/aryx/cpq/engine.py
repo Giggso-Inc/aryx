@@ -1371,6 +1371,26 @@ def _clear_rule_join_data_cache() -> None:
     _RULE_JOIN_DATA_CACHE.clear()
 
 
+# 2026-08-18 perf fix: _load_value_rules' own raw-data dependency
+# (_load_rule_join_data, above) was already cached, but _load_value_rules
+# ITSELF -- the CPU-bound classification pass that builds 500+ Recommendation/
+# Constraint/Validation/Hiding rule objects from those (cached) raw rows --
+# was not. Confirmed live: this exact classification work re-runs from
+# scratch on every one of its 5 call sites within engine.py (load_
+# recommendation_and_constraint_rules, load_validation_rules, load_
+# recommendation_rules, ...), which every real CPQ turn calls back-to-back --
+# ~28s of pure CPU re-work per turn for a large catalog, not DB latency
+# (confirmed live: workspace 93, 500 rec + 186 constraint + 105 hiding
+# rules). Same short-TTL, leak-safe pattern as _RULE_JOIN_DATA_CACHE.
+_VALUE_RULES_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
+_VALUE_RULES_CACHE_TTL_SECONDS = 30.0
+
+
+def _clear_value_rules_cache() -> None:
+    """Test-isolation hook -- same purpose as _clear_rule_join_data_cache."""
+    _VALUE_RULES_CACHE.clear()
+
+
 # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_10.md -- a
 # CANDIDATE registry of data tables known to be missing from AT LEAST ONE
 # ingested workspace historically (not attribute names -- a hiding rule
@@ -1663,8 +1683,37 @@ def _no_real_fill_justification(
 # one-remaining-option) all run BEFORE the blind-pick fallback, so a
 # real constraint narrowing this to one legal category will auto-fill
 # through one of those first and the blind guess simply stops firing.
+#
+# 2026-08-18: three siblings added, each individually confirmed via live
+# rule-action data (not assumed from a shared code shape) to have the
+# identical constraint-only governance profile as accessoriesSolutionSet_
+# astro above -- a real rule (recommendation OR constraint) targets the
+# attribute's own value, but _no_real_fill_justification's recommendation-
+# only check can't see the constraint, so it was blocked from ever
+# reaching the confident branches even though real catalog governance
+# exists:
+#   - relatedServicesType_astro ("Service Type"): real script-backed
+#     constraint querying the real Data Table relSoftAndServcParts for
+#     the current CPQ model (rule 18654807132, constraint_type=1).
+#   - relatedServiceCategory_astro ("Service Category"): real constraint
+#     (rule 17691443159, script-backed) plus a declarative one (rule
+#     17691443165) -- hidden until relatedServicesType_astro resolves.
+#   - selectEndUserType_astro ("Select End User Type"): one real
+#     constraint (rule with attribute_id 17691442... verified via live
+#     rule-action query), zero recommendations.
+# A GENERIC fix (letting rule_governed_ids' hiding+recommendation+
+# constraint union satisfy this check for every attr) was tried and
+# reverted the same day -- it also let additionalSystemEnhancementFeature
+# Type_astro (the documented "9-of-11, never guess" incident this whole
+# check exists to prevent) bypass the gate, and separately let Group-1
+# hiding-only-governed attrs (e.g. cBPQRCode_astro) skip their
+# missing-data-table warn-and-skip. This named-allowlist approach only
+# grants the exception to attributes individually verified safe.
 _BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
     "accessoriesSolutionSet_astro",
+    "relatedServicesType_astro",
+    "relatedServiceCategory_astro",
+    "selectEndUserType_astro",
 })
 
 # Catalog-agnostic "this is the opt-out choice" phrasing -- an attr with
@@ -4951,6 +5000,17 @@ class CpqEngine:
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
+        _cache_key = (workspace_id, catalog_prefix)
+        _cache_hit = _VALUE_RULES_CACHE.get(_cache_key)
+        if _cache_hit is not None:
+            _cache_ts, _cache_result = _cache_hit
+            if time.monotonic() - _cache_ts < _VALUE_RULES_CACHE_TTL_SECONDS:
+                logger.info(
+                    "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
+                    workspace_id, catalog_prefix,
+                )
+                return _cache_result
+
         _t0 = time.monotonic()
         logger.info(
             "cpq_step: _load_value_rules (rec/con/validation) start "
@@ -5362,7 +5422,9 @@ class CpqEngine:
             time.monotonic() - _t0, len(rec_rules), len(con_rules),
             len(validation_rules), len(hiding_rules),
         )
-        return rec_rules, con_rules, validation_rules, hiding_rules
+        _result = (rec_rules, con_rules, validation_rules, hiding_rules)
+        _VALUE_RULES_CACHE[_cache_key] = (time.monotonic(), _result)
+        return _result
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",

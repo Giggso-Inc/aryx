@@ -1891,6 +1891,26 @@ def _reask_stale_constraint_violations(
     session.complete = False
     first = stale[0]
     prompt = _cpq_engine.next_question_prompt(first.attr, constrained_item_values=first.allowed)
+    # 2026-08-18 fix (sibling gap to _reask_confirmed_data_table_conflict's
+    # own fix): sync pending_scope to the narrowed list just shown above,
+    # or the next reply gets validated against whatever candidates were
+    # left over from BEFORE this re-ask -- same "stale scope rejects a
+    # verbatim answer" bug, just harder to trigger here since it only
+    # shows when `first.allowed` narrows to 2+ options (a 1-option case,
+    # the common shape for this branch, can't expose it since any answer
+    # either matches the sole option or doesn't).
+    _allowed_set = set(first.allowed or ())
+    set_pending_scope(
+        session,
+        kind="attr_options",
+        candidates=[
+            o.display_name for o in first.attr.options
+            if not _allowed_set or o.item_value in _allowed_set
+        ],
+        origin_question=prompt,
+        attr_vn=first.attr.variable_name,
+        asked_turn=session.turn,
+    )
     first_label = _cpq_engine.disambiguated_label(first.attr, attrs)
     rest_labels = [_cpq_engine.disambiguated_label(v.attr, attrs) for v in stale[1:]]
     also_note = (
@@ -5778,13 +5798,69 @@ def _llm_first_gateway_turn(
         _pending_attr_for_gate = next(
             (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
         )
-    _defer_gateway_to_pending_answer = (
+    # 2026-08-18 fix: a bare reply that verbatim (or near-verbatim) matches
+    # one of the PENDING attr's own real menu options is answering that
+    # question -- never send it to the LLM gateway for fresh
+    # classification first. Confirmed live: a customer picking "SmartLocate"
+    # from a pending promoApplicationServices_astro multi-select had no
+    # change-verb, so _pending_reply_is_topic_switch's deterministic check
+    # correctly said "not a topic switch" -- but with nothing ELSE checked,
+    # the gateway still ran and the LLM reinterpreted the bare item name as
+    # a change-intent against an unrelated attribute, inventing a "which
+    # value for SmartLocate?" follow-up with no basis in real catalog
+    # structure (no such per-item attr exists). Reuses `apply_answer`'s own
+    # already-trusted matcher (exact item_value/display-name, numeric
+    # selection, substring/word-boundary) -- no new matching logic.
+    #
+    # PR #212 review (M1) -- corrected: `apply_answer` matches against the
+    # FULL, unrestricted reply text via substring/word-boundary branches
+    # with no length cap, so a genuine topic switch that happens to
+    # mention the pending attr's own option name as a whole word (e.g.
+    # pending=Country, reply="since it ships to Canada, change the
+    # hardware version instead") would ALSO satisfy this match -- the
+    # original `matches_own_options or not topic_switch` let that false
+    # positive override a correct topic-switch verdict.
+    #
+    # Fixed two ways, since the deterministic topic-switch regex
+    # (`_pending_reply_looks_like_new_request`) alone doesn't reliably
+    # catch every compound-sentence phrasing (verified live: it misses
+    # "since it ships to Canada, change the hardware version instead" --
+    # no combination of its change-verb/target-detection regexes matches
+    # that exact wording, so relying on it alone as a first-class
+    # override still lets the false positive through):
+    #   1. A word-count cap -- a BARE reply answering the pending
+    #      question is short by construction (a menu-item name, a
+    #      number, "1 Year"); a genuine topic switch is a real sentence.
+    #      This is the primary, robust guard.
+    #   2. The cheap deterministic check still runs and wins outright
+    #      when it DOES catch a switch, as defense in depth -- never
+    #      consult apply_answer at all once it says "new request."
+    _BARE_REPLY_MAX_WORDS = 6
+    _looks_like_new_request = bool(
         _pending_attr_for_gate is not None
-        and not _pending_reply_is_topic_switch(
+        and _pending_reply_looks_like_new_request(
+            req.question, _pending_attr_for_gate, attrs,
+            session.filled, session.filled_multi,
+        )
+    )
+    _pending_reply_matches_own_options = bool(
+        not _looks_like_new_request
+        and _pending_attr_for_gate is not None
+        and _pending_attr_for_gate.options
+        and len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
+    )
+    if _pending_attr_for_gate is None:
+        _defer_gateway_to_pending_answer = False
+    elif _looks_like_new_request:
+        _defer_gateway_to_pending_answer = False
+    elif _pending_reply_matches_own_options:
+        _defer_gateway_to_pending_answer = True
+    else:
+        _defer_gateway_to_pending_answer = not _pending_reply_is_topic_switch(
             req.question, _pending_attr_for_gate, attrs,
             session.filled, session.filled_multi, req.workspace_id,
         )
-    )
 
     # N4: skip when top-level classify_ask_route already ran this turn
     # (one classification LLM call per turn). Live sessions never mark

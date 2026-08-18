@@ -16,11 +16,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_rule_join_data_cache_between_tests():
-    from aryx.cpq.engine import _clear_rule_join_data_cache
+    from aryx.cpq.engine import _clear_rule_join_data_cache, _clear_value_rules_cache
 
     _clear_rule_join_data_cache()
+    _clear_value_rules_cache()
     yield
     _clear_rule_join_data_cache()
+    _clear_value_rules_cache()
 
 
 @pytest.fixture(autouse=True)

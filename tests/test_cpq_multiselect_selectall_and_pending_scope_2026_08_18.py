@@ -279,3 +279,102 @@ def test_non_anchor_attr_recommendation_reassert_is_unaffected():
     )
 
     assert ret_filled.get("someOrdinaryAttr_astro") == "B"
+
+
+# ── Named allowlist extension (2026-08-18): 3 confirmed constraint-only ────
+# attrs sharing accessoriesSolutionSet_astro's exact governance shape ───────
+
+def test_relatedservicestype_astro_allowlist_alone_selects_all_no_rec_rule_needed():
+    """PR #212 review (N1): the dedicated test above still passes a
+    non-satisfying rec_rule to open the multi-select entry gate, which
+    predates relatedServicesType_astro being added to
+    _BLIND_FILL_RISK_ACCEPTED_VNS -- it doesn't isolate whether the
+    allowlist entry itself is sufficient. This test proves it is: no
+    rec_rules at all, the allowlist alone must open the gate for its
+    real, live-confirmed governance shape (script-backed constraint
+    querying relSoftAndServcParts, zero recommendation rules)."""
+    attr = ConfigAttr(
+        entity_id=10, variable_name="relatedServicesType_astro",
+        display_label="Service Type", required=False, default_value="",
+        select_type="multi",
+        options=_menu("INSTALLATION", "RENTAL", "REPAIR", "SOFTWARE"),
+    )
+    eng = CpqEngine()
+    filled_multi: dict = {}
+    eng.auto_fill(
+        [attr], {}, already_filled_multi=filled_multi,
+        constrained_opts={10: ["INSTALLATION", "REPAIR"]},
+        display_order={"relatedServicesType_astro": 0},
+    )
+    assert sorted(filled_multi.get("relatedServicesType_astro", [])) == [
+        "INSTALLATION", "REPAIR",
+    ]
+
+
+def test_related_service_category_selects_all_when_constrained_and_ambiguous():
+    """relatedServiceCategory_astro: live-confirmed real constraint (script-
+    backed rule 17691443159 + declarative rule 17691443165), zero
+    recommendation rules -- now in _BLIND_FILL_RISK_ACCEPTED_VNS."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="relatedServiceCategory_astro",
+        display_label="Service Category", required=False, default_value="",
+        select_type="multi",
+        options=_menu("DEVICE RENTAL", "DEVICE INSTALLATION", "DEVICE PROGRAMMING"),
+    )
+    eng = CpqEngine()
+    filled_multi: dict = {}
+    eng.auto_fill(
+        [attr], {}, already_filled_multi=filled_multi,
+        constrained_opts={1: ["DEVICE RENTAL", "DEVICE INSTALLATION"]},
+        display_order={"relatedServiceCategory_astro": 0},
+    )
+    assert sorted(filled_multi.get("relatedServiceCategory_astro", [])) == [
+        "DEVICE INSTALLATION", "DEVICE RENTAL",
+    ]
+
+
+def test_select_end_user_type_blind_picks_first_option_when_constrained():
+    """selectEndUserType_astro: live-confirmed one real constraint rule,
+    zero recommendation rules -- single-select, so the allowlist exception
+    resolves via first-eligible-option, not select-all."""
+    attr = ConfigAttr(
+        entity_id=1, variable_name="selectEndUserType_astro",
+        display_label="Select End User Type", required=False, default_value="",
+        select_type="single",
+        options=_menu("POLICE PROTECTION", "FIRE PROTECTION", "EMS"),
+    )
+    eng = CpqEngine()
+    filled, _display, _pending = eng.auto_fill(
+        [attr], {}, governed_ids={1},
+        constrained_opts={1: ["POLICE PROTECTION", "FIRE PROTECTION"]},
+        display_order={"selectEndUserType_astro": 0},
+    )
+    assert filled.get("selectEndUserType_astro") == "POLICE PROTECTION"
+
+
+def test_additional_system_enhancement_feature_type_still_stays_empty():
+    """Regression guard: additionalSystemEnhancementFeatureType_astro (the
+    documented "9-of-11, never guess" incident this whole check exists to
+    prevent) is deliberately NOT in the allowlist -- must still stay
+    empty, not select-all, even with the same constrained-ambiguous shape
+    as the 3 newly-added attrs."""
+    attr = ConfigAttr(
+        entity_id=21, variable_name="additionalSystemEnhancementFeatureType_astro",
+        display_label="Additional System Enhancement Feature Type",
+        required=False, default_value="", select_type="multi",
+        options=_menu(
+            "DISABLE CLOUD SERVICES", "DELETE NARROWBANDING-WAIVER REQUIRED",
+            "ICE KIT", "OPTIONAL EMERGENCY TONE", "SEQUENTIAL SERIAL NUMBER",
+        ),
+    )
+    constrained_opts = {21: [
+        "DISABLE CLOUD SERVICES", "ICE KIT", "OPTIONAL EMERGENCY TONE",
+    ]}
+    eng = CpqEngine()
+    multi: dict = {}
+    eng.auto_fill(
+        [attr], hints={}, constrained_opts=constrained_opts,
+        governed_ids={21}, rule_governed_ids={21}, already_filled_multi=multi,
+        display_order={"additionalSystemEnhancementFeatureType_astro": 5},
+    )
+    assert multi.get("additionalSystemEnhancementFeatureType_astro") is None
