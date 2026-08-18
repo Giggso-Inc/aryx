@@ -1748,6 +1748,21 @@ def _reask_confirmed_data_table_conflict(
     label_a = _cpq_engine.disambiguated_label(attr_a, attrs)
     label_b = _cpq_engine.disambiguated_label(attr_b, attrs)
     prompt = _cpq_engine.next_question_prompt(attr_a)
+    # 2026-08-18 fix: sync pending_scope to the list just shown above, or
+    # the next reply gets validated against whatever candidates were left
+    # over from BEFORE this re-ask (stale, narrower list) — confirmed live:
+    # a customer's exact, verbatim answer from THIS prompt ("Single XE")
+    # was rejected as "no match" because pending_scope_candidates still
+    # held the prior turn's 1-item list. `attr_a.options` here is the same
+    # source `next_question_prompt` renders its numbered list from.
+    set_pending_scope(
+        session,
+        kind="attr_options",
+        candidates=[o.display_name for o in attr_a.options],
+        origin_question=prompt,
+        attr_vn=attr_a_vn,
+        asked_turn=session.turn,
+    )
     return (
         f"⚠️ **Rule conflict detected.** Your selections for **{label_a}** "
         f"and **{label_b}** are incompatible — the catalog's own data "

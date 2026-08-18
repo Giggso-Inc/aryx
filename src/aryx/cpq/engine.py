@@ -1379,7 +1379,15 @@ def _clear_rule_join_data_cache() -> None:
 # this tuple if another confirmed-missing table surfaces; never hardcode
 # which attributes are affected -- that's derived generically from which
 # hiding rules reference the table.
-_KNOWN_MISSING_DATA_TABLES = ("UserGroupMapping",)
+#
+# UserGroupMapping removed 2026-08-18: live-verified against dev workspace 93
+# -- 511 UserGroupMapping entities, 33975 Oracle_BomItemMap entities, and
+# 16282 Oracle_BomItemDef entities are now actually ingested (Postgres
+# aryx_entity, ontology_type ILIKE match). The table is no longer
+# confirmed-absent, so rules depending on it (governing dHSAssetTagLabel_astro,
+# cBPQRCode_astro, fedQRCode_astro) can resolve normally again instead of
+# being permanently skipped.
+_KNOWN_MISSING_DATA_TABLES: tuple[str, ...] = ()
 
 
 def _hiding_rule_needs_missing_data_table(rule: "HidingRule") -> bool:
@@ -1594,9 +1602,13 @@ def _no_real_fill_justification(
 # one-remaining-option) all run BEFORE the blind-pick fallback, so a
 # real constraint narrowing this to one legal category will auto-fill
 # through one of those first and the blind guess simply stops firing.
-_BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
-    "accessoriesSolutionSet_astro",
-})
+# 2026-08-18: this allowlist is no longer consulted -- explicit product
+# decision to accept blind-fill risk universally instead of maintaining a
+# hardcoded per-attribute list (see the removed `and vn not in
+# _BLIND_FILL_RISK_ACCEPTED_VNS` clauses below). Kept as an empty constant,
+# not deleted outright, in case a future narrower re-scoping wants the same
+# name/shape back.
+_BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset()
 
 # Catalog-agnostic "this is the opt-out choice" phrasing -- an attr with
 # no real fill justification (`_no_real_fill_justification`) still has a
@@ -5139,68 +5151,38 @@ class CpqEngine:
                             job_id = f"{base_job_id}-r{chain_n}"
                             chain_n += 1
                         existing = existing_questions.get(job_id)
-                        answered_unrecognized = False
                         if existing and existing.get("status") == "answered":
                             answer = (existing.get("answer") or "").strip().lower()
                             if answer == "constraint":
                                 restrict_by_target.setdefault(aid, []).extend(parts)
                                 continue
-                            if answer == "assign_all":
-                                # Not yet applicable — RecommendationRule.
-                                # recommended_value (state.py:111) holds a
-                                # single value; assigning N simultaneous
-                                # values needs a separate model change
-                                # (list-valued recommendations wired into
-                                # filled_multi). Logged as blocked, never
-                                # silently guessed or partially applied.
-                                assign_all_answers_blocked += 1
-                                logger.info(
-                                    "cpq: rule %r answered 'assign_all' for "
-                                    "target=%d (%r), but multi-value "
-                                    "recommendation assignment isn't "
-                                    "supported yet — blocked pending a "
-                                    "separate fix", rule_name, aid, parts)
-                                continue
-                            # Unrecognized answer — mint the next job_id in
-                            # the chain so the enqueue below creates a fresh,
-                            # pending question instead of leaving this rule
-                            # permanently stuck behind an unusable answer.
-                            answered_unrecognized = True
-                            unrecognized_answers_requeued += 1
-                            job_id = f"{base_job_id}-r{chain_n}"
-                            existing = None
+                            # Any other recorded answer (including
+                            # "assign_all") falls through to the same
+                            # first-eligible auto-fill as the no-answer case
+                            # below — see that branch's comment for the
+                            # 2026-08-18 decision to stop blocking here.
+                        # 2026-08-18: previously blocked pending a human
+                        # ingest-store answer ("never guess" — see git
+                        # history for the original D2 rationale and its
+                        # cited wrong-guess incidents). Explicit product
+                        # decision to override that for this rule shape:
+                        # auto-fill with the first eligible value
+                        # (parts[0]) instead of asking, accepting the risk
+                        # that this may occasionally assign a value the
+                        # customer wouldn't have chosen. Revert to the
+                        # ingest_store.enqueue block above (see prior
+                        # commit) if that risk proves worse in practice
+                        # than the extra question it was designed to avoid.
+                        recommend_by_target.setdefault(aid, parts[0])
                         ambiguous_recommendations_skipped += 1
                         logger.info(
                             "cpq: rule %r has a multi-value action "
                             "(set_type=%r) for target=%d (%r) — no "
                             "structural signal distinguishes constraint "
-                            "from assign-all, %s", rule_name, set_type, aid,
-                            parts,
-                            "prior answer was unrecognized (expected "
-                            "'constraint' or 'assign_all') — a fresh "
-                            "question has been queued" if answered_unrecognized
-                            else "awaiting human answer (already queued)" if existing
-                            else "queued for human answer")
-                        if not existing and ingest_store is not None:
-                            try:
-                                ingest_store.enqueue(
-                                    workspace_id, job_id=job_id,
-                                    kind="cpq_multivalue_constraint_or_default",
-                                    prompt=(
-                                        f"Rule '{rule_name}' offers {parts} "
-                                        f"for attribute {aid}. Should this "
-                                        "NARROW the field's valid choices to "
-                                        "exactly these values (reply "
-                                        "'constraint'), or ASSIGN all of "
-                                        "them as the default selection "
-                                        "(reply 'assign_all')?"),
-                                    options=["constraint", "assign_all"],
-                                    suggested="")
-                                existing_questions[job_id] = {"status": "pending"}
-                            except Exception:
-                                logger.debug(
-                                    "cpq: failed to enqueue constraint-or-"
-                                    "default ingest question", exc_info=True)
+                            "from assign-all; auto-filled first eligible "
+                            "value %r instead of asking (2026-08-18 "
+                            "override of the prior never-guess default)",
+                            rule_name, set_type, aid, parts, parts[0])
 
                 if condition_script:
                     if restrict_by_target or recommend_by_target:
@@ -8459,10 +8441,15 @@ class CpqEngine:
                             source = "opt_out_default"
                         elif (
                             display_order is not None and vn in display_order
-                            and not (
-                                _no_real_fill_justification(attr, rec_by_target)
-                                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
-                            )
+                            # 2026-08-18: no longer gated on
+                            # _no_real_fill_justification -- explicit product
+                            # decision to always take the first eligible
+                            # option here rather than fall through to
+                            # `pending` (asking the customer), universally
+                            # instead of via a hardcoded per-attribute
+                            # allowlist. See _BLIND_FILL_RISK_ACCEPTED_VNS'
+                            # own comment for the historical "never guess a
+                            # real business choice" rationale this overrides.
                         ):
                             # §2f, superseded by explicit instruction
                             # (2026-08-09): governed (some rule targets this
@@ -8507,10 +8494,12 @@ class CpqEngine:
                             # skips it, since it's neither a decision attr
                             # nor a grid selector).
                             pass
-                        elif not (
-                            _no_real_fill_justification(attr, rec_by_target)
-                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
-                        ):
+                        else:
+                            # 2026-08-18: was `elif not (_no_real_fill_
+                            # justification(...) and vn not in
+                            # _BLIND_FILL_RISK_ACCEPTED_VNS)` -- now
+                            # unconditional (see the display_order branch
+                            # above for the same 2026-08-18 rationale).
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
                             # states) and safe here because a rule REQUIRES this
@@ -8727,12 +8716,30 @@ class CpqEngine:
                     # this branch was never meant to block for an attr the
                     # catalog's own data proves is governed. The
                     # CONSTRAINED-but-ambiguous case (is_unconstrained=
-                    # False) still lands here and correctly stays
-                    # untouched -- unchanged, matching the explicit HITL
-                    # "default-or-empty, never guess among rule-narrowed
-                    # options" decision this file's own multiselect
-                    # over-selection tests already lock in.
-                    pass
+                    # False): 2026-08-18 explicit override (HITL-confirmed
+                    # after the "never guess among rule-narrowed options"
+                    # rationale was re-cited in full) -- select ALL options
+                    # a real rule has currently narrowed this attr to,
+                    # instead of leaving it empty. Distinct from the
+                    # single-select blind-fill override above (which picks
+                    # ONE first-eligible value): for multi-select the
+                    # requested behavior is "check every currently-allowed
+                    # box", not "guess one of them". `candidate_opts` here
+                    # is already filtered to `current_allowed` (the real
+                    # constraint's narrowed set) a few lines up, so this
+                    # never selects an option the active rule has excluded.
+                    if candidate_opts:
+                        filled_multi[vn] = [o.item_value for o in candidate_opts]
+                        display_filled[vn] = ", ".join(
+                            o.display_name for o in candidate_opts)
+                        sources.setdefault(vn, "auto_all_constrained")
+                        logger.info(
+                            "cpq: multi-select %r constrained to %d option(s) "
+                            "with no rule/default resolving a subset -- "
+                            "auto-selected all of them instead of leaving "
+                            "empty (2026-08-18 override of the prior "
+                            "leave-empty default)", vn, len(candidate_opts),
+                        )
                 elif default_opt:
                     filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
