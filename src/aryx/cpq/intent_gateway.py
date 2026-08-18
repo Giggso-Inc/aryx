@@ -355,13 +355,45 @@ def _llm_classify_once(
         "doubt between the two, prefer \"decline\" (an unwanted decline is "
         "recoverable by asking again; an unwanted approval submits a real "
         "order the customer did not agree to).\n"
+        "7. A pending attribute (see SESSION PENDING below, if present) is relevant to "
+        "classifying THIS message only if the message's own content actually relates to "
+        "that attribute's real concept (its label, or its value candidates) -- never infer "
+        "relevance just because something is pending and the message happens to mention a "
+        "related-sounding word. A pending attribute must never be treated as \"what the "
+        "customer means\" for ANY category (a quantity change, a country change, approval, "
+        "or anything else) unless the pending attribute's own label genuinely matches that "
+        "category's concept. When the message's real subject doesn't match the pending "
+        "attribute at all, classify based on the message's actual content, not the fact "
+        "that something else happens to be pending.\n"
+        "8. PRODUCT_QUANTITY_CHANGE vs ambiguous: a bare/generic quantity reference "
+        "(\"that quantity\", \"the quantity\") with a clearly stated new number, and no "
+        "specific catalog item named in the message, should be classified as "
+        "PRODUCT_QUANTITY_CHANGE with high confidence -- do not default to ambiguous just "
+        "because no candidate attribute in CANDIDATE ATTRIBUTES matches; PRODUCT_QUANTITY_"
+        "CHANGE deliberately has no attribute target (variable_name=null is correct for it).\n"
     )
     if repair_hint:
         sys += f"\nPREVIOUS ATTEMPT FAILED VALIDATION: {repair_hint}\nFix the JSON.\n"
 
     pending_bits: list[str] = []
     if session.pending_variables:
-        pending_bits.append(f"pending_attr={session.pending_variables[0]}")
+        _pending_vn = session.pending_variables[0]
+        # docs/CPQ_GATEWAY_PENDING_ATTR_QUANTITY_CONFLATION_PLAN_2026_08_17.md --
+        # a bare variable_name gives the model no way to judge whether this
+        # pending attribute has anything to do with the current message's
+        # subject, inviting it to hallucinate relevance from co-occurrence
+        # alone (confirmed live: a pending Hardware Version question plus a
+        # quantity-change message was misclassified as being about "the
+        # recently discussed line item"). The real label lets the model
+        # judge genuine relevance instead of guessing from the bare name.
+        _pending_bundle = next(
+            (b for b in bundles if b.attr.variable_name == _pending_vn), None,
+        )
+        pending_bits.append(
+            f"pending_attr={_pending_vn} (label: {_pending_bundle.attr.display_label!r})"
+            if _pending_bundle is not None
+            else f"pending_attr={_pending_vn}"
+        )
     if session.pending_change_no_value_vn:
         pending_bits.append(
             f"awaiting_value_for={session.pending_change_no_value_vn}"

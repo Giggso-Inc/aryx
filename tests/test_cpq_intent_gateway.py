@@ -11,6 +11,7 @@ from aryx.cpq.intent_gateway import (
     MUTATING_CATEGORIES,
     AttrCandidateBundle,
     ValueCandidate,
+    _llm_classify_once,
     build_candidate_bundles,
     classify_intent,
     clear_gateway_cache,
@@ -701,3 +702,104 @@ def test_classify_intent_timeout_actually_returns_promptly_not_after_the_slow_ca
     # Well under the underlying call's 2s sleep -- the old buggy
     # `with ThreadPoolExecutor()` block would have blocked until ~2s.
     assert elapsed < 1.0, f"timeout wrapper blocked for {elapsed:.2f}s, not ~0.1s"
+
+
+# ── docs/CPQ_GATEWAY_PENDING_ATTR_QUANTITY_CONFLATION_PLAN_2026_08_17.md ──────
+
+def test_pending_attr_prompt_includes_display_label():
+    """Live bug: a pending attribute was sent to the model as a bare
+    variable_name only, giving it no way to judge whether the attribute
+    has anything to do with the current message -- confirmed live to
+    hallucinate a false connection (a pending "Hardware Version" question
+    plus a quantity-change message was misread as being about "the
+    recently discussed line item"). The real label lets the model judge
+    genuine relevance instead of guessing from the bare name."""
+    session = CpqSession()
+    session.pending_variables = ["hWVersion_astro"]
+    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
+    bundles = build_candidate_bundles(attrs, session, "can you change that quantity to 5")
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=('{"intent_category": "ambiguous", "confidence": "low"}', 5, 3),
+    ) as mock_chat:
+        _llm_classify_once(
+            "can you change that quantity to 5", bundles, session,
+            "gemini-2.5-pro", workspace_id=1,
+        )
+    _sys, user = mock_chat.call_args.args[0], mock_chat.call_args.args[1]
+    assert "Hardware Version" in user
+    assert "pending_attr=hWVersion_astro" in user
+
+
+def test_pending_attr_conflation_rule_present_in_system_prompt():
+    """The system prompt must actually carry the anti-conflation
+    instruction, not just the label -- a mocked unit test can't verify a
+    live model's judgment, but it can verify the guidance actually reaches
+    it."""
+    session = CpqSession()
+    session.pending_variables = ["hWVersion_astro"]
+    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
+    bundles = build_candidate_bundles(attrs, session, "can you change that quantity to 5")
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=('{"intent_category": "ambiguous", "confidence": "low"}', 5, 3),
+    ) as mock_chat:
+        _llm_classify_once(
+            "can you change that quantity to 5", bundles, session,
+            "gemini-2.5-pro", workspace_id=1,
+        )
+    sys_prompt = mock_chat.call_args.args[0]
+    assert "own concept" in sys_prompt or "genuinely matches" in sys_prompt
+
+
+def test_product_quantity_change_rule_present_in_system_prompt():
+    """docs/CPQ_GATEWAY_PENDING_ATTR_QUANTITY_CONFLATION_PLAN_2026_08_17.md
+    second finding: rule 7 (pending-attr conflation) alone was confirmed,
+    via a live scenario diff, to NOT be enough -- the model correctly
+    stopped blaming the pending attribute but still defaulted to
+    "ambiguous" rather than confidently choosing PRODUCT_QUANTITY_CHANGE,
+    since that category (unlike approval/decline) never had an explicit
+    rule telling the model when to prefer it. Asserts rule 8 actually
+    reaches the prompt."""
+    session = CpqSession()
+    attrs = []
+    bundles = build_candidate_bundles(attrs, session, "can you change that quantity to 5")
+    with patch(
+        "aryx.cpq.intent_gateway._pinned_chat",
+        return_value=('{"intent_category": "ambiguous", "confidence": "low"}', 5, 3),
+    ) as mock_chat:
+        _llm_classify_once(
+            "can you change that quantity to 5", bundles, session,
+            "gemini-2.5-pro", workspace_id=1,
+        )
+    sys_prompt = mock_chat.call_args.args[0]
+    assert "PRODUCT_QUANTITY_CHANGE" in sys_prompt
+    assert "do not default to ambiguous" in sys_prompt
+
+
+def test_unrelated_pending_attr_does_not_block_correct_classification():
+    """Guard against a future quarantine/dispatch change silently
+    reintroducing a block here: once the model gets the category right
+    (product_quantity_change) despite an unrelated pending attribute, the
+    rest of the pipeline must accept and forward it, not fight it."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.pending_variables = ["hWVersion_astro"]
+    engine = MagicMock()
+    attrs = [_attr("hWVersion_astro", "Hardware Version", [("H1", "H1")])]
+    fake_reply = (
+        '{"intent_category": "product_quantity_change", "confidence": "high", '
+        '"variable_name": null, "value_ref": null, '
+        '"evidence_span": "change that quantity to 5", "quantity_text": "5"}'
+    )
+    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(fake_reply, 5, 3)):
+        with patch("aryx.config.get_settings") as mock_settings, \
+             patch("aryx.cpq.intent_gateway.get_settings") as mock_settings2:
+            for m in (mock_settings, mock_settings2):
+                m.return_value.cpq_intent_gemini_model = "gemini-2.5-pro"
+                m.return_value.cpq_intent_classify_timeout_s = 5.0
+            decision = classify_intent(
+                "can you change that quantity to 5", attrs, session, engine, workspace_id=1,
+            )
+    assert decision.action == "dispatch"
+    assert decision.result.intent_category == IntentCategory.PRODUCT_QUANTITY_CHANGE
