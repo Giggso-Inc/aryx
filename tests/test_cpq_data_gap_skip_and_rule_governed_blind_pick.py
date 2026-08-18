@@ -30,9 +30,6 @@ exact real-world shape rather than passing no constrained_opts at all
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
-from aryx.cpq import engine as engine_module
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, HidingRule, MenuOption
 
@@ -75,14 +72,7 @@ def test_attr_matched_via_source_id_not_entity_id_is_skipped(caplog):
     )
     eng = CpqEngine()
     import logging
-    # UserGroupMapping is no longer in the live registry (2026-08-18: live-
-    # verified 511 rows now ingested for workspace 93 --
-    # _KNOWN_MISSING_DATA_TABLES is now empty). The skip mechanism itself
-    # is unchanged and must still work generically for whatever table IS
-    # confirmed missing at a given point in time -- patch the constant back
-    # to exercise the mechanism rather than depending on production data.
-    with patch.object(engine_module, "_KNOWN_MISSING_DATA_TABLES", ("UserGroupMapping",)), \
-         caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING):
         filled, _display, pending = eng.auto_fill(
             [attr], {}, governed_ids={292414}, rule_governed_ids={292414},
             hiding_rules=[rule], display_order={"cBPQRCode_astro": 36},
@@ -102,8 +92,7 @@ def test_attr_blocked_on_missing_data_table_is_skipped_not_asked(caplog):
     )
     eng = CpqEngine()
     import logging
-    with patch.object(engine_module, "_KNOWN_MISSING_DATA_TABLES", ("UserGroupMapping",)), \
-         caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING):
         filled, _display, pending = eng.auto_fill(
             [attr], {}, governed_ids={1}, rule_governed_ids={1},
             hiding_rules=[rule], display_order={"cBPQRCode_astro": 36},
