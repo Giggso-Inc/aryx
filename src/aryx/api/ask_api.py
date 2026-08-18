@@ -5782,25 +5782,57 @@ def _llm_first_gateway_turn(
     # value for SmartLocate?" follow-up with no basis in real catalog
     # structure (no such per-item attr exists). Reuses `apply_answer`'s own
     # already-trusted matcher (exact item_value/display-name, numeric
-    # selection, substring/word-boundary) -- no new matching logic. Cannot
-    # suppress a genuine topic switch: those are always phrased with a
-    # change-verb/arrow, which never matches a bare menu option here, so
-    # they still fall through to the existing topic-switch check below.
-    _pending_reply_matches_own_options = bool(
+    # selection, substring/word-boundary) -- no new matching logic.
+    #
+    # PR #212 review (M1) -- corrected: `apply_answer` matches against the
+    # FULL, unrestricted reply text via substring/word-boundary branches
+    # with no length cap, so a genuine topic switch that happens to
+    # mention the pending attr's own option name as a whole word (e.g.
+    # pending=Country, reply="since it ships to Canada, change the
+    # hardware version instead") would ALSO satisfy this match -- the
+    # original `matches_own_options or not topic_switch` let that false
+    # positive override a correct topic-switch verdict.
+    #
+    # Fixed two ways, since the deterministic topic-switch regex
+    # (`_pending_reply_looks_like_new_request`) alone doesn't reliably
+    # catch every compound-sentence phrasing (verified live: it misses
+    # "since it ships to Canada, change the hardware version instead" --
+    # no combination of its change-verb/target-detection regexes matches
+    # that exact wording, so relying on it alone as a first-class
+    # override still lets the false positive through):
+    #   1. A word-count cap -- a BARE reply answering the pending
+    #      question is short by construction (a menu-item name, a
+    #      number, "1 Year"); a genuine topic switch is a real sentence.
+    #      This is the primary, robust guard.
+    #   2. The cheap deterministic check still runs and wins outright
+    #      when it DOES catch a switch, as defense in depth -- never
+    #      consult apply_answer at all once it says "new request."
+    _BARE_REPLY_MAX_WORDS = 6
+    _looks_like_new_request = bool(
         _pending_attr_for_gate is not None
-        and _pending_attr_for_gate.options
-        and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
-    )
-    _defer_gateway_to_pending_answer = (
-        _pending_attr_for_gate is not None
-        and (
-            _pending_reply_matches_own_options
-            or not _pending_reply_is_topic_switch(
-                req.question, _pending_attr_for_gate, attrs,
-                session.filled, session.filled_multi, req.workspace_id,
-            )
+        and _pending_reply_looks_like_new_request(
+            req.question, _pending_attr_for_gate, attrs,
+            session.filled, session.filled_multi,
         )
     )
+    _pending_reply_matches_own_options = bool(
+        not _looks_like_new_request
+        and _pending_attr_for_gate is not None
+        and _pending_attr_for_gate.options
+        and len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
+    )
+    if _pending_attr_for_gate is None:
+        _defer_gateway_to_pending_answer = False
+    elif _looks_like_new_request:
+        _defer_gateway_to_pending_answer = False
+    elif _pending_reply_matches_own_options:
+        _defer_gateway_to_pending_answer = True
+    else:
+        _defer_gateway_to_pending_answer = not _pending_reply_is_topic_switch(
+            req.question, _pending_attr_for_gate, attrs,
+            session.filled, session.filled_multi, req.workspace_id,
+        )
 
     # N4: skip when top-level classify_ask_route already ran this turn
     # (one classification LLM call per turn). Live sessions never mark

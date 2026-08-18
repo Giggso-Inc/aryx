@@ -38,6 +38,15 @@ def _attr(eid, vn, label, *, options=None, required=False, select_type="single")
 
 
 def _setup(monkeypatch, *, universal_enabled: bool, llm_first_enabled: bool = True):
+    # `top_level_route_used()` is a contextvars.ContextVar with no
+    # autouse reset fixture in this suite -- in synchronous pytest
+    # execution (no real async context boundary between tests), a prior
+    # test's `mark_top_level_route_used()` call can leak into a later
+    # test run in the same thread, making the "N4: skip when top-level
+    # already ran this turn" gate wrongly short-circuit. Reset explicitly
+    # per test rather than relying on suite-wide ordering.
+    from aryx.cpq.intent_gateway import _top_level_route_used
+    _token = _top_level_route_used.set(False)
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     monkeypatch.setattr(api._cpq_engine, "resolve_always_ask_skips", lambda *a, **k: set())
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: BmlEvaluator({}))
@@ -251,3 +260,48 @@ def test_change_verb_topic_switch_during_pending_multiselect_still_uses_gateway(
     # needs to prove the gateway is NOT skipped for a genuine topic
     # switch, not pin the exact call count that quirk affects.
     assert mock_gw.called, "a genuine change-verb topic switch must still reach the gateway"
+
+
+def test_topic_switch_mentioning_pending_options_own_value_still_uses_gateway(monkeypatch):
+    """PR #212 review (M1): apply_answer's substring/word-boundary
+    branches have no length cap on the reply text -- a genuine topic
+    switch that happens to mention the PENDING attr's own option name as
+    a whole word (here: pending=Country, option "Canada", reply switches
+    to Hardware Version but names "Canada" along the way) must not be
+    misfiled as "answering the pending question." This exact wording was
+    verified to NOT trip the cheap deterministic change-verb regex
+    (`_pending_reply_looks_like_new_request`) either, so the word-count
+    cap on the bare-reply shortcut is the guard actually being tested
+    here -- it must fall through to the real (LLM-backed) topic-switch
+    check rather than short-circuiting on the word-boundary match."""
+    _setup(monkeypatch, universal_enabled=True)
+    country_attr = _attr(
+        1, "ultimateDestinationCountry", "Ultimate Destination Country",
+        options=_opt("United States", "Canada", "Mexico"),
+    )
+    hw_attr = _attr(2, "hWVersion_astro", "Hardware Version",
+                     options=_opt("4G LTE+5G", "4G LTE Only"))
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([country_attr, hw_attr], "aSTRO25_bom"))
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        status="configuring", turn=3,
+        pending_variables=["ultimateDestinationCountry"],
+    )
+    req = AskRequest(
+        question="since it ships to Canada, change the hardware version instead",
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    with patch.object(
+        api, "_llm_detect_pending_topic_switch", return_value="hWVersion_astro",
+    ), patch.object(
+        api, "gateway_classify_intent",
+        return_value=_confirming_decision(
+            IntentCategory.CHANGE_REQUEST, variable_name="hWVersion_astro",
+        ),
+    ) as mock_gw:
+        _run_cpq_turn_inner(req, object())
+    assert mock_gw.called, (
+        "a genuine change-verb topic switch must reach the gateway even "
+        "when it mentions the pending attr's own option name in passing"
+    )

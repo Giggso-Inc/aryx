@@ -284,6 +284,33 @@ def test_non_anchor_attr_recommendation_reassert_is_unaffected():
 # ── Named allowlist extension (2026-08-18): 3 confirmed constraint-only ────
 # attrs sharing accessoriesSolutionSet_astro's exact governance shape ───────
 
+def test_relatedservicestype_astro_allowlist_alone_selects_all_no_rec_rule_needed():
+    """PR #212 review (N1): the dedicated test above still passes a
+    non-satisfying rec_rule to open the multi-select entry gate, which
+    predates relatedServicesType_astro being added to
+    _BLIND_FILL_RISK_ACCEPTED_VNS -- it doesn't isolate whether the
+    allowlist entry itself is sufficient. This test proves it is: no
+    rec_rules at all, the allowlist alone must open the gate for its
+    real, live-confirmed governance shape (script-backed constraint
+    querying relSoftAndServcParts, zero recommendation rules)."""
+    attr = ConfigAttr(
+        entity_id=10, variable_name="relatedServicesType_astro",
+        display_label="Service Type", required=False, default_value="",
+        select_type="multi",
+        options=_menu("INSTALLATION", "RENTAL", "REPAIR", "SOFTWARE"),
+    )
+    eng = CpqEngine()
+    filled_multi: dict = {}
+    eng.auto_fill(
+        [attr], {}, already_filled_multi=filled_multi,
+        constrained_opts={10: ["INSTALLATION", "REPAIR"]},
+        display_order={"relatedServicesType_astro": 0},
+    )
+    assert sorted(filled_multi.get("relatedServicesType_astro", [])) == [
+        "INSTALLATION", "REPAIR",
+    ]
+
+
 def test_related_service_category_selects_all_when_constrained_and_ambiguous():
     """relatedServiceCategory_astro: live-confirmed real constraint (script-
     backed rule 17691443159 + declarative rule 17691443165), zero
