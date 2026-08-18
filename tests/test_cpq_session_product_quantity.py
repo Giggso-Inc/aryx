@@ -641,6 +641,52 @@ def test_disambiguation_resolving_to_product_answers_from_session(monkeypatch):
     assert "12" in resp["answer"]
 
 
+def test_quantity_change_reminds_about_a_still_pending_question(monkeypatch):
+    """docs/CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md follow-up: a
+    quantity change applied while a different question is still pending
+    (e.g. Hardware Version, never answered) must remind the customer of
+    it -- previously this path returned ONLY "Quantity -> N" with no
+    reminder at all, unlike every QA-answer path (_handle_cpq_qa), which
+    always appends this same block when something is pending."""
+    hw_attr = ConfigAttr(
+        entity_id=1, variable_name="hWVersion_astro", display_label="Hardware Version",
+        required=False, default_value="", select_type="single",
+        options=[MenuOption(item_value="H1", display_name="APX NEXT (4G LTE+5G)")],
+    )
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([hw_attr], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=1)
+    session.pending_variables = ["hWVersion_astro"]
+    req = AskRequest(question="change the quantity to 5", workspace_id=1,
+                      session_data=session.to_dict())
+    _confirm_product_quantity_change(monkeypatch, quantity_text="5")
+    resp = _run_cpq_turn(req, object())
+    assert resp["tools_called"] == ["cpq_product_quantity()"]
+    assert resp["session_data"]["product_quantity"] == 5
+    assert "Quantity" in resp["answer"] and "5" in resp["answer"]
+    assert "Resuming your configuration" in resp["answer"]
+    assert "Hardware Version" in resp["answer"]
+
+
+def test_quantity_change_omits_reminder_when_nothing_pending(monkeypatch):
+    """Sibling guard: the reminder must only appear when something is
+    genuinely pending -- must not regress the normal, nothing-pending
+    case into always appending a stray reminder."""
+    monkeypatch.setattr(
+        "aryx.api.ask_api._cpq_engine.load_product_config",
+        lambda *a, **k: ([], "aSTRO25_bom"),
+    )
+    session = _base_session(product_quantity=1)
+    req = AskRequest(question="change the quantity to 5", workspace_id=1,
+                      session_data=session.to_dict())
+    _confirm_product_quantity_change(monkeypatch, quantity_text="5")
+    resp = _run_cpq_turn(req, object())
+    assert resp["tools_called"] == ["cpq_product_quantity()"]
+    assert "Resuming your configuration" not in resp["answer"]
+
+
 def test_deterministic_backstop_skips_llm_when_no_user_sourced_or_named_candidate(monkeypatch):
     """docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md follow-up
     review, High finding: the exact shape of the original live incident --
