@@ -803,3 +803,107 @@ def test_unrelated_pending_attr_does_not_block_correct_classification():
             )
     assert decision.action == "dispatch"
     assert decision.result.intent_category == IntentCategory.PRODUCT_QUANTITY_CHANGE
+
+
+# ── Negative / overcorrection guard (rules 7 & 8 must not break these) ───────
+# The curated scenario table in docs/CPQ_GATEWAY_PENDING_ATTR_QUANTITY_
+# CONFLATION_PLAN_2026_08_17.md was verified once via one-off scratchpad
+# scripts, not committed tests -- these lock the same guarantees in
+# permanently, so a future change can't silently regress them.
+
+def test_pending_attr_reply_still_resolves_when_genuinely_relevant():
+    """Scenario 5: a short reply naming a value for the PENDING attribute
+    itself ("make it the 4G LTE Only one" while Hardware Version is
+    pending) must still resolve against it -- rule 7 only forbids
+    inferring relevance from an UNRELATED message, never suppresses
+    resolution when the message genuinely is about the pending attribute."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.pending_variables = ["hWVersion_astro"]
+    hw = _attr("hWVersion_astro", "Hardware Version", [("H1", "H1"), ("H2", "H2")])
+    attrs = [hw]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = (hw, "H2")
+    engine.detect_change_requests_multi.return_value = [(hw, "H2")]
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"change_request","confidence":"high",'
+        '"variable_name":"hWVersion_astro","value_ref":1,'
+        '"evidence_span":"make it the 4G LTE Only one"}'
+    )
+    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)):
+        decision = classify_intent(
+            "make it the 4G LTE Only one", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "dispatch"
+    assert decision.result.variable_name == "hWVersion_astro"
+
+
+def test_customer_last_asked_about_still_resolves_a_short_followup():
+    """Scenario 6: customer_last_asked_about is a DIFFERENT, pre-existing
+    pending-context mechanism from pending_attr -- rule 7 (which only
+    talks about pending_attr) must not collaterally weaken it. A short
+    follow-up naming a value right after a QA question about that
+    attribute must still resolve against it."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.last_qa_variables = ["batteryType_astro"]
+    battery = _attr("batteryType_astro", "Battery Type", [("STD", "STANDARD"), ("EXT", "EXTENDED")])
+    attrs = [battery]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = (battery, "STD")
+    engine.detect_change_requests_multi.return_value = [(battery, "STD")]
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = None
+
+    good_json = (
+        '{"intent_category":"change_request","confidence":"high",'
+        '"variable_name":"batteryType_astro","value_ref":0,'
+        '"evidence_span":"make it standard"}'
+    )
+    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)):
+        decision = classify_intent(
+            "make it standard", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "dispatch"
+    assert decision.result.variable_name == "batteryType_astro"
+
+
+def test_genuinely_quantity_shaped_pending_attr_still_allowed_to_compete():
+    """Scenario 7 (non-overcorrection check): rules 7/8 must not make the
+    model refuse BULK_QUANTITY_CHANGE outright just because it looks like
+    the same shape as the fixed bug -- when the pending attribute IS a
+    real, quantity-shaped field and the message clearly refers to it, that
+    classification must still be reachable, not blocked by the new
+    guidance."""
+    clear_gateway_cache()
+    session = CpqSession()
+    session.product_name = "astro"
+    session.pending_variables = ["quantityVX650ItemType_astro"]
+    qty = _attr("quantityVX650ItemType_astro", "Quantity (VX650 Item Type)")
+    attrs = [qty]
+    engine = MagicMock()
+    engine.detect_change_request.return_value = None
+    engine.detect_change_requests_multi.return_value = []
+    engine.detect_change_target_without_value.return_value = None
+    engine.detect_multi_select_removal.return_value = None
+    engine.detect_bulk_quantity_change.return_value = ("quantityVX650ItemType_astro",)
+
+    good_json = (
+        '{"intent_category":"bulk_quantity_change","confidence":"high",'
+        '"variable_name":"quantityVX650ItemType_astro","value_ref":null,'
+        '"evidence_span":"change the quantity to 3","quantity_text":"3"}'
+    )
+    with patch("aryx.cpq.intent_gateway._pinned_chat", return_value=(good_json, 10, 5)):
+        decision = classify_intent(
+            "change the quantity to 3", attrs, session, engine, workspace_id=1,
+        )
+    assert decision.action == "dispatch"
+    assert decision.result.intent_category == IntentCategory.BULK_QUANTITY_CHANGE
+    assert decision.result.variable_name == "quantityVX650ItemType_astro"
