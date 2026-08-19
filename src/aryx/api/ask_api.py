@@ -983,6 +983,14 @@ def _handle_cpq_qa(
     # LLM integration. Gated on `session.pending_variables` so the extra
     # call only happens when a short-circuit could even apply (nothing
     # pending -> nothing to short-circuit to -> skip the call entirely).
+    # Cached so the (flag-gated) ambiguity check further below can reuse
+    # this exact call instead of re-classifying the same
+    # (question, attrs, session, workspace_id) a second time on the same
+    # turn -- both calls pass identical arguments, so a second call would
+    # be a pure, avoidable extra LLM round-trip whenever both checks are
+    # in play at once (PR #213 review finding).
+    _meta_result: "IntentResult | None" = None
+    _meta_it = _meta_ot = 0
     if not resume_review and session.pending_variables:
         _meta_result, _meta_it, _meta_ot = _llm_classify_intent_universal(
             req.question, attrs, session, req.workspace_id,
@@ -1167,8 +1175,15 @@ def _handle_cpq_qa(
             _qa_it = _qa_ot = 0
             if get_settings().cpq_qa_ambiguity_check_enabled:
                 try:
-                    _qa_intent, _qa_it, _qa_ot = _llm_classify_intent_universal(
-                        req.question, attrs, session, req.workspace_id)
+                    # Reuse the SESSION_STATUS_QUERY check's classify call
+                    # above when it already ran (identical arguments) --
+                    # never pay for a second, redundant LLM round-trip on
+                    # the same turn (PR #213 review finding).
+                    if _meta_result is not None:
+                        _qa_intent, _qa_it, _qa_ot = _meta_result, _meta_it, _meta_ot
+                    else:
+                        _qa_intent, _qa_it, _qa_ot = _llm_classify_intent_universal(
+                            req.question, attrs, session, req.workspace_id)
                     if (
                         _qa_intent is not None
                         and _qa_intent.category == IntentCategory.AMBIGUOUS

@@ -280,6 +280,48 @@ def test_stale_pending_variable_not_in_attrs_falls_through_to_normal_qa(monkeypa
     assert "Fell through to normal QA." in resp["answer"]
 
 
+def test_ambiguity_check_reuses_the_session_status_classify_call_not_a_second_one(monkeypatch):
+    """PR #213 review finding: the SESSION_STATUS_QUERY check and the
+    (flag-gated) ambiguity check both call _llm_classify_intent_universal
+    with IDENTICAL arguments -- when both are "in play" on the same turn
+    (something pending AND cpq_qa_ambiguity_check_enabled=True AND the
+    fast-attr-query path misses), the ambiguity check must reuse the
+    first call's result rather than paying for a second, redundant LLM
+    round-trip. Uses an AMBIGUOUS result (not SESSION_STATUS_QUERY) so
+    the top check does NOT short-circuit, letting execution reach the
+    ambiguity block and prove the SAME single call served both."""
+    _qa_common_mocks(monkeypatch)
+    hw = _attr(1, "hWVersion_astro", "Hardware Version", options=_opt("H1", "H2"))
+    session = CpqSession(mode="cpq", product_name="astro")
+    session.pending_variables = ["hWVersion_astro"]
+    req = AskRequest(question="what about the other thing", workspace_id=1,
+                      session_data=session.to_dict())
+
+    ambiguous_result = IntentResult(
+        category=IntentCategory.AMBIGUOUS, confidence=Confidence.HIGH,
+        clarifying_question="Did you mean the battery or the antenna?",
+        rationale="could mean either",
+    )
+    real_settings = api.get_settings()
+    patched_settings = real_settings.model_copy(
+        update={"cpq_qa_ambiguity_check_enabled": True})
+
+    with patch("aryx.api.ask_api._llm_classify_intent_universal",
+               return_value=(ambiguous_result, 30, 10)) as mock_classify, \
+         patch("aryx.api.ask_api.get_settings", lambda: patched_settings), \
+         patch("aryx.api.ask_api._extract_terms", return_value=([], 10, 5, 0)), \
+         patch("aryx.api.ask_api.gather", return_value=([], [])), \
+         patch("aryx.api.ask_api._enrich_with_attributes", lambda entities, *a, **k: entities), \
+         patch("aryx.api.ask_api.render_context", return_value=""), \
+         patch("aryx.api.ask_api._synthesise") as mock_synth, \
+         patch("aryx.api.ask_api._llm_split_multi_attr_options_query", return_value=None):
+        resp = _handle_cpq_qa(req, session, [hw], object())
+
+    mock_classify.assert_called_once()
+    mock_synth.assert_not_called()
+    assert resp["answer"].startswith("Did you mean the battery or the antenna?")
+
+
 def test_resume_review_path_is_never_short_circuited(monkeypatch):
     """resume_review=True (the review-summary caller) is a distinct,
     deliberate resume path -- the classify call must never even be made
