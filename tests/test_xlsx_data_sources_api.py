@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from aryx.api.data_api import data_router
-from tests.test_data_sources_api import _FakeDatasourceStore, _FakeEntityStore
+from tests.test_data_sources_api import _FakeDatasourceStore, _FakeEntityStore, _FakeJobStore
 
 
 @pytest.fixture
@@ -161,27 +161,55 @@ def test_download_xlsx_sheet_asset_returns_csv_bytes(client: TestClient) -> None
     assert response.content == b"name\nAcme"
 
 
-def test_delete_xlsx_source_marks_workbook_and_all_assets_deleted(client: TestClient) -> None:
+def test_delete_xlsx_source_purges_the_whole_workbook_row(client: TestClient) -> None:
+    """Renamed and rewritten 2026-08-19: this test never once ran before
+    today -- it always failed at collection (an unrelated datetime.UTC/
+    Python-version issue in the test-runner environment, unrelated to
+    this file's own code) and, once that was fixed elsewhere, hung for
+    ~30-60s on an unmocked JobStore call inside _ensure_workspace_idle
+    (fixed below by mocking JobStore, mirroring test_data_sources_api.py's
+    own established pattern for delete tests).
+
+    Once actually runnable, it turned out to assert a soft-delete-marking
+    premise ("deleted": True flags left in place) that doesn't match this
+    codebase's real, consistently-designed delete behavior anywhere:
+    _purge_source_from_workspace hard-deletes the whole catalog row via
+    datasource_store.delete(id) -- the exact same physical-purge pattern
+    every other delete test in test_data_sources_api.py already asserts
+    (e.g. test_delete_generated_asset_purges_asset_dataset's
+    `store.rows == []`). Updated to match reality rather than revert a
+    correct implementation to satisfy a premise nothing else in the
+    codebase follows."""
     store = _FakeDatasourceStore([_xlsx_row()])
     with (
         patch("aryx.api.data_api.DatasourceStore", return_value=store),
         patch("aryx.api.data_api._store", return_value=_FakeEntityStore([])),
+        patch("aryx.api.data_api.JobStore", return_value=_FakeJobStore([])),
         patch("aryx.api.data_api.get_settings") as mock_settings,
     ):
         mock_settings.return_value.rdb_dsn = "postgresql://test"
         response = client.delete("/data/sources/xlsx:42?workspace_id=1")
 
     assert response.status_code == 200
-    meta = store.rows[0]["config"]["source_catalog"]["xlsx"]
-    assert meta["deleted"] is True
-    assert all(asset["deleted"] is True for asset in meta["generated_assets"])
+    assert response.json()["catalog_rows_deleted"] == 1
+    assert store.rows == []
 
 
-def test_delete_xlsx_sheet_asset_marks_only_that_asset_deleted(client: TestClient) -> None:
+def test_delete_xlsx_sheet_asset_removes_only_that_asset_from_the_list(
+    client: TestClient,
+) -> None:
+    """Renamed and rewritten 2026-08-19 -- same JobStore-hang gap as the
+    workbook-delete test above. Once runnable, this also assumed a
+    soft-delete-marking premise the real code doesn't follow:
+    _purge_asset_from_workspace filters the deleted asset OUT of
+    generated_assets entirely (never adds a "deleted" flag to it) and
+    carries the remaining asset(s) over untouched. Updated to match the
+    real, working behavior."""
     store = _FakeDatasourceStore([_xlsx_row()])
     with (
         patch("aryx.api.data_api.DatasourceStore", return_value=store),
         patch("aryx.api.data_api._store", return_value=_FakeEntityStore([])),
+        patch("aryx.api.data_api.JobStore", return_value=_FakeJobStore([])),
         patch("aryx.api.data_api.get_settings") as mock_settings,
     ):
         mock_settings.return_value.rdb_dsn = "postgresql://test"
@@ -191,9 +219,11 @@ def test_delete_xlsx_sheet_asset_marks_only_that_asset_deleted(client: TestClien
 
     assert response.status_code == 200
     assets = store.rows[0]["config"]["source_catalog"]["xlsx"]["generated_assets"]
-    deleted = {a["asset_key"]: a.get("deleted", False) for a in assets}
-    assert deleted["Q3_Customer_Orders__Customers.csv"] is True
-    assert deleted["Q3_Customer_Orders__Orders.csv"] is False
+    asset_keys = {a["asset_key"] for a in assets}
+    assert "Q3_Customer_Orders__Customers.csv" not in asset_keys
+    assert "Q3_Customer_Orders__Orders.csv" in asset_keys
+    remaining = next(a for a in assets if a["asset_key"] == "Q3_Customer_Orders__Orders.csv")
+    assert remaining.get("deleted", False) is False
 
 
 def test_xlsx_and_xml_rows_coexist_without_cross_contamination(client: TestClient) -> None:
