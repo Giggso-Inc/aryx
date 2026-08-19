@@ -88,30 +88,49 @@ def test_package_type_never_reaches_pending_even_when_constraint_resolves():
     assert display_filled.get("packingPackageType_astro") == "BULK"
 
 
-def test_package_type_never_reaches_pending_even_when_constraint_is_unresolvable():
-    """The actual live-observed failure mode: the constraint evaluation
-    can't determine a value at all (e.g. Tier 1 can't parse the script
-    and Tier 2 isn't available/hasn't resolved) -- unlike
-    _auto_resolve_singleton_pending (which correctly leaves an
-    ambiguous/unresolved attr in `pending`), this hard exclusion must
-    still remove Package Type and fall back to first-eligible-option
-    rather than ever presenting it as a question."""
+def test_package_type_stays_pending_when_nothing_justifies_a_value():
+    """PR #215 review (C1): when neither a constraint nor a catalog
+    default resolves Package Type, it must NOT be blind-picked from its
+    8 genuinely different real options (SINGLE/BULK/N/A/DEMO KIT CASE/
+    ...) -- that's exactly the "guess among real business choices with
+    no justification" failure mode _no_real_fill_justification/
+    _BLIND_FILL_RISK_ACCEPTED_VNS (engine.py) exist to prevent. It must
+    stay in `pending` and still get asked."""
     attr = _package_type_attr()
     pending = [attr]
     filled: dict = {}
     display_filled: dict = {}
     filled_source: dict = {}
-    # No constraint rules at all -- nothing can narrow it.
+    # No constraint rules at all -- nothing can narrow it, no default_value either.
     result = _hard_exclude_from_pending(
         pending, filled, display_filled, filled_source, [], None,
     )
 
-    assert result == [], "Package Type must never reach pending, even unresolved"
-    assert filled.get("packingPackageType_astro") == "SINGLE", (
-        "with nothing else to go on, falls back to the first real "
-        "catalog option -- matching the native UI always showing SOME "
-        "value rather than blocking"
+    assert result == [attr], "with nothing justifying a value, it must still be asked"
+    assert "packingPackageType_astro" not in filled
+
+
+def test_package_type_stays_pending_when_constraint_is_ambiguous():
+    """A constraint that narrows to 2+ remaining legal values is still
+    an unresolved choice among real options, not a computed answer --
+    must not be blind-picked either, only an exact single-value
+    resolution counts as real justification."""
+    attr = _package_type_attr()
+    pending = [attr]
+    filled: dict = {}
+    display_filled: dict = {}
+    filled_source: dict = {}
+    rule = ConstraintRule(
+        rule_name="ambiguous probe", condition_attr_id=-1, condition_value="",
+        target_attr_id=attr.entity_id, allowed_values=[],
+        script='return "SINGLE|^|BULK";',
     )
+    bml_eval = BmlEvaluator({}, use_llm=False)
+    result = _hard_exclude_from_pending(
+        pending, filled, display_filled, filled_source, [rule], bml_eval,
+    )
+    assert result == [attr]
+    assert "packingPackageType_astro" not in filled
 
 
 def test_unrelated_attr_in_pending_is_left_alone():
@@ -132,10 +151,13 @@ def test_unrelated_attr_in_pending_is_left_alone():
     assert "someOtherAttr_astro" not in filled
 
 
-def test_package_type_removed_from_middle_of_pending_list():
+def test_package_type_resolved_from_middle_of_pending_list():
     """_hard_exclude_from_pending scans the WHOLE pending list, not just
     the head -- unlike _auto_resolve_singleton_pending, which only ever
-    looks at pending[0]."""
+    looks at pending[0]. Uses a real single-value-resolving constraint
+    (rather than nothing at all) since an unjustified guess must NOT be
+    made -- see test_package_type_stays_pending_when_nothing_justifies_
+    a_value for that case."""
     package_type = _package_type_attr()
     before_attr = ConfigAttr(
         entity_id=2, variable_name="beforeAttr_astro", display_label="Before",
@@ -146,9 +168,15 @@ def test_package_type_removed_from_middle_of_pending_list():
         required=False, default_value="", select_type="single", options=_menu("Y"),
     )
     pending = [before_attr, package_type, after_attr]
-    filled: dict = {}
+    filled: dict = {"additionalSystemEnhancementFeatureType_astro": "SOME OTHER FEATURE"}
+    rule = ConstraintRule(
+        rule_name="Default Single Pack Clamshell if ICE Kit ordered and BULK if no ICE Kit on ENhanced",
+        condition_attr_id=-1, condition_value="", target_attr_id=package_type.entity_id,
+        allowed_values=[], script=_ICE_KIT_SCRIPT,
+    )
+    bml_eval = _fake_ice_kit_evaluator("SOME OTHER FEATURE")
     result = _hard_exclude_from_pending(
-        pending, filled, {}, {}, [], None,
+        pending, filled, {}, {}, [rule], bml_eval,
     )
     assert result == [before_attr, after_attr]
-    assert filled.get("packingPackageType_astro") == "SINGLE"
+    assert filled.get("packingPackageType_astro") == "BULK"

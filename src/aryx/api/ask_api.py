@@ -1866,18 +1866,22 @@ def _hard_exclude_from_pending(
     con_rules: list, bml_eval: Any,
     workspace_id: int | None = None, catalog_prefix: str = "",
 ) -> list:
-    """Remove every attribute in `_NEVER_ASK_RECOMMENDED_ONLY_VNS` from
-    `pending`, filling each with its best available value instead of
-    ever presenting it as a question -- unlike `_auto_resolve_singleton_
-    pending`, this never leaves the attribute in `pending` even when its
-    constraints are still ambiguous or unresolved, matching the native
-    UI's own "system-computed, not a customer decision" contract for
-    these specific attributes. Preference order: (1) the currently
-    active constraint's own legal set (first eligible value -- multiple
-    remaining legal values here means the recommendation IS ambiguous
-    right now, but the native UI still shows something rather than
-    blocking, so first-eligible mirrors that), (2) the attribute's own
-    catalog default_value if valid, (3) the first real catalog option.
+    """Remove an attribute in `_NEVER_ASK_RECOMMENDED_ONLY_VNS` from
+    `pending` ONLY when something real justifies a value -- the currently
+    active constraint narrowing to exactly one legal option, or the
+    attribute's own catalog default_value. Deliberately does NOT fall
+    back to blindly picking `valid_opts[0]` when neither resolves it
+    (PR #215 review, C1): packingPackageType_astro has 8 genuinely
+    different real options (SINGLE/BULK/N/A/DEMO KIT CASE/...) -- an
+    unconstrained blind pick here is exactly the "guess among real
+    business choices with no justification" failure mode _no_real_fill_
+    justification/_BLIND_FILL_RISK_ACCEPTED_VNS (engine.py) exist to
+    prevent, and unlike the native UI's own "Recommended Configuration"
+    section (which shows an "Edit" override affordance), a silent chat
+    guess gives the customer no cue anything needs checking. When
+    nothing justifies a value, the attribute stays in `pending` --
+    same as `_auto_resolve_singleton_pending` already does for its own
+    ambiguous case -- so it still gets asked rather than guessed.
     Only ever touches attrs individually named in the frozenset above --
     never a generic "skip anything hard to resolve" mechanism.
     """
@@ -1903,19 +1907,21 @@ def _hard_exclude_from_pending(
                 )
                 allowed = None
             if allowed:
-                chosen = next(
-                    (o for o in valid_opts if o.item_value in allowed), None,
-                )
+                # Only a genuine single-value resolution counts as real
+                # justification -- 2+ remaining legal values is still an
+                # unresolved choice among real options, not a computed
+                # answer, so it must NOT be blind-picked here either.
+                narrowed = [o for o in valid_opts if o.item_value in allowed]
+                if len(narrowed) == 1:
+                    chosen = narrowed[0]
         if chosen is None and attr.default_value:
             chosen = next(
                 (o for o in valid_opts if o.item_value == attr.default_value), None,
             )
-        if chosen is None and valid_opts:
-            chosen = valid_opts[0]
         if chosen is None:
-            # No real option at all to fall back to -- genuinely nothing
-            # to show, so let it through to `pending` rather than
-            # silently dropping it (never worse than today's behavior).
+            # Nothing justifies a value -- leave it in pending so it
+            # still gets asked, rather than guessing among real,
+            # materially different business choices.
             survivors.append(attr)
             continue
         filled[attr.variable_name] = chosen.item_value
