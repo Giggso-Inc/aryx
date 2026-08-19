@@ -25,7 +25,7 @@ from aryx.cpq.engine import (
     CpqEngine, DECISION_REQUIRED_KEYS, SUMMARY_FALLBACK_CATEGORY,
     MAX_PRODUCT_QUANTITY, MIN_PRODUCT_QUANTITY, detect_country_change_request,
     extract_quantity_hint, is_valid_product_quantity, question_mentions_quantity,
-    quantity_turn_precheck, variable_name_words,
+    quantity_turn_precheck, variable_name_words, _valid,
 )
 from aryx.cpq.bom_gate import (
     find_missing_required_fields, recheck_constraints, validate_before_payload,
@@ -1830,6 +1830,184 @@ def _reask_confirmed_data_table_conflict(
     )
 
 
+# Attributes the native Motorola UI genuinely never asks about as a
+# conversational question at all -- confirmed live against the real
+# APX NEXT product screenshots: these show up ONLY under the passive,
+# system-computed "Recommended Configuration" section (with an "Edit"
+# override affordance), never under "Mandatory User Input". No database
+# flag distinguishes the two sections in this catalog (confirmed live:
+# zero BmConfigLayoutAttrAssoc rows exist for ANY attribute here, so this
+# isn't a layout-tier gap our loader could read if only it looked in the
+# right place -- the signal genuinely isn't ingested data at all). The
+# real, already-established proxy this session has used throughout is
+# rule governance: every attribute in this set has enough real
+# constraint/recommendation coverage to be system-computed, which is
+# exactly what "Recommended Configuration" means natively.
+#
+# packingPackageType_astro ("Package Type"): 9 active constraint rules
+# (engine.py's _BLIND_FILL_RISK_ACCEPTED_VNS / _auto_resolve_singleton_
+# pending already lean on this same governance to auto-fill it in the
+# common case) -- but its real script-backed rule (18131370895) depends
+# on BmlEvaluator's Tier-2 (LLM) path (Tier 1 doesn't support its
+# findinArray/split idiom), so on some turns it still reached `pending`
+# and got asked, then a genuine catalog-duplicate-option matching bug
+# (live-confirmed: "Bulk" rejected against a list that visibly contains
+# "Bulk") made it unanswerable from chat at all. Hard exclusion here is
+# the backstop: never let it reach `pending` regardless of whether the
+# timing-dependent auto-fill happened to catch it, mirroring the native
+# UI's own "this is never a chat question" contract exactly.
+_NEVER_ASK_RECOMMENDED_ONLY_VNS: frozenset[str] = frozenset({
+    "packingPackageType_astro",
+})
+
+
+def _hard_exclude_from_pending(
+    pending: list, filled: dict, display_filled: dict, filled_source: dict,
+    con_rules: list, bml_eval: Any,
+    workspace_id: int | None = None, catalog_prefix: str = "",
+) -> list:
+    """Remove an attribute in `_NEVER_ASK_RECOMMENDED_ONLY_VNS` from
+    `pending` ONLY when something real justifies a value -- the currently
+    active constraint narrowing to exactly one legal option, or the
+    attribute's own catalog default_value. Deliberately does NOT fall
+    back to blindly picking `valid_opts[0]` when neither resolves it
+    (PR #215 review, C1): packingPackageType_astro has 8 genuinely
+    different real options (SINGLE/BULK/N/A/DEMO KIT CASE/...) -- an
+    unconstrained blind pick here is exactly the "guess among real
+    business choices with no justification" failure mode _no_real_fill_
+    justification/_BLIND_FILL_RISK_ACCEPTED_VNS (engine.py) exist to
+    prevent, and unlike the native UI's own "Recommended Configuration"
+    section (which shows an "Edit" override affordance), a silent chat
+    guess gives the customer no cue anything needs checking. When
+    nothing justifies a value, the attribute stays in `pending` --
+    same as `_auto_resolve_singleton_pending` already does for its own
+    ambiguous case -- so it still gets asked rather than guessed.
+    Only ever touches attrs individually named in the frozenset above --
+    never a generic "skip anything hard to resolve" mechanism.
+    """
+    if not pending:
+        return pending
+    survivors: list = []
+    for attr in pending:
+        if attr.variable_name not in _NEVER_ASK_RECOMMENDED_ONLY_VNS or not attr.options:
+            survivors.append(attr)
+            continue
+        valid_opts = [o for o in attr.options if _valid(o.item_value)]
+        chosen = None
+        if con_rules and bml_eval is not None:
+            try:
+                allowed = _cpq_engine.apply_constraint_rules(
+                    [attr], con_rules, filled, bml_eval,
+                    workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+                ).get(attr.entity_id)
+            except Exception:  # noqa: BLE001 — best-effort, never blocks the turn
+                logger.debug(
+                    "cpq: hard-exclude constraint check failed for %r",
+                    attr.variable_name, exc_info=True,
+                )
+                allowed = None
+            if allowed:
+                # Only a genuine single-value resolution counts as real
+                # justification -- 2+ remaining legal values is still an
+                # unresolved choice among real options, not a computed
+                # answer, so it must NOT be blind-picked here either.
+                narrowed = [o for o in valid_opts if o.item_value in allowed]
+                if len(narrowed) == 1:
+                    chosen = narrowed[0]
+        if chosen is None and attr.default_value:
+            chosen = next(
+                (o for o in valid_opts if o.item_value == attr.default_value), None,
+            )
+        if chosen is None:
+            # Nothing justifies a value -- leave it in pending so it
+            # still gets asked, rather than guessing among real,
+            # materially different business choices.
+            survivors.append(attr)
+            continue
+        filled[attr.variable_name] = chosen.item_value
+        display_filled[attr.variable_name] = chosen.display_name
+        filled_source.setdefault(attr.variable_name, "rule")
+        logger.info(
+            "cpq: %r hard-excluded from pending (native UI never asks "
+            "this conversationally) -- resolved to %r",
+            attr.variable_name, chosen.item_value,
+        )
+    return survivors
+
+
+def _auto_resolve_singleton_pending(
+    pending: list, filled: dict, display_filled: dict, filled_source: dict,
+    con_rules: list, bml_eval: Any,
+    workspace_id: int | None = None, catalog_prefix: str = "",
+) -> list:
+    """Live bug: `auto_fill`'s own "constraint narrows to exactly one legal
+    value -> auto-fill, never ask" mechanism only ever sees the constraint
+    evaluation available AT THE MOMENT auto_fill() ran. A script-backed
+    constraint rule (e.g. Package Type's real ICE-KIT-gated rule,
+    18131370895) can depend on BmlEvaluator's Tier-2 (LLM) path when Tier
+    1's deterministic parser doesn't support its idiom (confirmed live:
+    no findinArray/findInArray handling in bml.evaluate_tier1) -- if that
+    evaluation hasn't resolved yet when auto_fill() runs, the attribute
+    lands in `pending` even though, by the time its question is actually
+    about to be presented, the SAME constraint has since narrowed to a
+    single legal value. Every one of ask_api's 6 independent auto_fill()
+    call sites did `next_attr = pending[0]` and asked immediately after,
+    with no re-check in between -- this closes that gap in one shared
+    place instead of duplicating the fix 6 times.
+
+    Re-evaluates `pending[0]`'s live constraints one more time right
+    before it would be asked; if exactly one legal value remains, fills
+    it silently and moves on to the new pending[0] (looping, since
+    resolving one attribute can itself let the next one narrow too, the
+    same cascade auto_fill's own fixed-point loop already relies on).
+    Never touches multi-select attrs (auto_fill's own "exactly one
+    value" shortcut is single-select-only by design -- a multi-select
+    genuinely narrowed to one legal box is a different, already-handled
+    "select all constrained candidates" case, not a forced single value).
+    Any evaluation failure degrades to leaving `pending` untouched -- this
+    is a best-effort late narrowing, never a hard requirement for the
+    turn to proceed.
+    """
+    if not pending or not con_rules or bml_eval is None:
+        return pending
+    pending = list(pending)
+    while pending:
+        attr = pending[0]
+        if attr.select_type == "multi" or not attr.options:
+            break
+        try:
+            allowed = _cpq_engine.apply_constraint_rules(
+                [attr], con_rules, filled, bml_eval,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+            ).get(attr.entity_id)
+        except Exception:  # noqa: BLE001 — best-effort, never blocks the turn
+            logger.debug(
+                "cpq: singleton-pending re-check failed for %r",
+                attr.variable_name, exc_info=True,
+            )
+            break
+        if not allowed:
+            break
+        valid_opts = [
+            o for o in attr.options
+            if _valid(o.item_value) and o.item_value in allowed
+        ]
+        if len(valid_opts) != 1:
+            break
+        opt = valid_opts[0]
+        filled[attr.variable_name] = opt.item_value
+        display_filled[attr.variable_name] = opt.display_name
+        filled_source.setdefault(attr.variable_name, "rule")
+        logger.info(
+            "cpq: singleton-pending %r auto-resolved to %r right before "
+            "asking -- its constraint narrowed to one legal value after "
+            "auto_fill() ran but before this question was presented",
+            attr.variable_name, opt.item_value,
+        )
+        pending = pending[1:]
+    return pending
+
+
 def _reask_stale_constraint_violations(
     session: Any, attrs: list, con_rules: list, bml_eval: Any,
     workspace_id: int | None = None, catalog_prefix: str = "",
@@ -2358,6 +2536,14 @@ def _handle_cascade(
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
+    pending = _hard_exclude_from_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
+    pending = _auto_resolve_singleton_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
     if pending:
         # New conflicts to resolve → FORMAT A (change notice + next question only)
         session.status = "configuring"
@@ -2588,6 +2774,14 @@ def _handle_multi_select_removal(
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
+    pending = _hard_exclude_from_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
+    pending = _auto_resolve_singleton_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
     if pending:
         session.status = "configuring"
         next_attr = pending[0]
@@ -2786,6 +2980,14 @@ def _handle_attr_activation(
         if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
+    pending = _hard_exclude_from_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
+    pending = _auto_resolve_singleton_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
     if pending:
         session.status = "configuring"
         next_attr = pending[0]
@@ -2953,6 +3155,14 @@ def _handle_attr_clear(
         if k not in dropped_multi and any(a.variable_name == k for a in attrs)
     }
 
+    pending = _hard_exclude_from_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
+    pending = _auto_resolve_singleton_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
     if pending:
         session.status = "configuring"
         next_attr = pending[0]
@@ -3218,6 +3428,14 @@ def _handle_bulk_quantity_change(
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
+    pending = _hard_exclude_from_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
+    pending = _auto_resolve_singleton_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
     if pending:
         session.status = "configuring"
         next_attr = pending[0]
@@ -3567,6 +3785,14 @@ def _handle_cascade_multi(
 
     unresolved_grid_gaps = _cpq_engine.unresolved_grid_quantity_options(
         visible_attrs, session.filled_multi)
+    pending = _hard_exclude_from_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
+    pending = _auto_resolve_singleton_pending(
+        pending, filled, display_filled, session.filled_source,
+        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+    )
     if pending:
         session.status = "configuring"
         next_attr = pending[0]
@@ -5944,11 +6170,34 @@ def _llm_first_gateway_turn(
             session.filled, session.filled_multi,
         )
     )
+    # PR #212 review follow-up: the word-count cap above exists to stop
+    # apply_answer's substring/word-boundary branches from false-
+    # positiving on a topic switch that happens to NAME the pending
+    # attr's option as one word in a longer sentence -- but it also
+    # blocked a genuine bare reply that IS a real catalog option whose
+    # own name is long (e.g. "APX NEXT XE 4G LTE PLUS 5G", 7 words, a
+    # real item_value/display_name in this same catalog family). An
+    # EXACT item_value/display-name match can't produce that false
+    # positive regardless of length -- it only fires when the reply, as
+    # a whole, equals one specific real option verbatim -- so it bypasses
+    # the cap entirely, while substring/fuzzy matches still respect it.
+    _reply_norm = req.question.strip().lower()
+    _exact_option_match = bool(
+        not _looks_like_new_request
+        and _pending_attr_for_gate is not None
+        and any(
+            _reply_norm in (o.item_value.strip().lower(), o.display_name.strip().lower())
+            for o in (_pending_attr_for_gate.options or [])
+        )
+    )
     _pending_reply_matches_own_options = bool(
         not _looks_like_new_request
         and _pending_attr_for_gate is not None
         and _pending_attr_for_gate.options
-        and len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        and (
+            _exact_option_match
+            or len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        )
         and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
     )
     if _pending_attr_for_gate is None:
