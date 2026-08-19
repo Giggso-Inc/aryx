@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from aryx.api.ask_api import _hard_exclude_from_pending
 from aryx.cpq.bml import BmlEvaluator
-from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption
+from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption, RecommendationRule
 
 _ICE_KIT_SCRIPT = """
 retVal = "";
@@ -180,3 +180,68 @@ def test_package_type_resolved_from_middle_of_pending_list():
     )
     assert result == [before_attr, after_attr]
     assert filled.get("packingPackageType_astro") == "BULK"
+
+
+def test_package_type_governing_rule_loads_as_recommendation_not_constraint():
+    """Live-confirmed: Package Type's real ICE-KIT rule (18131370895)
+    loads as a RecommendationRule in the real engine (CpqEngine's own
+    set_type-based classification), not a ConstraintRule -- so passing
+    it only via `con_rules` (the pre-fix shape) would never resolve
+    Package Type at all, regardless of any variable-handling fix. This
+    proves the rec_rules path alone is sufficient."""
+    attr = _package_type_attr()
+    pending = [attr]
+    filled = {"additionalSystemEnhancementFeatureType_astro": "SOME OTHER FEATURE"}
+    display_filled: dict = {}
+    filled_source: dict = {}
+    rule = RecommendationRule(
+        rule_name="Default Single Pack Clamshell if ICE Kit ordered and BULK if no ICE Kit on ENhanced",
+        condition_attr_id=-1, condition_value="", target_attr_id=attr.entity_id,
+        recommended_value="", script=_ICE_KIT_SCRIPT,
+    )
+    bml_eval = _fake_ice_kit_evaluator("SOME OTHER FEATURE")
+
+    result = _hard_exclude_from_pending(
+        pending, filled, display_filled, filled_source,
+        con_rules=[], bml_eval=bml_eval, rec_rules=[rule],
+    )
+
+    assert result == []
+    assert filled.get("packingPackageType_astro") == "BULK"
+
+
+def test_package_type_resolves_when_governing_variable_never_asked_at_all():
+    """The actual live bug (dev-rv-msi transcript): Package Type is
+    reached in the conversation BEFORE additionalSystemEnhancementFeature
+    Type_astro (order_number 120) has ever come up at all -- genuinely
+    absent from `filled`, not merely empty. The real native "Recommended
+    Configuration" section only ever computes once the whole form is
+    submitted, by which point an untouched feature-type selection is a
+    resolved "nothing selected", not a live unknown -- generically
+    discovered here via bml.referenced_variables() over the rule's own
+    script (no hand-maintained per-attribute variable list), and applied
+    only on a local copy passed into this one check."""
+    attr = _package_type_attr()
+    pending = [attr]
+    filled: dict = {}  # additionalSystemEnhancementFeatureType_astro never asked
+    display_filled: dict = {}
+    filled_source: dict = {}
+    rule = RecommendationRule(
+        rule_name="Default Single Pack Clamshell if ICE Kit ordered and BULK if no ICE Kit on ENhanced",
+        condition_attr_id=-1, condition_value="", target_attr_id=attr.entity_id,
+        recommended_value="", script=_ICE_KIT_SCRIPT,
+    )
+    bml_eval = _fake_ice_kit_evaluator("")
+
+    result = _hard_exclude_from_pending(
+        pending, filled, display_filled, filled_source,
+        con_rules=[], bml_eval=bml_eval, rec_rules=[rule],
+    )
+
+    assert result == [], "Package Type must resolve, not be asked, even when ICE Kit was never touched"
+    assert filled.get("packingPackageType_astro") == "BULK"
+    assert "additionalSystemEnhancementFeatureType_astro" not in filled, (
+        "the synthetic empty default must only apply to the LOCAL copy "
+        "used for this one check -- the real session state must never "
+        "be mutated with a value the customer never actually provided"
+    )

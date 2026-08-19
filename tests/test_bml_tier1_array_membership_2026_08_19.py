@@ -13,7 +13,7 @@ then rejected).
 """
 from __future__ import annotations
 
-from aryx.cpq.bml import evaluate_tier1, BmlEvaluator
+from aryx.cpq.bml import evaluate_tier1, referenced_variables, BmlEvaluator
 
 _ICE_KIT_SCRIPT = """
 retVal = "";
@@ -114,3 +114,17 @@ def test_real_package_type_script_no_longer_needs_tier2():
         _ICE_KIT_SCRIPT, {"additionalSystemEnhancementFeatureType_astro": "SOME OTHER FEATURE"},
     )
     assert allowed == ["BULK"]
+
+
+def test_referenced_variables_sees_the_array_membership_idiom_variable():
+    """ask_api._hard_exclude_from_pending's generic "treat an entirely
+    unasked governing variable as empty" fix (for the individually-vetted
+    _NEVER_ASK_RECOMMENDED_ONLY_VNS attribute set only) depends on
+    referenced_variables() discovering additionalSystemEnhancementFeature
+    Type_astro from the raw script text -- before this fix, referenced_
+    variables only recognized VAR ==/<>/!= "literal" comparisons, missing
+    this variable entirely since it never appears next to a comparison
+    operator (it's the first argument of split(...) instead)."""
+    assert referenced_variables(_ICE_KIT_SCRIPT) == {
+        "additionalSystemEnhancementFeatureType_astro",
+    }
