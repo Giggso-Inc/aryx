@@ -1865,6 +1865,7 @@ def _hard_exclude_from_pending(
     pending: list, filled: dict, display_filled: dict, filled_source: dict,
     con_rules: list, bml_eval: Any, rec_rules: list | None = None,
     workspace_id: int | None = None, catalog_prefix: str = "",
+    all_attrs: list | None = None,
 ) -> list:
     """Remove an attribute in `_NEVER_ASK_RECOMMENDED_ONLY_VNS` from
     `pending` ONLY when something real justifies a value -- the currently
@@ -1909,6 +1910,19 @@ def _hard_exclude_from_pending(
     list. Only ever applied on a LOCAL COPY of `filled` used for this
     one check; the real session state is never mutated, so every other
     attribute's missing-vs-empty distinction is completely unaffected.
+
+    PR #218 review (M1): "unasked -> empty" is only a safe default for a
+    governing variable whose real-world meaning HAS a valid empty state
+    -- true for additionalSystemEnhancementFeatureType_astro (a
+    multi-select feature checklist, where "never touched" and
+    "explicitly selected nothing" are the same real state), but NOT true
+    for a decision-anchor single-select (Hardware Version, Country,
+    Product) where every real option is mutually exclusive and blank
+    means "not yet known", not "resolved empty". So this default is
+    restricted to governing variables that are themselves multi-select
+    (`select_type == "multi"`, looked up via `all_attrs`) -- a
+    single-select governing variable that's entirely unasked is left
+    genuinely missing, same as everywhere else in the engine.
     """
     if not pending:
         return pending
@@ -1927,8 +1941,12 @@ def _hard_exclude_from_pending(
         governing_vars: set[str] = set()
         for script in governing_scripts:
             governing_vars |= referenced_variables(script)
+        attrs_by_vn = {a.variable_name: a for a in (all_attrs or [])}
         filled_for_check = dict(filled)
         for vn in governing_vars:
+            governing_attr = attrs_by_vn.get(vn)
+            if governing_attr is not None and governing_attr.select_type != "multi":
+                continue
             filled_for_check.setdefault(vn, "")
         if con_rules and bml_eval is not None:
             try:
@@ -2597,6 +2615,7 @@ def _handle_cascade(
         pending, filled, display_filled, session.filled_source,
         con_rules, bml_eval, rec_rules=rec_rules,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -2836,6 +2855,7 @@ def _handle_multi_select_removal(
         pending, filled, display_filled, session.filled_source,
         con_rules, bml_eval, rec_rules=rec_rules,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3043,6 +3063,7 @@ def _handle_attr_activation(
         pending, filled, display_filled, session.filled_source,
         con_rules, bml_eval, rec_rules=rec_rules,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3219,6 +3240,7 @@ def _handle_attr_clear(
         pending, filled, display_filled, session.filled_source,
         con_rules, bml_eval, rec_rules=rec_rules,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3493,6 +3515,7 @@ def _handle_bulk_quantity_change(
         pending, filled, display_filled, session.filled_source,
         con_rules, bml_eval, rec_rules=rec_rules,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3851,6 +3874,7 @@ def _handle_cascade_multi(
         pending, filled, display_filled, session.filled_source,
         con_rules, bml_eval, rec_rules=rec_rules,
         workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,

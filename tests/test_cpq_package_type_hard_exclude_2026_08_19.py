@@ -245,3 +245,49 @@ def test_package_type_resolves_when_governing_variable_never_asked_at_all():
         "used for this one check -- the real session state must never "
         "be mutated with a value the customer never actually provided"
     )
+
+
+def test_unasked_single_select_anchor_is_not_defaulted_to_empty():
+    """PR #218 review (M1): "unasked -> empty" is only safe for a
+    governing variable that has a real, catalog-meaningful empty state
+    (e.g. a multi-select feature checklist). A decision-anchor
+    single-select (Hardware Version, Country, Product) has no such
+    state -- every real option is mutually exclusive, so "never asked"
+    means "not yet known", not "resolved empty". Simulates this with a
+    hypothetical single-select governing variable: it must NOT be
+    defaulted to "", so the attribute stays in `pending` rather than
+    resolving against a guessed-empty anchor."""
+    attr = _package_type_attr()
+    pending = [attr]
+    filled: dict = {}  # the anchor variable was never asked either
+    display_filled: dict = {}
+    filled_source: dict = {}
+    anchor_attr = ConfigAttr(
+        entity_id=99, variable_name="hardwareVersion_astro", display_label="Hardware Version",
+        required=True, default_value="", select_type="single",
+        options=_menu("V1", "V2"),
+    )
+    rule = RecommendationRule(
+        rule_name="anchor-based rule", condition_attr_id=-1, condition_value="",
+        target_attr_id=attr.entity_id, recommended_value="",
+        script='if((hardwareVersion_astro=="V1")){retVal = "BULK";}else{retVal = "SINGLE";}return retVal;',
+    )
+
+    def _fake_allowed(script, variables, cache_id=None):
+        hv = variables.get("hardwareVersion_astro")
+        if hv is None:
+            return None
+        return ["BULK"] if hv == "V1" else ["SINGLE"]
+
+    bml_eval = BmlEvaluator({}, use_llm=False)
+    bml_eval.allowed_values_for_script = _fake_allowed  # type: ignore[method-assign]
+
+    result = _hard_exclude_from_pending(
+        pending, filled, display_filled, filled_source,
+        con_rules=[], bml_eval=bml_eval, rec_rules=[rule],
+        all_attrs=[attr, anchor_attr],
+    )
+
+    assert result == [attr], "an unasked decision-anchor must not be treated as resolved-empty"
+    assert "packingPackageType_astro" not in filled
+    assert "hardwareVersion_astro" not in filled
