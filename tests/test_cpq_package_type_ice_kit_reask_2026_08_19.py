@@ -115,14 +115,27 @@ def test_ice_kit_script_logic_yields_bulk_when_ice_kit_absent():
     ) == ["BULK"]
 
 
-def test_package_type_reasks_narrowed_to_bulk_when_ice_kit_removed():
+def test_package_type_silently_reresolves_to_bulk_when_ice_kit_removed():
     """End-to-end: Package Type was filled "SINGLE PACK CLAMSHELL" while
     ICE KIT was selected; ICE KIT is then removed from the feature-type
     selection, flipping the real catalog script's sole legal value to
-    "BULK". _reask_stale_constraint_violations must clear the stale
-    value and re-narrow the next question to exactly ["BULK"] -- not
-    report a zero-option conflict and not fall back to the raw 8-option
-    list."""
+    "BULK".
+
+    2026-08-19 UPDATE (live transcript, second occurrence same day): a
+    sibling live bug showed a DIFFERENT Package Type-governing rule
+    ("Constraint Package Type Based on Bundle Type") narrow Package Type
+    to exactly one legal value here, yet still get cleared and re-asked
+    as a pointless single-option menu ("choose one: 1. Single Pack
+    Clamshell"). Since packingPackageType_astro is a member of
+    _NEVER_ASK_RECOMMENDED_ONLY_VNS -- the native UI NEVER asks about it
+    conversationally, full stop, regardless of WHICH governing rule
+    caused the staleness -- _reask_stale_constraint_violations now
+    silently re-resolves any hard-excluded attribute's staleness the
+    same way when it narrows to exactly one legal value, rather than
+    re-asking. This test (previously asserting a narrowed re-ask) is
+    updated to assert the new, consistent behavior for this exact ICE
+    KIT scenario too -- not a special case, the same one mechanism now
+    covers both governing rules."""
     package_type_attr = _package_type_attr()
     session = CpqSession()
     session.filled = {
@@ -147,20 +160,14 @@ def test_package_type_reasks_narrowed_to_bulk_when_ice_kit_removed():
         session, [package_type_attr], con_rules=[rule], bml_eval=bml_eval,
     )
 
-    assert result is not None
-    assert "packingPackageType_astro" not in session.filled, (
-        "the stale SINGLE PACK CLAMSHELL value must be cleared once ICE "
-        "KIT is no longer selected"
+    # Nothing left to ask about -- the caller's normal "show complete"
+    # branch takes over (mirrors the confirmed-data-table-conflict
+    # fallback when `stale` empties out entirely).
+    assert result is None
+    assert session.filled.get("packingPackageType_astro") == "BULK", (
+        "must silently re-resolve to the freshly narrowed sole legal "
+        "value, not sit cleared or hold the stale SINGLE PACK CLAMSHELL"
     )
-    assert session.pending_variables[0] == "packingPackageType_astro"
-    # The re-ask must offer ONLY the freshly recomputed legal value, not
-    # the raw 8-option catalog list -- the exact live bug this fix closes.
-    assert "BULK" in result
-    for other_option in (
-        "SINGLE PACK CLAMSHELL", "SINGLE XE", "BULK XE",
-        "DEMO KIT CASE", "PACK INTO DEMO KIT CASE",
-    ):
-        assert other_option not in result, (
-            f"re-ask must be narrowed to the sole legal value BULK, but "
-            f"{other_option!r} leaked into the prompt"
-        )
+    assert session.display_filled.get("packingPackageType_astro") == "BULK"
+    assert session.filled_source.get("packingPackageType_astro") == "rule"
+    assert "packingPackageType_astro" not in session.pending_variables
