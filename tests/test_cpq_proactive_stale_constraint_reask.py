@@ -113,9 +113,17 @@ def test_still_valid_value_is_left_alone():
 def test_genuine_conflict_reports_instead_of_asking_an_unanswerable_question():
     """Live regression this fix must NOT reintroduce: if the recomputed
     allowed set is ALSO empty (2+ active constraints genuinely conflict),
-    this is not a stale-but-fixable value -- asking would just reproduce
-    the exact "Please provide a value" dead-end this session's other
-    fixes exist to prevent. Must report the conflict, mutate nothing."""
+    this is not a stale-but-fixable value -- asking a narrowed question
+    would just reproduce the exact "Please provide a value" dead-end
+    this session's other fixes exist to prevent, so the reported message
+    is still the plain conflict report, never a narrowed prompt.
+
+    2026-08-19 fix: the stale value IS now cleared and re-queued (live
+    APX NEXT transcript: Package Type vs Product left stuck exactly
+    here, and the next turn's ask fell through to a generic re-ask path
+    that had no conflict context and showed the full raw catalog list).
+    Leaving the attribute filled with known-stale data and un-queued was
+    the actual bug -- this test now locks in the corrected behavior."""
     package_type_attr = ConfigAttr(
         entity_id=1, variable_name="packingPackageType_astro", display_label="Package Type",
         required=False, default_value="", select_type="single",
@@ -160,11 +168,15 @@ def test_genuine_conflict_reports_instead_of_asking_an_unanswerable_question():
 
     assert result is not None
     assert "Rule conflict detected" in result
-    assert "packingPackageType_astro" in session.filled, (
-        "a genuine conflict must not clear the value -- there's no "
-        "productive replacement to ask for"
+    assert "packingPackageType_astro" not in session.filled, (
+        "the stale, now-invalid value must be cleared so the attribute "
+        "isn't left stuck holding known-bad data"
     )
-    assert session.pending_variables == [], "must not mutate pending on a genuine conflict"
+    assert session.pending_variables == ["packingPackageType_astro"], (
+        "the conflicted attribute must be re-queued so the next ask for "
+        "it goes through the standard pending-attr flow instead of a "
+        "generic fallback with no conflict context"
+    )
 
 
 def test_both_confirmed_data_table_conflict_reasks_naming_both_attrs():
