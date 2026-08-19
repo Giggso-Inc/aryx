@@ -6170,11 +6170,34 @@ def _llm_first_gateway_turn(
             session.filled, session.filled_multi,
         )
     )
+    # PR #212 review follow-up: the word-count cap above exists to stop
+    # apply_answer's substring/word-boundary branches from false-
+    # positiving on a topic switch that happens to NAME the pending
+    # attr's option as one word in a longer sentence -- but it also
+    # blocked a genuine bare reply that IS a real catalog option whose
+    # own name is long (e.g. "APX NEXT XE 4G LTE PLUS 5G", 7 words, a
+    # real item_value/display_name in this same catalog family). An
+    # EXACT item_value/display-name match can't produce that false
+    # positive regardless of length -- it only fires when the reply, as
+    # a whole, equals one specific real option verbatim -- so it bypasses
+    # the cap entirely, while substring/fuzzy matches still respect it.
+    _reply_norm = req.question.strip().lower()
+    _exact_option_match = bool(
+        not _looks_like_new_request
+        and _pending_attr_for_gate is not None
+        and any(
+            _reply_norm in (o.item_value.strip().lower(), o.display_name.strip().lower())
+            for o in (_pending_attr_for_gate.options or [])
+        )
+    )
     _pending_reply_matches_own_options = bool(
         not _looks_like_new_request
         and _pending_attr_for_gate is not None
         and _pending_attr_for_gate.options
-        and len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        and (
+            _exact_option_match
+            or len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        )
         and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
     )
     if _pending_attr_for_gate is None:

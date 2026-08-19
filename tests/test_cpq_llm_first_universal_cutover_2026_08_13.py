@@ -305,3 +305,41 @@ def test_topic_switch_mentioning_pending_options_own_value_still_uses_gateway(mo
         "a genuine change-verb topic switch must reach the gateway even "
         "when it mentions the pending attr's own option name in passing"
     )
+
+
+def test_long_verbatim_option_name_bare_reply_bypasses_the_word_count_cap(monkeypatch):
+    """PR #212 review follow-up: the word-count cap on the bare-reply
+    shortcut exists so apply_answer's substring/word-boundary branches
+    can't false-positive on a topic switch that merely NAMES the
+    pending attr's option inside a longer sentence -- but a reply that
+    IS, verbatim, a real catalog option whose own name is long (7 words
+    here) is not that failure mode at all: an EXACT item_value/display-
+    name match can only fire when the whole reply equals one specific
+    real option, regardless of length. This must still be treated as
+    answering the pending question, not routed to the (LLM-backed)
+    topic-switch classifier."""
+    _setup(monkeypatch, universal_enabled=True)
+    product_attr = _attr(
+        1, "productSelectionProduct_all", "Product",
+        options=_opt("APX NEXT XE 4G LTE PLUS 5G", "APX NEXT ENHANCED"),
+    )
+    monkeypatch.setattr(api._cpq_engine, "load_product_config",
+                         lambda *a, **k: ([product_attr], "aSTRO25_bom"))
+    session = CpqSession(
+        mode="cpq", product_name="aSTRO25_bom", country="United States",
+        status="configuring", turn=3,
+        pending_variables=["productSelectionProduct_all"],
+    )
+    req = AskRequest(
+        question="APX NEXT XE 4G LTE PLUS 5G",
+        workspace_id=1, session_data=session.to_dict(),
+    )
+    with patch.object(
+        api, "_llm_detect_pending_topic_switch", return_value=None,
+    ), patch.object(api, "gateway_classify_intent") as mock_gw:
+        _run_cpq_turn_inner(req, object())
+    assert not mock_gw.called, (
+        "a verbatim, exact catalog option name must be treated as "
+        "answering the pending question regardless of its word count, "
+        "never routed to the gateway/LLM topic-switch classifier"
+    )
