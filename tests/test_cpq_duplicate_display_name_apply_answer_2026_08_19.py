@@ -76,3 +76,29 @@ def test_non_duplicate_display_name_match_unaffected():
     eng = CpqEngine()
     result = eng.apply_answer(attr, "Canada")
     assert result == ("CA", "Canada")
+
+
+def test_exact_display_name_match_wins_over_a_superset_substring_option():
+    """PR #214 review (C1): the "Exact display-name match" tier was
+    accidentally deleted while adding the duplicate-canonical-value
+    special case above it, leaving only an empty comment header. The
+    tier below it ("User answer contained in option's display name")
+    happened to catch plain exact matches too by coincidence (a string
+    is trivially a substring of itself), so most tests still passed --
+    but its priority ordering is wrong for options where one display
+    name is a superset of another: with options ["Advanced Plus",
+    "Advanced"], a reply of exactly "Advanced" must return "Advanced",
+    not "Advanced Plus" via "advanced" in "advanced plus". This is the
+    live-confirmed root cause the deleted tier existed to prevent."""
+    attr = _attr(
+        options=[
+            MenuOption(item_value="ADV_PLUS", display_name="Advanced Plus"),
+            MenuOption(item_value="ADV", display_name="Advanced"),
+        ],
+    )
+    eng = CpqEngine()
+    result = eng.apply_answer(attr, "Advanced")
+    assert result == ("ADV", "Advanced"), (
+        "an exact display-name match must win over a DIFFERENT option "
+        "whose display name merely contains the reply as a substring"
+    )

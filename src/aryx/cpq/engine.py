@@ -11112,6 +11112,10 @@ class CpqEngine:
                 return opt.item_value, opt.display_name
 
         # Exact display-name match
+        for opt in options:
+            if opt.display_name.lower() == ua:
+                if _valid(opt.item_value):
+                    return opt.item_value, opt.display_name
 
         # User answer contained in option's display name (user typed a prefix)
         for opt in options:
