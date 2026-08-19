@@ -11307,21 +11307,41 @@ class CpqEngine:
     ) -> bool:
         """Tier A/B scoping key (docs/CPQ_GOVERNED_BLINDPICK_AND_CONFIGDATA_
         BEAUTIFY_FIX_PLAN_2026_08_14.md Fix 2, extended for beautify's
-        Mandatory/System split) — True only for structurally-required
-        decision anchors (Hardware Version, exact productSelectionProduct_
-        all match, "basemodel"/"selectmodel"-named attrs) and attributes
-        the customer directly answered (source=="user"). Shared by
-        `build_payload` (scopes `config_data` to this set) and
+        Mandatory/System split) — True for the catalog's own `required`
+        flag (`ConfigAttr.required`, sourced from bm_config_attr.required —
+        the same source-of-truth native Oracle CPQ's UI uses to render its
+        "Mandatory User Input" box), plus the structural decision anchors
+        (Hardware Version, exact productSelectionProduct_all match,
+        "basemodel"/"selectmodel"-named attrs) that are mandatory by
+        construction even on catalogs that don't mark them `required=1`.
+        Shared by `build_payload` (scopes `config_data` to this set) and
         `beautify_rows`/`beautify_text` (splits their output into a
         "Mandatory User Input" section using this same signal vs. a
         "System-Configured / Recommended" section for everything else) —
         one scoping key, two consumers, so the two views can never silently
         drift apart on what counts as "genuinely required."
 
+        Live-confirmed regression (2026-08-19): the previous version keyed
+        entirely off `source == "user"` plus a 4-item structural allowlist,
+        with no reference to `attr.required` at all. Catalog-required
+        fields the engine blind-picked/defaulted (Configuration Type,
+        Software Bundle, Software Release, Solution Type, Duration,
+        Wireless Carrier, Battery Type, Include a Spare, the Application
+        Services checkboxes, etc.) never matched either tier and fell into
+        "System-Configured / Recommended" — or were dropped from the
+        Beautify view entirely — while attributes the user merely happened
+        to answer directly (e.g. Region, Order Type, Validation Org),
+        despite not being catalog-required, were promoted into "Mandatory
+        User Input". Reading `attr.required` directly (the same field
+        already trusted elsewhere in this module, e.g.
+        `_no_real_fill_justification`) fixes both directions at once.
+
         `attr` may be `None` (no ConfigAttr resolved for this key) — such a
-        key can never be a structural anchor, so only the `source=="user"`
-        fallback can include it.
+        key can never be catalog-required or a structural anchor, so only
+        the `source=="user"` fallback can include it.
         """
+        if attr is not None and attr.required:
+            return True
         vn_flat = vn.lower().replace("_", "")
         tier_a = attr is not None and (
             vn == "productSelectionProduct_all"
@@ -11329,11 +11349,7 @@ class CpqEngine:
             or "basemodel" in vn_flat
             or "selectmodel" in vn_flat
         )
-        tier_b = (
-            any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
-            and source == "user"
-        )
-        return tier_a or tier_b or source == "user"
+        return tier_a or source == "user"
 
     def build_payload(
         self,

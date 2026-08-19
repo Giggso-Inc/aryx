@@ -86,3 +86,34 @@ def test_beautify_rows_no_filled_attrs_still_shows_product_row():
     eng = CpqEngine()
     rows = eng.beautify_rows("APX NEXT", {}, [])
     assert rows == [{"label": "Product", "value": "APX NEXT"}]
+
+
+def test_beautify_rows_catalog_required_attr_lands_in_mandatory_section_even_when_system_filled():
+    """Live-confirmed regression (2026-08-19): a catalog `required=1` attr
+    the engine blind-picked (source != "user") — e.g. Configuration Type,
+    Software Bundle — must still land in "Mandatory User Input", matching
+    native Oracle CPQ's own grouping, instead of being demoted to
+    "System-Configured / Recommended" just because the customer didn't
+    type it directly."""
+    eng = CpqEngine()
+    display_filled = {
+        "configurationTypeAttr": "Software Bundle",
+        "regionAttr": "NA",
+    }
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="configurationTypeAttr",
+                   display_label="Configuration Type", required=True,
+                   default_value="", options=[]),
+        ConfigAttr(entity_id=2, variable_name="regionAttr",
+                   display_label="Region", required=False,
+                   default_value="", options=[]),
+    ]
+    filled_source = {
+        "configurationTypeAttr": "system",
+        "regionAttr": "system",
+    }
+    rows = eng.beautify_rows("APX NEXT", display_filled, attrs, filled_source)
+
+    sections = {r["label"]: r["section"] for r in rows}
+    assert sections["Configuration Type"] == "Mandatory User Input"
+    assert sections["Region"] == "System-Configured / Recommended"
