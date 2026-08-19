@@ -1842,14 +1842,46 @@ def _reask_stale_constraint_violations(
     # (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15). Asking
     # a question with zero valid options would just reproduce the exact
     # unanswerable "Please provide a value" dead-end this session's other
-    # fixes exist to prevent — report the conflict instead. Nothing is
-    # mutated here (no push_snapshot, no pops) since there's no productive
-    # value to clear toward.
+    # fixes exist to prevent — report the conflict instead of building a
+    # narrowed prompt.
+    #
+    # The stale value(s) ARE still cleared and re-queued here (2026-08-19
+    # fix — live-confirmed via a real APX NEXT transcript: Package Type
+    # vs Product left in exactly this branch), mirroring the sibling
+    # `stale` branch below. Before this fix nothing was mutated, so a
+    # conflicted attribute stayed sitting in session.filled with its
+    # stale (now-invalid) value and was never re-queued through this
+    # function's own accounting — the next turn's ask for it fell
+    # through to a generic, less-informed re-ask path that has no
+    # knowledge of the conflict and presented the FULL raw catalog list
+    # instead of anything narrowed, confusing the user into re-picking
+    # from scratch. Clearing + re-queuing here doesn't fix the
+    # unanswerable-with-zero-options problem (that's inherent to a real
+    # conflict), but it does mean the attribute is no longer stuck
+    # holding stale data, and the subsequent ask goes through the
+    # standard pending-attr flow with the OTHER conflicting side already
+    # known, giving the constraint engine a real chance to narrow it.
     conflicted = [v for v in stale if not v.allowed]
     if conflicted:
         conflict_labels = [
             _cpq_engine.disambiguated_label(v.attr, attrs) for v in conflicted
         ]
+        push_snapshot(session, reason="stale_constraint_conflict_reask")
+        conflicted_vns: list[str] = []
+        for v in conflicted:
+            vn = v.attr.variable_name
+            if v.attr.select_type == "multi":
+                session.filled_multi.pop(vn, None)
+            else:
+                session.filled.pop(vn, None)
+            session.display_filled.pop(vn, None)
+            session.filled_source.pop(vn, None)
+            conflicted_vns.append(vn)
+        session.pending_variables = conflicted_vns + [
+            v for v in session.pending_variables if v not in conflicted_vns
+        ]
+        session.status = "configuring"
+        session.complete = False
         if len(conflict_labels) == 1:
             return (
                 f"⚠️ **Rule conflict detected.** **{conflict_labels[0]}** has "
