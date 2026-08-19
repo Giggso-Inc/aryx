@@ -113,9 +113,17 @@ def test_still_valid_value_is_left_alone():
 def test_genuine_conflict_reports_instead_of_asking_an_unanswerable_question():
     """Live regression this fix must NOT reintroduce: if the recomputed
     allowed set is ALSO empty (2+ active constraints genuinely conflict),
-    this is not a stale-but-fixable value -- asking would just reproduce
-    the exact "Please provide a value" dead-end this session's other
-    fixes exist to prevent. Must report the conflict, mutate nothing."""
+    this is not a stale-but-fixable value -- asking a narrowed question
+    would just reproduce the exact "Please provide a value" dead-end
+    this session's other fixes exist to prevent, so the reported message
+    is still the plain conflict report, never a narrowed prompt.
+
+    2026-08-19 fix: the stale value IS now cleared and re-queued (live
+    APX NEXT transcript: Package Type vs Product left stuck exactly
+    here, and the next turn's ask fell through to a generic re-ask path
+    that had no conflict context and showed the full raw catalog list).
+    Leaving the attribute filled with known-stale data and un-queued was
+    the actual bug -- this test now locks in the corrected behavior."""
     package_type_attr = ConfigAttr(
         entity_id=1, variable_name="packingPackageType_astro", display_label="Package Type",
         required=False, default_value="", select_type="single",
@@ -160,11 +168,15 @@ def test_genuine_conflict_reports_instead_of_asking_an_unanswerable_question():
 
     assert result is not None
     assert "Rule conflict detected" in result
-    assert "packingPackageType_astro" in session.filled, (
-        "a genuine conflict must not clear the value -- there's no "
-        "productive replacement to ask for"
+    assert "packingPackageType_astro" not in session.filled, (
+        "the stale, now-invalid value must be cleared so the attribute "
+        "isn't left stuck holding known-bad data"
     )
-    assert session.pending_variables == [], "must not mutate pending on a genuine conflict"
+    assert session.pending_variables == ["packingPackageType_astro"], (
+        "the conflicted attribute must be re-queued so the next ask for "
+        "it goes through the standard pending-attr flow instead of a "
+        "generic fallback with no conflict context"
+    )
 
 
 def test_both_confirmed_data_table_conflict_reasks_naming_both_attrs():
@@ -239,3 +251,59 @@ def test_no_confirmed_data_table_conflict_is_a_noop_with_no_constraint_rules():
         )
     assert result is None
     assert session.filled == {"foo": "bar"}
+
+
+def test_stale_reask_syncs_pending_scope_to_the_narrowed_options():
+    """Sibling fix to _reask_confirmed_data_table_conflict's own
+    pending_scope sync: this "Before finishing -- X is no longer valid"
+    re-ask must ALSO sync pending_scope to the narrowed option list it
+    just showed, or a verbatim reply from that list gets validated
+    against a stale scope left over from before this re-ask (same bug
+    class, just impossible to see when the narrowed set happens to be a
+    single option)."""
+    service_type_attr = ConfigAttr(
+        entity_id=1, variable_name="serviceTypeAdditionalDMSCoverage_astro",
+        display_label="Service Type", required=False, default_value="",
+        select_type="single",
+        options=_menu("ADVANCED", "ESSENTIAL", "ESSENTIAL WITH ACCIDENTAL DAMAGE"),
+    )
+    product_attr = ConfigAttr(
+        entity_id=2, variable_name="productSelectionProduct_all", display_label="Product",
+        required=True, default_value="", select_type="single", options=_menu("APX NEXT MULTI"),
+    )
+    attrs = [service_type_attr, product_attr]
+    session = CpqSession()
+    session.filled = {
+        "serviceTypeAdditionalDMSCoverage_astro": "ADVANCED",
+        "productSelectionProduct_all": "APX NEXT MULTI",
+    }
+    session.display_filled = {"serviceTypeAdditionalDMSCoverage_astro": "Advanced"}
+    session.filled_source = {"serviceTypeAdditionalDMSCoverage_astro": "rule"}
+    session.pending_variables = []
+    session.status = "awaiting_approval"
+    # A STALE, unrelated scope left over from before this re-ask -- this
+    # must be overwritten by the fix, not consulted for the new question.
+    session.pending_scope_kind = "attr_options"
+    session.pending_scope_candidates = ["some completely unrelated option"]
+
+    con_rule = ConstraintRule(
+        rule_name="Constrain rule for APX Next",
+        condition_attr_id=product_attr.entity_id, condition_value="",
+        condition_operator="3", target_attr_id=service_type_attr.entity_id,
+        allowed_values=["ESSENTIAL", "ESSENTIAL WITH ACCIDENTAL DAMAGE"],
+    )
+
+    result = _reask_stale_constraint_violations(
+        session, attrs, con_rules=[con_rule], bml_eval=None,
+    )
+
+    assert result is not None
+    assert session.pending_scope_candidates is not None
+    assert set(session.pending_scope_candidates) == {
+        "ESSENTIAL", "ESSENTIAL WITH ACCIDENTAL DAMAGE",
+    }
+    assert "ADVANCED" not in session.pending_scope_candidates, (
+        "the ruled-out option must not be offered as a valid scope match"
+    )
+    assert session.pending_scope_kind == "attr_options"
+    assert session.pending_scope_attr_vn == "serviceTypeAdditionalDMSCoverage_astro"

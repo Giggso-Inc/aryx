@@ -1791,6 +1791,21 @@ def _reask_confirmed_data_table_conflict(
     label_a = _cpq_engine.disambiguated_label(attr_a, attrs)
     label_b = _cpq_engine.disambiguated_label(attr_b, attrs)
     prompt = _cpq_engine.next_question_prompt(attr_a)
+    # 2026-08-18 fix: sync pending_scope to the list just shown above, or
+    # the next reply gets validated against whatever candidates were left
+    # over from BEFORE this re-ask (stale, narrower list) — confirmed live:
+    # a customer's exact, verbatim answer from THIS prompt ("Single XE")
+    # was rejected as "no match" because pending_scope_candidates still
+    # held the prior turn's 1-item list. `attr_a.options` here is the same
+    # source `next_question_prompt` renders its numbered list from.
+    set_pending_scope(
+        session,
+        kind="attr_options",
+        candidates=[o.display_name for o in attr_a.options],
+        origin_question=prompt,
+        attr_vn=attr_a_vn,
+        asked_turn=session.turn,
+    )
     return (
         f"⚠️ **Rule conflict detected.** Your selections for **{label_a}** "
         f"and **{label_b}** are incompatible — the catalog's own data "
@@ -1870,14 +1885,46 @@ def _reask_stale_constraint_violations(
     # (docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_CLARIFY_ISSUE.md §15). Asking
     # a question with zero valid options would just reproduce the exact
     # unanswerable "Please provide a value" dead-end this session's other
-    # fixes exist to prevent — report the conflict instead. Nothing is
-    # mutated here (no push_snapshot, no pops) since there's no productive
-    # value to clear toward.
+    # fixes exist to prevent — report the conflict instead of building a
+    # narrowed prompt.
+    #
+    # The stale value(s) ARE still cleared and re-queued here (2026-08-19
+    # fix — live-confirmed via a real APX NEXT transcript: Package Type
+    # vs Product left in exactly this branch), mirroring the sibling
+    # `stale` branch below. Before this fix nothing was mutated, so a
+    # conflicted attribute stayed sitting in session.filled with its
+    # stale (now-invalid) value and was never re-queued through this
+    # function's own accounting — the next turn's ask for it fell
+    # through to a generic, less-informed re-ask path that has no
+    # knowledge of the conflict and presented the FULL raw catalog list
+    # instead of anything narrowed, confusing the user into re-picking
+    # from scratch. Clearing + re-queuing here doesn't fix the
+    # unanswerable-with-zero-options problem (that's inherent to a real
+    # conflict), but it does mean the attribute is no longer stuck
+    # holding stale data, and the subsequent ask goes through the
+    # standard pending-attr flow with the OTHER conflicting side already
+    # known, giving the constraint engine a real chance to narrow it.
     conflicted = [v for v in stale if not v.allowed]
     if conflicted:
         conflict_labels = [
             _cpq_engine.disambiguated_label(v.attr, attrs) for v in conflicted
         ]
+        push_snapshot(session, reason="stale_constraint_conflict_reask")
+        conflicted_vns: list[str] = []
+        for v in conflicted:
+            vn = v.attr.variable_name
+            if v.attr.select_type == "multi":
+                session.filled_multi.pop(vn, None)
+            else:
+                session.filled.pop(vn, None)
+            session.display_filled.pop(vn, None)
+            session.filled_source.pop(vn, None)
+            conflicted_vns.append(vn)
+        session.pending_variables = conflicted_vns + [
+            v for v in session.pending_variables if v not in conflicted_vns
+        ]
+        session.status = "configuring"
+        session.complete = False
         if len(conflict_labels) == 1:
             return (
                 f"⚠️ **Rule conflict detected.** **{conflict_labels[0]}** has "
@@ -1919,6 +1966,26 @@ def _reask_stale_constraint_violations(
     session.complete = False
     first = stale[0]
     prompt = _cpq_engine.next_question_prompt(first.attr, constrained_item_values=first.allowed)
+    # 2026-08-18 fix (sibling gap to _reask_confirmed_data_table_conflict's
+    # own fix): sync pending_scope to the narrowed list just shown above,
+    # or the next reply gets validated against whatever candidates were
+    # left over from BEFORE this re-ask -- same "stale scope rejects a
+    # verbatim answer" bug, just harder to trigger here since it only
+    # shows when `first.allowed` narrows to 2+ options (a 1-option case,
+    # the common shape for this branch, can't expose it since any answer
+    # either matches the sole option or doesn't).
+    _allowed_set = set(first.allowed or ())
+    set_pending_scope(
+        session,
+        kind="attr_options",
+        candidates=[
+            o.display_name for o in first.attr.options
+            if not _allowed_set or o.item_value in _allowed_set
+        ],
+        origin_question=prompt,
+        attr_vn=first.attr.variable_name,
+        asked_turn=session.turn,
+    )
     first_label = _cpq_engine.disambiguated_label(first.attr, attrs)
     rest_labels = [_cpq_engine.disambiguated_label(v.attr, attrs) for v in stale[1:]]
     also_note = (
@@ -5817,13 +5884,69 @@ def _llm_first_gateway_turn(
         _pending_attr_for_gate = next(
             (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
         )
-    _defer_gateway_to_pending_answer = (
+    # 2026-08-18 fix: a bare reply that verbatim (or near-verbatim) matches
+    # one of the PENDING attr's own real menu options is answering that
+    # question -- never send it to the LLM gateway for fresh
+    # classification first. Confirmed live: a customer picking "SmartLocate"
+    # from a pending promoApplicationServices_astro multi-select had no
+    # change-verb, so _pending_reply_is_topic_switch's deterministic check
+    # correctly said "not a topic switch" -- but with nothing ELSE checked,
+    # the gateway still ran and the LLM reinterpreted the bare item name as
+    # a change-intent against an unrelated attribute, inventing a "which
+    # value for SmartLocate?" follow-up with no basis in real catalog
+    # structure (no such per-item attr exists). Reuses `apply_answer`'s own
+    # already-trusted matcher (exact item_value/display-name, numeric
+    # selection, substring/word-boundary) -- no new matching logic.
+    #
+    # PR #212 review (M1) -- corrected: `apply_answer` matches against the
+    # FULL, unrestricted reply text via substring/word-boundary branches
+    # with no length cap, so a genuine topic switch that happens to
+    # mention the pending attr's own option name as a whole word (e.g.
+    # pending=Country, reply="since it ships to Canada, change the
+    # hardware version instead") would ALSO satisfy this match -- the
+    # original `matches_own_options or not topic_switch` let that false
+    # positive override a correct topic-switch verdict.
+    #
+    # Fixed two ways, since the deterministic topic-switch regex
+    # (`_pending_reply_looks_like_new_request`) alone doesn't reliably
+    # catch every compound-sentence phrasing (verified live: it misses
+    # "since it ships to Canada, change the hardware version instead" --
+    # no combination of its change-verb/target-detection regexes matches
+    # that exact wording, so relying on it alone as a first-class
+    # override still lets the false positive through):
+    #   1. A word-count cap -- a BARE reply answering the pending
+    #      question is short by construction (a menu-item name, a
+    #      number, "1 Year"); a genuine topic switch is a real sentence.
+    #      This is the primary, robust guard.
+    #   2. The cheap deterministic check still runs and wins outright
+    #      when it DOES catch a switch, as defense in depth -- never
+    #      consult apply_answer at all once it says "new request."
+    _BARE_REPLY_MAX_WORDS = 6
+    _looks_like_new_request = bool(
         _pending_attr_for_gate is not None
-        and not _pending_reply_is_topic_switch(
+        and _pending_reply_looks_like_new_request(
+            req.question, _pending_attr_for_gate, attrs,
+            session.filled, session.filled_multi,
+        )
+    )
+    _pending_reply_matches_own_options = bool(
+        not _looks_like_new_request
+        and _pending_attr_for_gate is not None
+        and _pending_attr_for_gate.options
+        and len(req.question.split()) <= _BARE_REPLY_MAX_WORDS
+        and _cpq_engine.apply_answer(_pending_attr_for_gate, req.question)
+    )
+    if _pending_attr_for_gate is None:
+        _defer_gateway_to_pending_answer = False
+    elif _looks_like_new_request:
+        _defer_gateway_to_pending_answer = False
+    elif _pending_reply_matches_own_options:
+        _defer_gateway_to_pending_answer = True
+    else:
+        _defer_gateway_to_pending_answer = not _pending_reply_is_topic_switch(
             req.question, _pending_attr_for_gate, attrs,
             session.filled, session.filled_multi, req.workspace_id,
         )
-    )
 
     # N4: skip when top-level classify_ask_route already ran this turn
     # (one classification LLM call per turn). Live sessions never mark

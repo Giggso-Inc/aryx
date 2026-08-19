@@ -1371,28 +1371,117 @@ def _clear_rule_join_data_cache() -> None:
     _RULE_JOIN_DATA_CACHE.clear()
 
 
+# 2026-08-18 perf fix: _load_value_rules' own raw-data dependency
+# (_load_rule_join_data, above) was already cached, but _load_value_rules
+# ITSELF -- the CPU-bound classification pass that builds 500+ Recommendation/
+# Constraint/Validation/Hiding rule objects from those (cached) raw rows --
+# was not. Confirmed live: this exact classification work re-runs from
+# scratch on every one of its 5 call sites within engine.py (load_
+# recommendation_and_constraint_rules, load_validation_rules, load_
+# recommendation_rules, ...), which every real CPQ turn calls back-to-back --
+# ~28s of pure CPU re-work per turn for a large catalog, not DB latency
+# (confirmed live: workspace 93, 500 rec + 186 constraint + 105 hiding
+# rules). Same short-TTL, leak-safe pattern as _RULE_JOIN_DATA_CACHE.
+_VALUE_RULES_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
+_VALUE_RULES_CACHE_TTL_SECONDS = 30.0
+
+
+def _clear_value_rules_cache() -> None:
+    """Test-isolation hook -- same purpose as _clear_rule_join_data_cache."""
+    _VALUE_RULES_CACHE.clear()
+
+
 # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_10.md -- a
-# small, explicit registry of data tables CONFIRMED absent from every
-# ingested catalog (not attribute names -- a hiding rule anywhere, for any
-# attribute, that structurally depends on one of these tables can never
-# resolve, so auto_fill warns and skips rather than asking forever). Extend
-# this tuple if another confirmed-missing table surfaces; never hardcode
-# which attributes are affected -- that's derived generically from which
-# hiding rules reference the table.
+# CANDIDATE registry of data tables known to be missing from AT LEAST ONE
+# ingested workspace historically (not attribute names -- a hiding rule
+# anywhere, for any attribute, that structurally depends on one of these
+# tables can never resolve THERE, so auto_fill warns and skips rather than
+# asking forever). Extend this tuple if another candidate-missing table
+# surfaces; never hardcode which attributes are affected -- that's derived
+# generically from which hiding rules reference the table.
+#
+# 2026-08-18 (Raven PR #211 review, finding #4): this was briefly emptied
+# to `()` on a single-workspace verification (workspace 93 -- 511
+# UserGroupMapping rows confirmed ingested there). Cross-workspace check
+# (docs/CPQ_MULTISELECT_AUTOFILL_AND_COUNTRY_CONFIGDATA_PLAN_2026_08_18.md)
+# found UserGroupMapping ingested ONLY for workspace 93 -- 16 other live
+# workspaces (1, 27, 28, 29, 31, 38, 51, 61, 63, 64, 73, 85, 88, 90, 91, 92)
+# have ZERO UserGroupMapping rows. Emptying this constant globally would
+# have silently defeated Group 1's skip for every one of those workspaces --
+# `dHSAssetTagLabel_astro`/`cBPQRCode_astro`/`fedQRCode_astro` would blind-
+# pick a wrong value there instead of correctly staying skipped. Fixed
+# properly instead: this list is now just the CANDIDATE names to check --
+# `_hiding_rule_needs_missing_data_table` verifies actual ingestion PER
+# WORKSPACE (live query, cached) rather than assuming one workspace's
+# ingestion status applies globally.
 _KNOWN_MISSING_DATA_TABLES = ("UserGroupMapping",)
 
+# workspace_id -> {table_name.lower(): is_ingested_bool}, short-TTL so a
+# newly-completed ingestion run is picked up without a process restart,
+# same convention as this file's other per-workspace caches (_DT_CACHE,
+# _LAYOUT_*_CACHE).
+_TABLE_INGESTED_CACHE: dict[int, dict[str, bool]] = {}
+_TABLE_INGESTED_CACHE_TTL_SECONDS = 300.0
+_TABLE_INGESTED_CACHE_TS: dict[int, float] = {}
 
-def _hiding_rule_needs_missing_data_table(rule: "HidingRule") -> bool:
+
+def _table_ingested_for_workspace(table_name: str, workspace_id: int | None) -> bool:
+    """True if `table_name` has at least one real ingested entity in
+    `workspace_id`. `workspace_id=None` (no workspace context available,
+    e.g. an offline/unit-test caller) conservatively returns False -- same
+    "assume missing, never assume present" default `_KNOWN_MISSING_DATA_
+    TABLES` always used before this was workspace-scoped."""
+    if workspace_id is None:
+        return False
+    key = table_name.lower()
+    now = time.monotonic()
+    cached_ts = _TABLE_INGESTED_CACHE_TS.get(workspace_id, 0.0)
+    if now - cached_ts >= _TABLE_INGESTED_CACHE_TTL_SECONDS:
+        _TABLE_INGESTED_CACHE.pop(workspace_id, None)
+    per_ws = _TABLE_INGESTED_CACHE.setdefault(workspace_id, {})
+    if key in per_ws:
+        return per_ws[key]
+    try:
+        rows = get_cpq_rdb().fetch_entities_by_type(workspace_id, table_name)
+        ingested = bool(rows)
+    except Exception:
+        logger.debug(
+            "cpq: table-ingestion check failed for %r ws=%s -- assuming "
+            "not ingested (never assume present on a lookup failure)",
+            table_name, workspace_id, exc_info=True,
+        )
+        ingested = False
+    per_ws[key] = ingested
+    _TABLE_INGESTED_CACHE_TS[workspace_id] = now
+    return ingested
+
+
+def _hiding_rule_needs_missing_data_table(
+    rule: "HidingRule", workspace_id: int | None = None,
+) -> bool:
     """True if `rule`'s script (declarative or condition-script form)
-    references a data table confirmed absent from every ingested catalog --
-    see `_KNOWN_MISSING_DATA_TABLES`. Such a rule can never resolve to a
-    real hide/show outcome, so its target should never be silently asked
-    about forever."""
+    references a data table that is NOT ingested for `workspace_id` -- see
+    `_KNOWN_MISSING_DATA_TABLES` for the candidate list and
+    `_table_ingested_for_workspace` for the per-workspace check. Such a
+    rule can never resolve to a real hide/show outcome in THIS workspace,
+    so its target should never be silently asked about forever here --
+    even though the exact same table may be genuinely ingested (and this
+    same rule shape genuinely resolvable) in a different workspace.
+
+    `workspace_id=None` (no caller passes it) preserves the original,
+    fully conservative behavior: every candidate table is treated as
+    missing everywhere, identical to today's behavior for any caller that
+    doesn't supply a workspace.
+    """
     script = (rule.script or "") + (getattr(rule, "condition_script", None) or "")
     if not script:
         return False
     script_lower = script.lower()
-    return any(table.lower() in script_lower for table in _KNOWN_MISSING_DATA_TABLES)
+    return any(
+        table.lower() in script_lower
+        and not _table_ingested_for_workspace(table, workspace_id)
+        for table in _KNOWN_MISSING_DATA_TABLES
+    )
 
 
 def _parenthetical_suffix(text: str) -> str | None:
@@ -1594,8 +1683,98 @@ def _no_real_fill_justification(
 # one-remaining-option) all run BEFORE the blind-pick fallback, so a
 # real constraint narrowing this to one legal category will auto-fill
 # through one of those first and the blind guess simply stops firing.
+#
+# 2026-08-18: three siblings added, each individually confirmed via live
+# rule-action data (not assumed from a shared code shape) to have the
+# identical constraint-only governance profile as accessoriesSolutionSet_
+# astro above -- a real rule (recommendation OR constraint) targets the
+# attribute's own value, but _no_real_fill_justification's recommendation-
+# only check can't see the constraint, so it was blocked from ever
+# reaching the confident branches even though real catalog governance
+# exists:
+#   - relatedServicesType_astro ("Service Type"): real script-backed
+#     constraint querying the real Data Table relSoftAndServcParts for
+#     the current CPQ model (rule 18654807132, constraint_type=1).
+#   - relatedServiceCategory_astro ("Service Category"): real constraint
+#     (rule 17691443159, script-backed) plus a declarative one (rule
+#     17691443165) -- hidden until relatedServicesType_astro resolves.
+#   - selectEndUserType_astro ("Select End User Type"): one real
+#     constraint (rule with attribute_id 17691442... verified via live
+#     rule-action query), zero recommendations.
+# A GENERIC fix (letting rule_governed_ids' hiding+recommendation+
+# constraint union satisfy this check for every attr) was tried and
+# reverted the same day -- it also let additionalSystemEnhancementFeature
+# Type_astro (the documented "9-of-11, never guess" incident this whole
+# check exists to prevent) bypass the gate, and separately let Group-1
+# hiding-only-governed attrs (e.g. cBPQRCode_astro) skip their
+# missing-data-table warn-and-skip. This named-allowlist approach only
+# grants the exception to attributes individually verified safe.
 _BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
     "accessoriesSolutionSet_astro",
+    "relatedServicesType_astro",
+    "relatedServiceCategory_astro",
+    "selectEndUserType_astro",
+    # 2026-08-19: four siblings added, each individually confirmed via the
+    # real Attrsequence Data Table (per-base-model AttrName+CPQModel+
+    # BaseModel+optionOrReqFlag rows, workspace 93) to be Required for
+    # nearly every base model -- a real governance signal
+    # _no_real_fill_justification can't see, since it only checks
+    # ConfigAttr.required (sourced from bm_config_attr.required, confirmed
+    # live to be 0/unreliable for essentially every attribute in this
+    # catalog, not the real per-base-model flag) and rec_by_target. Each
+    # was live-verified separately, not assumed from a shared shape:
+    #   - baselineReleaseSW_astro ("Software Release"): 448/449
+    #     Attrsequence rows marked Required.
+    #   - applicationServicesSelection_astro ("Application Services
+    #     Selection"): 28/28 rows marked Required (always).
+    #   - carrierSelectionMultiSelect_astro ("Carrier Selection"): 3/3
+    #     rows marked Required (always) -- also cited by name in this
+    #     file's own auto_fill multi-select branch as governed via real
+    #     attrSequence coverage.
+    #   - packingPackageType_astro ("Package Type"): 452/453 Attrsequence
+    #     rows marked Required. Distinct from its own real constraint
+    #     rule (18131370895, script-backed on additionalSystemEnhancement
+    #     FeatureType_astro/ICE KIT) which already auto-fills it when that
+    #     rule resolves to exactly one legal value -- this allowlist entry
+    #     only covers the fallback case where that constraint hasn't
+    #     narrowed anything yet.
+    # Two siblings from the same investigation were deliberately NOT
+    # added: solutionTypeDuration_astro (6/215 Required -- mostly
+    # optional, base-model dependent) and applicationServicesIntroBundle_
+    # astro (12/86 Required -- same caveat). promoApplicationServices_
+    # astro/additionalApplicationServices_astro/aTAKNonPromoApplication
+    # Services_astro were also checked and confirmed genuinely optional
+    # (0 Required rows each) -- correctly excluded, not an oversight.
+    "baselineReleaseSW_astro",
+    "applicationServicesSelection_astro",
+    "carrierSelectionMultiSelect_astro",
+    "packingPackageType_astro",
+})
+
+# Multi-select attrs individually confirmed (Attrsequence: 0 Required rows
+# across every base model checked, workspace 93) to be genuinely optional
+# add-on choices with no active governance forcing a selection --
+# "customer wants none of these" is itself a real, valid, low-risk answer
+# for these three, unlike blind-picking a real business choice among them.
+# Distinct from _sole_opt_out_option (which finds a literal "None"/"not
+# needed" MENU ITEM the catalog authored): none of these three carry such
+# an option, so that existing mechanism can't resolve them -- this is a
+# separate case, "the attr itself can validly stay empty," not "the menu
+# declares an opt-out value." Never applied generically: an attr not
+# individually verified genuinely optional here still falls through to
+# the existing blind-pick-first-option fallback (or asks), same as
+# before this addition.
+#   - promoApplicationServices_astro ("Promo Application Services"):
+#     0/12 Attrsequence rows Required.
+#   - additionalApplicationServices_astro ("Additional Application
+#     Services"): 0/85 Attrsequence rows Required.
+#   - aTAKNonPromoApplicationServices_astro ("ATAK Non-Promo Application
+#     Services"): zero Attrsequence rows at all (also hidden by its own
+#     rule unless ATAK is explicitly enabled).
+_OPTIONAL_EMPTY_FILL_ACCEPTED_VNS: frozenset[str] = frozenset({
+    "promoApplicationServices_astro",
+    "additionalApplicationServices_astro",
+    "aTAKNonPromoApplicationServices_astro",
 })
 
 # Catalog-agnostic "this is the opt-out choice" phrasing -- an attr with
@@ -1628,6 +1807,26 @@ def _sole_opt_out_option(valid_opts: list[Any]) -> Any | None:
         or _OPT_OUT_OPTION_RE.search(o.item_value or "")
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+# Some catalog attributes carry two menu options with the IDENTICAL
+# display_name but different item_value (a real BigMachines authoring
+# duplicate, not an ingestion artifact -- confirmed live in the raw XML
+# export for applicationServicesIntroBundle_astro: item_value "5 YEAR"
+# (order 5) and "5 YEARS" (order 8) both display as "5 Year"). Before
+# this fix, apply_answer's exact-display-name match returned whichever
+# duplicate came first in option order, regardless of which one any
+# governing rule actually keys off. Live-traced: the hiding rule that
+# keeps additionalApplicationServices_astro visible only recognizes the
+# literal "5 YEARS" (plural) -- matching the singular "5 YEAR" duplicate
+# left the attribute stuck hidden even after the customer answered the
+# duration question. Named per-attribute map (not a generic
+# first/last-wins heuristic) so only individually verified duplicates
+# get resolved; an unlisted attribute's duplicate options still fall
+# through to first-match, same as before.
+_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, str] = {
+    "applicationServicesIntroBundle_astro": "5 YEARS",
+}
 
 # Product-line selectors that list the full multi-family portfolio (~325
 # models). Must wait until Hardware Version is filled on hardware-based
@@ -4882,6 +5081,17 @@ class CpqEngine:
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
+        _cache_key = (workspace_id, catalog_prefix)
+        _cache_hit = _VALUE_RULES_CACHE.get(_cache_key)
+        if _cache_hit is not None:
+            _cache_ts, _cache_result = _cache_hit
+            if time.monotonic() - _cache_ts < _VALUE_RULES_CACHE_TTL_SECONDS:
+                logger.info(
+                    "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
+                    workspace_id, catalog_prefix,
+                )
+                return _cache_result
+
         _t0 = time.monotonic()
         logger.info(
             "cpq_step: _load_value_rules (rec/con/validation) start "
@@ -5293,7 +5503,9 @@ class CpqEngine:
             time.monotonic() - _t0, len(rec_rules), len(con_rules),
             len(validation_rules), len(hiding_rules),
         )
-        return rec_rules, con_rules, validation_rules, hiding_rules
+        _result = (rec_rules, con_rules, validation_rules, hiding_rules)
+        _VALUE_RULES_CACHE[_cache_key] = (time.monotonic(), _result)
+        return _result
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -7692,7 +7904,7 @@ class CpqEngine:
         # behavior for every existing call site.
         _missing_data_target_ids: set[int] = {
             rule.target_attr_id for rule in (hiding_rules or [])
-            if _hiding_rule_needs_missing_data_table(rule)
+            if _hiding_rule_needs_missing_data_table(rule, workspace_id)
         }
 
         # Two "optional"-tier attrs (no rule, no default — eligible only via
@@ -7958,7 +8170,27 @@ class CpqEngine:
             # resolved the attribute so nothing was pending) that a
             # separate BOM-gate consistency check caught one full turn
             # later, only once the customer said "confirm".
-            if not value and rec_by_target and attr.options:
+            # 2026-08-18 fix (confirmed live via direct repro): a decision-
+            # anchor attr (country/region/hardware version/product --
+            # _DECISION_ANCHOR_VNS) whose CUSTOMER-CONFIRMED value was just
+            # dropped THIS SAME pass (a few lines above, because a real
+            # constraint narrowed it away) must never be silently reasserted
+            # to a DIFFERENT value by a recommendation rule here -- that
+            # silently overwrites a real customer decision with no re-ask,
+            # no warning, and no trace of what happened to their answer.
+            # Skipping this branch lets the attr fall through to `pending`
+            # instead, so the customer is asked to re-confirm -- same
+            # "never silently reguess a real decision" principle
+            # `user_answered_dropped_ids` already enforces for the blind-
+            # pick paths later in this function, extended here to close the
+            # one place it didn't yet cover. Every OTHER attr (not a
+            # decision anchor, or not dropped this pass) is unaffected --
+            # this is a narrow, targeted exclusion, not a change to how
+            # recommendation rules resolve in general.
+            if (
+                not value and rec_by_target and attr.options
+                and not (vn in _DECISION_ANCHOR_VNS and attr.entity_id in user_answered_dropped_ids)
+            ):
                 _allowed_for_rec = (
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
@@ -8606,6 +8838,30 @@ class CpqEngine:
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
+                and vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+                and allowed_for_attr is None
+            ):
+                # Confirmed genuinely optional (Attrsequence: 0 Required
+                # rows) with no menu-declared opt-out option for
+                # _sole_opt_out_option to find -- "select nothing" is
+                # itself the real, valid answer here, distinct from the
+                # blind-pick-one-real-option fallback a few lines below.
+                # `allowed_for_attr is None` (truly unconstrained) guards
+                # this from ever overriding a REAL active constraint's own
+                # narrowed set -- a constrained-but-ambiguous case for one
+                # of these three attrs must still select-all from the
+                # narrowed candidates via the sibling mechanism upstream,
+                # never resolve to empty just because the attr's name is
+                # in this allowlist (confirmed live: without this guard,
+                # this branch wrongly intercepted promoApplicationServices_
+                # astro's own constrained-and-ambiguous regression test).
+                filled_multi[vn] = []
+                display_filled[vn] = "(none)"
+                sources.setdefault(vn, "optional_empty")
+                filled_multi_now = True
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
                 and not (
                     _no_real_fill_justification(attr, rec_by_target)
                     and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
@@ -8727,12 +8983,30 @@ class CpqEngine:
                     # this branch was never meant to block for an attr the
                     # catalog's own data proves is governed. The
                     # CONSTRAINED-but-ambiguous case (is_unconstrained=
-                    # False) still lands here and correctly stays
-                    # untouched -- unchanged, matching the explicit HITL
-                    # "default-or-empty, never guess among rule-narrowed
-                    # options" decision this file's own multiselect
-                    # over-selection tests already lock in.
-                    pass
+                    # False): 2026-08-18 explicit override (HITL-confirmed
+                    # after the "never guess among rule-narrowed options"
+                    # rationale was re-cited in full) -- select ALL options
+                    # a real rule has currently narrowed this attr to,
+                    # instead of leaving it empty. Distinct from the
+                    # single-select blind-fill override above (which picks
+                    # ONE first-eligible value): for multi-select the
+                    # requested behavior is "check every currently-allowed
+                    # box", not "guess one of them". `candidate_opts` here
+                    # is already filtered to `current_allowed` (the real
+                    # constraint's narrowed set) a few lines up, so this
+                    # never selects an option the active rule has excluded.
+                    if candidate_opts:
+                        filled_multi[vn] = [o.item_value for o in candidate_opts]
+                        display_filled[vn] = ", ".join(
+                            o.display_name for o in candidate_opts)
+                        sources.setdefault(vn, "auto_all_constrained")
+                        logger.info(
+                            "cpq: multi-select %r constrained to %d option(s) "
+                            "with no rule/default resolving a subset -- "
+                            "auto-selected all of them instead of leaving "
+                            "empty (2026-08-18 override of the prior "
+                            "leave-empty default)", vn, len(candidate_opts),
+                        )
                 elif default_opt:
                     filled_multi[vn] = [default_opt.item_value]
                     display_filled[vn] = default_opt.display_name
@@ -10814,6 +11088,23 @@ class CpqEngine:
             idx = int(ua) - 1
             if 0 <= idx < len(presentable) and _valid(presentable[idx].item_value):
                 return presentable[idx].item_value, presentable[idx].display_name
+
+        # Known catalog duplicates -- two menu options share the same
+        # display_name (a real BigMachines authoring duplicate, see
+        # _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE) so a plain-text
+        # reply like "5 year" can coincidentally exact-match one
+        # duplicate's item_value ("5 YEAR") while the OTHER duplicate is
+        # the one governing rules actually key off ("5 YEARS"). Checked
+        # ahead of both the item_value and display-name exact-match
+        # tiers below so the coincidental item_value hit can't win first.
+        canonical_value = _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
+            attr.variable_name)
+        if canonical_value is not None:
+            for opt in options:
+                if opt.item_value == canonical_value and (
+                    opt.item_value.lower() == ua or opt.display_name.lower() == ua
+                ):
+                    return opt.item_value, opt.display_name
 
         # Exact item_value match
         for opt in options:
