@@ -167,6 +167,20 @@ def test_build_show_summary_response_derives_catalog_prefix_from_attrs_not_load_
 
 
 def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monkeypatch):
+    """Updated 2026-08-19: this test predates PR #209's quantity-change
+    resume-reminder fix (commit 9e93196, docs/CPQ_QA_RESUME_CONCATENATION_
+    PLAN_2026_08_18.md's sibling fix) and pinned the OLD behavior -- a
+    bare "Quantity -> N" line with no mention of the still-pending
+    question. That gap was live-confirmed as a real bug and deliberately
+    fixed: a quantity change while something is pending now appends the
+    same "Resuming your configuration..." reminder every QA-answer path
+    already showed. This test never caught the conflict when PR #209
+    merged because it was masked by an unrelated test-infra issue (the
+    file's other real-DB-dependent tests were timing out against
+    Docker-internal hostnames unreachable from a bare host pytest run,
+    so the whole file was skipped in every "full regression" pass this
+    session) -- now updated to assert the current, intentional behavior
+    instead of reverting it."""
     monkeypatch.setattr(api, "_persist_cpq_history", lambda *a, **k: None)
     _confirm_product_quantity_change(monkeypatch)
     battery = _attr(1, "batteryType_astro", "Battery Type", options=_opt("STANDARD"))
@@ -180,7 +194,9 @@ def test_quantity_change_mid_configuration_still_shows_only_the_short_line(monke
     req = AskRequest(question="change the quantity to 15", workspace_id=1,
                       session_data=session.to_dict())
     resp = _run_cpq_turn_inner(req, object())
-    assert resp["answer"] == "**Quantity** → 15"
+    assert resp["answer"].startswith("**Quantity** → 15")
+    assert "Resuming your configuration" in resp["answer"]
+    assert "Battery Type" in resp["answer"]
     assert "Configuration complete" not in resp["answer"]
 
 

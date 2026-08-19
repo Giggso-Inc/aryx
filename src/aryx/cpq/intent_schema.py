@@ -91,6 +91,20 @@ class IntentCategory(str, Enum):
     # (session_guard). Not a regex cascade detector; handled before
     # LLM-first dispatch in ask_api.
     UNDO = "undo"
+    # A question ABOUT the conversation/process itself ("what's next?",
+    # "where am I?", "what should I do now?") -- never about catalog
+    # content. Added 2026-08-18 (docs/CPQ_QA_RESUME_CONCATENATION_PLAN_
+    # 2026_08_18.md): _handle_cpq_qa's generic graph-QA path has zero
+    # awareness of what's still pending, so a bare meta-question like this
+    # was hallucinating an irrelevant catalog answer glued to the correct
+    # "Resuming your configuration..." reminder. When something is
+    # genuinely pending, the pending question itself IS the answer to
+    # "what's next" -- no graph knowledge needed. Not a regex-detector
+    # mirror; replaced an earlier hardcoded phrase-list approach
+    # specifically because a fixed list under-generalizes across phrasing
+    # variants, the same "not a regex/deterministic pattern" reasoning
+    # already applied to PRODUCT_QUANTITY_CHANGE elsewhere in this file.
+    SESSION_STATUS_QUERY = "session_status_query"
 
 
 class Confidence(str, Enum):

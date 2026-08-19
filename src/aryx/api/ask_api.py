@@ -966,6 +966,57 @@ def _handle_cpq_qa(
     answer, then appends the current config resume prompt so the user knows where
     they were. The session state is preserved unchanged.
     """
+    # docs/CPQ_QA_RESUME_CONCATENATION_PLAN_2026_08_18.md — a session-status
+    # meta-question ("what's next") while something is genuinely pending IS
+    # answered by the pending question itself; querying the graph for it
+    # only produces irrelevant, hallucinated noise glued to the correct
+    # resume reminder (live-confirmed). Skip the graph-QA path entirely in
+    # this narrow case — everything else below is unchanged.
+    #
+    # LLM-based, not regex/pattern-matched: an earlier version of this fix
+    # used a fixed phrase-list, but a fixed list under-generalizes across
+    # phrasing variants it was never written for -- the SAME "no ad hoc
+    # deterministic pattern" reasoning already applied to
+    # PRODUCT_QUANTITY_CHANGE's own classification. Reuses the SAME
+    # classifier `_llm_classify_intent_universal` this function already
+    # calls further below for its (flag-gated) ambiguity check -- no new
+    # LLM integration. Gated on `session.pending_variables` so the extra
+    # call only happens when a short-circuit could even apply (nothing
+    # pending -> nothing to short-circuit to -> skip the call entirely).
+    # Cached so the (flag-gated) ambiguity check further below can reuse
+    # this exact call instead of re-classifying the same
+    # (question, attrs, session, workspace_id) a second time on the same
+    # turn -- both calls pass identical arguments, so a second call would
+    # be a pure, avoidable extra LLM round-trip whenever both checks are
+    # in play at once (PR #213 review finding).
+    _meta_result: "IntentResult | None" = None
+    _meta_it = _meta_ot = 0
+    if not resume_review and session.pending_variables:
+        _meta_result, _meta_it, _meta_ot = _llm_classify_intent_universal(
+            req.question, attrs, session, req.workspace_id,
+        )
+        if (
+            _meta_result is not None
+            and _meta_result.category == IntentCategory.SESSION_STATUS_QUERY
+            and _meta_result.confidence != Confidence.LOW
+        ):
+            _meta_pending_attr = next(
+                (a for a in attrs if a.variable_name == session.pending_variables[0]), None,
+            )
+            if _meta_pending_attr:
+                answer = (
+                    "*Resuming your configuration...*\n\n"
+                    + _cpq_engine.next_question_prompt(_meta_pending_attr)
+                )
+                _persist_cpq_history(req.workspace_id, req.question, answer)
+                return {
+                    "answer": answer, "terms": [], "tools_called": ["cpq_qa_status()"],
+                    "usage": {"prompt_tokens": _meta_it, "completion_tokens": _meta_ot,
+                              "latency_ms": 0, "menial_model": "cpq-qa",
+                              "answer_model": "cpq-qa"},
+                    "grounding": None, "session_data": session.to_dict(), "cpq_payload": None,
+                }
+
     # Label collision check first — a shared display_label across 2+ distinct
     # attrs (real BigMachines source-data reuse, docs/CPQ_SESSION_2_OPEN_ISSUES.md
     # item 2) must be disambiguated, never silently resolved to whichever
@@ -1124,8 +1175,15 @@ def _handle_cpq_qa(
             _qa_it = _qa_ot = 0
             if get_settings().cpq_qa_ambiguity_check_enabled:
                 try:
-                    _qa_intent, _qa_it, _qa_ot = _llm_classify_intent_universal(
-                        req.question, attrs, session, req.workspace_id)
+                    # Reuse the SESSION_STATUS_QUERY check's classify call
+                    # above when it already ran (identical arguments) --
+                    # never pay for a second, redundant LLM round-trip on
+                    # the same turn (PR #213 review finding).
+                    if _meta_result is not None:
+                        _qa_intent, _qa_it, _qa_ot = _meta_result, _meta_it, _meta_ot
+                    else:
+                        _qa_intent, _qa_it, _qa_ot = _llm_classify_intent_universal(
+                            req.question, attrs, session, req.workspace_id)
                     if (
                         _qa_intent is not None
                         and _qa_intent.category == IntentCategory.AMBIGUOUS
@@ -4454,7 +4512,18 @@ def _llm_classify_intent_universal(
         "Never invent a plausible-sounding attribute name to explain an "
         "identifier you don't recognize; if it doesn't match any listed "
         "variable_name and there's no PENDING STATE explaining it, use "
-        "confidence=\"low\" and category=\"ambiguous\" instead."
+        "confidence=\"low\" and category=\"ambiguous\" instead.\n\n"
+        "Use category=\"session_status_query\" ONLY when the message asks "
+        "about the CONVERSATION/PROCESS itself — e.g. \"what's next?\", "
+        "\"what is the next step?\", \"where am I?\", \"what should I do "
+        "now?\", \"what do you need from me?\" — never when it asks about "
+        "catalog content, even content that happens to use the word "
+        "\"next\" (e.g. \"what's the next hardware version model\" is "
+        "ATTR_QUERY/QA_QUESTION about the catalog, NOT session_status_query "
+        "— it names a real thing in the catalog, not the conversation "
+        "itself). If in doubt whether a message is about the process or "
+        "the catalog, prefer the catalog category (qa_question/ambiguous) "
+        "— session_status_query is deliberately narrow."
     )
     user = (
         f"{pending_block}"
