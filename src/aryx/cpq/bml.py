@@ -790,10 +790,22 @@ def referenced_variables(script: str) -> set[str]:
     longer identifier (e.g. "truely") — it must not apply to the
     quoted-string alternative at all.
     """
-    return {
+    found = {
         m.group(1) for m in re.finditer(
             r'(\w+)\s*(?:==|<>|!=)\s*(?:"[^"]*"|true\b|false\b)', script, re.IGNORECASE)
     }
+    # findinArray(split(VAR, "SEP"), "LITERAL") -- the same real-catalog
+    # array-membership idiom evaluate_tier1 gained native support for
+    # (see _ARRAY_MEMBERSHIP_RE). The comparison-based regex above can't
+    # see VAR here since it never appears next to ==/<>/!=; missing it
+    # here means allowed_values_for_script's cache key never varies with
+    # this variable's value -- the same stale-cache risk this function's
+    # own docstring already documents for the comparison idiom.
+    found |= {
+        m.group(1) for m in re.finditer(
+            r'find[Ii]n[Aa]rray\s*\(\s*split\s*\(\s*(\w+)\s*,', script, re.IGNORECASE)
+    }
+    return found
 
 
 _VAR_VALUE_RE = re.compile(r'(\w+)\s*(?:==|<>|!=)\s*"([^"]*)"')

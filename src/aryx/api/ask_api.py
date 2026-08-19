@@ -1863,17 +1863,18 @@ _NEVER_ASK_RECOMMENDED_ONLY_VNS: frozenset[str] = frozenset({
 
 def _hard_exclude_from_pending(
     pending: list, filled: dict, display_filled: dict, filled_source: dict,
-    con_rules: list, bml_eval: Any,
+    con_rules: list, bml_eval: Any, rec_rules: list | None = None,
     workspace_id: int | None = None, catalog_prefix: str = "",
+    all_attrs: list | None = None,
 ) -> list:
     """Remove an attribute in `_NEVER_ASK_RECOMMENDED_ONLY_VNS` from
     `pending` ONLY when something real justifies a value -- the currently
-    active constraint narrowing to exactly one legal option, or the
-    attribute's own catalog default_value. Deliberately does NOT fall
-    back to blindly picking `valid_opts[0]` when neither resolves it
-    (PR #215 review, C1): packingPackageType_astro has 8 genuinely
-    different real options (SINGLE/BULK/N/A/DEMO KIT CASE/...) -- an
-    unconstrained blind pick here is exactly the "guess among real
+    active constraint/recommendation narrowing to exactly one legal
+    option, or the attribute's own catalog default_value. Deliberately
+    does NOT fall back to blindly picking `valid_opts[0]` when neither
+    resolves it (PR #215 review, C1): packingPackageType_astro has 8
+    genuinely different real options (SINGLE/BULK/N/A/DEMO KIT CASE/...)
+    -- an unconstrained blind pick here is exactly the "guess among real
     business choices with no justification" failure mode _no_real_fill_
     justification/_BLIND_FILL_RISK_ACCEPTED_VNS (engine.py) exist to
     prevent, and unlike the native UI's own "Recommended Configuration"
@@ -1884,9 +1885,48 @@ def _hard_exclude_from_pending(
     ambiguous case -- so it still gets asked rather than guessed.
     Only ever touches attrs individually named in the frozenset above --
     never a generic "skip anything hard to resolve" mechanism.
+
+    Checks BOTH con_rules and rec_rules -- live-confirmed Package Type's
+    real governing rule (18131370895, the ICE-KIT script) loads as a
+    RecommendationRule, not a ConstraintRule (CpqEngine's set_type-based
+    classification, same reclassification confirmed for Duration's
+    equivalent rule this session), so a constraint-only check would
+    never see it at all regardless of any variable-handling fix.
+
+    "ICE Kit not yet asked" fix (generic, not hardcoded per attribute):
+    the native UI's "Recommended Configuration" section is computed once
+    the entire "Mandatory User Input" form is submitted -- by which
+    point every governing input has a real, definitive state (even
+    "never touched" is a resolved empty, not a live unknown). Our
+    engine evaluates hard-excluded attrs mid-conversation, genuinely
+    before some of their real governing inputs (e.g. the ICE Kit
+    feature-type selection, order_number 120 vs Package Type's own 37 --
+    Package Type is reached first in this catalog's own ordering) have
+    ever come up. For THIS individually-vetted attribute set only,
+    treat a governing variable that's entirely absent from `filled` the
+    same as "explicitly answered empty" -- discovered dynamically via
+    bml.referenced_variables() over each of the attr's own real
+    governing scripts, never a hand-maintained per-attribute variable
+    list. Only ever applied on a LOCAL COPY of `filled` used for this
+    one check; the real session state is never mutated, so every other
+    attribute's missing-vs-empty distinction is completely unaffected.
+
+    PR #218 review (M1): "unasked -> empty" is only a safe default for a
+    governing variable whose real-world meaning HAS a valid empty state
+    -- true for additionalSystemEnhancementFeatureType_astro (a
+    multi-select feature checklist, where "never touched" and
+    "explicitly selected nothing" are the same real state), but NOT true
+    for a decision-anchor single-select (Hardware Version, Country,
+    Product) where every real option is mutually exclusive and blank
+    means "not yet known", not "resolved empty". So this default is
+    restricted to governing variables that are themselves multi-select
+    (`select_type == "multi"`, looked up via `all_attrs`) -- a
+    single-select governing variable that's entirely unasked is left
+    genuinely missing, same as everywhere else in the engine.
     """
     if not pending:
         return pending
+    from aryx.cpq.bml import referenced_variables
     survivors: list = []
     for attr in pending:
         if attr.variable_name not in _NEVER_ASK_RECOMMENDED_ONLY_VNS or not attr.options:
@@ -1894,10 +1934,24 @@ def _hard_exclude_from_pending(
             continue
         valid_opts = [o for o in attr.options if _valid(o.item_value)]
         chosen = None
+        governing_scripts = [
+            r.script for r in list(con_rules or []) + list(rec_rules or [])
+            if getattr(r, "target_attr_id", None) == attr.entity_id and r.script
+        ]
+        governing_vars: set[str] = set()
+        for script in governing_scripts:
+            governing_vars |= referenced_variables(script)
+        attrs_by_vn = {a.variable_name: a for a in (all_attrs or [])}
+        filled_for_check = dict(filled)
+        for vn in governing_vars:
+            governing_attr = attrs_by_vn.get(vn)
+            if governing_attr is not None and governing_attr.select_type != "multi":
+                continue
+            filled_for_check.setdefault(vn, "")
         if con_rules and bml_eval is not None:
             try:
                 allowed = _cpq_engine.apply_constraint_rules(
-                    [attr], con_rules, filled, bml_eval,
+                    [attr], con_rules, filled_for_check, bml_eval,
                     workspace_id=workspace_id, catalog_prefix=catalog_prefix,
                 ).get(attr.entity_id)
             except Exception:  # noqa: BLE001 — best-effort, never blocks the turn
@@ -1914,6 +1968,27 @@ def _hard_exclude_from_pending(
                 narrowed = [o for o in valid_opts if o.item_value in allowed]
                 if len(narrowed) == 1:
                     chosen = narrowed[0]
+        if chosen is None and rec_rules and bml_eval is not None:
+            for rule in rec_rules:
+                if rule.target_attr_id != attr.entity_id or not rule.script:
+                    continue
+                try:
+                    rec_allowed = bml_eval.allowed_values_for_script(
+                        rule.script, filled_for_check,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort, never blocks the turn
+                    logger.debug(
+                        "cpq: hard-exclude recommendation check failed for %r "
+                        "(rule=%r)", attr.variable_name, rule.rule_name, exc_info=True,
+                    )
+                    rec_allowed = None
+                if rec_allowed and len(rec_allowed) == 1:
+                    match = next(
+                        (o for o in valid_opts if o.item_value == rec_allowed[0]), None,
+                    )
+                    if match is not None:
+                        chosen = match
+                        break
         if chosen is None and attr.default_value:
             chosen = next(
                 (o for o in valid_opts if o.item_value == attr.default_value), None,
@@ -2538,7 +2613,9 @@ def _handle_cascade(
         visible_attrs, session.filled_multi)
     pending = _hard_exclude_from_pending(
         pending, filled, display_filled, session.filled_source,
-        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        con_rules, bml_eval, rec_rules=rec_rules,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -2776,7 +2853,9 @@ def _handle_multi_select_removal(
         visible_attrs, session.filled_multi)
     pending = _hard_exclude_from_pending(
         pending, filled, display_filled, session.filled_source,
-        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        con_rules, bml_eval, rec_rules=rec_rules,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -2982,7 +3061,9 @@ def _handle_attr_activation(
 
     pending = _hard_exclude_from_pending(
         pending, filled, display_filled, session.filled_source,
-        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        con_rules, bml_eval, rec_rules=rec_rules,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3157,7 +3238,9 @@ def _handle_attr_clear(
 
     pending = _hard_exclude_from_pending(
         pending, filled, display_filled, session.filled_source,
-        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        con_rules, bml_eval, rec_rules=rec_rules,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3430,7 +3513,9 @@ def _handle_bulk_quantity_change(
         visible_attrs, session.filled_multi)
     pending = _hard_exclude_from_pending(
         pending, filled, display_filled, session.filled_source,
-        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        con_rules, bml_eval, rec_rules=rec_rules,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
@@ -3787,7 +3872,9 @@ def _handle_cascade_multi(
         visible_attrs, session.filled_multi)
     pending = _hard_exclude_from_pending(
         pending, filled, display_filled, session.filled_source,
-        con_rules, bml_eval, workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        con_rules, bml_eval, rec_rules=rec_rules,
+        workspace_id=req.workspace_id, catalog_prefix=catalog_prefix,
+        all_attrs=attrs,
     )
     pending = _auto_resolve_singleton_pending(
         pending, filled, display_filled, session.filled_source,
