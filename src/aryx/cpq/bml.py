@@ -58,6 +58,61 @@ install_run_id_logging(__name__)
 # boolean RHS — callers use whichever matched.
 _CMP_RE = re.compile(r'^\s*(\w+)\s*(==|<>|!=)\s*(?:"([^"]*)"|(true|false))\s*$', re.IGNORECASE)
 
+# findinArray(split(VAR, "SEP"), "LITERAL") <> -1  /  == -1 — a genuinely
+# common real-catalog idiom (confirmed live: Package Type's governing
+# constraint, 18131370895, plus several Duration/Application-Services-
+# Bundle-Duration DISALLOW rules use this exact shape) that _CMP_RE can't
+# recognize at all, since its LHS is a function call, not a bare
+# identifier. Before this, every script using this idiom fell straight to
+# Tier 2 (LLM) regardless of whether the referenced variable was even
+# filled — live-confirmed root cause of a real split-brain bug: the
+# LLM's answer to "does this array contain X" was non-deterministic
+# across two calls in the SAME turn (cpq_scope_match accepted a reply
+# Tier-2 then rejected via apply_answer's own separately-recomputed
+# constrained set), so a customer's exact, valid answer could be
+# accepted at one layer and rejected at another.
+#
+# "<> -1" (findinArray returns a real index) means "the array CONTAINS
+# the literal"; "== -1" (not found) means "does NOT contain it" — the
+# BM-native idiom for array membership, same semantic op7/op8 already
+# give multi-select declarative rule_input rows (_MULTI_SELECT_
+# CONTAINS_OPERATOR/_MULTI_SELECT_NOT_CONTAINS_OPERATOR), just expressed
+# as a raw script instead of a declarative row.
+_ARRAY_MEMBERSHIP_RE = re.compile(
+    r'^\s*find[Ii]n[Aa]rray\s*\(\s*split\s*\(\s*(\w+)\s*,\s*"([^"]*)"\s*\)\s*,\s*"([^"]*)"\s*\)'
+    r'\s*(<>|==)\s*-?1\s*$',
+    re.IGNORECASE,
+)
+# Packs (separator, literal) into _parse_condition's existing 4-tuple
+# "expected" slot without changing its shape everywhere it's unpacked —
+# \x1f (ASCII unit separator) can't appear in real BML string literals.
+_ARRAY_PACK_SEP = "\x1f"
+_ARRAY_IN_OP = "ARRAY_IN"
+_ARRAY_NOT_IN_OP = "ARRAY_NOT_IN"
+
+
+def _match_array_membership(cond: str) -> tuple[str, str, str] | None:
+    """Match the findinArray(split(...)) idiom; returns (var, op, packed
+    "sep\\x1fliteral") in the same (var, op, expected) shape _CMP_RE's
+    match groups already produce, or None if this clause isn't that
+    idiom at all (never a partial/guessed match)."""
+    m = _ARRAY_MEMBERSHIP_RE.match(_strip_wrapping_parens(cond.strip()))
+    if not m:
+        return None
+    var, sep, literal, arrow_op = m.groups()
+    op = _ARRAY_IN_OP if arrow_op == "<>" else _ARRAY_NOT_IN_OP
+    return var, op, f"{sep}{_ARRAY_PACK_SEP}{literal}"
+
+
+def _array_membership_hit(actual: str, op: str, packed_expected: str) -> bool:
+    """Evaluate an ARRAY_IN/ARRAY_NOT_IN clause given `actual` (the raw
+    variable value, e.g. "SMARTLOCATE~ICE KIT") and the packed
+    "sep\\x1fliteral" produced by _match_array_membership."""
+    sep, literal = packed_expected.split(_ARRAY_PACK_SEP, 1)
+    members = [p.strip() for p in actual.split(sep)] if sep else [actual.strip()]
+    hit = literal.strip() in members
+    return hit if op == _ARRAY_IN_OP else not hit
+
 # returnVal = "A"|"B"|... assignment inside a branch body. Also matches
 # `retVal = ...` (no "urn") — confirmed live: dozens of real APX NEXT
 # constraint/recommendation scripts (docs/CPQ_APX_NEXT_RULE_CATALOG.md) use
@@ -281,18 +336,27 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
         if len(parts) > 1:
             out = []
             for i, part in enumerate(parts):
-                m = _CMP_RE.match(_strip_wrapping_parens(part))
-                if not m:
-                    return None
-                # group(3) is the quoted-string RHS, group(4) the bare
-                # true/false literal RHS — exactly one is populated.
-                out.append(("" if i == 0 else joiner, m.group(1), m.group(2),
-                            m.group(3) if m.group(3) is not None else m.group(4)))
+                part_stripped = _strip_wrapping_parens(part)
+                m = _CMP_RE.match(part_stripped)
+                if m:
+                    # group(3) is the quoted-string RHS, group(4) the bare
+                    # true/false literal RHS — exactly one is populated.
+                    out.append(("" if i == 0 else joiner, m.group(1), m.group(2),
+                                m.group(3) if m.group(3) is not None else m.group(4)))
+                    continue
+                arr = _match_array_membership(part_stripped)
+                if arr:
+                    out.append(("" if i == 0 else joiner, arr[0], arr[1], arr[2]))
+                    continue
+                return None
             return out
     m = _CMP_RE.match(_strip_wrapping_parens(cond))
     if m:
         return [("", m.group(1), m.group(2),
                  m.group(3) if m.group(3) is not None else m.group(4))]
+    arr = _match_array_membership(_strip_wrapping_parens(cond))
+    if arr:
+        return [("", arr[0], arr[1], arr[2])]
     return None
 
 
@@ -397,12 +461,16 @@ def _parse_boolean_expr(cond: str) -> "_BoolExpr | None":
             return None
         return _BoolExpr(kind="and", parts=parsed)
     m = _CMP_RE.match(cond)
-    if not m:
-        return None
-    return _BoolExpr(
-        kind="cmp", var=m.group(1), op=m.group(2),
-        value=m.group(3) if m.group(3) is not None else m.group(4),
-    )
+    if m:
+        return _BoolExpr(
+            kind="cmp", var=m.group(1), op=m.group(2),
+            value=m.group(3) if m.group(3) is not None else m.group(4),
+        )
+    arr = _match_array_membership(cond)
+    if arr:
+        var, op, packed = arr
+        return _BoolExpr(kind="cmp", var=var, op=op, value=packed)
+    return None
 
 
 def _eval_boolean_expr(expr: "_BoolExpr", variables: dict[str, str]) -> tuple[bool | None, bool]:
@@ -418,6 +486,8 @@ def _eval_boolean_expr(expr: "_BoolExpr", variables: dict[str, str]) -> tuple[bo
         actual = variables.get(expr.var)
         if actual is None:
             return None, True
+        if expr.op in (_ARRAY_IN_OP, _ARRAY_NOT_IN_OP):
+            return _array_membership_hit(actual, expr.op, expr.value or ""), False
         hit = actual.strip().lower() == (expr.value or "").strip().lower()
         if expr.op in ("<>", "!="):
             hit = not hit
@@ -924,9 +994,12 @@ def _first_matching_branch(
             if actual is None:
                 saw_missing = True
                 continue
-            hit = actual.strip().lower() == expected.strip().lower()
-            if op in ("<>", "!="):
-                hit = not hit
+            if op in (_ARRAY_IN_OP, _ARRAY_NOT_IN_OP):
+                hit = _array_membership_hit(actual, op, expected)
+            else:
+                hit = actual.strip().lower() == expected.strip().lower()
+                if op in ("<>", "!="):
+                    hit = not hit
             if result is None:
                 result = hit
             elif joiner == "AND":
