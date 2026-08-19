@@ -146,23 +146,58 @@ genuinely pending:**
 
 ## Implementation summary (2026-08-18)
 
-- `_is_session_status_meta_question()` added to `src/aryx/api/ask_api.py` — a
-  phrase-specific regex list (`_SESSION_STATUS_META_QUESTION_PATTERNS`), never a bare "next"
-  keyword.
-- Short-circuit added at the very top of `_handle_cpq_qa` (before the label-collision check):
-  fires only when `not resume_review and session.pending_variables and
-  _is_session_status_meta_question(req.question)` — answers with just the resume block
-  (`tools_called: ["cpq_qa_status()"]`), skipping graph-QA synthesis entirely.
-- New test file `tests/test_cpq_qa_status_meta_resume.py` (6 tests, all passing): the exact
-  reported scenario short-circuits correctly; falls through unchanged when nothing pending;
-  a real catalog question while pending is unaffected (both fragments present); the
-  "next hardware version" false-positive phrasing does NOT misfire; detector unit tests for
-  the confirmed live phrasings; `resume_review=True` is never intercepted by the new check.
-- **Regression**: `tests/test_cpq_2026_07_28_fixes.py`, `test_cpq_intent_first_gate.py`,
-  `test_cpq_negative_harden.py`, `test_cpq_label_collision_memory.py` — 116/116 passing,
-  zero regressions.
-- **Live-verified** against the redeployed `api` container, replaying the exact reported
-  transcript end-to-end: "what is the next step for configuration" (with Hardware Version
-  still pending) now answers with ONLY `*Resuming your configuration...*` + the Hardware
-  Version prompt — no graph-QA preamble, `tools_called: ["cpq_qa_status()"]`. Same live run
-  also re-confirmed PR #209's quantity-change resume reminder is still working correctly.
+**v1 (regex-based, superseded same day):** a phrase-specific regex list
+(`_is_session_status_meta_question`/`_SESSION_STATUS_META_QUESTION_PATTERNS`). Worked and was
+live-verified, but the owner asked for a more robust, non-pattern-matched detector — a fixed
+phrase list under-generalizes across wording it was never written for, the same "not a regex/
+deterministic pattern" reasoning already applied to `PRODUCT_QUANTITY_CHANGE` elsewhere in
+this file. Removed entirely in v2, no trace left in the codebase.
+
+**v2 (LLM-based, current):**
+
+- New `IntentCategory.SESSION_STATUS_QUERY` added to the shared enum
+  (`src/aryx/cpq/intent_schema.py`) — "a question ABOUT the conversation/process itself, never
+  about catalog content."
+- Reuses the SAME existing classifier `_llm_classify_intent_universal` already calls inside
+  `_handle_cpq_qa` for its (flag-gated) ambiguity check — no new LLM integration, no new model,
+  no new call site pattern. Its system prompt was extended with explicit guidance on this new
+  category, including an explicit anti-false-positive instruction: "what's the next hardware
+  version model" must classify as `ATTR_QUERY`/`QA_QUESTION` about the catalog, never
+  `SESSION_STATUS_QUERY`, since it names a real catalog thing, not the conversation itself.
+- **Not routed through the shared intent gateway** (PR #209's `classify_intent`/
+  `_llm_classify_once` in `intent_gateway.py`), despite that being the more consistent-seeming
+  "existing LLM" at first glance — investigated and rejected: `_llm_first_gateway_turn`
+  deliberately DEFERS the gateway entirely when something is pending and the message isn't a
+  topic switch (`_defer_gateway_to_pending_answer`, `ask_api.py` ~5811-5834), which is exactly
+  this bug's own trigger condition. The live-reported transcript never touched the gateway at
+  all — it reached `_handle_cpq_qa` through STEP 7's own separate deterministic
+  `detect_qa_question(strict=True)` gate. Routing detection through the gateway would have
+  required also reworking that deliberate pending-answer-priority skip logic — a much larger,
+  riskier change unrelated to this bug.
+- Call is gated on `not resume_review and session.pending_variables` — only pays the extra LLM
+  round-trip when a short-circuit could even apply; `resume_review=True` and the
+  nothing-pending case never trigger a classify call at all (zero added cost on those paths).
+- Confidence gate mirrors the existing AMBIGUOUS branch a few lines below in the same
+  function: `confidence != LOW` required to trust the category; a LOW-confidence result, or
+  the classifier returning `None` (LLM error/unparseable — same fail-closed discipline every
+  `_llm_*` helper in this file follows), falls through to normal QA handling unchanged.
+- New test file `tests/test_cpq_qa_status_meta_resume.py` (9 tests, all passing): exact
+  reported scenario short-circuits correctly (mocked classifier); falls through when nothing
+  pending (classify call never made); real catalog question while pending unaffected; the
+  "next hardware version" false-positive case; LOW-confidence result does not short-circuit;
+  classifier failure (`None`) falls through safely; prompt-content test proving the new
+  category and its anti-false-positive guidance actually reach the model; stale
+  `pending_variables` fallthrough; `resume_review=True` never even calls the classifier.
+- **Regression**: `tests/test_cpq_qa_status_meta_resume.py`, `test_cpq_intent_schema.py`,
+  `test_cpq_2026_07_28_fixes.py`, `test_cpq_negative_harden.py`,
+  `test_cpq_label_collision_memory.py` — 128/128 passing, zero regressions.
+- **Live-verified** against a redeployed `api` container running the LLM-based version,
+  replaying the exact reported transcript end-to-end: "what is the next step for
+  configuration" (Hardware Version still pending) answers with ONLY the resume block,
+  `tools_called: ["cpq_qa_status()"]`. Also live-verified: normal config flow unaffected; a
+  real catalog QA question while pending still gets both a real answer and the resume
+  reminder; PR #209's quantity-change reminder still works; a status question with nothing
+  pending falls through unchanged; and — against the REAL model, not a mock — "what's the
+  next hardware version model after this one" correctly classifies as a catalog question
+  (`tools_called: ["cpq_qa()"]`), confirming the anti-false-positive prompt guidance holds up
+  live, not just under a mocked unit test.
