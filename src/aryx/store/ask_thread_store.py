@@ -92,12 +92,14 @@ def _insert_message_oracle(cur: Any, params: tuple[Any, ...]) -> tuple[str, int,
     conditional-overwrite rules as a plain UPDATE.
 
     Returns a 4-tuple matching the Postgres RETURNING shape -- (id,
-    sequence_number, inserted, content) -- if inserted or safely updated
-    (`inserted` is always False here since callers never read it; kept only
-    for shape parity with ask_thread_select_request_message.sql's fallback
-    row, which callers *do* index positionally). Returns None if an existing
-    row must not be overwritten (caller then loads the existing row via
-    ask_thread_select_request_message, exactly like the Postgres path).
+    sequence_number, inserted, content) -- if inserted or safely updated.
+    `inserted` is True only on the genuine-insert branch below -- callers
+    use it (ensure_thread_and_user_message/append_assistant_message's
+    newly_inserted) to gate ask_thread_touch_channel so a retry that hits
+    the update branch doesn't double-count message_count. Returns None if
+    an existing row must not be overwritten (caller then loads the existing
+    row via ask_thread_select_request_message, exactly like the Postgres
+    path).
     """
     (thread_id, message_id, content, message_type, _thread_id_again, request_id,
      is_ai_processed, ai_provider, ai_model, ai_processing_time,
@@ -126,7 +128,7 @@ def _insert_message_oracle(cur: Any, params: tuple[Any, ...]) -> tuple[str, int,
              is_ai_processed, ai_provider, ai_model, ai_processing_time,
              next_seq, metadata, citations, usage),
         )
-        return (message_id, next_seq, False, content)
+        return (message_id, next_seq, True, content)
 
     existing_id, existing_seq, existing_content, existing_metadata_raw, existing_updated_at = existing
 
