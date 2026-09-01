@@ -94,8 +94,26 @@ def _translate_sql(sql: str, cursor: "OracleCursorWrapper") -> str:
     )
     sql = _LIMIT_RE.sub(lambda m: f"FETCH FIRST {m.group(1)} ROWS ONLY", sql)
 
-    # 5. ON CONFLICT DO NOTHING / DO UPDATE → strip clause, mark cursor so ORA-00001 is swallowed.
-    #    Oracle does not support ON CONFLICT syntax; duplicates are handled via ORA-00001.
+    # 5. ON CONFLICT DO NOTHING → strip clause, mark cursor so ORA-00001 is
+    #    swallowed (Oracle does not support ON CONFLICT syntax; duplicates
+    #    are handled via ORA-00001).
+    #
+    #    ON CONFLICT DO UPDATE is NOT handled the same way: stripping it
+    #    identically to DO NOTHING would silently reduce a real upsert to
+    #    insert-or-ignore, discarding the intended update on every conflict
+    #    with no error (found by post-merge review -- a systemic trap for
+    #    the next such query added without an explicit Oracle MERGE
+    #    override). Fail loudly instead: every DO UPDATE query needs its
+    #    own Oracle override (see upsert_discovery.sql's MERGE for the
+    #    established pattern) or an explicit backend branch in the caller.
+    conflict_match = _CONFLICT_RE.search(sql)
+    if conflict_match and re.search(r"\bDO\s+UPDATE\b", conflict_match.group(0), re.IGNORECASE):
+        raise ValueError(
+            "ON CONFLICT ... DO UPDATE has no safe generic Oracle translation "
+            "(it would silently degrade to insert-or-ignore) -- add a "
+            "queries/oracle/<name>.sql override using MERGE, or an explicit "
+            "backend branch in the caller"
+        )
     new_sql = _CONFLICT_RE.sub("", sql)
     if new_sql != sql:
         cursor._conflict_ignore = True
