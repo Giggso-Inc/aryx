@@ -468,11 +468,13 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
 
     if rels:
         store.save_relationships(rels)
+    linked_source_ids = {r.source_entity_id for r in rels}
     logger.info(
         "_relate_isolated: linked %d / %d isolated entity(ies) (%d type(s) confirmed)",
         len(rels), total_isolated,
-        sum(1 for iso_type in isolated_by_type if any(
-            r.source_entity_id == isolated_by_type[iso_type][0][0] for r in rels
-        )),
+        sum(
+            1 for iso_type in isolated_by_type
+            if linked_source_ids.intersection(t[0] for t in isolated_by_type[iso_type])
+        ),
     )
     return len(rels)
