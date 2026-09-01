@@ -46,6 +46,16 @@ class OracleGraphReader:
         self._pool = get_oracle_pool(dsn)
         self._workspace_id = workspace_id
 
+    @property
+    def graph_name(self) -> str:
+        """Cache-key-safe identifier for this reader's scope.
+
+        Mirrors GraphReader.graph_name (FalkorDB) so callers like
+        aryx.graph.retrieve.all_types() can key a cache off either reader
+        without branching on backend.
+        """
+        return f"oracle::{self._workspace_id}"
+
     @contextmanager
     def _connection(self) -> Iterator[Any]:
         """Acquire a pooled connection with the graph query timeout applied.
@@ -335,9 +345,9 @@ class OracleGraphReader:
               FROM GRAPH_TABLE (
                 aryx_knowledge_graph
                 MATCH SHORTEST (
-                  (a IS aryx_graph_vertex WHERE a.entity_id = :src)
+                  (a IS aryx_graph_vertex WHERE a.entity_id = :src AND a.workspace_id = :ws)
                   -[r IS aryx_graph_edge]->{{1,{hops}}}  # nosec S608 — hops is a validated int
-                  (b IS aryx_graph_vertex WHERE b.entity_id = :dst)
+                  (b IS aryx_graph_vertex WHERE b.entity_id = :dst AND b.workspace_id = :ws2)
                 )
                 ONE ROW PER STEP (a, r, b)
                 COLUMNS (
@@ -347,10 +357,19 @@ class OracleGraphReader:
                 )
               )
         """
+        # Scoping both path endpoints to this workspace is sufficient, not
+        # just defense-in-depth: every edge/vertex is written with a single
+        # workspace_id at ingest time (see e.g. neighbors_batch's WHERE
+        # e.workspace_id = :ws), so no edge ever crosses a workspace
+        # boundary -- a path that starts inside this workspace can never
+        # traverse into another one.
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(sql, {"src": src, "dst": dst})
+                    cur.execute(sql, {
+                        "src": src, "dst": dst,
+                        "ws": self._workspace_id, "ws2": self._workspace_id,
+                    })
                     step_rows = cur.fetchall()
             if not step_rows:
                 return []
