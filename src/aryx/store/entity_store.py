@@ -428,14 +428,27 @@ class EntityStore:
         """Insert a single entity and return its new id."""
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    load("insert_entity"),
-                    (self._ws, ontology_type, Json(attributes, dumps=_dumps), confidence),
-                )
-                row = cur.fetchone()
-        if not row:
-            raise RuntimeError(f"insert_entity returned no row — workspace {self._ws}")
-        entity_id = int(row[0])
+                if get_settings().effective_db_backend() == "oci":
+                    # queries/oracle/insert_entity.sql takes an explicit id
+                    # (5 params, no RETURNING) -- unlike the Postgres/generic
+                    # 4-param RETURNING version, since Oracle's BIGSERIAL
+                    # equivalent is fetched up front (same pattern as
+                    # _save_batch's bulk path via _fetch_entity_ids).
+                    entity_id = _fetch_entity_ids(cur, 1)[0]
+                    cur.execute(
+                        load("insert_entity"),
+                        (entity_id, self._ws, ontology_type,
+                         Json(attributes, dumps=_dumps), confidence),
+                    )
+                else:
+                    cur.execute(
+                        load("insert_entity"),
+                        (self._ws, ontology_type, Json(attributes, dumps=_dumps), confidence),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise RuntimeError(f"insert_entity returned no row — workspace {self._ws}")
+                    entity_id = int(row[0])
         logger.info("entity created ws=%s id=%s type=%s", self._ws, entity_id, ontology_type)
         return entity_id
 
