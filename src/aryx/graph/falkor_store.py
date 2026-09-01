@@ -193,6 +193,19 @@ class FalkorStore:
         # to CREATE INDEX statements by ensure_indexes().
         self._index_candidates: set[str] = set()
 
+    def run_read_only(self, query: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
+        """Execute an arbitrary query via FalkorDB's server-enforced read-only
+        mode (GRAPH.RO_QUERY) -- rejects any write operation at the database
+        level, not just an application-side keyword blacklist.
+
+        Used by graph_api.py's /graph/cypher endpoint (found by post-merge
+        review: that endpoint previously called store.run(), a method that
+        never existed on this class -- every call crashed with
+        AttributeError -- and relied solely on a regex keyword blacklist
+        that doesn't catch e.g. a write-capable CALL procedure).
+        """
+        return self._graph.ro_query(query, params=params or {}).result_set
+
     def clear(self) -> None:
         """Delete the whole graph for a clean rebuild.
 

@@ -79,10 +79,18 @@ def graph_router() -> APIRouter:
 
     @router.post("/graph/cypher")
     def cypher_read(body: dict[str, Any]) -> dict[str, Any]:
-        """Run a read-only Cypher MATCH; rejects writes (server.py also guards)."""
+        """Run a read-only Cypher query via FalkorDB's server-enforced
+        read-only mode (GRAPH.RO_QUERY), not just an app-side keyword
+        blacklist -- the database itself rejects any write operation,
+        including write-capable procedure calls a regex can't catch.
+
+        Found by post-merge review: this previously called store.run(),
+        a method that never existed on FalkorStore -- every call crashed
+        with AttributeError regardless of the keyword check below.
+        """
         import re as _re
         q = str(body.get("query") or "")
-        if _re.search(r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|DETACH)\b",
+        if _re.search(r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|DETACH|CALL)\b",
                       q, _re.IGNORECASE):
             raise HTTPException(400, "read-only — write keywords rejected")
         wid = int(body.get("workspace_id", 1))
@@ -90,7 +98,7 @@ def graph_router() -> APIRouter:
         from aryx.workspaces import ws_graph
         store = FalkorStore(get_settings().graph_url, ws_graph(wid))
         try:
-            rows = store.run(q, params={})
+            rows = store.run_read_only(q, params={})
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, f"cypher failed: {exc}") from exc
         return {"rows": rows[: int(body.get("limit", 50))]}

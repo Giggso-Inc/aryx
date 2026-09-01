@@ -82,6 +82,40 @@ def test_graph_overview_falls_back_when_domain_has_no_match(client: TestClient) 
     assert payload["overview_nodes"][0]["entity_ids"] == [1]
 
 
+def test_cypher_read_uses_server_enforced_read_only_query(client: TestClient) -> None:
+    """Regression coverage: this endpoint previously called store.run(), a
+    method that never existed on FalkorStore -- every call crashed with
+    AttributeError. Now uses run_read_only(), backed by FalkorDB's
+    GRAPH.RO_QUERY (server-enforced), not just the keyword blacklist."""
+    class FakeStore:
+        def __init__(self, url: str, graph: str) -> None:
+            pass
+
+        def run_read_only(self, query: str, params: dict) -> list[list[object]]:
+            assert query == "MATCH (n) RETURN n LIMIT 1"
+            return [[1], [2], [3]]
+
+    with patch("aryx.graph.falkor_store.FalkorStore", FakeStore):
+        response = client.post("/graph/cypher", json={
+            "query": "MATCH (n) RETURN n LIMIT 1", "limit": 2,
+        })
+
+    assert response.status_code == 200
+    assert response.json() == {"rows": [[1], [2]]}
+
+
+def test_cypher_read_rejects_write_keywords(client: TestClient) -> None:
+    response = client.post("/graph/cypher", json={"query": "CREATE (n:Entity)"})
+    assert response.status_code == 400
+
+
+def test_cypher_read_rejects_call_procedures(client: TestClient) -> None:
+    """CALL can invoke write-capable procedures the original keyword list
+    didn't cover; also caught server-side by GRAPH.RO_QUERY regardless."""
+    response = client.post("/graph/cypher", json={"query": "CALL db.labels()"})
+    assert response.status_code == 400
+
+
 def test_neighbors_response_includes_direction_field() -> None:
     from aryx.api.graph_api import _reader, graph_router
 
