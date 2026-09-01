@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextvars
 import logging
-import os
 import time
 
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
@@ -99,8 +98,20 @@ def _broker_for(model: str) -> Broker:
 
 def _log_call(role: str, model: str, pt: int, ct: int, ms: int, err: str,
               workspace_id: int = 1) -> None:
-    """Best-effort persist to aryx_llm_call (no-op if DB unavailable)."""
-    dsn = os.environ.get("ARYX_RDB_DSN", "")
+    """Best-effort persist to aryx_llm_call (no-op if DB unavailable).
+
+    Uses get_settings().effective_dsn(), not a raw os.environ read -- the
+    latter (ARYX_RDB_DSN specifically) bypassed the Settings/effective_dsn()
+    machinery entirely, so on an OCI deployment where ops sets
+    ARYX_OCI_ADB_DSN/ARYX_DB_USER/ARYX_DB_PASSWORD per convention and never
+    sets ARYX_RDB_DSN, this silently no-opped on every single call -- every
+    LLM call's usage/audit record was lost, exactly the gap this choke
+    point exists to close (found by post-merge review).
+    """
+    try:
+        dsn = get_settings().effective_dsn()
+    except Exception:  # noqa: BLE001 — e.g. ARYX_OCI_ADB_DSN unset; stay best-effort
+        return
     if not dsn:
         return
     try:
