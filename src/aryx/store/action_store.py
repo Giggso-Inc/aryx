@@ -118,10 +118,18 @@ class ActionStore:
         return (row[0] or {}).get(key) if row else None
 
     def set_attribute(self, entity_id: int, key: str, value: Any) -> None:
-        """Merge one attribute into the entity JSONB; touches updated_at."""
+        """Merge one attribute into the entity JSONB; touches updated_at.
+
+        Uses merge_one_attribute.sql, not update_entity_attributes.sql --
+        the latter is a full-replace query (see entity_store.update_entity's
+        "Replace attributes" contract); passing a single-key {key: value}
+        dict to a full-replace query would wipe every other attribute the
+        entity had. Both queries previously shared one file with mutually
+        incompatible contracts (found by post-merge review).
+        """
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(load("update_entity_attributes"),
+                cur.execute(load("merge_one_attribute"),
                             (Json({key: value}, dumps=_dumps),
                              entity_id, self._ws))
 
