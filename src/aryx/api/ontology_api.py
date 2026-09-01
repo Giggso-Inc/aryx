@@ -70,7 +70,8 @@ def ontology_router() -> APIRouter:
         return export_runtime.status()
 
     @router.post("/config")
-    def set_config(req: OntologyConfigRequest) -> dict:
+    def set_config(req: OntologyConfigRequest,
+                   _: str | None = Depends(write_api_key)) -> dict:
         """Update the interchange config (enable, formats, base URI)."""
         export_runtime.set_config(
             enabled=req.enabled, formats=req.formats,
@@ -89,20 +90,22 @@ def ontology_router() -> APIRouter:
         return _ob.list_browse(workspace_id)
 
     @router.post("/types/{name}/approve")
-    def approve_type(name: str, workspace_id: int = 1) -> dict:
+    def approve_type(name: str, workspace_id: int = 1,
+                      _: str | None = Depends(write_api_key)) -> dict:
         """Approve a proposed type."""
         return _ob.approve(name, workspace_id)
 
     @router.post("/types/{name}/parent")
     def set_parent(name: str, body: dict,
-                    workspace_id: int = 1) -> dict:
+                    workspace_id: int = 1,
+                    _: str | None = Depends(write_api_key)) -> dict:
         """Set or clear parent_type (body.parent str|null)."""
         parent = body.get("parent")
         return _ob.set_parent(name, str(parent) if parent else None,
                                 workspace_id)
 
     @router.post("/types")
-    def add_type(body: dict) -> dict:
+    def add_type(body: dict, _: str | None = Depends(write_api_key)) -> dict:
         """Create a new ontology type manually in one workspace."""
         return _ob.add_type(str(body.get("name", "")).strip(),
                             body.get("attributes") or {},
@@ -166,7 +169,8 @@ def ontology_router() -> APIRouter:
         )
 
     @router.post("/import")
-    def import_ontology(req: OntologyImportRequest) -> dict:
+    def import_ontology(req: OntologyImportRequest,
+                         _: str | None = Depends(write_api_key)) -> dict:
         """Parse RDF/OWL into proposed types via the ontology_browse helper."""
         if not export_runtime.is_enabled():
             raise HTTPException(403, "ontology import disabled — enable in Settings")
