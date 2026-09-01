@@ -7,6 +7,7 @@ import secrets
 from datetime import datetime
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.mcp.auth import (
     SALES_CPQ_PURPOSE,
     SALES_CPQ_TOOLS,
@@ -80,21 +81,19 @@ class McpTokenStore:
 
         raw = "aryx_" + secrets.token_urlsafe(32)
         prefix = raw[:12]
+        insert_params = (
+            label, _hash(raw), prefix, purpose, encoded_tools,
+            workspace_id, shay_workspace_id, expires_at,
+        )
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    load("insert_mcp_token"),
-                    (
-                        label,
-                        _hash(raw),
-                        prefix,
-                        purpose,
-                        encoded_tools,
-                        workspace_id,
-                        shay_workspace_id,
-                        expires_at,
-                    ),
-                )
+                cur.execute(load("insert_mcp_token"), insert_params)
+                if get_settings().effective_db_backend() == "oci":
+                    # No RETURNING on Oracle (see insert_mcp_token.sql's
+                    # override note) -- prefix is already unique (derived
+                    # from a fresh secrets.token_urlsafe() call above), so
+                    # it's a safe follow-up lookup key.
+                    cur.execute(load("select_mcp_token_by_prefix"), (prefix,))
                 row = cur.fetchone()
         logger.info("mcp token issued id=%s label=%s", row[0], label)
         return {
