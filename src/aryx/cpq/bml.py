@@ -1756,11 +1756,28 @@ class BmlEvaluator:
             from aryx.config import get_settings
             from aryx.queries import load
             from aryx.store.pool import get_pool
-            with get_pool(get_settings().effective_dsn()).connection() as conn:
+            settings = get_settings()
+            result_json = json.dumps(result)
+            with get_pool(settings.effective_dsn()).connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(load("upsert_bml_tier2_cache"), (
-                        cache_key, self._workspace_id, kind, json.dumps(result),
-                    ))
+                    if settings.effective_db_backend() == "oci":
+                        # Oracle has no ON CONFLICT ... DO UPDATE -- the
+                        # translated upsert_bml_tier2_cache.sql only strips
+                        # ON CONFLICT and swallows the resulting ORA-00001,
+                        # which correctly emulates a fresh insert but would
+                        # silently no-op instead of refreshing an existing
+                        # row's result. Check for the existing row first.
+                        cur.execute(load("select_bml_tier2_cache_exists"), (cache_key,))
+                        if cur.fetchone() is not None:
+                            cur.execute(load("update_bml_tier2_cache"), (result_json, cache_key))
+                        else:
+                            cur.execute(load("upsert_bml_tier2_cache"), (
+                                cache_key, self._workspace_id, kind, result_json,
+                            ))
+                    else:
+                        cur.execute(load("upsert_bml_tier2_cache"), (
+                            cache_key, self._workspace_id, kind, result_json,
+                        ))
         except Exception:  # noqa: BLE001 — durable cache is best-effort only
             logger.debug("bml: durable tier-2 cache write failed", exc_info=True)
 

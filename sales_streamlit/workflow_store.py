@@ -7,6 +7,7 @@ from typing import Any
 from psycopg.types.json import Json
 
 from aryx.queries import load
+from aryx.store.ask_thread_store import _as_json
 from sales_streamlit.msi_workflow import (
     MsiWorkflowRequest,
     new_workflow_record,
@@ -15,7 +16,13 @@ from aryx.store.pool import get_pool
 
 
 def _record(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map one SQL result row to the workflow contract."""
+    """Map one SQL result row to the workflow contract.
+
+    request_payload/identifiers/steps are JSONB on Postgres (psycopg auto-
+    decodes) but native JSON on Oracle, which python-oracledb can return as
+    an already-parsed dict or as text depending on driver version -- _as_json
+    normalizes both (same helper AryxAskThreadStore uses for gg_* columns).
+    """
     return {
         "workflow_id": str(row[0]),
         "confirmation_id": str(row[1]),
@@ -23,9 +30,9 @@ def _record(row: tuple[Any, ...]) -> dict[str, Any]:
         "thread_id": str(row[3]),
         "status": str(row[4]),
         "current_step": str(row[5] or ""),
-        "request": row[6] or {},
-        "identifiers": row[7] or {},
-        "steps": row[8] or [],
+        "request": _as_json(row[6]) or {},
+        "identifiers": _as_json(row[7]) or {},
+        "steps": _as_json(row[8]) or [],
         "error_message": str(row[9] or ""),
         "created_at": row[10],
         "updated_at": row[11],

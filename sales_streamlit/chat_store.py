@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from aryx.queries import load
-from aryx.store.ask_thread_store import ASK_CHANNEL_NAME, AryxAskThreadStore
+from aryx.store.ask_thread_store import ASK_CHANNEL_NAME, AryxAskThreadStore, _as_json
 from aryx.store.pool import get_pool
 
 
@@ -163,7 +163,10 @@ class SalesChatStore:
             row = cur.fetchone()
         if row is None:
             return None
-        metadata = row[2] or {}
+        # Postgres JSONB auto-decodes via psycopg; Oracle's gg_messages
+        # stores the same data as CLOB and returns plain text -- normalize
+        # both to a dict (see AryxAskThreadStore._as_json's docstring).
+        metadata = _as_json(row[2]) or {}
         return {
             "id": str(row[0]),
             "content": str(row[1]),
