@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
 from typing import Any, MutableMapping
+
+logger = logging.getLogger(__name__)
+
+_warned_session_actor_mode = False
 
 
 def resolve_actor_id(
@@ -40,6 +45,27 @@ def resolve_actor_id(
     if os.environ.get("ARYX_SALES_ALLOW_SESSION_ACTOR", "0") != "1":
         raise RuntimeError(
             f"Trusted sales identity header {header_name!r} was not provided"
+        )
+    # This anonymous fallback identifies an actor solely by a bearer token
+    # in the URL (?actor=<token>) -- intended only for local dev, where
+    # there's no ingress SSO header to inject. It has a real limitation
+    # with no full fix available at this layer: anyone who obtains a
+    # generated actor URL (browser history, shared link, referrer/log
+    # leakage) is treated as that same identity, including their prior
+    # chat transcript and MSI workflow state (found by post-merge review).
+    # Signing the token wouldn't close this -- it only prevents forging a
+    # *new* token, not replaying a leaked valid one; that requires real
+    # session/cookie-based auth, out of scope for this lightweight
+    # fallback. Logged loudly (once per process) so enabling this in any
+    # shared/production deployment is visible in logs, not silent.
+    global _warned_session_actor_mode
+    if not _warned_session_actor_mode:
+        _warned_session_actor_mode = True
+        logger.warning(
+            "ARYX_SALES_ALLOW_SESSION_ACTOR=1: sales chat identity is a bare "
+            "?actor= URL token, not a real trusted identity -- anyone who "
+            "obtains a generated actor URL is treated as that same actor. "
+            "Do not enable this in a shared/production deployment."
         )
     key = "_aryx_sales_actor_id"
     if key in session_state:
