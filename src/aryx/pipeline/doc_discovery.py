@@ -15,6 +15,7 @@ import re
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as defused_ET
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
@@ -28,13 +29,16 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.connectors.records_source import RecordsConnector
+from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
 from aryx.pipeline.orchestrate import run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.ontology_store import OntologyStore
 from aryx.source_catalog import (
     restore_generic_source_entry,
+    upsert_xlsx_catalog_entry,
     upsert_xml_catalog_entry,
+    xlsx_asset_record,
     xml_asset_record,
 )
 
@@ -70,7 +74,31 @@ def _stem_type(filename: str) -> str:
     return "".join(_singular(w).title() for w in words if w)
 
 
-_KEY_SUFFIXES = ("_code", "_id", "_key", "_num", "_ref", "_no", "_cage")
+def _key_suffixes() -> tuple[str, ...]:
+    """Config-driven column-name suffixes treated as generic key/code
+    indicators — domain-agnostic naming conventions, not specific to any
+    one dataset. Override with ARYX_FK_KEY_SUFFIXES."""
+    return tuple(
+        s.strip() for s in get_settings().fk_key_suffixes.split(",") if s.strip()
+    )
+
+
+def _id_like_names() -> frozenset[str]:
+    """Config-driven column names treated as a generic opaque-identifier
+    signal. Override with ARYX_ID_LIKE_COLUMN_NAMES."""
+    return frozenset(
+        s.strip().lower() for s in get_settings().id_like_column_names.split(",")
+        if s.strip()
+    )
+
+
+def _name_like_names() -> frozenset[str]:
+    """Config-driven column names treated as a generic display-name
+    signal. Override with ARYX_NAME_LIKE_COLUMN_NAMES."""
+    return frozenset(
+        s.strip().lower() for s in get_settings().name_like_column_names.split(",")
+        if s.strip()
+    )
 
 
 def _guess_key_col(sample: str) -> str:
@@ -83,8 +111,9 @@ def _guess_key_col(sample: str) -> str:
     try:
         first_line = sample.split("\n")[0]
         headers = next(csv.reader(io.StringIO(first_line)))
+        suffixes = _key_suffixes()
         for h in headers[:6]:
-            if any(h.lower().endswith(sfx) for sfx in _KEY_SUFFIXES):
+            if any(h.lower().endswith(sfx) for sfx in suffixes):
                 return h
         return headers[0] if headers else "name"
     except Exception:  # noqa: BLE001
@@ -92,7 +121,8 @@ def _guess_key_col(sample: str) -> str:
 
 
 def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
-    """Promote an explicit 'id'/'uuid'/'guid' column to primary match_key.
+    """Promote an explicit id-like column (see ARYX_ID_LIKE_COLUMN_NAMES) to
+    primary match_key.
 
     When a CSV has an explicit PK column the LLM sometimes picks a FK column
     (e.g. bm_config_rule_id) instead.  In Pass 2 FK detection that causes
@@ -100,12 +130,13 @@ def _id_priority_mk(sample: str, mk: list[str]) -> list[str]:
     creating thousands of false edges.  Returning 'id' early avoids this because
     short keys like 'id' have mk_stem length < 3 and are skipped by Pass 2.
     """
-    if mk and mk[0].lower() in ("id", "uuid", "guid"):
+    id_names = _id_like_names()
+    if mk and mk[0].lower() in id_names:
         return mk
     try:
         hdr_line = sample.split("\n")[0]
         hdrs = next(csv.reader(io.StringIO(hdr_line)), [])
-        id_hdr = next((h for h in hdrs[:8] if h.lower() in ("id", "uuid", "guid")), None)
+        id_hdr = next((h for h in hdrs[:8] if h.lower() in id_names), None)
         if id_hdr:
             return [id_hdr]
     except Exception:  # noqa: BLE001
@@ -575,8 +606,15 @@ def _consolidate_csv_names(data: bytes, did: str | None = None) -> bytes:
 
 
 def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
-               broker: Broker, context: str, did: str | None = None) -> dict[str, Any]:
-    """Read everything; return {mentions, tabular, summary} without committing."""
+               broker: Broker, context: str, did: str | None = None,
+               on_progress: Callable[[int, int, list], None] | None = None) -> dict[str, Any]:
+    """Read everything; return {mentions, tabular, summary} without committing.
+
+    on_progress: optional callback forwarded to extract_mentions() for each
+    document — see doc_router.DocumentRouterConnector / ontology.extract for
+    the (completed, total, new_records) signature. Lets the caller persist
+    partial progress on long-running (1000+ page) documents.
+    """
     settings = get_settings()
     logger.info("read_files start did=%s doc_files=%d tabular_files=%d context=%r",
                 did, len(doc_paths), len(tabular), context)
@@ -586,7 +624,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
             paths=doc_paths, system="document", broker=broker,
             chunk_store=ChunkStore(settings.rdb_dsn), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
-            context=context)
+            context=context, on_progress=on_progress)
         mentions = list(connector.extract())
 
     # XML/XLSX files: expand into one CSV per element type / worksheet so
@@ -641,6 +679,10 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
     """
     if len(plans) < 2:
         return []
+
+    key_suffixes = _key_suffixes()
+    id_names = _id_like_names()
+    name_names = _name_like_names()
 
     def _headers(data: bytes) -> list[str]:
         try:
@@ -715,8 +757,8 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                     tag_candidates.add(form)
                     tag_candidates.add(_singular(form))
             headers_b = plan_headers[j]
-            id_col = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
-            name_col = next((c for c in headers_b if c.lower() in ("name", "full_name", "title")), None)
+            id_col = next((c for c in headers_b if c.lower() in id_names), None)
+            name_col = next((c for c in headers_b if c.lower() in name_names), None)
             mk0 = plan_b["match_keys"][0] if plan_b.get("match_keys") else None
 
             for col in plan_headers[i]:
@@ -788,7 +830,7 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 #   own_mk_l — skip when both A and B are siblings sharing a parent FK
                 #   _col_is_varying — skip single-value context fields
                 if (col_l == mk_b_l and col_l != own_mk_l
-                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
+                        and any(col_l.endswith(sfx) for sfx in key_suffixes)
                         and _is_varying(i, col)):
                     seen2.add(col2_key)
                     links.append({
@@ -804,7 +846,7 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 # Rule B: column contains B's match-key stem as a fragment AND has
                 # a key suffix — catches hierarchical/reference column patterns
                 if (mk_stem in col_l and col_l != mk_b_l
-                        and any(col_l.endswith(sfx) for sfx in _KEY_SUFFIXES)
+                        and any(col_l.endswith(sfx) for sfx in key_suffixes)
                         and _is_varying(i, col)
                         and _is_varying(j, mk_b)):
                     seen2.add(col2_key)
@@ -823,8 +865,8 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
                 # Target cardinality guard: if the join target column has only one
                 # distinct value (e.g. company_id = constant) it cannot produce
                 # meaningful per-row joins — only false cartesian-product edges.
-                col_sfx = next((s for s in _KEY_SUFFIXES if col_l.endswith(s)), None)
-                mk_sfx = next((s for s in _KEY_SUFFIXES if mk_b_l.endswith(s)), None)
+                col_sfx = next((s for s in key_suffixes if col_l.endswith(s)), None)
+                mk_sfx = next((s for s in key_suffixes if mk_b_l.endswith(s)), None)
                 if (col_sfx and mk_sfx and col_sfx == mk_sfx
                         and col_l != mk_b_l and col_l != own_mk_l
                         and _is_varying(i, col)
@@ -874,7 +916,7 @@ def _detect_fk_links(plans: list[dict], log_id: str | None = None) -> list[dict]
             continue
         fk_col_l = f"{elem_b}_id"
         headers_b = plan_headers[j]
-        id_col_b = next((c for c in headers_b if c.lower() in ("id", "uuid", "key")), None)
+        id_col_b = next((c for c in headers_b if c.lower() in id_names), None)
         mk0_b = plan_b["match_keys"][0] if plan_b.get("match_keys") else None
         target_attr = id_col_b or mk0_b
         if not target_attr:
@@ -1094,13 +1136,29 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     completed_plans: set[str] = set(state.get("completed_plans", []))
     plan_run_ids: dict[str, str] = dict(state.get("plan_run_ids", {}))
 
+    # Same is_last/skip_graph pattern already used below for tabular plans
+    # (see _run_one_plan): a real incident with 96 mention types on one PDF
+    # showed every type's run_pipeline() call independently ran relate,
+    # schema_fk, relate_isolated, dimension_link, AND project_graph — and
+    # project_graph's own contract is to clear() and rebuild the ENTIRE
+    # workspace graph from every entity seen so far, so cost grew with every
+    # type instead of running once. Only the LAST type with any mentions
+    # now runs the expensive whole-workspace passes; earlier types just
+    # resolve their own records into entities.
+    types_with_recs = [
+        ot for ot in approved_types
+        if any(m.payload.get("type") == ot for m in data["mentions"])
+    ]
+    last_type_with_recs = types_with_recs[-1] if types_with_recs else None
+
     for otype in approved_types:
         step += 1
         jobs.update_stage(job_id, f"{step}/{total}", int(step * 90 / total), f"Adding {otype}")
         recs = [m for m in data["mentions"] if m.payload.get("type") == otype]
         if recs:
-            logger.info("confirm job=%s step=%d/%d otype=%s records=%d",
-                        job_id, step, total, otype, len(recs))
+            is_last = otype == last_type_with_recs
+            logger.info("confirm job=%s step=%d/%d otype=%s records=%d is_last=%s",
+                        job_id, step, total, otype, len(recs), is_last)
 
             def _progress_otype(stage: str, pct: int, detail: str, _otype: str = otype,
                                  _step: int = step) -> None:
@@ -1113,7 +1171,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.rdb_dsn,
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
-                         workspace_id=workspace_id, relate=True, on_progress=_progress_otype)
+                         workspace_id=workspace_id, relate=is_last, skip_graph=not is_last,
+                         on_progress=_progress_otype)
         else:
             logger.info("confirm job=%s step=%d/%d otype=%s skipped, no matching mentions",
                         job_id, step, total, otype)
@@ -1129,7 +1188,27 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
                     job_id, len(all_valid_plans) - len(valid_plans),
                     [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
-    _persist_xml_sources(valid_plans, workspace_id, settings.rdb_dsn)
+    _persist_tabular_sources(valid_plans, workspace_id, settings.rdb_dsn)
+
+    def _report_fk_stage(pct: int, detail: str) -> None:
+        # A transient job-store failure while reporting progress must never
+        # abort real FK-detection work — same discipline as dynamic_fk.py's
+        # own on_progress guard (judge_candidates_with_llm).
+        try:
+            jobs.update_stage(job_id, "FK Detection", pct, detail)
+        except Exception:  # noqa: BLE001
+            logger.warning("confirm job=%s FK-detection stage report failed", job_id, exc_info=True)
+
+    # docs/falkordb_high_cpu_2026-07-29.md follow-up — this whole FK-detection
+    # block (column-name passes + the dynamic value-overlap/LLM-judge pass
+    # below) previously called jobs.update_stage() nowhere at all. A
+    # CSV-only confirm (no approved_types, so the mentions loop above never
+    # runs either) sat at its initial jobs.create() values — status
+    # "queued", pct 0 — for the entire duration of this block, genuinely
+    # indistinguishable in the UI/API from a job that never started, even
+    # though real work was running. Live-confirmed: a 33-file SL3500e batch
+    # sat "queued" for 9+ minutes of real dynamic-FK activity.
+    _report_fk_stage(1, "Detecting column-name foreign keys…")
     auto_fk = _detect_fk_links(valid_plans, log_id=job_id)
     if auto_fk:
         logger.info("confirm job=%s auto-detected %d fk-link spec(s): %s",
@@ -1140,6 +1219,8 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # column-name-based FK detection above. Mutates the bm_function plan's
     # own CSV data (adds 3 derived columns) when it finds recognized
     # scripts, so this must run before _run_one_plan below reads plan["data"].
+    if valid_plans:
+        _report_fk_stage(2, "Analyzing script data-flow links…")
     script_flow_links = _detect_script_data_flow_links(valid_plans, log_id=job_id)
     if script_flow_links:
         auto_fk.extend(script_flow_links)
@@ -1149,6 +1230,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     # Detect FK links from the last plan to types already in the workspace.
     # Fires for single-file jobs where _detect_fk_links returns [].
     if valid_plans:
+        _report_fk_stage(3, "Detecting workspace-level foreign keys…")
         try:
             onto = OntologyStore(settings.rdb_dsn, workspace_id)
             try:
@@ -1169,6 +1251,32 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             auto_fk.extend(workspace_fk)
             logger.info("confirm job=%s workspace FK links detected count=%d specs=%s",
                         job_id, len(workspace_fk), workspace_fk)
+
+    # Dynamic (value-overlap + LLM judge) detection — fills the gap the
+    # column-name passes above cannot see (differently-named columns,
+    # derived/semantic joins). Runs once over the whole batch, only on pairs
+    # not already resolved above, so it's purely additive.
+    if valid_plans:
+        _report_fk_stage(4, "Scanning for dynamic (value-overlap) foreign keys…")
+        already_linked = {(lk["source_type"], lk["target_type"]) for lk in auto_fk}
+
+        def _dynamic_fk_progress(done: int, total_candidates: int) -> None:
+            # 5-10%: this stage alone can run for many minutes on a large
+            # multi-table batch (every candidate gets its own LLM call, no
+            # cap) — real "N/M judged" progress here is what would have
+            # told us live whether the 9-minute-silent run was working or
+            # actually hung, instead of guessing from CPU% and log gaps.
+            pct = 5 + int(done * 5 / max(total_candidates, 1))
+            _report_fk_stage(pct, f"Judging candidate foreign keys ({done}/{total_candidates})…")
+
+        dynamic_fk = detect_dynamic_fk_links(
+            valid_plans, broker, already_linked=already_linked, log_id=job_id,
+            on_progress=_dynamic_fk_progress,
+        )
+        if dynamic_fk:
+            auto_fk.extend(dynamic_fk)
+            logger.info("confirm job=%s dynamic (value+LLM) fk-link spec(s): %d: %s",
+                        job_id, len(dynamic_fk), dynamic_fk)
 
     def _run_one_plan(plan: dict, is_last: bool, plan_step: int) -> None:
         """Run a single tabular plan through the pipeline."""
@@ -1292,17 +1400,99 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             logger.warning("confirm job=%s validation crashed: %s", job_id, exc,
                            exc_info=True)
 
+    # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md — the CPQ rule/
+    # table caches (data_table_resolver._TABLES_CACHE, engine._VALUE_RULES_
+    # CACHE/_RULE_JOIN_DATA_CACHE) were widened from a 30s to a 300s TTL to
+    # let them survive real cross-turn gaps; that widening only stays safe
+    # against a re-ingest changing this workspace's Data Tables/rules
+    # mid-session if staleness is cleared HERE, at the point ingestion
+    # actually completes, rather than relying on the (now longer) TTL alone
+    # to eventually notice. These hooks clear() the WHOLE module-level cache
+    # (no workspace-scoped variant exists — they're simple dicts keyed by
+    # (workspace_id, catalog_prefix) with no per-key clear helper), so an
+    # ingest into workspace A also evicts workspace B's still-warm cache
+    # entries — a bounded, acceptable inefficiency (one extra fresh scan for
+    # unrelated workspaces on their next turn), not a correctness issue.
+    # Best-effort — an import failure or clear() bug must never fail an
+    # otherwise-successful ingest.
+    try:
+        from aryx.cpq.data_table_resolver import _clear_tables_cache
+        from aryx.cpq.engine import (
+            _clear_data_table_forced_vns_cache,
+            _clear_rule_join_data_cache,
+            _clear_substitute_util_get_constraint_vals_cache,
+            _clear_value_rules_cache,
+        )
 
-def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
-    """Persist XML parent metadata for the source catalog."""
+        _clear_tables_cache()
+        _clear_rule_join_data_cache()
+        _clear_value_rules_cache()
+        _clear_data_table_forced_vns_cache()
+        _clear_substitute_util_get_constraint_vals_cache()
+        logger.info("confirm job=%s cleared CPQ rule/table caches after ingest", job_id)
+    except Exception as exc:  # noqa: BLE001 — never fail the ingest over cache invalidation
+        logger.warning("confirm job=%s CPQ cache invalidation failed: %s", job_id, exc,
+                       exc_info=True)
+
+    # 2026-08-29 (PR #287 review, Section 12): the clears above only reach
+    # THIS process' in-memory copy of each cache. Under multiple api
+    # worker processes (P1), every OTHER worker's copy is untouched by
+    # them -- this write is what lets those other workers notice, via
+    # their own short-interval poll (data_table_resolver._current_
+    # invalidation_marker), that a re-ingest happened somewhere and their
+    # cached data may now be stale. Placed AFTER all real ingest work
+    # above (plan execution, FK links, validation) has already completed
+    # and committed -- a worker that sees this marker move is guaranteed
+    # to see the real underlying data as of at least that point in time,
+    # never a partial/in-flight ingest. Separate try/except, independent
+    # of the in-process clears above: a marker-write failure must not
+    # skip the in-process clear (which still protects THIS worker), and
+    # vice versa.
+    try:
+        from aryx.store.pool import get_pool
+
+        # Explicit short acquisition timeout -- an unreachable/exhausted
+        # pool must not delay this best-effort write for psycopg_pool's
+        # own 30s default; the in-process clears above already ran and
+        # protect this worker regardless of whether this write succeeds.
+        with get_pool(settings.rdb_dsn).connection(timeout=2.0) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cpq_cache_invalidation_marker "
+                "SET invalidated_at = NOW(), last_job_id = %s WHERE id = 1",
+                (job_id,),
+            )
+        logger.info("confirm job=%s wrote cross-process cache invalidation marker", job_id)
+    except Exception as exc:  # noqa: BLE001 — never fail the ingest over marker write
+        logger.warning(
+            "confirm job=%s cross-process cache invalidation marker write failed "
+            "(other worker processes may serve stale CPQ data for up to the cache "
+            "TTL): %s", job_id, exc, exc_info=True,
+        )
+
+
+def _persist_tabular_sources(valid_plans: list[dict[str, Any]], workspace_id: int, dsn: str) -> None:
+    """Persist parent-workbook metadata for the source catalog.
+
+    Every confirmed plan derived from an XML or XLSX upload carries its
+    original source_filename/source_bytes (set in read_files() for both
+    suffixes alike — see converted_tabular above). The catalog entry kind
+    must match the ORIGINAL file's own suffix, not always "xml": writing
+    every source as an xml catalog entry mislabeled .xlsx uploads as
+    "XML File" in the Data tab and left their generated-asset metadata
+    under the wrong catalog key.
+    """
     grouped: dict[str, dict[str, Any]] = {}
     for plan in valid_plans:
         source_filename = plan.get("source_filename")
         source_bytes = plan.get("source_bytes")
         if not source_filename or source_bytes is None:
             continue
-        group = grouped.setdefault(source_filename, {"source_bytes": source_bytes, "assets": []})
-        group["assets"].append(xml_asset_record(
+        group = grouped.setdefault(
+            source_filename, {"source_bytes": source_bytes, "assets": []},
+        )
+        is_xlsx = Path(source_filename).suffix.lower() == ".xlsx"
+        asset_record = xlsx_asset_record if is_xlsx else xml_asset_record
+        group["assets"].append(asset_record(
             filename=plan["filename"],
             dataset=Path(plan["filename"]).stem,
             ontology_type=plan["ontology_type"],
@@ -1312,10 +1502,19 @@ def _persist_xml_sources(valid_plans: list[dict[str, Any]], workspace_id: int, d
         return
     store = DatasourceStore(dsn)
     for source_filename, payload in grouped.items():
-        upsert_xml_catalog_entry(
-            store,
-            workspace_id=workspace_id,
-            source_filename=source_filename,
-            xml_bytes=payload["source_bytes"],
-            assets=payload["assets"],
-        )
+        if Path(source_filename).suffix.lower() == ".xlsx":
+            upsert_xlsx_catalog_entry(
+                store,
+                workspace_id=workspace_id,
+                source_filename=source_filename,
+                xlsx_bytes=payload["source_bytes"],
+                assets=payload["assets"],
+            )
+        else:
+            upsert_xml_catalog_entry(
+                store,
+                workspace_id=workspace_id,
+                source_filename=source_filename,
+                xml_bytes=payload["source_bytes"],
+                assets=payload["assets"],
+            )

@@ -132,6 +132,22 @@ def ontology_router() -> APIRouter:
             raise HTTPException(403, "ontology export is disabled — enable it in Settings")
         if format not in export_runtime.enabled_formats():
             raise HTTPException(403, f"format '{format}' is not enabled in Settings")
+        cap = get_settings().ontology_export_max_entities
+        if cap > 0:
+            settings = get_settings()
+            _estore = EntityStore(settings.rdb_dsn, workspace_id)
+            try:
+                entity_count = _estore.count_entities()
+            finally:
+                _estore.close()
+            if entity_count > cap:
+                raise HTTPException(
+                    413,
+                    f"workspace {workspace_id} has {entity_count:,} entities — "
+                    f"synchronous export is capped at {cap:,} to prevent proxy "
+                    f"timeouts (502). Raise ARYX_ONTOLOGY_EXPORT_MAX_ENTITIES or "
+                    f"use the async export endpoint.",
+                )
         cfg = export_runtime.status()
         try:
             bundle = _load_bundle(workspace_id, bool(cfg["include_provenance"]))

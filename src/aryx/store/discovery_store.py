@@ -7,15 +7,39 @@ via the shared pool factory — oracle_pool.py handles all SQL translation.
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from aryx.config import get_settings
 from aryx.queries import load
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
+
+
+class DiscoveryPayloadTooLarge(ValueError):
+    """Raised when a discovery result is too large to persist in one write.
+
+    Two real, confirmed incidents motivate this guard:
+    - A 32-file BigMachines CSV catalog batch's serialized payload was large
+      enough to overrun Postgres's wire-protocol fixed-size message-length
+      framing, killing the connection outright with "invalid message
+      length" instead of a normal query error.
+    - A 33-file SL3500e batch separately hit a second, harder wall: a naive
+      uncompressed JSON payload can exceed engine-level size limits (Postgres
+      caps a single JSONB array's serialized size at 268,435,455 bytes).
+
+    ``data_json`` is stored gzip-compressed then base64-encoded — this keeps
+    it a plain JSON string (no column-type/migration change, works
+    unchanged on both Postgres and Oracle ADB 23ai) while shrinking
+    text-heavy CSV/mention payloads substantially. This guard measures the
+    size AFTER compression against ``settings.discovery_max_payload_mb``, so
+    an oversized batch still fails as a clean, catchable error instead of
+    crashing the connection or failing deep inside a database write.
+    """
 
 _COLUMNS = [
     "discovery_id", "workspace_id", "status",
@@ -64,11 +88,25 @@ def _discovery_hook(d: dict) -> Any:
 
 
 def _serialize_data(data: dict) -> str:
-    return json.dumps(data, cls=_DiscoveryEncoder)
+    """Return data_json's column value: gzip-compressed JSON, base64-encoded.
+
+    The result is JSON-encoded again (a quoted string) so the column keeps
+    holding valid JSON on both backends — no BYTEA/BLOB column or migration
+    needed, just a different encoding of the same text column.
+    """
+    raw = json.dumps(data, cls=_DiscoveryEncoder).encode("utf-8")
+    compressed = gzip.compress(raw)
+    return json.dumps(base64.b64encode(compressed).decode("ascii"))
 
 
 def _deserialize_data(s: str) -> dict:
-    return json.loads(s, object_hook=_discovery_hook)
+    parsed = json.loads(s)
+    if not isinstance(parsed, str):
+        # Empty-row fallback ("{}" default) — not a base64 payload.
+        return parsed if isinstance(parsed, dict) else {}
+    compressed = base64.b64decode(parsed)
+    raw = gzip.decompress(compressed)
+    return json.loads(raw, object_hook=_discovery_hook)
 
 
 def _row_to_dict(values: tuple) -> dict[str, Any]:
@@ -95,10 +133,18 @@ class DiscoveryStore:
         file_count: int,
     ) -> None:
         """Upsert a discovery row.  Does NOT overwrite status or confirm_state on conflict."""
+        data_json = _serialize_data(data)
+        max_bytes = get_settings().discovery_max_payload_mb * 1024 * 1024
+        if len(data_json) > max_bytes:
+            raise DiscoveryPayloadTooLarge(
+                f"discovery {discovery_id} payload is {len(data_json)} bytes "
+                f"(compressed) — exceeds discovery_max_payload_mb="
+                f"{get_settings().discovery_max_payload_mb}MB"
+            )
         params = {
             "discovery_id": discovery_id,
             "workspace_id": workspace_id,
-            "data_json":    _serialize_data(data),
+            "data_json":    data_json,
             "summary_json": json.dumps(summary),
             "file_count":   file_count,
             "created_at":   datetime.now(tz=timezone.utc),

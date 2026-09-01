@@ -32,21 +32,160 @@ None as "no constraint derived", never as "everything allowed".
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from aryx.cpq.logging_context import install_run_id_logging
 
 logger = logging.getLogger(__name__)
 install_run_id_logging(__name__)
 
-# variable == "value" / variable <> "value" comparisons inside a condition
-_CMP_RE = re.compile(r'^\s*(\w+)\s*(==|<>|!=)\s*"([^"]*)"\s*$')
+# variable == "value" / variable <> "value" comparisons inside a condition.
+# The RHS also accepts a bare true/false literal (variable == true), not just
+# a quoted string — confirmed live: a real recommendation script gates on
+# `includeASpareBatteryWithEachBodyCamera_viSoln == true` (a boolean-typed
+# attr compared against a bare, unquoted literal). Without this,
+# _parse_condition silently rejected the ENTIRE condition (never matched
+# _CMP_RE at all), so the script's real conditional logic could never be
+# evaluated deterministically — it always fell to Tier 2, which got this
+# specific case wrong (returned "YES" for a customer whose spare-battery
+# flag was false). Group 3 is the quoted-string RHS, group 4 the bare
+# boolean RHS — callers use whichever matched.
+_CMP_RE = re.compile(r'^\s*(\w+)\s*(==|<>|!=)\s*(?:"([^"]*)"|(true|false))\s*$', re.IGNORECASE)
 
-# returnVal = "A"|"B"|... assignment inside a branch body
-_ASSIGN_RE = re.compile(r'return[Vv]al\s*=\s*((?:"[^"]*"\s*(?:\|\s*)?)+);?')
+# findinArray(split(VAR, "SEP"), "LITERAL") <> -1  /  == -1 — a genuinely
+# common real-catalog idiom (confirmed live: Package Type's governing
+# constraint, 18131370895, plus several Duration/Application-Services-
+# Bundle-Duration DISALLOW rules use this exact shape) that _CMP_RE can't
+# recognize at all, since its LHS is a function call, not a bare
+# identifier. Before this, every script using this idiom fell straight to
+# Tier 2 (LLM) regardless of whether the referenced variable was even
+# filled — live-confirmed root cause of a real split-brain bug: the
+# LLM's answer to "does this array contain X" was non-deterministic
+# across two calls in the SAME turn (cpq_scope_match accepted a reply
+# Tier-2 then rejected via apply_answer's own separately-recomputed
+# constrained set), so a customer's exact, valid answer could be
+# accepted at one layer and rejected at another.
+#
+# "<> -1" (findinArray returns a real index) means "the array CONTAINS
+# the literal"; "== -1" (not found) means "does NOT contain it" — the
+# BM-native idiom for array membership, same semantic op7/op8 already
+# give multi-select declarative rule_input rows (_MULTI_SELECT_
+# CONTAINS_OPERATOR/_MULTI_SELECT_NOT_CONTAINS_OPERATOR), just expressed
+# as a raw script instead of a declarative row.
+_ARRAY_MEMBERSHIP_RE = re.compile(
+    r'^\s*find[Ii]n[Aa]rray\s*\(\s*split\s*\(\s*(\w+)\s*,\s*"([^"]*)"\s*\)\s*,\s*"([^"]*)"\s*\)'
+    r'\s*(<>|==)\s*-?1\s*$',
+    re.IGNORECASE,
+)
+# Packs (separator, literal) into _parse_condition's existing 4-tuple
+# "expected" slot without changing its shape everywhere it's unpacked —
+# \x1f (ASCII unit separator) can't appear in real BML string literals.
+_ARRAY_PACK_SEP = "\x1f"
+_ARRAY_IN_OP = "ARRAY_IN"
+_ARRAY_NOT_IN_OP = "ARRAY_NOT_IN"
+
+
+def _match_array_membership(cond: str) -> tuple[str, str, str] | None:
+    """Match the findinArray(split(...)) idiom; returns (var, op, packed
+    "sep\\x1fliteral") in the same (var, op, expected) shape _CMP_RE's
+    match groups already produce, or None if this clause isn't that
+    idiom at all (never a partial/guessed match)."""
+    m = _ARRAY_MEMBERSHIP_RE.match(_strip_wrapping_parens(cond.strip()))
+    if not m:
+        return None
+    var, sep, literal, arrow_op = m.groups()
+    op = _ARRAY_IN_OP if arrow_op == "<>" else _ARRAY_NOT_IN_OP
+    return var, op, f"{sep}{_ARRAY_PACK_SEP}{literal}"
+
+
+def _array_membership_hit(actual: str, op: str, packed_expected: str) -> bool:
+    """Evaluate an ARRAY_IN/ARRAY_NOT_IN clause given `actual` (the raw
+    variable value, e.g. "SMARTLOCATE~ICE KIT") and the packed
+    "sep\\x1fliteral" produced by _match_array_membership."""
+    sep, literal = packed_expected.split(_ARRAY_PACK_SEP, 1)
+    members = [p.strip() for p in actual.split(sep)] if sep else [actual.strip()]
+    hit = literal.strip() in members
+    return hit if op == _ARRAY_IN_OP else not hit
+
+# returnVal = "A"|"B"|... assignment inside a branch body. Also matches
+# `retVal = ...` (no "urn") — confirmed live: dozens of real APX NEXT
+# constraint/recommendation scripts (docs/CPQ_APX_NEXT_RULE_CATALOG.md) use
+# "retVal" interchangeably with "returnVal"; the old pattern required the
+# literal substring "return", which "retVal" doesn't contain at all, so
+# every such script silently fell through to Tier 2 instead of Tier 1.
+_ASSIGN_RE = re.compile(r're(?:t|turn)[Vv]al\s*=\s*((?:"[^"]*"\s*(?:\|\s*)?)+);?')
 _STR_RE = re.compile(r'"([^"]*)"')
+
+# ANY_IDENTIFIER = string[]{ "A", "B", "C" }; — a branch reassigning some
+# arbitrary local variable (not necessarily returnVal/retVal — confirmed
+# live: real SVX Mounting Type (Array) narrowing script uses `ret`) to a
+# comma-separated array literal, returned by reference elsewhere in the
+# script (`return ret;`, outside the if/else _parse_branches only hands
+# this function the matched branch's OWN body for — the trailing return
+# is never part of `body` at all). Distinct idiom from `_ASSIGN_RE`'s
+# pipe-delimited `returnVal = "A"|"B"` shape: comma-separated inside a
+# `string[]{...}` constructor, any variable name. Confirmed live this is
+# exactly what left a real narrowing rule inert (evaluate_tier1 always
+# returned (None, False) for it) even though its condition parsed and
+# matched correctly — this deployment's Tier-2 LLM fallback then also
+# failed to resolve it, so the customer-facing option list stayed at the
+# raw, unfiltered 12-option catalog menu instead of the narrowed 5/6.
+_ARRAY_LITERAL_ASSIGN_RE = re.compile(
+    r'\w+\s*=\s*string\s*\[\s*\]\s*\{([^{}]*)\}\s*;?', re.IGNORECASE)
+
+# docs/config_consistency_issues_2026-07-30.md issue 2 follow-up —
+# live-confirmed real APX Next scripts build a |^|-delimited allowed-list
+# via STRING CONCATENATION instead of one packed literal, e.g.
+# `retVal = "CORE BUNDLE" + "|^|" + "SECURITY BUNDLE" + "|^|" + ...;` —
+# a DIFFERENT authoring style than `_split_pipe_caret_values`'s existing
+# single-literal `"A|^|B|^|C"` case. `_ASSIGN_RE`/`_RETURN_STR_RE` only
+# match the FIRST quoted fragment here, and the concatenation guard below
+# (existing, correctly built for the SVX HTML-building case where a real
+# variable like `link` is mixed into the chain) then bails as
+# unparseable — correct for a GENUINELY dynamic chain, but this shape is
+# not dynamic at all: every single term is a quoted literal, nothing else.
+# Fully statically resolvable — just authored with `+` instead of one
+# big string.
+_FULL_LITERAL_CONCAT_RE = re.compile(r'^(?:"[^"]*"\s*\+\s*)*"[^"]*"\s*;?\s*$')
+# A pure delimiter literal (`|^|`, `|`, etc.) — never a real catalog value,
+# must be filtered out of the extracted literal chain.
+_PURE_DELIMITER_RE = re.compile(r'^\|[^|"]*\|$|^\|$')
+
+
+def _literal_concat_values(rhs: str) -> list[str] | None:
+    """If `rhs` (everything from right after the `=`/`return` through the
+    terminating `;`) is ENTIRELY a chain of quoted-string literals joined
+    by `+` — no variables, no function calls, nothing else — return the
+    non-delimiter literals in order. Returns None when the chain contains
+    anything else at all; a real variable/expression genuinely can't be
+    resolved statically and this must never guess at one (same "never
+    guess" discipline as everywhere else in this module).
+    """
+    rhs = rhs.strip()
+    if not rhs or not _FULL_LITERAL_CONCAT_RE.match(rhs):
+        return None
+    literals = _STR_RE.findall(rhs)
+    return [v for v in literals if v and not _PURE_DELIMITER_RE.match(v)]
+
+
+# Full right-hand-side of a returnVal/return assignment, from right after
+# the `=`/keyword through the terminating `;` — used only by the literal-
+# concatenation fallback above, which needs the WHOLE chain, not just the
+# first fragment `_ASSIGN_RE`/`_RETURN_STR_RE` themselves capture.
+_FULL_ASSIGN_RHS_RE = re.compile(r're(?:t|turn)[Vv]al\s*=\s*(.+?);', re.DOTALL)
+_FULL_RETURN_RHS_RE = re.compile(r'\breturn\s+(.+?);', re.DOTALL)
+
+# return "literal"; directly inside a branch body — a different idiom from
+# the returnVal assignment above. Confirmed live: the same recommendation
+# script above returns "YES" (or "" outside any branch) as a literal
+# string, never assigning to returnVal at all.
+_RETURN_STR_RE = re.compile(r'\breturn\s+"([^"]*)"\s*;?')
 
 # if (...) { ... } chain scanner
 _IF_RE = re.compile(r'\bif\s*\(', re.IGNORECASE)
@@ -105,6 +244,51 @@ def _strip_line_comments(text: str) -> str:
     return "".join(out)
 
 
+def _strip_block_comments(text: str) -> str:
+    """Strip `/* ... */` block comments, but never inside a quoted string
+    literal — same string-awareness as `_strip_line_comments`, which only
+    handles `//` and leaves `/* */` untouched.
+
+    Live-confirmed bug (2026-07-28): a real constraint script
+    ("Restrict APX Next Product Selection based on HW Version selection")
+    wraps a dead scratch block in `/* ... */` referencing `usersessionget`/
+    `util.*` — both `_TIER1_BLOCKERS` triggers. Because this comment was
+    never stripped, its dead reference alone rejected an otherwise
+    trivially Tier-1-parseable if/else script, forcing every evaluation of
+    it into the shared, per-turn-capped Tier-2 LLM path for no reason.
+    """
+    out: list[str] = []
+    in_str = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            if j == -1:
+                break
+            i = j + 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _find_block(text: str, open_idx: int) -> tuple[str, int] | None:
     """Return (block_body, index_after_close) for the {...} starting at open_idx."""
     depth = 0
@@ -145,36 +329,250 @@ def _parse_condition(cond: str) -> list[tuple[str, str, str, str]] | None:
     Supports single comparisons and chains joined by a uniform AND or OR,
     each optionally wrapped in its own parens. The first tuple's joiner is ''.
     """
-    cond = cond.strip()
+    # Strip a redundant OUTER wrapping layer around the WHOLE chain before
+    # splitting on AND/OR (2026-07-28) — live-confirmed real BML script:
+    # `if( ((A) OR (B) OR ... OR (H)) ){` (a real 8-clause "Hide Housing
+    # attribute if not XE model" condition). Splitting on OR first (the
+    # prior order) breaks this into "((A)", "(B)", ..., "(H))" — the
+    # first/last fragments are individually unbalanced, so per-fragment
+    # _strip_wrapping_parens can't repair them and the whole condition was
+    # silently rejected as unparseable, forcing this hiding rule to Tier-2
+    # (which returns unknown when the LLM fallback is disabled, and
+    # apply_hiding_rules' safe default then leaves the target VISIBLE when
+    # it should have been hidden). _strip_wrapping_parens already handles
+    # a genuinely-fully-wrapped string correctly (only strips when the
+    # leading "(" closes at the very last character) — it just needed to
+    # run on the whole cond once before the split, not only per-fragment
+    # after. Safe for the existing per-clause-only-wrapped shape
+    # ("(x==A) OR (y==B)", no full outer wrap) too: that shape's outer
+    # "(" closes well before the string's end, so this strips nothing.
+    cond = _strip_wrapping_parens(cond.strip())
     for joiner, sep in (("AND", re.compile(r'\bAND\b|&&', re.IGNORECASE)),
                         ("OR", re.compile(r'\bOR\b|\|\|', re.IGNORECASE))):
         parts = sep.split(cond)
         if len(parts) > 1:
             out = []
             for i, part in enumerate(parts):
-                m = _CMP_RE.match(_strip_wrapping_parens(part))
-                if not m:
-                    return None
-                out.append(("" if i == 0 else joiner, m.group(1), m.group(2), m.group(3)))
+                part_stripped = _strip_wrapping_parens(part)
+                m = _CMP_RE.match(part_stripped)
+                if m:
+                    # group(3) is the quoted-string RHS, group(4) the bare
+                    # true/false literal RHS — exactly one is populated.
+                    out.append(("" if i == 0 else joiner, m.group(1), m.group(2),
+                                m.group(3) if m.group(3) is not None else m.group(4)))
+                    continue
+                arr = _match_array_membership(part_stripped)
+                if arr:
+                    out.append(("" if i == 0 else joiner, arr[0], arr[1], arr[2]))
+                    continue
+                return None
             return out
     m = _CMP_RE.match(_strip_wrapping_parens(cond))
     if m:
-        return [("", m.group(1), m.group(2), m.group(3))]
+        return [("", m.group(1), m.group(2),
+                 m.group(3) if m.group(3) is not None else m.group(4))]
+    arr = _match_array_membership(_strip_wrapping_parens(cond))
+    if arr:
+        return [("", arr[0], arr[1], arr[2])]
     return None
 
 
-def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
+# docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md -- a small,
+# separate recursive parser for conditions that MIX AND and OR (e.g. `(A OR B
+# OR C) AND D`), which _parse_condition above deliberately doesn't handle (it
+# requires a UNIFORM chain). Tried only as a fallback when _parse_condition
+# already failed -- every condition _parse_condition already resolves keeps
+# using that exact code path, unchanged. Confirmed live (real catalog survey,
+# workspace 39005): 13 real hiding/recommendation rules fail to parse for
+# exactly this reason, including the rule that hides Frequency Bands for
+# APX NEXT MULTI/XE MULTI/XN ALL -- `_BoolExpr` is a distinct shape from
+# _parse_condition's flat list specifically so this stays purely additive.
+@dataclasses.dataclass
+class _BoolExpr:
+    """A parsed boolean expression node: "cmp" (leaf, a single comparison)
+    or "and"/"or" (internal, `parts` are child _BoolExpr nodes)."""
+
+    kind: str
+    parts: list["_BoolExpr"] | None = None
+    var: str | None = None
+    op: str | None = None
+    value: str | None = None
+
+
+_TOP_LEVEL_OR_RE = re.compile(r'\bOR\b|\|\|', re.IGNORECASE)
+_TOP_LEVEL_AND_RE = re.compile(r'\bAND\b|&&', re.IGNORECASE)
+
+
+def _split_top_level(text: str, keyword_re: re.Pattern) -> list[str] | None:
+    """Split `text` at occurrences of `keyword_re` sitting at paren-depth 0
+    and outside any "..." quoted string. Returns None when no such
+    occurrence exists (there may still be matches nested inside parens or a
+    quoted value, which must NOT trigger a split)."""
+    depth = 0
+    in_quotes = False
+    parts: list[str] = []
+    last = 0
+    i = 0
+    n = len(text)
+    found = False
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            in_quotes = not in_quotes
+            i += 1
+            continue
+        if in_quotes:
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0:
+            m = keyword_re.match(text, i)
+            if m:
+                parts.append(text[last:i])
+                last = m.end()
+                i = m.end()
+                found = True
+                continue
+        i += 1
+    if not found:
+        return None
+    parts.append(text[last:])
+    return parts
+
+
+def _parse_boolean_expr(cond: str) -> "_BoolExpr | None":
+    """Recursive-descent parser for a mixed AND/OR condition, standard
+    precedence (AND binds tighter than OR — matches how every real mixed
+    script found in the live catalog survey is actually written). Returns
+    None if any part doesn't reduce to a single comparison or a further
+    AND/OR split — never guesses a shape it can't fully account for."""
+    cond = cond.strip()
+    while True:
+        # _strip_wrapping_parens only removes ONE layer per call — the real
+        # "Hide Frequency Bands..." script's second AND-part is DOUBLE-
+        # wrapped (`((modelSelectionbaseModel_astro<>""))`), confirmed live.
+        # Loop to stability so a leftover single layer doesn't make the
+        # final _CMP_RE match fail (it anchors on a leading word character,
+        # not "(").
+        stripped = _strip_wrapping_parens(cond)
+        if stripped == cond:
+            break
+        cond = stripped
+    or_parts = _split_top_level(cond, _TOP_LEVEL_OR_RE)
+    if or_parts is not None:
+        parsed = [_parse_boolean_expr(p) for p in or_parts]
+        if any(p is None for p in parsed):
+            return None
+        return _BoolExpr(kind="or", parts=parsed)
+    and_parts = _split_top_level(cond, _TOP_LEVEL_AND_RE)
+    if and_parts is not None:
+        parsed = [_parse_boolean_expr(p) for p in and_parts]
+        if any(p is None for p in parsed):
+            return None
+        return _BoolExpr(kind="and", parts=parsed)
+    m = _CMP_RE.match(cond)
+    if m:
+        return _BoolExpr(
+            kind="cmp", var=m.group(1), op=m.group(2),
+            value=m.group(3) if m.group(3) is not None else m.group(4),
+        )
+    arr = _match_array_membership(cond)
+    if arr:
+        var, op, packed = arr
+        return _BoolExpr(kind="cmp", var=var, op=op, value=packed)
+    return None
+
+
+def _eval_boolean_expr(expr: "_BoolExpr", variables: dict[str, str]) -> tuple[bool | None, bool]:
+    """Recursively evaluate a _BoolExpr. Returns (result, blocked_by_missing_
+    var) — same per-condition contract _first_matching_branch's flat-chain
+    evaluation already uses, generalized to nesting. Short-circuits the same
+    way: an "or" node with any confirmed-True child is True regardless of a
+    sibling's missing variable; symmetrically an "and" node with any
+    confirmed-False child is False regardless of a sibling's missing
+    variable. Only genuinely undetermined when nothing short-circuits AND
+    something is missing."""
+    if expr.kind == "cmp":
+        actual = variables.get(expr.var)
+        if actual is None:
+            return None, True
+        if expr.op in (_ARRAY_IN_OP, _ARRAY_NOT_IN_OP):
+            return _array_membership_hit(actual, expr.op, expr.value or ""), False
+        hit = actual.strip().lower() == (expr.value or "").strip().lower()
+        if expr.op in ("<>", "!="):
+            hit = not hit
+        return hit, False
+
+    child_results: list[bool | None] = []
+    any_missing = False
+    for part in expr.parts or []:
+        result, missing = _eval_boolean_expr(part, variables)
+        if missing:
+            any_missing = True
+        child_results.append(result)
+
+    if expr.kind == "or":
+        if any(r is True for r in child_results):
+            return True, False
+        if any_missing:
+            return None, True
+        return False, False
+    # "and"
+    if any(r is False for r in child_results):
+        return False, False
+    if any_missing:
+        return None, True
+    return True, False
+
+
+_BARE_RETURN_RE = re.compile(r'\A\s*return\s+.+?;\s*\Z', re.IGNORECASE | re.DOTALL)
+
+
+def _parse_branches(script: str) -> list[tuple[list | "_BoolExpr" | None, str]] | None:
     """Parse an if / else-if / else chain into [(condition, body)].
 
-    condition is the _parse_condition output, or None for the else branch.
-    Returns None when the script doesn't fit the Tier-1 idiom.
+    condition is _parse_condition's flat-list output, a _BoolExpr (only for
+    a condition that mixed AND/OR and needed the separate recursive parser —
+    docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md), or None
+    for the else branch. Returns None when the script doesn't fit the Tier-1
+    idiom at all.
     """
-    script = _strip_line_comments(script)
-    if _TIER1_BLOCKERS.search(script):
-        return None
+    script = _strip_block_comments(_strip_line_comments(script))
     branches: list[tuple[list | None, str]] = []
     m = _IF_RE.search(script)
     if not m:
+        # No if/else at all — a common, genuinely trivial idiom: the WHOLE
+        # script is just one unconditional `return <value>;` (confirmed
+        # live: workspace 39004's "Set default to Baseline Release for
+        # Baseline Release SW" — `return "BASELINE RELEASE";`, no
+        # condition whatsoever). Before this, ANY script shaped this way
+        # reported "grammar unsupported" and needed Tier 2 — but
+        # settings.bml_use_llm is off by default (deliberately, to avoid
+        # a live request stalling on a slow/rate-limited LLM call), so in
+        # practice these scripts silently resolved to nothing at all,
+        # letting a rule-governed attribute's OWN unrelated "first
+        # eligible option by order" fallback (CpqEngine.auto_fill step 5)
+        # claim it instead — e.g. baselineReleaseSW_astro's real answer
+        # ("BASELINE RELEASE", the canonical spelling) was silently
+        # replaced by "YES" (a legacy same-display-label sibling option,
+        # just the first one by catalog order_number), even though the
+        # rule that was SUPPOSED to set it never got the chance to fire.
+        # A single unconditional return needs no branch/condition
+        # machinery at all — treat it as one universal branch (cond=None,
+        # always matches) and reuse the exact same _branch_values/
+        # _branch_bool body-parsing _first_matching_branch already trusts
+        # for every other branch body, so this idiom gets neither more
+        # nor less scrutiny than a real if/else chain's own bodies.
+        bare = script.strip()
+        if bare and _BARE_RETURN_RE.match(bare) and not _TIER1_BLOCKERS.search(bare):
+            return [(None, bare)]
         return None
     pos = m.start()
     text = script
@@ -194,7 +592,17 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
                     break
         if cond_end == -1:
             return None
-        cond = _parse_condition(text[paren_start + 1:cond_end])
+        cond_text = text[paren_start + 1:cond_end]
+        if _TIER1_BLOCKERS.search(cond_text):
+            return None
+        cond = _parse_condition(cond_text)
+        if cond is None:
+            # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
+            # -- fallback only: _parse_condition requires a UNIFORM AND-only
+            # or OR-only chain and returns None for a mixed condition (e.g.
+            # `(A OR B OR C) AND D`). Every condition _parse_condition
+            # already resolves never reaches this line.
+            cond = _parse_boolean_expr(cond_text)
         if cond is None:
             return None
         brace = text.find("{", cond_end)
@@ -206,6 +614,8 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
         body, after = block
         if _IF_RE.search(body):
             return None  # nested if → Tier 2
+        if _TIER1_BLOCKERS.search(body):
+            return None
         branches.append((cond, body))
         # else / else if?
         rest = text[after:].lstrip()
@@ -223,10 +633,60 @@ def _parse_branches(script: str) -> list[tuple[list | None, str]] | None:
             body2, _ = block2
             if _IF_RE.search(body2):
                 return None
+            if _TIER1_BLOCKERS.search(body2):
+                return None
             branches.append((None, body2))
             break
+        # Amendment 19 follow-up (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
+        # a single if{...} block with NO `else` keyword at all, followed by
+        # exactly one bare `return true;`/`return false;` and nothing else,
+        # is a common real idiom — an implicit else expressed as a
+        # fallthrough rather than an explicit else block (confirmed live:
+        # "Hide Video Streaming Devices for FedRamp" —
+        # `if(x=="Y"){return true;} return false;`). Without this, a false
+        # condition made the whole script report as unparseable instead of
+        # correctly falling through to `false` — forcing an avoidable
+        # Tier-2 call for a script Tier 1 can actually resolve completely.
+        #
+        # Deliberately restricted to a bare BOOLEAN literal, not any
+        # `return <literal>;` — a bare `return "";` (empty string) is a
+        # real, different, already-tested idiom (SVX's "Set defaults for
+        # VX650": `if(cond){return "YES";} return "";`) where empty-string
+        # means "no recommendation" and must stay `None`, not become an
+        # inferred branch — see test_real_script_does_not_force_yes_when_
+        # condition_false. Booleans have no such "empty means nothing"
+        # ambiguity, so this is safe to infer; quoted-string returns are
+        # not, and are intentionally left untouched.
+        if len(branches) == 1 and not _IF_RE.search(rest):
+            m_tail = re.match(r'return\s+(true|false)\s*;\s*$', rest, re.IGNORECASE)
+            if m_tail:
+                branches.append((None, rest))
         break
     return branches or None
+
+
+def _split_pipe_caret_values(values: list[str]) -> list[str]:
+    """Expand any `A|^|B|^|C`-shaped entry into separate values.
+
+    `|^|` is a real, common BM delimiter for a multi-value allowed-list
+    packed inside a SINGLE quoted string (confirmed live: dozens of real
+    APX NEXT/SVX constraint/recommendation scripts —
+    docs/CPQ_APX_NEXT_RULE_CATALOG.md — e.g. `retVal =
+    "SMARTMESSAGING|^|VIQI VIRTUAL PARTNER|^|SMARTINCIDENT";`) — a
+    different convention from the `"A"|"B"` multi-QUOTE pipe format
+    `_ASSIGN_RE` otherwise splits on. Without this, a single `|^|`-packed
+    quoted string collapsed into ONE bogus concatenated "value" that never
+    matches any real item_value — confirmed live: "Restrict Service Type
+    Based on the Solution Type" corrupted Service Type resolution for
+    every CapEx-purchase SVX quote this way.
+    """
+    out: list[str] = []
+    for v in values:
+        if "|^|" in v:
+            out.extend(part.strip() for part in v.split("|^|") if part.strip())
+        elif v:
+            out.append(v)
+    return out
 
 
 def _branch_values(body: str) -> list[str] | None:
@@ -247,11 +707,66 @@ def _branch_values(body: str) -> list[str] | None:
     joined by `|`, so it stops matching (without erroring) at the first
     `+` — this check catches exactly that silent truncation.
     """
+    _arr_matches = list(_ARRAY_LITERAL_ASSIGN_RE.finditer(body))
+    if _arr_matches:
+        # `VAR = string[]{"A","B","C"};` — comma-separated, any variable
+        # name, distinct idiom from the pipe-delimited returnVal/retVal
+        # assignment below. Raven review (PR #269): the branch's own
+        # trailing `return VAR;` is never part of `body` at all (see
+        # _parse_branches), so which assignment is "the one that counts"
+        # can't be resolved by name — the LAST array-literal assignment in
+        # source order wins, matching evaluate_constant_return's own
+        # `_LOCAL_LITERAL_ASSIGN_RE` precedent for this exact "multiple
+        # assignments, which one counts" ambiguity (normal execution
+        # order: a later reassignment always shadows an earlier one).
+        # Confirmed live this is the correct real-world case too: the
+        # real SVX script's own `ret = string[];` placeholder sits BEFORE
+        # the if/else entirely (outside every branch body), so a real
+        # branch only ever contains its own single, final assignment.
+        return [v for v in _STR_RE.findall(_arr_matches[-1].group(1)) if v]
     m = _ASSIGN_RE.search(body)
     if not m:
-        return None
+        # A DIFFERENT idiom from the returnVal assignment above — some
+        # real scripts `return "literal";` directly (confirmed live: SVX's
+        # "Set defaults for VX650" — `if (spareBattery == true) { return
+        # "YES"; }`). Same concatenation guard as the returnVal path: a
+        # tail continuing with `+` past the matched literal means this
+        # isn't a clean single-value return, so bail rather than truncate.
+        m2 = _RETURN_STR_RE.search(body)
+        if not m2:
+            return None
+        tail2 = body[m2.end():].lstrip()
+        if tail2.startswith("+"):
+            _full = _FULL_RETURN_RHS_RE.search(body)
+            _literal_vals = (
+                _literal_concat_values(_full.group(1)) if _full else None
+            )
+            if _literal_vals is not None:
+                return _split_pipe_caret_values(_literal_vals)
+            logger.warning(
+                "cpq: Tier-1 _branch_values found a `return \"...\";` whose "
+                "value continues past the matched literal (string "
+                "concatenation) — treating as unparseable rather than "
+                "returning a truncated value. matched=%r body=%.200r",
+                m2.group(0), body,
+            )
+            return None
+        value = m2.group(1)
+        return _split_pipe_caret_values([value]) if value else []
     tail = body[m.end():].lstrip()
     if tail.startswith("+"):
+        # docs/config_consistency_issues_2026-07-30.md issue 2 follow-up —
+        # try the fully-literal concatenation fallback FIRST: real APX Next
+        # scripts build a |^|-delimited allowed-list via `"A" + "|^|" +
+        # "B" + ...` — every term a quoted literal, genuinely resolvable —
+        # before falling back to the WARNING/unparseable path below, which
+        # stays correct for an actually dynamic chain (a real variable
+        # mixed in, e.g. the SVX HTML-building case this guard was
+        # originally built for).
+        _full = _FULL_ASSIGN_RHS_RE.search(body)
+        _literal_vals = _literal_concat_values(_full.group(1)) if _full else None
+        if _literal_vals is not None:
+            return _split_pipe_caret_values(_literal_vals)
         # WARNING, not info — this deployment's root logger is configured
         # at WARNING (confirmed live: aryx.cpq.bml's effective level was
         # WARNING, silently dropping an earlier INFO call here), and this
@@ -266,7 +781,7 @@ def _branch_values(body: str) -> list[str] | None:
         )
         return None
     values = [v.strip() for v in _STR_RE.findall(m.group(1))]
-    return [v for v in values if v and v != "|"]
+    return _split_pipe_caret_values([v for v in values if v and v != "|"])
 
 
 # `return true;` / `return false;` inside a hiding-rule branch body — a
@@ -287,8 +802,44 @@ def _branch_bool(body: str) -> bool | None:
 
 
 def referenced_variables(script: str) -> set[str]:
-    """Variable names compared in the script (Tier-1 scan, best effort)."""
-    return {m.group(1) for m in re.finditer(r'(\w+)\s*(?:==|<>|!=)\s*"', script)}
+    """Variable names compared in the script (Tier-1 scan, best effort).
+
+    Live-verified gap (2026-07-24): only matched a quoted-string RHS
+    (`var == "X"`), missing bare boolean literal comparisons (`var ==
+    true`) entirely — the exact same idiom `_CMP_RE` in evaluate_tier1
+    already had to learn to parse (bare booleans are common, e.g. "if
+    (spareBattery == true)"). Since this function's result scopes
+    allowed_values_for_script's cache key (BmlEvaluator._SHARED_SCRIPT_
+    CACHE), missing a variable here means the cache key never varies
+    with that variable's value — the FIRST-ever evaluation's result gets
+    reused for every later call regardless of what that variable's
+    current value actually is, a much worse bug than a cache miss.
+
+    Regression caught in review (PR #117): the first attempt at this fix
+    put a trailing `\b` after the WHOLE alternation, including the
+    quoted-string branch — a word boundary can never match right after a
+    closing `"`, so it silently broke the far more common quoted-string
+    case (`var == "X"` matched nothing at all). The `\b` belongs only on
+    the bare boolean literals, to stop them matching as a substring of a
+    longer identifier (e.g. "truely") — it must not apply to the
+    quoted-string alternative at all.
+    """
+    found = {
+        m.group(1) for m in re.finditer(
+            r'(\w+)\s*(?:==|<>|!=)\s*(?:"[^"]*"|true\b|false\b)', script, re.IGNORECASE)
+    }
+    # findinArray(split(VAR, "SEP"), "LITERAL") -- the same real-catalog
+    # array-membership idiom evaluate_tier1 gained native support for
+    # (see _ARRAY_MEMBERSHIP_RE). The comparison-based regex above can't
+    # see VAR here since it never appears next to ==/<>/!=; missing it
+    # here means allowed_values_for_script's cache key never varies with
+    # this variable's value -- the same stale-cache risk this function's
+    # own docstring already documents for the comparison idiom.
+    found |= {
+        m.group(1) for m in re.finditer(
+            r'find[Ii]n[Aa]rray\s*\(\s*split\s*\(\s*(\w+)\s*,', script, re.IGNORECASE)
+    }
+    return found
 
 
 _VAR_VALUE_RE = re.compile(r'(\w+)\s*(?:==|<>|!=)\s*"([^"]*)"')
@@ -464,6 +1015,17 @@ def _first_matching_branch(
     for cond, body in branches:
         if cond is None:
             return body, False
+        if isinstance(cond, _BoolExpr):
+            # docs/CPQ_TIER1_MIXED_AND_OR_CONDITION_PARSER_PLAN_2026_08_10.md
+            # -- this branch's condition mixed AND and OR and needed the
+            # separate recursive parser/evaluator; every condition
+            # _parse_condition itself resolves never takes this path.
+            result, blocked = _eval_boolean_expr(cond, variables)
+            if result is None:
+                return None, blocked
+            if result:
+                return body, False
+            continue
         # The whole chain is uniformly AND or OR (_parse_condition's own
         # contract) — only the first tuple's joiner is "" (a placeholder,
         # not "no chain"), so read the chain's real kind from any other
@@ -478,9 +1040,12 @@ def _first_matching_branch(
             if actual is None:
                 saw_missing = True
                 continue
-            hit = actual.strip().lower() == expected.strip().lower()
-            if op in ("<>", "!="):
-                hit = not hit
+            if op in (_ARRAY_IN_OP, _ARRAY_NOT_IN_OP):
+                hit = _array_membership_hit(actual, op, expected)
+            else:
+                hit = actual.strip().lower() == expected.strip().lower()
+                if op in ("<>", "!="):
+                    hit = not hit
             if result is None:
                 result = hit
             elif joiner == "AND":
@@ -497,8 +1062,92 @@ def _first_matching_branch(
     return None, False
 
 
+_NUMERIC_OPERATORS = frozenset({"1", "2", "5"})  # <, <=, >
+_NOT_EQUAL_OPERATOR = "3"
+# "7"/"8" — multi-select ("~"-joined current-selection set) membership,
+# confirmed via docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md
+# Phase 2: 104/110 real op7/op8 rows target an attribute classify_select_type
+# already independently calls "multi" (checkbox); the remaining 6 are all
+# _BM_USER_GROUPS, a BM system membership pseudo-attribute — same set-
+# intersection semantic, just against the user's group membership set
+# instead of a menu attribute's current selections. "7" = the current
+# selection set intersects the rule's expected value(s) ("Do not allow
+# Smartlocate to be deselected when Smartvideo or SmartEvidence selected"
+# uses op7 as an OR across SMARTVIDEO/SMARTEVIDENCE). "8" = the current
+# selection set does NOT intersect the expected value(s) ("...only when
+# Enhancement Level is selected" uses op8 on both ENHANCEMENT LEVEL 1 and
+# LEVEL 2 as the rule's own failure condition -- fires, i.e. blocks, when
+# NEITHER is selected; "Hide Smartvideo help text if Smartvideo not
+# selected" uses op8 directly on SMARTVIDEO).
+_MULTI_SELECT_CONTAINS_OPERATOR = "7"
+_MULTI_SELECT_NOT_CONTAINS_OPERATOR = "8"
+_MULTI_SELECT_OPERATORS = frozenset(
+    {_MULTI_SELECT_CONTAINS_OPERATOR, _MULTI_SELECT_NOT_CONTAINS_OPERATOR}
+)
+
+
+def _operator_hit(actual: str, expected_values: list[str], operator: str) -> bool | None:
+    """Does `actual` satisfy `expected_values` under the given BM-native
+    operator code? Returns None when a numeric operator can't parse either
+    side — never guessed, same D2 discipline as every other unresolvable
+    case in this module.
+
+    expected_values may itself contain "~"-delimited OR-lists per value
+    (same convention as ConstraintRule.allowed_values) — expanded into a
+    flat set for "=", "<>", "7" and "8" (membership / non-membership
+    against the whole set). Numeric operators (<, <=, >) compare against
+    the single expected value directly — real catalog data never carries a
+    "~"-list for a numeric bound (confirmed: docs/CPQ_DECLARATIVE_
+    CONDITION_OPERATOR_PLAN_2026_08_05.md's audit found no such case).
+
+    Mapping confirmed via docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_
+    2026_08_05.md: "4"="=" (default/majority, 31/31 rule-name cross-check
+    for "3"), "3"="<>", "1"="<", "2"="<=", "5"=">", "7"="intersects"/
+    "8"="disjoint from" (Phase 2, 104/110 real rows target a
+    select_type=="multi" attr, cross-checked against 4 independently
+    -authored rule names — see the constants above for detail).
+
+    For "7"/"8", `actual` is itself allowed to be a "~"-joined SET (a
+    multi-select attr's current selections), not just a scalar — checked
+    via set intersection with `expected_values` rather than the scalar
+    membership check the other operators use. A plain scalar with no "~"
+    still works correctly here: it just becomes a one-element set.
+    """
+    actual_norm = actual.strip().lower()
+    if operator in _NUMERIC_OPERATORS:
+        try:
+            actual_num = float(actual)
+            expected_num = float(expected_values[0]) if expected_values else None
+        except (TypeError, ValueError):
+            return None
+        if expected_num is None:
+            return None
+        if operator == "1":
+            return actual_num < expected_num
+        if operator == "2":
+            return actual_num <= expected_num
+        return actual_num > expected_num  # "5"
+
+    expanded = {
+        part.strip().lower()
+        for v in expected_values
+        for part in v.split("~")
+        if part.strip()
+    }
+
+    if operator in _MULTI_SELECT_OPERATORS:
+        actual_set = {part.strip().lower() for part in actual.split("~") if part.strip()}
+        intersects = bool(actual_set & expanded)
+        return intersects if operator == _MULTI_SELECT_CONTAINS_OPERATOR else not intersects
+
+    hit = actual_norm in expanded
+    if operator == _NOT_EQUAL_OPERATOR:
+        return not hit
+    return hit  # "4"
+
+
 def evaluate_declarative_conditions(
-    conditions: list[tuple[int, str]], variables_by_id: dict[int, str],
+    conditions: list[tuple[int, str, str]], variables_by_id: dict[int, str],
 ) -> tuple[bool | None, bool]:
     """Evaluate a rule's FULL set of bm_config_rule_input rows (not just the
     last one — see HidingRule.conditions / ConstraintRule.conditions /
@@ -506,18 +1155,21 @@ def evaluate_declarative_conditions(
     single condition_attr_id/condition_value pair for multi-input rules).
 
     Grouping rule: the SAME attribute_id repeated across rows means OR (any
-    of that attribute's listed values matches); DIFFERENT attribute_ids are
-    ANDed together. Confirmed live this matches real data: a rule like
-    "Allow Multi-Code Plug Programming only when Enhancement Level is
-    selected" repeats one attribute 3x with different ENHANCEMENT LEVEL
-    values (an OR-list) alongside 2 other distinct attributes (ANDed in) —
-    a real boolean expression, not a simple range.
+    of that attribute's listed values matches, or none of them does for
+    "<>" — see _operator_hit); DIFFERENT attribute_ids are ANDed together.
+    Confirmed live this matches real data: a rule like "Allow Multi-Code
+    Plug Programming only when Enhancement Level is selected" repeats one
+    attribute 3x with different ENHANCEMENT LEVEL values (an OR-list)
+    alongside 2 other distinct attributes (ANDed in) — a real boolean
+    expression, not a simple range.
 
-    No operator1/operator2 distinction is made here (confirmed live: 0 of
-    1,694 real rule_input rows in this catalog populate operator2/value2 at
-    all, and operator1 is never consulted by the declarative evaluator this
-    replaces either — matching prior behavior exactly, just extended to ALL
-    inputs instead of only the last).
+    operator1 IS now consulted, via _operator_hit — see that function's
+    docstring and docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md
+    for the confirmed mapping and why the prior "always =" behavior was
+    wrong for 25.5% of real condition rows in one catalog. Every row for
+    the same attr_id is assumed to share one operator (mixing "=" and "<>"
+    within one OR-group was never observed in the confirmed audit); the
+    first row's operator is used for the whole group.
 
     Returns (result, blocked_by_missing_var):
       - (True, False)  — every attribute-group matched.
@@ -536,10 +1188,12 @@ def evaluate_declarative_conditions(
     if not conditions:
         return None, False
     by_attr: dict[int, list[str]] = {}
+    op_by_attr: dict[int, str] = {}
     order: list[int] = []
-    for attr_id, value in conditions:
+    for attr_id, value, operator in conditions:
         if attr_id not in by_attr:
             order.append(attr_id)
+            op_by_attr[attr_id] = operator
         by_attr.setdefault(attr_id, []).append(value)
 
     saw_missing = False
@@ -548,7 +1202,6 @@ def evaluate_declarative_conditions(
         if actual is None:
             saw_missing = True
             continue
-        expected_values = by_attr[attr_id]
         # Each row's own value can itself be a "~"-delimited OR-list (same
         # encoding as ConstraintRule.allowed_values, e.g. a single input row
         # storing "PREMIER~ADVANCED SOFTWARE ONLY~ESSENTIAL SOFTWARE ONLY")
@@ -559,13 +1212,11 @@ def evaluate_declarative_conditions(
         # docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §3). Splitting each
         # row's value here is a strict superset of the old behavior — a
         # row with no "~" splits into a 1-element list, identical to before.
-        expanded = {
-            part.strip().lower()
-            for v in expected_values
-            for part in v.split("~")
-            if part.strip()
-        }
-        hit = actual.strip().lower() in expanded
+        # _operator_hit handles the "~"-expansion itself.
+        hit = _operator_hit(actual, by_attr[attr_id], op_by_attr[attr_id])
+        if hit is None:
+            saw_missing = True
+            continue
         if not hit:
             return False, False
     if saw_missing:
@@ -705,6 +1356,142 @@ def _resolve_literal_expr(expr: str, literals: dict[str, str]) -> str | None:
     return "".join(parts)
 
 
+# Idiom C — "hide unless present in a master delimited list": a shape
+# distinct from the if/else-if/else chain _first_matching_branch parses —
+# one guarded if-block, no branch-vs-branch comparison at all. Found live
+# investigating Amendment 18's 121 hiding-rule targets that fell through to
+# Tier 2 despite depending on nothing but two already-filled variables — the
+# grammar, not missing data, was the blocker. Confirmed identical shape
+# across dozens of real rules in the CommandCentral Aware catalog (e.g.
+# "Hide Third Party Vendor Name if no values available", "Hide QTY Included
+# array if not values are available", "Hide Connector Type Included array if
+# not values are available", ...), differing only in which master/separator
+# variable and which literal name they check for:
+#
+#   if(MASTER<>""){
+#   ARR = SPLIT(MASTER,SEP);
+#   IDX = findinarray(ARR,"LITERAL");
+#      if (IDX ==-1){
+#          return TRUE;
+#      }
+#      }
+#   return FALSE;
+#
+# Semantics: hide the target UNLESS "LITERAL" appears in MASTER's own value
+# once split on SEP's own value (an empty/missing MASTER never hides — the
+# outer guard is false, so it falls straight to `return FALSE`).
+# `re.fullmatch` (not `search`) against the whole comment-stripped script:
+# anything beyond this exact shape bails to None rather than guessing.
+_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+_HIDE_MASTER_LIST_RE = re.compile(
+    r'if\s*\(\s*(?P<master>\w+)\s*<>\s*""\s*\)\s*\{\s*'
+    r'(?P<arr>\w+)\s*=\s*SPLIT\s*\(\s*(?P=master)\s*,\s*(?P<sep>\w+)\s*\)\s*;\s*'
+    r'(?P<idx>\w+)\s*=\s*findinarray\s*\(\s*(?P=arr)\s*,\s*"(?P<literal>[^"]*)"\s*\)\s*;\s*'
+    r'if\s*\(\s*(?P=idx)\s*==\s*-1\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'\}\s*'
+    r'return\s+false\s*;\s*',
+    re.IGNORECASE,
+)
+
+
+def evaluate_hide_master_list(
+    script: str, variables: dict[str, str],
+) -> tuple[bool | None, bool]:
+    """Tier 1.5 (Idiom C): resolve the "hide unless in master list" idiom
+    deterministically. Returns (hide, blocked_by_missing_var) — same
+    contract as evaluate_hide_tier1/_first_matching_branch. (None, False)
+    means the script isn't this idiom at all (try the next tier); (None,
+    True) means it IS this idiom but MASTER or SEP isn't filled yet.
+    """
+    m = _HIDE_MASTER_LIST_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    if not m:
+        return None, False
+    master = variables.get(m.group("master"))
+    sep = variables.get(m.group("sep"))
+    if master is None or sep is None:
+        return None, True
+    if master == "":
+        return False, False
+    return m.group("literal") not in master.split(sep), False
+
+
+# Idiom D — the ungated sibling of Idiom C: no outer `if(MASTER<>"")` guard
+# at all, and an extra nested base-model check inside the else branch.
+# Confirmed live shape of Carrier Selection / Wireless Carrier's real
+# hiding-rule scripts (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_
+# 2026_08_07.md §1.3/§2.3):
+#
+#   ARR = SPLIT(MASTER, SEP);
+#   IDX = findinarray(ARR, "LITERAL");
+#   if (IDX == -1) {
+#       return true;
+#   }
+#   else {
+#       if (BASEMODEL == "") {
+#           return true;
+#       }
+#   }
+#   return false;
+#
+# Neither Idiom C's regex (requires the outer guard) nor
+# _first_matching_branch's if/else-if/else chain parser (built for
+# branch-vs-branch comparisons, not a nested nullary SPLIT/findinarray)
+# recognize this shape — it previously fell through both to Tier 2 (LLM),
+# which has no reason to know an empty MASTER here means "Oracle's runtime
+# master-string sync was never captured for this catalog" rather than "no
+# entry, confidently hide". Reporting a confident hide silently dropped the
+# attribute before it ever reached the real ingested Data Table fallback
+# (data_table_resolver.py) that DOES have rows for it in this catalog.
+_HIDE_MASTER_LIST_UNGUARDED_RE = re.compile(
+    r'(?P<arr>\w+)\s*=\s*SPLIT\s*\(\s*(?P<master>\w+)\s*,\s*(?P<sep>\w+)\s*\)\s*;\s*'
+    r'(?P<idx>\w+)\s*=\s*findinarray\s*\(\s*(?P=arr)\s*,\s*"(?P<literal>[^"]*)"\s*\)\s*;\s*'
+    r'if\s*\(\s*(?P=idx)\s*==\s*-1\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'else\s*\{\s*'
+    r'if\s*\(\s*(?P<basemodel>\w+)\s*==\s*""\s*\)\s*\{\s*'
+    r'return\s+true\s*;\s*'
+    r'\}\s*'
+    r'\}\s*'
+    r'return\s+false\s*;\s*',
+    re.IGNORECASE,
+)
+
+
+def evaluate_hide_master_list_unguarded(
+    script: str, variables: dict[str, str],
+) -> tuple[bool | None, bool]:
+    """Tier 1.5 (Idiom D). Returns (hide, blocked_by_missing_var) — same
+    contract as the other Tier-1 evaluators. (None, False) means the
+    script isn't this idiom (try the next tier). An empty/unset MASTER
+    reports (None, True) — blocked/unknown — NOT a confident hide, since
+    (unlike Idiom C) there is no outer guard making that the script's own
+    deterministic answer; here it's genuinely missing runtime data. An
+    empty BASEMODEL, by contrast, is a real "nothing selected yet" state
+    (same convention used everywhere else in this codebase) and DOES
+    report a confident hide.
+    """
+    m = _HIDE_MASTER_LIST_UNGUARDED_RE.fullmatch(_COMMENT_RE.sub("", script).strip())
+    if not m:
+        return None, False
+    master = variables.get(m.group("master"))
+    sep = variables.get(m.group("sep"))
+    if master is None or sep is None:
+        return None, True
+    if master == "":
+        return None, True
+    if m.group("literal") not in master.split(sep):
+        return True, False
+    base_model = variables.get(m.group("basemodel"))
+    if base_model is None:
+        return None, True
+    if base_model == "":
+        return True, False
+    return False, False
+
+
 def evaluate_tier1(
     script: str, variables: dict[str, str],
 ) -> tuple[list[str] | None, bool]:
@@ -731,7 +1518,19 @@ def evaluate_hide_tier1(
     Returns (hide, blocked_by_missing_var) — see _first_matching_branch for
     the exact semantics of each case; True means the target attr should be
     hidden, False means it should stay visible.
+
+    Tries Idiom C (evaluate_hide_master_list), then Idiom D
+    (evaluate_hide_master_list_unguarded) — two different grammar shapes
+    _first_matching_branch's if/else-if/else chain parser was never meant
+    to recognize — and falls through to the chain parser only when neither
+    idiom matches ((None, False) from both).
     """
+    result, blocked = evaluate_hide_master_list(script, variables)
+    if blocked or result is not None:
+        return result, blocked
+    result, blocked = evaluate_hide_master_list_unguarded(script, variables)
+    if blocked or result is not None:
+        return result, blocked
     body, blocked = _first_matching_branch(script, variables)
     if blocked:
         return None, True
@@ -767,6 +1566,7 @@ class BmlEvaluator:
     def __init__(
         self, scripts: dict[int, str], use_llm: bool = True,
         workspace_id: int = 0, catalog_prefix: str = "",
+        tier2_max_per_turn: int | None = None,
     ) -> None:
         """scripts — {bm_function_id: script_text} from the RDB.
 
@@ -774,15 +1574,334 @@ class BmlEvaluator:
         _SHARED_SCRIPT_CACHE) so results never cross-contaminate between
         catalogs or workspaces that happen to reuse the same BM-native
         function id.
+
+        tier2_max_per_turn (Amendment 18): a hard ceiling on distinct
+        Tier-2 attempts across this evaluator's WHOLE lifetime — one
+        instance lives for exactly one CPQ turn (built fresh per turn by
+        CpqEngine.build_bml_evaluator), so this naturally caps "per turn,
+        across every pass of evaluate_rules_loop combined." None defaults
+        to settings.bml_tier2_max_per_turn. A `threading.Lock` guards the
+        check-and-increment since prefetch_tier2 dispatches concurrently
+        from multiple threads.
         """
         self._scripts = scripts
         self._use_llm = use_llm
         self._workspace_id = workspace_id
         self._catalog_prefix = catalog_prefix
-        self.stats = {"tier1": 0, "tier2": 0, "unknown": 0, "missing": 0, "cached": 0}
+        if tier2_max_per_turn is None:
+            from aryx.config import get_settings
+            tier2_max_per_turn = get_settings().bml_tier2_max_per_turn
+        self._tier2_cap = tier2_max_per_turn
+        self._tier2_count = 0
+        self._tier2_lock = threading.Lock()
+        self._cap_warned = False
+        self.stats = {
+            "tier1": 0, "tier2": 0, "unknown": 0, "missing": 0, "cached": 0,
+            "capped": 0, "durable_hit": 0,
+            # docs/CPQ_Usage_Reporting_Gap — real token usage from every
+            # Tier-2 LLM call this evaluator makes (hide/condition/values/
+            # ask_worthy), accumulated across its whole lifetime (one
+            # instance per turn, same scope as _tier2_count above). Every
+            # _evaluate_llm_* method adds into these via _record_llm_usage
+            # instead of discarding llm_runtime.chat's token counts —
+            # previously silently thrown away (indexed [0] for text only),
+            # so a turn with real Tier-2 activity still reported 0 tokens.
+            "prompt_tokens": 0, "completion_tokens": 0,
+        }
+
+    def _record_llm_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        """Accumulate one Tier-2 LLM call's real token usage into self.stats.
+
+        Called from every _evaluate_llm_* method right after a successful
+        llm_runtime.chat call, regardless of whether the reply parsed to a
+        usable result — the call itself happened and cost real tokens/
+        latency either way, same as any other LLM call in this codebase.
+        """
+        self.stats["prompt_tokens"] += prompt_tokens
+        self.stats["completion_tokens"] += completion_tokens
 
     def script_for(self, function_id: int) -> str | None:
         return self._scripts.get(function_id)
+
+    def _prepare(
+        self, kind: str, tier1_fn: Any, script: str, variables: dict[str, str],
+        cache_id: int | None,
+    ) -> tuple[tuple, Any, bool]:
+        """Shared key/cache/Tier-1 step for hide_for_script/condition_holds/
+        allowed_values_for_script (Amendment 18, docs/CPQ_UNIFIED_INTENT_
+        CLASSIFIER_PLAN.md) — factored out so `prefetch_tier2` can run this
+        same cheap, local, no-network step for a whole batch of scripts
+        before deciding which ones genuinely need a Tier-2 call, without
+        duplicating (and risking drift in) the cache-key formula each of
+        those three methods already relied on individually.
+
+        Returns (key, result, needs_tier2). When needs_tier2 is False,
+        `result` is already final — a cache hit, a Tier-1 resolution, an
+        unresolvable-due-to-missing-variable, or LLM disabled — and the
+        caller should write it to the cache and return it directly, exactly
+        as before this refactor. tier1_fn is evaluate_tier1 (allowed-values
+        idiom) or evaluate_hide_tier1 (bool idiom, shared by hide_for_script
+        and condition_holds) — both return (result, blocked_by_missing_var).
+        """
+        key = (kind, self._workspace_id, self._catalog_prefix,
+               cache_id if cache_id is not None else hash(script),
+               frozenset(variables.items()))
+        if key in _SHARED_SCRIPT_CACHE:
+            self.stats["cached"] += 1
+            return key, _SHARED_SCRIPT_CACHE[key], False
+        result, blocked_by_missing_var = tier1_fn(script, variables)
+        if result is not None:
+            self.stats["tier1"] += 1
+            return key, result, False
+        if blocked_by_missing_var:
+            self.stats["unknown"] += 1
+            return key, None, False
+        if not self._use_llm:
+            self.stats["unknown"] += 1
+            return key, None, False
+        if not self._reserve_tier2_slot():
+            self.stats["capped"] += 1
+            self.stats["unknown"] += 1
+            return key, None, False
+        return key, None, True
+
+    def _reserve_tier2_slot(self) -> bool:
+        """Claim one of this turn's Tier-2 attempts, or refuse once the cap
+        (Amendment 18, `bml_tier2_max_per_turn`) is reached.
+
+        Thread-safe (prefetch_tier2 dispatches from multiple threads at
+        once) — a plain unguarded read-then-increment could let concurrent
+        callers overshoot the cap. Logs a single warning the first time this
+        turn hits the ceiling, so a truncated turn is visible in logs rather
+        than silently incomplete.
+        """
+        with self._tier2_lock:
+            if self._tier2_count >= self._tier2_cap:
+                if not self._cap_warned:
+                    self._cap_warned = True
+                    logger.warning(
+                        "bml: Tier-2 cap (%d) reached this turn (workspace=%s "
+                        "catalog=%r) — further script-backed rules fall back "
+                        "to 'unknown' (never guess) for the rest of this turn",
+                        self._tier2_cap, self._workspace_id, self._catalog_prefix,
+                    )
+                return False
+            self._tier2_count += 1
+            return True
+
+    def _store(self, key: tuple, result: Any) -> Any:
+        """Write a final result to the shared cache (same cap-and-clear
+        policy every call site already used) and return it, so both the
+        single-script methods and prefetch_tier2's batch path share one
+        write path."""
+        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
+            _SHARED_SCRIPT_CACHE.clear()
+        _SHARED_SCRIPT_CACHE[key] = result
+        return result
+
+    def _durable_key(
+        self, kind: str, script: str, variables: dict[str, str],
+        cache_id: int | None,
+    ) -> str:
+        """Stable, cross-process cache key for the durable Tier-2 store
+        (Amendment 18 option 4, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md).
+
+        Deliberately NOT Python's built-in hash() — string hashing is
+        randomized per-process by default (PYTHONHASHSEED), so hash(script)
+        (what the in-memory _SHARED_SCRIPT_CACHE key uses when cache_id is
+        None) would compute a DIFFERENT value after every restart, making a
+        durable store keyed on it a permanent, silent miss. sha256 over a
+        canonical (sorted-keys JSON) representation is stable across
+        processes, machines, and Python versions — the actual property this
+        needs. Same identity components as the in-memory key (kind,
+        workspace, catalog, script-or-cache_id, full variable state) — this
+        durable layer changes WHERE a result is cached, never WHAT is
+        treated as "the same state," so it carries no new correctness risk
+        beyond the in-memory cache's own already-established semantics.
+        """
+        ident = cache_id if cache_id is not None else script
+        canonical = json.dumps(
+            {"kind": kind, "ws": self._workspace_id, "cat": self._catalog_prefix,
+             "ident": ident, "vars": dict(sorted(variables.items()))},
+            sort_keys=True, default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _durable_get(self, cache_key: str) -> tuple[Any, bool]:
+        """Look up a Tier-2 result in the durable store. Returns (result,
+        found) — best-effort: any DB error is treated as a miss, never
+        raised, since this is a pure optimization layer over the same
+        network-call fallback that already exists."""
+        try:
+            from aryx.config import get_settings
+            from aryx.queries import load
+            from aryx.store.pool import get_pool
+            with get_pool(get_settings().effective_dsn()).connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(load("select_bml_tier2_cache"), (cache_key,))
+                    row = cur.fetchone()
+            if row is None:
+                return None, False
+            return json.loads(row[0]) if isinstance(row[0], str) else row[0], True
+        except Exception:  # noqa: BLE001 — durable cache is best-effort only
+            logger.debug("bml: durable tier-2 cache read failed", exc_info=True)
+            return None, False
+
+    def _durable_put(self, cache_key: str, kind: str, result: Any) -> None:
+        """Persist a freshly-computed Tier-2 result. Best-effort: a write
+        failure never blocks or fails the turn — the in-memory cache and
+        the network fallback both still work exactly as before this layer
+        existed."""
+        try:
+            from aryx.config import get_settings
+            from aryx.queries import load
+            from aryx.store.pool import get_pool
+            with get_pool(get_settings().effective_dsn()).connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(load("upsert_bml_tier2_cache"), (
+                        cache_key, self._workspace_id, kind, json.dumps(result),
+                    ))
+        except Exception:  # noqa: BLE001 — durable cache is best-effort only
+            logger.debug("bml: durable tier-2 cache write failed", exc_info=True)
+
+    def _call_tier2(
+        self, kind: str, script: str, variables: dict[str, str],
+        cache_id: int | None = None,
+    ) -> Any:
+        """Single entry point for every actual Tier-2 network call — checks
+        the durable cross-process cache first, only calls the LLM on a
+        genuine miss, then persists the fresh result. Replaces calling
+        _evaluate_llm_hide/_evaluate_llm_condition/_evaluate_llm directly so
+        all four Tier-2 call sites (hide_for_script, condition_holds,
+        allowed_values_for_script, prefetch_tier2) get durability for free.
+        """
+        durable_key = self._durable_key(kind, script, variables, cache_id)
+        result, found = self._durable_get(durable_key)
+        if found:
+            self.stats["durable_hit"] += 1
+            return result
+        result = {
+            "hide": self._evaluate_llm_hide,
+            "cond": self._evaluate_llm_condition,
+            "values": self._evaluate_llm,
+            "ask_worthy": self._evaluate_llm_ask_worthy,
+        }[kind](script, dict(variables))
+        self._durable_put(durable_key, kind, result)
+        return result
+
+    def classify_ask_worthy(
+        self, attr_label: str, rule_message: str, rule_script: str, attr_key: int,
+    ) -> bool:
+        """Generic (not catalog-specific) Tier-2 judgment for a no-option,
+        no-decision-keyword free-text attr that IS targeted by a
+        ValidationRule: is this a value a sales rep configuring a quote
+        would actively decide and enter, or an internal/advanced/system
+        field the native UI doesn't normally prompt for?
+
+        docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md Amendment 22 — every
+        deterministic signal available (required flag, default_value,
+        script shape, hiding-rule visibility) was confirmed identical
+        between a genuine case (agencyDomainName_ID_swSoln,
+        OfVideoStreamingDevices_3_swSoln) and a false-positive case
+        (APX Next's systemID_astro / "Owner System ID", Amendment 20).
+        Falls back to the LLM only because no cheaper signal exists —
+        same escalation discipline as every other Tier-2 use in this file.
+        Cached durably via the same `_call_tier2`/`aryx_bml_tier2_cache`
+        machinery already used for script evaluation (kind="ask_worthy"),
+        keyed by attr_key so it's a one-time cost per attribute, not per
+        turn. Defaults to False (never guess toward asking) on any LLM
+        failure or "unknown" — preserves the current safe/dormant
+        behavior when the classifier can't decide.
+
+        Routed through `_prepare` (Raven review, 2026-07-28) — previously
+        called `_call_tier2` directly, which skipped BOTH the in-memory
+        `_SHARED_SCRIPT_CACHE` check every other Tier-2 kind gets AND
+        `bml_tier2_max_per_turn` (Amendment 18/PR #122) entirely, since only
+        `_prepare` enforces that cap via `_reserve_tier2_slot()`. On an
+        800+-attribute catalog with a cold durable cache, this reintroduced
+        the exact unbounded-sequential-LLM-calls problem PR #122's cap
+        exists to prevent. There's no Tier-1 idiom for "is this ask-worthy"
+        (Amendment 22's whole premise is that no cheaper signal exists), so
+        a tier1_fn that always defers to Tier-2 reuses `_prepare`'s cache/
+        cap machinery without pretending a Tier-1 shortcut exists.
+        """
+        script = rule_script or ""
+        # A gating condition (e.g. "only relevant when advancedFlag ==
+        # YES") tends to sit in the script's FINAL return statement, not
+        # its opening comments/setup — a head-only truncation can silently
+        # cut it off on a long script (confirmed live: a 4407-char script
+        # had its one gating clause at position 4315). Send both ends
+        # rather than assume the interesting part is near the top.
+        if len(script) > 4000:
+            script = script[:2000] + "\n...\n" + script[-2000:]
+        context = f"{attr_label}\n{rule_message or ''}\n{script}"
+        key, result, needs_tier2 = self._prepare(
+            "ask_worthy", lambda _s, _v: (None, False), context, {}, cache_id=attr_key)
+        if needs_tier2:
+            result = self._call_tier2("ask_worthy", context, {}, cache_id=attr_key)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        result = self._store(key, result)
+        return bool(result) if isinstance(result, bool) else False
+
+    def prefetch_tier2(
+        self, requests: list[tuple[str, str, dict[str, str], int | None]],
+    ) -> None:
+        """Warm the shared cache for a batch of (kind, script, variables,
+        cache_id) requests CONCURRENTLY, instead of the one-script-at-a-time
+        sequential path every rule-application method otherwise takes.
+
+        Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a single
+        turn on a large catalog can leave 800+ distinct scripts needing
+        Tier-2 — live-confirmed sequential evaluation of that many scripts
+        can take tens of minutes. Every script's evaluation is independent
+        given a fixed variable-state snapshot, so this dispatches all of
+        them at once via a thread pool (Tier-2 calls are blocking network
+        I/O — urllib releases the GIL while waiting, so threads, not
+        asyncio, parallelize this with no change to the existing synchronous
+        call sites) and lets each one's result land in `_SHARED_SCRIPT_CACHE`
+        under the EXACT same key `hide_for_script`/`condition_holds`/
+        `allowed_values_for_script` would compute themselves. Those methods
+        are NOT changed by this — they still run sequentially, in whatever
+        order the existing apply_hiding_rules/apply_recommendation_rules/
+        apply_constraint_rules loops call them — but every one of those
+        calls becomes a cache hit instead of a fresh network round-trip.
+
+        This method never raises and never changes behavior, only latency:
+        a request this caller failed to include (or got a kind/script/
+        variables slightly wrong for) simply doesn't get pre-warmed and
+        falls through to the normal sequential path for that one script,
+        exactly as if prefetch had never run at all.
+
+        Deduplicates by cache key first (multiple rules can share the exact
+        same script text and current variable state) so an identical
+        Tier-2 call is never fired twice concurrently for the same answer.
+        """
+        tier1_fn = {
+            "hide": evaluate_hide_tier1,
+            "cond": evaluate_hide_tier1,
+            "values": evaluate_tier1,
+        }
+        pending: dict[tuple, tuple[str, str, dict[str, str]]] = {}
+        for kind, script, variables, cache_id in requests:
+            fn = tier1_fn.get(kind)
+            if fn is None:
+                continue  # unrecognized kind — skip, never guess a mapping
+            key, result, needs_tier2 = self._prepare(kind, fn, script, variables, cache_id)
+            if needs_tier2:
+                pending.setdefault(key, (kind, script, variables))
+            else:
+                self._store(key, result)
+        if not pending:
+            return
+
+        def _run(item: tuple[tuple, tuple[str, str, dict[str, str]]]) -> None:
+            key, (kind, script, variables) = item
+            result = self._call_tier2(kind, script, variables)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+            self._store(key, result)
+
+        with ThreadPoolExecutor(max_workers=min(16, len(pending))) as pool:
+            list(pool.map(_run, pending.items()))
 
     def allowed_values(
         self, function_id: int, variables: dict[str, str],
@@ -798,46 +1917,30 @@ class BmlEvaluator:
         self, script: str, variables: dict[str, str],
         cache_id: int | None = None,
     ) -> list[str] | None:
-        """Allowed-value list for a raw BML script body, or None if unknown."""
-        # referenced_variables() re-scans the whole script text with a regex —
-        # compute it ONCE per call, not once per (variable, value) pair. With
-        # ~170 filled variables and hundreds of script-backed constraint
-        # rules active, doing this inside the generator below (as written
-        # previously) re-parsed the same script ~170x per call — 71,490
-        # redundant regex scans and ~155s of wasted CPU in one real turn.
-        script_vars = referenced_variables(script)
-        relevant = frozenset(
-            (k, v) for k, v in variables.items()
-            if k in script_vars
-        )
-        key = ("values", self._workspace_id, self._catalog_prefix,
-               cache_id if cache_id is not None else hash(script), relevant)
-        if key in _SHARED_SCRIPT_CACHE:
-            self.stats["cached"] += 1
-            return _SHARED_SCRIPT_CACHE[key]
-        result, blocked_by_missing_var = evaluate_tier1(script, variables)
-        if result is not None:
-            self.stats["tier1"] += 1
-        elif blocked_by_missing_var:
-            # A referenced variable isn't filled yet — Tier 2 has no more
-            # information than we do (it cannot know a value that doesn't
-            # exist), so asking it would be a pure-waste round-trip. This
-            # cache entry naturally becomes a miss again once the variable
-            # gets filled, since `relevant` (and so `key`) changes.
-            self.stats["unknown"] += 1
-            result = None
-        elif self._use_llm:
-            result = self._evaluate_llm(script, dict(relevant))
-            if result is not None:
-                self.stats["tier2"] += 1
-            else:
-                self.stats["unknown"] += 1
-        else:
-            self.stats["unknown"] += 1
-        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
-            _SHARED_SCRIPT_CACHE.clear()
-        _SHARED_SCRIPT_CACHE[key] = result
-        return result
+        """Allowed-value list for a raw BML script body, or None if unknown.
+
+        Cache key uses the FULL variable state, not a regex-filtered subset
+        — live-confirmed bug: referenced_variables() can't see
+        numeric-comparison/function-call variables (e.g. fmod(qty, 25)), so
+        a key scoped to just those alone stayed IDENTICAL across genuinely
+        different quantity values, and a cached True/False from one qty was
+        wrongly reused for another. Key/cache/Tier-1 step factored into
+        `_prepare` (Amendment 18) so `prefetch_tier2` can run the same cheap
+        step for a whole batch before deciding what needs Tier 2 — this
+        method's own behavior/return value is unchanged by that refactor.
+        """
+        key, result, needs_tier2 = self._prepare(
+            "values", evaluate_tier1, script, variables, cache_id)
+        if needs_tier2:
+            # Full `variables`, not a regex-filtered subset — see
+            # condition_holds' identical fix (docs/CPQ_UNIFIED_INTENT_
+            # CLASSIFIER_PLAN.md Amendment 12/13 follow-up) for why:
+            # referenced_variables() can't see numeric-comparison/
+            # function-call variables, so a filtered subset can silently
+            # omit the one variable a script actually depends on.
+            result = self._call_tier2("values", script, variables, cache_id)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        return self._store(key, result)
 
     def _evaluate_llm(
         self, script: str, variables: dict[str, str],
@@ -857,7 +1960,8 @@ class BmlEvaluator:
             # commit to true/false/allowed-values) — moved from "menial" to
             # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
             # lightweight term-extraction task "menial" is meant for.
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -888,35 +1992,17 @@ class BmlEvaluator:
         """Hide/show decision for a raw hiding-rule BML script body, or None
         if unknown. Mirrors allowed_values_for_script's tiering/caching, but
         for the hide-rule idiom (see evaluate_hide_tier1) rather than the
-        constraint/recommendation allowed-values idiom."""
-        script_vars = referenced_variables(script)
-        relevant = frozenset(
-            (k, v) for k, v in variables.items()
-            if k in script_vars
-        )
-        key = ("hide", self._workspace_id, self._catalog_prefix,
-               cache_id if cache_id is not None else hash(script), relevant)
-        if key in _SHARED_SCRIPT_CACHE:
-            self.stats["cached"] += 1
-            return _SHARED_SCRIPT_CACHE[key]
-        result, blocked_by_missing_var = evaluate_hide_tier1(script, variables)
-        if result is not None:
-            self.stats["tier1"] += 1
-        elif blocked_by_missing_var:
-            self.stats["unknown"] += 1
-            result = None
-        elif self._use_llm:
-            result = self._evaluate_llm_hide(script, dict(relevant))
-            if result is not None:
-                self.stats["tier2"] += 1
-            else:
-                self.stats["unknown"] += 1
-        else:
-            self.stats["unknown"] += 1
-        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
-            _SHARED_SCRIPT_CACHE.clear()
-        _SHARED_SCRIPT_CACHE[key] = result
-        return result
+        constraint/recommendation allowed-values idiom. Key/cache/Tier-1 step
+        factored into `_prepare` (Amendment 18) — see allowed_values_for_
+        script's docstring; this method's own behavior is unchanged."""
+        key, result, needs_tier2 = self._prepare(
+            "hide", evaluate_hide_tier1, script, variables, cache_id)
+        if needs_tier2:
+            # Full `variables`, not a regex-filtered subset — same fix as
+            # allowed_values_for_script/condition_holds.
+            result = self._call_tier2("hide", script, variables, cache_id)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        return self._store(key, result)
 
     def _evaluate_llm_hide(
         self, script: str, variables: dict[str, str],
@@ -937,7 +2023,8 @@ class BmlEvaluator:
             # commit to true/false/allowed-values) — moved from "menial" to
             # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
             # lightweight term-extraction task "menial" is meant for.
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -967,35 +2054,22 @@ class BmlEvaluator:
         recommend/restrict action rather than a hide decision. Uses a
         distinct cache-key prefix ("cond") so a script's hide-decision and
         condition-decision can never collide even if reused across both
-        (BM-native ids are only unique within one export, not globally)."""
-        script_vars = referenced_variables(script)
-        relevant = frozenset(
-            (k, v) for k, v in variables.items()
-            if k in script_vars
-        )
-        key = ("cond", self._workspace_id, self._catalog_prefix,
-               cache_id if cache_id is not None else hash(script), relevant)
-        if key in _SHARED_SCRIPT_CACHE:
-            self.stats["cached"] += 1
-            return _SHARED_SCRIPT_CACHE[key]
-        result, blocked_by_missing_var = evaluate_hide_tier1(script, variables)
-        if result is not None:
-            self.stats["tier1"] += 1
-        elif blocked_by_missing_var:
-            self.stats["unknown"] += 1
-            result = None
-        elif self._use_llm:
-            result = self._evaluate_llm_condition(script, dict(relevant))
-            if result is not None:
-                self.stats["tier2"] += 1
-            else:
-                self.stats["unknown"] += 1
-        else:
-            self.stats["unknown"] += 1
-        if len(_SHARED_SCRIPT_CACHE) >= _MAX_SHARED_CACHE_ENTRIES:
-            _SHARED_SCRIPT_CACHE.clear()
-        _SHARED_SCRIPT_CACHE[key] = result
-        return result
+        (BM-native ids are only unique within one export, not globally).
+        Key/cache/Tier-1 step factored into `_prepare` (Amendment 18) — see
+        allowed_values_for_script's docstring; this method's own behavior
+        is unchanged."""
+        key, result, needs_tier2 = self._prepare(
+            "cond", evaluate_hide_tier1, script, variables, cache_id)
+        if needs_tier2:
+            # Pass the FULL variables dict, not a regex-filtered subset —
+            # live-confirmed: a script checking
+            # `fmod(OfVideoStreamingDevices_3_swSoln, 25) <> 0` had that
+            # exact variable silently excluded from a filtered subset,
+            # leaving it unable to reason about the one variable the
+            # condition actually depends on.
+            result = self._call_tier2("cond", script, variables, cache_id)
+            self.stats["tier2" if result is not None else "unknown"] += 1
+        return self._store(key, result)
 
     def _evaluate_llm_condition(
         self, script: str, variables: dict[str, str],
@@ -1017,7 +2091,8 @@ class BmlEvaluator:
             # commit to true/false/allowed-values) — moved from "menial" to
             # "answer" (ARYX_LLM_REASON_MODEL) since this is not the
             # lightweight term-extraction task "menial" is meant for.
-            txt = llm_runtime.chat("answer", sys_p, user_p)[0]
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
             s, e = txt.find("{"), txt.rfind("}")
             if s == -1 or e <= s:
                 return None
@@ -1029,4 +2104,58 @@ class BmlEvaluator:
                 return val
         except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
             logger.debug("bml: tier-2 LLM condition-evaluation failed", exc_info=True)
+        return None
+
+    def _evaluate_llm_ask_worthy(
+        self, context: str, variables: dict[str, str],
+    ) -> bool | None:
+        """Tier 2: ask the reason model whether a no-option, validation-rule
+        -governed free-text attribute is worth proactively asking a sales
+        rep about (see classify_ask_worthy above). `variables` is unused —
+        this is a static per-attribute judgment, not a per-turn one; kept
+        only to match _call_tier2's shared dispatch signature.
+        """
+        try:
+            from aryx import llm_runtime
+            sys_p = (
+                "You classify BigMachines CPQ configuration attributes. "
+                "Given an attribute's display label and its validation "
+                "rule's message/script, decide whether a sales rep "
+                "configuring a customer quote would need to actively "
+                "decide and enter this value (a genuine quote-relevant "
+                "decision, e.g. a quantity, domain name, or setting the "
+                "customer cares about), versus an internal, advanced, or "
+                "system-integration field the native UI would not "
+                "normally prompt a rep for.\n\n"
+                "Read the FULL script, not just the label — it often "
+                "contains the real signal. If the script's condition only "
+                "matters when ANOTHER attribute (not this one) is set to "
+                "an enabling/advanced value (e.g. an '...advanced...', "
+                "'...key...', or similar toggle-style attribute name "
+                "equals YES/enabled), that is a strong sign this is a "
+                "conditional, advanced, or hardware-integration field a "
+                "rep would not be asked about by default — answer false "
+                "unless the label itself is unambiguously a core, always-"
+                "relevant business fact (e.g. a domain name, a device "
+                "count, a service duration)."
+            )
+            user_p = (
+                f"Attribute label and validation rule context:\n{context[:4600]}\n\n"
+                'Reply ONLY as JSON: {"ask_worthy": true} or '
+                '{"ask_worthy": false} or {"unknown": true} if it cannot '
+                "be determined."
+            )
+            txt, _it, _ot = llm_runtime.chat("answer", sys_p, user_p)
+            self._record_llm_usage(_it, _ot)
+            s, e = txt.find("{"), txt.rfind("}")
+            if s == -1 or e <= s:
+                return None
+            d = json.loads(txt[s:e + 1])
+            if d.get("unknown"):
+                return None
+            val = d.get("ask_worthy")
+            if isinstance(val, bool):
+                return val
+        except Exception:  # noqa: BLE001 — LLM unavailable → unknown, not fatal
+            logger.debug("bml: tier-2 LLM ask-worthy classification failed", exc_info=True)
         return None

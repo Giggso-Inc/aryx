@@ -180,10 +180,15 @@ export function DataExplorer() {
   const deleteSourceByKey = async (sourceKey: string) => {
     setBusyKey(`${sourceKey}:delete`);
     try {
-      await api.deleteDataSource(workspaceId, sourceKey);
+      const result = await api.deleteDataSource(workspaceId, sourceKey);
       setActiveSourceKey(null);
       setActiveSourceDetail(null);
       await refreshSources();
+      if (result.graph_sync === "repair_required") {
+        setSourceErr(
+          "Source data was deleted, but the graph view still needs repair.",
+        );
+      }
     } catch (e) {
       setSourceErr(e instanceof Error ? e.message : "delete failed");
     } finally {
@@ -239,13 +244,23 @@ export function DataExplorer() {
     const targetKey = `${sourceKey}:${assetKey}:delete`;
     setBusyKey(targetKey);
     try {
-      await api.deleteGeneratedAsset(workspaceId, sourceKey, assetKey);
-      const nextDetail = await api.getDataSourceDetail(workspaceId, sourceKey);
-      setActiveSourceDetail(mergeDetailMetrics(
-        nextDetail,
-        activeSourceDetail?.entity_summary ?? {},
-      ));
+      const result = await api.deleteGeneratedAsset(workspaceId, sourceKey, assetKey);
+      if (result.catalog_rows_deleted > 0) {
+        setActiveSourceKey(null);
+        setActiveSourceDetail(null);
+      } else {
+        const nextDetail = await api.getDataSourceDetail(workspaceId, sourceKey);
+        setActiveSourceDetail(mergeDetailMetrics(
+          nextDetail,
+          activeSourceDetail?.entity_summary ?? {},
+        ));
+      }
       await refreshSources();
+      if (result.graph_sync === "repair_required") {
+        setSourceErr(
+          "Asset data was deleted, but the graph view still needs repair.",
+        );
+      }
     } catch (e) {
       setSourceErr(e instanceof Error ? e.message : "asset delete failed");
     } finally {
@@ -346,8 +361,8 @@ export function DataExplorer() {
           title={deleteRequest.kind === "source" ? "Delete Source" : "Delete Asset"}
           message={
             deleteRequest.kind === "source"
-              ? `Delete ${deleteRequest.sourceName} from the source catalog?`
-              : `Delete ${deleteRequest.assetName} from ${deleteRequest.sourceName}?`
+              ? `Permanently delete ${deleteRequest.sourceName}? This removes its records, entity provenance, and affected graph data. This cannot be undone.`
+              : `Permanently delete ${deleteRequest.assetName} from ${deleteRequest.sourceName}? Its records, entity provenance, and affected graph data will be removed. This cannot be undone.`
           }
           onCancel={() => setDeleteRequest(null)}
           onConfirm={() => { void confirmDelete(); }}

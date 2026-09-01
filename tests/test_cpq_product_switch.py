@@ -27,6 +27,8 @@ family entity carrying its real product name.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import aryx.api.ask_api as api
 from aryx.api.ask_api import AskRequest, _run_cpq_turn
 from aryx.cpq.state import ConfigAttr, ConstraintRule, CpqSession, MenuOption
@@ -75,9 +77,16 @@ def _fake_reader_with_batch_fetch(
     trees: dict[str, list[str]] | None = None,
 ) -> _FakeProductReader:
     reader = _FakeProductReader(catalogs, trees)
+    # Patched on the CLASS, not on the api._cpq_engine singleton instance:
+    # some callers (e.g. the detect_product_mention tests below) construct
+    # their own local CpqEngine() rather than using the module singleton,
+    # and an instance-level monkeypatch never reaches a different instance
+    # — that gap let _batch_fetch fall through to a real RDB connection
+    # attempt and hang indefinitely on any host without a route to
+    # Postgres (docs/config_consistency_issues_2026-07-30.md, Issue 9).
     monkeypatch.setattr(
-        api._cpq_engine, "_batch_fetch",
-        lambda ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
+        type(api._cpq_engine), "_batch_fetch",
+        lambda self, ids, ws: {i: {"name": reader.id_to_name.get(i, "")} for i in ids},
     )
     return reader
 
@@ -260,6 +269,80 @@ def test_decline_reply_with_no_new_product_still_declines_normally(monkeypatch):
     assert sd["product_name"] == "SL3500e"
     assert sd["pending_switch_product"] == ""
     assert sd["pending_anchor"] == ""
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
+# docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row 21: a
+# genuinely ambiguous reply ("maybe", "I guess") is neither a clear yes
+# nor a clear no — the LLM tiebreak must resolve it correctly instead of
+# always defaulting to decline.
+
+def test_ambiguous_switch_reply_resolves_to_accept_via_llm(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="SL3500e", country="")
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="I guess so", workspace_id=1, session_data=session_data)
+    fake_reply = '{"decision": "accept"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "MOTOTRBO"
+    assert sd["pending_switch_product"] == ""
+
+
+def test_ambiguous_switch_reply_falls_back_to_declined_when_llm_says_unclear(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="not sure", workspace_id=1, session_data=session_data)
+    fake_reply = '{"decision": "unclear"}'
+    with patch("aryx.api.ask_api.llm_runtime.chat", return_value=(fake_reply, 10, 5)):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e", "unclear must never guess a switch"
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
+def test_ambiguous_switch_reply_fails_safe_to_declined_on_llm_error(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="maybe", workspace_id=1, session_data=session_data)
+    with patch("aryx.api.ask_api.llm_runtime.chat", side_effect=RuntimeError("boom")):
+        resp = _run_cpq_turn(req, reader)
+
+    assert resp
+    sd = resp["session_data"]
+    assert sd["product_name"] == "SL3500e"
+    assert resp["tools_called"] == ["cpq_switch_declined()"]
+
+
+def test_clear_decline_reply_never_calls_the_llm(monkeypatch):
+    """A clear "no"/"nope"/"never" is cheap and unambiguous enough that
+    it must never reach the LLM tiebreak at all."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(
+        product_name="SL3500e", filled={"battery": "STANDARD"})
+    session_data["pending_anchor"] = "confirm_switch"
+    session_data["pending_switch_product"] = "MOTOTRBO"
+
+    req = AskRequest(question="nope", workspace_id=1, session_data=session_data)
+    with patch("aryx.api.ask_api.llm_runtime.chat") as mock_chat:
+        resp = _run_cpq_turn(req, reader)
+
+    mock_chat.assert_not_called()
     assert resp["tools_called"] == ["cpq_switch_declined()"]
 
 
@@ -483,6 +566,158 @@ def test_detect_product_mention_recognises_a_brand_new_product_with_no_code_chan
     assert result == "Zorbax Ultra 9000"
 
 
+# ── Regression: vague/abbreviated product mention ("APX") ────────────────
+# Bug: "Give me quote of APX with 10 qty" suggested an unrelated family
+# (videoSolutions_BOM) because neither detect_product_mention's exact
+# substring check (candidate-in-question, backwards for a mention SHORTER
+# than every real candidate) nor the whole-sentence fuzzy fallback (noisy
+# for a short abbreviation buried in filler words) had any signal for it.
+# Fix: score individual question-word tokens as prefixes of candidate
+# names too — dynamic, no product list hardcoded.
+
+def test_vague_abbreviation_suggests_the_real_matching_family_not_an_unrelated_one(
+    monkeypatch,
+):
+    reader = _fake_reader_with_batch_fetch(monkeypatch, {
+        "ApxNextConfig": "APX NEXT",
+        "Apx6500Config": "APX6500",
+        "VideoSolutionsConfig": "videoSolutions_BOM",
+    })
+    from aryx.cpq.engine import CpqEngine
+    engine = CpqEngine()
+
+    # Bare abbreviation must not resolve outright (ambiguous among two
+    # real APX families) — it should land in the suggestion band.
+    detected = engine.detect_product_mention(
+        "Give me quote of APX with 10 qty", hints={},
+        reader=reader, workspace_id=1,
+    )
+    assert detected == ""
+
+    suggestions = engine.suggest_product_candidates(
+        "Give me quote of APX with 10 qty", reader, workspace_id=1,
+    )
+    assert suggestions, "a genuine brand abbreviation must surface suggestions"
+    assert "videoSolutions_BOM" not in suggestions
+    assert {"APX NEXT", "APX6500"} & set(suggestions)
+
+
+def test_vague_abbreviation_with_no_matching_family_gets_no_suggestions(
+    monkeypatch,
+):
+    """An abbreviation-shaped token that isn't a prefix of anything ingested
+    must not manufacture a suggestion out of thin air."""
+    reader = _fake_reader_with_batch_fetch(monkeypatch, {
+        "VideoSolutionsConfig": "videoSolutions_BOM",
+        "MototrboConfig": "MOTOTRBO",
+    })
+    from aryx.cpq.engine import CpqEngine
+    engine = CpqEngine()
+
+    suggestions = engine.suggest_product_candidates(
+        "Give me quote of APX with 10 qty", reader, workspace_id=1,
+    )
+    assert "videoSolutions_BOM" not in suggestions
+
+
+# ── Regression batch: real-world vague/specific order phrasings ──────────
+# A user-supplied set of live phrasings to pin down, covering the full
+# spectrum from bare abbreviation to fully-qualified multi-line order, all
+# against the SAME ingested workspace (three real APX NEXT variants as
+# separate catalogs + one unrelated family) — proves the abbreviation fix
+# doesn't regress specific-mention detection, and specific mentions still
+# never fall into the ambiguous/suggestion path.
+
+_APX_VARIANT_CATALOGS = {
+    "ApxNextConfig": "APX NEXT",
+    "ApxNextXeConfig": "APX NEXT XE",
+    "ApxNextXnConfig": "APX NEXT XN",
+    "MototrboConfig": "MOTOTRBO",
+}
+
+
+def _apx_variant_engine(monkeypatch):
+    reader = _fake_reader_with_batch_fetch(monkeypatch, _APX_VARIANT_CATALOGS)
+    from aryx.cpq.engine import CpqEngine
+    return CpqEngine(), reader
+
+
+def test_bare_apx_is_ambiguous_among_three_real_variants_never_mototrbo(monkeypatch):
+    """"Give me a quote for the APX" — too vague to auto-pick ANY of the
+    three real APX NEXT variants; must offer them as suggestions and must
+    never surface the unrelated MOTOTRBO family."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Give me a quote for the APX"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == ""
+
+    suggestions = engine.suggest_product_candidates(question, reader, workspace_id=1)
+    assert suggestions, "a genuine brand mention must surface suggestions"
+    assert "MOTOTRBO" not in suggestions
+    assert set(suggestions) <= {"APX NEXT", "APX NEXT XE", "APX NEXT XN"}
+
+
+def test_fully_qualified_variant_in_a_structured_order_resolves_directly(monkeypatch):
+    """"Generate a quote: APX NEXT XN All Band, Qty 1, United States" names
+    a specific variant in full — must resolve directly, no disambiguation."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Generate a quote: APX NEXT XN All Band, Qty 1, United States"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == "APX NEXT XN"
+
+
+def test_two_variants_named_in_one_multi_line_order_picks_a_real_one(monkeypatch):
+    """"Give me a quote for 10 APX NEXT XE Single Band radios and 5 APX
+    NEXT XN All Band radios for the United Kingdom." names two real
+    variants in the same message — detection must resolve to one of the
+    two ACTUAL variants named, never an unrelated or invented value."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = (
+        "Give me a quote for 10 APX NEXT XE Single Band radios and 5 APX "
+        "NEXT XN All Band radios for the United Kingdom."
+    )
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected in {"APX NEXT XE", "APX NEXT XN"}
+
+
+def test_variant_plus_trailing_qualifier_still_resolves_directly(monkeypatch):
+    """"Quote 12 APX NEXT XE devices for US Federal tier discount." — the
+    trailing qualifier ("US Federal tier discount") must not distract
+    detection away from the clearly-named variant."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Quote 12 APX NEXT XE devices for US Federal tier discount."
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == "APX NEXT XE"
+
+
+def test_fully_generic_radio_quote_request_has_no_product_signal(monkeypatch):
+    """"I need 10 radios quote to US" — no product name at all; must not
+    fuzzy-match ANY ingested family (this is the raw engine-level half of
+    the ask_api "did you mean A, or B?" behavior asserted elsewhere)."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "I need 10 radios quote to US"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == ""
+    suggestions = engine.suggest_product_candidates(question, reader, workspace_id=1)
+    assert suggestions == []
+
+
+def test_quoted_spelled_out_quantity_does_not_break_variant_detection(monkeypatch):
+    """"Give me a quote for 'ten' APX NEXT XE radios for Canada" — quote
+    marks around a spelled-out quantity must not interfere with matching
+    the variant name itself (normalization strips punctuation anyway)."""
+    engine, reader = _apx_variant_engine(monkeypatch)
+    question = "Give me a quote for 'ten' APX NEXT XE radios for Canada"
+
+    detected = engine.detect_product_mention(question, hints={}, reader=reader, workspace_id=1)
+    assert detected == "APX NEXT XE"
+
+
 # ── Scenario 7: fuzzy substring fallback catches a PARTIAL/misspelled ──────
 # product mention that Tier 1's exact-substring match alone would miss —
 # deterministic (SequenceMatcher via aryx.resolution.classical.string_score),
@@ -624,6 +859,47 @@ _FAKE_COUNTRY_ATTR = ConfigAttr(
 )
 
 
+def _block_real_rdb_access(monkeypatch) -> None:
+    """Make every real-RDB entry point fail fast instead of hanging.
+
+    docs/config_consistency_issues_2026-07-30.md Issue 9: this test's
+    faked product-switch-reload flow (new catalog_prefix from
+    load_product_config's fake return) is never warm in any of the
+    engine's per-catalog caches, so _run_cpq_turn_inner falls through to
+    several REAL RDB calls — extract_flag_hints (-> _build_flag_keyword_
+    index -> PostgresCpqRdb.fetch_function_scripts), load_validation_rules
+    (-> _load_value_rules -> IngestQuestionStore.list), payload_flow_
+    exclusions (-> _detect_layout_tier -> fetch_layout_attr_assoc), and
+    potentially others not yet identified. On a bare host with no route
+    to the `postgres` compose service, each one hangs indefinitely on
+    connection rather than failing fast — and mocking every individual
+    CpqEngine method one at a time is a moving target (three were found
+    this way before this fix; there is no guarantee a fourth doesn't
+    exist).
+
+    Every PostgresCpqRdb/OracleCpqRdb method routes through the single
+    `self._connection()` choke point (`rdb.py`), and IngestQuestionStore
+    routes through its own `get_pool(dsn)` call in `__init__` — both
+    ultimately call `aryx.store.pool.get_pool`. Patching get_pool itself
+    to raise immediately covers every current AND future caller in one
+    place, rather than enumerating call sites. This is safe: every
+    PostgresCpqRdb method already wraps its query in
+    `try/except Exception: ... return {}/[]` (its own module docstring:
+    "Failures are logged and surface as empty results, never a hard
+    error"), and _load_value_rules wraps its IngestQuestionStore call in
+    the same pattern — so a fast-failing get_pool degrades exactly the
+    way a genuinely unreachable production DB would, it just doesn't
+    hang getting there.
+    """
+    def _fail_fast(dsn, min_size=2, max_size=10):
+        raise RuntimeError(
+            "real RDB access attempted from an offline unit test — see "
+            "docs/config_consistency_issues_2026-07-30.md Issue 9"
+        )
+    monkeypatch.setattr("aryx.store.pool.get_pool", _fail_fast)
+    monkeypatch.setattr("aryx.store.ingest_question_store.get_pool", _fail_fast)
+
+
 def _country_check_setup(monkeypatch, available: bool):
     """Override load_product_config (normally mocked to return ([], "") by
     _no_switch_setup, which would make _country_available_for short-circuit
@@ -645,6 +921,7 @@ def _country_check_setup(monkeypatch, available: bool):
     monkeypatch.setattr(
         api._cpq_engine, "check_country_availability", lambda *a, **k: available,
     )
+    _block_real_rdb_access(monkeypatch)
 
 
 def test_switch_preserves_valid_country_without_reasking(monkeypatch):
@@ -705,6 +982,7 @@ def test_confirmed_switch_seeds_product_identifier_without_reasking(monkeypatch)
         lambda *a, **k: ([], []),
     )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    _block_real_rdb_access(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e", country="United States")
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "MOTOTRBO"
@@ -755,6 +1033,7 @@ def test_confirmed_switch_seeds_product_identifier_from_original_question_when_f
         lambda *a, **k: ([], []),
     )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    _block_real_rdb_access(monkeypatch)
     session_data = _mid_config_session(product_name="SL3500e", country="United States")
     session_data["pending_anchor"] = "confirm_switch"
     session_data["pending_switch_product"] = "aSTRO25_bom"
@@ -1036,6 +1315,7 @@ def _pending_menu_setup(monkeypatch):
         lambda *a, **k: ([], []),
     )
     monkeypatch.setattr(api._cpq_engine, "build_bml_evaluator", lambda *a, **k: None)
+    _block_real_rdb_access(monkeypatch)
     return reader
 
 
@@ -1206,6 +1486,63 @@ def test_confirm_switch_accepts_the_product_name_as_affirmative(monkeypatch):
         "replying with the offered product's own name must count as yes, not decline"
     )
     assert "OK — continuing" not in resp["answer"]
+
+
+# ── MT17 (cpq_test_cases.xlsx, 6-MultiProduct): undo-vs-switch collision ────
+# "go back" is _UNDO_RE's own undo trigger phrase AND a completely ordinary
+# way to ask for a product switch back — "Actually go back to APX NEXT". The
+# undo check ran unconditionally before any switch detection, so naming a
+# real product got swallowed as a snapshot rollback that ignores what was
+# actually asked. Fixed by reusing detect_product_mention (dynamic,
+# catalog-driven, no hardcoded product/phrase list) to check whether the
+# message names a different real product before honoring the undo trigger.
+
+def test_go_back_naming_a_real_product_is_a_switch_not_an_undo(monkeypatch):
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="MOTOTRBO")
+    # A snapshot exists (as it would after an earlier real switch) — proves
+    # this isn't merely "nothing to undo" masking the collision.
+    session_data["history"] = [{"product_name": "SL3500e", "_snapshot_reason": "mutating"}]
+    req = AskRequest(question="Actually go back to APX NEXT", workspace_id=1,
+                      session_data=session_data)
+    reader._catalogs["ApxNextConfig"] = "APX NEXT"
+
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["tools_called"] == ["cpq_switch_candidate()"], (
+        "naming a real product must win over the 'go back' undo trigger"
+    )
+    assert resp["session_data"]["pending_switch_product"] == "APX NEXT"
+    assert resp["session_data"]["product_name"] == "MOTOTRBO", "not switched yet — confirmation still required"
+    assert resp["session_data"]["history"], "the undo path must not have consumed the snapshot"
+
+
+def test_go_back_with_no_real_product_still_undoes_normally(monkeypatch):
+    """The fix must not disable undo generally — only when a real, different
+    product is actually named."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="MOTOTRBO")
+    session_data["history"] = [{"product_name": "MOTOTRBO", "battery": "STANDARD",
+                                 "_snapshot_reason": "mutating"}]
+    req = AskRequest(question="please go back", workspace_id=1, session_data=session_data)
+
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["tools_called"] == ["cpq_undo()"]
+    assert not resp["session_data"]["history"], "a genuine undo must still consume the snapshot"
+
+
+def test_go_back_naming_the_current_product_still_undoes_normally(monkeypatch):
+    """Naming the CURRENT product isn't a switch signal — must not block undo."""
+    reader = _no_switch_setup(monkeypatch)
+    session_data = _mid_config_session(product_name="MOTOTRBO")
+    session_data["history"] = [{"product_name": "MOTOTRBO", "_snapshot_reason": "mutating"}]
+    req = AskRequest(question="go back to MOTOTRBO please", workspace_id=1,
+                      session_data=session_data)
+
+    resp = _run_cpq_turn(req, reader)
+
+    assert resp["tools_called"] == ["cpq_undo()"]
 
 
 def test_country_availability_raw_display_text_documents_the_p1_bug():

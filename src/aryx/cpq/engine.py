@@ -21,18 +21,37 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from aryx.config import get_settings
 from aryx.cpq.bml import (
     BmlEvaluator, evaluate_declarative_conditions, extract_literal_comparisons,
+    _operator_hit,
 )
+from aryx.cpq.data_table_resolver import resolve_whitelist_values as dt_resolve_whitelist_values
+from aryx.cpq.data_table_resolver import resolve_product_cpq_model_family as dt_resolve_product_cpq_model_family
+from aryx.cpq.data_table_resolver import resolve_product_cpq_models_from_rows as dt_resolve_product_cpq_models_from_rows
+from aryx.cpq.data_table_resolver import resolve_region_allow_value as dt_resolve_region_allow_value
+from aryx.cpq.data_table_resolver import resolve_invalid_product_variant as dt_resolve_invalid_product_variant
+from aryx.cpq.data_table_resolver import discover_cpq_models_for_base_model as dt_discover_cpq_models_for_base_model
+from aryx.cpq.data_table_resolver import governed_attr_names_for_base_model as dt_governed_attr_names_for_base_model
+from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model as dt_governed_required_attr_names_for_base_model
+from aryx.cpq.data_table_resolver import find_inconsistent_filled_pairs as dt_find_inconsistent_filled_pairs
+from aryx.cpq.data_table_resolver import (
+    find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
+)
+from aryx.cpq.data_table_resolver import attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model
+from aryx.cpq.data_table_resolver import _invalidate_on_marker_change
+from aryx.cpq.data_table_resolver import _cache_write_if_marker_unchanged
+from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
 from aryx.cpq.logging_context import install_run_id_logging
 from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq import rule_trace
 from aryx.resolution.classical import string_score
 from aryx.cpq.state import (
     ConfigAttr, ConstraintRule, CpqSession, HidingRule, MenuOption,
-    RecommendationRule,
+    RecommendationRule, ValidationRule,
 )
 from aryx.store.ingest_question_store import IngestQuestionStore
 
@@ -65,6 +84,140 @@ _DISPLAY_EMPTY: frozenset[str] = frozenset({
 def _presentable(val: str | None) -> bool:
     """True when val should appear as a numbered option in the user-facing prompt."""
     return bool(val) and str(val).strip().lower() not in _DISPLAY_EMPTY
+
+
+# A reply declining one grid-selector option's upfront quantity question
+# (see CpqEngine.parse_grid_quantity_reply) — "skip"/"none"/"no" etc. all
+# mean the same thing a bare "0" does: this option isn't included.
+_GRID_QUANTITY_SKIP_RE = re.compile(
+    r"^\s*(skip|none|no|nope|nothing|n/?a|not\s+needed)\s*$", re.IGNORECASE,
+)
+
+# 2026-08-27 follow-up: a customer plausibly types a spelled-out or
+# "dozen"-family quantity ("three", "a dozen", "half a dozen", "2 dozen")
+# instead of a bare digit. Deliberately a small, FIXED vocabulary — never
+# a general NLP number parser — same "never guess, only convert a
+# recognized phrasing" discipline as the rest of this module. Negative
+# quantities ("-5", "minus 6") are intentionally NOT included here: a
+# negative mount count has no real business meaning, so parse_grid_
+# quantity_reply correctly keeps rejecting those (unchanged).
+_GRID_QUANTITY_WORD_NUMBERS: dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20,
+}
+
+_GRID_QUANTITY_DOZEN_N_RE = re.compile(r"^(\d+|[a-z]+)\s+dozen$")
+
+
+def _parse_grid_quantity_dozen_phrase(text: str) -> int | None:
+    """"dozen"/"a dozen" -> 12, "half a dozen"/"half dozen" -> 6, "N
+    dozen" (N a digit or one of _GRID_QUANTITY_WORD_NUMBERS) -> N*12.
+    Returns None for anything else — never a guess."""
+    tl = text.strip().lower()
+    if tl in ("dozen", "a dozen"):
+        return 12
+    if tl in ("half a dozen", "half dozen"):
+        return 6
+    m = _GRID_QUANTITY_DOZEN_N_RE.match(tl)
+    if not m:
+        return None
+    n_text = m.group(1)
+    if n_text.isdigit():
+        return int(n_text) * 12
+    if n_text in _GRID_QUANTITY_WORD_NUMBERS:
+        return _GRID_QUANTITY_WORD_NUMBERS[n_text] * 12
+    return None
+
+
+# ── Unit/pluralization-tolerant option matching ─────────────────────────
+# Live bug: a customer reply of "2 Yrs" (or "2 Years") never matched a
+# catalog option displayed as "2 Year" — the existing tiers require the
+# option's exact display text to appear as a literal whole word, and
+# neither the trailing "s" (pluralization) nor the "Yrs" abbreviation
+# survives that literal check. Rather than hardcoding a synonym table for
+# every unit the catalog might use ("yr"/"yrs"->"year", "mo"/"mos"->
+# "month", ...), this compares tokens generically: a trailing "s" is
+# treated as an optional plural marker, and a short token is treated as
+# an abbreviation of a longer one when its letters appear, in order, as
+# at least half of the longer token's letters ("yr" -> "year", "yrs" ->
+# "years") — the same kind of ordered-subsequence test command-line tools
+# use for abbreviated flag matching, not a per-unit lookup table.
+
+def _singularize_token(token: str) -> str:
+    """Strip a likely plural "s" — but never from a 1-2 letter token,
+    where that would leave nothing meaningful (keeps "as", "is" untouched;
+    "yrs" -> "yr" is exactly the short-form case this exists for)."""
+    if len(token) > 2 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _is_ordered_abbreviation(short: str, long: str) -> bool:
+    """True when `short`'s letters occur, in order, inside `long`, and
+    `short` covers at least half of `long`'s length — generic enough to
+    recognize "yr" as an abbreviation of "year" without knowing what a
+    year is, while still rejecting coincidental one- or two-letter hits."""
+    if not short or not long or len(short) >= len(long):
+        return False
+    remaining = iter(long)
+    if not all(ch in remaining for ch in short):
+        return False
+    return len(short) >= max(2, len(long) // 2)
+
+
+def _has_digit(token: str) -> bool:
+    return any(ch.isdigit() for ch in token)
+
+
+def _tokens_match_loosely(a: str, b: str) -> bool:
+    """Equal after optional de-pluralization, or one an ordered
+    abbreviation of the other — except a token carrying a digit (a
+    quantity, "2" vs "3", "5" vs "12") must match EXACTLY, never loosely.
+    Without this, the ordered-subsequence check would itself treat "1" as
+    an "abbreviation" of "12" and silently cross-match the wrong
+    quantity — worse than merely being unit-unaware."""
+    if a == b:
+        return True
+    if _has_digit(a) or _has_digit(b):
+        return False
+    na, nb = _singularize_token(a), _singularize_token(b)
+    if na == nb:
+        return True
+    return _is_ordered_abbreviation(na, nb) or _is_ordered_abbreviation(nb, na)
+
+
+def _option_matches_with_unit_normalization(display_name: str, ua: str) -> bool:
+    """True when `display_name`'s tokens appear, in order and each loosely
+    matching (see `_tokens_match_loosely`), as a contiguous run of tokens
+    somewhere inside `ua` — e.g. "2 Year" inside "set smartprogramming to
+    2 years", or standing alone as "2 yrs".
+
+    Scoped to options that actually carry a quantity: `display_name` must
+    contain at least one purely-numeric token, and that token must match
+    verbatim in `ua` (enforced by `_tokens_match_loosely` above). Without
+    this gate, the abbreviation heuristic alone is too permissive for a
+    single-word option with no quantity at all — a catalog option
+    displayed as "Android" would otherwise match a message containing the
+    ordinary word "and" (`_is_ordered_abbreviation("and", "android")` is
+    True on letters alone), and this repo's own catalogs use short
+    product-line prefixes ("APX", "SAM"-style) where the same risk is not
+    hypothetical. Requiring a quantity anchor keeps this tier scoped to
+    exactly what it was built for: "<number> <unit>" options."""
+    dn_tokens = display_name.strip().lower().split()
+    if not any(_has_digit(t) for t in dn_tokens):
+        return False
+    ua_tokens = ua.strip().lower().split()
+    n = len(dn_tokens)
+    if n == 0 or n > len(ua_tokens):
+        return False
+    for start in range(len(ua_tokens) - n + 1):
+        window = ua_tokens[start:start + n]
+        if all(_tokens_match_loosely(u, d) for u, d in zip(window, dn_tokens)):
+            return True
+    return False
 
 
 def _label_mention_span(
@@ -162,8 +315,47 @@ def _label_mentioned(label_lower: str, q_lower: str, max_dropped_leading: int = 
     return _label_mention_span(label_lower, q_lower, max_dropped_leading) is not None
 
 
-def _condition_value_matches(current_val: str, condition_value: str) -> bool:
-    """True when current_val satisfies a single condition_attr/condition_value pair.
+def _label_mentioned_strict(label_lower: str, q_lower: str) -> bool:
+    """Exact-phrase match, or a leading-word-dropped suffix that NEVER
+    degrades to a single generic shared word (e.g. "Type"/"Package").
+
+    Live-verified gap: `_label_mentioned`'s word-set fallback tier is
+    explicitly safe only as a coarse pre-filter (its own docstring: "a
+    false-positive span here costs an extra attr considered, never a
+    wrongly-resolved value") because `detect_change_request` always
+    requires a SEPARATE value-match (apply_answer/numeric extraction)
+    before actually resolving anything — a loose label match alone never
+    directly causes a wrong resolution there. `detect_attr_activation`/
+    `detect_attr_clear` (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2/D4)
+    have no such secondary check: the label match itself IS the final
+    decision. Confirmed live: "add surveillance package type" — meant for
+    "Surveillance Package Type" — instead matched an unrelated "Customer
+    Type" attr, because dropping "Customer" leaves the single word
+    "type", which trivially appears in almost any message mentioning any
+    "*Type"-suffixed attr. This helper keeps the same leading-word-drop
+    tolerance for 3+-word labels (dropping down to 2+ remaining words is
+    still discriminating) but requires the FULL label verbatim for a
+    2-word label — no single-word degradation, ever.
+    """
+    if label_lower in q_lower:
+        return True
+    words = label_lower.split()
+    if len(words) < 3:
+        return False  # 2-word (or shorter) labels: exact phrase only
+    for start in range(1, len(words) - 1):  # always leaves >= 2 words
+        suffix = " ".join(words[start:])
+        if suffix in q_lower:
+            return True
+    return False
+
+
+def _condition_value_matches(
+    current_val: str, condition_value: str, operator: str = "4",
+) -> bool:
+    """True when current_val satisfies a single condition_attr/condition_value
+    pair, under the given BM-native operator (default "4" = "=" — the
+    majority code, and the only one every existing caller assumed before
+    docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md).
 
     condition_value is sometimes a "~"-delimited OR-list (same convention
     already handled for ConstraintRule.allowed_values, e.g. "PREMIER~ADVANCED
@@ -178,9 +370,16 @@ def _condition_value_matches(current_val: str, condition_value: str) -> bool:
     Single-value condition_value strings behave identically to a plain
     equality check (a 1-element split set), so this is a strict superset
     fix, not a behavior change for the common case.
+
+    A None result from the shared _operator_hit (a numeric operator that
+    couldn't parse either side) is treated as "does not match" here rather
+    than propagated as "unresolved" — every caller of this scalar path
+    already treats a plain False the same as "condition not met, skip,"
+    so collapsing None into False changes nothing observable for the
+    handful of real rows that would hit this edge case, while keeping this
+    function's simple bool return type callers already depend on.
     """
-    allowed = {v.strip().lower() for v in condition_value.split("~") if v.strip()}
-    return current_val.strip().lower() in allowed
+    return bool(_operator_hit(current_val, [condition_value], operator))
 
 
 # Ontology types ingested from an XML source are named '{SourceStem}Bm{Tag}'
@@ -255,6 +454,17 @@ def _variable_words(variable_name: str) -> list[str]:
     return [w for w in words if len(w) > 1 and w not in _GENERIC_ATTR_WORDS]
 
 
+# Public alias so ask_api can access it without importing a private name
+# (same convention as DECISION_REQUIRED_KEYS above). Used by the ISSUE-004
+# country-change fix (PR #205 review, Medium finding #5) to replace a raw
+# substring test with a real word-segment match — "region" as a substring
+# would incorrectly match a hypothetical "RegionalDiscountCode" (segment
+# "regional" != "region"); splitting into real camelCase/underscore words
+# first and requiring an EXACT segment match avoids that false positive
+# while staying fully generic (no hardcoded attribute names).
+variable_name_words = _variable_words
+
+
 # ── CPQ intent detection ───────────────────────────────────────────────────────
 # Generic CPQ-domain vocabulary only — the English words customers use to
 # signal configuration intent ("quote", "configure", "bom", ...) are a fixed
@@ -262,9 +472,14 @@ def _variable_words(variable_name: str) -> list[str]:
 # same kind of hardcoding a product-name list is. Product-name literals
 # (formerly apx|mototrbo|sl3500|dpx|xpr here) were removed — is_cpq_question()
 # now also checks the workspace's actually-ingested product names dynamically.
+# Live-confirmed gap (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+# PLAN.md): "\bradio\b" never matches "radios" — the word boundary after
+# "radio" fails when an "s" immediately continues the word. "I want to
+# order APX Next radios..." silently fell through to the generic,
+# non-CPQ LLM pipeline entirely because of this one missing "s?".
 _CPQ_TRIGGER = re.compile(
     r"\b(quote|configure|configuration|build.*quote|create.*quote|"
-    r"radio|"
+    r"radios?|"
     r"5g|lte|carrier|billing|activation|hardware.*version|"
     r"bom|payload)\b",
     re.IGNORECASE,
@@ -308,20 +523,430 @@ _HINT_PATTERNS: list[tuple[str, str, str]] = [
 # chargerCountryPlug_apcr kept re-asking because "united states" can never be
 # found inside its own "US" option text — the customer had already answered
 # with the country, typed it again for this attribute, and got rejected.
-_COUNTRY_HINT_SHORTHAND: dict[str, tuple[str, ...]] = {
-    "united states": ("US", "USA"),
-    "united kingdom": ("UK", "GB"),
-}
+# Superseded by _COUNTRY_ALIAS_GROUPS below (2026-08-14) -- the old dict
+# only supported the full-name -> abbreviation direction (a lookup keyed by
+# the shorthand itself, e.g. `.get("usa", ())`, always returned empty since
+# "usa" was never a dict KEY, only ever a value) and covered exactly 2
+# countries. Confirmed live: a customer typing "USA" (not "US") to answer
+# Ultimate Destination Country failed to match the real "US" option and
+# fell through to the generic "251 options, too many to list" prompt with
+# no matching branch and no log line anywhere in the process.
+#
+# _COUNTRY_ALIAS_GROUPS is data-generated (not hand-typed) from pycountry's
+# ISO 3166-1 tables -- one frozenset per real country containing its
+# common name, official name, alpha-2, and alpha-3 codes -- plus a small,
+# explicit set of colloquial names ISO's own name fields don't carry but
+# real customers type constantly (uk, uae, russia, vatican, ivory coast,
+# swaziland, macedonia, micronesia, burma, turkey, palestine, brunei).
+# pycountry itself is NOT a runtime dependency of this project (adding one
+# needs its own CVE-checked approval, per this repo's library-approval
+# rule) -- it was used ONLY offline, once, to generate this literal, the
+# same way _COUNTRY_TO_REGION above is a hand-maintained static table, not
+# a live library call. Regenerate by re-running the same generation script
+# if pycountry's ISO data is ever updated upstream.
+#
+# Every group is symmetric by construction, closing the one-directional
+# bug above for good: _country_alias_group("usa") and
+# _country_alias_group("us") both return the identical frozenset
+# containing "united states", "us", "usa", "united states of america".
+_COUNTRY_ALIAS_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({'af', 'afg', 'afghanistan', 'islamic republic of afghanistan'}),
+    frozenset({'al', 'alb', 'albania', 'republic of albania'}),
+    frozenset({'algeria', 'dz', 'dza', "people's democratic republic of algeria"}),
+    frozenset({'american samoa', 'as', 'asm'}),
+    frozenset({'ad', 'and', 'andorra', 'principality of andorra'}),
+    frozenset({'ago', 'angola', 'ao', 'republic of angola'}),
+    frozenset({'ai', 'aia', 'anguilla'}),
+    frozenset({'antarctica', 'aq', 'ata'}),
+    frozenset({'ag', 'antigua and barbuda', 'atg'}),
+    frozenset({'ar', 'arg', 'argentina', 'argentine republic'}),
+    frozenset({'am', 'arm', 'armenia', 'republic of armenia'}),
+    frozenset({'abw', 'aruba', 'aw'}),
+    frozenset({'au', 'aus', 'australia'}),
+    frozenset({'at', 'austria', 'aut', 'republic of austria'}),
+    frozenset({'az', 'aze', 'azerbaijan', 'republic of azerbaijan'}),
+    frozenset({'bahamas', 'bhs', 'bs', 'commonwealth of the bahamas'}),
+    frozenset({'bahrain', 'bh', 'bhr', 'kingdom of bahrain'}),
+    frozenset({'bangladesh', 'bd', 'bgd', "people's republic of bangladesh"}),
+    frozenset({'barbados', 'bb', 'brb'}),
+    frozenset({'belarus', 'blr', 'by', 'republic of belarus'}),
+    frozenset({'be', 'bel', 'belgium', 'kingdom of belgium'}),
+    frozenset({'belize', 'blz', 'bz'}),
+    frozenset({'ben', 'benin', 'bj', 'republic of benin'}),
+    frozenset({'bermuda', 'bm', 'bmu'}),
+    frozenset({'bhutan', 'bt', 'btn', 'kingdom of bhutan'}),
+    frozenset({'bo', 'bol', 'bolivia', 'bolivia, plurinational state of', 'plurinational state of bolivia'}),
+    frozenset({'bes', 'bonaire, sint eustatius and saba', 'bq'}),
+    frozenset({'ba', 'bih', 'bosnia and herzegovina', 'republic of bosnia and herzegovina'}),
+    frozenset({'botswana', 'bw', 'bwa', 'republic of botswana'}),
+    frozenset({'bouvet island', 'bv', 'bvt'}),
+    frozenset({'br', 'bra', 'brazil', 'federative republic of brazil'}),
+    frozenset({'british indian ocean territory', 'io', 'iot'}),
+    frozenset({'bn', 'brn', 'brunei', 'brunei darussalam'}),
+    frozenset({'bg', 'bgr', 'bulgaria', 'republic of bulgaria'}),
+    frozenset({'bf', 'bfa', 'burkina faso'}),
+    frozenset({'bdi', 'bi', 'burundi', 'republic of burundi'}),
+    frozenset({'cabo verde', 'cpv', 'cv', 'republic of cabo verde'}),
+    frozenset({'cambodia', 'kh', 'khm', 'kingdom of cambodia'}),
+    frozenset({'cameroon', 'cm', 'cmr', 'republic of cameroon'}),
+    frozenset({'ca', 'can', 'canada'}),
+    frozenset({'cayman islands', 'cym', 'ky'}),
+    frozenset({'caf', 'central african republic', 'cf'}),
+    frozenset({'chad', 'republic of chad', 'tcd', 'td'}),
+    frozenset({'chile', 'chl', 'cl', 'republic of chile'}),
+    frozenset({'china', 'chn', 'cn', "people's republic of china"}),
+    frozenset({'christmas island', 'cx', 'cxr'}),
+    frozenset({'cc', 'cck', 'cocos (keeling) islands'}),
+    frozenset({'co', 'col', 'colombia', 'republic of colombia'}),
+    frozenset({'com', 'comoros', 'km', 'union of the comoros'}),
+    frozenset({'cg', 'cog', 'congo', 'republic of the congo'}),
+    frozenset({'cd', 'cod', 'congo, the democratic republic of the'}),
+    frozenset({'ck', 'cok', 'cook islands'}),
+    frozenset({'costa rica', 'cr', 'cri', 'republic of costa rica'}),
+    frozenset({'croatia', 'hr', 'hrv', 'republic of croatia'}),
+    frozenset({'cu', 'cub', 'cuba', 'republic of cuba'}),
+    frozenset({'curaçao', 'cuw', 'cw'}),
+    frozenset({'cy', 'cyp', 'cyprus', 'republic of cyprus'}),
+    frozenset({'cz', 'cze', 'czech republic', 'czechia'}),
+    frozenset({'ci', 'civ', "côte d'ivoire", 'ivory coast', "republic of côte d'ivoire"}),
+    frozenset({'denmark', 'dk', 'dnk', 'kingdom of denmark'}),
+    frozenset({'dj', 'dji', 'djibouti', 'republic of djibouti'}),
+    frozenset({'commonwealth of dominica', 'dm', 'dma', 'dominica'}),
+    frozenset({'do', 'dom', 'dominican republic'}),
+    frozenset({'ec', 'ecu', 'ecuador', 'republic of ecuador'}),
+    frozenset({'arab republic of egypt', 'eg', 'egy', 'egypt'}),
+    frozenset({'el salvador', 'republic of el salvador', 'slv', 'sv'}),
+    frozenset({'equatorial guinea', 'gnq', 'gq', 'republic of equatorial guinea'}),
+    frozenset({'er', 'eri', 'eritrea', 'the state of eritrea'}),
+    frozenset({'ee', 'est', 'estonia', 'republic of estonia'}),
+    frozenset({'eswatini', 'kingdom of eswatini', 'swaziland', 'swz', 'sz'}),
+    frozenset({'et', 'eth', 'ethiopia', 'federal democratic republic of ethiopia'}),
+    frozenset({'falkland islands (malvinas)', 'fk', 'flk'}),
+    frozenset({'faroe islands', 'fo', 'fro'}),
+    frozenset({'fiji', 'fj', 'fji', 'republic of fiji'}),
+    frozenset({'fi', 'fin', 'finland', 'republic of finland'}),
+    frozenset({'fr', 'fra', 'france', 'french republic'}),
+    frozenset({'french guiana', 'gf', 'guf'}),
+    frozenset({'french polynesia', 'pf', 'pyf'}),
+    frozenset({'atf', 'french southern territories', 'tf'}),
+    frozenset({'ga', 'gab', 'gabon', 'gabonese republic'}),
+    frozenset({'gambia', 'gm', 'gmb', 'republic of the gambia'}),
+    frozenset({'ge', 'geo', 'georgia'}),
+    frozenset({'de', 'deu', 'federal republic of germany', 'germany'}),
+    frozenset({'gh', 'gha', 'ghana', 'republic of ghana'}),
+    frozenset({'gi', 'gib', 'gibraltar'}),
+    frozenset({'gr', 'grc', 'greece', 'hellenic republic'}),
+    frozenset({'gl', 'greenland', 'grl'}),
+    frozenset({'gd', 'grd', 'grenada'}),
+    frozenset({'glp', 'gp', 'guadeloupe'}),
+    frozenset({'gu', 'guam', 'gum'}),
+    frozenset({'gt', 'gtm', 'guatemala', 'republic of guatemala'}),
+    frozenset({'gg', 'ggy', 'guernsey'}),
+    frozenset({'gin', 'gn', 'guinea', 'republic of guinea'}),
+    frozenset({'gnb', 'guinea-bissau', 'gw', 'republic of guinea-bissau'}),
+    frozenset({'guy', 'guyana', 'gy', 'republic of guyana'}),
+    frozenset({'haiti', 'ht', 'hti', 'republic of haiti'}),
+    frozenset({'heard island and mcdonald islands', 'hm', 'hmd'}),
+    frozenset({'holy see (vatican city state)', 'va', 'vat', 'vatican', 'vatican city'}),
+    frozenset({'hn', 'hnd', 'honduras', 'republic of honduras'}),
+    frozenset({'hk', 'hkg', 'hong kong', 'hong kong special administrative region of china'}),
+    frozenset({'hu', 'hun', 'hungary'}),
+    frozenset({'iceland', 'is', 'isl', 'republic of iceland'}),
+    frozenset({'in', 'ind', 'india', 'republic of india'}),
+    frozenset({'id', 'idn', 'indonesia', 'republic of indonesia'}),
+    frozenset({'ir', 'iran', 'iran, islamic republic of', 'irn', 'islamic republic of iran'}),
+    frozenset({'iq', 'iraq', 'irq', 'republic of iraq'}),
+    frozenset({'ie', 'ireland', 'irl'}),
+    frozenset({'im', 'imn', 'isle of man'}),
+    frozenset({'il', 'isr', 'israel', 'state of israel'}),
+    frozenset({'it', 'ita', 'italian republic', 'italy'}),
+    frozenset({'jam', 'jamaica', 'jm'}),
+    frozenset({'japan', 'jp', 'jpn'}),
+    frozenset({'je', 'jersey', 'jey'}),
+    frozenset({'hashemite kingdom of jordan', 'jo', 'jor', 'jordan'}),
+    frozenset({'kaz', 'kazakhstan', 'kz', 'republic of kazakhstan'}),
+    frozenset({'ke', 'ken', 'kenya', 'republic of kenya'}),
+    frozenset({'ki', 'kir', 'kiribati', 'republic of kiribati'}),
+    frozenset({"democratic people's republic of korea", "korea, democratic people's republic of", 'kp', 'north korea', 'prk'}),
+    frozenset({'kor', 'korea, republic of', 'kr', 'south korea'}),
+    frozenset({'kuwait', 'kw', 'kwt', 'state of kuwait'}),
+    frozenset({'kg', 'kgz', 'kyrgyz republic', 'kyrgyzstan'}),
+    frozenset({'la', 'lao', "lao people's democratic republic", 'laos'}),
+    frozenset({'latvia', 'lv', 'lva', 'republic of latvia'}),
+    frozenset({'lb', 'lbn', 'lebanese republic', 'lebanon'}),
+    frozenset({'kingdom of lesotho', 'lesotho', 'ls', 'lso'}),
+    frozenset({'lbr', 'liberia', 'lr', 'republic of liberia'}),
+    frozenset({'lby', 'libya', 'ly'}),
+    frozenset({'li', 'lie', 'liechtenstein', 'principality of liechtenstein'}),
+    frozenset({'lithuania', 'lt', 'ltu', 'republic of lithuania'}),
+    frozenset({'grand duchy of luxembourg', 'lu', 'lux', 'luxembourg'}),
+    frozenset({'mac', 'macao', 'macao special administrative region of china', 'mo'}),
+    frozenset({'madagascar', 'mdg', 'mg', 'republic of madagascar'}),
+    frozenset({'malawi', 'mw', 'mwi', 'republic of malawi'}),
+    frozenset({'malaysia', 'my', 'mys'}),
+    frozenset({'maldives', 'mdv', 'mv', 'republic of maldives'}),
+    frozenset({'mali', 'ml', 'mli', 'republic of mali'}),
+    frozenset({'malta', 'mlt', 'mt', 'republic of malta'}),
+    frozenset({'marshall islands', 'mh', 'mhl', 'republic of the marshall islands'}),
+    frozenset({'martinique', 'mq', 'mtq'}),
+    frozenset({'islamic republic of mauritania', 'mauritania', 'mr', 'mrt'}),
+    frozenset({'mauritius', 'mu', 'mus', 'republic of mauritius'}),
+    frozenset({'mayotte', 'myt', 'yt'}),
+    frozenset({'mex', 'mexico', 'mx', 'united mexican states'}),
+    frozenset({'federated states of micronesia', 'fm', 'fsm', 'micronesia', 'micronesia, federated states of'}),
+    frozenset({'md', 'mda', 'moldova', 'moldova, republic of', 'republic of moldova'}),
+    frozenset({'mc', 'mco', 'monaco', 'principality of monaco'}),
+    frozenset({'mn', 'mng', 'mongolia'}),
+    frozenset({'me', 'mne', 'montenegro'}),
+    frozenset({'montserrat', 'ms', 'msr'}),
+    frozenset({'kingdom of morocco', 'ma', 'mar', 'morocco'}),
+    frozenset({'moz', 'mozambique', 'mz', 'republic of mozambique'}),
+    frozenset({'burma', 'mm', 'mmr', 'myanmar', 'republic of myanmar'}),
+    frozenset({'na', 'nam', 'namibia', 'republic of namibia'}),
+    frozenset({'nauru', 'nr', 'nru', 'republic of nauru'}),
+    frozenset({'federal democratic republic of nepal', 'nepal', 'np', 'npl'}),
+    frozenset({'kingdom of the netherlands', 'netherlands', 'nl', 'nld'}),
+    frozenset({'nc', 'ncl', 'new caledonia'}),
+    frozenset({'new zealand', 'nz', 'nzl'}),
+    frozenset({'ni', 'nic', 'nicaragua', 'republic of nicaragua'}),
+    frozenset({'ne', 'ner', 'niger', 'republic of the niger'}),
+    frozenset({'federal republic of nigeria', 'ng', 'nga', 'nigeria'}),
+    frozenset({'niu', 'niue', 'nu'}),
+    frozenset({'nf', 'nfk', 'norfolk island'}),
+    frozenset({'macedonia', 'mk', 'mkd', 'north macedonia', 'republic of north macedonia'}),
+    frozenset({'commonwealth of the northern mariana islands', 'mnp', 'mp', 'northern mariana islands'}),
+    frozenset({'kingdom of norway', 'no', 'nor', 'norway'}),
+    frozenset({'om', 'oman', 'omn', 'sultanate of oman'}),
+    frozenset({'islamic republic of pakistan', 'pak', 'pakistan', 'pk'}),
+    frozenset({'palau', 'plw', 'pw', 'republic of palau'}),
+    frozenset({'palestine', 'palestine, state of', 'ps', 'pse', 'the state of palestine'}),
+    frozenset({'pa', 'pan', 'panama', 'republic of panama'}),
+    frozenset({'independent state of papua new guinea', 'papua new guinea', 'pg', 'png'}),
+    frozenset({'paraguay', 'pry', 'py', 'republic of paraguay'}),
+    frozenset({'pe', 'per', 'peru', 'republic of peru'}),
+    frozenset({'ph', 'philippines', 'phl', 'republic of the philippines'}),
+    frozenset({'pcn', 'pitcairn', 'pn'}),
+    frozenset({'pl', 'pol', 'poland', 'republic of poland'}),
+    frozenset({'portugal', 'portuguese republic', 'prt', 'pt'}),
+    frozenset({'pr', 'pri', 'puerto rico'}),
+    frozenset({'qa', 'qat', 'qatar', 'state of qatar'}),
+    frozenset({'ro', 'romania', 'rou'}),
+    frozenset({'ru', 'rus', 'russia', 'russian federation'}),
+    frozenset({'rw', 'rwa', 'rwanda', 'rwandese republic'}),
+    frozenset({'re', 'reu', 'réunion'}),
+    frozenset({'bl', 'blm', 'saint barthélemy'}),
+    frozenset({'saint helena, ascension and tristan da cunha', 'sh', 'shn'}),
+    frozenset({'kn', 'kna', 'saint kitts and nevis'}),
+    frozenset({'lc', 'lca', 'saint lucia'}),
+    frozenset({'maf', 'mf', 'saint martin (french part)'}),
+    frozenset({'pm', 'saint pierre and miquelon', 'spm'}),
+    frozenset({'saint vincent and the grenadines', 'vc', 'vct'}),
+    frozenset({'independent state of samoa', 'samoa', 'ws', 'wsm'}),
+    frozenset({'republic of san marino', 'san marino', 'sm', 'smr'}),
+    frozenset({'democratic republic of sao tome and principe', 'sao tome and principe', 'st', 'stp'}),
+    frozenset({'kingdom of saudi arabia', 'sa', 'sau', 'saudi arabia'}),
+    frozenset({'republic of senegal', 'sen', 'senegal', 'sn'}),
+    frozenset({'republic of serbia', 'rs', 'serbia', 'srb'}),
+    frozenset({'republic of seychelles', 'sc', 'seychelles', 'syc'}),
+    frozenset({'republic of sierra leone', 'sierra leone', 'sl', 'sle'}),
+    frozenset({'republic of singapore', 'sg', 'sgp', 'singapore'}),
+    frozenset({'sint maarten (dutch part)', 'sx', 'sxm'}),
+    frozenset({'sk', 'slovak republic', 'slovakia', 'svk'}),
+    frozenset({'republic of slovenia', 'si', 'slovenia', 'svn'}),
+    frozenset({'sb', 'slb', 'solomon islands'}),
+    frozenset({'federal republic of somalia', 'so', 'som', 'somalia'}),
+    frozenset({'republic of south africa', 'south africa', 'za', 'zaf'}),
+    frozenset({'gs', 'sgs', 'south georgia and the south sandwich islands'}),
+    frozenset({'republic of south sudan', 'south sudan', 'ss', 'ssd'}),
+    frozenset({'es', 'esp', 'kingdom of spain', 'spain'}),
+    frozenset({'democratic socialist republic of sri lanka', 'lk', 'lka', 'sri lanka'}),
+    frozenset({'republic of the sudan', 'sd', 'sdn', 'sudan'}),
+    frozenset({'republic of suriname', 'sr', 'sur', 'suriname'}),
+    frozenset({'sj', 'sjm', 'svalbard and jan mayen'}),
+    frozenset({'kingdom of sweden', 'se', 'swe', 'sweden'}),
+    frozenset({'ch', 'che', 'swiss confederation', 'switzerland'}),
+    frozenset({'sy', 'syr', 'syria', 'syrian arab republic'}),
+    frozenset({'taiwan', 'taiwan, province of china', 'tw', 'twn'}),
+    frozenset({'republic of tajikistan', 'tajikistan', 'tj', 'tjk'}),
+    frozenset({'tanzania', 'tanzania, united republic of', 'tz', 'tza', 'united republic of tanzania'}),
+    frozenset({'kingdom of thailand', 'th', 'tha', 'thailand'}),
+    frozenset({'democratic republic of timor-leste', 'timor-leste', 'tl', 'tls'}),
+    frozenset({'tg', 'tgo', 'togo', 'togolese republic'}),
+    frozenset({'tk', 'tkl', 'tokelau'}),
+    frozenset({'kingdom of tonga', 'to', 'ton', 'tonga'}),
+    frozenset({'republic of trinidad and tobago', 'trinidad and tobago', 'tt', 'tto'}),
+    frozenset({'republic of tunisia', 'tn', 'tun', 'tunisia'}),
+    frozenset({'tkm', 'tm', 'turkmenistan'}),
+    frozenset({'tc', 'tca', 'turks and caicos islands'}),
+    frozenset({'tuv', 'tuvalu', 'tv'}),
+    frozenset({'republic of türkiye', 'tr', 'tur', 'turkey', 'türkiye'}),
+    frozenset({'republic of uganda', 'ug', 'uga', 'uganda'}),
+    frozenset({'ua', 'ukr', 'ukraine'}),
+    frozenset({'ae', 'are', 'uae', 'united arab emirates'}),
+    frozenset({'gb', 'gbr', 'uk', 'united kingdom', 'united kingdom of great britain and northern ireland'}),
+    frozenset({'united states', 'united states of america', 'us', 'usa'}),
+    frozenset({'um', 'umi', 'united states minor outlying islands'}),
+    frozenset({'eastern republic of uruguay', 'uruguay', 'ury', 'uy'}),
+    frozenset({'republic of uzbekistan', 'uz', 'uzb', 'uzbekistan'}),
+    frozenset({'republic of vanuatu', 'vanuatu', 'vu', 'vut'}),
+    frozenset({'bolivarian republic of venezuela', 've', 'ven', 'venezuela', 'venezuela, bolivarian republic of'}),
+    frozenset({'socialist republic of viet nam', 'viet nam', 'vietnam', 'vn', 'vnm'}),
+    frozenset({'british virgin islands', 'vg', 'vgb', 'virgin islands, british'}),
+    frozenset({'vi', 'vir', 'virgin islands of the united states', 'virgin islands, u.s.'}),
+    frozenset({'wallis and futuna', 'wf', 'wlf'}),
+    frozenset({'eh', 'esh', 'western sahara'}),
+    frozenset({'republic of yemen', 'ye', 'yem', 'yemen'}),
+    frozenset({'republic of zambia', 'zambia', 'zm', 'zmb'}),
+    frozenset({'republic of zimbabwe', 'zimbabwe', 'zw', 'zwe'}),
+    frozenset({'ala', 'ax', 'åland islands'}),
+)
+
+
+def _country_alias_group(value: str) -> frozenset[str] | None:
+    """The alias group containing `value` (already expected lowercased/
+    stripped), or None if it isn't a recognized country name/code in any
+    of the 249 real ISO entries + colloquial supplements above. Shared by
+    every consumer (auto_fill's hint-priority path, apply_answer's direct-
+    reply path) so a fix here closes the gap everywhere at once, instead
+    of two independently-drifting copies."""
+    for group in _COUNTRY_ALIAS_GROUPS:
+        if value in group:
+            return group
+    return None
+
+
+def _normalize_country_candidate(value: str) -> str:
+    """Lowercase/strip a raw country candidate and collapse the specific
+    punctuation ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_
+    2026_08_17.md) identified as the live bug class -- periods used as
+    abbreviation markers ("U.S.A", "US.A", "U.K", "U.A.E") -- down to the
+    same plain token `_COUNTRY_ALIAS_GROUPS` already keys on (e.g. "usa",
+    "uk", "uae"). Deliberately generic string normalization only (case,
+    periods, whitespace) -- never a per-country substitution list, so it
+    applies identically to all 249 real countries above, not just the
+    US/UK/UAE examples the bug was originally reported against."""
+    collapsed = value.strip().lower().replace(".", "")
+    return re.sub(r"\s+", " ", collapsed).strip()
+
+
+def _country_canonical_name(group: frozenset[str]) -> str:
+    """Pick a human-readable canonical common name out of an alias group,
+    generically -- never a per-country hardcoded lookup table.
+
+    Every group is a flat, unordered frozenset mixing alpha-2 (2 chars),
+    alpha-3 (3 chars), common name, and official name -- the original
+    pycountry generation order (engine.py:387+ comment) isn't preserved
+    once the data became a frozenset. Codes are always <=3 chars by ISO
+    3166-1 construction; every common/official name in this table is
+    longer than that. Among whatever's left after dropping the codes,
+    the common name is reliably the SHORTEST remaining member, since
+    official names are always longer superset phrasings of the common
+    form ("republic of X", "kingdom of X", "X of America", ...).
+    Verified against every group in `_COUNTRY_ALIAS_GROUPS` above (e.g.
+    "united states" beats "united states of america"; "south korea"
+    beats "korea, republic of"; "ivory coast" beats "republic of côte
+    d'ivoire") -- this function's logic never names a specific country."""
+    candidates = [member for member in group if len(member) > 3] or list(group)
+    return min(candidates, key=len).title()
 
 # Generic country extraction — captures any proper-noun country name from NL
 # phrases like "customer in Australia", "located in New Zealand", "for Canada".
 # The extracted name is matched word-boundary against DB option display names,
 # so no country → item_value mapping is needed here.
+
+# Live-confirmed bug, fixed 2026-07-26 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+# PLAN.md Amendment 11): a bare re.IGNORECASE on the whole pattern makes
+# [A-Z]/[a-z] match EITHER case, defeating the capture group's actual
+# purpose — matching a genuinely Title-Case proper noun. Once that
+# distinction is gone, the repeated group `(?:\s+[A-Z][a-z]+)*` happily
+# keeps consuming every following lowercase word too, since each one still
+# satisfies "[A-Z][a-z]+" under blanket IGNORECASE. Confirmed live: "...for
+# customer Houston City of whose destination country is United States"
+# captured "Customer Houston City Of Whose Destination Country Is United
+# States" as the "country" — the ENTIRE tail of the sentence, not just the
+# real country name. Fixed by scoping case-insensitivity to ONLY the
+# preposition alternation via an inline (?i:...) group — the capture group
+# itself now requires genuine Title Case, as originally intended, so a run
+# of ordinary lowercase words correctly stops the match instead of
+# extending it.
+# Added 2026-07-27: "destination country is X" / "country is X" phrasing
+# — confirmed live it falls through with none of the existing triggers
+# (the word before the country name is "is", not in/for/from). Scoped
+# narrowly to "country is" specifically (not a bare "is", which would
+# false-positive on any unrelated "X is Y" sentence) — safe because the
+# word "country" immediately preceding it is itself already a strong,
+# on-topic signal.
+# N1 harden (2026-07-28): also match "destination country is X",
+# "destination country X", "whose destination country is X" — confirmed
+# negative few-shot re-asked country when user already said United States.
+# Capture group allows Title Case OR single-token ALLCAPS (US) after the
+# trigger; multi-word countries use Title Case words.
+# 2026-07-31 follow-up (docs/config_consistency_issues_2026-07-30.md item
+# 5): "...with destination country as United States" fell through every
+# existing trigger — "as" sits between "destination country" and the real
+# country name, and none of the prior alternatives account for that
+# preposition, so the country was silently dropped and re-asked despite
+# being stated. Added "destination country as"/"country as" alongside the
+# existing "is" variants.
+# Fallback-path hardening, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_
+# 2026_08_13.md review finding: `_mine_history_for_cpq_context`, which
+# recovers a country stated on an EARLIER non-CPQ turn, has no LLM call
+# to route through -- those historical texts were never classified at
+# all, so this regex remains the only mechanism there. Two fixes:
+# (1) an optional "the" between the preposition and the country name
+# ("in the United States") -- the capture group previously had to start
+# IMMEDIATELY after the preposition, and a lowercase "the" broke the
+# match outright; (2) a trailing `\b` on the `[A-Z]{2}` alternative so
+# it can never again grab a 2-letter fragment of a longer ALLCAPS token
+# ("APXNET" -> "AP"). The leftmost-match-wins failure mode (a bad match
+# earlier in the sentence shadowing a real country later on) is fixed
+# at the call site in `extract_hints` below, not here in the pattern
+# itself.
 _COUNTRY_PREP = re.compile(
-    r"\b(?:in|for|from|customer\s+in|located\s+in|based\s+in)\s+"
-    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-    re.IGNORECASE,
+    r"(?i:\b(?:in|for|from|customer\s+in|located\s+in|based\s+in|"
+    r"destination\s+country\s+is|destination\s+country\s+as|"
+    r"destination\s+country|"
+    r"whose\s+destination\s+country\s+is|country\s+is|country\s+as)\s+)"
+    r"(?:the\s+)?"
+    r"((?:[A-Z]{2,}\b|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
 )
+
+# Verb-anchored country CHANGE command, mirroring _QUANTITY_CHANGE_VERB_RE's
+# shape but scoped to "country" -- _COUNTRY_PREP above only recognizes
+# DESCRIPTIVE phrasing ("customer in X", "destination country is X"), never
+# a change COMMAND ("change country to X"), so a customer explicitly asking
+# to change the country mid-session had no detector at all before this
+# (docs/CPQ_QUANTITY_COUNTRY_SUMMARY_FIXES_2026_08_13.md follow-up -- live
+# bug: "Change country to United States unless the quantity is 10" fell
+# through to the generic attribute-disambiguation clarify prompt instead of
+# ever being recognized as a country-change request). The negative
+# lookahead keeps this from firing on an unrelated change command that
+# merely happens to mention "country" later in a longer sentence about
+# something else entirely -- "country" must appear within a short span of
+# the verb.
+_COUNTRY_CHANGE_RE = re.compile(
+    r"(?i:\b(?:change|set|update|make\s+it)\b(?:(?!\b(?:quantity|qty)\b).){0,25}?"
+    r"\bcountry\b\s+(?:to|as|is)\s+)"
+    r"((?:[A-Z]{2}|[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)*)"
+)
+
+
+def detect_country_change_request(question: str) -> str | None:
+    """Deterministic detector for an explicit "change country to X" command.
+
+    Returns the as-typed, validated country name (e.g. "United States"),
+    or None when no verb-anchored country-change command is present, or
+    the captured text isn't a country the engine actually recognizes
+    (`CpqEngine.is_recognized_country`) -- never a bare regex fragment.
+    """
+    m = _COUNTRY_CHANGE_RE.search(question or "")
+    if not m:
+        return None
+    candidate = m.group(1).strip()
+    if not CpqEngine.is_recognized_country(candidate):
+        return None
+    return candidate
+
 
 # Region hints (abbreviations the generic extractor won't catch as country names)
 _REGION_PATTERNS: list[tuple[str, str]] = [
@@ -330,6 +955,455 @@ _REGION_PATTERNS: list[tuple[str, str]] = [
     (r"\bapac\b", "APAC"),
     (r"\blatin\s+america\b", "LA"),
 ]
+
+# Session-level product quantity extraction (docs/CPQ_QUANTITY_SLOTFILLING_
+# AND_UI_ISSUES_PLAN_2026_08_11.md) -- a number adjacent to a quantity-
+# indicating word or "units"/product-noun phrasing, never a bare number
+# anywhere in the message (a model code, a year, a street address digit
+# would all be wrongly captured otherwise). Longest/most specific patterns
+# first so "50 in qty" doesn't get short-circuited by a looser alternative.
+# PR #186 review, critical #1: every pattern's digit group needs a LEFT
+# boundary too, not just the trailing `(?!\.\d)` guard -- `\d+` has no
+# built-in word-start requirement, so it can start matching mid-identifier.
+# Confirmed live: "quote me 5 APX8000 radios" -- the real "5" isn't
+# directly followed by "radios" (that "APX8000" is in the way) so it never
+# matches, but "8000" lifted straight out of "APX8000" IS directly
+# followed by " radios" and matches instead, silently becoming the
+# quantity. `(?<![\w.\-])` immediately before the digit group rejects any
+# match whose digit run is glued onto a preceding letter/digit/word
+# character OR a hyphen (a model code like "APX8000" or "APX-5000", a
+# decimal fraction) -- redundant but harmless on patterns that already
+# require preceding whitespace via a literal keyword phrase. The hyphen
+# exclusion (review follow-up) still allows a genuine negative quantity
+# ("quantity is -5") since that "-" is itself preceded by whitespace, not
+# by the digit group's own left edge.
+# Named separately (not inline in the list literal) so `extract_quantity_
+# hint` can identify it by reference and apply the year exclusion against
+# the FULL captured digit string -- see the comment where it's used in
+# `_QUANTITY_PATTERNS` below.
+_MODEL_QUANTITY_PATTERN = re.compile(
+    r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:models?)\b"
+)
+
+_QUANTITY_PATTERNS: list[re.Pattern] = [
+    re.compile(r"(?i:\bqty\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s+of\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s+(?:is|to|as)\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bqty\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    # "qty to N" -- live-verified gap, 2026-08-13 (docs/CPQ_QUANTITY_
+    # EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 6): the "quantity"
+    # pattern above already supports "is|to|as", but "qty" (its own
+    # common shorthand) only ever supported the bare/colon/equals form,
+    # so "update qty to 30" silently matched nothing while "update
+    # quantity to 30" worked.
+    re.compile(r"(?i:\bqty\s+(?:is|to|as)\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bquantity\s*[:=]?\s*)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:in\s+qty)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:qty)\b"),
+    re.compile(r"(?<![\w.\-])(-?\d+)(?!\.\d)\s*(?i:units?)\b"),
+    re.compile(r"(?i:\bi\s+want\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    re.compile(r"(?i:\bneed\s+)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    # "I need pricing for a dozen X" / "...for 12 X" -- live-verified gap,
+    # 2026-08-13: the bare "need N" pattern above requires the number
+    # RIGHT after "need", so "need pricing for N" (a very common real
+    # quoting phrasing) never matched at all, regardless of digit vs
+    # word-form. Anchored on the fixed phrase "pricing for" specifically
+    # (not a general "for N" pattern) to keep the same narrow-adjacency
+    # safety discipline as every other pattern here -- never a bare number
+    # anywhere in the message.
+    re.compile(r"(?i:\bpricing\s+for\s+(?:an?\s+)?)(?<![\w.\-])(-?\d+)(?!\.\d)\b"),
+    # Tolerates up to 3 intervening words between the number and the unit
+    # noun ("15 APX NEXT radios") -- live-verified gap, 2026-08-13 (docs/
+    # CPQ_QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 5): every
+    # pattern here used to require the number strictly ADJACENT to its
+    # context word, so a product name sitting between them (the single
+    # most common real quoting phrasing) matched nothing at all. Each
+    # intervening word must be PURELY alphabetic (no digit anywhere in
+    # it) -- a model code glued to digits ("APX8000") must still block
+    # the match entirely (PR #186 review, critical #1's existing guard),
+    # never be treated as an acceptable "product name" word, and this
+    # can never stretch across into an unrelated, separately-stated
+    # number later in the same sentence either.
+    re.compile(
+        r"(?<![\w.\-])(-?\d+)(?!\.\d)\s+(?:[A-Za-z][A-Za-z'-]*\s+){0,3}"
+        r"(?i:radios?|devices?|pieces?|pcs)\b"
+    ),
+    # "model(s)" -- live-verified gap, 2026-08-13 (docs/CPQ_QUANTITY_
+    # EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 4): "the 2026 model"
+    # stated no order quantity at all, but the combined pattern above
+    # matched "2026" as if it were one, since a year and a genuine
+    # quantity look identical to a bare regex. The year exclusion itself
+    # is NOT encoded in this pattern (a fixed-width lookbehind here would
+    # only ever inspect the last 4 characters of an arbitrarily long
+    # digit run, wrongly rejecting real 5+-digit quantities like 12026 or
+    # 32026 whose TRAILING 4 digits happen to look like a year -- PR
+    # review finding, 2026-08-13) -- it's applied in `extract_quantity_
+    # hint` below, which can check the FULL captured digit string's
+    # length before deciding it's a year.
+    _MODEL_QUANTITY_PATTERN,
+]
+
+# PR #186 review, medium: decimal variants of the same patterns above,
+# checked BEFORE the integer patterns run. Without this, a decimal like
+# "10.0" gets rejected from matching as "10" by `(?!\.\d)` as intended,
+# but the regex engine then backtracks and matches the trailing "0" after
+# the decimal point instead of failing outright -- silently turning
+# "change quantity to 10.0" into quantity=0. Derived by substituting each
+# pattern's own `(-?\d+)(?!\.\d)` integer group for a `(-?\d+\.\d+)`
+# decimal group, so the two lists can never drift out of sync with each
+# other.
+_QUANTITY_DECIMAL_PATTERNS: list[re.Pattern] = [
+    re.compile(
+        p.pattern.replace(r"(?<![\w.\-])(-?\d+)(?!\.\d)", r"(?<![\w.\-])(-?\d+\.\d+)")
+    )
+    for p in _QUANTITY_PATTERNS
+]
+
+# PR #186 review, critical #2: a thousands-separator comma between two
+# digit groups ("1,000") sits at a real word boundary, so an integer
+# pattern happily matches just the "1" before it and silently truncates
+# the stated quantity -- no rejection, no indication anything was
+# mangled. Stripped before any pattern runs, so "1,000" is treated
+# exactly like "1000" was always the input. Deliberately narrow (exactly
+# 3 digits after the comma, comma glued to digits on both sides) so it
+# never touches an ordinary list separator like "5, 1000 items".
+_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d),(?=\d{3}(?:\D|$))")
+
+# A real order is somewhere between "at least one" and "not an absurd
+# typo/overflow" -- callers use this to decide whether an extracted number
+# is a plausible quantity at all, distinct from "no number found" (None).
+# 100,000 units of a single product line is already far beyond any real
+# order this catalog has ever seen; treated as a probable typo, not a
+# genuine bulk order, same "never silently accept an implausible value"
+# discipline the rest of this module already applies elsewhere.
+MIN_PRODUCT_QUANTITY = 1
+MAX_PRODUCT_QUANTITY = 100_000
+
+
+def is_valid_product_quantity(value: int) -> bool:
+    """True for a real, plausible order quantity -- rejects zero, negative,
+    and absurdly large values. Never silently coerces (e.g. clamps a
+    negative to 0 or a huge number down to the max) -- callers must reject
+    and ask again, not guess what the customer actually meant."""
+    return MIN_PRODUCT_QUANTITY <= value <= MAX_PRODUCT_QUANTITY
+
+
+# Spelled-out quantities ("I want ten APX Next", "twenty-five units") --
+# a customer typing the number as a word is exactly as valid as typing a
+# digit, and neither the client's report nor a reasonable customer would
+# expect one to work and not the other. Deliberately covers "and" only as
+# glue between words already in a real number run ("one hundred and
+# fifty"), never as a standalone match -- "one" is a valid START token,
+# "and" is not, so ordinary text containing "and" is never mistaken for a
+# number.
+_ONES_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19,
+}
+_TENS_WORDS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_SCALE_WORDS = {"hundred": 100, "thousand": 1000, "dozen": 12}
+_NUMBER_WORDS = {**_ONES_WORDS, **_TENS_WORDS, **_SCALE_WORDS}
+_SIGN_WORDS = {"negative", "minus"}
+# Fraction/count modifiers before a scale word ("half a dozen" -> 6, "a
+# couple dozen" -> 24) -- live-verified gap, 2026-08-13 (docs/CPQ_
+# QUANTITY_EXTRACTION_DEFECTS_PLAN_2026_08_13.md cluster 2): neither
+# "half" nor "couple" is a number word, so `_NUMBER_WORD_RUN_RE` used to
+# match only the bare scale word ("dozen"), silently dropping the
+# modifier and reporting 12 instead of 6/24.
+_FRACTION_MODIFIERS = {"half": 0.5}
+_COUNT_MODIFIERS = {"couple": 2}
+_NUM_WORD_ALT = "|".join(_NUMBER_WORDS)
+_MODIFIER_ALT = r"(?:half\s+(?:a\s+)?|(?:a\s+)?couple\s+(?:of\s+)?)"
+_NUMBER_WORD_RUN_RE = re.compile(
+    rf"\b(?:(?:negative|minus)[\s-]+)?(?:{_MODIFIER_ALT})?(?:{_NUM_WORD_ALT})"
+    rf"(?:[\s-]+(?:and[\s-]+)?(?:{_NUM_WORD_ALT}))*\b",
+    re.IGNORECASE,
+)
+
+
+def _words_to_number(phrase: str) -> int | None:
+    """"twenty-five" -> 25, "one hundred and fifty" -> 150,
+    "negative five" -> -5, "half a dozen" -> 6, "a couple dozen" -> 24 --
+    None if any token isn't a recognized number word (never guess a
+    partial parse). A leading sign word must produce a real negative
+    result, never silently drop the sign and return the magnitude as if
+    it were positive."""
+    tokens = [
+        t for t in re.split(r"[\s-]+", phrase.strip().lower())
+        if t and t not in ("and", "a", "of")
+    ]
+    if not tokens:
+        return None
+    negative = tokens[0] in _SIGN_WORDS
+    if negative:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    multiplier: float = 1
+    if tokens[0] in _FRACTION_MODIFIERS:
+        multiplier = _FRACTION_MODIFIERS[tokens[0]]
+        tokens = tokens[1:]
+    elif tokens[0] in _COUNT_MODIFIERS:
+        multiplier = _COUNT_MODIFIERS[tokens[0]]
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    total = 0
+    current = 0
+    for tok in tokens:
+        if tok in _NUMBER_WORDS:
+            val = _NUMBER_WORDS[tok]
+            # Identity check (which WORD it is), never a value check --
+            # "twelve" (a _ONES_WORDS entry worth 12) must never be
+            # mistaken for the scale word "dozen" just because they share
+            # the same numeric value (docs/CPQ_QUANTITY_EXTRACTION_
+            # DEFECTS_PLAN_2026_08_13.md cluster 1: "one hundred and
+            # twelve" was silently becoming 1200, treating "twelve" as a
+            # second multiplier applied on top of "hundred").
+            if tok in _SCALE_WORDS:
+                current = (current or 1) * val
+                if val >= 1000:
+                    total += current
+                    current = 0
+            else:
+                current += val
+        else:
+            return None  # unrecognized token -- abort, never guess
+    result = (total + current) * multiplier
+    if isinstance(result, float):
+        if not result.is_integer():
+            return None  # a fractional quantity is never a valid whole count
+        result = int(result)
+    return -result if negative else result
+
+
+def _substitute_number_words(text: str) -> str:
+    """Replaces every recognizable number-word run with its digit form so
+    the existing digit-anchored _QUANTITY_PATTERNS can match it unchanged
+    -- e.g. "I want ten APX Next" -> "I want 10 APX Next". A run whose
+    words don't form a valid number (shouldn't happen given the regex only
+    matches known number words, but kept as a safety net) is left as-is."""
+    def _replace(m: re.Match) -> str:
+        value = _words_to_number(m.group(0))
+        return str(value) if value is not None else m.group(0)
+    return _NUMBER_WORD_RUN_RE.sub(_replace, text)
+
+
+# A sign WORD directly before a DIGIT ("minus 5", "negative 12") --
+# live-verified gap, 2026-08-13 (docs/CPQ_QUANTITY_EXTRACTION_DEFECTS_
+# PLAN_2026_08_13.md cluster 3): `_SIGN_WORDS` is only ever consulted
+# inside `_words_to_number`, which only runs on a matched number-WORD
+# run -- a bare digit after a sign word never reaches it at all, so
+# "minus 5 units" silently became +5 (the digit-only pattern `(-?\d+)`
+# only recognizes a literal "-" character glued to the digit, never the
+# word "minus" with a space before the digit). Normalized to the
+# literal sign form ("minus 5" -> "-5") before either the decimal or
+# integer patterns run, so both paths see it identically.
+_SIGN_WORD_DIGIT_RE = re.compile(r"(?i:\b(?:negative|minus)\b)[\s-]+(?=\d)")
+
+
+def _normalize_quantity_text(text: str) -> str:
+    """Shared preprocessing for both the decimal check and the integer
+    patterns -- quote-stripping and thousands-separator removal must
+    happen identically for both, or a comma/quote could dodge one path
+    and not the other."""
+    text = re.sub(
+        r"[\"'‘’“”]([A-Za-z0-9-]+)[\"'‘’“”]",
+        r"\1", text,
+    )
+    text = _SIGN_WORD_DIGIT_RE.sub("-", text)
+    return _THOUSANDS_SEPARATOR_RE.sub("", text)
+
+
+def extract_quantity_decimal_hint(text: str) -> str | None:
+    """The exact decimal substring (e.g. "10.0", "-3.5") when a decimal
+    number sits in one of the same quantity-context positions
+    `_QUANTITY_PATTERNS` matches integers in -- None otherwise.
+
+    PR #186 review, medium: exists so a caller building a customer-facing
+    rejection message can quote what the customer actually typed ("10.0")
+    instead of the wrong, confusing digit `extract_quantity_hint`'s own
+    regex backtracking used to produce ("0", the fractional remainder).
+    Checked BEFORE `extract_quantity_hint` runs its integer patterns at
+    all -- this is a short-circuit, not just an alternate lookup.
+    """
+    normalized = _normalize_quantity_text(text)
+    for pattern in _QUANTITY_DECIMAL_PATTERNS:
+        m = pattern.search(normalized)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _is_year_shaped_model_quantity(digits: str) -> bool:
+    """True only when `digits` (the exact captured string, sign included)
+    is EXACTLY a 4-digit 19xx/20xx run -- never for a longer number whose
+    trailing 4 digits merely happen to look like a year. PR review
+    finding, 2026-08-13: a fixed-width regex lookbehind can only ever see
+    the last 4 characters before the match position, so it can't tell
+    "2026" (a real year, no quantity stated) apart from "...2026" at the
+    tail of a longer real quantity like "12026" or "32026" -- both would
+    wrongly be rejected if the exclusion were encoded purely as a
+    lookbehind inside the pattern itself. Checking the FULL captured
+    group's length here, in Python, after the match, gets this right."""
+    unsigned = digits[1:] if digits.startswith("-") else digits
+    return len(unsigned) == 4 and unsigned[:2] in ("19", "20")
+
+
+def extract_quantity_hint(text: str) -> int | None:
+    """The overall product quantity stated in free text, e.g. "50 in qty",
+    "qty of 50", "i want 50", "50 radios" -- None when no supported phrasing
+    matches. Deliberately narrow (a number must be adjacent to a quantity-
+    indicating word) rather than "the first number found anywhere" -- a raw
+    number scan would misread a model code, a year, or an unrelated count
+    (like a street address) as the quantity.
+
+    Also recognizes the number spelled out as words ("I want ten APX
+    Next", "twenty-five units") -- exactly as valid as a digit from a
+    customer's point of view, so it must work exactly the same way. Tried
+    only as a fallback (digit forms first): the number-word text is
+    substituted with its digit equivalent and re-run through the same
+    digit-anchored patterns above, so both forms share one set of
+    quantity-context rules rather than duplicating each pattern twice.
+
+    Returns the raw parsed integer, including zero/negative when the text
+    actually says so ("change quantity to -5") -- callers must validate
+    with `is_valid_product_quantity` before accepting, never assume a
+    return value here is automatically a sane quantity. A decimal like
+    "1.5"/"10.0" is deliberately never matched at all -- checked via
+    `extract_quantity_decimal_hint` FIRST and short-circuited to None
+    here, rather than relying solely on each integer pattern's own
+    `(?!\\.\\d)` guard, which blocks the direct "10" match but does not
+    stop the regex engine from backtracking into the fractional
+    remainder instead (PR #186 review, medium: "10.0" was silently
+    becoming quantity 0 without this).
+    """
+    text = _normalize_quantity_text(text)
+    if extract_quantity_decimal_hint(text) is not None:
+        return None
+    for pattern in _QUANTITY_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            if pattern is _MODEL_QUANTITY_PATTERN and _is_year_shaped_model_quantity(m.group(1)):
+                continue
+            try:
+                return int(m.group(1))
+            except ValueError:
+                continue
+    substituted = _substitute_number_words(text)
+    if substituted == text:
+        return None
+    for pattern in _QUANTITY_PATTERNS:
+        m = pattern.search(substituted)
+        if m:
+            if pattern is _MODEL_QUANTITY_PATTERN and _is_year_shaped_model_quantity(m.group(1)):
+                continue
+            try:
+                return int(m.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+# Any mention of the word "quantity"/"qty"/"how many" at all -- the cheap,
+# deterministic pre-filter for even bothering to consider quantity routing.
+# Purely a "is it worth looking at this turn at all" gate, not a judgment
+# call -- the actual product-vs-catalog-attribute disambiguation (a real
+# judgment call, not something a keyword list can reliably make) is an LLM
+# decision, made in ask_api.py's _llm_resolve_quantity_target, mirroring
+# this file's other single-purpose LLM helpers rather than the big
+# generic intent gateway (whose schema has no way to represent "the
+# overall product quantity" at all -- it only ever names real ConfigAttr
+# variable_names). docs/CPQ_QUANTITY_TARGET_MISROUTE_FIX_PLAN_2026_08_17.md:
+# that prompt is reinforced with each candidate's filled_source
+# provenance and explicit anti-digit-coincidence guidance, rather than
+# routing this decision through pattern-matching instead.
+_QUANTITY_WORD_RE = re.compile(r"(?i:\bqty\b|\bquantity\b|\bhow\s+many\b)")
+# "change/set/update the quantity to N" vs. a plain question ("what's my
+# quantity") -- deterministic, not a judgment call: these are unambiguous
+# verb cues, unlike WHICH quantity is meant.
+_QUANTITY_CHANGE_VERB_RE = re.compile(
+    r"(?i:\b(?:change|set|update|make\s+it|adjust)\b)"
+)
+
+
+def question_mentions_quantity(question: str) -> bool:
+    """Cheap, regex-only pre-check: is this turn even worth loading the
+    catalog for to consider quantity routing? Callers must check this
+    BEFORE loading attrs -- loading the full product config on every
+    single turn regardless of content is wasteful and, in a caller with a
+    test-double reader, can fail for reasons unrelated to quantity at all.
+    """
+    return bool(_QUANTITY_WORD_RE.search(question))
+
+
+def find_catalog_quantity_attrs(attrs: list[ConfigAttr]) -> list[ConfigAttr]:
+    """Real catalog attributes shaped like a per-item quantity field: no
+    catalog menu (a genuine free-text/numeric attribute), select_type
+    integer/float, and "quantity" or "qty" in the display label or variable
+    name -- e.g. "Quantity (VX650 Item Type)". These are never asked
+    proactively (the session-level product_quantity is), but stay
+    reachable when the customer names one directly or picks one via
+    disambiguation.
+    """
+    out = []
+    for a in attrs:
+        if a.options:
+            continue
+        if a.select_type not in ("integer", "float"):
+            continue
+        haystack = f"{a.display_label} {a.variable_name}".lower()
+        if "quantity" in haystack or "qty" in haystack:
+            out.append(a)
+    return out
+
+
+def quantity_turn_precheck(question: str, attrs: list[ConfigAttr]) -> dict[str, Any] | None:
+    """Cheap, deterministic first pass for a quantity-related turn -- None
+    when the message isn't about quantity at all (caller falls through to
+    normal handling). Otherwise returns the facts the caller needs to
+    decide routing:
+      {"is_change": bool, "value": int | None, "decimal_value": str | None,
+       "candidates": list[ConfigAttr]}
+
+    `decimal_value` (PR #186 review, medium) is set when the message
+    stated a decimal quantity ("change quantity to 10.0") -- `value`
+    stays None for these (a decimal is never a valid quantity), but
+    `is_change` is still True so the caller can reject with a message
+    quoting the real decimal text instead of silently doing nothing.
+
+    Deliberately does NOT decide "which quantity does the customer mean" --
+    that's a real judgment call once `candidates` is non-empty, made by an
+    LLM (ask_api._llm_resolve_quantity_target), not a keyword heuristic
+    (docs/CPQ_QUANTITY_SLOTFILLING_AND_UI_ISSUES_PLAN_2026_08_11.md step 3).
+    """
+    if not _QUANTITY_WORD_RE.search(question):
+        return None
+    value = extract_quantity_hint(question)
+    decimal_value = extract_quantity_decimal_hint(question)
+    _has_change_verb = bool(_QUANTITY_CHANGE_VERB_RE.search(question))
+    return {
+        "is_change": _has_change_verb
+        and (value is not None or decimal_value is not None),
+        # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row
+        # 23: exposed separately from `is_change` so a caller can tell
+        # "explicit change verb, but nothing parseable at all" ("change
+        # quantity to a couple dozen") apart from "not a change attempt
+        # in the first place" -- the former is exactly the case an LLM
+        # extraction fallback should be tried for; the latter never
+        # should be.
+        "has_change_verb": _has_change_verb,
+        "value": value,
+        "decimal_value": decimal_value,
+        "candidates": find_catalog_quantity_attrs(attrs),
+    }
+
 
 # catalog-hint matching (extract_catalog_hints): a real menu option's own
 # text (item_value/display_name) found verbatim in the question — punctuation
@@ -358,6 +1432,27 @@ _PRODUCT_FUZZY_MATCH_THRESHOLD = 0.82
 # hint) while still well below the confirm-worthy threshold.
 _PRODUCT_FUZZY_SUGGEST_THRESHOLD = 0.65
 
+# The sliding-window score above compares a candidate against the WHOLE
+# normalized question (filler words, quantities, country names and all),
+# which is the right shape for "does some run of this sentence spell out
+# the product" but has no signal for the opposite, equally common case: a
+# short brand abbreviation ("APX", "SL", "MOTO") that IS a genuine leading
+# fragment of a real ingested name ("APXNEXT", "SL3500E", "MOTOTRBO") but
+# is far too short for name_norm-in-q_norm containment to ever fire, and
+# too short relative to a long candidate for the sliding window to carry
+# any real signal (window > len(q_norm) collapses to one whole-string
+# comparison, so short/vague mentions were scored on coincidental overlap
+# with unrelated filler text — confirmed live: "APX" alone matched
+# "videoSolutions_BOM" over any real APX-family name). This bonus scores
+# any individual WORD token from the question that is a genuine prefix of
+# a candidate's normalized name — dynamic, no product list involved, works
+# for whatever is actually ingested. Sits inside the "suggest" band, never
+# the "confirm" band: a bare abbreviation is real signal that the customer
+# means SOME member of a family, never enough on its own to silently pick
+# WHICH one (this engine's documented "never guess" discipline).
+_ABBR_PREFIX_MIN_LEN = 3
+_ABBR_PREFIX_SCORE = 0.75
+
 # next_question_prompt: an attr whose effective option list exceeds this is
 # asked as "type the exact name" (with a few examples) instead of a numbered
 # menu — confirmed live that unconstrained master lists (product selector:
@@ -380,6 +1475,246 @@ _FLAG_KEYWORD_INDEX_CACHE: dict[tuple[int, str], dict[str, tuple[str, str]]] = {
 # ingested data, safe to compute once per catalog per process lifetime.
 _LAYOUT_TIER_CACHE: dict[tuple[int, str], int] = {}
 _LAYOUT_SCOPE_CACHE: dict[tuple[int, str], dict[str, Any] | None] = {}
+
+# docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md — {variable_name: rank} for a
+# catalog's decoded native-UI layout export (distinct from the above: this
+# carries the `hide` bit and document order the raw relational layout
+# tables never decoded). Same process-lifetime caching rationale.
+_LAYOUT_COMPONENTS_CACHE: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
+_LAYOUT_DISPLAY_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
+_LAYOUT_FULL_ORDER_CACHE: dict[tuple[int, str], dict[str, int] | None] = {}
+_DEFAULT_LAYOUT_FILE_SOURCE: LayoutFileSource = LocalDirLayoutFileSource()
+
+# docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md — module-
+# level, short-TTL cache for CpqEngine._load_rule_join_data, keyed by
+# (workspace_id, catalog_prefix). Mirrors data_table_resolver._TABLES_CACHE
+# exactly (same problem, same fix): confirmed live a single /ask HTTP
+# request calls load_hiding_rules() + load_recommendation_and_constraint_
+# rules() + load_validation_rules() back to back, each independently
+# re-running the same 4 join-table queries from scratch -- 3+ full re-fetches
+# of ~1,300 rules' worth of join data from ONE block of code, in every turn,
+# with 14 total call sites across ask_api.py. A short TTL (rather than pure
+# process-lifetime) keeps this safe against rule data being re-ingested
+# mid-session.
+_RULE_JOIN_DATA_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
+# docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md -- widened from 30.0.
+# 30s is shorter than realistic time between two conversational turns (a
+# customer reading a question and typing a reply), so this cache was almost
+# never actually hit across turns in practice, only within one turn's own
+# back-to-back call sites. The staleness risk this TTL guards against (a
+# mid-session rule re-ingest) is an occasional admin action, not something
+# that happens every 30s -- 300s is a real cross-turn win while still
+# bounding staleness to 5 minutes worst-case if the invalidation hook
+# (doc_discovery.ingest_confirmed) is ever bypassed.
+_RULE_JOIN_DATA_CACHE_TTL_SECONDS = 300.0
+
+
+def _clear_rule_join_data_cache() -> None:
+    """Test-isolation hook -- call from an autouse fixture to prevent this
+    process-lifetime cache from leaking fake/monkeypatched rule data
+    between tests that reuse the same (workspace_id, catalog_prefix) key.
+    Mirrors data_table_resolver._clear_tables_cache."""
+    _RULE_JOIN_DATA_CACHE.clear()
+
+
+# 2026-08-18 perf fix: _load_value_rules' own raw-data dependency
+# (_load_rule_join_data, above) was already cached, but _load_value_rules
+# ITSELF -- the CPU-bound classification pass that builds 500+ Recommendation/
+# Constraint/Validation/Hiding rule objects from those (cached) raw rows --
+# was not. Confirmed live: this exact classification work re-runs from
+# scratch on every one of its 5 call sites within engine.py (load_
+# recommendation_and_constraint_rules, load_validation_rules, load_
+# recommendation_rules, ...), which every real CPQ turn calls back-to-back --
+# ~28s of pure CPU re-work per turn for a large catalog, not DB latency
+# (confirmed live: workspace 93, 500 rec + 186 constraint + 105 hiding
+# rules). Same short-TTL, leak-safe pattern as _RULE_JOIN_DATA_CACHE.
+_VALUE_RULES_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
+
+# 2026-08-28 perf fix: _data_table_forced_vns has NO cache parameter at any
+# of its 4 real call sites (build_payload never threads one through), so
+# every call re-runs its full _ATTRSEQ_CONFIRMED_REQUIRED_VNS x candidate-
+# CPQ-models cross-product from scratch, each candidate lookup only hitting
+# data_table_resolver's module-level TABLE cache (no DB re-query) but still
+# paying real Python-level function-call/dict-lookup/logging overhead --
+# confirmed live: 3,580 such lookups logged within a single APX Next
+# Product-selection turn (elapsed_s=177.75 for that turn's rule-eval step
+# alone). Same short-TTL, leak-safe pattern as _RULE_JOIN_DATA_CACHE and
+# _VALUE_RULES_CACHE above -- keyed on exactly the inputs the function
+# actually reads (workspace/catalog/base_model/product plus each
+# _ATTRSEQ_CONFIRMED_REQUIRED_VNS member's own filled/filled_multi value),
+# so a real change to any of those inputs naturally misses and recomputes;
+# nothing else can go stale under this key.
+_DATA_TABLE_FORCED_VNS_CACHE: dict[tuple, tuple[float, frozenset]] = {}
+_DATA_TABLE_FORCED_VNS_CACHE_TTL_SECONDS = 300.0
+
+
+def _clear_data_table_forced_vns_cache() -> None:
+    """Test-isolation hook -- call from an autouse fixture to prevent this
+    process-lifetime cache from leaking fake/monkeypatched data between
+    tests that reuse the same cache key. Mirrors _clear_rule_join_data_cache."""
+    _DATA_TABLE_FORCED_VNS_CACHE.clear()
+
+
+# 2026-08-28 perf fix (P5, follow-up to the P2 fix above): _substitute_util_
+# get_constraint_vals has no memoization of its own -- confirmed live it
+# alone cost 82s/59s/37s across 3 real APX Next passes before
+# apply_constraint_rules' own whole-function cache (_constraint_cache)
+# stabilized, and on any genuine cache-miss (a real narrowing/resync)
+# still re-walks the full _cpq_model_candidates cross-product once per
+# script-backed ConstraintRule. Keyed on the full `filled`-state signature
+# (not just base_model/product) because resolve_whitelist_values' own
+# multi-condition row matching (_row_conditions_match) can depend on ANY
+# filled attribute, not just the two obviously-relevant ones -- see
+# _fill_signature's own docstring for why a narrower signature is unsafe
+# here (same failure class as the Package Type bug it was written to
+# prevent).
+_SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE: dict[tuple, tuple[float, str]] = {}
+_SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE_TTL_SECONDS = 300.0
+
+
+def _clear_substitute_util_get_constraint_vals_cache() -> None:
+    """Test-isolation hook -- mirrors _clear_data_table_forced_vns_cache."""
+    _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE.clear()
+
+
+_RULE_JOIN_DATA_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+_VALUE_RULES_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+_DATA_TABLE_FORCED_VNS_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+_SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
+# docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md -- widened from 30.0,
+# same reasoning as _RULE_JOIN_DATA_CACHE_TTL_SECONDS above.
+_VALUE_RULES_CACHE_TTL_SECONDS = 300.0
+
+
+def _clear_value_rules_cache() -> None:
+    """Test-isolation hook -- same purpose as _clear_rule_join_data_cache."""
+    _VALUE_RULES_CACHE.clear()
+
+
+# docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_10.md -- a
+# CANDIDATE registry of data tables known to be missing from AT LEAST ONE
+# ingested workspace historically (not attribute names -- a hiding rule
+# anywhere, for any attribute, that structurally depends on one of these
+# tables can never resolve THERE, so auto_fill warns and skips rather than
+# asking forever). Extend this tuple if another candidate-missing table
+# surfaces; never hardcode which attributes are affected -- that's derived
+# generically from which hiding rules reference the table.
+#
+# 2026-08-18 (Raven PR #211 review, finding #4): this was briefly emptied
+# to `()` on a single-workspace verification (workspace 93 -- 511
+# UserGroupMapping rows confirmed ingested there). Cross-workspace check
+# (docs/CPQ_MULTISELECT_AUTOFILL_AND_COUNTRY_CONFIGDATA_PLAN_2026_08_18.md)
+# found UserGroupMapping ingested ONLY for workspace 93 -- 16 other live
+# workspaces (1, 27, 28, 29, 31, 38, 51, 61, 63, 64, 73, 85, 88, 90, 91, 92)
+# have ZERO UserGroupMapping rows. Emptying this constant globally would
+# have silently defeated Group 1's skip for every one of those workspaces --
+# `dHSAssetTagLabel_astro`/`cBPQRCode_astro`/`fedQRCode_astro` would blind-
+# pick a wrong value there instead of correctly staying skipped. Fixed
+# properly instead: this list is now just the CANDIDATE names to check --
+# `_hiding_rule_needs_missing_data_table` verifies actual ingestion PER
+# WORKSPACE (live query, cached) rather than assuming one workspace's
+# ingestion status applies globally.
+_KNOWN_MISSING_DATA_TABLES = ("UserGroupMapping",)
+
+# workspace_id -> {table_name.lower(): is_ingested_bool}, short-TTL so a
+# newly-completed ingestion run is picked up without a process restart,
+# same convention as this file's other per-workspace caches (_DT_CACHE,
+# _LAYOUT_*_CACHE).
+_TABLE_INGESTED_CACHE: dict[int, dict[str, bool]] = {}
+_TABLE_INGESTED_CACHE_TTL_SECONDS = 300.0
+_TABLE_INGESTED_CACHE_TS: dict[int, float] = {}
+
+
+def _table_ingested_for_workspace(table_name: str, workspace_id: int | None) -> bool:
+    """True if `table_name` has at least one real ingested entity in
+    `workspace_id`. `workspace_id=None` (no workspace context available,
+    e.g. an offline/unit-test caller) conservatively returns False -- same
+    "assume missing, never assume present" default `_KNOWN_MISSING_DATA_
+    TABLES` always used before this was workspace-scoped."""
+    if workspace_id is None:
+        return False
+    key = table_name.lower()
+    now = time.monotonic()
+    cached_ts = _TABLE_INGESTED_CACHE_TS.get(workspace_id, 0.0)
+    if now - cached_ts >= _TABLE_INGESTED_CACHE_TTL_SECONDS:
+        _TABLE_INGESTED_CACHE.pop(workspace_id, None)
+    per_ws = _TABLE_INGESTED_CACHE.setdefault(workspace_id, {})
+    if key in per_ws:
+        return per_ws[key]
+    try:
+        rows = get_cpq_rdb().fetch_entities_by_type(workspace_id, table_name)
+        ingested = bool(rows)
+    except Exception:
+        logger.debug(
+            "cpq: table-ingestion check failed for %r ws=%s -- assuming "
+            "not ingested (never assume present on a lookup failure)",
+            table_name, workspace_id, exc_info=True,
+        )
+        ingested = False
+    per_ws[key] = ingested
+    _TABLE_INGESTED_CACHE_TS[workspace_id] = now
+    return ingested
+
+
+def _hiding_rule_needs_missing_data_table(
+    rule: "HidingRule", workspace_id: int | None = None,
+) -> bool:
+    """True if `rule`'s script (declarative or condition-script form)
+    references a data table that is NOT ingested for `workspace_id` -- see
+    `_KNOWN_MISSING_DATA_TABLES` for the candidate list and
+    `_table_ingested_for_workspace` for the per-workspace check. Such a
+    rule can never resolve to a real hide/show outcome in THIS workspace,
+    so its target should never be silently asked about forever here --
+    even though the exact same table may be genuinely ingested (and this
+    same rule shape genuinely resolvable) in a different workspace.
+
+    `workspace_id=None` (no caller passes it) preserves the original,
+    fully conservative behavior: every candidate table is treated as
+    missing everywhere, identical to today's behavior for any caller that
+    doesn't supply a workspace.
+    """
+    script = (rule.script or "") + (getattr(rule, "condition_script", None) or "")
+    if not script:
+        return False
+    script_lower = script.lower()
+    return any(
+        table.lower() in script_lower
+        and not _table_ingested_for_workspace(table, workspace_id)
+        for table in _KNOWN_MISSING_DATA_TABLES
+    )
+
+
+def _parenthetical_suffix(text: str) -> str | None:
+    """The content of a trailing "(...)" segment in `text`, or None.
+
+    Catalog display names often encode a distinguishing variant this way —
+    "APX NEXT (4G LTE+5G)": a common family name outside the parens, the
+    specific variant inside. extract_catalog_hints' D2 verbatim rule
+    requires the WHOLE glued option text to appear in the question; a
+    customer answering with only the variant ("I'll take the 4G LTE+5G
+    version") — the most natural way to name it — never satisfies that,
+    even though the variant is exactly what distinguishes this option from
+    its siblings. Exposing the inner segment as an additional candidate
+    text lets the existing ambiguity/negation/never-guess machinery in
+    extract_catalog_hints treat it exactly like any other option text —
+    this is plain string parsing (no pattern list, no per-product
+    special-casing), so it generalizes to any catalog option shaped this
+    way, not just this one product.
+
+    Only a single, unnested trailing "(...)" is trusted — returns None on
+    anything else (nested parens, an unmatched "(" earlier in the segment,
+    empty parens), so a shape this helper can't safely parse is simply
+    never offered as a candidate rather than risk extracting a corrupted
+    fragment (e.g. a literal trailing ")" left over from a nested group).
+    """
+    stripped = text.rstrip()
+    if "(" not in stripped or not stripped.endswith(")"):
+        return None
+    _before, _, after = stripped.rpartition("(")
+    inner = after[:-1].strip()
+    if "(" in inner or ")" in inner:
+        return None
+    return inner or None
 
 
 def _normalize_for_hint(text: str) -> str:
@@ -456,6 +1791,517 @@ _DECISION_REQUIRED_KEYS: frozenset[str] = frozenset({
 # Public alias so ask_api can access it without importing a private name.
 DECISION_REQUIRED_KEYS = _DECISION_REQUIRED_KEYS
 
+# Core navigational anchors -- never suppressed by the attrSequence-driven
+# "doesn't apply to this base model" check (CpqEngine._suppress_ungoverned_
+# attrs), even when a real ingested attrSequence table has no row for one
+# of these at the active base model. These decide WHICH base model/product
+# is even active, so attrSequence coverage for them is beside the point;
+# generic fragment match, same convention as _DECISION_REQUIRED_KEYS.
+_NEVER_SUPPRESS_FRAGMENTS: frozenset[str] = frozenset({
+    "basemodel", "product", "country", "region", "hwversion", "hardwareversion",
+})
+
+# The exact (not fragment-matched) variable names of this catalog's real
+# decision anchors -- used by evaluate_rules_loop to tell "hidden because an
+# anchor is still blank" (merely gating, values dormant/preserved) apart
+# from "hidden with every anchor already answered" (a real, current-state
+# conflict, values stripped exactly as before). See the strip-vs-preserve
+# comment at its one call site for the live-confirmed regression this
+# narrower, exact-name check exists to avoid repeating.
+_DECISION_ANCHOR_VNS: tuple[str, ...] = (
+    "ultimateDestinationCountry", "hWVersion_astro",
+    "productSelectionProduct_all", "modelSelectionbaseModel_astro",
+)
+
+# Attrs confirmed live (2026-08-16, cross-checked against real native-UI
+# screenshots for APX NEXT Enhanced/XE 4G LTE+5G) to be orphaned/legacy --
+# they have ZERO attrSequence rows anywhere in the workspace (any CPQModel,
+# any base model), so _suppress_ungoverned_attrs's "total silence, not a
+# confident exclusion" carve-out normally leaves them visible. For these
+# specific, verified-dead attrs that default is wrong: native CPQ never
+# renders modelSelectionFrequencyBands_astro (20-option legacy single-
+# select) or modelSelectionFrequencyBandPlus_astro for any APX NEXT
+# product -- modelSelectionFrequencyBandMsl_astro is the real, attrSequence-
+# governed control. Narrow allowlist, not a change to the general silence
+# carve-out, since most attrs with zero attrSequence coverage genuinely are
+# ambiguous rather than confirmed-dead.
+_CONFIRMED_DEAD_ATTRS: frozenset[str] = frozenset({
+    "modelSelectionFrequencyBands_astro",
+    "modelSelectionFrequencyBandPlus_astro",
+})
+
+# Multi-select attrs confirmed live (2026-08-16) to default to EVERY
+# Whitelist/Data-Table-confirmed-legal option checked, not just one --
+# real-world meaning is "which of these apply" (coverage), not "pick one
+# among many". See the one call site (auto_fill's narrowed-legal-values
+# branch) for why this is a narrow, named allowlist rather than a change
+# to that branch's default behavior for every multi-select.
+_SELECT_ALL_NARROWED_LEGAL_MULTI_VNS: frozenset[str] = frozenset({
+    "modelSelectionFrequencyBandMsl_astro",
+})
+
+# Live-confirmed (2026-08-16): additionalSystemEnhancementFeatureType_
+# astro got blind-picked to its first menu option with NOTHING in the
+# catalog behind it -- required=False, no real default_value, zero
+# recommendation rules ever targeting it -- and that guess silently
+# cascaded into narrowing an unrelated, real question (Application
+# Services) down to the wrong 5-option set. `_no_real_fill_justification`
+# is the dynamic, catalog-agnostic test for this exact shape, computed
+# per-attribute at call time rather than a hardcoded attribute-name list
+# -- any attribute anywhere in this (or another) catalog with the same
+# profile gets the same protection automatically, with no code change
+# needed to name it. Checked at the two specific auto_fill call sites
+# that had no other real-data guard at all: the unconditional multi-
+# select "nothing to justify a subset" fallback, and the two single-
+# select first-by-order fallbacks (display-order-based and the final
+# bare-menu-order one). Every earlier, more specific branch in the same
+# method (satisfied recommendation, Data Table single-match, confirmed-
+# valid default under an active constraint, exactly-one-remaining-
+# option) is left completely untouched and still fires normally for any
+# attr whenever real data actually supports it -- this only blocks the
+# LAST-resort "guess from the whole unconstrained menu" step.
+def _no_real_fill_justification(
+    attr: "ConfigAttr", rec_by_target: dict[int, list[Any]],
+) -> bool:
+    if attr.required:
+        return False
+    if _valid(attr.default_value):
+        return False
+    if rec_by_target.get(attr.entity_id) or rec_by_target.get(attr.source_id):
+        return False
+    return True
+
+
+def _fill_signature(
+    filled: dict[str, str],
+    filled_multi: dict[str, list[str]],
+    visible_ids: set[int],
+) -> tuple:
+    """docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md — a broad, unhashed
+    snapshot of everything a "default_first_available" blind guess could
+    plausibly depend on: every filled single/multi value plus the current
+    visible-attribute-id set (a hiding-rule-driven visibility change can
+    alter legal options too, not just a value change). Deliberately NOT
+    scoped down to "only attrs this one plausibly depends on" -- no safe
+    dependency graph exists yet for script-backed rules (docs/CPQ_TURN_
+    LATENCY_FIX_CORRECTNESS_RISK_2026_08_19.md), so a narrower signature
+    risks silently missing a real narrowing, the same failure class as the
+    Package Type bug. Compared by direct tuple equality, never hashed --
+    sidesteps Python's per-process-randomized hash() entirely.
+    """
+    return (
+        tuple(sorted(filled.items())),
+        tuple(sorted((k, tuple(sorted(v))) for k, v in filled_multi.items())),
+        tuple(sorted(visible_ids)),
+    )
+
+# Explicit, named business-accepted exceptions to the dynamic check
+# above -- NOT a technical classification, a deliberate product decision
+# to trade guess-risk for fewer prompts on ONE specific attribute.
+# accessoriesSolutionSet_astro (2026-08-16): its real constraint
+# ("Constraint solution set based on product") depends on Oracle_
+# BomItemMap/Oracle_BomItemDef, not yet ingested -- until they are, it
+# blind-picks the first menu option instead of asking. No further change
+# needed once ingestion lands: the confident branches this exception
+# doesn't touch (recommendation match, Data Table single-match, exactly-
+# one-remaining-option) all run BEFORE the blind-pick fallback, so a
+# real constraint narrowing this to one legal category will auto-fill
+# through one of those first and the blind guess simply stops firing.
+#
+# 2026-08-18: three siblings added, each individually confirmed via live
+# rule-action data (not assumed from a shared code shape) to have the
+# identical constraint-only governance profile as accessoriesSolutionSet_
+# astro above -- a real rule (recommendation OR constraint) targets the
+# attribute's own value, but _no_real_fill_justification's recommendation-
+# only check can't see the constraint, so it was blocked from ever
+# reaching the confident branches even though real catalog governance
+# exists:
+#   - relatedServicesType_astro ("Service Type"): real script-backed
+#     constraint querying the real Data Table relSoftAndServcParts for
+#     the current CPQ model (rule 18654807132, constraint_type=1).
+#   - relatedServiceCategory_astro ("Service Category"): real constraint
+#     (rule 17691443159, script-backed) plus a declarative one (rule
+#     17691443165) -- hidden until relatedServicesType_astro resolves.
+#   - selectEndUserType_astro ("Select End User Type"): one real
+#     constraint (rule with attribute_id 17691442... verified via live
+#     rule-action query), zero recommendations.
+# A GENERIC fix (letting rule_governed_ids' hiding+recommendation+
+# constraint union satisfy this check for every attr) was tried and
+# reverted the same day -- it also let additionalSystemEnhancementFeature
+# Type_astro (the documented "9-of-11, never guess" incident this whole
+# check exists to prevent) bypass the gate, and separately let Group-1
+# hiding-only-governed attrs (e.g. cBPQRCode_astro) skip their
+# missing-data-table warn-and-skip. This named-allowlist approach only
+# grants the exception to attributes individually verified safe.
+_BLIND_FILL_RISK_ACCEPTED_VNS: frozenset[str] = frozenset({
+    "accessoriesSolutionSet_astro",
+    "relatedServicesType_astro",
+    "relatedServiceCategory_astro",
+    "selectEndUserType_astro",
+    # 2026-08-19: four siblings added, each individually confirmed via the
+    # real Attrsequence Data Table (per-base-model AttrName+CPQModel+
+    # BaseModel+optionOrReqFlag rows, workspace 93) to be Required for
+    # nearly every base model -- a real governance signal
+    # _no_real_fill_justification can't see, since it only checks
+    # ConfigAttr.required (sourced from bm_config_attr.required, confirmed
+    # live to be 0/unreliable for essentially every attribute in this
+    # catalog, not the real per-base-model flag) and rec_by_target. Each
+    # was live-verified separately, not assumed from a shared shape:
+    #   - baselineReleaseSW_astro ("Software Release"): 448/449
+    #     Attrsequence rows marked Required.
+    #   - applicationServicesSelection_astro ("Application Services
+    #     Selection"): 28/28 rows marked Required (always).
+    #   - carrierSelectionMultiSelect_astro ("Carrier Selection"): 3/3
+    #     rows marked Required (always) -- also cited by name in this
+    #     file's own auto_fill multi-select branch as governed via real
+    #     attrSequence coverage.
+    #   - wirelessCarrier_astro ("Wireless Carrier"): Required (flag "R")
+    #     under real APX NEXT CPQModels (APXNEXTSINGLE, APXNEXTXNALL,
+    #     APXNEXTINTLFED, APXNEXTINTL, ...) for 9 base models -- confirmed
+    #     live to share ZERO base models with carrierSelectionMultiSelect_
+    #     astro's own Required coverage (single base model H55TGT9PW8BN).
+    #     The two are mutually-exclusive per-base-model siblings for the
+    #     same real-world "carrier" concept (single-select on some base
+    #     models, multi-select on others), not one legacy/one real -- both
+    #     genuinely required, just never for the same base model.
+    #   - packingPackageType_astro ("Package Type"): 452/453 Attrsequence
+    #     rows marked Required. Distinct from its own real constraint
+    #     rule (18131370895, script-backed on additionalSystemEnhancement
+    #     FeatureType_astro/ICE KIT) which already auto-fills it when that
+    #     rule resolves to exactly one legal value -- this allowlist entry
+    #     only covers the fallback case where that constraint hasn't
+    #     narrowed anything yet.
+    # Two siblings from the same investigation were deliberately NOT
+    # added: solutionTypeDuration_astro (6/215 Required -- mostly
+    # optional, base-model dependent) and applicationServicesIntroBundle_
+    # astro (12/86 Required -- same caveat). promoApplicationServices_
+    # astro/additionalApplicationServices_astro/aTAKNonPromoApplication
+    # Services_astro were also checked and confirmed genuinely optional
+    # (0 Required rows each) -- correctly excluded, not an oversight.
+    "baselineReleaseSW_astro",
+    "applicationServicesSelection_astro",
+    "carrierSelectionMultiSelect_astro",
+    "packingPackageType_astro",
+})
+
+# Subset of _BLIND_FILL_RISK_ACCEPTED_VNS's 2026-08-19 additions that were
+# individually confirmed Required (not just "safe to blind-fill via real
+# governance rules", the reason the set's other four members are in it) —
+# see that set's docstring for the per-attribute Attrsequence row counts.
+# Used by `_is_mandatory_input_attr` for beautify's Mandatory/System split
+# instead of the unreliable flat ConfigAttr.required/bm_config_attr.
+# required column (same docstring, "confirmed live to be 0/unreliable for
+# essentially every attribute in this catalog").
+#
+# packingPackageType_astro deliberately excluded (2026-08-19, rebase-time
+# reconciliation with docs/CPQ_PackageType_HardExclude_RCA_2026-08-19.docx
+# and docs/CPQ_Beautify_Mandatory_Section_Miscategorization_2026_08_19.md):
+# a high Attrsequence Required row-count alone does NOT mean a real
+# Mandatory-User-Input UI field -- Package Type is one of the confirmed
+# exceptions (`_RECOMMENDED_CONFIG_ONLY_VNS` below), live-verified against
+# the real native APX NEXT screenshot to appear ONLY under "Recommended
+# Configuration," never under "Mandatory User Input," regardless of its
+# Attrsequence row count. Including it here would have unconditionally
+# (no per-consumer gate) leaked it back into `config_data` too, directly
+# contradicting that already-verified classification.
+_ATTRSEQ_CONFIRMED_REQUIRED_VNS: frozenset[str] = frozenset({
+    "baselineReleaseSW_astro",
+    "applicationServicesSelection_astro",
+    "carrierSelectionMultiSelect_astro",
+    "wirelessCarrier_astro",
+})
+
+# Multi-select attrs individually confirmed (Attrsequence: 0 Required rows
+# across every base model checked, workspace 93) to be genuinely optional
+# add-on choices with no active governance forcing a selection --
+# "customer wants none of these" is itself a real, valid, low-risk answer
+# for these three, unlike blind-picking a real business choice among them.
+# Distinct from _sole_opt_out_option (which finds a literal "None"/"not
+# needed" MENU ITEM the catalog authored): none of these three carry such
+# an option, so that existing mechanism can't resolve them -- this is a
+# separate case, "the attr itself can validly stay empty," not "the menu
+# declares an opt-out value." Never applied generically: an attr not
+# individually verified genuinely optional here still falls through to
+# the existing blind-pick-first-option fallback (or asks), same as
+# before this addition.
+#   - promoApplicationServices_astro ("Promo Application Services"):
+#     0/12 Attrsequence rows Required.
+#   - additionalApplicationServices_astro ("Additional Application
+#     Services"): 0/85 Attrsequence rows Required.
+#   - aTAKNonPromoApplicationServices_astro ("ATAK Non-Promo Application
+#     Services"): zero Attrsequence rows at all (also hidden by its own
+#     rule unless ATAK is explicitly enabled).
+_OPTIONAL_EMPTY_FILL_ACCEPTED_VNS: frozenset[str] = frozenset({
+    "promoApplicationServices_astro",
+    "additionalApplicationServices_astro",
+    "aTAKNonPromoApplicationServices_astro",
+})
+
+# Catalog-agnostic "this is the opt-out choice" phrasing -- an attr with
+# no real fill justification (`_no_real_fill_justification`) still has a
+# safe, non-guessed answer available when exactly one of its menu options
+# itself says "nothing needed here" (e.g. preSalesEnggAcknowledgement_
+# astro's "Add-on sale, new system components or SI services are not
+# required"). This is fundamentally different from blind-picking among
+# several real business choices (_BLIND_FILL_RISK_ACCEPTED_VNS) -- it's
+# recognizing the customer's own catalog already offers a declared
+# "skip" answer, the same concept next_question_prompt's own "(Optional
+# — say 'skip' or 'none needed')" hint already surfaces conversationally.
+# Deliberately requires EXACTLY one match -- 2+ matches means the menu's
+# phrasing is ambiguous about which is the real opt-out, and guessing
+# between them would be exactly the guess-risk this whole mechanism
+# exists to avoid, so it falls through to asking instead.
+_OPT_OUT_OPTION_RE = re.compile(
+    r"\bnot\s+(?:required|needed|applicable)\b"
+    r"|\bnone\s+(?:needed|required)\b"
+    r"|\bn/?a\b"
+    r"|\bno(?:t)?\s+(?:action|service|item)s?\s+(?:required|needed)\b",
+    re.IGNORECASE,
+)
+
+
+def _sole_opt_out_option(valid_opts: list[Any]) -> Any | None:
+    matches = [
+        o for o in valid_opts
+        if _OPT_OUT_OPTION_RE.search(o.display_name or "")
+        or _OPT_OUT_OPTION_RE.search(o.item_value or "")
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+# Some catalog attributes carry two menu options with the IDENTICAL
+# display_name but different item_value (a real BigMachines authoring
+# duplicate, not an ingestion artifact -- confirmed live in the raw XML
+# export for applicationServicesIntroBundle_astro: item_value "5 YEAR"
+# (order 5) and "5 YEARS" (order 8) both display as "5 Year"). Before
+# this fix, apply_answer's exact-display-name match returned whichever
+# duplicate came first in option order, regardless of which one any
+# governing rule actually keys off. Live-traced: the hiding rule that
+# keeps additionalApplicationServices_astro visible only recognizes the
+# literal "5 YEARS" (plural) -- matching the singular "5 YEAR" duplicate
+# left the attribute stuck hidden even after the customer answered the
+# duration question. Named per-attribute map (not a generic
+# first/last-wins heuristic) so only individually verified duplicates
+# get resolved; an unlisted attribute's duplicate options still fall
+# through to first-match, same as before.
+_DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE: dict[str, str] = {
+    "applicationServicesIntroBundle_astro": "5 YEARS",
+}
+
+# Product-line selectors that list the full multi-family portfolio (~325
+# models). Must wait until Hardware Version is filled on hardware-based
+# catalogs — otherwise next_question_prompt dumps the unconstrained list.
+_PRODUCT_LINE_SELECTOR_EXACT: frozenset[str] = frozenset({
+    "productSelectionProduct_all",
+})
+
+# Attrs confirmed live (docs/CPQ_SCRIPT_GOVERNED_GUESS_ISSUE.md) to be
+# governed EXCLUSIVELY by a script-based recommendation rule that can
+# legitimately resolve to "no recommendation" (not just "unknown") — for
+# these, auto_fill's blind first-by-order fallback ("safe because a rule
+# REQUIRES this attr to be resolved") must not fire, since the rule can
+# validly decline to recommend anything. Deliberately an explicit,
+# narrow allowlist rather than a blanket "any script-only-governed attr"
+# rule: the blanket version (commit 59074de, reverted) silenced this
+# fallback for APX Next's entire catalog too (601 recommendation rules,
+# almost all script-only, per the same pattern) — turning its working
+# instant-complete flow into ~30 unwanted questions on a fresh quote.
+# Add a new variable_name here only after live-reproducing the same
+# failure mode, the same way this one was found.
+_NEVER_GUESS_SCRIPT_GOVERNED: frozenset[str] = frozenset({
+    "wouldYouLikeToIncludeABatterySubscription_viSoln",
+})
+
+_DEFAULT_CPQ_MODEL_CANDIDATES: tuple[str, ...] = ("APXNEXT", "APXNEXT_BOM")
+
+
+def _cpq_model_candidates(
+    product_name: str, workspace_id: int | None = None, catalog_prefix: str = "",
+    cache: dict[tuple[int, str], tuple] | None = None, base_model: str = "",
+) -> tuple[str, ...]:
+    """CPQModel code(s) to try for `product_name`, in priority order:
+    1. The real, ingested constraint-shaped Data Table rows' own
+       productSelectionProduct_all attr/val pairs
+       (data_table_resolver.resolve_product_cpq_models_from_rows) --
+       catalog-agnostic and fully data-driven, no per-catalog hardcoding.
+       Explicit instruction (2026-08-10): a hand-authored per-catalog
+       override map (formerly `_PRODUCT_TO_CPQ_MODEL` here) is not an
+       acceptable substitute for real ingested data, even for a single
+       catalog -- any catalog needing this fine-grained split must get it
+       from its own rows, the same way every other catalog does.
+    2. Otherwise, the ingested CPQModelHierarchy-shaped Data Table's real
+       Product -> cpqModelName mapping, when `workspace_id` is available --
+       real, catalog-wide reference data, though only family-level, not
+       per-product (e.g. "APXNEXT" for both "APX NEXT MULTI" and "APX NEXT
+       ENHANCED", where tier 1 above would have found the finer
+       "APXNEXTENHANCED" for the latter). Both the bare family code and its
+       "_BOM" variant are tried, since every real export seen so far
+       ingests both under the same family.
+    3. The static APXNEXT/APXNEXT_BOM fallback, unchanged, when none of the
+       above applies (no workspace_id, or the product is in no ingested
+       source at all) -- identical to this function's original behavior.
+       A product landing here with zero real coverage is a genuine data
+       gap, to be documented and flagged, never papered over with a new
+       hardcoded entry for that one catalog.
+
+    `base_model`, when supplied, appends every CPQModel code the real
+    ingested Data Tables actually use for that EXACT base model (see
+    data_table_resolver.discover_cpq_models_for_base_model) AFTER whichever
+    of 1-3 above already matched -- never replacing the primary,
+    product-derived candidates, only supplementing them. Confirmed live
+    (2026-08-08): a base model can appear under a more specific variant
+    code than its product name maps to (H45TGU9PW8AN's real whitelist/
+    attrSequence rows are keyed to "APXNEXTXNSINGLE" even though "APX NEXT
+    Single Band" maps to "APXNEXTSINGLE") -- a genuine cross-SKU
+    base-model-sharing case in the source catalog. Omitting `base_model`
+    (the default) keeps this function's behavior identical to before this
+    parameter existed.
+    """
+    primary = None
+    if workspace_id is not None:
+        from_rows = dt_resolve_product_cpq_models_from_rows(
+            product_name, workspace_id, catalog_prefix, cache,
+        )
+        if from_rows:
+            primary = from_rows
+    if primary is None and workspace_id is not None:
+        family = dt_resolve_product_cpq_model_family(
+            product_name, workspace_id, catalog_prefix, cache,
+        )
+        if family:
+            primary = (family, f"{family}_BOM")
+    if primary is None:
+        primary = _DEFAULT_CPQ_MODEL_CANDIDATES
+    if not (base_model and workspace_id is not None):
+        return primary
+    discovered = dt_discover_cpq_models_for_base_model(
+        base_model, workspace_id, catalog_prefix, cache,
+    )
+    extra = tuple(cm for cm in discovered if cm not in primary)
+    return primary + extra if extra else primary
+
+
+# Matches `put(<dictVar>,"Attribute Variable Name","<attrName>")` -- the
+# real BML idiom rule scripts use to name their own target attribute.
+# Case/quote-style-tolerant since real scripts vary ("inputparam" vs
+# "inputParam", "Attribute Variable Name" is always this exact label
+# though -- confirmed across every traced rule).
+_UTIL_ATTR_VAR_NAME_RE = re.compile(
+    r'put\(\s*\w+\s*,\s*"Attribute Variable Name"\s*,\s*"([^"]+)"\s*\)',
+)
+# Matches the actual `util.getConstraintVals(<dictVar>, <listVar>)` call
+# site to replace -- same idiom every real constraint-rule script uses
+# (docs/CPQ_UTIL_LIBRARY_FUNCTION_INVENTORY_2026_08_13.md). This is a
+# NATIVE, compiled Oracle Java platform function with no BML source in
+# any export ever seen -- the BML evaluator correctly can't execute it and
+# returns "unknown" (never guess), which is why a constraint rule calling
+# it silently narrows nothing instead of erroring. Confirmed live
+# (2026-08-14): "Restrict Model Selection Attributes (Portable)" targeting
+# modelSelectionFrequencyBands_astro returns None from
+# BmlEvaluator.allowed_values_for_script for exactly this reason, leaving
+# the raw catalog menu unfiltered instead of the real, narrowed legal set.
+_UTIL_GET_CONSTRAINT_VALS_CALL_RE = re.compile(
+    r'util\.getConstraintVals\s*\(\s*\w+\s*,\s*\w+\s*\)',
+)
+
+
+def _substitute_util_get_constraint_vals(
+    script: str, filled: dict[str, str],
+    workspace_id: int | None, catalog_prefix: str,
+    cache: dict[tuple[int, str], tuple] | None,
+) -> str:
+    """Precompute `util.getConstraintVals(...)` and splice the real,
+    ingested legal-value set into `script` as a pipe-delimited string
+    literal (the same delimiter convention BmlEvaluator's own Tier-2
+    prompt already documents: "determine which values the script allows
+    (its returnVal, split on '|')"), so the shared Tier-1/Tier-2 evaluator
+    sees a script with NO `util.` reference left and can parse the
+    surrounding if/elif chain (or, for the common single-statement idiom,
+    the bare `return "<literal>"`) normally instead of being forced to
+    Tier-2 LLM guessing purely because of this one call.
+
+    `util.getConstraintVals`'s real backing data (docs/CPQ_UTIL_LIBRARY_
+    FUNCTION_INVENTORY_2026_08_13.md) is the same already-ingested
+    constraint-shaped Data Table `resolve_whitelist_values` already
+    queries for the narrowed-ask/blind-pick paths elsewhere in this file
+    (the "Constrain Master String" the real script reads from is itself
+    built from these same rows) -- reused directly here rather than
+    reimplementing the AND-condition matching a second time.
+
+    Deliberately narrow: only substitutes when (a) the call is present at
+    all, (b) the script's own "Attribute Variable Name" param names the
+    real target attr, (c) CPQModel/base model both resolve from `filled`,
+    and (d) `resolve_whitelist_values` finds real ingested rows for this
+    exact (cpq_model, base_model, attr_var_name) combination -- `None` (no
+    rows at all, e.g. the confirmed-live APX NEXT Enhanced/Frequency Bands
+    gap) leaves the script unchanged, still falling through to Tier-2
+    exactly as before; only a genuine `None`-vs-list distinction changes
+    behavior, never a guess. An empty list (`[]`, real rows exist but none
+    match the current filled context) still substitutes -- a confirmed
+    "nothing legal right now" is real information, not an unknown.
+    """
+    if "util.getConstraintVals" not in script or workspace_id is None:
+        return script
+    attr_match = _UTIL_ATTR_VAR_NAME_RE.search(script)
+    if not attr_match:
+        return script
+    attr_var_name = attr_match.group(1)
+    base_model = filled.get("modelSelectionbaseModel_astro", "")
+    product = filled.get("productSelectionProduct_all", "")
+    if not base_model:
+        return script
+
+    # 2026-08-28 perf fix: called once per script-backed ConstraintRule on
+    # every apply_constraint_rules cache-miss (its own RC6 whole-function
+    # cache -- see _constraint_cache -- only avoids re-running this when
+    # NOTHING relevant changed; a genuine narrowing/resync still forces a
+    # full recompute here). Each call independently re-walks the full
+    # _cpq_model_candidates cross-product for its own attr_var_name --
+    # confirmed live: this alone cost 82s/59s/37s across 3 passes for APX
+    # Next before the per-pass constraint cache stabilized (see the
+    # narrowing_rec_rules loop's own comment a few lines below this
+    # function's second call site). Memoized here on exactly what
+    # resolve_whitelist_values actually reads -- the full `filled` dict
+    # (via _row_conditions_match's multi-condition row matching, NOT just
+    # base_model/product) -- using the same broad, provably-safe
+    # _fill_signature already used elsewhere in this file for this exact
+    # class of problem (RC1: a narrower signature risks silently missing a
+    # real narrowing). Still a real win: this function is called from two
+    # sites within apply_constraint_rules, and apply_constraint_rules
+    # itself has 4 call sites across a turn -- an identical (script,
+    # filled-state) pair recurring across any of those no longer re-walks
+    # the candidate list.
+    _cache_key = (
+        workspace_id, catalog_prefix, script, _fill_signature(filled, {}, frozenset()),
+    )
+    _marker_at_read = _invalidate_on_marker_change(
+        _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE,
+        _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE_LAST_SEEN_MARKER,
+    )
+    _hit = _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE.get(_cache_key)
+    if _hit is not None:
+        _ts, _cached_result = _hit
+        if time.monotonic() - _ts < _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE_TTL_SECONDS:
+            return _cached_result
+
+    _result = script
+    for cpq_model in _cpq_model_candidates(
+        product, workspace_id, catalog_prefix, cache, base_model=base_model,
+    ):
+        values = dt_resolve_whitelist_values(
+            cpq_model, base_model, attr_var_name, filled, workspace_id, catalog_prefix, cache,
+        )
+        if values is not None:
+            joined = "|".join(values)
+            escaped = joined.replace("\\", "\\\\").replace('"', '\\"')
+            _result = _UTIL_GET_CONSTRAINT_VALS_CALL_RE.sub(f'"{escaped}"', script)
+            break
+    _cache_write_if_marker_unchanged(
+        _SUBSTITUTE_UTIL_GET_CONSTRAINT_VALS_CACHE, _cache_key, (time.monotonic(), _result), _marker_at_read,
+    )
+    return _result
+    return script
+
 # Summary categories (§ render_filled_summary grouping) — structural
 # fragment-matching against variable_name, same convention as
 # _DECISION_REQUIRED_KEYS above. Generic across any ingested catalog:
@@ -473,8 +2319,18 @@ _SUMMARY_CATEGORY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # its actual model/product attr), so a loose "model" substring sweeps
     # those in too. These fragments target the attr that names the product
     # itself, not siblings that merely share its naming prefix.
+    # "hwversion" added live-verified (2026-07-24): hWVersion_astro matched
+    # none of the original fragments, so it fell into the fallback
+    # "Associated Options" category — which the LLM narrator is explicitly
+    # allowed to only PARTIALLY cover (never claims completeness, by
+    # design, to avoid hallucinated placeholders for omitted facts). That
+    # meant a customer's own explicit "change the hardware version to X"
+    # could silently vanish from the "Configuration complete" summary even
+    # though the JSON payload had it correctly — a real product-identifying
+    # decision deserves the same always-fully-shown treatment as Base
+    # Model/Product Name, not partial-coverage treatment.
     ("Product Name", ("selectmodel", "basemodel", "modelname", "productname",
-                       "productselection", "producttype")),
+                       "productselection", "producttype", "hwversion")),
     ("Service Plan", ("service", "billing", "plan", "solutiontype", "archetype")),
     ("Quantity & Duration", ("quantity", "duration", "qty")),
 )
@@ -505,6 +2361,37 @@ _ASSOCIATED_OPTIONS_KEY_FRAGMENTS: frozenset[str] = frozenset({
 # (e.g. to tighten its own narration instructions for it) without a
 # private-name cross-module import.
 SUMMARY_FALLBACK_CATEGORY = _SUMMARY_FALLBACK_CATEGORY
+
+# Public alias for the real, non-catch-all category names
+# (`categorized_summary_groups`'s own grouping) -- Raven review on PR
+# #236 (Medium): ask_api's Mandatory-section boundary regex used to
+# duplicate these as hardcoded string literals, which would silently
+# under-match again if a category were ever renamed or a new one added
+# here without updating that copy. Derived directly from
+# _SUMMARY_CATEGORY_KEYS (the one place these names are actually
+# defined) instead.
+SUMMARY_CATEGORY_NAMES = tuple(category for category, _fragments in _SUMMARY_CATEGORY_KEYS)
+
+# Live-confirmed gap (2026-08-19): in the narrowed "sales rep talking
+# points" scope (rule_governed_ids supplied), `_filled_summary_triples`
+# already narrows its whole item list down to exactly
+# `_is_mandatory_input_attr`'s Tier A/B/C set (PR #222) -- but
+# `categorized_summary_groups` still buckets any of those items that don't
+# match Product Name/Service Plan/Quantity & Duration's fragments under
+# the OLD catch-all name, "Associated Options", and `render_filled_summary`
+# / `ask_api._cpq_summary_text` still give that category its old "ONE
+# short, intentionally-partial plain-text line, free to omit any fact"
+# treatment -- appropriate for a genuine grab-bag of cosmetic/accessory
+# facts, but every item reaching this bucket in the narrowed scope is now,
+# by construction, a confirmed Mandatory User Input fact (e.g. Software
+# Release, Ultimate Destination Country) that must be fully and reliably
+# listed, never partially narrated. `categorized_summary_groups` renames
+# this bucket to `_SUMMARY_MANDATORY_CATEGORY` whenever `rule_governed_ids`
+# is supplied; the full-detail-dump scope (rule_governed_ids=None) keeps
+# the original "Associated Options" name and one-line rendering unchanged,
+# since that scope is NOT narrowed to mandatory-only and can still be a
+# genuine 20-50+ item catch-all.
+_SUMMARY_MANDATORY_CATEGORY = "Mandatory User Input"
 
 # Country -> standard sales-region abbreviation. Deliberately covers only
 # the unambiguous majority; countries not listed here fall through to the
@@ -625,6 +2512,19 @@ class CpqEngine:
         source as detect_product_mention). A question naming a product
         with no other CPQ-domain word (e.g. just "MOTOTRBO?") still routes
         to CPQ without needing that product's name hardcoded here.
+
+        Live-confirmed gap (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_
+        PLAN.md): the dynamic fallback used to check ONLY
+        _ingested_product_names — internal BOM family codes
+        ("aSTRO25_bom", "softwareSolutions_BOM"), never the real,
+        customer-facing product name ("APX Next") a customer actually
+        types. "I want to order APX Next radios..." named a real,
+        ingested product by its real name and STILL fell through
+        entirely to the generic non-CPQ pipeline. Switched to
+        ingested_product_alias_map — the same catalog-tree-derived alias
+        source detect_product_mention already relies on successfully,
+        which carries both the family code AND every real product/line
+        name from each catalog's own bm_catalog tree.
         """
         if _CPQ_TRIGGER.search(question):
             return True
@@ -633,10 +2533,15 @@ class CpqEngine:
         q_norm = re.sub(r"[^a-z0-9]", "", question.lower())
         if not q_norm:
             return False
+        alias_map = self.ingested_product_alias_map(reader, workspace_id)
+        candidates = set(alias_map) | set(alias_map.values()) | set(
+            self._ingested_product_names(reader, workspace_id)
+        )
         return any(
-            re.sub(r"[^a-z0-9]", "", name.lower()) in q_norm
-            for name in self._ingested_product_names(reader, workspace_id)
+            len(norm) >= _HINT_MIN_PHRASE_LEN and norm in q_norm
+            for name in candidates
             if name
+            for norm in (re.sub(r"[^a-z0-9]", "", name.lower()),)
         )
 
     def extract_hints(self, question: str) -> dict[str, str]:
@@ -644,6 +2549,21 @@ class CpqEngine:
 
         Returns {attr_key_fragment: hint_value} where hint_value is matched
         word-boundary against DB option display names — no hardcoded country list.
+
+        Contract callers must honor for `hints["country"]` specifically
+        (review finding, docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_08_13.md):
+        this is a raw, UNVALIDATED regex candidate, not a confirmed country.
+        When no `_COUNTRY_PREP` match in the sentence is a real, recognized
+        country, this still returns the leftmost match anyway (so a caller
+        that wants to reject explicitly has something to reject, rather than
+        a silent absence indistinguishable from "no country mentioned at
+        all"). Every caller MUST re-validate via `is_recognized_country`
+        before trusting this value for anything — never assign it to
+        `session.country` (or equivalent) directly. Both current callers
+        (`ask_api.py`'s turn-1 hint block and `_mine_history_for_cpq_
+        context`) already do this; a new caller that reads `hints.get(
+        "country")` without the same check would silently reintroduce the
+        exact bug class this whole plan closes.
         """
         hints: dict[str, str] = {}
 
@@ -655,10 +2575,32 @@ class CpqEngine:
 
         # Generic country extraction: "customer in Australia", "located in New Zealand"
         # Captures the proper-noun after a preposition and matches it against DB display names.
+        #
+        # Tries every match in the sentence, not just the first -- fallback-
+        # path hardening, 2026-08-13 (docs/CPQ_COUNTRY_LLM_ONLY_PLAN_2026_
+        # 08_13.md review finding). `re.search` only ever returns the
+        # LEFTMOST match; a bogus earlier trigger ("for APX Next" -> "AP")
+        # used to shadow a real, later, correctly-stated country in the
+        # same sentence ("...in the United States") because nothing ever
+        # looked past the first hit. Prefers the first candidate that's a
+        # real, recognized country; falls back to the plain leftmost match
+        # (this method's original behavior) only when NONE of them
+        # validate, so callers that intend to validate downstream
+        # themselves still get a candidate to reject, not a silent None.
         if "country" not in hints:
-            m = _COUNTRY_PREP.search(question)
-            if m:
-                hints["country"] = m.group(1).strip().title()
+            valid_match = None
+            first_match = None
+            for m in _COUNTRY_PREP.finditer(question):
+                candidate = m.group(1).strip().title()
+                if first_match is None:
+                    first_match = candidate
+                if self.is_recognized_country(candidate):
+                    valid_match = candidate
+                    break
+            if valid_match is not None:
+                hints["country"] = valid_match
+            elif first_match is not None:
+                hints["country"] = first_match
 
         # Region hints (abbreviations)
         if "region" not in hints:
@@ -766,7 +2708,11 @@ class CpqEngine:
             for opt in attr.options:
                 if opt.item_value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
                     continue
-                for text in (opt.item_value, opt.display_name):
+                _texts = [(opt.item_value, False), (opt.display_name, False)]
+                _suffix = _parenthetical_suffix(opt.display_name)
+                if _suffix and _suffix not in (opt.item_value, opt.display_name):
+                    _texts.append((_suffix, True))
+                for text, _is_suffix in _texts:
                     stripped = text.strip()
                     is_code = any(c.isdigit() for c in stripped) or "/" in stripped
                     norm = _normalize_for_hint(text)
@@ -788,6 +2734,18 @@ class CpqEngine:
                         # recorded above for negation-suppression, just not
                         # added to `candidates` below.
                         continue
+                    if _is_suffix and not is_code:
+                        # A parenthetical suffix is a much shorter, more
+                        # generic-sounding fragment than the full option
+                        # text it's plucked from ("Best Value", "Recommended
+                        # for most users") — multi-word alone isn't enough
+                        # distinctiveness evidence the way it is for a
+                        # full, catalog-specific item_value/display_name
+                        # (raven review, PR follow-up). Only trust it when
+                        # it also looks like a technical/distinguishing
+                        # code (contains a digit or slash) — "4G LTE+5G"
+                        # qualifies, ordinary marketing prose does not.
+                        continue
                     candidates.setdefault(norm, []).append(
                         (attr.variable_name, opt.item_value))
 
@@ -800,12 +2758,41 @@ class CpqEngine:
             owners = {vn for vn, _iv in entries}
             if len(owners) > 1:
                 continue  # real option for 2+ different attrs — never guess
+            if len(set(entries)) > 1:
+                # Same attr, but 2+ genuinely different real values share
+                # this exact phrase (e.g. two hardware-version options both
+                # display a "(4G LTE+5G)" variant suffix on siblings like
+                # "APX NEXT" and "APX NEXT XE") — this widens once
+                # _parenthetical_suffix starts contributing candidate text,
+                # since a shared variant suffix is common across sibling
+                # products. Never guess which one the customer meant.
+                continue
             vn, item_value = entries[0]
             if vn in hints:
                 continue  # a longer, more specific phrase already matched this attr
             if _is_negated_before(q_lower, q_index_map[idx]):
                 continue  # "exclude ... <phrase>" — not a selection
             hints[vn] = item_value
+
+        # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md row
+        # 17: a deterministic sanity check, not an LLM call — negating an
+        # attr's ONLY real (non-boolean) option is contradictory (there's
+        # nothing left to fall back to), so it must never silently
+        # suppress the whole attribute the way a genuine "exclude X, use
+        # Y instead" negation among 2+ real options correctly does.
+        # Cheap: reuses `attrs` already scoped to this call, no new rule
+        # evaluation or threading needed.
+        _attr_by_vn = {a.variable_name: a for a in attrs}
+
+        def _has_only_one_real_option(vn: str) -> bool:
+            attr = _attr_by_vn.get(vn)
+            if attr is None:
+                return False
+            real_opts = [
+                o for o in attr.options
+                if o.item_value.strip().lower() not in self._BOOLEAN_DISPLAY_VALUES
+            ]
+            return len(real_opts) <= 1
 
         negated_vns: set[str] = set()
         for phrase, owners in all_owners.items():
@@ -814,7 +2801,7 @@ class CpqEngine:
                 continue
             if not _is_negated_before(q_lower, q_index_map[idx]):
                 continue
-            negated_vns.update(owners)
+            negated_vns.update(vn for vn in owners if not _has_only_one_real_option(vn))
             # Passive suppression (negated_vns) only stops auto_fill's blind
             # first-by-order fallback — it does nothing about an attr whose
             # own default_value applies unconditionally regardless of
@@ -953,6 +2940,84 @@ class CpqEngine:
                 continue
             hints[vn] = literal_value
         return hints
+
+    def find_unresolvable_context_attrs(
+        self,
+        attrs: list["ConfigAttr"],
+        filled: dict[str, str],
+        workspace_id: int,
+        catalog_prefix: str,
+        rec_rules: list["RecommendationRule"],
+        con_rules: list["ConstraintRule"],
+    ) -> list[dict[str, Any]]:
+        """Surface every option-less, script-referenced, still-unfilled attr
+        that NO rule in this catalog can ever set (the customerType-class
+        gap — generalized from a single confirmed instance, docs/
+        APX_Next_RootCause_And_Fix_Report).
+
+        Never guesses a value (D2) — this only reports WHICH attrs are
+        structurally unresolvable and what literal values scripts elsewhere
+        compare them to, so a caller (a standalone payload-construction
+        workflow, or a live turn) can decide what to do, instead of the
+        gap being invisible the way it was for customerType. Distinct from
+        an attr a recommendation rule targets but simply hasn't been run
+        yet — call evaluate_recommendation_rules/evaluate_rules_loop
+        first; only what remains missing after that pass is a genuine gap
+        this method is meant to catch.
+
+        Catalog-agnostic: uses only the same generic option-less/script-
+        literal-comparison scan _build_flag_keyword_index already performs,
+        and the same rule-target check any catalog's rec/con rules go
+        through — no attribute or rule name is hardcoded.
+
+        Returns a list of {variable_name, literal_values_referenced,
+        num_referencing_scripts}, one entry per genuinely unresolvable,
+        still-missing attr — empty when nothing needs attention.
+        """
+        by_vn = {a.variable_name: a for a in attrs}
+        option_less = {
+            vn for vn, a in by_vn.items() if not a.options and not a.hidden
+        }
+        if not option_less:
+            return []
+
+        settable_by_rule: set[int] = set()
+        for r in (*rec_rules, *con_rules):
+            target_id = getattr(r, "target_attr_id", None)
+            if target_id:
+                settable_by_rule.add(target_id)
+
+        scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
+        referenced: dict[str, set[str]] = {}
+        referencing_count: dict[str, int] = {}
+        for script in scripts.values():
+            if not script:
+                continue
+            seen_this_script: set[str] = set()
+            for var, value in extract_literal_comparisons(script):
+                if var not in option_less:
+                    continue
+                referenced.setdefault(var, set()).add(value)
+                seen_this_script.add(var)
+            for var in seen_this_script:
+                referencing_count[var] = referencing_count.get(var, 0) + 1
+
+        result: list[dict[str, Any]] = []
+        for vn, values in referenced.items():
+            if filled.get(vn):
+                continue
+            attr = by_vn.get(vn)
+            eid = attr.entity_id if attr else None
+            sid = attr.source_id if attr else None
+            if eid in settable_by_rule or (sid is not None and sid in settable_by_rule):
+                continue  # a rule CAN fill this — not this method's concern
+            result.append({
+                "variable_name": vn,
+                "literal_values_referenced": sorted(v for v in values if v.strip()),
+                "num_referencing_scripts": referencing_count.get(vn, 0),
+            })
+        result.sort(key=lambda r: -r["num_referencing_scripts"])
+        return result
 
     def _ingested_product_names(self, reader: Any, workspace_id: int) -> list[str]:
         """Real product/family display names for every catalog currently
@@ -1108,6 +3173,106 @@ class CpqEngine:
         leaves = [nm for native, _p, nm in nodes if native not in parent_ids]
         return leaves[0] if len(leaves) == 1 else ""
 
+    def model_variable_candidates(
+        self, reader: Any, workspace_id: int, catalog_prefix: str,
+    ) -> list[str]:
+        """Companion to single_model_variable_name: the full list of leaf
+        model variable names when the tree has 2+ (the ambiguous case that
+        function deliberately returns "" for, rather than guessing).
+
+        Amendment 10 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): a
+        catalog like CommandCentral Aware has several model leaves
+        (commandCentralAware2024_BOM, commandCentralAware2026_BOM,
+        commandCentralDEMS_BOM, ...) under one family — with no single
+        unambiguous leaf, _bm_model_variable_name was never seeded at
+        all, and no question ever asked which one was meant; the turn
+        fell through to unrelated "Product" attrs instead, which don't
+        represent this identity in this catalog's data at all.
+
+        Returns [] when there are 0 or exactly 1 leaves (that case is
+        single_model_variable_name's job), else the distinct, sorted leaf
+        names for the caller to present as a disambiguation choice.
+        """
+        if not catalog_prefix:
+            return []
+        cat_ents = reader.find_entities(
+            ontology_type=f"{catalog_prefix}BmCatalog", limit=200)
+        if not cat_ents:
+            return []
+        pg = self._batch_fetch([e["id"] for e in cat_ents], workspace_id)
+        nodes: list[tuple[str, str, str]] = []
+        for cent in cat_ents:
+            a = pg.get(cent["id"], {})
+            native = str(a.get("id") or "").strip()
+            parent = str(a.get("parent_id") or "").strip()
+            name = str(a.get("name") or cent.get("name") or "").strip()
+            if native and name:
+                nodes.append((native, parent, name))
+        parent_ids = {p for _n, p, _nm in nodes if p and p != "-1"}
+        leaves = sorted({nm for native, _p, nm in nodes if native not in parent_ids})
+        return leaves if len(leaves) >= 2 else []
+
+    def model_catalog_path(
+        self,
+        reader: Any,
+        workspace_id: int,
+        catalog_prefix: str,
+        model: str,
+        product_family: str = "",
+    ) -> dict[str, str]:
+        """Return the validated family, line, and leaf model for MSI.
+
+        The route uses the same BmCatalog tree as
+        :meth:`single_model_variable_name` and
+        :meth:`model_variable_candidates`; it never derives identity from a
+        generic Product attribute.
+
+        ``catalog_prefix`` (e.g. "ApxNextConfig") is the ontology-type
+        namespace used to find this catalog's entities in the graph — it is
+        NOT the catalog's own root node name (e.g. "aSTRO25_bom"), which is
+        what resolve_catalog_path's family-membership check validates
+        against. Conflating the two here previously made the family check
+        impossible to pass (catalog_prefix never equals a root node's
+        name) — this was unreachable until the sales-cpq confirm flow
+        first actually exercised it live. When the caller doesn't have the
+        product_family name available, falls back to catalog_prefix (the
+        old, always-failing behavior) rather than skipping validation
+        silently.
+        """
+        from sales_streamlit.product_context import resolve_catalog_path
+
+        if not catalog_prefix or not model:
+            raise ValueError("Product family and resolved model are required")
+        entities = reader.find_entities(
+            ontology_type=f"{catalog_prefix}BmCatalog",
+            limit=200,
+        )
+        if not entities:
+            raise ValueError(
+                f"BmCatalog tree for family {catalog_prefix!r} was not found"
+            )
+        properties = self._batch_fetch(
+            [entity["id"] for entity in entities],
+            workspace_id,
+        )
+        nodes = []
+        for entity in entities:
+            attrs = properties.get(entity["id"], {})
+            nodes.append(
+                {
+                    "native_id": str(attrs.get("id") or "").strip(),
+                    "parent_id": str(attrs.get("parent_id") or "").strip(),
+                    "name": str(
+                        attrs.get("name") or entity.get("name") or ""
+                    ).strip(),
+                }
+            )
+        return resolve_catalog_path(
+            nodes,
+            product_family=product_family or catalog_prefix,
+            model=model,
+        )
+
     def detect_product_mention(
         self, question: str, hints: dict[str, str],
         reader: Any = None, workspace_id: int = 1,
@@ -1186,14 +3351,31 @@ class CpqEngine:
             for name, name_norm in ordered:
                 if name_norm and name_norm in q_norm:
                     return alias_map[name]
-            scored = self._fuzzy_score_candidates(q_norm, ordered)
+            scored = self._fuzzy_score_candidates(
+                q_norm, ordered, question_tokens=self._question_tokens(question),
+            )
             if scored and scored[0][1] >= _PRODUCT_FUZZY_MATCH_THRESHOLD:
                 return alias_map[scored[0][0]]
         return next((v for k, v in hints.items() if "product" in k), "")
 
     @staticmethod
+    def _question_tokens(question: str) -> frozenset[str]:
+        """Individual normalized word tokens from `question`, filtered to
+        those long enough to carry brand-abbreviation signal (see
+        `_ABBR_PREFIX_MIN_LEN`). Distinct from q_norm, which glues the
+        whole question into one string for substring/sliding-window
+        checks — this stays word-separated so a short mention ("APX")
+        isn't diluted by neighboring filler ("quote", "qty", "10").
+        """
+        return frozenset(
+            t for t in re.findall(r"[a-z0-9]+", (question or "").lower())
+            if len(t) >= _ABBR_PREFIX_MIN_LEN
+        )
+
+    @staticmethod
     def _fuzzy_score_candidates(
         q_norm: str, ordered: list[tuple[str, str]],
+        question_tokens: frozenset[str] | None = None,
     ) -> list[tuple[str, float]]:
         """Best deterministic fuzzy score of each (name, name_norm) pair
         against q_norm — a sliding window the length of the candidate's
@@ -1204,6 +3386,14 @@ class CpqEngine:
         names shorter than _HINT_MIN_PHRASE_LEN are never scored (same
         guard used elsewhere to stop short names from spuriously matching
         unrelated text).
+
+        `question_tokens` (see `_question_tokens`) adds a second, word-level
+        signal on top of the whole-string sliding window: any token that is
+        a genuine prefix of a candidate's normalized name bumps that
+        candidate's score into the "suggest" band via `_ABBR_PREFIX_SCORE`,
+        even when the whole-sentence window carries no useful signal for a
+        short/vague mention. Purely additive (`max`) — never lowers a score
+        the sliding window already found on its own.
         """
         scored: list[tuple[str, float]] = []
         for name, name_norm in ordered:
@@ -1214,6 +3404,10 @@ class CpqEngine:
             best = 0.0
             for i in range(span):
                 best = max(best, string_score(name_norm, q_norm[i:i + window]))
+            if question_tokens and any(
+                name_norm.startswith(tok) for tok in question_tokens
+            ):
+                best = max(best, _ABBR_PREFIX_SCORE)
             scored.append((name, best))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored
@@ -1267,7 +3461,9 @@ class CpqEngine:
             for name, family in alias_map.items()
             if family.strip().lower() != exclude_norm
         ]
-        scored = self._fuzzy_score_candidates(q_norm, ordered)
+        scored = self._fuzzy_score_candidates(
+            q_norm, ordered, question_tokens=self._question_tokens(question),
+        )
         suggestions: list[str] = []
         for name, score in scored:
             if not (_PRODUCT_FUZZY_SUGGEST_THRESHOLD <= score < _PRODUCT_FUZZY_MATCH_THRESHOLD):
@@ -1285,6 +3481,8 @@ class CpqEngine:
         con_rules: list["ConstraintRule"],
         filled: dict[str, str],
         bml_eval: BmlEvaluator,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> bool:
         """Is the country in `filled` compatible with this catalog's
         product line (variable_name "productSelectionProduct_all" —
@@ -1322,7 +3520,10 @@ class CpqEngine:
         )
         if selector is None:
             return True
-        constrained = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        constrained = self.apply_constraint_rules(
+            attrs, con_rules, filled, bml_eval,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+        )
         allowed = constrained.get(selector.entity_id)
         if allowed is None:
             return True
@@ -1411,7 +3612,21 @@ class CpqEngine:
         (rule loaders) must treat that the same as "no catalog filter".
         """
         prefixes = {_catalog_prefix(t) for t in attr_types}
-        prefixes.discard("")
+        if "" in prefixes:
+            # "" means _catalog_prefix found no PascalCase marker — either a
+            # genuinely unprefixed catalog (confirmed live: CommandCentral
+            # Aware, ingested via the generic doc_discovery pipeline, emits
+            # bare 'BmConfigAttr'/'BmPrdFamily' with no distinguishing
+            # prefix at all) or unrecognized noise. Keep "" as a real,
+            # matchable catalog only when it resolves to an actual
+            # BmPrdFamily/BmCatalog entity; otherwise it's noise and must
+            # still be discarded, never treated as a valid scope.
+            has_real_family = bool(
+                reader.find_entities(ontology_type="BmPrdFamily", limit=1)
+                or reader.find_entities(ontology_type="BmCatalog", limit=1)
+            )
+            if not has_real_family:
+                prefixes.discard("")
         if len(prefixes) <= 1:
             return attr_types, (next(iter(prefixes)) if prefixes else "")
 
@@ -1526,7 +3741,7 @@ class CpqEngine:
             return []
         attr_pg = self._batch_fetch([e["id"] for e in attr_ents], workspace_id)
         target_id = None
-        fallback_candidates: list[tuple[int, int]] = []  # (entity_id, option_count)
+        fallback_ids: list[int] = []
         for ent in attr_ents:
             pg = attr_pg.get(ent["id"], {})
             vn = str(
@@ -1537,13 +3752,20 @@ class CpqEngine:
                 break
             if (self._PRODUCT_FIELD_FALLBACK_RE.search(vn)
                     and self._PRODUCT_FIELD_FALLBACK_HINT_RE.search(vn)):
-                try:
-                    neighbor_count = len(reader.neighbors(ent["id"]))
-                except Exception:
-                    neighbor_count = 0
-                fallback_candidates.append((ent["id"], neighbor_count))
-        if target_id is None and fallback_candidates:
-            target_id = max(fallback_candidates, key=lambda c: c[1])[0]
+                fallback_ids.append(ent["id"])
+        if target_id is None and fallback_ids:
+            # One batched call instead of one reader.neighbors() per
+            # candidate — was up to hundreds of round-trips on catalogs with
+            # many attrs matching the fallback regex (mirrors the
+            # neighbors_batch() fix already applied to load_product_config's
+            # own attribute-neighbor loop a few hundred lines below).
+            try:
+                neighbors_by_id = reader.neighbors_batch(fallback_ids)
+            except Exception:
+                neighbors_by_id = {}
+            target_id = max(
+                fallback_ids, key=lambda eid: len(neighbors_by_id.get(eid, []))
+            )
         if target_id is None:
             return []
         try:
@@ -1735,7 +3957,22 @@ class CpqEngine:
 
         attr_ents: list[dict] = []
         for attr_type in attr_types:
-            attr_ents.extend(reader.find_entities(ontology_type=attr_type, limit=500))
+            # Paginate past find_entities' capped limit — confirmed live
+            # (2026-07-27, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+            # Amendment 13): a single limit=500 call silently truncated
+            # CommandCentral Aware's 906 real BmConfigAttr rows down to
+            # 324 loaded, dropping hundreds of attrs including
+            # hiddenHidingRuleMasterStringForCommandCentral_swSoln — the
+            # exact gotcha find_entities' own docstring already documents
+            # for BmMenuItem (SL3500e's >2000 rows), just never applied
+            # here. Loop until a short page confirms there's nothing left.
+            offset = 0
+            while True:
+                page = reader.find_entities(ontology_type=attr_type, limit=500, offset=offset)
+                attr_ents.extend(page)
+                if len(page) < 500:
+                    break
+                offset += 500
 
         if not attr_ents:
             logger.info("cpq: no bm_config_attr entities found in graph "
@@ -1758,13 +3995,27 @@ class CpqEngine:
         # alone (FalkorDB's in-process round-trips hid the same N+1 cost).
         neighbor_map: dict[int, list[int]] = {}  # attr_entity_id → [menu_entity_ids]
         all_menu_ids: list[int] = []
+        # AttributeError fallback keeps OracleGraphReader and every test double
+        # lacking neighbors_batch working unchanged, same pattern as
+        # distinct_types above -- any OTHER failure also degrades to the
+        # per-entity loop rather than silently dropping every attr's menu
+        # items (an empty {} fallback here would surface as products losing
+        # all their options, not just running slower).
         try:
             neighbors_by_attr = reader.neighbors_batch([e["id"] for e in attr_ents])
         except Exception:
             logger.debug("cpq: batch neighbor fetch failed", exc_info=True)
-            neighbors_by_attr = {}
+            neighbors_by_attr = None
         for ent in attr_ents:
             eid = ent["id"]
+            try:
+                neighbors = (
+                    neighbors_by_attr.get(eid, []) if neighbors_by_attr is not None
+                    else reader.neighbors(eid)
+                )
+            except Exception:
+                logger.debug("cpq: neighbor fetch failed for attr %d", eid, exc_info=True)
+                neighbors = []
             # reader.neighbors_batch() has no catalog awareness — for attrs whose
             # native id is reused across catalogs (e.g. productSelectionProduct_all,
             # confirmed live to have separate BmMenuItem sets per catalog under
@@ -1775,7 +4026,7 @@ class CpqEngine:
             # that means scoping didn't narrow to one catalog, so no filter
             # should be applied (same convention as the attr-type scoping above).
             menu_ids = [
-                n["id"] for n in neighbors_by_attr.get(eid, [])
+                n["id"] for n in neighbors
                 if "menuitem" in (n.get("type") or "").lower().replace("_", "")
                 and (
                     not resolved_catalog_prefix
@@ -1799,6 +4050,11 @@ class CpqEngine:
             if e["id"] not in neighbor_map
             and str(attr_pg.get(e["id"], {}).get("menu_type") or "") == "1"
         ]
+        # Shared lazily-built pool for the override FK fallback below (step
+        # 3c) -- reused from step 3b's fk_menu_pg when that fallback already
+        # ran this call, since both need the same "every menu-item row in
+        # this catalog, keyed by graph entity id" data.
+        _fk_menu_pool: dict[int, dict] | None = None
         if orphan_eids:
             # A real BM native id can legitimately own more than one graph
             # entity_id (confirmed live: SL3500e ingested
@@ -1837,6 +4093,7 @@ class CpqEngine:
                         offset += page_size
                 fk_menu_pg = self._batch_fetch(
                     [m["id"] for m in fk_menu_ents], workspace_id)
+                _fk_menu_pool = fk_menu_pg
                 for mid, mdata in fk_menu_pg.items():
                     owner_eids = orphan_real_ids.get(str(mdata.get("bm_config_attr_id") or ""))
                     if not owner_eids:
@@ -1845,14 +4102,150 @@ class CpqEngine:
                         neighbor_map.setdefault(owner_eid, []).append(mid)
                     all_menu_ids.append(mid)
 
+        # Step 3c (override redirection) — BigMachines' bm_config_att_override
+        # construct lets one catalog replace/extend a SHARED base attribute's
+        # own menu list with a catalog-specific one (same native attribute_id,
+        # different graph entity, different — and often more complete —
+        # bm_menu_item set). Nothing in this pipeline read this construct
+        # before (confirmed live: zero references to it anywhere in the
+        # codebase) — every attr's options came ONLY from its own base
+        # entity's graph neighbors, so an override-only option was silently
+        # invisible everywhere (the answer prompt, apply_answer matching,
+        # every constraint rule's allowed-value intersection).
+        #
+        # Live-confirmed bug (2026-07-28): productSelectionProduct_all's base
+        # entity (native id 39427019) neighbors a stale bm_menu_item set that
+        # repeats "APX NEXT ENHANCED" many times but never carries "APX NEXT
+        # XE 4G LTE PLUS 5G" — while a bm_config_att_override entity for the
+        # SAME native attribute_id neighbors the complete, catalog-correct
+        # list containing both. A real constraint rule (Hardware-Version-
+        # keyed) correctly narrowed to both values, but the numbered prompt
+        # only ever showed the one the base entity's own menu list happened
+        # to carry.
+        #
+        # Purely additive and structural: detected via ontology_type suffix
+        # (no hardcoded catalog/attr names) and merged (never replaces) into
+        # the base entity's own neighbor list — `seen_opts`' (item_value,
+        # display_name) dedup below already absorbs any item repeated in
+        # both sets, so this only ever ADDS options a base-only read would
+        # have missed, never removes one a real customer answer already
+        # relies on.
+        override_types = [
+            t for t in all_type_names
+            if _norm(t).endswith("configattoverride")
+            and (not resolved_catalog_prefix
+                 or _catalog_prefix(t) == resolved_catalog_prefix)
+        ]
+        if override_types:
+            override_ents: list[dict] = []
+            for ot in override_types:
+                offset = 0
+                while True:
+                    page = reader.find_entities(ontology_type=ot, limit=500, offset=offset)
+                    override_ents.extend(page)
+                    if len(page) < 500:
+                        break
+                    offset += 500
+            if override_ents:
+                override_pg = self._batch_fetch(
+                    [e["id"] for e in override_ents], workspace_id)
+                # base attr's own native id -> owning entity_id(s), same
+                # "native id can own 2+ entity_ids" reality the orphan
+                # FK-fallback above already accounts for.
+                base_eids_by_native_id: dict[str, list[int]] = {}
+                for e in attr_ents:
+                    rid = attr_pg.get(e["id"], {}).get("id")
+                    if rid is not None:
+                        base_eids_by_native_id.setdefault(str(rid), []).append(e["id"])
+                for oe in override_ents:
+                    oeid = oe["id"]
+                    target_native_id = str(override_pg.get(oeid, {}).get("attribute_id") or "")
+                    owner_eids = base_eids_by_native_id.get(target_native_id)
+                    if not owner_eids:
+                        continue
+                    try:
+                        override_neighbors = reader.neighbors(oeid)
+                    except Exception:
+                        logger.debug(
+                            "cpq: neighbor fetch failed for override attr %d",
+                            oeid, exc_info=True)
+                        continue
+                    override_menu_ids = [
+                        n["id"] for n in override_neighbors
+                        if "menuitem" in (n.get("type") or "").lower().replace("_", "")
+                        and (not resolved_catalog_prefix
+                             or _catalog_prefix(n.get("type") or "") == resolved_catalog_prefix)
+                    ]
+                    if not override_menu_ids:
+                        # FK fallback (2026-08-17, live-confirmed): same class
+                        # of gap as the base-attr orphan_eids fallback above,
+                        # but for override entities -- a bm_config_att_override
+                        # can have a real Postgres row and real bm_menu_item
+                        # children correctly linked via the ref_id property,
+                        # yet zero graph edges (confirmed live: override
+                        # entity 2251385 for productSelectionProduct_all has
+                        # 325 real menu items keyed by ref_id == its own
+                        # native id, but reader.neighbors() returns empty,
+                        # silently dropping "APX NEXT XE 4G LTE PLUS 5G" from
+                        # the Product menu). Detected structurally (empty
+                        # graph neighbors on an override row that exists in
+                        # Postgres), never by attr/catalog name, so it
+                        # self-heals for any override hitting the same gap.
+                        # Reuses the same menu-item pool as the base-attr
+                        # fallback (fetched lazily here if that fallback
+                        # didn't already run this call).
+                        if _fk_menu_pool is None:
+                            _fk_menu_pool = {}
+                            _menu_types_all = [
+                                t for t in all_type_names
+                                if _norm(t).endswith("menuitem")
+                                and (not resolved_catalog_prefix
+                                     or _catalog_prefix(t) == resolved_catalog_prefix)
+                            ]
+                            _fk_menu_ents_all: list[dict] = []
+                            for mt in _menu_types_all:
+                                _off = 0
+                                while True:
+                                    _page = reader.find_entities(
+                                        ontology_type=mt, limit=2000, offset=_off)
+                                    _fk_menu_ents_all.extend(_page)
+                                    if len(_page) < 2000:
+                                        break
+                                    _off += 2000
+                            _fk_menu_pool = self._batch_fetch(
+                                [m["id"] for m in _fk_menu_ents_all], workspace_id)
+                        override_native_id = str(override_pg.get(oeid, {}).get("id") or "")
+                        override_menu_ids = [
+                            mid for mid, mdata in _fk_menu_pool.items()
+                            if str(mdata.get("ref_id") or "") == override_native_id
+                        ]
+                        if not override_menu_ids:
+                            continue
+                    for owner_eid in owner_eids:
+                        # Prepended, not appended: the override is BM's
+                        # authoritative, catalog-specific replacement for
+                        # this attr's menu — when the same item_value exists
+                        # in both (confirmed live: "APX NEXT ENHANCED" on the
+                        # base list displays as "APX NEXT Enhanced", but the
+                        # override's own copy of that same item_value
+                        # displays as "APX NEXT (4G LTE+5G)"), the override's
+                        # display must win, not silently coexist as a
+                        # second, differently-labeled entry for an identical
+                        # code. Processing override entries first lets the
+                        # item_value-keyed dedup below keep only the first
+                        # (override) occurrence.
+                        neighbor_map[owner_eid] = override_menu_ids + neighbor_map.get(owner_eid, [])
+                    all_menu_ids.extend(override_menu_ids)
+
         # Single batch fetch for all menu items across all attrs
         all_menu_pg = self._batch_fetch(all_menu_ids, workspace_id) if all_menu_ids else {}
 
         menu_by_attr: dict[int, list[MenuOption]] = {}
         for eid, menu_ids in neighbor_map.items():
             opts: list[MenuOption] = []
-            # (item_value, display_name) pairs already added for this attr —
-            # company-level/global BM attrs (e.g. _BM_USER_CURRENCY,
+            # item_values already added for this attr, keyed by item_value
+            # ALONE (2026-07-28: widened from an (item_value, display_name)
+            # pair) — company-level/global BM attrs (e.g. _BM_USER_CURRENCY,
             # _BM_USER_LANGUAGE, _BM_USER_NUMBER_FORMAT) share one native id
             # across every ingested catalog from the same BM tenant, and
             # reader.neighbors() has no catalog-prefix scoping of its own, so
@@ -1862,7 +4255,19 @@ class CpqEngine:
             # Bug 1 — this is the safe, minimal backstop; product-specific
             # attrs never hit this since their menu items are never
             # re-exported verbatim across catalogs.
-            seen_opts: set[tuple[str, str]] = set()
+            #
+            # Widened to item_value-only (2026-07-28, override redirection
+            # above): a bm_config_att_override's menu item can share the SAME
+            # item_value as one already on the base attr's own menu, with a
+            # DIFFERENT display_name — confirmed live: "APX NEXT ENHANCED"
+            # displays as "APX NEXT Enhanced" on the base list but as
+            # "APX NEXT (4G LTE+5G)" on the override's own copy. The old
+            # (item_value, display_name) key let both survive as two
+            # differently-labeled entries for what is really one identical
+            # code — a customer-facing duplicate. Override entries are
+            # placed first in `menu_ids` above specifically so this dedup
+            # keeps the override's (authoritative) display when both exist.
+            seen_item_values: set[str] = set()
             for mid in menu_ids:
                 ma = all_menu_pg.get(mid, {})
                 # Always use item_value (API code), item_text for display
@@ -1876,10 +4281,9 @@ class CpqEngine:
                         continue
                     if any(f in dt_lo for f in _NOISE_ITEM_FRAGMENTS):
                         continue
-                    key = (iv_lo, dt_lo)
-                    if key in seen_opts:
+                    if iv_lo in seen_item_values:
                         continue
-                    seen_opts.add(key)
+                    seen_item_values.add(iv_lo)
                     opts.append(MenuOption(item_value=iv, display_name=dt, order=order))
             opts.sort(key=lambda x: x.order)
             menu_by_attr[eid] = opts
@@ -1907,6 +4311,30 @@ class CpqEngine:
                 role_by_attr_id[member_id] = "member"
                 order_by_attr_id[member_id] = order
 
+        # Rule-target ids — computed once here so Step 4's hidden/no-default
+        # drop below can exempt attrs that are dynamically populated by a
+        # rule action rather than a static default (Amendment 13,
+        # docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md). Live-confirmed gap:
+        # hiddenHidingRuleMasterStringForCommandCentral_swSoln (hidden=1,
+        # empty default_value, but the ACTION-target of a
+        # util.getConstraintVals-style recommendation rule) was being
+        # dropped before rule evaluation ever ran, so it could never be
+        # filled — and every downstream script checking it (e.g. "Hide 'of
+        # Video Streaming Devices' if No value available for command and
+        # control") always saw it blank, permanently defeating that
+        # catalog's own visibility mechanism. Rule references use the
+        # BM-native id (pg["id"]/attribute_id/bm_config_rule_id), not the
+        # aryx entity_id — both are checked below since either can appear
+        # as a rule action's target.
+        try:
+            _rule_actions_by_rule = self._load_rule_join_data(
+                workspace_id, resolved_catalog_prefix)[2]
+            rule_target_ids: set[int] = {
+                aid for acts in _rule_actions_by_rule.values() for aid, *_rest in acts
+            }
+        except Exception:
+            rule_target_ids = set()
+
         # Step 4 — build ConfigAttr list
         config_attrs: list[ConfigAttr] = []
         for ent in attr_ents:
@@ -1925,6 +4353,21 @@ class CpqEngine:
                 logger.debug("cpq: skipping noise attr %r", var_name)
                 continue
 
+            # docs/CPQ_CONFIG_ATTR_STATUS_FILTERING_ROOT_CAUSE_AND_FIX_
+            # PLAN_2026-08-14.md — BmConfigAttr rows carry the same
+            # status=1 (active) / status=3 (inactive) convention already
+            # relied on for BmConfigRule (see fetch_rules/fetch_value_
+            # rules' active_only). Confirmed live: 15 real status=3
+            # attribute rows exist (workspace 19) and were loaded
+            # unconditionally — a deactivated/deleted attribute could
+            # still be shown/asked to the customer. status is present on
+            # every real BmConfigAttr row across both real workspaces
+            # (verified — no attr lacks the field), so this never
+            # accidentally excludes a legitimately-untracked attr.
+            if str(pg.get("status", "")).strip() == "3":
+                logger.debug("cpq: skipping inactive (status=3) attr %r", var_name)
+                continue
+
             display = str(pg.get("name") or ent.get("name") or var_name).strip()
             required_raw = str(pg.get("required") or "0").strip().lower()
             required = required_raw in ("1", "true", "yes")
@@ -1941,9 +4384,20 @@ class CpqEngine:
             # name-match it against a visible selector's menu options (§5
             # Change B, docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md).
             is_grid_qty_candidate = "quantity" in vn_lo
-            if is_hidden and not default_val and not (is_array_control or is_grid_qty_candidate):
+            _src_id_raw = pg.get("id") or pg.get("attribute_id") or pg.get("bm_config_rule_id")
+            _is_rule_target = eid in rule_target_ids or (
+                _src_id_raw is not None
+                and str(_src_id_raw).strip().isdigit()
+                and int(_src_id_raw) in rule_target_ids
+            )
+            if (is_hidden and not default_val
+                    and not (is_array_control or is_grid_qty_candidate or _is_rule_target)):
                 # Hidden with nothing to contribute — never shown/asked, and
-                # no default to feed BML scripts, so still fully dropped.
+                # no static default to feed BML scripts — dropped, UNLESS
+                # it's a rule action's target (Amendment 13): those attrs
+                # are dynamically populated by a recommendation/constraint
+                # rule at apply time, not a static default, and dropping
+                # them here means they can never be filled at all.
                 continue
 
             hide_in_trans_raw = str(pg.get("hide_in_trans") or "0").strip().lower()
@@ -2040,14 +4494,34 @@ class CpqEngine:
         second condition dropped). See docs/CPQ_APX_NEXT_RULE_CATALOG.md
         "Gap Deep-Dive & Impact Analysis" and bml.evaluate_declarative_conditions
         for the AND/OR-grouping semantics applied to this list.
+
+        docs/CPQ_RULE_JOIN_DATA_CACHING_PERFORMANCE_PLAN_2026_08_10.md —
+        module-level, short-TTL cached (see _RULE_JOIN_DATA_CACHE above):
+        this is the shared fetch every rule loader (load_hiding_rules,
+        _load_value_rules, and everything built on top of them) calls
+        independently, with zero caching previously — confirmed live 3+
+        redundant full re-fetches of the same join data from one turn's
+        single top-level rule-loading block.
         """
+        _key = (workspace_id, catalog_prefix)
+        _marker_at_read = _invalidate_on_marker_change(_RULE_JOIN_DATA_CACHE, _RULE_JOIN_DATA_CACHE_LAST_SEEN_MARKER)
+        _hit = _RULE_JOIN_DATA_CACHE.get(_key)
+        if _hit is not None:
+            _ts, _result = _hit
+            if time.monotonic() - _ts < _RULE_JOIN_DATA_CACHE_TTL_SECONDS:
+                return _result
+
         rdb = get_cpq_rdb()
-        inputs_by_rule: dict[int, list[tuple[int, str]]] = {}
-        for rid, aid, val in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
-            inputs_by_rule.setdefault(rid, []).append((aid, val))
-        actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]] = {}
-        for rid, aid, at, val, fn, st in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
-            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st))
+        # (attr_id, value, operator) — operator is the raw BM-native
+        # comparison code ("1"/"2"/.../"8"); see docs/CPQ_DECLARATIVE_
+        # CONDITION_OPERATOR_PLAN_2026_08_05.md for what each means and
+        # bml.evaluate_declarative_conditions for where it's interpreted.
+        inputs_by_rule: dict[int, list[tuple[int, str, str]]] = {}
+        for rid, aid, val, op in rdb.fetch_rule_inputs(workspace_id, catalog_prefix):
+            inputs_by_rule.setdefault(rid, []).append((aid, val, op))
+        actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]] = {}
+        for rid, aid, at, val, fn, st, comments in rdb.fetch_rule_actions(workspace_id, catalog_prefix):
+            actions_by_rule.setdefault(rid, []).append((aid, at, val, fn, st, comments))
         # bm_config_marked_attr: the real target linkage for many declarative
         # hiding rules — verified against real data where BmConfigRuleAction
         # and the rule's own attr_id both carry no target (docs/CPQ_GRAPH_FIX_PLAN.md §6a).
@@ -2059,12 +4533,14 @@ class CpqEngine:
         chain_by_rule: dict[int, int] = {}
         for rid, cid in rdb.fetch_rule_chain_links(workspace_id, catalog_prefix):
             chain_by_rule[rid] = cid
-        return rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule
+        _result = (rdb, inputs_by_rule, actions_by_rule, marked_by_rule, chain_by_rule)
+        _cache_write_if_marker_unchanged(_RULE_JOIN_DATA_CACHE, _key, (time.monotonic(), _result), _marker_at_read)
+        return _result
 
     @staticmethod
     def _resolve_targets(
         rule_key: int,
-        actions_by_rule: dict[int, list[tuple[int, int, str, int, int]]],
+        actions_by_rule: dict[int, list[tuple[int, int, str, int, int, str]]],
         marked_by_rule: dict[int, list[int]],
         chain_by_rule: dict[int, int],
         max_hops: int = 3,
@@ -2081,7 +4557,7 @@ class CpqEngine:
         """
         acts = actions_by_rule.get(rule_key, [])
         if acts:
-            return [(aid, at) for aid, at, _v, _f, _st in acts]
+            return [(aid, at) for aid, at, _v, _f, _st, _c in acts]
         marked = marked_by_rule.get(rule_key)
         if marked:
             return [(aid, 2) for aid in marked]
@@ -2091,7 +4567,7 @@ class CpqEngine:
         while current is not None and current not in seen and hops < max_hops:
             acts = actions_by_rule.get(current, [])
             if acts:
-                return [(aid, at) for aid, at, _v, _f, _st in acts]
+                return [(aid, at) for aid, at, _v, _f, _st, _c in acts]
             marked = marked_by_rule.get(current)
             if marked:
                 return [(aid, 2) for aid in marked]
@@ -2107,6 +4583,33 @@ class CpqEngine:
         if source_id is not None and (source_id in inputs or source_id in actions):
             return source_id
         return entity_id
+
+    @staticmethod
+    def _condition_has_operator_collision(conditions: list[tuple[int, str, str]]) -> bool:
+        """True if any single attribute in `conditions` is checked with 2+
+        DISTINCT operators — docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_
+        PLAN_2026_08_05.md.
+
+        evaluate_declarative_conditions groups same-attribute rows under a
+        single shared operator (the first row's); for rows that genuinely
+        share one operator (an OR-list of acceptable/excluded values) this
+        is correct, but for rows with DIFFERENT operators on the same
+        attribute it silently drops every row after the first — confirmed
+        live via "Restrict Number Of Seats between 1 and 12" (`< 1` and
+        `> 12` on the same attribute; only `< 1` would ever be checked).
+
+        Confirmed catalog-wide (80 real rules across 4 catalogs) that no
+        single combining rule fixes this correctly for every shape yet —
+        two patterns are confirmed for 76% of cases, but forcing them in
+        now would silently mis-evaluate the remaining ~24% (see the plan
+        doc). Used as a purely structural, never-guessed exclusion: a rule
+        hitting this collision is skipped entirely (same as if it were
+        never confirmed) rather than loaded with a guessed combining rule.
+        """
+        by_attr: dict[int, set[str]] = {}
+        for attr_id, _value, operator in conditions:
+            by_attr.setdefault(attr_id, set()).add(operator)
+        return any(len(ops) > 1 for ops in by_attr.values())
 
     def _detect_layout_tier(self, workspace_id: int, catalog_prefix: str = "") -> int:
         """docs/CPQ_LAYOUT_VISIBILITY_FLOW_PLAN.md §2 — one cheap existence
@@ -2242,6 +4745,140 @@ class CpqEngine:
         _LAYOUT_SCOPE_CACHE[key] = result
         return result
 
+    @staticmethod
+    def _walk_layout_components(node: Any) -> list[dict[str, Any]]:
+        """Depth-first, document-order list of every leaf component object
+        carrying a `resourceAttributeVarName` — the exact flattened order
+        the native UI renders in, no `parent_id`/`order_number` tree walk
+        needed (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §1: the raw
+        relational `order_number` is sibling-scoped, not a flat rank; this
+        nested JSON's own array order already is one)."""
+        out: list[dict[str, Any]] = []
+
+        def _walk(n: Any) -> None:
+            if isinstance(n, dict):
+                if "resourceAttributeVarName" in n:
+                    out.append(n)
+                for v in n.values():
+                    _walk(v)
+            elif isinstance(n, list):
+                for item in n:
+                    _walk(item)
+
+        _walk(node)
+        return out
+
+    @classmethod
+    def _load_layout_components(
+        cls, workspace_id: int, catalog_prefix: str,
+        layout_source: LayoutFileSource | None,
+    ) -> list[dict[str, Any]] | None:
+        """Parsed, `status=="Active"`-validated, flattened (document-order)
+        component list for a catalog's layout export, or None if no
+        currently-Active file exists. Cached process-lifetime — the shared
+        parse step both `load_layout_display_order` (§2, visible-only) and
+        `_load_layout_full_order` (§2b, ALL entries — rule conditions are
+        frequently layout-*hidden*, e.g. a derived attr like Base Model,
+        so the ranking those need can't come from the visible-only map)
+        build on."""
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_COMPONENTS_CACHE:
+            return _LAYOUT_COMPONENTS_CACHE[key]
+        source = layout_source or _DEFAULT_LAYOUT_FILE_SOURCE
+        text = source.get(catalog_prefix)
+        if not text:
+            _LAYOUT_COMPONENTS_CACHE[key] = None
+            return None
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            logger.warning(
+                "cpq layout: malformed layout JSON for catalog_prefix=%r",
+                catalog_prefix, exc_info=True,
+            )
+            _LAYOUT_COMPONENTS_CACHE[key] = None
+            return None
+        if not isinstance(data, dict) or data.get("status") != "Active":
+            logger.info(
+                "cpq layout: layout file for %r has status=%r, not "
+                "'Active' — ignoring (stale/deprecated export guard)",
+                catalog_prefix,
+                data.get("status") if isinstance(data, dict) else None,
+            )
+            _LAYOUT_COMPONENTS_CACHE[key] = None
+            return None
+        components = cls._walk_layout_components(data)
+        _LAYOUT_COMPONENTS_CACHE[key] = components
+        return components
+
+    def load_layout_display_order(
+        self, workspace_id: int, catalog_prefix: str = "",
+        layout_source: LayoutFileSource | None = None,
+    ) -> dict[str, int] | None:
+        """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2 — {variable_name:
+        rank} for exactly the attributes a catalog's decoded native-UI
+        layout export marks `hide: false` and non-`HTML`-typed, ranked by
+        the file's own document order (§1: the authoritative flat order —
+        `bm_layout_model.order_number` is only sibling-scoped).
+
+        Returns None when no matching, currently-Active layout file exists
+        for this catalog — callers must treat that as "no layout signal",
+        never as "empty visible set" (every §2/§2b/§2c mechanism built on
+        this falls back to today's unchanged behavior in that case).
+
+        layout_source — injected for tests / a future non-local backend
+        (see LayoutFileSource); defaults to the process-wide local
+        directory source (`ARYX_CPQ_LAYOUT_DIR`, else cwd).
+        """
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_DISPLAY_ORDER_CACHE:
+            return _LAYOUT_DISPLAY_ORDER_CACHE[key]
+        components = self._load_layout_components(workspace_id, catalog_prefix, layout_source)
+        if components is None:
+            _LAYOUT_DISPLAY_ORDER_CACHE[key] = None
+            return None
+        order: dict[str, int] = {}
+        for comp in components:
+            vn = comp.get("resourceAttributeVarName")
+            if (
+                vn and comp.get("hide") is False
+                and comp.get("resourceAttrType") != "HTML"
+                and vn not in order
+            ):
+                order[vn] = len(order)
+        result = order or None
+        _LAYOUT_DISPLAY_ORDER_CACHE[key] = result
+        return result
+
+    def _load_layout_full_order(
+        self, workspace_id: int, catalog_prefix: str = "",
+        layout_source: LayoutFileSource | None = None,
+    ) -> dict[str, int] | None:
+        """docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b — {variable_name:
+        rank} over EVERY component in the layout file's document order,
+        regardless of `hide`/`resourceAttrType` — used for rule-conflict
+        ranking, where a rule's condition attribute is very often itself
+        layout-hidden (a derived/computed attr, e.g. Base Model, is never
+        shown to the customer but still gates other rules). Distinct from
+        `load_layout_display_order`, which intentionally excludes exactly
+        those hidden attrs for the summary/payload visible-set use case.
+        """
+        key = (workspace_id, catalog_prefix)
+        if key in _LAYOUT_FULL_ORDER_CACHE:
+            return _LAYOUT_FULL_ORDER_CACHE[key]
+        components = self._load_layout_components(workspace_id, catalog_prefix, layout_source)
+        if components is None:
+            _LAYOUT_FULL_ORDER_CACHE[key] = None
+            return None
+        order: dict[str, int] = {}
+        for comp in components:
+            vn = comp.get("resourceAttributeVarName")
+            if vn and vn not in order:
+                order[vn] = len(order)
+        result = order or None
+        _LAYOUT_FULL_ORDER_CACHE[key] = result
+        return result
+
     def resolve_always_ask_skips(
         self, workspace_id: int, catalog_prefix: str, attrs: list[ConfigAttr],
     ) -> set[str]:
@@ -2269,6 +4906,65 @@ class CpqEngine:
             if attr.entity_id not in in_flow_ids:
                 skips.add(attr.variable_name)
         return skips
+
+    def resolve_primary_layout_section_vns(
+        self, workspace_id: int, catalog_prefix: str, attrs: list["ConfigAttr"],
+    ) -> set[str] | None:
+        """Variable names genuinely shown on the native UI's own configuration
+        screen(s) — the country-anchor's own layout "section" (see
+        resolve_ui_layout_scope), scoped to a single, deterministically-
+        chosen flow when 2+ active flows exist.
+
+        docs/config_consistency_issues_2026-07-30.md items 1/2: a real
+        staging screenshot showed the native UI's Model Configuration panel
+        surfacing ~10 fields for one screen, while Aryx's payload/summary
+        carried 80-90 attributes total. This catalog's own ingested layout
+        data doesn't resolve to per-SCREEN granularity (the finest grouping
+        available is a ~35-attr "section" spanning several screens) — this
+        is the ceiling of what's derivable without guessing a finer split
+        the data doesn't contain.
+
+        Flow disambiguation (APX Next ships 2 simultaneously-active
+        rule_type=6 flows — resolve_ui_layout_scope's own docstring already
+        flags this as unresolved): prefers the flow whose name does NOT end
+        in "_sysConfig" (confirmed live: the two flows here are named
+        "Configuration Flow For Astro Devices (Portable)" and
+        "...Astro Devices (Portable)_sysConfig" — the suffixed one reads as
+        a secondary/system-config variant, not the primary customer-facing
+        flow). Falls back to the lowest flow_id for a stable, deterministic
+        choice when no name is unsuffixed either way — never a random pick.
+
+        Returns None (no narrowing — caller keeps existing full behavior)
+        when: no layout data at all (tier 3), or the chosen flow has no
+        resolvable country-anchor section. Never guesses a subset when the
+        catalog's own data doesn't support one.
+        """
+        scope = self.resolve_ui_layout_scope(workspace_id, catalog_prefix)
+        if not scope or not scope["flows"]:
+            return None
+        flow_ids = list(scope["flows"].keys())
+        if len(flow_ids) == 1:
+            chosen_id = flow_ids[0]
+        else:
+            rdb = get_cpq_rdb()
+            names = {
+                src_id: (name or "")
+                for _eid, src_id, name, _fn
+                in rdb.fetch_rules(workspace_id, "6", catalog_prefix, active_only=True)
+                if src_id is not None
+            }
+            unsuffixed = [
+                fid for fid in flow_ids
+                if not names.get(fid, "").strip().lower().endswith("_sysconfig")
+            ]
+            chosen_id = min(unsuffixed) if unsuffixed else min(flow_ids)
+        section = scope["flows"][chosen_id].get("section")
+        if not section:
+            return None
+        by_entity_id = {a.entity_id: a.variable_name for a in attrs}
+        return {
+            by_entity_id[aid] for aid in section if aid in by_entity_id
+        }
 
     @staticmethod
     def model_context_mirror_vns(attrs: list["ConfigAttr"]) -> set[str]:
@@ -2370,20 +5066,93 @@ class CpqEngine:
             if attr.hidden or not attr.options:
                 continue
             item_map: dict[str, str] = {}
-            for opt in attr.options:
-                token = norm(opt.display_name or opt.item_value)
+            # Live-confirmed gap (2026-08-26, real BOM API rejection —
+            # "Index 6/10/11 ... is not Valid"): two DIFFERENT real
+            # options can share a common substring -- "MOLLE Mount"'s
+            # normalized token is itself a substring of the longer,
+            # more specific "Locking Molle Mount"'s own quantity attr
+            # name (`...LockingMolleMountQuantity...`), and likewise
+            # "Belt Mount" inside "TEK-LOK Belt Mount"'s. Naively
+            # matching per-option let BOTH options claim the SAME
+            # quantity attr, synthesizing a phantom extra array-set row
+            # for an option the customer never actually selected.
+            # Processing longest-token-first and removing a quantity
+            # candidate once claimed ensures the longer, more specific
+            # option's own genuine match wins that candidate before a
+            # shorter, coincidentally-overlapping option ever gets a
+            # chance at it -- the shorter option then correctly finds no
+            # (remaining) match instead of stealing someone else's.
+            opts_by_token_len = sorted(
+                (
+                    (opt, norm(opt.display_name or opt.item_value))
+                    for opt in attr.options
+                ),
+                key=lambda ot: -len(ot[1]),
+            )
+            claimed_vns: set[str] = set()
+            for opt, token in opts_by_token_len:
                 if len(token) < 6:
                     continue
-                matches = [vn for vn, qn in qty_norm if token in qn]
+                matches = [
+                    vn for vn, qn in qty_norm
+                    if token in qn and vn not in claimed_vns
+                ]
                 if len(matches) == 1:
                     item_map[opt.item_value.strip().lower()] = matches[0]
+                    claimed_vns.add(matches[0])
             if item_map:
                 links[attr.variable_name] = item_map
         return links
 
+    def is_grid_quantity_attr(self, attr: ConfigAttr, attrs: list[ConfigAttr]) -> bool:
+        """True when `attr` is one of `resolve_array_grid_links`' hidden
+        per-option quantity companions (any selector's item_map value) —
+        used to gate the skip/zero reply parsing below to exactly the
+        upfront-flow's own quantity attrs, never an ordinary free-text
+        field."""
+        links = self.resolve_array_grid_links(attrs)
+        return any(
+            attr.variable_name in item_map.values() for item_map in links.values()
+        )
+
+    def parse_grid_quantity_reply(self, text: str) -> str | None:
+        """Parse a reply to one grid-selector option's upfront quantity
+        question (2026-08-26, explicit product decision): "skip" or a bare
+        "0" both mean the option isn't included — stored as the literal
+        "0" so it still appears in the final payload (a real, confirmed
+        customer decision, not an unanswered gap) — and a plain whole
+        number is that option's quantity.
+
+        2026-08-27 follow-up: also recognizes a small, fixed vocabulary of
+        natural-language quantities — spelled-out numbers ("three" -> 3)
+        and the "dozen" family ("a dozen" -> 12, "half a dozen" -> 6, "2
+        dozen"/"two dozen" -> 24) — converting each to its digit string.
+        Deliberately NOT a general NLP number parser (see
+        _GRID_QUANTITY_WORD_NUMBERS' own comment); a negative quantity
+        ("-5", "minus 6") is intentionally never recognized here — a
+        negative mount count has no real business meaning.
+
+        Returns None for anything else, letting the caller fall back to
+        its normal answer handling rather than guessing.
+        """
+        t = text.strip()
+        if _GRID_QUANTITY_SKIP_RE.match(t):
+            return "0"
+        if t.isdigit():
+            return t
+        tl = t.lower()
+        if tl in _GRID_QUANTITY_WORD_NUMBERS:
+            return str(_GRID_QUANTITY_WORD_NUMBERS[tl])
+        dozen_val = _parse_grid_quantity_dozen_phrase(t)
+        if dozen_val is not None:
+            return str(dozen_val)
+        return None
+
     def resolve_pending_grid_quantities(
         self, attrs: list[ConfigAttr], filled: dict[str, str],
         filled_multi: dict[str, list[str]],
+        constrained_opts: dict[int, list[str]] | None = None,
+        selector_vns: set[str] | None = None,
     ) -> list[ConfigAttr]:
         """Extra pending ConfigAttrs for grid-quantity attrs whose selector
         has a selected row without a quantity yet (resolve_array_grid_links).
@@ -2392,8 +5161,45 @@ class CpqEngine:
         same free-text pending mechanism as any other attribute (these
         quantity attrs have no menu options, so apply_answer's free-text
         numeric path handles the reply). No new UI/ask concept needed.
+
+        2026-08-25 (explicit product decision): when the selector itself
+        has NO selection recorded at all yet (never answered, no
+        filled_multi entry, no filled entry), every one of its real,
+        grid-linked options is treated as pending its own quantity —
+        instead of first asking the customer to pick which options they
+        want, every real option gets its own quantity question directly
+        (blank/"0" answers simply exclude that option later — see
+        `_finalize_grid_selections_from_quantities`). Generic: keyed only
+        on `resolve_array_grid_links`'s own resolution, no catalog/
+        attribute name hardcoded. Once the selector DOES have a real
+        selection (customer answered normally, or a prior turn already
+        started this per-option flow and filled_multi was synthesized),
+        this reverts to the original "only already-selected rows" set —
+        never re-asks an option the customer explicitly excluded.
+
+        constrained_opts — optional (default `None`, preserving prior
+        behavior of seeding every raw catalog option) — the same
+        `apply_constraint_rules` output (keyed by entity_id) the normal
+        "choose one" pending-question path already narrows its own option
+        list with. Live-confirmed gap (2026-08-26, SVX base model "SVX
+        Video Remote Speaker Mic"): without this, the upfront flow asked
+        for a quantity on EVERY raw-catalog option resolve_array_grid_
+        links could token-match — including TEK-LOK Belt Mount, valid
+        only for the TAA variant, not the base model actually selected.
+        When given and the selector's entity_id has a narrowed set, only
+        those item_values are treated as real/selectable here.
+
+        selector_vns -- optional (default None, all grid selectors in
+        `attrs`). When given, restricts resolution to only these
+        selectors' own linked quantity attrs. Needed by callers resolving
+        a single, specific selector (e.g. label-collision resolution in
+        ask_api.py): without this, a catalog with more than one grid-
+        linked multi-select can have an unrelated selector's quantity
+        attr returned here instead (Raven review, PR #283).
         """
         links = self.resolve_array_grid_links(attrs)
+        if selector_vns is not None:
+            links = {vn: m for vn, m in links.items() if vn in selector_vns}
         if not links:
             return []
         by_vn = {a.variable_name: a for a in attrs}
@@ -2403,6 +5209,18 @@ class CpqEngine:
             selected = filled_multi.get(selector_vn) or (
                 [filled[selector_vn]] if selector_vn in filled and filled[selector_vn] else []
             )
+            if not selected and selector_vn not in filled_multi and selector_vn not in filled:
+                selector_attr = by_vn.get(selector_vn)
+                if selector_attr is not None:
+                    allowed = (
+                        constrained_opts.get(selector_attr.entity_id)
+                        if constrained_opts else None
+                    )
+                    selected = [
+                        o.item_value for o in selector_attr.options
+                        if o.item_value.strip().lower() in item_map
+                        and (allowed is None or o.item_value in allowed)
+                    ]
             for item_value in selected:
                 qty_vn = item_map.get(item_value.strip().lower())
                 if not qty_vn or qty_vn in filled or qty_vn in seen:
@@ -2413,6 +5231,197 @@ class CpqEngine:
                 extra.append(qty_attr)
                 seen.add(qty_vn)
         return extra
+
+    def _finalize_grid_selections_from_quantities(
+        self, attrs: list[ConfigAttr], filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str] | None = None,
+        constrained_opts: dict[int, list[str]] | None = None,
+    ) -> None:
+        """Once EVERY real grid-linked option for a not-yet-selected
+        selector has its own quantity answered (2026-08-25's upfront
+        per-option flow — see `resolve_pending_grid_quantities`),
+        synthesize the selector's own `filled_multi` entry from the
+        options that got a real, positive quantity — a "0" or blank
+        quantity simply means that option isn't included. Mutates
+        `filled_multi` in place. A selector already answered (via a
+        real selection or an earlier synthesis) is left untouched;
+        never re-derives over a customer's own explicit choice.
+
+        filled_source — optional (default `None`, no-op for a caller
+        that doesn't track provenance). When given, also stamps the
+        synthesized selector as `"user"` — live-confirmed gap (2026-08-26):
+        without this, the selector's `filled_multi` entry has no
+        provenance at all, so `build_payload`'s `scope_required_and_edited`
+        preview (`_is_mandatory_input_attr`, which requires a confirmed
+        source) silently drops the ENTIRE array-set wrapper — every
+        answered mount quantity — from the JSON preview, even though each
+        one was individually, genuinely confirmed by the customer. This is
+        a real, derived-but-confirmed decision, exactly as legitimate as
+        one the customer typed directly onto the selector itself.
+
+        constrained_opts — optional (default `None`) — see
+        `resolve_pending_grid_quantities`'s own docstring for the exact
+        gap this closes: without it, a not-yet-selected selector's
+        `filled_multi` synthesis (and the "all linked options answered"
+        completeness check) would consider options outside the currently
+        valid model/constraint set.
+        """
+        links = self.resolve_array_grid_links(attrs)
+        if not links:
+            return
+        by_vn = {a.variable_name: a for a in attrs}
+        for selector_vn, item_map in links.items():
+            if selector_vn in filled_multi or selector_vn in filled:
+                continue
+            selector_attr = by_vn.get(selector_vn)
+            if selector_attr is None:
+                continue
+            allowed = (
+                constrained_opts.get(selector_attr.entity_id) if constrained_opts else None
+            )
+            linked_options = [
+                o for o in selector_attr.options
+                if o.item_value.strip().lower() in item_map
+                and (allowed is None or o.item_value in allowed)
+            ]
+            if not linked_options:
+                continue
+            qty_vns = {item_map[o.item_value.strip().lower()] for o in linked_options}
+            # Digit-only, not just present -- a non-numeric value stored in
+            # `filled` (e.g. by an unrelated bug upstream) must not be read
+            # as an answered quantity here (Raven review, PR #283).
+            if not all(
+                qty_vn in filled and filled[qty_vn].strip().isdigit() for qty_vn in qty_vns
+            ):
+                continue  # still waiting on at least one option's quantity
+            selected_values = [
+                o.item_value for o in linked_options
+                if _valid(filled.get(item_map[o.item_value.strip().lower()], ""))
+                and filled[item_map[o.item_value.strip().lower()]].strip() not in ("0", "")
+            ]
+            filled_multi[selector_vn] = selected_values
+            if filled_source is not None:
+                filled_source[selector_vn] = "user"
+
+    def append_pending_grid_quantities(
+        self, pending: list[ConfigAttr], attrs: list[ConfigAttr],
+        filled: dict[str, str], filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str] | None = None,
+        constrained_opts: dict[int, list[str]] | None = None,
+        selector_vns: set[str] | None = None,
+    ) -> list[ConfigAttr]:
+        """Add `resolve_pending_grid_quantities`'s output to `pending`
+        (mutated in place, also returned for call-site convenience),
+        skipping anything already present.
+
+        SVX mounting-type queue-jump (narrow, catalog-scoped — live-
+        confirmed 2026-08-24, not a general rule): a grid-quantity attr is
+        only just unlocked THIS pass by the customer's own selection, yet
+        a plain append lands it behind mountType_viSoln whenever that
+        unrelated sibling merely ranks earlier in the catalog's native
+        layout order. A customer who just picked a mount option should be
+        asked its quantity before being asked about a completely
+        different "Mounting Type" field. Every OTHER catalog/attr keeps
+        the plain append-to-end behavior.
+
+        2026-08-25 (explicit product decision, upfront per-option
+        quantities): before appending, first calls
+        `_finalize_grid_selections_from_quantities` — once every real
+        linked option for a not-yet-selected grid selector has its own
+        quantity answered, its filled_multi entry is synthesized right
+        here, so it naturally drops out of `pending` on this same pass
+        instead of lingering. The selector's OWN "choose one" question is
+        also excluded from `pending` while its per-option quantities are
+        still being asked (resolve_pending_grid_quantities now seeds ALL
+        real linked options, not just already-selected ones, for exactly
+        this not-yet-selected case) — replaced entirely by the per-option
+        flow, never asked redundantly alongside it.
+
+        A selector that already carries a REAL customer selection (a
+        filled_multi entry present BEFORE this call — i.e. the customer
+        answered its "choose one" question directly rather than going
+        through the upfront per-option flow) is left standing in
+        `pending` untouched: that's the upstream grid-selector-multi-row
+        flow's territory (grid_selector_remaining_options/auto_fill's
+        grid_declined_vns), which re-offers the selector across turns
+        until the customer declines further rows. The upfront flow only
+        ever owns a selector from its unselected state through to its own
+        synthesis — it must never swallow a selector upstream's flow is
+        actively driving.
+
+        constrained_opts — optional (default `None`) — threaded straight
+        through to `resolve_pending_grid_quantities`/`_finalize_grid_
+        selections_from_quantities`; see their docstrings for the model/
+        constraint-narrowing gap this closes.
+
+        selector_vns -- optional (default None, all grid selectors in
+        `attrs`). When given, restricts which selectors' quantity attrs
+        this call may surface/append. Callers resolving one specific,
+        already-known selector (e.g. label-collision resolution in
+        ask_api.py) must pass this -- otherwise, with more than one
+        grid-linked multi-select in the catalog, an unrelated selector's
+        quantity attr can be appended ahead of/instead of the intended
+        one (Raven review, PR #283).
+        """
+        pre_existing_multi = set(filled_multi.keys())
+        self._finalize_grid_selections_from_quantities(
+            attrs, filled, filled_multi, filled_source, constrained_opts)
+        links = self.resolve_array_grid_links(attrs)
+        if selector_vns is not None:
+            links = {vn: m for vn, m in links.items() if vn in selector_vns}
+        # Only strip a selector that the upfront flow itself owns: one
+        # with no real selection yet (mid per-option flow) or one just
+        # finalized above. A selector already real-selected before this
+        # call is left alone for upstream's re-ask flow to handle.
+        pending = [
+            a for a in pending
+            if not (a.variable_name in links and a.variable_name not in pre_existing_multi)
+        ]
+        seen = {a.variable_name for a in pending}
+        for qty_attr in self.resolve_pending_grid_quantities(
+            attrs, filled, filled_multi, constrained_opts, selector_vns=selector_vns,
+        ):
+            if qty_attr.variable_name in seen:
+                continue
+            if self._is_svx_mounting_array_quantity_attr(qty_attr) and any(
+                a.variable_name == "mountType_viSoln" for a in pending
+            ):
+                mt_idx = next(
+                    i for i, a in enumerate(pending) if a.variable_name == "mountType_viSoln"
+                )
+                pending.insert(mt_idx, qty_attr)
+            else:
+                pending.append(qty_attr)
+            seen.add(qty_attr.variable_name)
+        return pending
+
+    @staticmethod
+    def grid_selector_remaining_options(
+        attr: "ConfigAttr",
+        filled_multi: dict[str, list[str]],
+        constrained_opts: dict[int, list[str]] | None,
+    ) -> list["MenuOption"]:
+        """Currently-valid options of a grid-selector attr the customer
+        hasn't picked yet.
+
+        Structural and catalog-agnostic: `filled_multi` gives what's
+        already chosen, `constrained_opts` (apply_constraint_rules'
+        output, same active-rule narrowing already used to build the
+        question prompt) gives what's still legal for the current
+        configuration. Neither param names any attribute or catalog.
+        """
+        picked = set(filled_multi.get(attr.variable_name) or [])
+        allowed = (
+            set(constrained_opts[attr.entity_id])
+            if constrained_opts and attr.entity_id in constrained_opts
+            else None
+        )
+        return [
+            o for o in attr.options
+            if _valid(o.item_value) and o.item_value not in picked
+            and (allowed is None or o.item_value in allowed)
+        ]
 
     def unresolved_grid_quantity_options(
         self, attrs: list[ConfigAttr], filled_multi: dict[str, list[str]],
@@ -2472,14 +5481,34 @@ class CpqEngine:
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
+        _t0 = time.monotonic()
+        logger.info(
+            "cpq_step: load_hiding_rules start workspace_id=%s catalog_prefix=%r",
+            workspace_id, catalog_prefix,
+        )
         rules: list[HidingRule] = []
         script_missing = 0
         unresolved = 0
+        operator_collisions = 0
         try:
             rdb, inputs, actions, marked, chain = self._load_rule_join_data(
                 workspace_id, catalog_prefix)
             scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
-            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(workspace_id, "11", catalog_prefix):
+            # active_only=True (docs/config_consistency_issues_2026-07-30.md,
+            # Issue 5 follow-up): live-confirmed real harm from the
+            # previously-deliberate byte-for-byte-unaffected choice noted in
+            # fetch_rules' own docstring — a DISABLED (status=3) hiding rule,
+            # "Hide Frequency Band & Extend Range if Product is selected as
+            # APX Enhanced" (script condition reads modelSelectionFrequency
+            # BandMsl_astro's OWN just-set value and hides it right back),
+            # was still being loaded and evaluated, wiping a customer's
+            # Frequency Band answer on the very same turn it was recorded.
+            # rule_type="6" flow rules already opted into this exact filter
+            # for the identical reason (dead/superseded rules alongside live
+            # ones); hiding rules never had — this closes that gap.
+            for eid, src_id, rule_name, fn_id in rdb.fetch_rules(
+                workspace_id, "11", catalog_prefix, active_only=True,
+            ):
                 key = self._rule_key(eid, src_id, inputs, actions)
                 targets = self._resolve_targets(key, actions, marked, chain)
                 if not targets:
@@ -2510,12 +5539,26 @@ class CpqEngine:
                 if not inp_list:
                     unresolved += 1
                     continue
-                cond_attr_id, cond_value = inp_list[-1]
+                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+                # — a declarative condition checking the SAME attribute
+                # with 2+ different operators cannot yet be evaluated
+                # correctly by evaluate_declarative_conditions (it
+                # collapses to the first row's operator+value, silently
+                # dropping the rest). No single combining rule is
+                # confirmed safe for every such shape yet — skip rather
+                # than load with a guessed combining rule, same treatment
+                # as the value-less-hide/constraint/recommendation/
+                # validation branches in _load_value_rules.
+                if self._condition_has_operator_collision(inp_list):
+                    operator_collisions += 1
+                    continue
+                cond_attr_id, cond_value, cond_operator = inp_list[-1]
                 for target_attr_id, action_type in targets:
                     rules.append(HidingRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         hide=(int(action_type or 2) == 2),
                         conditions=list(inp_list),
@@ -2526,10 +5569,36 @@ class CpqEngine:
         script_backed = sum(1 for r in rules if r.script is not None)
         logger.info(
             "cpq: loaded %d hiding rules (%d declarative, %d script-backed, "
-            "%d missing script, %d unresolved)",
+            "%d missing script, %d unresolved, %d skipped: same-attribute "
+            "operator collision, docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_"
+            "PLAN_2026_08_05.md) elapsed_s=%.3f",
             len(rules), len(rules) - script_backed, script_backed,
-            script_missing, unresolved)
-        return rules
+            script_missing, unresolved, operator_collisions, time.monotonic() - _t0)
+
+        # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md — a
+        # real, separate class of "hide" rule authored OUTSIDE rule_type=11
+        # (a declarative action with no literal value1, e.g. "Associated rec
+        # rule to Hide Frequency Band for Single Band") that _load_value_
+        # rules already classifies correctly but the rest of the codebase
+        # only ever asked for hiding rules from THIS method. Merged in here,
+        # not by changing load_recommendation_and_constraint_rules' return
+        # arity (that method is monkeypatched with a bare (rec, con) 2-tuple
+        # across the test suite) — every existing caller of load_hiding_
+        # rules() gets the complete set automatically, with zero call-site
+        # changes anywhere.
+        try:
+            _rec, _con, _val, extra_hiding = self._load_value_rules(workspace_id, catalog_prefix)
+        except Exception:
+            logger.debug("cpq: value-less hiding rule load failed", exc_info=True)
+            extra_hiding = []
+        if extra_hiding:
+            logger.info("cpq: loaded %d additional value-less-action hiding rules",
+                        len(extra_hiding))
+        logger.info(
+            "cpq_step: load_hiding_rules done elapsed_s=%.3f total_rules=%d",
+            time.monotonic() - _t0, len(rules) + len(extra_hiding),
+        )
+        return rules + extra_hiding
 
     @staticmethod
     def _attr_index(attrs: list[ConfigAttr]) -> dict[int, ConfigAttr]:
@@ -2549,17 +5618,163 @@ class CpqEngine:
         return idx
 
     @staticmethod
+    def _rule_forced_from_active_decision_vns(
+        rules: list[Any] | None, attrs: list[ConfigAttr] | None,
+        filled_source: dict[str, str], active_sources: frozenset[str],
+    ) -> frozenset[str]:
+        """`_is_mandatory_input_attr`'s `rule_forced_active_vns` — variable_
+        names a RecommendationRule set via a SINGLE declarative condition
+        (script/condition_script/multi-input `conditions` rules abstain --
+        no one extractable trigger attr to check) whose trigger attr is
+        itself actively sourced. Catalog-agnostic: walks `RecommendationRule.
+        condition_attr_id`/`target_attr_id` generically, no attribute or
+        rule name hardcoded -- see `_is_mandatory_input_attr`'s own
+        docstring for the live case (wirelessCarrier_astro forced by
+        "...when ATAK is enabled") this closes.
+        """
+        if not rules or not attrs:
+            return frozenset()
+        attr_idx = CpqEngine._attr_index(attrs)
+        result: set[str] = set()
+        for rule in rules:
+            if not isinstance(rule, RecommendationRule):
+                continue
+            if rule.script is not None or rule.condition_script is not None:
+                continue  # no single extractable trigger attr -- never guess
+            if rule.conditions:
+                continue  # multi-input AND/OR -- ambiguous which leg to trust
+            cond_attr = attr_idx.get(rule.condition_attr_id)
+            target_attr = attr_idx.get(rule.target_attr_id)
+            if cond_attr is None or target_attr is None:
+                continue
+            if filled_source.get(cond_attr.variable_name) in active_sources:
+                result.add(target_attr.variable_name)
+        return frozenset(result)
+
+    @staticmethod
+    def _data_table_forced_vns(
+        filled: dict[str, str], workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> frozenset[str]:
+        """`_is_mandatory_input_attr`'s active-source widening for a
+        `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` member whose filled value the
+        real ingested Whitelist/Defaultinattr Data Table confirms as a
+        genuine, catalog-recognized legal option for the active
+        (cpq_model, base_model, ...already-filled context) -- not a made-
+        up/impossible value. Confirmed live (workspace 93): for base model
+        H55TGT9PW8AN + Country=US, wirelessCarrier_astro has TWO real
+        legal values (ATT/FIRSTNET, VERIZON) -- deliberately NOT requiring
+        exactly one (an earlier, stricter version of this check did, and
+        live data proved that too strict: a real catalog-authored choice
+        among 2+ legitimate carriers is still a genuine answer the
+        customer needs reflected in `config_data`, same as beautify/the
+        summary already show it unconditionally for
+        `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` members). Catalog-agnostic -- no
+        attribute name hardcoded, checks every `_ATTRSEQ_CONFIRMED_
+        REQUIRED_VNS` member generically via `resolve_whitelist_values`.
+
+        `filled_multi` -- optional (default `None`). A `_ATTRSEQ_CONFIRMED_
+        REQUIRED_VNS` member can be `select_type=="multi"` (e.g.
+        carrierSelectionMultiSelect_astro, the 5G-capable sibling of the
+        single-select wirelessCarrier_astro) -- its real answer lives in
+        `filled_multi`, never in `filled`, so checking `filled.get(vn)`
+        alone silently always misses it (confirmed live 2026-08-20: the
+        5G flow's carrierSelectionMultiSelect_astro never widened here
+        even though the exact same Data Table narrowing this method
+        already handled for the 4G single-select sibling applies to it
+        too). Confirms via the same `resolve_whitelist_values` legality
+        check, requiring every selected value be a real legal option
+        (not just one) -- the multi-select analogue of the single-select
+        "any real legal option" check above.
+
+        `None`/no `workspace_id`, or no base model resolved yet, is a
+        complete no-op -- same convention as every other Data-Table-driven
+        helper in this file.
+        """
+        if workspace_id is None:
+            return frozenset()
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return frozenset()
+        product = filled.get("productSelectionProduct_all", "")
+
+        _cache_key = (
+            workspace_id, catalog_prefix, base_model, product,
+            tuple(sorted(
+                (vn, filled.get(vn), tuple(sorted((filled_multi or {}).get(vn) or ())))
+                for vn in _ATTRSEQ_CONFIRMED_REQUIRED_VNS
+            )),
+        )
+        _marker_at_read = _invalidate_on_marker_change(
+            _DATA_TABLE_FORCED_VNS_CACHE, _DATA_TABLE_FORCED_VNS_CACHE_LAST_SEEN_MARKER,
+        )
+        _hit = _DATA_TABLE_FORCED_VNS_CACHE.get(_cache_key)
+        if _hit is not None:
+            _ts, _cached_result = _hit
+            if time.monotonic() - _ts < _DATA_TABLE_FORCED_VNS_CACHE_TTL_SECONDS:
+                return _cached_result
+
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        if not cands:
+            return frozenset()
+        result: set[str] = set()
+        for vn in _ATTRSEQ_CONFIRMED_REQUIRED_VNS:
+            val = filled.get(vn)
+            multi_vals = (filled_multi or {}).get(vn)
+            if not val and not multi_vals:
+                continue
+            for cm in cands:
+                legal = dt_resolve_whitelist_values(
+                    cm, base_model, vn, filled, workspace_id, catalog_prefix, cache,
+                )
+                if legal is None:
+                    continue
+                if multi_vals:
+                    if all(v in legal for v in multi_vals):
+                        result.add(vn)
+                        break
+                elif val in legal:
+                    result.add(vn)
+                    break
+        _final_result = frozenset(result)
+        _cache_write_if_marker_unchanged(
+            _DATA_TABLE_FORCED_VNS_CACHE, _cache_key, (time.monotonic(), _final_result), _marker_at_read,
+        )
+        return _final_result
+
+    @staticmethod
     def _filled_by_rule_id(
         attrs: list[ConfigAttr], filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> dict[int, str]:
-        """Map every id a rule may reference → the attr's filled value."""
+        """Map every id a rule may reference → the attr's filled value.
+
+        select_type=="multi" attrs' current selections live in filled_multi
+        (a separate structure from the scalar filled dict — see
+        evaluate_rules_loop's docstring), not in `filled`. Joined here into
+        a single "~"-delimited string so bml._operator_hit's set-
+        intersection check (operators "7"/"8" — docs/CPQ_DECLARATIVE_
+        CONDITION_OPERATOR_PLAN_2026_08_05.md Phase 2) sees the real
+        current selection set instead of always finding the condition
+        attribute missing. An explicitly-emptied multi-select (filled_multi
+        holding []) still maps to "" here rather than being omitted — that
+        is a known, real "nothing selected" state, not an unfilled one.
+        """
+        multi = filled_multi or {}
         out: dict[int, str] = {}
         for a in attrs:
-            if a.variable_name in filled:
+            if a.variable_name in multi:
+                val = "~".join(multi[a.variable_name])
+            elif a.variable_name in filled:
                 val = filled[a.variable_name]
-                out[a.entity_id] = val
-                if a.source_id is not None:
-                    out[a.source_id] = val
+            else:
+                continue
+            out[a.entity_id] = val
+            if a.source_id is not None:
+                out[a.source_id] = val
         return out
 
     def apply_hiding_rules(
@@ -2568,6 +5783,7 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[HidingRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
     ) -> tuple[list[ConfigAttr], list[str], set[str]]:
         """Apply hiding rules against current filled values.
 
@@ -2581,6 +5797,11 @@ class CpqEngine:
         "unknown applies no constraint" rule, just inverted for hiding
         (unknown → don't hide, not → hide everything).
 
+        filled_multi — select_type=="multi" attrs' current selections (see
+        _filled_by_rule_id); only consulted for declarative conditions
+        (operators "7"/"8"). Script-backed rules are unaffected — they
+        already read `filled` directly via bml_eval, a separate contract.
+
         Returns:
           filtered_attrs — attrs still visible after rules are applied
           rule_messages  — human-readable list of rules that fired (for reporting)
@@ -2590,7 +5811,7 @@ class CpqEngine:
             return attrs, [], set()
 
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
 
         hidden_eids: set[int] = set()
         messages: list[str] = []
@@ -2608,8 +5829,16 @@ class CpqEngine:
                     messages.append(
                         f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
                     )
+                    rule_trace.record_fire(
+                        rule_type="hiding", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome="hide", bml_tier="script",
+                    )
                 elif hide is False:
                     hidden_eids.discard(target.entity_id)
+                    rule_trace.record_fire(
+                        rule_type="hiding", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome="show", bml_tier="script",
+                    )
                 continue
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
@@ -2620,15 +5849,25 @@ class CpqEngine:
                 current_val = filled_by_rule_id.get(rule.condition_attr_id)
                 if current_val is None:
                     continue  # condition attr not filled yet — rule doesn't fire
-                if not _condition_value_matches(current_val, rule.condition_value):
+                if not _condition_value_matches(
+                    current_val, rule.condition_value, rule.condition_operator
+                ):
                     continue
             if rule.hide:
                 hidden_eids.add(target.entity_id)
                 messages.append(
                     f"*Rule '{rule.rule_name}' hid **{target.display_label}***"
                 )
+                rule_trace.record_fire(
+                    rule_type="hiding", rule_id=rule.rule_name,
+                    attr=target.variable_name, outcome="hide",
+                )
             else:
                 hidden_eids.discard(target.entity_id)
+                rule_trace.record_fire(
+                    rule_type="hiding", rule_id=rule.rule_name,
+                    attr=target.variable_name, outcome="show",
+                )
 
         hidden_vns = {a.variable_name for a in attrs if a.entity_id in hidden_eids}
         filtered = [a for a in attrs if a.entity_id not in hidden_eids]
@@ -2638,8 +5877,12 @@ class CpqEngine:
 
     def _load_value_rules(
         self, workspace_id: int, catalog_prefix: str = "",
-    ) -> tuple[list[RecommendationRule], list[ConstraintRule]]:
-        """Load recommendation + constraint rules together in one pass.
+    ) -> tuple[
+        list[RecommendationRule], list[ConstraintRule], list[ValidationRule],
+        list[HidingRule],
+    ]:
+        """Load recommendation + constraint + validation + (a subset of)
+        hiding rules together in one pass.
 
         Historical note: this originally filtered by a hardcoded rule_type
         ("10" for recommendation, "5" for constraint) and action_type ("3"
@@ -2656,24 +5899,59 @@ class CpqEngine:
         set_type on each declarative rule action: set_type == -1 always
         means "remove this value from the allowed set" (constraint); any
         other set_type means "assign this specific value" (recommendation/
-        default). This classifies every non-hiding rule by inspecting its
-        own actions instead of trusting rule_type/action_type.
+        default) EXCEPT when the action carries no value1 at all and
+        set_type is 1 or 3 — confirmed (docs/CPQ_VALUELESS_HIDE_ACTION_
+        LOADING_GAP_PLAN_2026_08_05.md) via cross-catalog rule-name sampling
+        to be a genuine "hide" action authored outside rule_type=11 (hiding
+        needs no value to assign). This classifies every non-rule_type=11
+        rule by inspecting its own actions instead of trusting rule_type/
+        action_type.
 
-        Hiding rules (rule_type=11) are unaffected by any of this — that
-        code has proven reliable across both catalogs and is loaded
-        separately by load_hiding_rules().
+        The BULK of hiding rules (rule_type=11) are unaffected by any of
+        this — that code has proven reliable across both catalogs and is
+        loaded separately by load_hiding_rules(). The 4th return value here
+        is a SEPARATE, ADDITIONAL subset of hiding rules this codebase used
+        to silently drop (see the plan doc above for the 1,096-action,
+        421-rule, 4-catalog audit) — callers needing the complete hiding
+        rule set must merge both (see load_recommendation_and_constraint_
+        rules' return type).
 
         catalog_prefix — scopes to one ingested catalog (see
         _load_rule_join_data) when the workspace holds more than one
         product's XML export. "" preserves the original workspace-wide load.
         """
+        _cache_key = (workspace_id, catalog_prefix)
+        _marker_at_read = _invalidate_on_marker_change(_VALUE_RULES_CACHE, _VALUE_RULES_CACHE_LAST_SEEN_MARKER)
+        _cache_hit = _VALUE_RULES_CACHE.get(_cache_key)
+        if _cache_hit is not None:
+            _cache_ts, _cache_result = _cache_hit
+            if time.monotonic() - _cache_ts < _VALUE_RULES_CACHE_TTL_SECONDS:
+                logger.info(
+                    "cpq_perf: _load_value_rules CACHE HIT ws=%s prefix=%r",
+                    workspace_id, catalog_prefix,
+                )
+                return _cache_result
+
+        _t0 = time.monotonic()
+        logger.info(
+            "cpq_step: _load_value_rules (rec/con/validation) start "
+            "workspace_id=%s catalog_prefix=%r", workspace_id, catalog_prefix,
+        )
         rec_rules: list[RecommendationRule] = []
         con_rules: list[ConstraintRule] = []
+        validation_rules: list[ValidationRule] = []
+        hiding_rules: list[HidingRule] = []
         script_constraints = 0
         script_recommendations_wired = 0
         cond_script_skipped = 0
         script_condition_gated = 0
         ambiguous_recommendations_skipped = 0
+        assign_all_answers_blocked = 0
+        unrecognized_answers_requeued = 0
+        validation_collisions_skipped = 0
+        constraint_collisions_skipped = 0
+        recommendation_collisions_skipped = 0
+        hiding_collisions_skipped = 0
         # Ambiguous multi-value recommendations are never guessed (D2) — instead
         # routed through the same HITL ingest-question queue used elsewhere for
         # ingest-time ambiguity. Prefetch existing rows once so 14 rules don't
@@ -2692,7 +5970,7 @@ class CpqEngine:
                 workspace_id, catalog_prefix)
             scripts = rdb.fetch_function_scripts(workspace_id, catalog_prefix)
             for eid, src_id, rule_name, _rule_type, fn_id in rdb.fetch_value_rules(
-                workspace_id, catalog_prefix,
+                workspace_id, catalog_prefix, active_only=True,
             ):
                 key = self._rule_key(eid, src_id, inputs, actions)
                 inp_list = inputs.get(key)
@@ -2708,7 +5986,7 @@ class CpqEngine:
                 # evaluated at all — see docs/CPQ_RULE_TOOL_FLOW_PLAN.md
                 # item 2/§7-8's confirmed "APX NEXT ENHANCED product +
                 # non-Enhanced hardware" inconsistency this closes).
-                for aid, _at, _val, act_fn, act_set_type in acts:
+                for aid, _at, _val, act_fn, act_set_type, _comments in acts:
                     if act_fn != -1:
                         script = scripts.get(act_fn)
                         if not script:
@@ -2726,12 +6004,28 @@ class CpqEngine:
                             ))
                             script_constraints += 1
                         else:
+                            # Live-confirmed gap (2026-08-25, SVX "Force Set
+                            # Quantity of Body Worn Cameras with sum of
+                            # Mounting"): this rule's own gating condition
+                            # (fn_id) can ALSO be script-backed independently
+                            # of its script-backed action -- previously
+                            # dropped entirely (condition_attr_id hardcoded
+                            # to 0, no condition_script), so the rule had no
+                            # way to know when to fire and never applied.
+                            # Attach it here too, generic to any rule with
+                            # this same dual-script shape. D2 "never guess"
+                            # still holds via apply_recommendation_rules'
+                            # own condition_holds check.
+                            _rec_condition_script = (
+                                scripts.get(fn_id) if fn_id != -1 else None
+                            )
                             rec_rules.append(RecommendationRule(
                                 rule_name=rule_name or str(eid),
                                 condition_attr_id=0,
                                 condition_value="",
                                 target_attr_id=aid,
                                 script=script,
+                                condition_script=_rec_condition_script,
                             ))
                             script_recommendations_wired += 1
                             logger.info(
@@ -2757,11 +6051,78 @@ class CpqEngine:
                             "but no BmFunction script was found — not gated",
                             rule_name, fn_id)
                         continue
-                    cond_attr_id, cond_value = 0, ""
+                    cond_attr_id, cond_value, cond_operator = 0, "", "4"
                 else:
                     if not inp_list:
                         continue
-                    cond_attr_id, cond_value = inp_list[-1]
+                    cond_attr_id, cond_value, cond_operator = inp_list[-1]
+
+                # Amendment 12 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
+                # a message-only action (function_id=-1, empty value1, but
+                # a real human-authored `comments` string) is neither a
+                # hide, a set, nor a restrict — its only content is a
+                # warning to show when this rule's own condition (script OR
+                # declarative) fires. Originally scoped to condition_script
+                # only ("a declarative-condition version would need
+                # separate confirmation before being added here" — this
+                # comment's own prior text); docs/CPQ_CONDITIONAL_REQUIRED_
+                # RULE_PLAN_2026_08_05.md provides that confirmation via a
+                # 4-catalog audit (138/150 real declarative "set_type=-1,
+                # no value1" rows carry a genuine message). By this point
+                # either condition_script is set or inp_list was non-empty
+                # (the `if not inp_list: continue` above already filtered
+                # out rules with neither), so no extra guard is needed here.
+                # docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md
+                # — a declarative (non-script) condition where the SAME
+                # attribute is checked with 2+ different operators cannot
+                # yet be evaluated correctly (evaluate_declarative_
+                # conditions collapses to the first row's operator+value,
+                # silently dropping the rest). Confirmed catalog-wide that
+                # no single combining rule is safe for every such shape
+                # yet (80 real rules across 4 catalogs, only 76% resolved
+                # with confidence) — applies uniformly to EVERY rule type
+                # built from this same inp_list (constraint, recommend,
+                # value-less-hide, validation-message below), not just the
+                # newest one: a HidingRule/ConstraintRule/RecommendationRule
+                # with this exact same-attribute/multi-operator shape would
+                # evaluate its condition just as incorrectly (e.g.
+                # collapsing "< 1 OR > 12" to only ever check "< 1", or
+                # merging a CONTAINS/NOT-CONTAINS pair into a single
+                # over-broad OR) as an unguarded declarative ValidationRule
+                # would. Skip all four entirely rather than load any of
+                # them with a guessed combining rule. Does not apply to
+                # script-gated rules (condition_script is not None) —
+                # those are unaffected, evaluated by the BML engine, not
+                # evaluate_declarative_conditions.
+                declarative_condition_collision = (
+                    condition_script is None
+                    and inp_list is not None
+                    and self._condition_has_operator_collision(inp_list)
+                )
+                for aid, _at, val, act_fn, _set_type, comments in acts:
+                    # "System recommendation" is BigMachines' own generic
+                    # boilerplate default comment (confirmed: 365
+                    # occurrences across this one catalog alone) — not a
+                    # real, customer-facing message a rule author actually
+                    # wrote. Excluded so a meaningless "⚠️ System
+                    # recommendation" is never shown. Re-confirmed as the
+                    # only such placeholder across all 138 declarative
+                    # candidates too (see the plan doc's boilerplate scan).
+                    if (act_fn == -1 and not val and comments
+                            and comments.strip().lower() != "system recommendation"):
+                        if declarative_condition_collision:
+                            validation_collisions_skipped += 1
+                            continue
+                        validation_rules.append(ValidationRule(
+                            rule_name=rule_name or str(eid),
+                            target_attr_id=aid,
+                            message=comments,
+                            condition_script=condition_script,
+                            condition_attr_id=cond_attr_id,
+                            condition_value=cond_value,
+                            condition_operator=cond_operator,
+                            conditions=list(inp_list) if condition_script is None else None,
+                        ))
 
                 # Declarative actions, bucketed per target by set_type.
                 # BigMachines packs multiple allowed values for one action
@@ -2772,8 +6133,26 @@ class CpqEngine:
                 # the target with zero real valid values.
                 restrict_by_target: dict[int, list[str]] = {}
                 recommend_by_target: dict[int, str] = {}
-                for aid, _at, val, act_fn, set_type in acts:
-                    if act_fn != -1 or not val:
+                # docs/CPQ_VALUELESS_HIDE_ACTION_LOADING_GAP_PLAN_2026_08_05.md
+                # — a declarative action with NO literal value1 (function_id
+                # =-1) is a genuine "hide" for set_type in (1, 3): confirmed
+                # via cross-catalog rule-name sampling (1,096 such actions
+                # across 4 ingested catalogs), e.g. "Associated rec rule to
+                # Hide Frequency Band for Single Band" — hiding needs no
+                # value to assign, unlike a recommendation/constraint. Scoped
+                # to (1, 3) specifically: set_type=2's real names are
+                # genuinely mixed (some "Show...", some "Set X to blank" —
+                # a third, distinct semantic), and set_type=-1's real names
+                # are mostly unrelated format/range validation ("Restrict
+                # value of Astro System Id to 4 hexadecimal chars") — never
+                # guessed without separate confirmation (D2).
+                hide_targets: set[int] = set()
+                for aid, _at, val, act_fn, set_type, _comments in acts:
+                    if act_fn != -1:
+                        continue
+                    if not val:
+                        if set_type in (1, 3):
+                            hide_targets.add(aid)
                         continue
                     parts = [p.strip() for p in val.split("~") if p.strip()]
                     if set_type == -1:
@@ -2781,43 +6160,113 @@ class CpqEngine:
                     elif len(parts) == 1:
                         recommend_by_target.setdefault(aid, parts[0])
                     else:
-                        # A recommendation assigns ONE default value — several
-                        # tilde-delimited candidates means picking one would be
-                        # guessing (same D2 "never guess" rule that governs
-                        # auto_fill elsewhere). Never guessed in code — routed
-                        # to a human via aryx_ingest_question instead. An
-                        # already-answered rule resolves like any other
-                        # RecommendationRule; an unanswered one stays skipped
-                        # (visible in the queue, not a dead-end log line).
-                        job_id = f"cpq-rule-{eid}-{aid}"
+                        # docs/CPQ_BUG2_CONSTRAINT_DISPATCH_MISCLASSIFICATION_
+                        # IMPLEMENTATION_PLAN_2026-08-14.md (v2) — a multi-
+                        # value, set_type != -1 action is genuinely ambiguous
+                        # between two DIFFERENT intents: "assign all N values
+                        # as the default selection" vs. "narrow this field's
+                        # valid choices to exactly these N values" (a
+                        # constraint). Verified live against real ingested
+                        # data (apx-cpq-test + workspace 19, 62 real rows)
+                        # that NEITHER the target's select_type NOR any BM-
+                        # native constraint-shaped field (constrain_all,
+                        # constraint_type, filter_attribute, action_type,
+                        # value_type) varies AT ALL across this whole rule
+                        # set — there is no structural signal in the ingested
+                        # schema that resolves this. Never guessed in code
+                        # (D2) — a wrong automatic guess here would ship a
+                        # customer configuration with features they never
+                        # chose, worse than today's silent skip. Routed to a
+                        # human via aryx_ingest_question, asking the actual
+                        # question (constraint vs. assign-all) instead of the
+                        # old "which ONE is the default" framing, which was
+                        # incoherent for every one of these rules (their
+                        # targets are all multi-select fields, verified live
+                        # — "pick exactly one" was never a valid framing). A
+                        # distinct job_id/kind from the old ambiguous-
+                        # recommendation question avoids misreading any prior
+                        # answer under the old (wrong) question semantics —
+                        # confirmed live that none of the 62 real rows were
+                        # ever answered, so this is a clean cutover.
+                        # Raven review of PR #198 — a malformed/case-mismatched
+                        # answer (e.g. "Constraint", stray whitespace) must
+                        # never permanently strand the rule with only a
+                        # manual DB fix as recovery. Normalize before
+                        # comparing, and if the LATEST question in this
+                        # rule's job_id chain was answered with neither
+                        # recognized value, mint the NEXT one in the chain so
+                        # a fresh, pending, answerable question appears
+                        # automatically — the stale answered row is left
+                        # alone (harmless history), never re-used or deleted.
+                        base_job_id = f"cpq-rule-{eid}-{aid}-constraint-or-default"
+                        job_id = base_job_id
+                        chain_n = 2
+                        while f"{base_job_id}-r{chain_n}" in existing_questions:
+                            job_id = f"{base_job_id}-r{chain_n}"
+                            chain_n += 1
                         existing = existing_questions.get(job_id)
-                        if (existing and existing.get("status") == "answered"
-                                and existing.get("answer") in parts):
-                            recommend_by_target.setdefault(aid, existing["answer"])
-                            continue
+                        answered_unrecognized = False
+                        if existing and existing.get("status") == "answered":
+                            answer = (existing.get("answer") or "").strip().lower()
+                            if answer == "constraint":
+                                restrict_by_target.setdefault(aid, []).extend(parts)
+                                continue
+                            if answer == "assign_all":
+                                # Not yet applicable — RecommendationRule.
+                                # recommended_value (state.py:111) holds a
+                                # single value; assigning N simultaneous
+                                # values needs a separate model change
+                                # (list-valued recommendations wired into
+                                # filled_multi). Logged as blocked, never
+                                # silently guessed or partially applied.
+                                assign_all_answers_blocked += 1
+                                logger.info(
+                                    "cpq: rule %r answered 'assign_all' for "
+                                    "target=%d (%r), but multi-value "
+                                    "recommendation assignment isn't "
+                                    "supported yet — blocked pending a "
+                                    "separate fix", rule_name, aid, parts)
+                                continue
+                            # Unrecognized answer — mint the next job_id in
+                            # the chain so the enqueue below creates a fresh,
+                            # pending question instead of leaving this rule
+                            # permanently stuck behind an unusable answer.
+                            answered_unrecognized = True
+                            unrecognized_answers_requeued += 1
+                            job_id = f"{base_job_id}-r{chain_n}"
+                            existing = None
                         ambiguous_recommendations_skipped += 1
                         logger.info(
-                            "cpq: rule %r has a multi-value recommendation "
-                            "action for target=%d (%r) — ambiguous which is "
-                            "the default, %s", rule_name, aid, parts,
-                            "awaiting human answer (already queued)" if existing
+                            "cpq: rule %r has a multi-value action "
+                            "(set_type=%r) for target=%d (%r) — no "
+                            "structural signal distinguishes constraint "
+                            "from assign-all, %s", rule_name, set_type, aid,
+                            parts,
+                            "prior answer was unrecognized (expected "
+                            "'constraint' or 'assign_all') — a fresh "
+                            "question has been queued" if answered_unrecognized
+                            else "awaiting human answer (already queued)" if existing
                             else "queued for human answer")
                         if not existing and ingest_store is not None:
                             try:
                                 ingest_store.enqueue(
                                     workspace_id, job_id=job_id,
-                                    kind="cpq_ambiguous_recommendation",
+                                    kind="cpq_multivalue_constraint_or_default",
                                     prompt=(
-                                        f"Rule '{rule_name}' recommends one of "
-                                        f"{parts} for attribute {aid} — which "
-                                        "should be the default?"),
-                                    options=parts, suggested="")
+                                        f"Rule '{rule_name}' offers {parts} "
+                                        f"for attribute {aid}. Should this "
+                                        "NARROW the field's valid choices to "
+                                        "exactly these values (reply "
+                                        "'constraint'), or ASSIGN all of "
+                                        "them as the default selection "
+                                        "(reply 'assign_all')?"),
+                                    options=["constraint", "assign_all"],
+                                    suggested="")
                                 existing_questions[job_id] = {"status": "pending"}
                             except Exception:
                                 logger.debug(
-                                    "cpq: failed to enqueue ambiguous-"
-                                    "recommendation ingest question",
-                                    exc_info=True)
+                                    "cpq: failed to enqueue constraint-or-"
+                                    "default ingest question", exc_info=True)
 
                 if condition_script:
                     if restrict_by_target or recommend_by_target:
@@ -2838,37 +6287,81 @@ class CpqEngine:
                             "(condition_function_id=%d) but no declarative "
                             "action — nothing to gate", rule_name, fn_id)
                 for target_attr_id, allowed in restrict_by_target.items():
+                    if declarative_condition_collision:
+                        constraint_collisions_skipped += 1
+                        continue
                     con_rules.append(ConstraintRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         allowed_values=allowed,
                         conditions=list(inp_list) if condition_script is None else None,
                         condition_script=condition_script,
                     ))
                 for target_attr_id, rec_val in recommend_by_target.items():
+                    if declarative_condition_collision:
+                        recommendation_collisions_skipped += 1
+                        continue
                     rec_rules.append(RecommendationRule(
                         rule_name=rule_name or str(eid),
                         condition_attr_id=cond_attr_id,
                         condition_value=cond_value,
+                        condition_operator=cond_operator,
                         target_attr_id=target_attr_id,
                         recommended_value=rec_val,
                         conditions=list(inp_list) if condition_script is None else None,
                         condition_script=condition_script,
                     ))
+                for target_attr_id in hide_targets:
+                    if declarative_condition_collision:
+                        hiding_collisions_skipped += 1
+                        continue
+                    hiding_rules.append(HidingRule(
+                        rule_name=rule_name or str(eid),
+                        condition_attr_id=cond_attr_id,
+                        condition_value=cond_value,
+                        condition_operator=cond_operator,
+                        target_attr_id=target_attr_id,
+                        hide=True,
+                        script=condition_script,
+                        conditions=list(inp_list) if condition_script is None else None,
+                    ))
         except Exception:
             logger.debug("cpq: value-rule load failed", exc_info=True)
         logger.info(
-            "cpq: loaded %d recommendation rules, %d constraint rules "
+            "cpq: loaded %d recommendation rules, %d constraint rules, "
+            "%d value-less hide rules "
             "(%d script-backed constraints, %d script-backed recommendations "
             "wired, %d script-condition rules gating a declarative action, "
-            "%d script-condition rules skipped, %d ambiguous "
-            "multi-value recommendations skipped)",
-            len(rec_rules), len(con_rules), script_constraints,
+            "%d script-condition rules skipped, %d multi-value actions "
+            "awaiting a constraint-or-assign-all human answer, %d 'assign_all' "
+            "answers blocked (multi-value recommendation not yet supported), "
+            "%d unrecognized answers auto-requeued with a fresh question, "
+            "%d/%d/%d recommendation/constraint/hide skipped: same-attribute "
+            "operator collision, "
+            "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
+            len(rec_rules), len(con_rules), len(hiding_rules), script_constraints,
             script_recommendations_wired, script_condition_gated,
-            cond_script_skipped, ambiguous_recommendations_skipped)
-        return rec_rules, con_rules
+            cond_script_skipped, ambiguous_recommendations_skipped,
+            assign_all_answers_blocked, unrecognized_answers_requeued,
+            recommendation_collisions_skipped, constraint_collisions_skipped,
+            hiding_collisions_skipped)
+        logger.info(
+            "cpq: loaded %d validation (warning-message) rules "
+            "(%d skipped: same-attribute operator collision, "
+            "docs/CPQ_SAME_ATTRIBUTE_OPERATOR_COLLISION_PLAN_2026_08_05.md)",
+            len(validation_rules), validation_collisions_skipped)
+        logger.info(
+            "cpq_step: _load_value_rules done elapsed_s=%.3f rec=%d con=%d "
+            "validation=%d extra_hiding=%d",
+            time.monotonic() - _t0, len(rec_rules), len(con_rules),
+            len(validation_rules), len(hiding_rules),
+        )
+        _result = (rec_rules, con_rules, validation_rules, hiding_rules)
+        _cache_write_if_marker_unchanged(_VALUE_RULES_CACHE, _cache_key, (time.monotonic(), _result), _marker_at_read)
+        return _result
 
     def load_recommendation_and_constraint_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -2878,8 +6371,30 @@ class CpqEngine:
         independently call _load_value_rules(), which repeats the same 4
         join-table queries plus a full function-script scan; calling both
         back-to-back (as every CPQ turn does) doubles that DB work for no
-        reason. Prefer this method whenever both lists are needed."""
-        return self._load_value_rules(workspace_id, catalog_prefix)
+        reason. Prefer this method whenever both lists are needed.
+
+        Return arity deliberately unchanged (still a 2-tuple) — widely
+        monkeypatched across the test suite with a bare `(rec, con)` stub;
+        the value-less-action hiding rule subset (docs/CPQ_VALUELESS_HIDE_
+        ACTION_LOADING_GAP_PLAN_2026_08_05.md) is folded into
+        load_hiding_rules() instead, so every existing caller/mock of
+        EITHER method keeps working unchanged."""
+        rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
+        return rec_rules, con_rules
+
+    def load_validation_rules(
+        self, workspace_id: int, catalog_prefix: str = "",
+    ) -> list[ValidationRule]:
+        """Warning-message rules (Amendment 12) for this catalog — see
+        ValidationRule's own docstring and _load_value_rules for how these
+        are distinguished from Hiding/Recommendation/Constraint rules.
+        Shares _load_value_rules' fetch with load_recommendation_and_
+        constraint_rules — call both only when genuinely needed, same
+        double-fetch caveat as load_recommendation_rules."""
+        _rec_rules, _con_rules, validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
+        return validation_rules
 
     def load_recommendation_rules(
         self, workspace_id: int, catalog_prefix: str = "",
@@ -2889,7 +6404,8 @@ class CpqEngine:
         If you also need constraint rules, call
         load_recommendation_and_constraint_rules() instead to avoid fetching
         the same rule data twice."""
-        rec_rules, _con_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        rec_rules, _con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return rec_rules
 
     def apply_recommendation_rules(
@@ -2898,6 +6414,8 @@ class CpqEngine:
         filled: dict[str, str],
         rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+        constrained_opts: dict[int, list[str]] | None = None,
     ) -> dict[str, tuple[str, str]]:
         """Apply recommendation rules. Returns {variable_name: (item_value, display)}.
 
@@ -2917,19 +6435,63 @@ class CpqEngine:
         same D2 "never guess" principle as the existing tilde-delimited
         ambiguous-recommendation skip below. bml_eval=None (caller opted
         out) silently skips script-backed rules, same as apply_constraint_rules.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute
+        (operators "7"/"8").
+
+        constrained_opts — this function runs BEFORE apply_constraint_rules
+        recomputes it for the CURRENT pass (evaluate_rules_loop's own
+        "hide -> auto_fill -> recommend -> constrain" order), so what's
+        passed in here is necessarily the PREVIOUS pass's result — still
+        the best available signal, and correct at the fixed point once the
+        loop converges. Live regression: without this, a recommendation
+        whose OWN condition never depends on the attribute a DIFFERENT,
+        active constraint just narrowed (e.g. "Default Service Type based
+        on Solution Type selected" vs. a Hardware-Version-keyed constraint
+        on the same target) kept unconditionally re-asserting its value
+        the instant auto_fill's own re-validation correctly dropped it —
+        every pass, forever, since this function only checks "is the
+        target currently filled at all", never "is this specific value
+        still valid". evaluate_rules_loop's fixed-point check compares KEY
+        sets, not values, so a target that's drop-then-immediately-refilled
+        to the SAME stale value every pass looked stable and converged
+        with the wrong answer, silently reporting a complete configuration
+        that a separate BOM-gate consistency check only caught one turn
+        later. None (caller opted out, e.g. the constraint pass hasn't run
+        even once yet) applies no filter, same "unknown -> don't guess a
+        restriction that isn't provably there" convention used everywhere
+        else a constraint is optional in this module.
         """
         if not rules:
             return {}
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         new_fills: dict[str, tuple[str, str]] = {}
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
-            if not target or target.variable_name in filled:
+            # A truthy check, not `in filled` — an empty string is D4's
+            # deliberate "user cleared this" marker
+            # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md), the single-select
+            # counterpart of filled_multi's existing "(none)" convention.
+            # A genuine rule re-assertion must still override it (same as
+            # it would override any other stale value) — only a REAL
+            # value already present blocks this rule from firing.
+            if not target or filled.get(target.variable_name):
                 continue
             if rule.script is not None:
                 if bml_eval is None:
                     continue
+                # Live-confirmed gap (2026-08-25, SVX "Force Set Quantity of
+                # Body Worn Cameras with sum of Mounting"): a rule can carry
+                # a script-backed ACTION and a script-backed CONDITION at
+                # the same time -- the action alone says nothing about WHEN
+                # to fire. Gate on the condition first when present, same
+                # D2 "never guess" convention as the declarative branch
+                # below (unknown/False -> never fires).
+                if rule.condition_script is not None:
+                    if bml_eval.condition_holds(rule.condition_script, filled) is not True:
+                        continue
                 allowed = bml_eval.allowed_values_for_script(rule.script, filled)
                 if not allowed or len(allowed) != 1:
                     continue  # unknown, or ambiguous — never guess
@@ -2951,7 +6513,8 @@ class CpqEngine:
                     if rule.condition_attr_id not in filled_by_rule_id:
                         continue
                     if not _condition_value_matches(
-                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                        rule.condition_operator,
                     ):
                         continue
                 recommended_value = rule.recommended_value
@@ -2960,11 +6523,204 @@ class CpqEngine:
                  if o.item_value.lower() == recommended_value.lower()),
                 recommended_value,
             )
-            if _valid(recommended_value):
-                new_fills[target.variable_name] = (recommended_value, matched_display)
+            if not _valid(recommended_value):
+                continue
+            allowed_for_target = (
+                constrained_opts.get(target.entity_id) if constrained_opts else None
+            )
+            if allowed_for_target is not None and not any(
+                recommended_value.lower() == v.lower() for v in allowed_for_target
+            ):
+                # A DIFFERENT, already-active constraint has ruled this
+                # value out — never re-assert it just because this rule's
+                # own condition doesn't happen to mention that constraint.
+                continue
+            new_fills[target.variable_name] = (recommended_value, matched_display)
+            rule_trace.record_fire(
+                rule_type="recommendation", rule_id=rule.rule_name,
+                attr=target.variable_name, outcome=f"set={recommended_value}",
+                bml_tier="script" if rule.script is not None else None,
+            )
         if new_fills:
             logger.info("cpq: recommendation rules auto-filled %s", list(new_fills.keys()))
         return new_fills
+
+    def resync_stale_recommendations(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_source: dict[str, str] | None,
+        rules: list[RecommendationRule],
+        bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+        constrained_opts: dict[int, list[str]] | None = None,
+    ) -> dict[str, tuple[str, str]]:
+        """Re-apply recommendation rules to attrs the ENGINE already filled
+        (never a customer's own choice), correcting them when a driving
+        attribute's later value now changes what they should be.
+
+        docs/config_consistency_issues_2026-07-30.md issue 6 (FedRAMP) /
+        docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1: this codebase
+        previously only DETECTED this class of drift
+        (`find_rule_inconsistencies` — logged, never corrected), deliberately,
+        since "the engine can't be certain what the correct value should
+        have been" for a value the CUSTOMER chose. That reasoning does not
+        apply to a value the engine itself auto-filled before its own
+        driving attribute had a value yet (the documented "first-by-order
+        claimed it first" race in `auto_fill`'s own docstring) — re-running
+        the SAME deterministic rule with fresher inputs isn't guessing, it's
+        finishing a computation that fired too early. Scoped by
+        `filled_source`, the exact boundary `find_rule_inconsistencies`
+        already uses: "user" is never touched. Also excludes "hint" and
+        "cascade" — both still trace back to something the customer said or
+        confirmed, not a value this method has any business overwriting.
+
+        Only ever revisits attrs already in `filled` (single-select) — a
+        multi-select TARGET's value lives in `filled_multi`, out of scope
+        for this pass; `apply_recommendation_rules` (unfilled attrs) is
+        unaffected, this only ever touches already-filled ones. filled_multi
+        is still accepted here for the separate purpose of reading a rule's
+        CONDITION attribute when that attribute (not the target) is
+        select_type=="multi" (operators "7"/"8" — see apply_hiding_rules).
+
+        Returns {variable_name: (item_value, display)} for every attr whose
+        value actually changed. The caller is expected to apply these
+        exactly like any other rule-sourced fill and treat them as a real
+        change for cascade-dependent invalidation, same as an explicit
+        customer edit would.
+
+        constrained_opts — see apply_recommendation_rules' identical
+        parameter; a "correction" back to a value a different, currently-
+        active constraint has already excluded is not a correction.
+        """
+        if not rules:
+            return {}
+        _NEVER_OVERRIDE = {"user", "hint", "cascade"}
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
+        corrections: dict[str, tuple[str, str]] = {}
+        for rule in rules:
+            target = by_rule_id.get(rule.target_attr_id)
+            if not target:
+                continue
+            vn = target.variable_name
+            current = filled.get(vn)
+            if not current:
+                continue  # unfilled — apply_recommendation_rules' job, not this one
+            if filled_source and filled_source.get(vn) in _NEVER_OVERRIDE:
+                continue
+            if rule.script is not None:
+                if bml_eval is None:
+                    continue
+                # Same dual-script gating gap as apply_recommendation_rules
+                # (2026-08-25) -- a script-backed action's own condition can
+                # ALSO be script-backed; check it first when present.
+                if rule.condition_script is not None:
+                    if bml_eval.condition_holds(rule.condition_script, filled) is not True:
+                        continue
+                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                if not allowed or len(allowed) != 1:
+                    continue
+                recommended_value = allowed[0]
+            elif rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                fires = bml_eval.condition_holds(rule.condition_script, filled)
+                if fires is not True:
+                    continue
+                recommended_value = rule.recommended_value
+            else:
+                if rule.conditions:
+                    matched, _blocked = evaluate_declarative_conditions(
+                        rule.conditions, filled_by_rule_id)
+                    if matched is not True:
+                        continue
+                else:
+                    if rule.condition_attr_id not in filled_by_rule_id:
+                        continue
+                    if not _condition_value_matches(
+                        filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                        rule.condition_operator,
+                    ):
+                        continue
+                recommended_value = rule.recommended_value
+            if not _valid(recommended_value) or current.lower() == recommended_value.lower():
+                continue
+            # Same guard as apply_recommendation_rules: a "correction" back
+            # to a value a DIFFERENT, currently-active constraint has
+            # already excluded is not a correction — it's silently undoing
+            # auto_fill's own correct fallback. Live regression: auto_fill
+            # correctly fell back to "ESSENTIAL" once Hardware Version
+            # activated a constraint excluding "ADVANCED", but this method
+            # ran right after (same pass) and — seeing its own unrelated
+            # condition (Solution Type) still held, with no constraint
+            # awareness at all — "resynced" it straight back to the
+            # excluded value, every single pass.
+            allowed_for_target = (
+                constrained_opts.get(target.entity_id) if constrained_opts else None
+            )
+            if allowed_for_target is not None and not any(
+                recommended_value.lower() == v.lower() for v in allowed_for_target
+            ):
+                continue
+            matched_display = next(
+                (o.display_name for o in target.options
+                 if o.item_value.lower() == recommended_value.lower()),
+                recommended_value,
+            )
+            corrections[vn] = (recommended_value, matched_display)
+        if corrections:
+            logger.info(
+                "cpq: resynced stale recommendation-governed attrs %s",
+                list(corrections.keys()),
+            )
+        return corrections
+
+    def apply_validation_rules(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        rules: list[ValidationRule],
+        bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> dict[str, str]:
+        """Evaluate every ValidationRule's condition (script OR
+        declarative — docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md)
+        against the current filled state (Amendment 12). Returns
+        {variable_name: message} for every rule whose condition currently,
+        definitely holds — never on False or unknown (D2 "never guess": an
+        unresolvable condition never fires a warning it can't actually
+        back).
+
+        Script-backed rules need bml_eval; bml_eval=None skips those only
+        (same convention as apply_recommendation_rules/
+        apply_constraint_rules) — declarative rules need no BML evaluator
+        at all and are unaffected by bml_eval=None, same as
+        apply_hiding_rules' own declarative branch.
+
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute.
+        """
+        if not rules:
+            return {}
+        by_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
+        warnings: dict[str, str] = {}
+        for rule in rules:
+            target = by_id.get(rule.target_attr_id)
+            if not target:
+                continue
+            if rule.condition_script is not None:
+                if bml_eval is None:
+                    continue
+                if bml_eval.condition_holds(rule.condition_script, filled) is True:
+                    warnings[target.variable_name] = rule.message
+            elif rule.conditions:
+                matched, _blocked = evaluate_declarative_conditions(
+                    rule.conditions, filled_by_rule_id)
+                if matched is True:
+                    warnings[target.variable_name] = rule.message
+        return warnings
 
     # ── Constraint rule loader ────────────────────────────────────────────────
 
@@ -2982,7 +6738,8 @@ class CpqEngine:
         load_recommendation_and_constraint_rules() instead to avoid
         fetching the same rule data twice.
         """
-        _rec_rules, con_rules = self._load_value_rules(workspace_id, catalog_prefix)
+        _rec_rules, con_rules, _validation_rules, _extra_hiding_rules = (
+            self._load_value_rules(workspace_id, catalog_prefix))
         return con_rules
 
     def build_bml_evaluator(self, workspace_id: int, catalog_prefix: str = "") -> BmlEvaluator:
@@ -2998,11 +6755,20 @@ class CpqEngine:
         Tier-2 LLM fallback is gated by settings.bml_use_llm (default
         False) — see that field's docstring for why it's off by default.
         """
+        _t0 = time.monotonic()
+        logger.info(
+            "cpq_step: build_bml_evaluator start workspace_id=%s catalog_prefix=%r",
+            workspace_id, catalog_prefix,
+        )
         try:
             scripts = get_cpq_rdb().fetch_function_scripts(workspace_id, catalog_prefix)
         except Exception:  # noqa: BLE001
             logger.debug("cpq: function script fetch failed", exc_info=True)
             scripts = {}
+        logger.info(
+            "cpq_step: build_bml_evaluator done elapsed_s=%.3f scripts=%d",
+            time.monotonic() - _t0, len(scripts),
+        )
         return BmlEvaluator(
             scripts, use_llm=get_settings().bml_use_llm,
             workspace_id=workspace_id, catalog_prefix=catalog_prefix,
@@ -3014,8 +6780,36 @@ class CpqEngine:
         rules: list[ConstraintRule],
         filled: dict[str, str],
         bml_eval: BmlEvaluator | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
+        _constraint_cache: dict[str, tuple] | None = None,
+        _signature_exclude_vns: frozenset[str] | None = None,
+        narrowing_rec_rules: list[RecommendationRule] | None = None,
     ) -> dict[int, list[str]]:
         """Return {attr_entity_id: [allowed_item_values]} for attrs with active constraints.
+
+        narrowing_rec_rules — optional (default None, no-op for every
+        existing caller). Live-confirmed gap (2026-08-25, SVX Mounting
+        Type): a real catalog rule can be authored with recommendation
+        mechanics (set_type != -1, per `_load_value_rules`'s own
+        classification) while its script's actual job is narrowing an
+        attribute's legal VALUE SET, not picking one value — confirmed via
+        `allowed_values_for_script` returning 5-6 candidates for SVX's
+        Mounting Type (Array) rule, which `apply_recommendation_rules`
+        correctly refuses to guess from (D2 "never guess"), but then
+        discards entirely rather than surfacing as a narrowing signal.
+        When given, each script-backed `RecommendationRule` here whose
+        script evaluates to 2+ values is intersected into the SAME
+        `constrained` result as a genuine constraint rule would be
+        (reusing `_intersect`) — a rule that can't safely set ONE value
+        can still safely narrow which values are legal, without
+        reclassifying the rule itself or touching `_load_value_rules`
+        (a broad, high-risk change given this same set_type heuristic
+        already classifies hundreds of real rules across catalogs).
+        A script resolving to 0 or 1 value is left alone here — that's
+        `apply_recommendation_rules`'s job (pick it), not a narrowing case.
 
         Multiple rules for the same target are intersected (AND semantics) so
         only values permitted by ALL active constraint rules remain valid.
@@ -3025,19 +6819,123 @@ class CpqEngine:
         variable_name — BML scripts compare variable names directly). An
         unknown script outcome (None) applies no constraint rather than
         allowing everything.
-        """
-        if not rules:
-            return {}
-        by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
-        constrained: dict[int, list[str]] = {}
 
-        def _intersect(target_eid: int, allowed: list[str]) -> None:
-            if target_eid in constrained:
-                existing = set(constrained[target_eid])
-                constrained[target_eid] = [v for v in allowed if v in existing]
+        filled_multi — see apply_hiding_rules; only consulted for
+        declarative conditions on a select_type=="multi" attribute
+        (operators "7"/"8").
+
+        Empty-intersection fallback (docs/CPQ_MULTISELECT_AUTOFILL_
+        OVERSELECTION_PLAN_2026_08_05.md's "Known remaining issue",
+        explicit product decision 2026-08-05): confirmed live that some
+        catalogs carry a genuine authoring gap — a constraint rule never
+        given a counterpart for a newer product variant, unconditionally
+        colliding with that variant's own (correct) constraint and zeroing
+        the intersection. When that happens, rules that fired are grouped
+        by their condition attribute set; each candidate group is scored
+        by how many rules catalog-wide (the full `rules` list, not just
+        those active this turn) reference that same condition attribute —
+        confirmed live this cleanly separates a catalog's backbone
+        discriminator (productSelectionProduct_all, 478 references in one
+        real catalog) from an incidentally-referenced peripheral one
+        (additionalSystemEnhancementFeatureType_astro, 3 references).
+        Dropping the single group with the strictly lowest score resolves
+        the conflict; a tie for lowest, or 2+ groups whose removal would
+        each independently resolve it, is genuinely ambiguous and left
+        empty rather than guessed. Never applied to script-backed rules
+        (their conditions aren't a declarative attr set to group or score).
+
+        _constraint_cache — docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md
+        (RC6, 2026-08-24): optional, mutated in place. When supplied, this
+        method's real evaluation is skipped and the previous pass's result
+        returned directly when nothing in `_fill_signature(filled,
+        filled_multi, visible_ids)`'s broad snapshot has changed since it
+        was last computed THIS TURN. This method had no caching or change-
+        detection of its own before RC6 -- unlike `auto_fill`'s RC1
+        signature gate, it unconditionally re-evaluated all 186+ constraint
+        rules (many script-backed) against the full attribute set on every
+        single pass. Live-confirmed cost comparable to `auto_fill`'s own on
+        a heavy turn (16.5s pass 0, 12.6s pass 1 on a 392-attr catalog) yet
+        was invisible until instrumented in this same investigation.
+        `None` (the default) is a complete no-op, identical to every
+        pre-existing call site (including the two callers outside
+        `evaluate_rules_loop`'s own per-pass loop, which never pass this and
+        remain fully unaffected). Owned by `evaluate_rules_loop`, which
+        declares one fresh dict per turn, so pass 0 of every turn always
+        computes fresh (no prior signature to compare against) -- same
+        lifecycle as `_default_fill_signatures`. The cached result is
+        returned as a shallow copy (`dict(...)`) since a caller
+        (`_apply_series_mapping_exclusions`) reassigns individual keys of
+        the dict it receives; copying the outer dict is sufficient because
+        this method only ever reassigns a key's whole value list, never
+        mutates a value list in place.
+
+        _signature_exclude_vns — same RC5 mechanism `auto_fill` uses: vns
+        already proven non-convergent churn this turn are excluded from the
+        signature above, so a permanently flip-flopping attribute never
+        defeats this cache the way it would defeat a naive signature.
+        `None` (the default) includes everything, identical to omitting it.
+        """
+        if not rules and not narrowing_rec_rules:
+            return {}
+        _cur_sig = None
+        if _constraint_cache is not None:
+            # RC6, 2026-08-24: exclude vns already proven (this turn) to be
+            # non-convergent churn (RC5's _oscillating_vns) from the
+            # signature -- otherwise a permanently-flip-flopping attribute
+            # (e.g. a resync_stale_recommendations disagreement) would
+            # change this signature every single pass and defeat this cache
+            # exactly the way it defeated auto_fill's before RC5.
+            _sig_filled = (
+                filled if not _signature_exclude_vns else
+                {k: v for k, v in filled.items() if k not in _signature_exclude_vns}
+            )
+            _sig_filled_multi = (
+                filled_multi or {} if not _signature_exclude_vns else
+                {k: v for k, v in (filled_multi or {}).items() if k not in _signature_exclude_vns}
+            )
+            _cur_sig = _fill_signature(
+                _sig_filled, _sig_filled_multi, {a.entity_id for a in attrs},
+            )
+            if _constraint_cache.get("sig") == _cur_sig:
+                return dict(_constraint_cache["result"])
+        by_rule_id = self._attr_index(attrs)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
+        constrained: dict[int, list[str]] = {}
+        # target.entity_id -> [(condition_key, normalized_allowed_values, rule_name)]
+        # for every rule that actually fired -- condition_key groups rules
+        # sharing the same declarative condition attribute set; script-backed
+        # rules get a per-rule-unique key so they're never grouped/dropped.
+        contributions: dict[int, list[tuple[frozenset, list[str], str]]] = {}
+
+        def _normalize(target: ConfigAttr, allowed: list[str]) -> list[str]:
+            # docs/config_consistency_issues_2026-07-30.md — a raw catalog
+            # rule's own authored allowed-value list can carry different
+            # letter-casing than the attribute's real menu item_value
+            # (confirmed live: the declarative rule "Constrain for
+            # APXNEXTSINGLE & APXNEXTXNSINGLE" lists "700/800 MHz" while
+            # every real menu item for this attribute is "700/800 MHZ" —
+            # a genuine source-catalog authoring inconsistency, not a bug
+            # in this parsing). Left uncorrected, this made a brand-new,
+            # completely default APX NEXT Single Band order fail its own
+            # BOM-gate stale-constraint check on the very first confirm,
+            # every time — the default value was never actually invalid,
+            # it just didn't case-exact-match the rule's own typo.
+            # Normalize each allowed value back to its real catalog
+            # item_value (case-insensitive lookup) before comparing/
+            # intersecting, so a same-value-different-case rule entry
+            # behaves exactly like the correctly-cased one would.
+            by_lower_item_value = {o.item_value.lower(): o.item_value for o in target.options}
+            return [by_lower_item_value.get(v.lower(), v) for v in allowed]
+
+        def _intersect(target: ConfigAttr, allowed: list[str], condition_key: frozenset) -> None:
+            normalized = _normalize(target, allowed)
+            contributions.setdefault(target.entity_id, []).append(
+                (condition_key, normalized, rule.rule_name))
+            if target.entity_id in constrained:
+                existing = set(constrained[target.entity_id])
+                constrained[target.entity_id] = [v for v in normalized if v in existing]
             else:
-                constrained[target_eid] = list(allowed)
+                constrained[target.entity_id] = list(normalized)
 
         for rule in rules:
             target = by_rule_id.get(rule.target_attr_id)
@@ -3046,33 +6944,189 @@ class CpqEngine:
             if rule.script is not None:
                 if bml_eval is None:
                     continue
-                allowed = bml_eval.allowed_values_for_script(rule.script, filled)
+                # Raven review (PR #269) asked whether this script-backed
+                # REAL ConstraintRule branch should skip already-filled
+                # targets the same way narrowing_rec_rules' loop below
+                # does. Deliberately does NOT: find_rule_inconsistencies
+                # consumes this exact output to check an ALREADY-FILLED
+                # value against its own constraint set (the proactive
+                # stale-constraint-reask feature) -- skipping filled
+                # targets here would silently disable that check for
+                # every script-backed constraint rule. narrowing_rec_
+                # rules' guard is safe only because that loop's sole
+                # consumer is display-time option narrowing; nothing
+                # reads it for stale-value validation. A real perf issue
+                # here (many script-backed ConstraintRules on filled
+                # targets) needs its own opt-in flag so validation
+                # callers keep evaluating everything while display-only
+                # callers can skip -- not a copy of this guard.
+                _script = _substitute_util_get_constraint_vals(
+                    rule.script, filled, workspace_id, catalog_prefix, _dt_cache,
+                )
+                allowed = bml_eval.allowed_values_for_script(_script, filled)
                 if allowed:
-                    _intersect(target.entity_id, allowed)
+                    _intersect(target, allowed, frozenset({f"script:{rule.rule_name}"}))
+                    rule_trace.record_fire(
+                        rule_type="constraint", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome=f"allowed={allowed}",
+                        bml_tier="script",
+                    )
                 continue
             if rule.condition_script is not None:
                 if bml_eval is None:
                     continue
                 fires = bml_eval.condition_holds(rule.condition_script, filled)
                 if fires is True:
-                    _intersect(target.entity_id, rule.allowed_values)
+                    _intersect(
+                        target, rule.allowed_values,
+                        frozenset({f"condition_script:{rule.rule_name}"}),
+                    )
+                    rule_trace.record_fire(
+                        rule_type="constraint", rule_id=rule.rule_name,
+                        attr=target.variable_name,
+                        outcome=f"allowed={rule.allowed_values}", bml_tier="condition_script",
+                    )
                 continue  # False or unknown — never guess, no constraint applied
             if rule.conditions:
                 matched, _blocked = evaluate_declarative_conditions(
                     rule.conditions, filled_by_rule_id)
                 if matched is not True:
                     continue
+                condition_key = frozenset(attr_id for attr_id, _value, _op in rule.conditions)
             else:
                 if rule.condition_attr_id not in filled_by_rule_id:
                     continue
                 if not _condition_value_matches(
-                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value
+                    filled_by_rule_id[rule.condition_attr_id], rule.condition_value,
+                    rule.condition_operator,
                 ):
                     continue
-            _intersect(target.entity_id, rule.allowed_values)
+                condition_key = frozenset({rule.condition_attr_id})
+            _intersect(target, rule.allowed_values, condition_key)
+            rule_trace.record_fire(
+                rule_type="constraint", rule_id=rule.rule_name,
+                attr=target.variable_name, outcome=f"allowed={rule.allowed_values}",
+            )
+
+        # How catalog-wide "central" each condition attribute is to THIS
+        # constraint ruleset — counted from the full `rules` list (every
+        # declarative condition attr this ConstraintRule set ever
+        # references), not just the ones that fired this turn. Purely
+        # structural, derived from the real loaded rules, no hardcoded
+        # attribute names: confirmed live this reliably separates a
+        # catalog's backbone discriminator (e.g. the product-line
+        # attribute nearly every "Constrain X for product Y" rule keys
+        # off — 478 references in one real catalog) from an incidentally-
+        # referenced peripheral one (an unrelated feature-option
+        # attribute two old rules happened to key off — 3 references,
+        # same catalog). Only actually consulted below when an empty
+        # intersection needs resolving; computed unconditionally here
+        # (cheap, one pass over `rules`) to avoid conditional-definition
+        # scoping hazards.
+        attr_ref_count: dict[int, int] = {}
+        for r in rules:
+            ids = (
+                {a for a, _v, _op in r.conditions} if r.conditions
+                else ({r.condition_attr_id} if r.condition_script is None and r.script is None else set())
+            )
+            for attr_id in ids:
+                attr_ref_count[attr_id] = attr_ref_count.get(attr_id, 0) + 1
+
+        def _centrality(condition_key: frozenset) -> int:
+            return max((attr_ref_count.get(a, 0) for a in condition_key), default=0)
+
+        for entity_id, rows in contributions.items():
+            if constrained.get(entity_id) or len(rows) < 2:
+                continue
+            groups: dict[frozenset, list[tuple[list[str], str]]] = {}
+            for condition_key, normalized, rule_name in rows:
+                groups.setdefault(condition_key, []).append((normalized, rule_name))
+            if len(groups) < 2:
+                continue  # everything shares one condition -- genuinely all-or-nothing
+            resolved_by_dropping: list[tuple[frozenset, list[str]]] = []
+            for dropped_key in groups:
+                kept_sets = [
+                    set(normalized)
+                    for key, entries in groups.items() if key != dropped_key
+                    for normalized, _rule_name in entries
+                ]
+                candidate = set.intersection(*kept_sets) if kept_sets else set()
+                if candidate:
+                    resolved_by_dropping.append((dropped_key, sorted(candidate)))
+            if not resolved_by_dropping:
+                continue
+            # Prefer dropping whichever candidate group's condition
+            # attribute is LEAST central catalog-wide — only when that
+            # minimum is unambiguous (a strict minimum, not tied with
+            # another candidate group). A tie means two structurally
+            # equally-plausible resolutions exist; never guess between them.
+            scored = sorted(
+                ((_centrality(key), key, candidate) for key, candidate in resolved_by_dropping),
+            )
+            target_name = by_rule_id[entity_id].variable_name if entity_id in by_rule_id else entity_id
+            if len(scored) > 1 and scored[0][0] == scored[1][0]:
+                logger.warning(
+                    "cpq: constraint intersection for %s is empty and 2+ "
+                    "equally-central rule-groups could each resolve it — "
+                    "ambiguous, left empty rather than guessing which one wins",
+                    target_name,
+                )
+                continue
+            _score, dropped_key, candidate = scored[0]
+            dropped_names = sorted({rule_name for _normalized, rule_name in groups[dropped_key]})
+            logger.warning(
+                "cpq: constraint intersection for %s was empty across all "
+                "active rules; dropped least catalog-central conflicting "
+                "rule(s) %s (condition attrs %s, %d catalog-wide reference(s)) "
+                "to resolve to %s — docs/CPQ_MULTISELECT_AUTOFILL_"
+                "OVERSELECTION_PLAN_2026_08_05.md empty-intersection fallback",
+                target_name, dropped_names, sorted(dropped_key), _score, candidate,
+            )
+            constrained[entity_id] = candidate
+
+        if narrowing_rec_rules:
+            for rule in narrowing_rec_rules:
+                if rule.script is None or bml_eval is None:
+                    continue
+                target = by_rule_id.get(rule.target_attr_id)
+                if target is None:
+                    continue
+                # Live-confirmed perf regression (2026-08-25, APX Next):
+                # apply_recommendation_rules skips a rule immediately when
+                # its target is already filled (line ~6017 above), so it
+                # only pays allowed_values_for_script's real cost for the
+                # small set of genuinely-unresolved targets -- confirmed
+                # live it stays ~10ms even with 1091 script-backed rec
+                # rules loaded. This loop was missing that same guard, so
+                # it evaluated the expensive script for ALL 1091 rules
+                # every pass regardless of fill state -- confirmed live
+                # this alone cost 82s/59s/37s on passes 0/1/2 for APX Next
+                # before the per-pass constraint cache stabilized. Same
+                # "nothing left to narrow once it's answered" logic
+                # applies here identically. NOT copied to the real-
+                # ConstraintRule loop above -- see its own comment on
+                # why that's unsafe (find_rule_inconsistencies needs
+                # already-filled targets evaluated there).
+                if filled.get(target.variable_name):
+                    continue
+                _script = _substitute_util_get_constraint_vals(
+                    rule.script, filled, workspace_id, catalog_prefix, _dt_cache,
+                )
+                allowed = bml_eval.allowed_values_for_script(_script, filled)
+                if allowed and len(allowed) >= 2:
+                    _intersect(target, allowed, frozenset({f"script_narrowing:{rule.rule_name}"}))
+                    rule_trace.record_fire(
+                        rule_type="constraint", rule_id=rule.rule_name,
+                        attr=target.variable_name, outcome=f"allowed={allowed}",
+                        bml_tier="script_narrowing",
+                    )
+
         if constrained:
             names = [by_rule_id[eid].variable_name for eid in constrained if eid in by_rule_id]
             logger.info("cpq: constraint rules active for %s", names)
+        if _constraint_cache is not None:
+            _constraint_cache["sig"] = _cur_sig
+            _constraint_cache["result"] = constrained
         return constrained
 
     # ── Rule-consistency cross-check ──────────────────────────────────────────
@@ -3086,6 +7140,9 @@ class CpqEngine:
         rec_rules: list[RecommendationRule],
         bml_eval: BmlEvaluator | None = None,
         filled_source: dict[str, str] | None = None,
+        filled_multi: dict[str, list[str]] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> list[dict[str, Any]]:
         """Cross-check `filled` against each rule type's OWN independently
         computed result — NOT a self-referential re-derivation of the same
@@ -3117,7 +7174,8 @@ class CpqEngine:
         issues: list[dict[str, Any]] = []
         by_vn = {a.variable_name: a for a in attrs}
 
-        _visible, _msgs, hidden_vns = self.apply_hiding_rules(attrs, filled, hiding_rules, bml_eval)
+        _visible, _msgs, hidden_vns = self.apply_hiding_rules(
+            attrs, filled, hiding_rules, bml_eval, filled_multi=filled_multi)
         for vn in hidden_vns:
             if filled.get(vn):
                 issues.append({
@@ -3125,7 +7183,9 @@ class CpqEngine:
                     "issue": "filled but an active hiding rule matches",
                 })
 
-        constrained_opts = self.apply_constraint_rules(attrs, con_rules, filled, bml_eval)
+        constrained_opts = self.apply_constraint_rules(
+            attrs, con_rules, filled, bml_eval, filled_multi=filled_multi,
+            workspace_id=workspace_id, catalog_prefix=catalog_prefix)
         for vn, value in filled.items():
             attr = by_vn.get(vn)
             allowed = constrained_opts.get(attr.entity_id) if attr else None
@@ -3136,7 +7196,7 @@ class CpqEngine:
                 })
 
         by_rule_id = self._attr_index(attrs)
-        filled_by_rule_id = self._filled_by_rule_id(attrs, filled)
+        filled_by_rule_id = self._filled_by_rule_id(attrs, filled, filled_multi)
         for rule in rec_rules:
             target = by_rule_id.get(rule.target_attr_id)
             if not target or target.variable_name not in filled:
@@ -3169,7 +7229,9 @@ class CpqEngine:
                     current_val = filled_by_rule_id.get(rule.condition_attr_id)
                     condition_met = (
                         current_val is not None
-                        and _condition_value_matches(current_val, rule.condition_value)
+                        and _condition_value_matches(
+                            current_val, rule.condition_value, rule.condition_operator
+                        )
                     )
                 recommended = rule.recommended_value
             if condition_met and recommended is not None and filled[vn].lower() != recommended.lower():
@@ -3197,8 +7259,34 @@ class CpqEngine:
         country: str | None = None,
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
+        rule_conflict_order: dict[str, int] | None = None,
+        display_order: dict[str, int] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
     ) -> tuple[list[ConfigAttr], dict[str, str], dict[str, str], dict[int, list[str]]]:
         """Run hide → recommend → constrain → auto-fill until state is stable.
+
+        workspace_id/catalog_prefix — passed straight through to auto_fill's
+        real-Data-Table fallback (see its own docstring); `None` (the
+        default) keeps every existing caller's behavior unchanged.
+
+        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2d:
+        passed straight through to every internal `auto_fill` call so the
+        default-value/first-available skip gate applies on EVERY pass, not
+        just the caller's own separate, final `auto_fill` call in
+        ask_api.py. Without this, an attr could get a "default"-sourced
+        value locked in during this loop's own early passes (before the
+        caller's final call ever runs) — that value then looks like
+        "already filled in a prior turn" to every later pass (including
+        the final one), which only re-validates against constraints, never
+        re-derives from scratch, so the §2d skip never gets a chance to
+        apply. Confirmed live: exactly this happened for 8 real attrs
+        before this fix. `None` keeps today's behavior unchanged.
+        rule_conflict_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md
+        §2b: the catalog's FULL layout document order
+        (`_load_layout_full_order`), passed straight through to
+        `rank_rules_by_specificity`. `None` keeps today's dependency-
+        graph-depth ranking unchanged.
 
         Each pass:
           1. Auto-fill (hints + defaults + first-option, with active constraints)
@@ -3223,19 +7311,183 @@ class CpqEngine:
         multi = filled_multi if filled_multi is not None else {}
         dropped = dropped_multi if dropped_multi is not None else {}
 
-        for _ in range(_MAX_LOOPS):
+        # docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md —
+        # ranked ONCE here against the full, pre-loop `attrs` (never the
+        # loop-local `attrs` below, which apply_hiding_rules reassigns to a
+        # shrinking subset every pass) so same-target hiding/recommendation
+        # conflicts resolve via provable specificity instead of whatever
+        # order fetch_rules()/fetch_value_rules() happened to return.
+        hiding_rules, rec_rules, con_rules = self.rank_rules_by_specificity(
+            attrs, hiding_rules, rec_rules, con_rules, display_order=rule_conflict_order)
+
+        # Shared across every pass of this loop (and every auto_fill call
+        # within it) so the Data Table resolver's per-workspace table scan
+        # (data_table_resolver._load_all_tables) runs once per /ask turn
+        # instead of once per governed attribute -- see auto_fill's own
+        # _dt_cache param and CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF
+        # §11-§12 for the live-measured cost of the uncached version.
+        dt_cache: dict[tuple[int, str], tuple] = {}
+
+        # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md — one fresh
+        # dict per turn (this whole loop is one Python call, so a plain
+        # local var survives across all 8 passes but never across turns),
+        # threaded into every auto_fill call below so a
+        # "default_first_available" guess is only re-derived when something
+        # relevant actually changed since it was last (re)derived, instead
+        # of unconditionally on every one of the 8 passes.
+        default_fill_signatures: dict[str, tuple] = {}
+
+        # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC3/RC4,
+        # 2026-08-24): a small subset of attributes proven, THIS turn, to be
+        # non-convergent (the exact same set re-invalidated/re-corrected by
+        # _invalidate_inconsistent_paired_values OR resync_stale_
+        # recommendations two passes running) gets excluded from the
+        # signature every OTHER attribute is gated on -- otherwise their
+        # churn changes the whole-dict signature every pass for everyone,
+        # defeating default_fill_signatures' gate entirely. Two independent
+        # "last seen" trackers (one per churn source, RC4 added
+        # _last_resync_vns alongside RC3's _last_inconsistent_vns) feed one
+        # shared _oscillating_vns set, so an attribute alternating between
+        # the two mechanisms is still caught. All reset fresh per turn, same
+        # lifecycle as default_fill_signatures above.
+        _last_inconsistent_vns: frozenset[str] = frozenset()
+        _last_resync_vns: frozenset[str] = frozenset()
+        _oscillating_vns: set[str] = set()
+
+        # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC6,
+        # 2026-08-24): apply_constraint_rules had no caching of its own --
+        # live-confirmed to cost comparable magnitude to auto_fill on a
+        # heavy catalog turn, unconditionally re-evaluating every pass. One
+        # fresh single-slot cache per turn, same lifecycle as
+        # default_fill_signatures -- pass 0 always computes fresh (empty
+        # dict, no prior signature to compare against).
+        constraint_cache: dict[str, tuple] = {}
+
+        # cpq_step start/done — the per-pass "cpq_perf: pass N total ...s"
+        # lines below already cover per-pass granularity; this brackets the
+        # WHOLE fixed-point loop (all up to _MAX_LOOPS=8 passes) so a hang
+        # anywhere inside shows up as "start" with no matching "done" for
+        # this run_id, rather than only inferring it from a missing pass log.
+        _loop_t0 = time.monotonic()
+        logger.info("cpq_step: evaluate_rules_loop start max_passes=%d", _MAX_LOOPS)
+        # pass_num pre-seeded defensively -- the "done" log below reads it
+        # after the loop, which is only safe today because _MAX_LOOPS is a
+        # positive constant guaranteeing at least one iteration (PR #200
+        # review flagged this as fragile, not currently broken).
+        pass_num = -1
+        for pass_num in range(_MAX_LOOPS):
+            _pass_t0 = time.monotonic()
+            rule_trace.bind_pass(pass_num)
             prev_filled_keys = set(filled.keys())
             prev_visible_ids = {a.entity_id for a in attrs}
 
+            # Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md):
+            # warm the shared Tier-2 cache CONCURRENTLY for every hiding
+            # rule's script before apply_hiding_rules runs its own
+            # sequential loop below — live-measured on the real
+            # CommandCentral Aware catalog, 823 distinct hiding-rule
+            # scripts needed Tier-2 in a single turn; evaluated one at a
+            # time that took 25+ minutes. apply_hiding_rules itself is
+            # UNCHANGED — it still calls bml_eval.hide_for_script(...) per
+            # rule in order; every one of those calls now just hits the
+            # cache this just populated, instead of making a fresh network
+            # call. A rule this prefetch missed simply falls through to its
+            # normal sequential call, exactly as if this line didn't exist.
+            if bml_eval is not None:
+                bml_eval.prefetch_tier2(
+                    self._bml_prefetch_requests(hiding=hiding_rules, filled=filled))
+
+            # docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_GAP_PLAN_2026_08_10.md
+            # -- populate the one shared variable dozens of hiding-rule
+            # scripts check membership in, via the real ingested
+            # attrSequence Data Table, before apply_hiding_rules runs those
+            # scripts below.
+            #
+            # docs/CPQ_HIDDEN_MASTER_STRING_STALE_AFTER_CASCADE_PLAN_2026_08_
+            # 10.md -- recompute whenever the two real inputs this value is
+            # derived from (product, base model) have changed since the
+            # cached value was computed, not just when the key is merely
+            # absent. Confirmed live: a mid-conversation Hardware Version
+            # change cascades productSelectionProduct_all to a new value,
+            # but the master string cached for the OLD product persisted --
+            # every hiding rule keyed on it (e.g. "Hide Carrier Selection if
+            # no values available (portables)") then evaluated against the
+            # wrong product's data, incorrectly hid carrierSelectionMulti
+            # Select_astro, and its real value got cleared along with the
+            # hide. Tracking key kept as a plain string (not a tuple) --
+            # `filled`/session.filled round-trips through JSON as
+            # session_data between turns, and a tuple would silently become
+            # a list on deserialization, breaking the equality check on the
+            # very next turn.
+            _hidden_ms_key = (
+                filled.get("productSelectionProduct_all", "") + "\x1f"
+                + filled.get("modelSelectionbaseModel_astro", "")
+            )
+            if (
+                "hiddenMasterStringForAstroPortable_astro" not in filled
+                or filled.get("_hiddenMasterStringForAstroPortable_astro_computed_for")
+                != _hidden_ms_key
+            ):
+                _hidden_ms = self._compute_hidden_master_string(
+                    filled, workspace_id, catalog_prefix, dt_cache, attrs=attrs,
+                )
+                if _hidden_ms is not None:
+                    filled["hiddenMasterStringForAstroPortable_astro"] = _hidden_ms
+                    filled["_hiddenMasterStringForAstroPortable_astro_computed_for"] = _hidden_ms_key
+
             # Apply hiding rules first so auto_fill only fills visible attrs
             attrs, _msgs, hidden_vns = self.apply_hiding_rules(
-                attrs, filled, hiding_rules, bml_eval=bml_eval)
+                attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=multi)
 
-            # Strip values ONLY for attrs an explicit hiding rule removed from
-            # view. Popping everything not currently visible (the old
-            # behaviour) also destroyed confirmed answers whose attr merely
-            # wasn't part of this load — dropping user data from the payload.
-            for k in hidden_vns:
+            # docs/CPQ_HIDDEN_VALUE_TEMPORARY_VS_CONFIRMED_PLAN_2026_08_16.md
+            # -- strip filled/multi for `hidden_vns` UNLESS a core decision
+            # anchor (Product, Base Model, Hardware Version, Country) is
+            # still unanswered. That's the one narrow window where a hide
+            # is merely gating ("Hide all attributes if Product is Blank")
+            # rather than a real invalidation -- e.g.
+            # modelSelectionFrequencyBandMsl_astro's default-picked
+            # '700/800 MHZ' got permanently wiped the moment Hardware
+            # Version was answered but Product was still blank, and never
+            # returned once Product was answered the next turn, even
+            # though nothing about the value itself was ever wrong.
+            #
+            # An EARLIER version of this fix stopped stripping on
+            # `hidden_vns` unconditionally, for ANY reason -- live-
+            # confirmed regression: once every anchor IS answered, a hide
+            # almost always means a REAL, current-state conflict (Package
+            # Type vs. the just-chosen Product, a carrier no longer valid
+            # for the resolved Base Model, ...), and leaving those stale
+            # values in `filled`/`multi` let them keep colliding with new
+            # answers turn after turn -- rule-consistency issue count grew
+            # 6 -> 10 -> 12 -> 13 -> 16 across one session, and Package
+            # Type/Product got stuck re-invalidating each other in a loop.
+            # Restricting the skip to "an anchor is still blank" keeps the
+            # original fix for the one case that actually needs it while
+            # restoring the old, safe strip for every later-stage conflict.
+            if all(
+                filled.get(_anchor_vn) for _anchor_vn in _DECISION_ANCHOR_VNS
+            ):
+                for k in hidden_vns:
+                    filled.pop(k, None)
+                    display_filled.pop(k, None)
+                    sources.pop(k, None)
+                    multi.pop(k, None)
+
+            # Real Oracle CPQ attrSequence Data Table narrowing -- an attr
+            # confidently NOT part of the active base model per real
+            # ingested data is suppressed the same way an explicit hiding
+            # rule removes one from view (docs/CPQ_CARRIER_WIRELESS_
+            # FREQBAND_DATA_GAP_PROOF_2026_08_07.md §13-§14). `None`/no
+            # workspace_id is a no-op, unchanged from before this existed.
+            _t0 = time.monotonic()
+            attrs, suppressed_vns = self._suppress_ungoverned_attrs(
+                attrs, filled, workspace_id, catalog_prefix, dt_cache,
+            )
+            logger.info(
+                "cpq_perf: _suppress_ungoverned_attrs took %.3fs pass=%d attrs=%d suppressed=%d",
+                time.monotonic() - _t0, pass_num, len(attrs), len(suppressed_vns),
+            )
+            for k in suppressed_vns:
                 filled.pop(k, None)
                 display_filled.pop(k, None)
                 sources.pop(k, None)
@@ -3243,15 +7495,114 @@ class CpqEngine:
 
             governed_ids = self.governed_target_ids(attrs, hiding_rules, rec_rules, con_rules)
             rule_ids = self.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+
+            # docs/CPQ_AUTO_FILL_TIER2_PREFETCH_GAP_PLAN_2026_08_10.md --
+            # auto_fill's own _satisfied_recommendation helper calls
+            # bml_eval.allowed_values_for_script/condition_holds per
+            # (unfilled attr, targeting recommendation rule) pair -- the
+            # same Tier-1/Tier-2 machinery apply_recommendation_rules uses,
+            # but BEFORE the prefetch below (which only warms the cache for
+            # apply_recommendation_rules/apply_constraint_rules' own later
+            # calls). Confirmed live: on pass 0, when the most attrs are
+            # still unfilled, this uncovered gap made auto_fill itself take
+            # 20-21s of serial Tier-2 network round-trips. Warming against
+            # the PRE-auto_fill filled state here is safe and non-wasteful
+            # even though the same rules get prefetched again below against
+            # the POST-auto_fill state -- prefetch_tier2 dedupes and caches
+            # by (script, variables), so a script whose referenced variables
+            # didn't change between the two prefetches is simply a cache
+            # hit the second time.
+            if bml_eval is not None:
+                bml_eval.prefetch_tier2(self._bml_prefetch_requests(
+                    attrs=attrs, rec=rec_rules, filled=filled))
+
+            _t0 = time.monotonic()
             filled, display_filled, _ = self.auto_fill(
                 attrs, hints, already_filled=filled, constrained_opts=constrained_opts,
                 filled_source=sources, governed_ids=governed_ids,
                 already_filled_multi=multi, dropped_multi=dropped,
                 rule_governed_ids=rule_ids, country=country, rec_rules=rec_rules,
                 negated_vns=negated_vns, skip_always_ask=skip_always_ask,
+                bml_eval=bml_eval, display_order=display_order,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix,
+                _dt_cache=dt_cache, hiding_rules=hiding_rules,
+                _default_fill_signatures=default_fill_signatures,
+                _signature_exclude_vns=frozenset(_oscillating_vns),
+            )
+            logger.info(
+                "cpq_perf: auto_fill took %.3fs pass=%d", time.monotonic() - _t0, pass_num,
             )
 
-            new_fills = self.apply_recommendation_rules(attrs, filled, rec_rules, bml_eval=bml_eval)
+            # Real Data Table pair-consistency check -- two attributes
+            # auto_fill resolved INDEPENDENTLY can each be individually
+            # legal while their combination is one the real catalog never
+            # allows (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_
+            # 2026_08_07.md §13-§14). Clearing both lets the next pass
+            # re-resolve them together instead of leaving a structurally-
+            # invalid combination locked into the payload.
+            _t0 = time.monotonic()
+            inconsistent_vns = self._invalidate_inconsistent_paired_values(
+                filled, sources, workspace_id, catalog_prefix, dt_cache,
+            )
+            logger.info(
+                "cpq_perf: _invalidate_inconsistent_paired_values took %.3fs pass=%d inconsistent=%s",
+                time.monotonic() - _t0, pass_num, sorted(inconsistent_vns),
+            )
+            # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC3,
+            # 2026-08-24; refined RC5, 2026-08-24): any vn present in this
+            # pass's AND the immediately preceding pass's invalidated set is
+            # proof of non-convergent churn for THAT vn specifically, not a
+            # real narrowing in progress -- fold the INTERSECTION (not exact
+            # set equality) into _oscillating_vns. Live-confirmed exact-
+            # equality was too strict: a genuinely persistent churner (e.g.
+            # getDataFromCookieFlag) never got caught when a second,
+            # unrelated vn sporadically joined/left the set pass to pass
+            # (e.g. ['getDataFromCookieFlag'] then ['packingPackageType_
+            # astro', 'getDataFromCookieFlag'] then ['getDataFromCookieFlag']
+            # again -- never twice IDENTICAL, but 'getDataFromCookieFlag'
+            # itself never stopped). Intersection catches the persistent
+            # core while a vn that stops appearing (real convergence) is
+            # correctly dropped from the next intersection.
+            _frozen_inconsistent = frozenset(inconsistent_vns)
+            _oscillating_vns |= (_frozen_inconsistent & _last_inconsistent_vns)
+            _last_inconsistent_vns = _frozen_inconsistent
+            for k in inconsistent_vns:
+                filled.pop(k, None)
+                display_filled.pop(k, None)
+                sources.pop(k, None)
+                multi.pop(k, None)
+
+            # Same prefetch, now for recommendation/constraint rule scripts
+            # against the POST-auto_fill state (auto_fill can itself have
+            # just resolved values these scripts depend on) — warms the
+            # cache for apply_recommendation_rules/apply_constraint_rules
+            # below, both still unchanged, still sequential, now cache hits.
+            if bml_eval is not None:
+                _t0 = time.monotonic()
+                bml_eval.prefetch_tier2(self._bml_prefetch_requests(
+                    attrs=attrs, rec=rec_rules, con=con_rules, filled=filled))
+                logger.info(
+                    "cpq_perf: prefetch_tier2 (post-auto_fill) took %.3fs pass=%d",
+                    time.monotonic() - _t0, pass_num,
+                )
+
+            # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC6
+            # investigation, 2026-08-24): apply_recommendation_rules,
+            # resync_stale_recommendations, and apply_constraint_rules had
+            # NO cpq_perf timing of their own -- live traces showed each
+            # pass's own total staying far above auto_fill's cost even after
+            # RC5 drove auto_fill down, with no visibility into where the
+            # remainder went. Instrumented permanently, same convention as
+            # auto_fill/_apply_series_mapping_exclusions, to close that gap.
+            _t0 = time.monotonic()
+            new_fills = self.apply_recommendation_rules(
+                attrs, filled, rec_rules, bml_eval=bml_eval, filled_multi=multi,
+                constrained_opts=constrained_opts,
+            )
+            logger.info(
+                "cpq_perf: apply_recommendation_rules took %.3fs pass=%d",
+                time.monotonic() - _t0, pass_num,
+            )
             if new_fills:
                 # Route multi-select targets to `multi`, not `filled` — same
                 # reasoning as auto_fill's final assignment block: this is
@@ -3266,17 +7617,157 @@ class CpqEngine:
                     else:
                         filled[k] = iv
                     display_filled[k] = d
-                    sources.setdefault(k, "rule")
+                    # Force-set, not setdefault: `k` only ever reaches here
+                    # via the truthy (not `in filled`) check above, so any
+                    # existing tag is either absent or D4's empty-value
+                    # "user"-cleared marker being genuinely overridden by a
+                    # real rule firing — never a real prior value's tag.
+                    sources[k] = "rule"
 
+            # docs/config_consistency_issues_2026-07-30.md issue 6 (FedRAMP)
+            # — a recommendation-governed attr the ENGINE already filled
+            # (never the customer's own choice) must not be permanently
+            # locked in if its driving attribute's value changes on a LATER
+            # pass of this same loop (e.g. auto_fill initially claimed it by
+            # first-by-order before the real condition could be checked).
+            # Scoped to filled_source != user/hint/cascade — see
+            # resync_stale_recommendations' own docstring for why that
+            # boundary is safe to cross where find_rule_inconsistencies
+            # deliberately only logs.
+            _t0 = time.monotonic()
+            _resynced = self.resync_stale_recommendations(
+                attrs, filled, sources, rec_rules, bml_eval=bml_eval, filled_multi=multi,
+                constrained_opts=constrained_opts,
+            )
+            logger.info(
+                "cpq_perf: resync_stale_recommendations took %.3fs pass=%d",
+                time.monotonic() - _t0, pass_num,
+            )
+            # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC4,
+            # 2026-08-24; refined RC5, 2026-08-24): live-confirmed a SECOND,
+            # structurally identical churn source to RC3's paired-value
+            # invalidation -- resync_stale_recommendations can permanently
+            # disagree with whatever auto_fill just derived (a real, never-
+            # resolving recommendation/derivation ping-pong, not a one-time
+            # correction), mutating `filled` every single pass. Same
+            # containment as RC3, same RC5 intersection refinement (a vn
+            # present in this pass's AND the previous pass's corrected set
+            # is non-convergent for THAT vn, even if OTHER vns sporadically
+            # join/leave the set) -- fold into the shared _oscillating_vns
+            # set so this source's churn ALSO stops perturbing every other
+            # attribute's signature, tracked independently of the paired-
+            # value source above so an attr alternating between the two
+            # mechanisms is still caught.
+            _frozen_resynced = frozenset(_resynced.keys()) if _resynced else frozenset()
+            _oscillating_vns |= (_frozen_resynced & _last_resync_vns)
+            _last_resync_vns = _frozen_resynced
+            if _resynced:
+                for k, (iv, d) in _resynced.items():
+                    filled[k] = iv
+                    display_filled[k] = d
+                    sources[k] = "rule"
+
+            _t0 = time.monotonic()
             constrained_opts = self.apply_constraint_rules(
-                attrs, con_rules, filled, bml_eval=bml_eval,
+                attrs, con_rules, filled, bml_eval=bml_eval, filled_multi=multi,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix, _dt_cache=dt_cache,
+                _constraint_cache=constraint_cache,
+                _signature_exclude_vns=frozenset(_oscillating_vns),
+                narrowing_rec_rules=rec_rules,
+            )
+            logger.info(
+                "cpq_perf: apply_constraint_rules (in-loop) took %.3fs pass=%d",
+                time.monotonic() - _t0, pass_num,
+            )
+            _t0 = time.monotonic()
+            self._apply_series_mapping_exclusions(
+                attrs, constrained_opts, filled, workspace_id, catalog_prefix, dt_cache,
+            )
+            logger.info(
+                "cpq_perf: _apply_series_mapping_exclusions took %.3fs pass=%d",
+                time.monotonic() - _t0, pass_num,
             )
 
-            if (set(filled.keys()) == prev_filled_keys
+            logger.info(
+                "cpq_perf: pass %d total %.3fs resynced=%s inconsistent=%d",
+                pass_num, time.monotonic() - _pass_t0, bool(_resynced), len(inconsistent_vns),
+            )
+            # 2026-08-28 perf fix: this break was gated on RAW _resynced/
+            # inconsistent_vns, so a single already-proven-non-convergent
+            # vn (tracked in _oscillating_vns precisely so its churn stops
+            # perturbing everything else -- see RC3/RC4/RC5 above) silently
+            # defeated this exit on EVERY real turn -- confirmed live: every
+            # sampled turn (cheap and expensive alike) ran the full 8
+            # passes, never fewer. Excluding _oscillating_vns members from
+            # both checks lets the loop exit once nothing NEW is churning,
+            # while a genuinely still-narrowing vn (not yet proven
+            # oscillating) still correctly blocks the break, same as before.
+            _non_oscillating_resynced = (
+                (frozenset(_resynced.keys()) if _resynced else frozenset())
+                - _oscillating_vns
+            )
+            _non_oscillating_inconsistent = frozenset(inconsistent_vns) - _oscillating_vns
+            if (not _non_oscillating_resynced
+                    and not _non_oscillating_inconsistent
+                    and set(filled.keys()) == prev_filled_keys
                     and {a.entity_id for a in attrs} == prev_visible_ids):
                 break
 
+        logger.info(
+            "cpq_step: evaluate_rules_loop done elapsed_s=%.3f passes=%d",
+            time.monotonic() - _loop_t0, pass_num + 1,
+        )
         return attrs, filled, display_filled, constrained_opts
+
+    @staticmethod
+    def _bml_prefetch_requests(
+        filled: dict[str, str],
+        attrs: list[ConfigAttr] | None = None,
+        hiding: list[HidingRule] | None = None,
+        rec: list[RecommendationRule] | None = None,
+        con: list[ConstraintRule] | None = None,
+    ) -> list[tuple[str, str, dict[str, str], int | None]]:
+        """Build BmlEvaluator.prefetch_tier2 requests for every script-backed
+        rule in the given rule sets, against the CURRENT `filled` state.
+
+        Amendment 18 (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md): mirrors
+        exactly what apply_hiding_rules/apply_recommendation_rules/
+        apply_constraint_rules will each independently ask
+        hide_for_script/condition_holds/allowed_values_for_script for —
+        same rule fields, same `filled` argument, no cache_id (those call
+        sites never pass one either, so both sides key on hash(script)).
+        Coverage gaps here only cost speed, never correctness: an
+        uncovered rule's script just isn't pre-warmed and falls through to
+        its normal sequential call, exactly as if this method didn't run.
+
+        `rec` also mirrors apply_recommendation_rules' own "already filled"
+        skip (needs `attrs` to resolve target_attr_id -> variable_name) so
+        a prefetch doesn't burn concurrent Tier-2 calls on rules that loop
+        will never actually consult this pass. `hiding`/`con` have no such
+        skip in their own apply_* methods (visibility and allowed-value
+        narrowing both apply regardless of current fill state), so none is
+        replicated here either.
+        """
+        reqs: list[tuple[str, str, dict[str, str], int | None]] = []
+        for rule in (hiding or []):
+            if rule.script is not None:
+                reqs.append(("hide", rule.script, filled, None))
+        if rec:
+            by_rule_id = CpqEngine._attr_index(attrs or [])
+            for rule in rec:
+                target = by_rule_id.get(rule.target_attr_id)
+                if not target or filled.get(target.variable_name):
+                    continue
+                if rule.script is not None:
+                    reqs.append(("values", rule.script, filled, None))
+                elif rule.condition_script is not None:
+                    reqs.append(("cond", rule.condition_script, filled, None))
+        for rule in (con or []):
+            if rule.script is not None:
+                reqs.append(("values", rule.script, filled, None))
+            elif rule.condition_script is not None:
+                reqs.append(("cond", rule.condition_script, filled, None))
+        return reqs
 
     # ── Context sentence builder ──────────────────────────────────────────────
 
@@ -3364,6 +7855,254 @@ class CpqEngine:
         return governed
 
     @staticmethod
+    def product_label_noise_vns(
+        attrs: list[ConfigAttr],
+        hiding_rules: list[HidingRule],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+    ) -> set[str]:
+        """Variable names of "Product"-labeled attrs that are genuinely
+        irrelevant noise once `session.model_leaf_resolved` is True — the
+        CommandCentral-style case Amendment 10 was built for, where a
+        generic "Product" attr carries no rule of its own and the real
+        model identity travels entirely through the resolved bm_catalog
+        leaf instead.
+
+        Deliberately NOT every attr labeled "Product" — live-confirmed bug
+        (2026-07-28): APX Next's order text ("Order APX Next Radios...")
+        also matches one of the workspace's catalog leaf candidates in the
+        ambiguous-multi-leaf resolution path, setting model_leaf_resolved
+        True for APX Next as well — but unlike CommandCentral, APX Next's
+        own "Product" attr (productSelectionProduct_all) IS a genuine,
+        rule-governed decision (a real constraint script narrows its
+        options by Hardware Version). The blanket "drop every Product-
+        labeled attr" rule silently dropped it from `pending` AND the
+        payload entirely, with no value ever collected. Scoping to
+        `rule_governed_ids` (a purely structural signal — which rules
+        already target which attrs, independent of current filled state)
+        distinguishes "truly noise, no rule cares about this" from "a real
+        rule narrows this, it must still be asked."
+        """
+        governed = CpqEngine.rule_governed_ids(attrs, hiding_rules, rec_rules, con_rules)
+        return {
+            a.variable_name for a in attrs
+            if a.display_label.strip().lower() == "product"
+            and a.entity_id not in governed
+        }
+
+    @staticmethod
+    def _normalized_label_stem(label: str) -> str:
+        """Lowercase, whitespace-collapsed, singular-ized display label —
+        used only to detect whether two attrs are labeled as the "same"
+        real-world concept (e.g. "Frequency Bands" and "Frequency Band"),
+        never to identify a specific attribute by name."""
+        s = re.sub(r"\s+", " ", label.strip().lower())
+        if s.endswith("s") and not s.endswith("ss"):
+            s = s[:-1]
+        return s
+
+    # Explicit, disclosed exception to the generic label-stem detector
+    # below — see exclusive_sibling_family_exclusions' docstring for why
+    # this pair specifically cannot be found by label similarity, and the
+    # live evidence establishing it belongs here anyway. Catalog-specific
+    # by necessity (this concept has no other derivable signal in the
+    # ingested data), NOT a general mechanism — kept to this one pair,
+    # added only after direct confirmation, not silently.
+    _KNOWN_SIBLING_PAIRS: tuple[tuple[str, str], ...] = (
+        ("wirelessCarrier_astro", "carrierSelectionMultiSelect_astro"),
+    )
+
+    def exclusive_sibling_family_exclusions(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str],
+        all_attrs: list[ConfigAttr] | None = None,
+        catalog_confirmed_vns: frozenset[str] | None = None,
+    ) -> tuple[set[str], list[ConfigAttr]]:
+        """Generic (no catalog/attribute names hardcoded) detector for a gap
+        this engine can hit on ANY catalog: two attrs sharing the same
+        real-world concept (near-identical display label, e.g. "Frequency
+        Bands" vs "Frequency Band"), one select_type=="multi" and the other
+        not, that BOTH ended up filled in the same turn — meaning no
+        catalog hiding rule actually excluded either one for the current
+        product (confirmed live on the APX Next catalog, docs/
+        config_consistency_issues_2026-07-30.md Issue 5: the active hiding
+        rule for this catalog's single-select sibling omits some product
+        values entirely, so it stays visible and gets an unconditional
+        default_value even when the multi-select sibling is the real
+        governing attribute for that product).
+
+        Only acts when the single-select sibling's value came from a
+        NON-customer-confirmed provenance — an unconditional XML
+        default_value, an engine-derived recommendation, or the
+        conservative auto/first-option fallback (filled_source in
+        {"default", "rule", "auto"}) — never "user"/"hint"/"cascade", so a
+        genuine customer-confirmed or customer-triggered value is never
+        second-guessed. Widened beyond a bare "default" check (confirmed
+        live: this catalog's single-select sibling is actually populated by
+        a shared-input RECOMMENDATION rule — tagged source "rule" — not a
+        bare XML default_value, so a "default"-only check never caught it).
+
+        `all_attrs` (docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
+        2026_08_05.md follow-up) — the label-stem grouping below only
+        trusts a pair when EXACTLY 2 attrs share that stem, specifically
+        so a genuinely ambiguous 3+-way label collision is never guessed.
+        That size check is meaningless if it only sees `attrs` (the
+        DYNAMICALLY hiding-filtered, currently-visible set): confirmed
+        live, a real catalog reuses the identical display label "Service
+        Type" across 4 semantically UNRELATED attributes (general service
+        type, related-services type, DMS coverage plan, RSM warranty
+        type); when a hiding rule happens to leave only 2 of the 4
+        visible this turn, the size-2 check wrongly treated them as a
+        genuine near-duplicate pair — the same false-positive class this
+        check exists to prevent, just reached via visibility instead of
+        catalog authoring. Groups by stem over `all_attrs` (the full,
+        pre-hiding catalog list) when given; defaults to `attrs` (old
+        behavior, unchanged) when omitted, so every existing caller/test
+        is unaffected.
+
+        `catalog_confirmed_vns` — optional (default `None`, no-op for every
+        existing caller). Confirmed live (2026-08-20, base model
+        H55TGT9PW8AN/APX NEXT All Band, 4G-only flow): this weak-source
+        strip fires even when the single-select's value was itself just
+        resolved via the real Whitelist/Defaultinattr Data Table or a
+        RecommendationRule triggered by an active decision (source tagged
+        "rule"/"default", same as a genuine blind pick) — for a 4G-only
+        product the multi-select sibling has zero legal Data Table rows,
+        so stripping the single-select's catalog-proven answer and asking
+        for the multi-select instead leaves BOTH empty. Callers pass the
+        union of `_rule_forced_from_active_decision_vns`/`_data_table_
+        forced_vns` here so a member already proven genuine by either
+        mechanism is exempted from this strip — narrow, catalog-agnostic
+        (no attribute name hardcoded), and leaves the 5G flow (where the
+        multi-select IS the real governing attr) untouched.
+
+        Returns (vns_to_strip_from_filled, attrs_to_add_to_pending) — the
+        multi-select sibling is asked instead of silently guessing which
+        half applies. Empty on any catalog without this exact shape.
+        """
+        _WEAK_SOURCES = {"default", "rule", "auto"}
+        by_vn = {a.variable_name: a for a in attrs}
+        stem_universe = all_attrs if all_attrs is not None else attrs
+        by_stem: dict[str, list[ConfigAttr]] = {}
+        for a in stem_universe:
+            by_stem.setdefault(self._normalized_label_stem(a.display_label), []).append(a)
+        groups: list[list[ConfigAttr]] = list(by_stem.values())
+
+        # Explicit, disclosed exception — NOT a generic mechanism. The
+        # label-stem detector above provably cannot pair these two: live-
+        # confirmed the display labels are "Wireless Carrier" vs "Carrier
+        # Selection" (zero shared tokens), yet they exhibit the EXACT same
+        # wrong-sibling bug as the generic-detected Frequency Band pair —
+        # confirmed live: wirelessCarrier_astro ends up with a value
+        # (e.g. "ATT/FIRSTNET", itself a real, valid option on BOTH
+        # attributes' overlapping menus, so bom_gate's provenance check
+        # never flags it) while carrierSelectionMultiSelect_astro — the
+        # real governing multi-select for this concept — stays empty.
+        # Named explicitly here (per direct approval) rather than silently
+        # extending the generic label heuristic to something it can't
+        # actually detect.
+        for vn_a, vn_b in self._KNOWN_SIBLING_PAIRS:
+            attr_a, attr_b = by_vn.get(vn_a), by_vn.get(vn_b)
+            if attr_a is not None and attr_b is not None:
+                groups.append([attr_a, attr_b])
+
+        to_strip: set[str] = set()
+        to_ask: list[ConfigAttr] = []
+        for group in groups:
+            if len(group) != 2:
+                continue
+            multi = [a for a in group if a.select_type == "multi"]
+            single = [a for a in group if a.select_type != "multi"]
+            if len(multi) != 1 or len(single) != 1:
+                continue
+            multi_attr, single_attr = multi[0], single[0]
+            if multi_attr.variable_name not in by_vn:
+                # The multi-select sibling only exists in `all_attrs` (the
+                # full, pre-hiding catalog list) — a real hiding rule has
+                # decided it does NOT apply this turn (confirmed live: "Hide
+                # Frequency Band Model Selection Attribute for APX NEXT All
+                # Band model" correctly hides modelSelectionFrequencyBandMsl_
+                # astro for that product). There is no more-specific answer
+                # to defer to, so the single-select's value — weak-sourced
+                # or not — is left alone rather than stripped for nothing;
+                # stripping it here previously resurrected a question the
+                # engine's own hiding-rule evaluation had already, correctly,
+                # decided to never ask.
+                continue
+            single_has_value = single_attr.variable_name in filled
+            multi_has_value = bool(filled_multi.get(multi_attr.variable_name))
+            if (
+                single_has_value and not multi_has_value
+                and filled_source.get(single_attr.variable_name) in _WEAK_SOURCES
+                and single_attr.variable_name not in (catalog_confirmed_vns or frozenset())
+            ):
+                to_strip.add(single_attr.variable_name)
+                to_ask.append(multi_attr)
+        return to_strip, to_ask
+
+    def enforce_exclusive_sibling_families(
+        self,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        filled_source: dict[str, str],
+        display_filled: dict[str, str],
+        pending: list[ConfigAttr],
+        all_attrs: list[ConfigAttr] | None = None,
+        catalog_confirmed_vns: frozenset[str] | None = None,
+    ) -> list[ConfigAttr]:
+        """Apply `exclusive_sibling_family_exclusions`: strip the weakly-
+        sourced single-select sibling from `filled` (mutated in place) and
+        add its multi-select sibling to `pending` if nothing has already
+        filled or asked it. Returns the updated pending list.
+
+        `all_attrs` — see exclusive_sibling_family_exclusions' docstring;
+        pass the full, pre-hiding catalog attr list so the label-stem
+        pairing check isn't fooled by a multi-way label collision that
+        happens to look like a 2-attr pair only because hiding rules left
+        just 2 of the real N visible this turn."""
+        to_strip, to_ask = self.exclusive_sibling_family_exclusions(
+            attrs, filled, filled_multi, filled_source, all_attrs=all_attrs,
+            catalog_confirmed_vns=catalog_confirmed_vns,
+        )
+        if not to_strip:
+            return pending
+        for vn in to_strip:
+            filled.pop(vn, None)
+            display_filled.pop(vn, None)
+            filled_source.pop(vn, None)
+        pending = [a for a in pending if a.variable_name not in to_strip]
+        pending_vns = {a.variable_name for a in pending}
+        for attr in to_ask:
+            # `to_ask` is already guaranteed visible-this-turn by
+            # exclusive_sibling_family_exclusions (it only pairs a multi-
+            # select sibling that's present in `attrs`, the visible list —
+            # see that function's docstring for the hidden-sibling
+            # regression this closes). Truthiness check (not mere key
+            # presence) is deliberate here —
+            # see test_enforce_still_asks_when_multi_sibling_has_an_empty_
+            # placeholder: a governing multi-select sibling this mechanism
+            # just decided IS the real answer for this concept must still
+            # be asked even if auto_fill left an empty-list placeholder for
+            # it, because THIS mechanism's whole point is that nobody has
+            # actually confirmed the real concept yet. (A false-positive
+            # pairing that wrongly reached this point at all — e.g. two
+            # unrelated attrs coincidentally sharing a display label — is
+            # fixed at the pairing stage in exclusive_sibling_family_
+            # exclusions, not by weakening this check.)
+            if (
+                not filled.get(attr.variable_name)
+                and not filled_multi.get(attr.variable_name)
+                and attr.variable_name not in pending_vns
+            ):
+                pending.append(attr)
+                pending_vns.add(attr.variable_name)
+        return pending
+
+    @staticmethod
     def governed_target_ids(
         attrs: list[ConfigAttr],
         hiding_rules: list[HidingRule],
@@ -3391,7 +8130,92 @@ class CpqEngine:
             if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
                 continue
             governed.add(attr.entity_id)
+        # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_PLAN_2026_08_
+        # 10.md follow-up (2026-08-16, refined same day): attrs with no
+        # real fill justification are DELIBERATELY left in `governed`
+        # here -- an earlier version of this method unconditionally
+        # excluded them by name, which also blocked their own confident
+        # "a real constraint narrowed this to exactly one legal value"
+        # auto-fill path (e.g. once Oracle_BomItemMap/Oracle_BomItemDef
+        # are ingested, accessoriesSolutionSet_astro's constraint could
+        # legitimately resolve to a single real category). The actual
+        # "nothing justifies a guess" case is checked dynamically instead
+        # at its specific, narrower call sites (auto_fill's unconditional
+        # multi-select and single-select first-by-order fallbacks) -- see
+        # `_no_real_fill_justification`'s own docstring for exactly which
+        # sites and why each needed its own guard rather than one here.
         return governed
+
+    @staticmethod
+    def is_recognized_country(value: str) -> str | None:
+        """The canonical common name (e.g. "United States") when `value`
+        is a real, recognized country -- by common name, official name,
+        ISO alpha-2/alpha-3 code, or a punctuation/abbreviation variant
+        of any of those ("US.A", "U.K", "U.A.E") -- else None.
+
+        ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
+        17.md): previously checked membership in `_COUNTRY_TO_REGION` --
+        a small, hand-typed dict of exact strings covering a narrow
+        subset of countries, with none of their punctuation/abbreviation
+        variants ("us.a" was never a key). Now normalizes the candidate
+        (`_normalize_country_candidate`) and checks it against
+        `_country_alias_group` -- the comprehensive, symmetric, 249-real-
+        country alias table already built for exactly this purpose
+        (`engine.py:404+`) -- so any real alias/punctuation/abbreviation
+        form of any of the 249 countries resolves here, not just the
+        handful the old dict happened to spell out.
+
+        Returns `str | None` rather than the old bare `bool` because this
+        is the single shared validation gate for THREE call sites (Path
+        B's bare-anchor-reply hint validation, Path C's change-command
+        gate, and Path C's downstream LLM-result validation) that all
+        need the RESOLVED canonical value, not just a yes/no -- a caller
+        that only ever needed the boolean keeps working unmodified, since
+        a non-empty string is truthy and `None` is falsy, identical to
+        the old bool contract.
+
+        Guards `session.country`'s own assignment (ask_api.py) against a
+        real, confirmed live bug: `extract_hints`' generic
+        preposition-based country extractor's 2-letter-code alternative
+        has no trailing word-boundary check, so "for APX Next" matched
+        "for " + "AP" (the first two letters of "APX") and produced
+        `hints["country"] = "Ap"`. session.country is a "first hint wins,
+        never re-derived" field (ask_api.py) — once set, it's reused
+        verbatim on every later turn regardless of whether a real answer
+        ever fills the actual country attribute, so a single bad match
+        this early permanently blocks `derive_region` for the rest of the
+        session with no way to self-correct. Since `session.country`'s
+        only consumer is `derive_region`, and `derive_region` itself
+        already returns None for anything it can't resolve a region for,
+        rejecting an unrecognized candidate BEFORE it's stored costs
+        nothing today and stops it from calcifying into a wrong value
+        that can never be replaced by a later, correct hint.
+
+        PR #205 review fix: an earlier version of this exclusion rejected
+        ANY candidate matching one of this system's own region codes
+        ("NA"/"EMEA"/"ME"/"APAC"/"LA") -- but "ME" is genuinely Montenegro's
+        real ISO alpha-2 code and "LA" is genuinely Laos's, so that blanket
+        rule silently reintroduced the exact same collision bug for two
+        more real countries. The blanket exclusion was never actually
+        needed for "EMEA"/"ME"/"APAC"/"LA" in the first place: none of
+        those four strings appear in any real country's alias group
+        (`_COUNTRY_ALIAS_GROUPS`) as anything OTHER than Montenegro's/
+        Laos's own codes, so the alias-group lookup below already returns
+        None for "EMEA"/"APAC" on its own -- only "NA" is a genuine,
+        confirmed double meaning (this system's own "North America" token
+        AND Namibia's real alpha-2 code, confirmed live and locked in by
+        test_garbage_and_product_fragments_not_recognized, which predates
+        this fix and only exercises "NA"/"APAC", never "ME"/"LA"). Scoped
+        to the literal, documented single collision instead of a blanket
+        rule across this system's whole region-code namespace.
+        """
+        _normalized = _normalize_country_candidate(value)
+        if _normalized.upper() == "NA":
+            return None
+        group = _country_alias_group(_normalized)
+        if group is None:
+            return None
+        return _country_canonical_name(group)
 
     @staticmethod
     def derive_region(country: str, attr: ConfigAttr) -> tuple[str, str] | None:
@@ -3404,10 +8228,32 @@ class CpqEngine:
         country with no mapping, or a catalog whose Region attr doesn't
         offer the derived code, returns None so the caller falls back to
         asking rather than guessing.
+
+        ISSUE-007 (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_
+        17.md): `country` may legitimately arrive as any real alias of a
+        country (official name, alpha-2/alpha-3 code, a punctuation
+        variant like "us.a" normalized upstream to "United States", ...)
+        rather than one of the handful of literal strings
+        `_COUNTRY_TO_REGION` happens to spell out as keys. The direct
+        lookup below is tried first (fast path, unchanged behavior for
+        the exact forms that already worked); only when that misses does
+        this resolve `country` to its full alias group and retry the
+        lookup against every member of that group -- generic for all 249
+        real countries, never a per-country special case -- since
+        `_COUNTRY_TO_REGION`'s own keys are already just a few of a
+        country's many real aliases (e.g. "us"/"usa"/"united states" are
+        all present for the US entry today).
         """
         if not country:
             return None
         region_code = _COUNTRY_TO_REGION.get(country.strip().lower())
+        if not region_code:
+            group = _country_alias_group(_normalize_country_candidate(country))
+            if group:
+                for alias in group:
+                    region_code = _COUNTRY_TO_REGION.get(alias)
+                    if region_code:
+                        break
         if not region_code:
             return None
         for opt in attr.options:
@@ -3416,6 +8262,415 @@ class CpqEngine:
         for opt in attr.options:
             if region_code in opt.display_name.upper():
                 return opt.item_value, opt.display_name
+        return None
+
+    @staticmethod
+    def _apply_series_mapping_exclusions(
+        attrs: list[ConfigAttr], constrained_opts: dict[int, list[str]],
+        filled: dict[str, str], workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> None:
+        """Real Oracle CPQ Seriesmodelsmapping Data Table narrowing for
+        productSelectionProduct_all -- mutates `constrained_opts` IN PLACE.
+
+        Confirmed live (2026-08-08): with country=US, "APX NEXT
+        International (Federal)" still appeared in the Product menu even
+        though it isn't a real, orderable model for the US market (see
+        data_table_resolver.resolve_invalid_product_variant's own
+        docstring for the full evidence chain). `None`/no workspace_id
+        (default) is a complete no-op, identical to before this existed.
+        Only ever REMOVES options a real ingested row explicitly says
+        aren't valid here -- never adds a constraint where none of this
+        data applies (never guess).
+        """
+        if workspace_id is None:
+            return
+        target = next(
+            (a for a in attrs if a.variable_name == "productSelectionProduct_all"), None,
+        )
+        if target is None:
+            return
+        existing = constrained_opts.get(target.entity_id)
+        candidates = (
+            [o for o in target.options if o.item_value in existing]
+            if existing is not None else target.options
+        )
+        excluded: set[str] = set()
+        for opt in candidates:
+            override = dt_resolve_invalid_product_variant(
+                opt.display_name, opt.item_value, filled, workspace_id, catalog_prefix, cache,
+            )
+            if override is not None:
+                excluded.add(opt.item_value)
+        if not excluded:
+            return
+        if existing is not None:
+            constrained_opts[target.entity_id] = [v for v in existing if v not in excluded]
+        else:
+            constrained_opts[target.entity_id] = [
+                o.item_value for o in target.options if o.item_value not in excluded
+            ]
+
+    @staticmethod
+    def _suppress_ungoverned_attrs(
+        attrs: list[ConfigAttr], filled: dict[str, str],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> tuple[list[ConfigAttr], set[str]]:
+        """Drop attrs the real ingested attrSequence Data Table confidently
+        says do NOT belong to the active base model -- returns (visible,
+        suppressed_variable_names).
+
+        `data_table_resolver.attribute_applies()` already answers this
+        generically for any attribute name; the gap was never the data, it
+        was that nothing called it. Confirmed live (2026-08-08): with a
+        base model whose real attrSequence rows list wirelessCarrier_astro
+        as required and carry ZERO rows for carrierSelectionMultiSelect_
+        astro, auto_fill still filled BOTH (they're independently governed
+        by unrelated rules) -- a structurally-invalid payload (two mutually
+        exclusive carrier mechanisms both populated) that no rule in the
+        static export catches, because the exclusivity lives in this Data
+        Table, not in any rule script.
+
+        Only ever REMOVES an attr when at least one CPQModel candidate has
+        attrSequence coverage for this exact base model (some OTHER attr
+        showed up) AND none of them say this one applies AND at least one
+        candidate's attrSequence table mentions this attr name for SOME
+        base model (i.e. the catalog actively tracks its applicability,
+        just not here) -- a confident "not part of this base model", never
+        a guess from missing data.
+
+        An attr that is absent from the base-model-scoped governed set
+        purely because NO attrSequence row anywhere (any base model, any
+        candidate) ever mentions it at all (confirmed live 2026-08-09:
+        carrierSelectionMultiSelect_astro has real sequence coverage for
+        exactly one (CPQModel, BaseModel) pair in the whole catalog) is
+        left visible instead -- there is no real "excluded" signal, only
+        silence, and silently dropping a real, catalog-defined question is
+        worse than asking it (same reasoning as bom_gate.
+        find_missing_required_fields and the always-ask decision-key
+        carve-outs elsewhere in this method).
+
+        `None` (no attrSequence coverage at all for any candidate) leaves
+        the attr untouched, identical to before this method existed.
+        `None`/no `workspace_id` is a complete no-op.
+        """
+        if workspace_id is None:
+            return attrs, set()
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return attrs, set()
+        product = filled.get("productSelectionProduct_all", "")
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        if not cands:
+            return attrs, set()
+
+        # Precomputed ONCE per candidate CPQModel here, not once per attr
+        # -- see governed_attr_names_for_base_model's own docstring for
+        # the live-measured O(attrs x candidates x rows) cost of the
+        # naive per-attr version this replaced.
+        scoped_name_sets = [
+            dt_governed_attr_names_for_base_model(
+                cm, base_model, workspace_id, catalog_prefix, cache,
+            )
+            for cm in cands
+        ]
+        if not any(s is not None for s in scoped_name_sets):
+            return attrs, set()
+        governed_names: set[str] = set()
+        for s in scoped_name_sets:
+            if s:
+                governed_names |= s
+
+        visible: list[ConfigAttr] = []
+        suppressed: set[str] = set()
+        for attr in attrs:
+            vn = attr.variable_name
+            vn_flat = vn.lower().replace("_", "")
+            if any(frag in vn_flat for frag in _NEVER_SUPPRESS_FRAGMENTS):
+                visible.append(attr)
+            elif vn in governed_names:
+                visible.append(attr)
+            elif vn in _CONFIRMED_DEAD_ATTRS:
+                # Verified-dead override -- skip the "total silence" carve-
+                # out below for these specific, cross-checked attrs.
+                suppressed.add(vn)
+            elif not any(
+                dt_attr_ever_governed_for_cpq_model(cm, vn, workspace_id, catalog_prefix, cache)
+                for cm in cands
+            ):
+                # No attrSequence row anywhere (any base model, any
+                # candidate CPQModel) ever mentions this attr -- silence,
+                # not a confident exclusion. Leave it visible/askable.
+                visible.append(attr)
+            else:
+                suppressed.add(vn)
+        return visible, suppressed
+
+    @staticmethod
+    def _compute_hidden_master_string(
+        filled: dict[str, str],
+        workspace_id: int | None,
+        catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+        attrs: list[ConfigAttr] | None = None,
+        var_name: str = "hiddenMasterStringForAstroPortable_astro",
+        separator_var_name: str = "hidddenRecordSeparator_allFamilly",
+    ) -> str | None:
+        """Real, generic replacement for a real BM script this catalog can't
+        execute ("Set Hidden Master String For Astro Portable" and its
+        siblings): the delimited list of attribute names the ingested
+        attrSequence Data Table says apply to the current product's
+        CPQModel/BaseModel pair -- exactly what dozens of "hide if no
+        values available" hiding-rule scripts check membership in via
+        SPLIT()/findinarray() (docs/CPQ_HIDDEN_MASTER_STRING_HIDING_RULE_
+        GAP_PLAN_2026_08_10.md). Reuses the SAME governed-name computation
+        `_suppress_ungoverned_attrs` already runs -- the gap here was
+        never the data, it was that nothing exposed this specific
+        variable to the hiding-rule evaluator.
+
+        `var_name` is accepted (not hardcoded into the body) so a sibling
+        master-string variable following the identical attrSequence-
+        lookup shape could reuse this same method later -- but the
+        result is only ever written into `filled` under this parameter's
+        actual value by the caller, never assumed here.
+
+        Returns `None` (leave the caller's `filled` untouched) when:
+          - `workspace_id` is `None`, or Product/Base Model aren't filled
+            yet -- the real script needs both too, same guard as
+            `_suppress_ungoverned_attrs`.
+          - no CPQModel candidate has ANY attrSequence coverage at all for
+            this base model -- an unresolvable "unknown", never
+            fabricated as an empty string. An empty string would make
+            every downstream script's `findinarray(...) == -1` branch
+            fire and hide everything, which is worse than leaving the
+            script "unknown" (matches `apply_hiding_rules`' own
+            "unknown -> don't hide" default for every OTHER unresolvable
+            script).
+
+        The join separator is read from `filled` first (in case a real
+        turn already resolved it the same way BigMachines' own runtime
+        would), else from the separator attribute's own real, ingested
+        `default_value` when `attrs` is supplied -- never a bare
+        hardcoded literal, so this stays correct for any catalog whose
+        export uses a different separator string.
+        """
+        if workspace_id is None:
+            return None
+        product = filled.get("productSelectionProduct_all", "")
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not product or not base_model:
+            return None
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        if not cands:
+            return None
+        scoped_name_sets = [
+            dt_governed_attr_names_for_base_model(
+                cm, base_model, workspace_id, catalog_prefix, cache,
+            )
+            for cm in cands
+        ]
+        if not any(s is not None for s in scoped_name_sets):
+            return None
+        governed_names: set[str] = set()
+        for s in scoped_name_sets:
+            if s:
+                governed_names |= s
+
+        sep = filled.get(separator_var_name, "")
+        if not sep and attrs:
+            sep_attr = next(
+                (a for a in attrs if a.variable_name == separator_var_name), None,
+            )
+            if sep_attr and sep_attr.default_value:
+                sep = sep_attr.default_value
+        if not sep:
+            sep = "@@@"
+
+        if not governed_names:
+            return ""
+        return "".join(f"{name}{sep}" for name in sorted(governed_names))
+
+    @staticmethod
+    def _invalidate_inconsistent_paired_values(
+        filled: dict[str, str], sources: dict[str, str],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> set[str]:
+        """Variable names to clear because their currently-filled value
+        contradicts a linked attribute's currently-filled value, per real
+        ingested Data Table rows (data_table_resolver.
+        find_inconsistent_filled_pairs -- see its own docstring for the
+        live-confirmed Bands/BandPlus example). Clearing both lets the
+        next evaluate_rules_loop pass re-resolve them together instead of
+        leaving a structurally-invalid combination locked in.
+
+        Never clears a variable whose value traces back to something the
+        customer said or confirmed -- filled_source in
+        `CpqEngine._CONFIRMED_SOURCES` ("user", "hint", "cascade"), the same
+        boundary `apply_recommendation_rules`' `_NEVER_OVERRIDE` and
+        `build_standalone_payload`'s own none-sentinel handling already use
+        -- this check second-guesses two independent auto-fill guesses,
+        never a real answer. Live-confirmed bug (2026-08-10): this
+        previously only excluded "user", so a "hint"-sourced value (e.g.
+        `ultimateDestinationCountry` mined from turn 1's free-text order)
+        got silently cleared and re-asked mid-conversation the moment a
+        LATER, unrelated cascade (Hardware Version) changed `base_model`/
+        `productSelectionProduct_all` enough for this pass's Data-Table-
+        scoped pairing to flag it -- even though the customer had already
+        given it.
+        `None`/no workspace_id is a complete no-op.
+        """
+        if workspace_id is None:
+            return set()
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return set()
+        product = filled.get("productSelectionProduct_all", "")
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md (RC3,
+        # 2026-08-24): intersection, not union. `base_model` can legitimately
+        # map to multiple real CPQModel candidates (a genuine cross-SKU
+        # base-model-sharing case -- see _cpq_model_candidates' own
+        # docstring). Live-confirmed bug: 'ICE KIT' and 'SINGLE PACK
+        # CLAMSHELL' are valid under APXNEXTENHANCED (the actual confirmed
+        # product) but don't exist under APXNEXTXN5G's rows at all --
+        # union logic vetoed them anyway. A combo is only a real
+        # contradiction if NO candidate model accepts it, matching the
+        # "try each candidate, only fail if all fail" fallback philosophy
+        # _cpq_model_candidates already documents for itself.
+        per_model_invalid = [
+            dt_find_inconsistent_filled_pairs(
+                cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
+            )
+            for cpq_model in cands
+        ]
+        invalid = set.intersection(*per_model_invalid) if per_model_invalid else set()
+        return {vn for vn in invalid if sources.get(vn) not in CpqEngine._CONFIRMED_SOURCES}
+
+    @staticmethod
+    def find_confirmed_data_table_conflicts(
+        filled: dict[str, str], sources: dict[str, str],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> set[tuple[str, str]]:
+        """The specific edge case `_invalidate_inconsistent_paired_values`
+        deliberately leaves untouched: a real, data-proven-invalid pair
+        where BOTH sides are customer-confirmed (`CpqEngine.
+        _CONFIRMED_SOURCES` -- "user", "hint", "cascade"). Neither side can
+        be silently self-corrected (both are real facts the customer gave),
+        so this is surfaced for an explicit re-ask instead -- same
+        discipline `_reask_stale_constraint_violations` already applies to
+        constraint-rule violations
+        (docs/CPQ_RULE_CONSISTENCY_VALIDATION_PLAN.md §4.1), extended to
+        Data-Table-proven conflicts
+        (docs/CPQ_BOTH_CONFIRMED_DATA_TABLE_CONFLICT_REASK_PLAN_2026_08_10.md).
+
+        `None`/no workspace_id, or no base model resolved yet, is a
+        complete no-op -- same convention as
+        `_invalidate_inconsistent_paired_values`.
+        """
+        if workspace_id is None:
+            return set()
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return set()
+        product = filled.get("productSelectionProduct_all", "")
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        confirmed_conflicts: set[tuple[str, str]] = set()
+        for cpq_model in cands:
+            for attr_a, attr_b in dt_find_inconsistent_filled_pairs_detailed(
+                cpq_model, base_model, filled, workspace_id, catalog_prefix, cache,
+            ):
+                if (sources.get(attr_a) in CpqEngine._CONFIRMED_SOURCES
+                        and sources.get(attr_b) in CpqEngine._CONFIRMED_SOURCES):
+                    confirmed_conflicts.add((attr_a, attr_b))
+        return confirmed_conflicts
+
+    @staticmethod
+    def _resolve_via_data_tables(
+        vn: str, filled: dict[str, str], valid_opts: list[MenuOption],
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> MenuOption | None:
+        """Real ingested Oracle CPQ Data Table lookup
+        (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_2026_08_07.md
+        §11-§12), tried only when script-based governance already failed to
+        resolve `vn`. Returns a menu option ONLY when the table resolves to
+        exactly one legal value that is also a real option on this attr --
+        2+ legal values, 0 legal values, no table data at all, or no
+        `workspace_id` (caller didn't opt in) all return None (never guess),
+        matching every other never-guess branch in this method.
+        """
+        if workspace_id is None:
+            return None
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return None
+        product = filled.get("productSelectionProduct_all", "")
+        for cpq_model in _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        ):
+            values = dt_resolve_whitelist_values(
+                cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
+            )
+            if values is None:
+                continue
+            if len(values) != 1:
+                # This candidate is ambiguous -- try the REST of the
+                # candidate tuple before giving up. `_cpq_model_candidates`
+                # appends base-model-specific candidates after the
+                # product-derived primary one(s) (confirmed live:
+                # H45TGU9PW8AN's real whitelist rows are keyed to
+                # APXNEXTXNSINGLE, only reachable via that appended tail,
+                # even though the product resolves primary to
+                # APXNEXTSINGLE/APXNEXTSINGLE_BOM). Returning None here
+                # would end the search the moment the FIRST candidate
+                # happens to be ambiguous, even when a later candidate
+                # would have resolved to exactly one confirmed value --
+                # the same "continue past ambiguous, don't abort" contract
+                # `_resolve_narrowed_legal_values` already uses below.
+                continue
+            return next((o for o in valid_opts if o.item_value == values[0]), None)
+        return None
+
+    @staticmethod
+    def _resolve_narrowed_legal_values(
+        vn: str, filled: dict[str, str], workspace_id: int, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> list[str] | None:
+        """Real ingested Data Table whitelist for `vn`, however many values
+        it narrows to -- unlike `_resolve_via_data_tables` (which only ever
+        returns when exactly one value is confidently correct), this
+        returns the full narrowed set so a blind-pick fallback can choose
+        from real, data-proven-legal options instead of the unfiltered raw
+        catalog menu (docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_
+        PLAN_2026_08_10.md). `None` -- no ingested table has any row for
+        this attr in this context (genuinely unknown, not zero); `[]` --
+        real rows exist but none match the current filled state (a
+        confirmed, real "nothing is legal right now" answer); `[v1, v2,
+        ...]` -- the real, catalog-sourced legal set, however many members.
+        """
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return None
+        product = filled.get("productSelectionProduct_all", "")
+        for cpq_model in _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        ):
+            values = dt_resolve_whitelist_values(
+                cpq_model, base_model, vn, filled, workspace_id, catalog_prefix, cache,
+            )
+            if values is not None:
+                return values
         return None
 
     def auto_fill(
@@ -3433,8 +8688,96 @@ class CpqEngine:
         rec_rules: list[RecommendationRule] | None = None,
         negated_vns: set[str] | None = None,
         skip_always_ask: set[str] | None = None,
+        bml_eval: BmlEvaluator | None = None,
+        validation_rules: list["ValidationRule"] | None = None,
+        display_order: dict[str, int] | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+        _dt_cache: dict[tuple[int, str], tuple] | None = None,
+        hiding_rules: list["HidingRule"] | None = None,
+        _default_fill_signatures: dict[str, tuple] | None = None,
+        _signature_exclude_vns: frozenset[str] | None = None,
+        grid_declined_vns: frozenset[str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[ConfigAttr]]:
         """Auto-fill attributes. Never assigns None/null/empty values.
+
+        grid_declined_vns — optional (default None, no-op for every
+        existing caller). docs/CPQ_SVX_MOUNTING_TYPE_ARRAY_GRID_MULTI_
+        SELECT_PLAN_2026_08_25.md: a grid-selector attr (one of
+        `resolve_array_grid_links`' keys — a select_type=="multi" attr
+        driving per-row quantity companions, e.g. SVX's mountingTypeArray_
+        viSoln or APX Next's itemTypeVX650_astro) that already has 1+
+        picks is kept in `pending` for another round as long as any
+        currently-valid (constraint/rec-rule-narrowed) option remains
+        unpicked — so a customer can add several rows across turns, not
+        just the first one they name. `grid_declined_vns` is the
+        customer's own escape hatch: once they explicitly decline further
+        picks (session-level, set by the caller), that vn is treated as
+        settled regardless of how many valid options remain unpicked.
+        Structural — keyed only on `resolve_array_grid_links`' own output
+        and `filled_multi`/`constrained_opts` state, no attribute or
+        catalog name anywhere in the check.
+
+        _default_fill_signatures — docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_
+        2026_08_19.md: optional, mutated in place. When supplied, a
+        "default_first_available"-sourced attribute is only re-derived when
+        `_fill_signature(...)` has changed since it was last (re)derived --
+        `None` (the default) is a complete no-op, identical to every caller
+        that doesn't pass it (every existing direct test call site included).
+        Owned by `evaluate_rules_loop`, which declares one fresh dict per
+        turn and threads it through every pass, so the gate only ever
+        suppresses redundant re-derivation WITHIN one turn's passes, never
+        across turns (pass 0 of a new turn always has an empty dict to
+        compare against, so it always re-attempts derivation).
+
+        _signature_exclude_vns — docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_
+        2026_08_19.md (RC3, 2026-08-24): optional; variable names to leave
+        out of `_fill_signature(...)`'s snapshot of `filled`/`filled_multi`.
+        `None` (the default) is a complete no-op. Exists because a small,
+        provably non-converging subset of attributes (e.g. a real Data-Table
+        pairing conflict that `_invalidate_inconsistent_paired_values`
+        re-evicts every single pass without ever resolving) would otherwise
+        change the WHOLE-dict signature every pass for every OTHER
+        `default_first_available` attribute too, defeating
+        `_default_fill_signatures`'s gate for the entire turn even though
+        only a handful of attributes are actually still in flux. Owned by
+        `evaluate_rules_loop`, which grows this set only once the SAME
+        invalidated set repeats across two consecutive passes -- a genuinely
+        still-narrowing attribute (a different set pass over pass) is never
+        added, so it keeps getting a fresh signature every pass as before.
+
+        hiding_rules — docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_
+        PLAN_2026_08_10.md: optional; when supplied, a pending-bound attr
+        whose ONLY hiding rule structurally depends on a confirmed-absent
+        data table (`_KNOWN_MISSING_DATA_TABLES`) is warned-and-skipped
+        instead of asked forever. `None` (the default) is a complete no-op,
+        identical to every caller that doesn't pass it.
+
+        workspace_id — optional; when supplied, an attribute whose only
+        governing rule is script-based and failed to resolve
+        (`_NEVER_GUESS_SCRIPT_GOVERNED`) gets one more real-data attempt via
+        `data_table_resolver.py` before falling through to pending
+        (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_2026_08_07.md
+        §11-§12) — real ingested Oracle CPQ Data Table rows, not a guess.
+        `None` (the default) skips this tier entirely, identical to
+        pre-existing behavior for every caller that doesn't pass it.
+        catalog_prefix — forwarded to the same lookup for workspaces
+        holding more than one ingested catalog (see `_catalog_prefix`).
+
+        display_order — optional {variable_name: rank} from
+        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+        PLAN.md §2c). When supplied: (a) the returned `pending` list is
+        sorted by rank instead of catalog/discovery order, so questions
+        get asked in the same sequence the real native UI shows them; (b)
+        only `is_decision_attr` anchors (Country/Region/Hardware
+        Version/Product) and grid-linked selectors reach `pending` at all
+        — every other attr the final ask-branch would otherwise have
+        asked about is instead SKIPPED (left entirely unfilled, not
+        defaulted-empty) when nothing upstream (hint/recommendation/
+        default) resolved it. Sibling-forced re-asks
+        (`enforce_exclusive_sibling_families`) are a separate code path
+        and are unaffected either way. `None` (the default) keeps today's
+        "ask everything with options" behavior completely unchanged.
 
         Priority order (first match wins):
           1. Already filled in a prior turn.
@@ -3496,11 +8839,23 @@ class CpqEngine:
         select_type handling within step 4:
           - single/boolean: default_value if present, else first option by
             order (boolean's "first option" is well-defined — only two states).
-          - multi: the allowed set from an active constraint rule IS the
-            selected set (written to the returned filled_multi); with no
-            active constraint and no default, left unselected — auto-picking
-            several options with nothing to justify the choice is the same
-            guessing risk D2 exists to prevent.
+          - multi, non-required: an active constraint narrowing to EXACTLY
+            ONE remaining option is auto-filled (written to filled_multi),
+            same certainty threshold as single-select's "exactly one
+            choice" case (confirmed live, docs/CPQ_MULTISELECT_AUTOFILL_
+            OVERSELECTION_PLAN_2026_08_05.md: a near-universally-true
+            constraint narrowing a menu to 9 of 11 options is not a
+            recommendation to select all 9 — auto-selecting all 9 there
+            was the original bug). Narrowing to SEVERAL remaining options
+            (still ambiguous) prefers the XML default_value when it's
+            still one of the currently-valid options; with no matching
+            default, defaults to empty rather than asking — an explicit
+            product decision (same plan doc's "explicit product decision"
+            addendum) to favor fewer conversational questions over asking
+            about every unresolved optional multi-select, accepting the
+            known, documented risk that a sibling rule keyed on "does NOT
+            contain value X" may treat that default-empty as a genuine
+            confirmed answer.
 
         Returns:
           filled         — {variable_name: item_value} for API payload
@@ -3526,6 +8881,7 @@ class CpqEngine:
         APX Next, 2 active flows) keeps today's unchanged always-ask
         behavior.
         """
+        dt_cache: dict[tuple[int, str], tuple] = _dt_cache if _dt_cache is not None else {}
         filled: dict[str, str] = dict(already_filled or {})
         filled_multi = already_filled_multi if already_filled_multi is not None else {}
         display_filled: dict[str, str] = {}
@@ -3572,7 +8928,7 @@ class CpqEngine:
 
         def _satisfied_recommendation(
             attr: "ConfigAttr", candidate_opts: list["MenuOption"],
-        ) -> tuple[str, str] | None:
+        ) -> tuple[str, str, str] | None:
             """A targeted recommendation whose condition is ALREADY true
             in the current `filled` state — more specific than a generic
             XML default_value and must win over it (confirmed live:
@@ -3581,26 +8937,59 @@ class CpqEngine:
             3 ran unconditionally before any rule got a chance to apply,
             since apply_recommendation_rules() never revisits an attr
             already in `filled` — docs/CPQ_SESSION_2_OPEN_ISSUES.md).
+
+            Also handles script/condition_script-backed rules (via
+            bml_eval), not just the plain condition_attr_id/condition_value
+            pair — same Tier-1/Tier-2 machinery apply_recommendation_rules
+            uses. Purely additive: a script that resolves is always a
+            correct answer, never a wrong guess, and never asks a
+            question that wasn't already going to be asked (it can only
+            resolve an attr that would otherwise stay unfilled/pending).
+            bml_eval=None (caller opted out) falls back to skipping script
+            rules entirely, same as apply_recommendation_rules.
+
+            Returns (item_value, display_name, rule_name) — the rule_name
+            (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2e) is the
+            specific rule that fired, for the rule-trace attribution call
+            sites use it for instead of the old generic "auto_fill:rule"
+            tag. Every return path below already has `rrule` in scope, so
+            this is free — no separate lookup.
             """
             for aid_key in (attr.entity_id, attr.source_id):
                 if aid_key is None:
                     continue
                 for rrule in rec_by_target.get(aid_key, []):
-                    cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
-                    if not cond_attr:
-                        continue
-                    cond_val = filled.get(cond_attr.variable_name)
-                    if cond_val is None or not _condition_value_matches(
-                        cond_val, rrule.condition_value
-                    ):
-                        continue
+                    if rrule.script is not None:
+                        if bml_eval is None:
+                            continue
+                        allowed = bml_eval.allowed_values_for_script(rrule.script, filled)
+                        if not allowed or len(allowed) != 1:
+                            continue  # unknown, or ambiguous — never guess
+                        recommended_value = allowed[0]
+                    elif rrule.condition_script is not None:
+                        if bml_eval is None:
+                            continue
+                        fires = bml_eval.condition_holds(rrule.condition_script, filled)
+                        if fires is not True:
+                            continue  # False or unknown — never guess, doesn't fire
+                        recommended_value = rrule.recommended_value
+                    else:
+                        cond_attr = attr_by_rule_id.get(rrule.condition_attr_id)
+                        if not cond_attr:
+                            continue
+                        cond_val = filled.get(cond_attr.variable_name)
+                        if cond_val is None or not _condition_value_matches(
+                            cond_val, rrule.condition_value, rrule.condition_operator
+                        ):
+                            continue
+                        recommended_value = rrule.recommended_value
                     match = next(
                         (o for o in candidate_opts
-                         if o.item_value.lower() == rrule.recommended_value.lower()),
+                         if o.item_value.lower() == recommended_value.lower()),
                         None,
                     )
                     if match:
-                        return match.item_value, match.display_name
+                        return match.item_value, match.display_name, rrule.rule_name
             return None
 
         # Selectors resolve_array_grid_links() confirmed drive a real
@@ -3612,6 +9001,115 @@ class CpqEngine:
         # auto-empty branch below so they're asked like any other real
         # question instead; every other optional multi-select is unaffected.
         grid_selector_vns = set(self.resolve_array_grid_links(attrs).keys())
+
+        # Attrs a real ingested attrSequence Data Table confirms govern the
+        # CURRENT base model (docs/CPQ_CARRIER_WIRELESS_FREQBAND_DATA_GAP_
+        # PROOF_2026_08_07.md §1-§3, §9): must be treated as askable by §2c's
+        # display-order gate below the same way `grid_selector_vns` already
+        # is. Without this, an attr that legitimately survives
+        # `_suppress_ungoverned_attrs` (confirmed governed, or never
+        # governed anywhere so left visible) could still be silently
+        # dropped by §2c's blanket "not a decision attr → skip" rule,
+        # exactly reproducing the original bug (a real question the
+        # customer should see just never appears) one layer further down.
+        # Also mirrors `_suppress_ungoverned_attrs`'s OTHER carve-out here:
+        # an attr no attrSequence row anywhere (any base model, any
+        # candidate CPQModel) ever mentions is silence, not a confident
+        # exclusion, so it survives suppression -- but §2c's gate below
+        # would otherwise still silently drop it as "not a decision attr".
+        # `_dt_never_governed_anywhere` memoizes that per-vn check (real
+        # rows can be up to tens of thousands; only compute once per attr
+        # actually reaching this branch, not for every attr up front).
+        # Base models are sometimes shared across unrelated regional/federal
+        # CPQModel siblings (confirmed live 2026-08-09: H55TGT9RW8AN has ZERO
+        # real coverage under APXNEXTSINGLE -- the primary, product-derived
+        # candidate for "APX NEXT Single Band" -- but 120 attrs' worth of
+        # coverage under APXNEXTINTL/APXNEXTINTLFED, discovered only via the
+        # base_model= widening below). Using the full widened candidate set
+        # to decide "must always ask, never blind-guess" inherited that
+        # unrelated sibling's entire governance scope onto a domestic order,
+        # forcing 120 real questions (Configuration Type, System Key,
+        # Wireless Carrier, ...) that the actual Single Band data would
+        # never require. `_dt_primary_candidates` (product-derived only, no
+        # base_model widening) is what should gate always-ask; the full,
+        # base-model-widened `_dt_candidates` is kept for VALUE RESOLUTION
+        # only (_resolve_via_data_tables, _dt_never_governed_anywhere) --
+        # that's the mechanism the keypad-type XN-variant fix depends on and
+        # must stay unchanged.
+        # Base Model region-allow resolution (confirmed live, 2026-08-10):
+        # NewCountryRegMapping-shaped ("region_rule") Data Table rows carry
+        # a real per-(CPQModel, region[, country]) ALLOW default for
+        # modelSelectionbaseModel_astro -- the same answer Oracle CPQ's own
+        # "Set Base Model" recommendation rules compute at runtime against
+        # `Oracle_BomItemMap` (a live table never present in any export
+        # seen so far). Computed here, BEFORE base model is filled, using
+        # only the PRIMARY (product-derived) CPQModel candidates -- unlike
+        # `_dt_candidates` below (which also widens by base_model once one
+        # is chosen), there is no base model yet to widen from. Only ever
+        # used when it resolves to exactly one value (see
+        # `resolve_region_allow_value`'s tie-safe contract); otherwise
+        # falls through to the unconditional always-ask anchor unchanged.
+        _bm_region_allow_value: str | None = None
+        if workspace_id is not None and not filled.get("modelSelectionbaseModel_astro"):
+            _bm_product = filled.get("productSelectionProduct_all", "")
+            if _bm_product:
+                _bm_country = filled.get("ultimateDestinationCountry") or country or ""
+                _bm_region = filled.get("modelSelectionRegion_astro") or (
+                    _COUNTRY_TO_REGION.get(_bm_country.strip().lower(), "") if _bm_country else ""
+                )
+                if _bm_region:
+                    _bm_primary_candidates = _cpq_model_candidates(
+                        _bm_product, workspace_id, catalog_prefix, _dt_cache,
+                    )
+                    for _bm_cm in _bm_primary_candidates:
+                        _bm_v = dt_resolve_region_allow_value(
+                            "modelSelectionbaseModel_astro", _bm_cm, _bm_region,
+                            workspace_id, catalog_prefix, _dt_cache, country=_bm_country,
+                        )
+                        if _bm_v:
+                            _bm_region_allow_value = _bm_v
+                            break
+
+        _dt_governed_vns: set[str] = set()
+        _dt_candidates: tuple[str, ...] = ()
+        if workspace_id is not None:
+            _dt_base_model = filled.get("modelSelectionbaseModel_astro", "")
+            if _dt_base_model:
+                _dt_product = filled.get("productSelectionProduct_all", "")
+                _dt_primary_candidates = _cpq_model_candidates(
+                    _dt_product, workspace_id, catalog_prefix, _dt_cache,
+                )
+                _dt_candidates = _cpq_model_candidates(
+                    _dt_product, workspace_id, catalog_prefix, _dt_cache, base_model=_dt_base_model,
+                )
+                for _dt_cm in _dt_primary_candidates:
+                    _dt_scoped = dt_governed_attr_names_for_base_model(
+                        _dt_cm, _dt_base_model, workspace_id, catalog_prefix, _dt_cache,
+                    )
+                    if _dt_scoped:
+                        _dt_governed_vns |= _dt_scoped
+
+        def _dt_never_governed_anywhere(vn: str) -> bool:
+            if not _dt_candidates:
+                return False
+            return not any(
+                dt_attr_ever_governed_for_cpq_model(
+                    cm, vn, workspace_id, catalog_prefix, _dt_cache,
+                )
+                for cm in _dt_candidates
+            )
+
+        # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_PLAN_2026_08_
+        # 10.md -- attrs whose ONLY hiding rule structurally depends on a
+        # confirmed-absent data table (_KNOWN_MISSING_DATA_TABLES) can never
+        # have that rule resolve. Precomputed once, same pattern as
+        # _dt_governed_vns above. hiding_rules=None (no caller passes it)
+        # keeps this empty -- a complete no-op, identical to today's
+        # behavior for every existing call site.
+        _missing_data_target_ids: set[int] = {
+            rule.target_attr_id for rule in (hiding_rules or [])
+            if _hiding_rule_needs_missing_data_table(rule, workspace_id)
+        }
 
         # Two "optional"-tier attrs (no rule, no default — eligible only via
         # the widened Phase N fallback) that share a real option value are
@@ -3642,8 +9140,26 @@ class CpqEngine:
 
         for attr in attrs:
             vn = attr.variable_name
+            # §2e (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): set by
+            # _satisfied_recommendation's call sites below when it returns
+            # a match, so the trace call downstream can attribute the fill
+            # to the specific rule that fired instead of a generic tag.
+            fired_rule_name: str | None = None
 
             if vn in filled:
+                # Deliberately cleared by the user (D4,
+                # docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md) — an empty
+                # value tagged filled_source="user" is a standing "leave
+                # this blank" decision, the single-select counterpart of
+                # filled_multi's existing empty-plus-"user" "(none)"
+                # convention below. Never re-guessed by the blind
+                # first-by-order fallback on a later pass; only a genuine
+                # rule re-assertion (apply_recommendation_rules' truthy
+                # check, not `in filled`) overrides it, exactly like it
+                # would override any other stale value.
+                if filled[vn] == "" and sources.get(vn) == "user":
+                    display_filled[vn] = "(none)"
+                    continue
                 # Already answered in a prior turn — but a cascade may have
                 # narrowed this attr's allowed set since then (single-select
                 # counterpart of the multi-select re-validation below, §5/
@@ -3661,6 +9177,60 @@ class CpqEngine:
                     filled.pop(vn, None)
                     display_filled.pop(vn, None)
                     sources.pop(vn, None)
+                elif sources.get(vn) == "default_first_available":
+                    # Live bug (2026-08-09): this value was picked with
+                    # NOTHING to justify it (§2f's blind first-by-order
+                    # fallback, when neither a satisfied recommendation nor
+                    # the real Data Table constraint resolved a value on
+                    # THAT pass) -- but evaluate_rules_loop's `filled` state
+                    # keeps growing richer pass over pass, and the Data
+                    # Table lookup that failed to narrow to one value on an
+                    # EARLY pass (not enough context yet) can very much
+                    # succeed on a LATER one. Confirmed live:
+                    # extendRangeTo762764MHz_astro got blind-picked "YES"
+                    # on an early pass; the real ingested constraint data,
+                    # given the FULL final filled state, unambiguously says
+                    # "NO" -- but nothing ever re-checked it once filled,
+                    # same "single-select re-validation" gap the
+                    # multi-select branch below already closes for its own
+                    # "default_first_available" tag. Re-open it every pass
+                    # instead of locking in a guess forever -- worst case
+                    # (still no real resolution) it just gets re-guessed
+                    # identically; best case, a real answer now overrides
+                    # the earlier guess before the customer ever sees the
+                    # wrong one.
+                    #
+                    # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md:
+                    # "every pass" was multiplying evaluate_rules_loop's cost
+                    # up to 8x per turn -- gate the re-derivation on whether
+                    # anything relevant has actually changed since it was
+                    # last (re)derived. Skipped entirely when the caller
+                    # doesn't opt in (`_default_fill_signatures is None`),
+                    # identical to every pre-existing call site.
+                    if _default_fill_signatures is not None:
+                        _sig_filled = (
+                            filled if not _signature_exclude_vns else
+                            {k: v for k, v in filled.items() if k not in _signature_exclude_vns}
+                        )
+                        _sig_filled_multi = (
+                            filled_multi if not _signature_exclude_vns else
+                            {k: v for k, v in filled_multi.items() if k not in _signature_exclude_vns}
+                        )
+                        _cur_sig = _fill_signature(
+                            _sig_filled, _sig_filled_multi, {a.entity_id for a in attrs},
+                        )
+                        if _default_fill_signatures.get(vn) == _cur_sig:
+                            matched_display = next(
+                                (o.display_name for o in attr.options
+                                 if o.item_value == filled[vn]),
+                                filled[vn],
+                            )
+                            display_filled[vn] = matched_display
+                            continue
+                        _default_fill_signatures[vn] = _cur_sig
+                    filled.pop(vn, None)
+                    display_filled.pop(vn, None)
+                    sources.pop(vn, None)
                 else:
                     matched_display = next(
                         (o.display_name for o in attr.options
@@ -3672,12 +9242,57 @@ class CpqEngine:
             if vn in filled_multi:
                 allowed_now = constrained_opts.get(attr.entity_id) if constrained_opts else None
                 if allowed_now is not None:
-                    allowed_set = set(allowed_now)
-                    kept = [v for v in filled_multi[vn] if v in allowed_set]
-                    lost = [v for v in filled_multi[vn] if v not in allowed_set]
-                    if lost:
-                        dropped[vn] = lost
-                        filled_multi[vn] = kept
+                    if sources.get(vn) == "default_first_available":
+                        # This value was picked with NOTHING to justify it
+                        # (no active constraint, no default_value) on some
+                        # earlier pass — a real constraint now exists for
+                        # this attr that didn't (or wasn't yet computed)
+                        # when the guess was made. Re-open unconditionally
+                        # rather than merely checking the guess is still
+                        # technically a member of the new allowed set —
+                        # "still happens to be valid" is not the same as
+                        # "is the answer Fix 3/4's own logic would now
+                        # produce", and re-deriving is idempotent (falls
+                        # through to the same branch below, which converges
+                        # to the same answer if run again with unchanged
+                        # inputs).
+                        #
+                        # docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md
+                        # — same gate as the single-select branch above: only
+                        # actually re-derive when something relevant changed
+                        # since last time.
+                        if _default_fill_signatures is not None:
+                            _sig_filled = (
+                                filled if not _signature_exclude_vns else
+                                {k: v for k, v in filled.items() if k not in _signature_exclude_vns}
+                            )
+                            _sig_filled_multi = (
+                                filled_multi if not _signature_exclude_vns else
+                                {k: v for k, v in filled_multi.items() if k not in _signature_exclude_vns}
+                            )
+                            _cur_sig = _fill_signature(
+                                _sig_filled, _sig_filled_multi, {a.entity_id for a in attrs},
+                            )
+                            if _default_fill_signatures.get(vn) == _cur_sig:
+                                display_filled[vn] = ", ".join(
+                                    next(
+                                        (o.display_name for o in attr.options
+                                         if o.item_value == v),
+                                        v,
+                                    )
+                                    for v in filled_multi[vn]
+                                )
+                                continue
+                            _default_fill_signatures[vn] = _cur_sig
+                        filled_multi.pop(vn, None)
+                        sources.pop(vn, None)
+                    else:
+                        allowed_set = set(allowed_now)
+                        kept = [v for v in filled_multi[vn] if v in allowed_set]
+                        lost = [v for v in filled_multi[vn] if v not in allowed_set]
+                        if lost:
+                            dropped[vn] = lost
+                            filled_multi[vn] = kept
                 if not filled_multi.get(vn):
                     if sources.get(vn) == "user":
                         # An EMPTY selection the user explicitly confirmed
@@ -3697,6 +9312,28 @@ class CpqEngine:
                         next((o.display_name for o in attr.options if o.item_value == v), v)
                         for v in filled_multi[vn]
                     )
+                    # Grid-selector re-ask (docs/CPQ_SVX_MOUNTING_TYPE_
+                    # ARRAY_GRID_MULTI_SELECT_PLAN_2026_08_25.md): live-
+                    # confirmed the customer naming just ONE of 5-6
+                    # narrowed mounting-type options permanently settled
+                    # this attr — the other real, still-valid options were
+                    # never offered again, even though the real native UI
+                    # is a grid letting several rows be filled across
+                    # turns. `vn in grid_selector_vns` is the SAME
+                    # structural signal (resolve_array_grid_links) that
+                    # already forces this attr onto `pending` on its FIRST
+                    # ask (see the is_decision_attr check below) — applying
+                    # it here too, gated on unpicked options actually
+                    # remaining and the customer not having declined
+                    # further picks, is not a new exception, just this
+                    # existing exception surviving past the first pick.
+                    if (
+                        vn in grid_selector_vns
+                        and vn not in (grid_declined_vns or ())
+                        and self.grid_selector_remaining_options(
+                            attr, filled_multi, constrained_opts)
+                    ):
+                        pending.append(attr)
                     continue
 
             if attr.hidden:
@@ -3749,19 +9386,29 @@ class CpqEngine:
                                 value = opt.item_value
                                 display = opt.display_name
                                 break
-                    # Priority 4: country full-name → abbreviation shorthand.
-                    # Only for the "country" hint key — a full country name
-                    # can never substring-match a shorter code-only option
-                    # (chargerCountryPlug_apcr's "US", not "United States").
+                    # Priority 4: country alias group (bidirectional) —
+                    # a hint value that's ANY known alias for a country
+                    # (full name, official name, alpha-2, alpha-3, or
+                    # common colloquial name) matches an option whose own
+                    # item_value/display_name is any OTHER alias in the
+                    # same group. Fixed 2026-08-14: the old lookup was
+                    # keyed one-directionally (full name -> abbreviation
+                    # only), so a hint value that was ITSELF an
+                    # abbreviation (e.g. "usa") could never look anything
+                    # up — `_COUNTRY_HINT_SHORTHAND.get("usa", ())` always
+                    # returned empty since "usa" was never a dict key.
+                    # _country_alias_group is symmetric, closing that gap
+                    # for real, for all 249 real ISO countries, not just
+                    # the 2 the old dict hand-covered.
                     if not value and hint_key == "country":
-                        for code in _COUNTRY_HINT_SHORTHAND.get(hv_lower, ()):
+                        alias_group = _country_alias_group(hv_lower)
+                        if alias_group:
                             for opt in attr.options:
-                                if opt.item_value.upper() == code or opt.display_name.upper() == code:
+                                if (opt.item_value.lower() in alias_group
+                                        or opt.display_name.lower() in alias_group):
                                     value = opt.item_value
                                     display = opt.display_name
                                     break
-                            if value:
-                                break
                     # Never assign an arbitrary hint string to a boolean-typed
                     # attr just because its name fragment-matched a hint key
                     # (e.g. "country" is a substring of
@@ -3784,15 +9431,95 @@ class CpqEngine:
             # 2. Recommendation rule already satisfied by the current filled
             # state — takes priority over the catalog's generic default_value
             # (see _satisfied_recommendation's docstring for the bug this closes).
-            if not value and rec_by_target and attr.options:
-                rec_match = _satisfied_recommendation(attr, attr.options)
+            #
+            # Constraint-filtered candidates, not the raw `attr.options` menu
+            # (live regression, docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_
+            # PLAN_2026_08_05.md follow-up): a script-backed recommendation
+            # rule with a condition unrelated to the attribute a DIFFERENT,
+            # ALREADY-ACTIVE constraint rule just narrowed can confidently
+            # reassert a value the constraint has already ruled out —
+            # confirmed live: "Default Service Type based on Solution Type
+            # selected" unconditionally returns "ADVANCED" (its own
+            # condition never depends on Hardware Version at all), while a
+            # separate constraint rule keyed on Hardware Version had
+            # already narrowed this same attr to 3 completely different
+            # options. Passing the full, unfiltered menu here let the
+            # recommendation win anyway — every turn, forever — because
+            # _satisfied_recommendation's own membership check
+            # (`candidate_opts`) only protects against a value that was
+            # NEVER a real menu option, not one merely excluded by an
+            # active constraint. This silently produced an internally
+            # inconsistent "Configuration complete" (the recommendation
+            # resolved the attribute so nothing was pending) that a
+            # separate BOM-gate consistency check caught one full turn
+            # later, only once the customer said "confirm".
+            # 2026-08-18 fix (confirmed live via direct repro): a decision-
+            # anchor attr (country/region/hardware version/product --
+            # _DECISION_ANCHOR_VNS) whose CUSTOMER-CONFIRMED value was just
+            # dropped THIS SAME pass (a few lines above, because a real
+            # constraint narrowed it away) must never be silently reasserted
+            # to a DIFFERENT value by a recommendation rule here -- that
+            # silently overwrites a real customer decision with no re-ask,
+            # no warning, and no trace of what happened to their answer.
+            # Skipping this branch lets the attr fall through to `pending`
+            # instead, so the customer is asked to re-confirm -- same
+            # "never silently reguess a real decision" principle
+            # `user_answered_dropped_ids` already enforces for the blind-
+            # pick paths later in this function, extended here to close the
+            # one place it didn't yet cover. Every OTHER attr (not a
+            # decision anchor, or not dropped this pass) is unaffected --
+            # this is a narrow, targeted exclusion, not a change to how
+            # recommendation rules resolve in general.
+            if (
+                not value and rec_by_target and attr.options
+                and not (vn in _DECISION_ANCHOR_VNS and attr.entity_id in user_answered_dropped_ids)
+            ):
+                _allowed_for_rec = (
+                    set(constrained_opts.get(attr.entity_id, []))
+                    if constrained_opts else None
+                )
+                _rec_candidate_opts = [
+                    o for o in attr.options
+                    if _valid(o.item_value)
+                    and (_allowed_for_rec is None or o.item_value in _allowed_for_rec)
+                ]
+                rec_match = _satisfied_recommendation(attr, _rec_candidate_opts)
                 if rec_match:
-                    value, display = rec_match
+                    value, display, fired_rule_name = rec_match
                     source = "rule"
 
             # 3. Default value (pointer-defaults excluded — see
-            # _is_pointer_default above; the post-pass resolves them)
-            if not value and _valid(attr.default_value) and not _is_pointer_default(attr):
+            # _is_pointer_default above; the post-pass resolves them).
+            # Also skipped when an active constraint has already narrowed
+            # this attr's allowed set and the raw default isn't in it
+            # (docs/config_consistency_issues_2026-07-30.md Issue 7
+            # follow-up: the catalog's own generic default_value is not
+            # guaranteed to satisfy a PRODUCT-SPECIFIC constraint rule —
+            # confirmed live, Carry Type's catalog default "2.0 INCH /
+            # 5.08 CM (STANDARD)" is genuinely invalid for APX NEXT Single
+            # Band's own constraint rule, yet this step locked it in
+            # unconditionally before the constraint-aware fallback a few
+            # lines below (which already correctly picks a real, valid
+            # option) ever got a chance to run — forcing a BOM-gate
+            # correction round-trip on every single default order for
+            # this product). Falling through here instead of locking in a
+            # known-bad value lets that existing fallback do its job.
+            _default_excluded_by_constraint = (
+                constrained_opts is not None
+                and attr.entity_id in constrained_opts
+                and attr.default_value not in constrained_opts[attr.entity_id]
+            )
+            if (
+                not value and _valid(attr.default_value)
+                and not _is_pointer_default(attr)
+                and not _default_excluded_by_constraint
+                # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): once a
+                # layout map is loaded, a bare catalog default_value no
+                # longer fills the attribute on its own — falls through to
+                # the final ask-branch, which §2c then skips (not asks)
+                # since this isn't a decision-anchor or grid selector.
+                and display_order is None
+            ):
                 value = attr.default_value
                 source = "default"
                 display = next(
@@ -3800,8 +9527,40 @@ class CpqEngine:
                      if o.item_value == attr.default_value),
                     attr.default_value,
                 )
+                # Issue 5 root cause 3 (docs/config_consistency_issues_
+                # 2026-07-30.md): some menu attrs carry a legacy boolean-era
+                # option pair (item_value "YES"/"NO") alongside a
+                # differently-spelled current/canonical option that shares
+                # the SAME display_name (confirmed live: baselineReleaseSW_
+                # astro has both "YES"->"Baseline Release" and "BASELINE
+                # RELEASE"->"Baseline Release"). If the catalog's
+                # default_value happens to be the bare legacy "YES"/"NO"
+                # spelling, prefer a same-display-name sibling option whose
+                # item_value ISN'T a bare boolean literal — it's the same
+                # real-world choice, just the non-deprecated spelling.
+                # Generic (no attribute names hardcoded): only fires when
+                # such a sibling genuinely exists, never invents a value.
+                if value.strip().upper() in ("YES", "NO"):
+                    _canonical_sibling = next(
+                        (o for o in attr.options
+                         if o.display_name == display
+                         and o.item_value.strip().upper() not in ("YES", "NO")),
+                        None,
+                    )
+                    if _canonical_sibling is not None:
+                        value = _canonical_sibling.item_value
+                        display = _canonical_sibling.display_name
             elif (not value and attr.select_type == "boolean"
-                    and attr.default_value.strip().lower() in ("true", "false")):
+                    and attr.default_value.strip().lower() in ("true", "false")
+                    # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): a
+                    # second, separate default_value branch I missed on the
+                    # first pass — same bare-catalog-default shape as the
+                    # sibling branch above, gated the same way. Found live:
+                    # a boolean attr's "true"/"false" default_value slipped
+                    # through with a "default"-tagged value even after §2d
+                    # shipped, because this branch has its own independent
+                    # default_value check instead of sharing the one above.
+                    and display_order is None):
                 # _valid() treats the literal string "false" as a none-sentinel
                 # (_NONE_VALUES) — correct for single-select dropdowns where
                 # "FALSE" can mean "no selection", but wrong for a genuinely
@@ -3824,6 +9583,10 @@ class CpqEngine:
             # ask regardless of governance.
             is_decision_attr = (
                 any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+                # Hardware Version is MANDATORY on hardware-based catalogs
+                # (APX/aSTRO25) — never blind first-by-order; must be asked
+                # (or matched from NL) before Product is even eligible.
+                or self._is_hardware_version_attr(attr)
                 # productSelectionProduct_all is a shared, catalog-wide
                 # option list (e.g. 325 product-line codes across every
                 # product family) with no rule reliably narrowing it to the
@@ -3835,6 +9598,8 @@ class CpqEngine:
                 # skip_always_ask overrides this ONLY when the caller
                 # already confirmed the real native UI never shows it (see
                 # docstring) — every other catalog keeps this unconditional.
+                # ALSO deferred from pending until hardware is filled — see
+                # _order_pending_hardware_before_product at end of auto_fill.
                 or (
                     vn == "productSelectionProduct_all"
                     and vn not in (skip_always_ask or ())
@@ -3864,6 +9629,40 @@ class CpqEngine:
                 # the exact "asks a question the native UI never shows" bug
                 # this carve-out pattern exists to prevent (Raven review).
                 or ("selectmodel" in vn_flat and vn not in (skip_always_ask or ()))
+                # Confirmed live (2026-08-08): modelSelectionbaseModel_astro
+                # has 16 real menu options and an empty default_value, and
+                # `governed_target_ids` DOES include it (some hiding rule
+                # references it as a CONDITION variable -- an earlier direct
+                # per-rule-type check missed this, using the wrong attribute
+                # name on HidingRule and reporting a false "0 hiding rules"),
+                # but being referenced as a condition is not the same as a
+                # rule ever RESOLVING it -- confirmed live it stays empty
+                # regardless of governed status (§2f's own comment already
+                # notes "'governed' ... really only ever meant 'some rule
+                # cares about this attr,' not 'a rule decided its value'").
+                # Once §2c's display_order-gated skip became active, that
+                # left a genuine, structurally load-bearing customer
+                # decision (16 real, meaningfully different physical base
+                # models) silently unfilled -- everything downstream
+                # (carrier, frequency-band pairing, provisioning) that
+                # conditions on base model never gets a chance to resolve.
+                #
+                # A broader "any ungoverned attr with 2+ options and no
+                # default" rule was tried and reverted -- it can't be
+                # distinguished from a genuinely fine-to-skip optional
+                # attr (confirmed by test_auto_fill_skips_unresolvable_
+                # non_anchor_attr_when_layout_loaded's own "someOptional
+                # Choice_astro" fixture, identically shaped, deliberately
+                # expected to skip) using anything generic available here.
+                # Narrowed instead to the same fragment-match convention
+                # _DECISION_REQUIRED_KEYS already uses for country/region
+                # -- "basemodel" is a structural naming convention (a
+                # physical hardware base model selector), not a literal
+                # per-catalog name, so this still generalizes across any
+                # catalog using it. Unconditional on governed status, same
+                # as every other decision-key fragment/anchor in this
+                # expression -- none of them gate on it either.
+                or "basemodel" in vn_flat
             )
             is_governed = attr.entity_id in governed
             governed_source = "rule" if attr.entity_id in rule_governed else "optional"
@@ -3879,18 +9678,100 @@ class CpqEngine:
                     value, display = derived
                     source = "country_derived"
 
+            # Base Model region-allow default (see the precompute above) --
+            # a real, confirmed per-region ALLOW value from an ingested
+            # region-rule-shaped Data Table, not a blind guess. Checked
+            # BEFORE the unconditional "basemodel" always-ask anchor above
+            # gets to force this to `pending` -- only ever applies when
+            # exactly one such value resolved.
+            if not value and "basemodel" in vn_flat and _bm_region_allow_value and attr.options:
+                match = next(
+                    (o for o in attr.options if o.item_value == _bm_region_allow_value),
+                    None,
+                )
+                if match:
+                    value = match.item_value
+                    display = match.display_name
+                    source = "region_allow_default"
+
             if not value and attr.options:
                 allowed_for_attr = (
                     set(constrained_opts.get(attr.entity_id, []))
                     if constrained_opts else None
                 )
+                if allowed_for_attr is not None:
+                    # A constraint is a source of truth for VALIDITY, not
+                    # catalog spelling. If it names a legal value with no
+                    # literal item_value match in the real catalog (live-
+                    # confirmed: productSelectionProduct_all's constraint
+                    # returns 'APX NEXT XE 4G LTE PLUS 5G', which no real
+                    # option equals), keeping the phantom value in the
+                    # allowed set is harmless (nothing matches it anyway)
+                    # but discarding the WHOLE set back to unconstrained
+                    # over one bad value throws away the legitimate,
+                    # real-matching values too (live-confirmed regression:
+                    # Product went from a flip-flopping 1-2 option menu to
+                    # showing all 325 raw options). Drop only the phantom
+                    # entries -- keep whichever real values the constraint
+                    # did correctly narrow to. Falls back to fully
+                    # unconstrained only if EVERY value was phantom (an
+                    # empty allowed set would otherwise wrongly zero out
+                    # valid_opts entirely).
+                    real_item_values = {o.item_value for o in attr.options}
+                    narrowed = allowed_for_attr & real_item_values
+                    allowed_for_attr = narrowed or None
                 valid_opts = [
                     o for o in attr.options
                     if _valid(o.item_value)
                     and (allowed_for_attr is None or o.item_value in allowed_for_attr)
                 ]
-                if len(valid_opts) == 1:
-                    # Exactly one choice — auto-fill, no user decision needed
+                if (
+                    len(valid_opts) == 1 and not is_decision_attr
+                    and attr.entity_id not in user_answered_dropped_ids
+                ):
+                    # Exactly one choice — auto-fill, no user decision needed.
+                    #
+                    # EXCLUDED for is_decision_attr (2026-08-17, live-
+                    # confirmed): a constraint script can resolve a legal
+                    # value that has NO literal match in attr.options at
+                    # all (confirmed live: productSelectionProduct_all's
+                    # "Restrict APX Next Product Selection based on HW
+                    # Version" constraint correctly returned 2 legal
+                    # values, {'APX NEXT ENHANCED', 'APX NEXT XE 4G LTE
+                    # PLUS 5G'}, but the real catalog menu has no option
+                    # whose item_value literally equals the second string
+                    # at all -- only 'APX NEXT XE MULTI'/'APX NEXT XE
+                    # SINGLE BAND' exist). Intersecting against the real
+                    # menu then silently drops the phantom entry, leaving
+                    # "exactly 1" as a false positive from a script/
+                    # catalog mismatch, not a genuine single-choice
+                    # situation -- and Product got auto-filled without
+                    # ever asking. Depends on Tier-2 LLM evaluation timing
+                    # (whether the constraint script gets a slot before
+                    # the per-turn cap), so it doesn't reproduce every
+                    # turn -- non-decision attrs keep the original
+                    # shortcut; decision-required ones (Country/Region/
+                    # Hardware Version/Product) never take it, same
+                    # protection this whole function already gives them
+                    # everywhere else.
+                    #
+                    # EXCLUDED when this attr's only-one-option state exists
+                    # because a constraint just rejected the CUSTOMER'S OWN
+                    # explicit answer this same turn (live-verified bug,
+                    # 2026-07-23: changing Billing Option to "Annual" got
+                    # silently replaced with "Immediate" — the drop was
+                    # correctly detected and noted, but this branch — a
+                    # DIFFERENT, earlier branch than the blind first-by-order
+                    # fallback the existing user_answered_dropped_ids guard
+                    # protects a few lines below — filled the one remaining
+                    # option unconditionally, with no awareness that "only
+                    # one option remains" was true BECAUSE it just excluded
+                    # what the customer picked). Falls through to `pending`
+                    # instead, same "a real decision deserves to be re-asked,
+                    # not silently re-guessed" principle as the sibling fix
+                    # (docs/CPQ_SESSION_2_OPEN_ISSUES.md item 4) — the
+                    # resume prompt shown for `pending` already tells the
+                    # customer the one remaining valid option.
                     value = valid_opts[0].item_value
                     display = valid_opts[0].display_name
                 elif (
@@ -3917,16 +9798,72 @@ class CpqEngine:
                     and attr.entity_id not in user_answered_dropped_ids
                 ):
                     if attr.select_type == "multi":
-                        # The allowed set from an active constraint IS the
-                        # selected set — never guess a subset with nothing
-                        # to justify it (allowed_for_attr is None → no
-                        # active constraint narrowed this attr → leave
-                        # unselected, ask the user).
-                        if allowed_for_attr is not None:
+                        # docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_
+                        # 2026_08_05.md — an active constraint narrowing to
+                        # exactly ONE remaining option is exactly as
+                        # unambiguous here as it already is for single-
+                        # select (the `len(valid_opts) == 1` branch above);
+                        # narrowing to SEVERAL remaining options is not the
+                        # same signal and must not be auto-selected in
+                        # full. Confirmed live: "Constrain Additional
+                        # feature Type" (condition: any product selected —
+                        # true for virtually every order) narrows
+                        # additionalSystemEnhancementFeatureType_astro to 9
+                        # of 11 options; that 9-item list is the catalog's
+                        # MENU of available choices, not a recommendation
+                        # to select all 9 — auto-selecting all 9
+                        # (including "ICE KIT") silently triggered an
+                        # unrelated constraint that collapsed a real
+                        # question (Package Type) to zero valid options.
+                        # allowed_for_attr is None → no active constraint
+                        # narrowed this attr → leave unselected, ask the
+                        # user (unchanged).
+                        if allowed_for_attr is not None and len(valid_opts) == 1:
                             filled_multi[vn] = [o.item_value for o in valid_opts]
                             display_filled[vn] = ", ".join(o.display_name for o in valid_opts)
                             sources.setdefault(vn, governed_source)
                             filled_multi_now = True
+                            if governed_source == "rule":
+                                rule_trace.record_fire(
+                                    rule_type="auto_fill", rule_id="auto_fill:rule_governed_multi",
+                                    attr=vn, outcome=f"set={filled_multi[vn]}",
+                                )
+                        elif allowed_for_attr is None:
+                            # No active rule-based constraint narrowed this
+                            # multi-select attr — the script governing it
+                            # either doesn't exist or failed to resolve.
+                            # Same real-Data-Table attempt as the
+                            # single-select _NEVER_GUESS_SCRIPT_GOVERNED
+                            # branch below, applied here too since
+                            # carrierSelectionMultiSelect_astro-shaped attrs
+                            # are multi-select (docs proof §11-§12). Only
+                            # ever fills confidently when exactly one real
+                            # value resolves.
+                            dt_match = self._resolve_via_data_tables(
+                                vn, filled, valid_opts, workspace_id, catalog_prefix, dt_cache,
+                            )
+                            if dt_match:
+                                filled_multi[vn] = [dt_match.item_value]
+                                display_filled[vn] = dt_match.display_name
+                                sources.setdefault(vn, "data_table")
+                                filled_multi_now = True
+                            # No confident single match (2+ legal values,
+                            # or none): NOT handled here -- falls through
+                            # (filled_multi_now stays False) to the second
+                            # multi-select branch below, whose own
+                            # `is_unconstrained and candidate_opts` case
+                            # already correctly blind-picks the first real
+                            # option (tagged "default_first_available") for
+                            # this exact genuinely-unconstrained shape. An
+                            # earlier version of this fix duplicated that
+                            # logic here with a different tag, which broke
+                            # the existing re-validation contract keyed on
+                            # "default_first_available" (docs/CPQ_
+                            # MULTISELECT_GOVERNED_NO_MATCH_ASK_PLAN_2026_08_
+                            # 10.md) -- see that plan's real gap instead:
+                            # `elif display_order is not None: pass` further
+                            # below intercepts this case BEFORE it ever
+                            # reaches the working is_unconstrained logic.
                     elif governed_source == "optional" and attr.entity_id in conflicted_optional_ids:
                         # This attr shares a real option value with another
                         # "optional"-tier attr — first-by-order would silently
@@ -3953,9 +9890,142 @@ class CpqEngine:
                             if rec_by_target else None
                         )
                         if rec_match:
-                            value, display = rec_match
+                            value, display, fired_rule_name = rec_match
                             source = "rule"
-                        else:
+                        elif (
+                            dt_match := self._resolve_via_data_tables(
+                                vn, filled, valid_opts, workspace_id, catalog_prefix, dt_cache,
+                            )
+                        ):
+                            # This attr is governed (some rule targets it)
+                            # but no active constraint narrowed it here —
+                            # the governing rule is either script-based and
+                            # just failed to resolve, or never fired at all.
+                            # Before falling to "no recommendation applies"
+                            # (_NEVER_GUESS_SCRIPT_GOVERNED) or a blind
+                            # first-by-order guess, try the real ingested
+                            # Data Table source (§11-§12 of the proof doc) —
+                            # a different, catalog-wide data source than the
+                            # script/rule evaluation that just failed, not a
+                            # second guess at the same one. Only ever fills
+                            # when exactly one real value resolves (see
+                            # _resolve_via_data_tables); a no-op (None) when
+                            # the caller didn't pass workspace_id.
+                            value = dt_match.item_value
+                            display = dt_match.display_name
+                            source = "data_table"
+                        elif vn in _NEVER_GUESS_SCRIPT_GOVERNED:
+                            # This attr's only governing rule is script-based
+                            # and just failed to resolve to a value above —
+                            # confirmed live to legitimately mean "no
+                            # recommendation applies" for this specific attr,
+                            # not "unknown, guess anyway". Falls through to
+                            # pending/ungoverned handling instead of guessing.
+                            pass
+                        elif (
+                            display_order is not None
+                            and allowed_for_attr is not None
+                            and _valid(attr.default_value)
+                        ):
+                            # §2g (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                            # narrow carve-out to §2f's skip below — an active
+                            # constraint (allowed_for_attr is not None) means
+                            # this attr's default_value has been CONFIRMED
+                            # valid for this exact product/configuration right
+                            # now, not just present in the catalog in the
+                            # abstract (the bare-default case §2d/§2f still
+                            # skip). Live-verified: APX NEXT Single Band's
+                            # Frequency Bands (UHF/VHF/700/800 MHz, catalog
+                            # default "700/800 MHZ") and Antenna Type
+                            # (Whip/No Antenna, catalog default "WHIP APX
+                            # NEXT") both survive their own active constraint.
+                            # Case-insensitive match: the constraint rule's own
+                            # `allowed_values` list and the menu's real
+                            # item_value casing aren't guaranteed to agree
+                            # character-for-character (confirmed live — same
+                            # "700/800 MHz" concept, different case) even
+                            # though every other exact-string comparison in
+                            # this file assumes they do; only this new
+                            # cross-source comparison needs the normalization.
+                            _default_norm = attr.default_value.strip().upper()
+                            match = next(
+                                (o for o in valid_opts
+                                 if o.item_value.strip().upper() == _default_norm),
+                                None,
+                            )
+                            if match:
+                                value = match.item_value
+                                display = match.display_name
+                                source = "default"
+                        elif (
+                            _no_real_fill_justification(attr, rec_by_target)
+                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                            and (opt_out_match := _sole_opt_out_option(valid_opts))
+                        ):
+                            # Nothing justifies picking among the REAL choices
+                            # here, but the menu itself declares one option as
+                            # the explicit "nothing needed" answer -- filling
+                            # that isn't a guess among business alternatives,
+                            # it's recognizing a choice the catalog already
+                            # made for the customer. See
+                            # `_sole_opt_out_option`'s own docstring.
+                            value = opt_out_match.item_value
+                            display = opt_out_match.display_name
+                            source = "opt_out_default"
+                        elif (
+                            display_order is not None and vn in display_order
+                            and not (
+                                _no_real_fill_justification(attr, rec_by_target)
+                                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                            )
+                        ):
+                            # §2f, superseded by explicit instruction
+                            # (2026-08-09): governed (some rule targets this
+                            # attr) but nothing -- no active constraint, no
+                            # satisfied recommendation, no Data Table match,
+                            # no confirmed default_value -- resolved a value.
+                            # Previously skipped entirely (never asked,
+                            # never defaulted); now picks the first real,
+                            # catalog-defined eligible option instead of
+                            # falling through to `pending`, matching the
+                            # identical first-by-order fallback the sibling
+                            # `else` branch below already uses when no
+                            # layout map is loaded. Tagged with a distinct
+                            # source (not "default") so a later audit or
+                            # revalidation pass can tell "guessed, nothing
+                            # to justify it" apart from a genuine catalog
+                            # default_value match -- same convention the
+                            # multi-select "is_unconstrained" branch already
+                            # uses (`source="default_first_available"`).
+                            #
+                            # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_
+                            # GAP_PLAN_2026_08_10.md: `and vn in display_order`
+                            # added -- this was the DOMINANT source of the
+                            # layout-visibility-baseline gap (26 real
+                            # attributes confirmed live), bigger than the
+                            # sibling _dt_governed_vns fix in this same file.
+                            # `display_order is not None` alone only proves a
+                            # layout map exists, not that THIS attr is in its
+                            # visible set -- a layout-hidden but rule-governed
+                            # attr with no other resolution signal was still
+                            # blind-picked unconditionally. See the `elif`
+                            # immediately below for the new layout-hidden case.
+                            value = valid_opts[0].item_value
+                            display = valid_opts[0].display_name
+                            source = "default_first_available"
+                        elif display_order is not None:
+                            # Layout map loaded, but this attr isn't in its
+                            # visible set -- the layout explicitly says never
+                            # show it. Falls through with no value set, same
+                            # as any other layout-hidden, unresolved attr
+                            # (the final ask/skip decision below correctly
+                            # skips it, since it's neither a decision attr
+                            # nor a grid selector).
+                            pass
+                        elif not (
+                            _no_real_fill_justification(attr, rec_by_target)
+                            and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                        ):
                             # single/boolean, 2+ options, no default: first by
                             # menu order — well-defined for boolean (only two
                             # states) and safe here because a rule REQUIRES this
@@ -3963,11 +10033,21 @@ class CpqEngine:
                             value = valid_opts[0].item_value
                             display = valid_opts[0].display_name
                             source = governed_source
+                        # else: nothing above (rec/data-table/confirmed-
+                        # default) justified a value for this specific,
+                        # confirmed-no-real-basis attr -- leave unset
+                        # rather than guess first-by-order, same principle
+                        # as the multi-select guard below.
                 # else: 0 or 2+ options, ungoverned → pending (user must choose)
-            elif not value and is_governed and not is_decision_attr and attr.select_type == "boolean":
+            elif (
+                not value and is_governed and not is_decision_attr
+                and attr.select_type == "boolean" and display_order is None
+            ):
                 # Governed boolean with no menu options at all: default to
                 # "false" (unchecked) rather than leaving it perpetually
                 # pending — a boolean's absent-default state is well-defined.
+                # §2f: gated the same way as the sibling branch above — once
+                # a layout map is loaded, this blind default is skipped too.
                 value = "false"
                 display = "No"
                 source = governed_source
@@ -3992,26 +10072,315 @@ class CpqEngine:
                     filled[vn] = value
                 display_filled[vn] = display or value
                 sources.setdefault(vn, source)
+                # Trace step 3 ("already-satisfied recommendation", source
+                # == "rule") and step 5 ("rule-governed default-or-first",
+                # source == governed_source == "rule") -- the two auto_fill
+                # paths this method's own docstring documents as having
+                # previously shipped real fill-ordering bugs
+                # (solutionTypeDevices_astro, hWVersion_astro). Raven review
+                # on PR #156: these were the only evaluate_rules_loop stage
+                # ("hide -> recommend -> constrain -> auto-fill") left
+                # untraced by the original rule_trace wiring.
+                if source == "rule" or (is_governed and source == governed_source == "rule"):
+                    # §2e (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                    # attribute to the specific rule _satisfied_recommendation
+                    # matched when we have one — lands in the same
+                    # rule_type="recommendation" bucket apply_recommendation_
+                    # rules' own trace entries use, so one query answers
+                    # "which rule fired this attribute" either way. Falls
+                    # back to the old generic tag only for step 5's
+                    # governed_source path, which isn't _satisfied_
+                    # recommendation-backed and has no single rule to name.
+                    if fired_rule_name:
+                        rule_trace.record_fire(
+                            rule_type="recommendation", rule_id=fired_rule_name,
+                            attr=vn, outcome=f"set={value}",
+                        )
+                    else:
+                        rule_trace.record_fire(
+                            rule_type="auto_fill", rule_id=f"auto_fill:{source}",
+                            attr=vn, outcome=f"set={value}",
+                        )
             elif (
                 attr.select_type == "multi" and not attr.required
                 and vn not in grid_selector_vns
+                and _no_real_fill_justification(attr, rec_by_target)
+                and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                and (opt_out_match := _sole_opt_out_option(
+                    [o for o in attr.options if _valid(o.item_value)]
+                ))
             ):
-                # An unconstrained multi-select (no active constraint narrowed
-                # it, no single-remaining-option, not marked required=1 in
-                # the raw XML) reaches here with nothing that justifies
-                # picking any subset — but real Oracle CPQ UI behavior for an
-                # optional checkbox-list field is an empty selection, not a
-                # forced choice (confirmed against raw XML: every attr this
-                # applies to in practice has required="0", and their BML
-                # scripts only narrow/disallow values under OTHER conditions,
-                # never enforce a minimum-selection count). Auto-assign empty
-                # rather than asking — a required=1 multi-select still falls
-                # through to the pending branch below instead. Grid-linked
-                # selectors (vn in grid_selector_vns) are excluded from this
-                # branch — see grid_selector_vns comment above.
+                # Same "the menu itself declares a safe opt-out" case as
+                # the single-select branch above, just for multi-select's
+                # separate fallback (valid_opts isn't reliably in scope
+                # here -- see the sibling elif's own comment on that).
+                filled_multi[vn] = [opt_out_match.item_value]
+                display_filled[vn] = opt_out_match.display_name
+                sources.setdefault(vn, "opt_out_default")
+                filled_multi_now = True
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
+                and vn in _OPTIONAL_EMPTY_FILL_ACCEPTED_VNS
+                and allowed_for_attr is None
+            ):
+                # Confirmed genuinely optional (Attrsequence: 0 Required
+                # rows) with no menu-declared opt-out option for
+                # _sole_opt_out_option to find -- "select nothing" is
+                # itself the real, valid answer here, distinct from the
+                # blind-pick-one-real-option fallback a few lines below.
+                # `allowed_for_attr is None` (truly unconstrained) guards
+                # this from ever overriding a REAL active constraint's own
+                # narrowed set -- a constrained-but-ambiguous case for one
+                # of these three attrs must still select-all from the
+                # narrowed candidates via the sibling mechanism upstream,
+                # never resolve to empty just because the attr's name is
+                # in this allowlist (confirmed live: without this guard,
+                # this branch wrongly intercepted promoApplicationServices_
+                # astro's own constrained-and-ambiguous regression test).
                 filled_multi[vn] = []
                 display_filled[vn] = "(none)"
-                sources.setdefault(vn, "default")
+                sources.setdefault(vn, "optional_empty")
+                filled_multi_now = True
+            elif (
+                attr.select_type == "multi" and not attr.required
+                and vn not in grid_selector_vns
+                and not (
+                    _no_real_fill_justification(attr, rec_by_target)
+                    and vn not in _BLIND_FILL_RISK_ACCEPTED_VNS
+                )
+            ):
+                # A multi-select that reached here (no single-remaining-
+                # option, not required=1 in the raw XML) has nothing
+                # unambiguous to justify picking a subset on its own —
+                # `valid_opts` from the branch above is NOT reliably in
+                # scope here (only assigned inside the sibling `if not
+                # value and attr.options:` block, which this attr never
+                # entered if attr.options was empty — confirmed live:
+                # UnboundLocalError on "APX NEXT All Band"). Recomputed
+                # independently against the same constraint. Grid-linked
+                # selectors (vn in grid_selector_vns) are excluded from
+                # this branch — see grid_selector_vns comment above.
+                #
+                # Two distinct cases (explicit product decisions,
+                # docs/CPQ_MULTISELECT_AUTOFILL_OVERSELECTION_PLAN_2026_08_
+                # 05.md):
+                #
+                # 1. Genuinely UNCONSTRAINED (no active constraint rule
+                #    ever targeted this attr this turn — real Oracle CPQ
+                #    UI behavior for e.g. Service Type/Carrier Selection):
+                #    prefer default_value; else first real menu option by
+                #    order — never leave it silently empty. Confirmed
+                #    live: relatedServicesType_astro ("Service Type") has
+                #    zero active constraints and no default_value; the
+                #    catalog's own first-listed real option is picked
+                #    instead of guessing nothing.
+                #
+                # 2. CONSTRAINED but ambiguous (a real rule narrowed this
+                #    attr to 2+ remaining options, just not exactly one):
+                #    prefer default_value if still valid under that
+                #    constraint; otherwise default to EMPTY, not first-
+                #    available — picking an arbitrary one of several
+                #    rule-narrowed options is exactly the guessing risk
+                #    Fix 1 exists to prevent (confirmed live:
+                #    additionalSystemEnhancementFeatureType_astro narrowed
+                #    to 9 of 11 by a real constraint — picking option #1
+                #    there would be exactly as arbitrary as picking all
+                #    9 was). KNOWN, ACCEPTED RISK: _filled_by_rule_id
+                #    treats that [] as a real, known-empty value, so a
+                #    sibling rule keyed on "does NOT contain value X"
+                #    (operator "8", disjoint-from) can fire on it as if
+                #    the customer had confirmed nothing — the same
+                #    mechanism that collapsed Package Type live via a
+                #    separate, pre-existing catalog rule contradiction
+                #    (see plan doc's "Known remaining issue").
+                is_unconstrained = attr.entity_id not in (constrained_opts or {})
+                current_allowed = (
+                    set(constrained_opts.get(attr.entity_id, []))
+                    if constrained_opts else None
+                )
+                candidate_opts = [
+                    o for o in attr.options
+                    if _valid(o.item_value)
+                    and (current_allowed is None or o.item_value in current_allowed)
+                ]
+                # Priority, highest first: (1) a targeted RecommendationRule
+                # already satisfied by the current filled state -- more
+                # specific than a generic default_value, same "rule beats
+                # default" priority _satisfied_recommendation's own
+                # docstring establishes for single-select; (2) the XML
+                # default_value; (3) first available (unconstrained case
+                # only, see above). Multi-select attrs never reach
+                # _satisfied_recommendation via the sibling "else" branch
+                # above (mutually exclusive if/elif with this one), so it
+                # must be checked here directly.
+                rec_match = (
+                    _satisfied_recommendation(attr, candidate_opts)
+                    if rec_by_target else None
+                )
+                default_opt = next(
+                    (o for o in candidate_opts if o.item_value == attr.default_value),
+                    None,
+                ) if attr.default_value else None
+                if rec_match:
+                    rec_value, rec_display, fired_rule_name = rec_match
+                    filled_multi[vn] = [rec_value]
+                    display_filled[vn] = rec_display
+                    sources.setdefault(vn, "rule")
+                    # §2e: this multi-select path never traced its fill at
+                    # all before — a real, separate gap from the
+                    # single-select trace call above, closed the same way.
+                    rule_trace.record_fire(
+                        rule_type="recommendation", rule_id=fired_rule_name,
+                        attr=vn, outcome=f"set={rec_value}",
+                    )
+                elif display_order is not None and not (
+                    is_unconstrained and candidate_opts
+                    and (attr.entity_id in rule_governed or vn in _dt_governed_vns)
+                ):
+                    # §2d (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md):
+                    # once a layout map is loaded, nothing satisfying a
+                    # recommendation rule means skip entirely — never fall
+                    # to default_value, never guess first-available, never
+                    # even the explicit-empty placeholder below. Leaves
+                    # filled_multi/display_filled/sources untouched for vn.
+                    # `test_multiselect_first_available_skipped_when_layout_
+                    # loaded` locks this in for a genuinely UNGOVERNED
+                    # multi-select -- still correctly skipped, unchanged.
+                    #
+                    # Narrowed (docs/CPQ_MULTISELECT_GOVERNED_NO_MATCH_ASK_
+                    # PLAN_2026_08_10.md): excludes the `is_unconstrained
+                    # and candidate_opts` shape ONLY when the attr is also
+                    # genuinely governed (rule_governed or _dt_governed_vns,
+                    # the exact same distinction Group 1/Group 2 already
+                    # established today for the single-select final chain)
+                    # so THAT case falls through to its own, already-
+                    # correct, already-tested handler a few lines below
+                    # instead of being silently dropped here first.
+                    # Confirmed live: carrierSelectionMultiSelect_astro
+                    # (governed via real attrSequence Data Table coverage,
+                    # no active constraint at all, 6 real options, nothing
+                    # else resolves it) was reaching this `pass` and
+                    # vanishing -- neither filled nor asked -- purely
+                    # because a layout map happened to be loaded, which
+                    # this branch was never meant to block for an attr the
+                    # catalog's own data proves is governed. The
+                    # CONSTRAINED-but-ambiguous case (is_unconstrained=
+                    # False): 2026-08-18 explicit override (HITL-confirmed
+                    # after the "never guess among rule-narrowed options"
+                    # rationale was re-cited in full) -- select ALL options
+                    # a real rule has currently narrowed this attr to,
+                    # instead of leaving it empty. Distinct from the
+                    # single-select blind-fill override above (which picks
+                    # ONE first-eligible value): for multi-select the
+                    # requested behavior is "check every currently-allowed
+                    # box", not "guess one of them". `candidate_opts` here
+                    # is already filtered to `current_allowed` (the real
+                    # constraint's narrowed set) a few lines up, so this
+                    # never selects an option the active rule has excluded.
+                    if candidate_opts:
+                        filled_multi[vn] = [o.item_value for o in candidate_opts]
+                        display_filled[vn] = ", ".join(
+                            o.display_name for o in candidate_opts)
+                        sources.setdefault(vn, "auto_all_constrained")
+                        logger.info(
+                            "cpq: multi-select %r constrained to %d option(s) "
+                            "with no rule/default resolving a subset -- "
+                            "auto-selected all of them instead of leaving "
+                            "empty (2026-08-18 override of the prior "
+                            "leave-empty default)", vn, len(candidate_opts),
+                        )
+                elif default_opt:
+                    filled_multi[vn] = [default_opt.item_value]
+                    display_filled[vn] = default_opt.display_name
+                    sources.setdefault(vn, "default")
+                elif is_unconstrained and candidate_opts:
+                    # Tagged with a DISTINCT source (not "default") so the
+                    # re-validation step above (`if vn in filled_multi:`)
+                    # can tell "guessed with nothing to justify it" apart
+                    # from a genuine default_value match. Necessary because
+                    # evaluate_rules_loop's fixed-point iteration can call
+                    # auto_fill on an EARLY pass where this attr is
+                    # genuinely unconstrained (e.g. before
+                    # productSelectionProduct_all itself is filled), lock
+                    # this guess into filled_multi, and then a LATER pass
+                    # activates a real constraint on the same attr — the
+                    # re-validation step would otherwise just confirm the
+                    # guessed value is still technically a member of the
+                    # new allowed set and keep it unquestioned, never
+                    # re-deriving the correct Fix-3 default-or-empty
+                    # answer for the now-real constraint (confirmed live:
+                    # additionalSystemEnhancementFeatureType_astro got
+                    # guessed "DISABLE CLOUD SERVICES" before Product was
+                    # resolved, then kept it across every later pass even
+                    # after its real 9-of-11 constraint activated).
+                    # docs/CPQ_MULTISELECT_BLIND_PICK_RESPECTS_WHITELIST_
+                    # PLAN_2026_08_10.md -- confirmed live (carrierSelection
+                    # MultiSelect_astro): the raw catalog menu order can
+                    # include real, data-proven-ILLEGAL options for the
+                    # current context (e.g. a carrier only legal for a
+                    # different destination country). When the real
+                    # ingested Data Table has ANY coverage for this attr
+                    # here -- even narrowed to 2+ values, not just the
+                    # single-confident-match case _resolve_via_data_tables
+                    # already handles above -- pick from that real,
+                    # narrowed set instead of the unfiltered raw menu.
+                    # `None` (no table coverage at all) falls back to
+                    # today's original raw-order pick, unchanged.
+                    _dt_legal = (
+                        self._resolve_narrowed_legal_values(
+                            vn, filled, workspace_id, catalog_prefix, dt_cache,
+                        )
+                        if workspace_id is not None else None
+                    )
+                    _narrowed_opts = (
+                        [o for o in candidate_opts if o.item_value in _dt_legal]
+                        if _dt_legal is not None else candidate_opts
+                    )
+                    if _narrowed_opts:
+                        if vn in _SELECT_ALL_NARROWED_LEGAL_MULTI_VNS:
+                            # Live-confirmed (2026-08-16): native CPQ UI
+                            # checks EVERY Whitelist-confirmed-legal option
+                            # by default for these specific attrs (real-
+                            # world meaning is "which of these does this
+                            # unit support", e.g. Frequency Band coverage)
+                            # -- picking only _narrowed_opts[0] silently
+                            # dropped 2 of 3 real, legal, native-UI-checked
+                            # values (modelSelectionFrequencyBandMsl_astro:
+                            # only '700/800 MHZ' ever reached the payload,
+                            # never 'VHF'/'UHF'). Deliberately a narrow,
+                            # named allowlist, NOT a blanket change to this
+                            # branch -- carrierSelectionMultiSelect_astro
+                            # hits this exact same code path and genuinely
+                            # needs the OPPOSITE behavior (native UI leaves
+                            # it unresolved/"Invalid selection" rather than
+                            # auto-checking every legal carrier), so
+                            # defaulting to "select all" here for every
+                            # attr would be a regression, not a fix.
+                            filled_multi[vn] = [o.item_value for o in _narrowed_opts]
+                            display_filled[vn] = ", ".join(
+                                o.display_name for o in _narrowed_opts)
+                            sources.setdefault(vn, "default_first_available")
+                        else:
+                            first_opt = _narrowed_opts[0]
+                            filled_multi[vn] = [first_opt.item_value]
+                            display_filled[vn] = first_opt.display_name
+                            sources.setdefault(vn, "default_first_available")
+                    else:
+                        # Real Data Table confirms ZERO legal values for
+                        # this exact context (`_dt_legal == []`) -- a
+                        # genuine, data-proven answer, not something to
+                        # guess past. Same empty outcome as the sibling
+                        # `else` below, reached here instead since
+                        # `is_unconstrained and candidate_opts` already
+                        # matched on the raw (pre-whitelist) option list.
+                        filled_multi[vn] = []
+                        display_filled[vn] = "(none)"
+                        sources.setdefault(vn, "default")
+                else:
+                    filled_multi[vn] = []
+                    display_filled[vn] = "(none)"
+                    sources.setdefault(vn, "default")
             elif self._is_noise_var(vn) and attr.options:
                 # Company-level/system attrs (_BM_USER_CURRENCY, _BM_USER_
                 # LANGUAGE, _BM_USER_NUMBER_FORMAT, ...) are already excluded
@@ -4032,7 +10401,8 @@ class CpqEngine:
                     display_filled[vn] = fallback.display_name
                     sources.setdefault(vn, "default")
             elif (
-                (attr.options or is_decision_attr)
+                (attr.options or is_decision_attr
+                 or self.should_ask_free_text_attr(attr, validation_rules, bml_eval))
                 and not self._is_noise_var(vn)
                 # skip_always_ask means the native UI never shows a question
                 # for this attr in this catalog — it must be excluded from
@@ -4067,7 +10437,225 @@ class CpqEngine:
                 # answer was collected then silently discarded. Same predicate
                 # the payload exclusion trusts; zero rule impact (no BML
                 # script in either catalog reads CRM_BILL_*/CRM_SHIP_*).
-                pending.append(attr)
+                #
+                # §2c (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md): when a
+                # layout map is loaded, only the anchors (is_decision_attr —
+                # Country/Region/Hardware Version/Product) and grid-linked
+                # selectors (never auto-fillable, explicit product decision)
+                # actually get asked. Everything else that reaches this
+                # branch has nothing resolving it via hint/recommendation/
+                # default — skip it (leave unfilled, not defaulted-empty)
+                # rather than asking, per your explicit call. Sibling-forced
+                # re-asks (enforce_exclusive_sibling_families) are a
+                # separate code path, unaffected either way. No layout map
+                # loaded → today's unchanged "ask everything with options".
+                #
+                # EXPLICIT INSTRUCTION (2026-08-10, HITL-confirmed): for an
+                # attr confirmed real-Data-Table-governed for THIS base
+                # model (vn in _dt_governed_vns) but with no rule/Data
+                # Table VALUE resolving it and no narrowing signal anywhere
+                # (confirmed exhaustively for several such attrs this
+                # session -- Additional Frequency Bands, Extend Range,
+                # spare-radio pair, System Key, Configuration Type, battery
+                # type, keypad type), blind-pick the first real catalog
+                # option instead of asking -- same first-by-order fallback
+                # §2f already uses for ungoverned attrs, extended here to
+                # this confirmed-governed case by explicit user choice.
+                # User accepted the tradeoff in full: this maximizes for
+                # turn count (≤3 turns), not per-attribute correctness --
+                # unlike default_first_available's re-validation (auto_fill
+                # re-opens it once real narrowing data appears), there is
+                # NO narrowing data to re-check against here, so this can
+                # never self-correct on a later pass. `_dt_never_governed_
+                # anywhere` is untouched -- that's a different, unrelated
+                # safety net (never silently drop an attr no table ever
+                # mentions) and still forces `pending` as before.
+                #
+                # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_PLAN_
+                # 2026_08_10.md: `and (display_order is None or vn in
+                # display_order)` added below -- confirmed live an
+                # attrSequence-governed attr the LAYOUT explicitly hides
+                # (hide:true) was still reaching this branch and landing in
+                # `pending` when it had no blind-pickable option, bypassing
+                # the layout-visibility baseline the sibling `elif` right
+                # below already enforces. No behavior change when no layout
+                # map is loaded, or for any attr the layout actually allows
+                # -- only a layout-hidden attr's outcome changes, falling
+                # through to the sibling `elif` instead (which correctly
+                # skips it, matching every other layout-hidden attr).
+                if is_decision_attr or vn in grid_selector_vns:
+                    # Forced-ask anchors (Country/Region/Hardware Version/
+                    # Product) and grid-linked selectors are never auto-
+                    # fillable -- always ask regardless of rule governance
+                    # or data gaps below. Unchanged from before this fix.
+                    # Checked FIRST, ahead of _dt_governed_vns below, same
+                    # priority order the pre-existing final `elif` used to
+                    # enforce before this restructuring.
+                    pending.append(attr)
+                elif (
+                    attr.entity_id in _missing_data_target_ids
+                    or attr.source_id in _missing_data_target_ids
+                ):
+                    # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_
+                    # PLAN_2026_08_10.md Group 1 -- checked BEFORE
+                    # _dt_governed_vns below: confirmed live the real Group
+                    # 1 attrs (cBPQRCode_astro/fedQRCode_astro/
+                    # dHSAssetTagLabel_astro) ARE ALSO attrSequence-Data-
+                    # Table-governed, so without this ordering they'd hit
+                    # that branch's own blind-pick/pending decision first
+                    # and never reach this check at all. `attr.source_id`
+                    # checked too, not just `attr.entity_id` -- confirmed
+                    # live the real hiding rule's `target_attr_id` (e.g.
+                    # 18302531462 for cBPQRCode_astro) is the BM-native
+                    # source id, not the FalkorDB graph entity_id (292414);
+                    # same entity_id-vs-source_id duplicate-id convention
+                    # `_satisfied_recommendation` already accounts for
+                    # elsewhere in this file. This attr's only real
+                    # governance is a hiding rule that can never resolve
+                    # (depends on a data table confirmed absent from every
+                    # ingested catalog, see _KNOWN_MISSING_DATA_TABLES).
+                    # Asking about it forever would never converge -- warn
+                    # (traceable, auditable) and skip: no fill, no pending,
+                    # leave it genuinely unresolved until the real data gap
+                    # (CPQ_USER_GROUP_MAPPING_HIDING_RULE_PLAN_2026_08_10.md)
+                    # is actually closed.
+                    logger.warning(
+                        "cpq: %r skipped -- its only hiding rule depends on "
+                        "a data table confirmed absent from this catalog "
+                        "(%s); will never resolve until that data is "
+                        "ingested", vn, ", ".join(_KNOWN_MISSING_DATA_TABLES),
+                    )
+                elif vn in _dt_governed_vns and (
+                    display_order is None or vn in display_order
+                ):
+                    # Deliberately checks key PRESENCE, not the whole dict's
+                    # truthiness (docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_
+                    # BLIND_PICK_PLAN_2026_08_10.md) -- confirmed live this
+                    # attr-absent-from-constrained_opts case is the DOMINANT
+                    # real shape: apply_constraint_rules only adds an entry
+                    # for attrs an active constraint actually fired against;
+                    # an attr with no active constraint firing has no entry
+                    # at all, meaning every real catalog option remains
+                    # legal, not zero. The original `.get(id, [])` pattern
+                    # treated "not a key" identically to "constrained to
+                    # nothing", silently sending real, blind-pickable attrs
+                    # (wirelessCarrier_astro, subscriptionBillingAddDMS
+                    # Coverage_astro, ...) straight to `pending` below with
+                    # an artificially-empty `_blind_opts` instead of ever
+                    # offering them a real option to pick from.
+                    _blind_allowed = (
+                        set(constrained_opts[attr.entity_id])
+                        if constrained_opts and attr.entity_id in constrained_opts
+                        else None
+                    )
+                    _blind_opts = [
+                        o for o in attr.options
+                        if _valid(o.item_value)
+                        and (_blind_allowed is None or o.item_value in _blind_allowed)
+                    ]
+                    if _blind_opts:
+                        _blind_first = _blind_opts[0]
+                        filled[vn] = _blind_first.item_value
+                        display_filled[vn] = _blind_first.display_name
+                        sources.setdefault(vn, "blind_pick_governed")
+                    else:
+                        pending.append(attr)
+                elif (
+                    attr.entity_id in rule_governed
+                    and attr.select_type != "multi"
+                    and vn not in _NEVER_GUESS_SCRIPT_GOVERNED
+                    and attr.entity_id not in user_answered_dropped_ids
+                    and not _valid(attr.default_value)
+                ):
+                    # docs/CPQ_DATA_GAP_SKIP_AND_RULE_GOVERNED_BLIND_PICK_
+                    # PLAN_2026_08_10.md Group 2 -- real recommendation/
+                    # constraint/hiding rules target this attr, but none
+                    # fired for this exact product/region/bundle and the
+                    # catalog has NO default_value at all (an attr WITH a
+                    # default_value that simply didn't survive an active
+                    # constraint is a structurally different, already-
+                    # correct case -- stays unfilled, not force-picked --
+                    # see test_default_value_not_used_when_it_does_not_
+                    # survive_the_constraint). HITL-confirmed generic
+                    # policy: blind-pick the first rule-valid option rather
+                    # than ask forever -- same tradeoff already accepted
+                    # for Data-Table-sequence-governed attrs a few lines
+                    # above, extended here to the ordinary-rule-governed
+                    # case. Three existing safety nets still apply
+                    # unconditionally: `_NEVER_GUESS_SCRIPT_GOVERNED` (a
+                    # curated allowlist of attrs already confirmed broken by
+                    # blind-picking, see that constant's own docstring/
+                    # history), `user_answered_dropped_ids` (a cascade just
+                    # invalidated the customer's own prior answer this pass
+                    # -- must be RE-ASKED, never silently reguessed, same
+                    # guard the exactly-one-remaining-option shortcut above
+                    # already uses), and falling through to the unchanged
+                    # safety net below if there's nothing valid to pick from
+                    # at all (never silently drop the attr). select_type !=
+                    # "multi" excluded here -- this branch only ever writes
+                    # a scalar into `filled`; a multi-select target needs
+                    # `filled_multi`'s list form instead (confirmed live
+                    # elsewhere in this file: writing a scalar for a
+                    # multi-select attr silently defeats build_payload's
+                    # array serialization for it). Multi-select rule-
+                    # governed attrs in this exact shape still fall through
+                    # to the unchanged safety net below (ask), not covered
+                    # by this pass.
+                    #
+                    # Deliberately checks key PRESENCE, not the whole dict's
+                    # truthiness (unlike the `allowed_for_attr` computed
+                    # earlier in this same function, ~line 6583) --
+                    # apply_constraint_rules' own docstring confirms
+                    # constrained_opts only holds entries for attrs with an
+                    # ACTIVE firing constraint; an attr absent from it has no
+                    # active constraint at all, so every real catalog option
+                    # is genuinely legal to pick from -- not zero. Using
+                    # `.get(id, [])` here (empty-list default whenever this
+                    # attr merely isn't a key, e.g. some OTHER unrelated
+                    # attr's constraint fired this turn) would make this
+                    # branch pick from nothing for the exact real-world shape
+                    # (Wireless Carrier, Include Accidental Damage, ...) this
+                    # fix exists for.
+                    _rg_allowed = (
+                        set(constrained_opts[attr.entity_id])
+                        if constrained_opts and attr.entity_id in constrained_opts
+                        else None
+                    )
+                    _rg_opts = [
+                        o for o in attr.options
+                        if _valid(o.item_value)
+                        and (_rg_allowed is None or o.item_value in _rg_allowed)
+                    ]
+                    if _rg_opts:
+                        _rg_first = _rg_opts[0]
+                        filled[vn] = _rg_first.item_value
+                        display_filled[vn] = _rg_first.display_name
+                        sources.setdefault(vn, "blind_pick_rule_governed")
+                    else:
+                        pending.append(attr)
+                elif (
+                    display_order is None
+                    # docs/CPQ_DATA_TABLE_GOVERNED_LAYOUT_VISIBILITY_GAP_
+                    # PLAN_2026_08_10.md: `vn in display_order and` added --
+                    # this was the THIRD, dominant instance of the same gap
+                    # (confirmed live: backupPTT_astro/rFIDRFIDEquipped_
+                    # astro/cableDataCable_astro have zero real attrSequence
+                    # coverage for ANY base model, so _dt_never_governed_
+                    # anywhere is True for them regardless of layout). That
+                    # safety net exists to never silently drop an attr the
+                    # catalog tracks nowhere AND the layout gives no
+                    # guidance on either -- but when the layout EXPLICITLY
+                    # hides an attr, that is not silence, it is a real
+                    # instruction, and it must win over an "unknown, ask to
+                    # be safe" fallback the same way it wins everywhere
+                    # else. No behavior change when no layout map is loaded
+                    # or the attr is layout-visible. This branch is now only
+                    # reached by attrs with ZERO rule governance at all
+                    # (Group 2's blind-pick above already claims every
+                    # rule-governed case with a real option to pick).
+                    or (vn in display_order and _dt_never_governed_anywhere(vn))
+                ):
+                    pending.append(attr)
 
         # Pointer-default resolution post-pass (Issue 11): an unfilled
         # pointer attr inherits its REFERENCED attribute's value once that
@@ -4134,24 +10722,141 @@ class CpqEngine:
                 still_pending.append(attr)
         pending = still_pending
 
-        # Sort pending: hwversion first (Level 1 anchor per spec Step 2),
-        # then other decision-required attrs (country, region), then the rest.
-        _LEVEL1_KEY = "hwversion"
-        hw_pending = [
-            a for a in pending
-            if _LEVEL1_KEY in a.variable_name.lower().replace("_", "")
-        ]
-        decision_pending = [
-            a for a in pending
-            if a not in hw_pending
-            and any(dk in a.variable_name.lower().replace("_", "") for dk in _DECISION_REQUIRED_KEYS)
-        ]
-        other_pending = [
-            a for a in pending if a not in hw_pending and a not in decision_pending
-        ]
-        pending = hw_pending + decision_pending + other_pending
+        # Hardware-based catalogs: country/region → Hardware (mandatory) →
+        # other attrs → Product last; Product deferred until Hardware filled.
+        pending = self._order_pending_hardware_before_product(
+            pending, filled, attrs, display_order=display_order,
+        )
 
         return filled, display_filled, pending
+
+    @staticmethod
+    def _is_hardware_version_attr(attr: "ConfigAttr") -> bool:
+        """True for Hardware Version attrs (hWVersion_*, Hardware Version label).
+
+        Hardware is mandatory on hardware-based product catalogs — used both
+        to force always-ask and to order pending ahead of Product.
+        """
+        vn_flat = (attr.variable_name or "").lower().replace("_", "")
+        label = (attr.display_label or "").lower()
+        if "hwversion" in vn_flat or "hardwareversion" in vn_flat:
+            return True
+        if "hardware" in label and "version" in label:
+            return True
+        return False
+
+    @staticmethod
+    def _is_product_line_selector(attr: "ConfigAttr") -> bool:
+        """True for the shared multi-family Product dropdown (~325 options)."""
+        vn = attr.variable_name or ""
+        if vn in _PRODUCT_LINE_SELECTOR_EXACT:
+            return True
+        vn_flat = vn.lower().replace("_", "")
+        if "productselectionproduct" in vn_flat:
+            return True
+        label = (attr.display_label or "").strip().lower()
+        if label == "product" and len(attr.options) > _MAX_ENUMERATED_OPTIONS:
+            return True
+        return False
+
+    @staticmethod
+    def _is_svx_mounting_array_quantity_attr(attr: "ConfigAttr") -> bool:
+        """True for the SVX video-solutions catalog's per-option quantity
+        attrs unlocked by a `mountingTypeArray_viSoln` selection (e.g.
+        `mountingTypeShirtMagneticMountQuantity_viSoln`).
+
+        Narrow, catalog-specific (not a general rule — see docs/
+        CPQ_SVX_MOUNTING_TYPE_ASK_ORDER_PLAN_2026_08_24.md): live-confirmed
+        these rank far behind the unrelated `mountType_viSoln` sibling
+        attr in this catalog's own native layout order (order_number 95+
+        vs. 6), so a customer who just picked a mount option gets asked
+        about a completely different "Mounting Type" field before the
+        quantity for their own just-made selection.
+        """
+        vn = attr.variable_name or ""
+        return vn.startswith("mountingType") and vn.endswith("Quantity_viSoln")
+
+    def _order_pending_hardware_before_product(
+        self,
+        pending: list["ConfigAttr"],
+        filled: dict[str, str],
+        attrs: list["ConfigAttr"],
+        display_order: dict[str, int] | None = None,
+    ) -> list["ConfigAttr"]:
+        """Defer Product until Hardware is filled; sort pending by dependency.
+
+        Live-confirmed (2026-07-28): after country was set, next prompt was
+        Product with 325 options because productSelectionProduct_all is
+        always-ask and catalog order listed it before Hardware. On
+        hardware-based catalogs Hardware is mandatory and constrains Product
+        — never ask the unconstrained product portfolio first.
+
+        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b:
+        when supplied, the real native UI's own sequence wins over the
+        catalog-agnostic heuristic below (confirmed live to already agree
+        with it on APX Next: Country → Hardware Version → Product). The
+        Hardware-before-Product deferral itself is a correctness
+        constraint (Product's options are genuinely unconstrained without
+        it), not just an ordering preference, so it still applies first;
+        display_order only changes the final sort key.
+        """
+        if not pending:
+            return pending
+        if display_order is not None:
+            # Deferral still applies (see docstring); ranking is layout
+            # position, with anything absent from the map (shouldn't
+            # happen once display_order-gated §2c is active, since
+            # pending would only ever hold decision attrs/grid selectors —
+            # both real layout members) sorted after everything ranked.
+            catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
+            if catalog_has_hw:
+                hw_vns = {
+                    a.variable_name for a in attrs if self._is_hardware_version_attr(a)
+                }
+                hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
+                if not hw_filled:
+                    pending = [a for a in pending if not self._is_product_line_selector(a)]
+            return sorted(
+                pending,
+                key=lambda a: display_order.get(a.variable_name, 10**9),
+            )
+
+        catalog_has_hw = any(self._is_hardware_version_attr(a) for a in attrs)
+        if not catalog_has_hw:
+            # Non-hardware catalog (e.g. pure software): keep country first,
+            # then original relative order.
+            countryish = [
+                a for a in pending
+                if any(
+                    dk in a.variable_name.lower().replace("_", "")
+                    for dk in _DECISION_REQUIRED_KEYS
+                )
+            ]
+            rest = [a for a in pending if a not in countryish]
+            return countryish + rest
+
+        hw_vns = {
+            a.variable_name for a in attrs if self._is_hardware_version_attr(a)
+        }
+        hw_filled = any(vn in filled and filled.get(vn) for vn in hw_vns)
+
+        # Drop product-line selectors from pending until hardware is known.
+        if not hw_filled:
+            pending = [
+                a for a in pending if not self._is_product_line_selector(a)
+            ]
+
+        def _rank(a: "ConfigAttr") -> tuple[int, int]:
+            vn_flat = a.variable_name.lower().replace("_", "")
+            if any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS):
+                return (0, a.order)
+            if self._is_hardware_version_attr(a):
+                return (1, a.order)
+            if self._is_product_line_selector(a):
+                return (3, a.order)
+            return (2, a.order)
+
+        return sorted(pending, key=_rank)
 
     # ── Step 6 / 7 / 8 detection helpers ─────────────────────────────────────
 
@@ -4188,17 +10893,42 @@ class CpqEngine:
 
     # Approval keywords — user is confirming the configuration (Step 8 trigger)
     _APPROVAL_RE = re.compile(
-        r"^(yes|confirm(?:ed)?|approve(?:d)?|submit|finali[sz]e|"
+        r"^(?:i\s+(?:hereby\s+|just\s+|really\s+)?)?"
+        r"(yes|confirm(?:ed)?|approve(?:d)?|submit|finali[sz]e|"
         r"looks?\s+good|that'?s?\s+(correct|right|good|it)|go\s+ahead|"
-        r"proceed|ok(?:ay)?|all\s+good|perfect|great|send\s+it|let'?s?\s+go)\b",
+        r"proceed|ok(?:ay)?|all\s+good|send\s+it|let'?s?\s+go)\b|"
+        r"^(?:great|perfect)\b[\s,!.]*(?:let'?s?\s+go|that'?s?\s+(?:works|good|right))?$",
         re.IGNORECASE,
     )
 
     # Q&A intent signals — user is asking a question, not answering a config prompt
+    #
+    # "list the/all/available"/"show me the/all/available" added
+    # 2026-08-31 — live-confirmed gap: "list the attributes in APX Next"
+    # starts with neither a "?" nor any of the original leading words, so
+    # detect_qa_question returned False both during active configuration
+    # (strict=True) and awaiting_approval review (strict=False), falling
+    # through to change-request detection instead of ever reaching
+    # _handle_cpq_qa's whole-catalog enumeration matcher (docs/
+    # CPQ_QA_Catalog_Attribute_Listing_Fix_2026_08_31.md).
+    #
+    # Deliberately NOT a bare `list\b`/`show\s+me\b` (Raven Review
+    # finding, 2026-08-31): unlike the pre-quote enumeration matcher in
+    # ask_api.py, which double-checks a keyword match against an LLM
+    # classification call before treating anything as a whole-catalog
+    # request, THIS regex is the sole gate for QA-vs-change-request
+    # routing turn-wide — a bare `list` would wrongly route a genuine
+    # imperative change request like "list Hardware Version as APX NEXT"
+    # into Q&A instead of change-request handling (the mirror-image of
+    # the bug this fix closes). Requiring an article after the verb
+    # ("the"/"all"/"available") keeps it matching only genuine
+    # enumeration phrasing, which a "set this to that" change command
+    # does not naturally produce.
     _QA_INTENT_RE = re.compile(
         r"^(what|why|how|explain|tell\s+me|describe|what'?s?\s*(is|are)?|"
         r"difference\s+between|compare|which\s+is\s+(better|best)|"
-        r"can\s+you\s+explain|why\s+can'?t|how\s+does|how\s+do)",
+        r"can\s+you\s+explain|why\s+can'?t|how\s+does|how\s+do|"
+        r"list\s+(the|all|available)|show\s+me\s+(the|all|available))\b",
         re.IGNORECASE,
     )
 
@@ -4222,9 +10952,312 @@ class CpqEngine:
     # equally strong, unambiguous change signal — same tier as a real verb.
     _ARROW_RE = re.compile(r"->|→")
 
+    # Removal verbs — user wants to DESELECT an already-chosen multi-select
+    # option, not add a new one (docs: Ask page needs to let a customer
+    # deselect a mount type, not just add more). Deliberately distinct from
+    # _CHANGE_VERB_RE: "change X to Y" replaces a single-select's value,
+    # while "remove X" subtracts one option from an existing multi-select
+    # selection — different verbs, different target data structure
+    # (filled_multi, never filled).
+    _REMOVE_VERB_RE = re.compile(
+        r"\b(remove|deselect|de-select|delete|drop|uncheck|take\s+out|"
+        r"get\s+rid\s+of|don'?t\s+need)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_multi_select_removal(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled_multi: dict[str, list[str]],
+    ) -> "tuple[ConfigAttr, list[str]] | None":
+        """Detect "remove X"/"deselect X" against an already-selected
+        multi-select option (e.g. "remove Jacket Magnetic Mount" after
+        selecting both Shirt and Jacket).
+
+        Confirmed live this was a real gap: apply_multi_answer/
+        _handle_cascade's multi-select branch only ever UNIONS mentioned
+        options with the current selection (by design, for the "also
+        include X" add case) — there was no removal path at all, so
+        "remove Jacket Magnetic Mount" fell straight through to "I didn't
+        quite catch that" with both mounts still selected.
+
+        Returns (attr, item_values_to_remove) or None. Only fires when a
+        removal verb is present AND at least one mentioned option is
+        genuinely already in the current selection — naming an option
+        that isn't currently selected is not a removal request (falls
+        through to the normal change-request/collision paths instead, same
+        "never guess" discipline as everywhere else in this file).
+        """
+        if not self._REMOVE_VERB_RE.search(question):
+            return None
+        for attr in attrs:
+            if attr.select_type != "multi":
+                continue
+            current = filled_multi.get(attr.variable_name)
+            if not current:
+                continue
+            mentioned = self.apply_multi_answer(attr, question)
+            to_remove = [iv for iv, _dn in mentioned if iv in current]
+            if to_remove:
+                return attr, to_remove
+        return None
+
+    # "add/activate/include/bring back/turn on X" — re-activating a real,
+    # currently-excluded, optional catalog attr post-quote-generation
+    # (docs/CPQ_POST_QUOTE_EDIT_AND_QA_PLAN.md D2). Deliberately distinct
+    # from _CHANGE_VERB_RE: "change X to Y" replaces an already-visible
+    # attr's value, while "add X" re-activates something not currently
+    # part of the quote at all.
+    _ADD_VERB_RE = re.compile(
+        r"\b(add|activate|include|bring\s+back|re-?add|reactivate|turn\s+on)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_attr_activation(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]],
+        hiding_rules: list[HidingRule],
+        workspace_id: int,
+        catalog_prefix: str,
+        bml_eval: BmlEvaluator | None = None,
+    ) -> ConfigAttr | None:
+        """Detect "add X"/"activate X" re-activating a real, currently-
+        excluded, optional attribute (D2). Never an invented field, never
+        a required one, never a bypass of a currently-active hiding rule.
+
+        A single unified eligibility check covers all 3 of D2's source
+        pools at once: `required == False`, not `attr.hidden` (BM-native
+        permanent hidden — a different concept from rule-conditional
+        hiding, never surfaced regardless of rule state), not already
+        filled/selected, and NOT currently hidden by an active hiding
+        rule (re-checked live against the CURRENT filled state via
+        `apply_hiding_rules`, never a cached/stale exclusion set — an
+        attr whose hiding condition is still true is never a candidate,
+        full stop). This naturally covers a declined multi-select (empty
+        `filled_multi`), a flow-exclusion-dropped attr
+        (`payload_flow_exclusions`), and a hiding-rule-excluded attr
+        whose condition lapsed — all three reduce to the same "real,
+        optional, currently invisible, not rule-blocked" predicate.
+        """
+        if not self._ADD_VERB_RE.search(question):
+            return None
+        _visible_now, _msgs, hidden_now = self.apply_hiding_rules(
+            attrs, filled, hiding_rules, bml_eval=bml_eval, filled_multi=filled_multi)
+        q_lower = question.lower()
+        for attr in attrs:
+            vn = attr.variable_name
+            if attr.required or attr.hidden:
+                continue
+            if vn in filled or filled_multi.get(vn):
+                continue
+            if vn in hidden_now:
+                continue  # still genuinely hidden by an active rule
+            if _label_mentioned_strict(attr.display_label.lower(), q_lower):
+                return attr
+        return None
+
+    # "clear/unset/blank X" — nullifying an optional SINGLE-select attr's
+    # current value back to empty (D4). Distinct from _REMOVE_VERB_RE
+    # (multi-select deselection, a different data structure entirely) and
+    # from _CHANGE_VERB_RE (replacing with a different concrete value).
+    _CLEAR_VERB_RE = re.compile(
+        r"\b(clear|unset|blank|leave\s+(?:it\s+)?(?:blank|empty|unset))\b",
+        re.IGNORECASE,
+    )
+
+    def detect_attr_clear(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        rec_rules: list[RecommendationRule],
+        con_rules: list[ConstraintRule],
+        bml_eval: BmlEvaluator | None = None,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+    ) -> ConfigAttr | None:
+        """Detect "clear X"/"unset X" nullifying an optional single-select
+        attribute's CURRENT value back to blank (D4) — never a required
+        attr, and never one a still-active rule would immediately refill.
+
+        Live-checked, not a static flag: simulates removing each
+        candidate from `filled` and re-runs
+        apply_recommendation_rules/apply_constraint_rules against that
+        trial state — if a recommendation would refire, or a constraint
+        narrows the attr to exactly one remaining valid option, clearing
+        is refused (the very next rule pass would just put the same value
+        straight back, silently, making the "clear" a no-op at best).
+        """
+        if not self._CLEAR_VERB_RE.search(question):
+            return None
+        q_lower = question.lower()
+        for attr in attrs:
+            vn = attr.variable_name
+            if attr.required or attr.select_type == "multi":
+                continue
+            if not filled.get(vn):
+                continue
+            if not _label_mentioned_strict(attr.display_label.lower(), q_lower):
+                continue
+            trial_filled = dict(filled)
+            trial_filled.pop(vn, None)
+            rec_fires = self.apply_recommendation_rules(
+                attrs, trial_filled, rec_rules, bml_eval=bml_eval)
+            if vn in rec_fires:
+                continue  # a recommendation would immediately refill it
+            constrained = self.apply_constraint_rules(
+                attrs, con_rules, trial_filled, bml_eval=bml_eval,
+                workspace_id=workspace_id, catalog_prefix=catalog_prefix)
+            allowed = constrained.get(attr.entity_id)
+            if allowed is not None:
+                valid_opts = [o for o in attr.options if o.item_value in allowed]
+                if len(valid_opts) == 1:
+                    continue  # constraint narrows to one — would refill immediately
+            return attr
+        return None
+
+    # "change/set/update/make ... quantit(y|ies) ... to <number>" OR
+    # "change/set/... both/all/every ... to <number>" — a bulk per-row
+    # quantity update, distinct from _CHANGE_VERB_RE's single-attribute
+    # value change. Live-verified gap (2026-07-22): "change both the
+    # mounting type to 25" — no "quantity" word at all, just "both" —
+    # missed the original quantity-only regex and fell into
+    # detect_change_request_collision instead, where 25 (never a real
+    # mount option) couldn't resolve either. The "both/all/every" branch
+    # is intentionally broader; detect_bulk_quantity_change's own
+    # restriction to resolve_array_grid_links' selectors with actually
+    # resolvable selected rows is the real safety net, not this regex.
+    _BULK_QTY_RE = re.compile(
+        r"\b(?:change|set|update|make)\b.{0,80}"
+        r"\b(?:quantit(?:y|ies)|both|all|every)\b.{0,60}"
+        r"\bto\b\s*(\d+(?:\.\d+)?)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def detect_bulk_quantity_change(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled_multi: dict[str, list[str]],
+    ) -> "tuple[str, list[str], str] | None":
+        """Detect "change both/all the mounting types quantity to 67" — set
+        every currently-selected grid-row's quantity to one value at once.
+
+        Live-verified gap: this phrasing was previously misread as a
+        single-attribute value change ("change Mounting Type to 67"),
+        which either mis-set the grid selector's own value or, on a
+        catalog with two identically-labeled "Mounting Type" attrs (one
+        single-select, one the real multi-select grid), forced an
+        unresolvable disambiguation prompt — 67 was never going to be a
+        valid answer for either one, since the real target is each row's
+        quantity attr, not the selector's own value.
+
+        Restricting candidates to `resolve_array_grid_links`' selectors
+        sidesteps that label collision entirely: a plain single-select
+        sibling (e.g. mountType_viSoln) never has grid links and so is
+        never a candidate here, regardless of a shared display_label.
+
+        Returns (selector_variable_name, item_values_to_update, new_qty)
+        or None. Only matches selectors with at least one already-selected,
+        quantity-resolvable row — never guesses at an unfilled selector.
+        """
+        m = self._BULK_QTY_RE.search(question)
+        if not m:
+            return None
+        new_qty = m.group(1)
+        grid_links = self.resolve_array_grid_links(attrs)
+        if not grid_links:
+            return None
+        by_vn = {a.variable_name: a for a in attrs}
+        candidates: list[tuple[str, list[str]]] = []
+        for selector_vn, item_map in grid_links.items():
+            selected = filled_multi.get(selector_vn) or []
+            resolvable = [iv for iv in selected if iv.strip().lower() in item_map]
+            if resolvable:
+                candidates.append((selector_vn, resolvable))
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0][0], candidates[0][1], new_qty
+        # Multiple grid selectors are in play — narrow by word overlap
+        # against each selector's own display_label rather than guess.
+        q_words = set(_variable_words(question.replace("_", " ")))
+        scored = []
+        for selector_vn, resolvable in candidates:
+            attr = by_vn.get(selector_vn)
+            label_words = set(_variable_words(attr.display_label)) if attr else set()
+            if q_words & label_words:
+                scored.append((selector_vn, resolvable))
+        if len(scored) == 1:
+            return scored[0][0], scored[0][1], new_qty
+        return None
+
     def detect_approval(self, question: str) -> bool:
         """True when the user is approving/confirming the configuration (Step 8)."""
         return bool(self._APPROVAL_RE.search(question.strip()))
+
+    # Decline keywords — user is explicitly rejecting the awaiting-approval
+    # configuration (ISSUE-002, docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_
+    # PLAN_2026_08_17.md). Anchored at the start of the message exactly like
+    # _APPROVAL_RE above, deliberately NOT a bare substring search — a
+    # substring match on "no" would false-positive on ordinary attribute
+    # answers that happen to start with a negative word (e.g. "no carry
+    # solution" as a value), which this detector must never be consulted
+    # for anyway (callers only invoke it in awaiting-approval-adjacent
+    # dispatch), but the anchored shape keeps the regex itself conservative
+    # regardless of call site.
+    _DECLINE_RE = re.compile(
+        r"^no+\b[\s,!.]*$|"  # bare "no"/"noo" (optionally with trailing punctuation) alone
+        r"^(?:no+\b[\s,!.]*)?"
+        r"(?:i\s+(?:hereby\s+|just\s+|really\s+)?)?"
+        r"(nope|declin(?:e|ed|ing)|reject(?:ed|ing)?|cancel(?:led|ing)?|"
+        r"don'?t\s+(?:approve|submit|confirm|finali[sz]e|send\s+it|go\s+ahead)|"
+        r"do\s+not\s+(?:approve|submit|confirm|finali[sz]e|send\s+it|go\s+ahead)|"
+        r"not\s+(?:yet|now|ready)|hold\s+on|wait|"
+        r"that'?s?\s+(?:wrong|not\s+(?:right|correct))|go\s+back)\b",
+        re.IGNORECASE,
+    )
+
+    def detect_decline(self, question: str) -> bool:
+        """True when the user is explicitly rejecting the awaiting-approval
+        configuration (Step 8 rejection). See ISSUE-002 fix plan for the
+        production bug this closes: an explicit "no, decline that" was being
+        misdispatched as an approval because no deterministic decline
+        detector existed at all.
+        """
+        return bool(self._DECLINE_RE.search(question.strip()))
+
+    # "give/show me the (final) summary/configuration", "recap", "what do
+    # I have so far" — a request to RE-SHOW the current configuration, not
+    # a question about a specific attribute and not an approval. Live-
+    # verified gap, 2026-08-13: with no dedicated category for this, "give
+    # the final summary now" was classified OUT_OF_SCOPE by the LLM
+    # classifier (none of its fixed categories represent "show it again"),
+    # and a shorter phrasing like "give the configuration" could
+    # coincidentally word-match a real catalog attribute whose own label
+    # contains "configuration" (e.g. "Configuration Type"), silently
+    # hijacking the turn into a change-target prompt for that unrelated
+    # attribute instead. Checked deterministically, ahead of both paths.
+    _SHOW_SUMMARY_RE = re.compile(
+        r"(?i:"
+        r"\b(?:show|give|send|display)\s+(?:me\s+)?(?:the\s+)?"
+        r"(?:final\s+|current\s+|full\s+)?(?:summary|configuration|config)\b"
+        r"|\brecap\b"
+        r"|\breview\s+(?:the\s+|my\s+)?(?:configuration|config|summary|order)\b"
+        r"|\bwhat\s+(?:do\s+i\s+have|have\s+i\s+(?:chosen|selected|picked))\s+so\s+far\b"
+        r"|\bwhat'?s?\s+my\s+(?:current\s+)?(?:configuration|config)\b"
+        r")"
+    )
+
+    def detect_show_summary_request(self, question: str) -> bool:
+        """True when the customer is asking to see the configuration
+        summary again, not naming a specific attribute or approving.
+        """
+        return bool(self._SHOW_SUMMARY_RE.search(question.strip()))
 
     def detect_qa_question(
         self,
@@ -4279,6 +11312,239 @@ class CpqEngine:
         including the explicitly-declined empty selection; for multi attrs
         a "different value" means the mentioned option isn't already in
         the selected rows.
+
+        Just the first match from `_change_request_matches` — see
+        `detect_change_requests_multi` for a message naming several
+        attrs at once.
+        """
+        return next(self._change_request_matches(question, attrs, filled, filled_multi), None)
+
+    def detect_all_change_targets_without_value(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        *,
+        filled_multi: dict[str, list[str]] | None = None,
+        exclude_vns: set[str] | None = None,
+        cap: int = 10,
+    ) -> list[ConfigAttr]:
+        """All already-filled attrs named in a valueless change utterance.
+
+        Ordered by first appearance of the label/vn in the question so
+        "change hardware version, service type and activation delay"
+        yields a stable FIFO for pending_intent_queue. ``exclude_vns``
+        skips already-handled targets; ``cap`` bounds the scan (default
+        matches INTENT_QUEUE_CAP).
+        """
+        if not self._CHANGE_VERB_RE.search(question or ""):
+            return []
+        exclude = exclude_vns or set()
+        multi = filled_multi or {}
+        q_flat = (question or "").lower().replace("_", " ")
+        matches: list[ConfigAttr] = []
+        for a in attrs:
+            if a.variable_name in exclude:
+                continue
+            if not (filled.get(a.variable_name) or multi.get(a.variable_name)):
+                continue
+            label_l = (a.display_label or "").lower()
+            vn_flat = a.variable_name.lower().replace("_", " ")
+            # Full label, variable_name, or a trailing multi-word slice of
+            # the label (e.g. "service type" matching "Primary Service Type").
+            hit = False
+            if label_l and label_l in q_flat:
+                hit = True
+            elif vn_flat and vn_flat in q_flat:
+                hit = True
+            else:
+                words = [w for w in label_l.split() if len(w) > 1]
+                for n in range(min(len(words), 3), 1, -1):
+                    tail = " ".join(words[-n:])
+                    if tail in q_flat:
+                        hit = True
+                        break
+            if hit:
+                matches.append(a)
+        # Prefer longer labels when one subsumes another (same as singular
+        # detector's max-by-len), but keep appearance order among peers.
+        # First drop subsumed shorter labels that share the same span.
+        def _pos(a: ConfigAttr) -> int:
+            label_l = (a.display_label or "").lower()
+            vn_flat = a.variable_name.lower().replace("_", " ")
+            positions = [i for i in (
+                q_flat.find(label_l) if label_l else -1,
+                q_flat.find(vn_flat) if vn_flat else -1,
+            ) if i >= 0]
+            return min(positions) if positions else 9999
+
+        # Drop attrs whose label is a strict substring of another match's
+        # label at the same region (e.g. "Type" inside "Service Type") —
+        # keep the longest label at each position cluster.
+        matches.sort(key=lambda a: (-len(a.display_label or ""), _pos(a), a.variable_name))
+        kept: list[ConfigAttr] = []
+        kept_labels: list[str] = []
+        for a in matches:
+            lab = (a.display_label or "").lower()
+            if any(lab and lab != k and lab in k for k in kept_labels):
+                continue
+            kept.append(a)
+            kept_labels.append(lab)
+        # Stable user-facing order: appearance in the utterance.
+        kept.sort(key=_pos)
+        return kept[: max(0, cap)]
+
+    def detect_change_target_without_value(
+        self, question: str, attrs: list[ConfigAttr], filled: dict[str, str],
+    ) -> ConfigAttr | None:
+        """A change-verb naming an already-filled attr, but with no
+        resolvable new value ("change hardware version", "change product")
+        — distinct from detect_change_request, which requires BOTH a verb
+        AND a value and returns None otherwise. Confirmed live
+        (docs/CPQ_MID_CONFIG_CHANGE_REQUEST_PLAN.md Related finding 1): a
+        valueless change message fell through every detector, regex and
+        LLM, straight to the generic "I didn't quite catch that" nudge —
+        this lets the caller instead ask which value, the same way
+        detect_attr_query's "what values are available" answer already
+        does. Only ever called AFTER detect_change_request/
+        detect_change_requests_multi have already returned nothing, so a
+        message with a resolvable value never reaches here.
+
+        Returns the first of ``detect_all_change_targets_without_value``
+        (appearance order) so multi-target callers can still use the
+        singular form for "active" while enqueuing the rest.
+        """
+        all_targets = self.detect_all_change_targets_without_value(
+            question, attrs, filled,
+        )
+        return all_targets[0] if all_targets else None
+
+    # Cap on detect_change_requests_multi's result — a message naming more
+    # than this is unusual enough that blindly trusting every match risks
+    # silently misapplying something the user didn't actually intend
+    # (product decision: cap 3, apply whichever parse, report the rest).
+    _MAX_MULTI_CHANGE_REQUESTS = 3
+
+    def detect_change_requests_multi(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> list[tuple[ConfigAttr, str]]:
+        """Up to `_MAX_MULTI_CHANGE_REQUESTS` (attr, new_value_hint) matches
+        from a SINGLE message naming several attrs at once — e.g. "change
+        the Shirt Magnetic Mount Quantity to 25 and the Jacket Magnetic
+        Mount Quantity to 25". `detect_change_request` only ever returns
+        the first match (`_change_request_matches` is a generator; each
+        `for attr in _try_order` iteration yields independently, so
+        collecting more than one is exactly this: keep scanning instead of
+        stopping at the first).
+
+        Returns [] when no match is found, mirroring the "no change
+        detected" contract callers already expect from the singular form.
+        """
+        out: list[tuple[ConfigAttr, str]] = []
+        for match in self._change_request_matches(question, attrs, filled, filled_multi):
+            out.append(match)
+            if len(out) >= self._MAX_MULTI_CHANGE_REQUESTS:
+                break
+        return out
+
+    # Generic connector/control words a leftover clause commonly contains
+    # that are never themselves part of a real catalog label — excluded so
+    # e.g. "...and confirm" doesn't count "confirm" as catalog-word overlap
+    # just because some unrelated attr's label happens to share it.
+    _GENERIC_CLAUSE_STOPWORDS = frozenset({
+        "to", "the", "a", "an", "then", "please", "also", "and", "or",
+        "change", "set", "update", "make", "it", "that", "this", "for",
+        "with", "of", "in", "on", "confirm", "submit", "thanks", "thank",
+        "yes", "no", "ok", "okay", "done",
+    })
+
+    def detect_unmatched_change_targets(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        matched_vns: "set[str]",
+    ) -> list[str]:
+        """Live-verified gap (2026-07-28): "change solution type and
+        hardware type" — where "hardware type" names nothing real in this
+        catalog (it's "Hardware Version", not "Hardware Type") — silently
+        dropped "hardware type" entirely once "solution type" was
+        successfully matched. The customer explicitly asked for two
+        things and only saw one addressed, with no indication the second
+        wasn't understood — indistinguishable from the system just
+        forgetting it.
+
+        Returns plain-language leftover phrases from the message that
+        (a) weren't accounted for by any attr already in `matched_vns`,
+        (b) don't match ANY real attr's label either (a genuine second
+        VALID target — just one this caller hasn't resolved yet — is not
+        "unmatched", it's simply not this function's problem), and
+        (c) share at least one content word with SOME real catalog
+        label, the signal that this was a plausible-but-failed naming
+        attempt rather than an unrelated trailing clause ("...and
+        confirm") that happens to split on the same connective.
+
+        Deliberately conservative: only runs when the message has an
+        actual change-verb AND a connective ("and"/","/"&") joining
+        multiple clauses — a single-clause message has nothing "left
+        over" to flag by construction.
+        """
+        verb_match = self._CHANGE_VERB_RE.search(question) or self._ARROW_RE.search(question)
+        if not verb_match:
+            return []
+        if not re.search(r"\band\b|,|&", question, re.IGNORECASE):
+            return []
+        catalog_words: set[str] = set()
+        for a in attrs:
+            catalog_words |= set(re.findall(r"[a-z0-9]+", a.display_label.lower()))
+        clauses = re.split(r"\band\b|,|&", question, flags=re.IGNORECASE)
+        unmatched: list[str] = []
+        for clause in clauses:
+            clause = clause.strip()
+            if not clause:
+                continue
+            clause_lower = clause.lower()
+            # Already accounted for by an attr this caller DID match.
+            if any(
+                a.variable_name in matched_vns
+                and _label_mentioned_strict(a.display_label.lower(), clause_lower)
+                for a in attrs
+            ):
+                continue
+            # Names a REAL attr — just not (yet) one in matched_vns. Not
+            # this function's concern; a genuine second valid target is
+            # not the same failure as naming nothing at all.
+            if any(_label_mentioned_strict(a.display_label.lower(), clause_lower) for a in attrs):
+                continue
+            stripped = self._CHANGE_VERB_RE.sub("", clause, count=1).strip()
+            stripped = self._ARROW_RE.sub("", stripped, count=1).strip()
+            if not stripped or len(stripped.split()) > 6:
+                continue
+            clause_words = (
+                set(re.findall(r"[a-z0-9]+", stripped.lower()))
+                - self._GENERIC_CLAUSE_STOPWORDS
+            )
+            if clause_words & catalog_words:
+                unmatched.append(stripped)
+        return unmatched
+
+    def _change_request_matches(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ):
+        """Generator yielding every (attr, new_value_hint) match — shared by
+        `detect_change_request` (first match only) and
+        `detect_change_requests_multi` (up to `_MAX_MULTI_CHANGE_REQUESTS`).
+        See `detect_change_request`'s docstring for the matching contract;
+        this is the same body with `return` turned into `yield` + `continue`
+        so the `for attr in _try_order` loop keeps scanning afterward
+        instead of exiting the whole function.
         """
         q_lower = question.lower()
         has_change_verb = bool(self._CHANGE_VERB_RE.search(question)) or bool(self._ARROW_RE.search(question))
@@ -4344,9 +11610,64 @@ class CpqEngine:
             vn_flat = attr.variable_name.lower().replace("_", "")
             label_lower = attr.display_label.lower()
 
-            # When a change verb is present, require the attr to be mentioned by name/label
+            # Require the attr to be mentioned by name/label REGARDLESS of
+            # change-verb presence (2026-07-28 fix) — the original gate
+            # only skipped an unmentioned attr when has_change_verb was
+            # True, which backwards-guarded exactly the wrong case: a bare
+            # reply with NO change verb (e.g. a plain "77" meant to answer
+            # a totally different pending free-text quantity attr) let
+            # EVERY filled attr through unfiltered, since the whole
+            # condition short-circuits False when has_change_verb is
+            # False. Live-verified: with no verb and no mention, "77" got
+            # tried against ultimateDestinationCountry's own apply_answer,
+            # which treats a bare number as a 1-based option INDEX — and
+            # position 77 in that catalog's 251-country list happens to be
+            # United Kingdom — silently overwriting the country and
+            # cascading a dozen dependent attrs, while the customer's
+            # actual answer (a quantity) was never even attempted here.
+            # Naming still isn't required through the SEPARATE hint-path
+            # fallback further below (extract_hints's own token-to-vn
+            # match is its own, narrower signal) — this only closes the
+            # "nothing at all ties this attr to the message" hole.
+            #
+            # A multi-select attr's own OPTION VALUE mentioned in the text
+            # counts too, not just its label/variable_name — "add the
+            # Jacket Clip Mount too" legitimately names the value being
+            # added, never the generic "Mounting Type" label itself
+            # (pre-existing, tested behavior — test_cpq_grid_decline.py).
+            _multi_option_mentioned = attr.select_type == "multi" and any(
+                o.display_name.lower() in q_lower for o in attr.options
+            )
             if (
-                has_change_verb
+                vn_flat not in q_lower.replace("_", "")
+                and not _label_mentioned(label_lower, q_lower)
+                and not _multi_option_mentioned
+            ):
+                continue
+
+            # docs/config_consistency_issues_2026-07-30.md issue 4 follow-up
+            # — a multi-select the customer never touched still gets a `[]`
+            # entry in filled_multi from auto_fill/hiding-rule evaluation
+            # (confirmed live: nearly every multi-select in a real catalog
+            # carries this, touched or not), so the gate above alone lets a
+            # BARE VALUE mention — with no explicit label/variable_name
+            # naming at all — match an untouched, empty multi-select purely
+            # because that value happens to also be one of ITS real
+            # options. Live-confirmed: with Frequency Bands (single-select)
+            # correctly the sole pending attribute, a bare "VHF" reply
+            # still matched an unrelated, never-touched
+            # modelSelectionFrequencyBandMsl_astro this way, writing the
+            # reply into the wrong attribute and leaving the real pending
+            # one stale (bom_gate re-detects it as invalid every confirm,
+            # looping forever). An EMPTY multi-select stays eligible when
+            # explicitly named by label/variable_name (test_cpq_grid_
+            # decline.py's declined-grid-reconsidered case: "I wanted to
+            # include the mounting type: X" must still work) — only a
+            # bare, unnamed value-only mention requires the multi-select to
+            # already hold a real selection.
+            if (
+                attr.select_type == "multi"
+                and not multi.get(attr.variable_name)
                 and vn_flat not in q_lower.replace("_", "")
                 and not _label_mentioned(label_lower, q_lower)
             ):
@@ -4362,12 +11683,13 @@ class CpqEngine:
                 mentioned = self.apply_multi_answer(attr, question)
                 current_rows = set(multi.get(attr.variable_name, []))
                 if any(iv not in current_rows for iv, _dn in mentioned):
-                    return attr, question
+                    yield attr, question
                 continue
             if attr.options:
                 result = self.apply_answer(attr, question)
                 if result and _valid(result[0]) and result[0] != filled.get(attr.variable_name):
-                    return attr, question
+                    yield attr, question
+                    continue
             elif has_change_verb:
                 # Free-text attr (e.g. a per-mount quantity field) with an
                 # explicit change verb — the label-mention gate above has
@@ -4414,7 +11736,8 @@ class CpqEngine:
                     m2 = re.search(r"-?\d+(?:\.\d+)?", search_text)
                     value = m2.group(0) if m2 else None
                 if value is not None and value != filled.get(attr.variable_name, ""):
-                    return attr, value
+                    yield attr, value
+                    continue
 
             # Hint-path fallback — coarse extracted token (e.g. "LTE", "4G") confirms
             # the attr is mentioned but may not identify the exact option. Only reached
@@ -4426,9 +11749,8 @@ class CpqEngine:
                 hk_flat = hk.lower().replace("_", "")
                 if hk_flat in vn_flat or vn_flat in hk_flat:
                     if hv.lower() != filled.get(attr.variable_name, "").lower():
-                        return attr, question
-
-        return None
+                        yield attr, question
+                        break
 
     def find_cascade_dependents(
         self,
@@ -4535,6 +11857,22 @@ class CpqEngine:
         silently resolves the tie via `max(..., key=len)`. Returns the tied
         candidates so the caller can ask the user to disambiguate instead of
         guessing, or None when there's no collision to report.
+
+        docs/config_consistency_issues_2026-07-30.md — live-confirmed bug: a
+        genuine COLLISION (one shared label, 2+ attrs) was being conflated
+        with a compound question naming several DIFFERENT, unambiguous
+        attrs by their own distinct labels in one sentence ("what are the
+        Frequency Bands and Wireless Carrier available?" wrongly pulled
+        wirelessCarrier_astro — label "Wireless Carrier", zero shared
+        tokens with "Frequency Bands" — into the SAME disambiguation
+        prompt, because the old check only counted `len(distinct_vns) >= 2`
+        across ALL label matches combined, never checking whether they
+        actually shared ONE label. Now groups matches by their OWN exact
+        label text first — only a group where 2+ DISTINCT variable_names
+        share the SAME label text is a real collision. Every `_narrow_label_
+        collision` caller already assumes this invariant (its own docstring:
+        "every candidate here has the IDENTICAL label by construction") —
+        this fix makes that actually true instead of assumed.
         """
         q_lower = question.lower()
         if not any(kw in q_lower for kw in self._OPTIONS_KEYWORDS):
@@ -4548,9 +11886,12 @@ class CpqEngine:
         if vn_matches:
             return None
         label_matches = [attr for attr in attrs if attr.display_label.lower() in q_lower]
-        distinct_vns = {a.variable_name for a in label_matches}
-        if len(distinct_vns) >= 2:
-            return label_matches
+        by_label: dict[str, list[ConfigAttr]] = {}
+        for a in label_matches:
+            by_label.setdefault(a.display_label.lower(), []).append(a)
+        for group in by_label.values():
+            if len({a.variable_name for a in group}) >= 2:
+                return group
         return None
 
     def detect_change_request_collision(
@@ -4585,23 +11926,29 @@ class CpqEngine:
             return None
         q_lower = question.lower()
         multi = filled_multi or {}
-        # _label_mentioned, not a strict substring check — detect_change_
-        # request's own resolution uses this same fuzzy matcher (drops up
-        # to 2 leading words, e.g. the generic "mounting type" prefix), so
-        # a real user phrasing like "change the Shirt Magnetic Mount
-        # Quantity to 99" (the specific attr's actual label is "mounting
-        # type Shirt Magnetic Mount Quantity") must be seen as a candidate
-        # here too — confirmed live: the strict substring check never saw
-        # the specific attr as a candidate at all (its full label never
-        # literally appears when the "mounting type" prefix is dropped),
-        # only the generic "Quantity" attrs, so the supersession check
-        # below never fired and a bogus 3-way "Quantity" collision was
-        # reported even though detect_change_request's own resolver would
-        # have resolved it unambiguously.
+        # _label_mentioned_strict (2026-07-28 fix), NOT the loose
+        # _label_mentioned — live-confirmed bug: "change solution type and
+        # hardware type" (neither phrase contains "service type" anywhere)
+        # still reported a "Service Type" collision, because the loose
+        # matcher's leading-word-drop tier let "Service Type" degrade to
+        # the single generic shared word "Type", which then substring-
+        # matched "type" inside BOTH "solution type" and "hardware type".
+        # _label_mentioned's own docstring says this loose tier is "safe
+        # only as a coarse pre-filter" specifically because its OTHER
+        # caller (detect_change_request) always requires a separate real
+        # value-match before resolving anything — this function has no
+        # such second check; it hands loose matches straight to the user
+        # as a real collision, so it needs the strict variant instead,
+        # which explicitly never degrades to a single generic shared word
+        # (see _label_mentioned_strict's own docstring). Multi-word
+        # dropped-prefix matches (e.g. "mounting type Shirt Magnetic Mount
+        # Quantity" naming just "Shirt Magnetic Mount Quantity") still work
+        # under the strict variant — only the single-generic-word
+        # degradation is excluded.
         candidates = [
             a for a in attrs
             if (a.variable_name in filled or a.variable_name in multi)
-            and _label_mentioned(a.display_label.lower(), q_lower)
+            and _label_mentioned_strict(a.display_label.lower(), q_lower)
         ]
         # Group by the EXACT label text, not just "2+ candidates matched at
         # all" — a substring containment match (e.g. "Quantity" inside
@@ -4628,6 +11975,74 @@ class CpqEngine:
                 continue
             return group
         return None
+
+    def count_turn_intents(
+        self,
+        question: str,
+        attrs: list[ConfigAttr],
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+    ) -> list[str]:
+        """Read-only diagnostic (docs/CPQ_LLM_INTENT_FIRST_PLAN.md Fix 4,
+        incremental step): runs every existing intent detector against one
+        message and returns a plain-string label for each one that fired,
+        WITHOUT changing what the turn actually does with the result —
+        purely observational, logged by the caller.
+
+        Confirmed live this session: "change solution type and primary
+        service type" only ever got ONE of its two targets addressed,
+        because `detect_change_request_collision` (and every other
+        detector in the real turn-processing flow) stops at its own first
+        match and the caller returns immediately. This counts how many
+        DISTINCT intents a single message actually contains, so that gap
+        can be measured against real traffic before any routing behavior
+        changes — reuses every detector as-is, adds no new detection
+        logic, and never influences the response.
+        """
+        hits: list[str] = []
+        try:
+            if self.detect_qa_question(question, None, strict=True):
+                hits.append("qa_question")
+        except Exception:  # noqa: BLE001 — diagnostic only, must never break the turn
+            logger.debug("count_turn_intents: detect_qa_question failed", exc_info=True)
+        try:
+            mode = self.detect_response_mode_request(question)
+            if mode:
+                hits.append(f"mode_request:{mode}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_response_mode_request failed", exc_info=True)
+        try:
+            collision = self.detect_change_request_collision(question, attrs, filled, filled_multi)
+            if collision:
+                hits.append(f"change_collision:{collision[0].display_label}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_change_request_collision failed", exc_info=True)
+        try:
+            multi = self.detect_change_requests_multi(question, attrs, filled, filled_multi)
+            for attr, _hint in multi:
+                hits.append(f"change:{attr.variable_name}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_change_requests_multi failed", exc_info=True)
+        if not any(h.startswith("change:") for h in hits):
+            try:
+                single = self.detect_change_request(question, attrs, filled, filled_multi)
+                if single:
+                    hits.append(f"change:{single[0].variable_name}")
+            except Exception:  # noqa: BLE001
+                logger.debug("count_turn_intents: detect_change_request failed", exc_info=True)
+        try:
+            no_value = self.detect_change_target_without_value(question, attrs, filled)
+            if no_value:
+                hits.append(f"change_no_value:{no_value.variable_name}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_change_target_without_value failed", exc_info=True)
+        try:
+            attr_q = self.detect_attr_query(question, attrs)
+            if attr_q:
+                hits.append(f"attr_query:{attr_q.variable_name}")
+        except Exception:  # noqa: BLE001
+            logger.debug("count_turn_intents: detect_attr_query failed", exc_info=True)
+        return hits
 
     def detect_attr_query(
         self, question: str, attrs: list[ConfigAttr],
@@ -4702,6 +12117,171 @@ class CpqEngine:
                 best_attr = attr
         return best_attr
 
+    # Recognizes the recurring `allowedChars = "..."` character-allowlist
+    # idiom in ValidationRule condition_scripts (confirmed live in both the
+    # CC Aware 2026 and CC Aware "Allow only specific characters on PD
+    # AGDOMAIN" rules) — the only script shape this describes; anything else
+    # returns None rather than guessing at a description.
+    _ALLOWED_CHARS_RE = re.compile(r'allowedChars\s*=\s*"([^"]*)"')
+
+    @classmethod
+    def _describe_char_allowlist(cls, script: str | None) -> str | None:
+        # Raven review, 2026-07-28: this previously did a blind first-match
+        # search with no guard against conditional branching or
+        # reassignment — the established sibling pattern for exactly this
+        # ambiguity class is bml.py's evaluate_constant_return, which bails
+        # to None on any `if (` in the script and walks multiple
+        # assignments in source order so the LAST one wins (never describes
+        # a stale/conditionally-overridden value as if it were the real
+        # constraint). Matched here for the same reason.
+        if not script:
+            return None
+        if re.search(r'\bif\s*\(', script, re.IGNORECASE):
+            return None
+        matches = list(cls._ALLOWED_CHARS_RE.finditer(script))
+        if not matches:
+            return None
+        chars = matches[-1].group(1)
+        if not chars:
+            return None
+        has_upper = any(c.isupper() for c in chars)
+        has_lower = any(c.islower() for c in chars)
+        has_digit = any(c.isdigit() for c in chars)
+        specials = sorted({c for c in chars if not c.isalnum()})
+        parts: list[str] = []
+        if has_upper and has_lower:
+            parts.append("letters")
+        elif has_upper:
+            parts.append("uppercase letters")
+        elif has_lower:
+            parts.append("lowercase letters")
+        if has_digit:
+            parts.append("digits")
+        if specials:
+            parts.append("the characters " + " ".join(specials))
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+    def describe_free_text_constraint(
+        self, attr: ConfigAttr, validation_rules: list["ValidationRule"] | None,
+    ) -> str | None:
+        """Plain-language description of a no-option attr's real constraint,
+        for a Q&A "what values are allowed" question the attr has no
+        options to answer with (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+        Amendment 20 follow-up — confirmed live: agencyDomainName_ID_swSoln
+        is free text with zero options, so the existing options-listing
+        fast path has nothing to show, and its own ValidationRule's
+        human-authored `message` ("Invalid selection") isn't descriptive
+        either). Only describes the one script idiom confirmed above;
+        returns None (never guesses) for any other rule shape.
+        """
+        target_ids = {attr.entity_id, attr.source_id}
+        for rule in validation_rules or []:
+            if rule.target_attr_id not in target_ids:
+                continue
+            desc = self._describe_char_allowlist(rule.condition_script)
+            if desc:
+                return desc
+        return None
+
+    def should_ask_free_text_attr(
+        self,
+        attr: ConfigAttr,
+        validation_rules: list["ValidationRule"] | None,
+        bml_eval: "BmlEvaluator | None",
+    ) -> bool:
+        """Generic (not catalog-specific) replacement for Amendment 19's
+        reverted blanket "has a ValidationRule -> ask" heuristic (Amendment
+        20, docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md). Every deterministic
+        signal available in this data (required flag, default_value, script
+        shape, hiding-rule visibility) was confirmed identical between a
+        genuine case and Amendment 20's false-positive case — so this
+        escalates to a Tier-2 LLM judgment (Amendment 22), same discipline
+        as every other "no cheaper signal exists" case in this codebase.
+        Returns False (never asks) when there's no governing ValidationRule
+        at all, or when bml_eval wasn't supplied — same opt-out convention
+        every other bml_eval=None caller already gets elsewhere.
+        """
+        if bml_eval is None:
+            return False
+        target_ids = {attr.entity_id, attr.source_id}
+        rule = next(
+            (r for r in (validation_rules or []) if r.target_attr_id in target_ids),
+            None,
+        )
+        if rule is None:
+            return False
+        return bml_eval.classify_ask_worthy(
+            attr.display_label, rule.message, rule.condition_script, attr.entity_id,
+        )
+
+    # ── Announcement label disambiguation ──────────────────────────────────────
+
+    @staticmethod
+    def disambiguated_label(attr: ConfigAttr, attrs: list[ConfigAttr]) -> str:
+        """`attr.display_label`, suffixed to stay unique when 2+ attrs in
+        `attrs` share the same raw catalog label.
+
+        Live-confirmed gap (2026-07-28): `serviceType_astro`,
+        `serviceTypeRSM_astro`, and `serviceTypeAdditionalDMSCoverage_astro`
+        all carry the literal display_label "Service Type" — when a cascade
+        turn changes more than one of them (the user's own change plus an
+        independently-firing recommendation rule), the customer sees
+        multiple identical "Updated **Service Type** → ..." lines that read
+        as duplicates/contradictions instead of distinct facts. This is the
+        same root cause `_label_collision_for` already disambiguates at
+        QUESTION time — this is the ANNOUNCEMENT-time equivalent.
+
+        No catalog field carries a friendly, human grouping name for an
+        attr (checked live: the raw ingested JSON has only structural/UI
+        codes — "category": "2", not a label) — so the fallback is the
+        attr's own variable_name, camelCase/acronym-split into words, with
+        the words already present in the shared label removed. E.g.
+        "serviceTypeRSM_astro" vs. shared label "Service Type" -> "RSM";
+        "serviceTypeAdditionalDMSCoverage_astro" -> "Additional DMS
+        Coverage". The catalog suffix (e.g. "_astro") is stripped first —
+        it's shared by every attr, never a distinguishing fact. Returns the
+        bare label unchanged when a sibling's variable_name has no fragment
+        left to distinguish it (e.g. the "plainest" one, whose variable_name
+        collapses to the label itself) rather than surface a raw,
+        customer-meaningless variable_name.
+        """
+        label = attr.display_label
+        siblings = [a for a in attrs if a.display_label == label]
+        if len(siblings) < 2:
+            return label
+        label_words = {w.lower() for w in re.split(r"[^A-Za-z0-9]+", label) if w}
+        # `attr.catalog_prefix` is a different, BM-type-level field (e.g.
+        # "ApxNextConfig") — NOT the "_astro"-style suffix variable_names
+        # actually carry, so it can't be used to strip that suffix (live-
+        # verified: checking it left "astro" un-stripped, leaking as a
+        # meaningless "Service Type (astro)"). Instead, derive it: any
+        # underscore-part shared by EVERY sibling's variable_name is by
+        # definition not a distinguishing fact for one of them — exclude
+        # those words the same way label_words are excluded.
+        _sibling_parts = [
+            {p.lower() for p in s.variable_name.split("_") if p} for s in siblings
+        ]
+        _shared_parts = set.intersection(*_sibling_parts) if _sibling_parts else set()
+        _excluded = label_words | _shared_parts
+        for part in attr.variable_name.split("_"):
+            if not part or part.lower() in _shared_parts:
+                continue
+            spaced = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", part)
+            spaced = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", spaced)
+            words = [w for w in spaced.split() if w.lower() not in _excluded]
+            if words:
+                return f"{label} ({' '.join(words)})"
+        # No distinguishing fragment left after stripping shared label
+        # words and the catalog suffix (this attr's variable_name IS the
+        # label, e.g. the plainest sibling among several sharing it) —
+        # better to leave it as the bare label than surface a raw,
+        # customer-meaningless variable_name fragment.
+        return label
+
     # ── Next question ─────────────────────────────────────────────────────────
 
     def next_question_prompt(
@@ -4709,22 +12289,78 @@ class CpqEngine:
         attr: ConfigAttr,
         context_sentence: str = "",
         constrained_item_values: list[str] | None = None,
+        validation_rules: list["ValidationRule"] | None = None,
+        attrs: list[ConfigAttr] | None = None,
+        already_selected: "list[str] | set[str] | None" = None,
     ) -> str:
         """Build the hybrid question shown to the sales rep for one pending attr.
+
+        already_selected — optional (default `None`, no-op for every
+        existing caller). item_values the customer already picked for a
+        select_type=="multi" grid-selector attr being asked AGAIN for
+        more rows (docs/CPQ_SVX_MOUNTING_TYPE_ARRAY_GRID_MULTI_SELECT_
+        PLAN_2026_08_25.md) — excluded from the numbered list so a re-ask
+        only ever offers options genuinely still open, never re-lists one
+        already answered. Generic: applies to any select_type=="multi"
+        attr, no attribute or catalog name involved.
 
         context_sentence — explains WHY this attr is being asked based on rules
           (e.g. "Since 5G was selected, we now need a compatible antenna.").
         constrained_item_values — when active constraint rules apply, only these
           item_values are presented in the numbered list.
+        validation_rules — when given, a free-text attr (no options) proactively
+          shows its format constraint up front (e.g. "must only contain letters,
+          digits, and the characters - . _") instead of a bare "Please provide a
+          value." — confirmed live a rep has no way to know the expected format
+          otherwise, since BigMachines' own source data has no help-text field
+          for these attrs at all (docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md
+          Amendment 21's describe_free_text_constraint, previously only reachable
+          reactively via a Q&A question — now shown proactively too). None when
+          not supplied (default), same opt-out convention as bml_eval=None
+          elsewhere — never guesses a constraint that can't be described.
+
+        attrs — optional (default `None`, preserving the bare `attr.display_
+          label` every existing caller already showed). When given, the
+          question header uses `disambiguated_label(attr, attrs)` instead —
+          live-confirmed gap (2026-08-21): `mountType_viSoln` and
+          `mountingTypeArray_viSoln` both carry the literal label "Mounting
+          Type"; `_label_collision_for` (ask_api.py) deliberately excludes
+          an already-ANSWERED sibling from its "which one did you mean"
+          re-ask (correct — nothing left to disambiguate BETWEEN), but that
+          left the remaining single pending attr's raw, still-colliding
+          label on screen with zero indication it's a DIFFERENT attribute
+          from the one just answered under the identical text. Catalog-
+          agnostic — no attribute name hardcoded, same generic mechanism
+          `disambiguated_label` already uses for cascade-announcement text.
         """
+        # A constraint is a source of truth for VALIDITY, not catalog
+        # spelling. If it names a legal value with no literal item_value
+        # match in the real catalog (live-confirmed: productSelectionProduct
+        # _all's constraint returns 'APX NEXT XE 4G LTE PLUS 5G', which no
+        # real option equals), discarding the WHOLE constrained set back to
+        # unconstrained (first attempt at this fix) throws away the
+        # legitimate, real-matching values too -- live-confirmed regression:
+        # Product went from a flip-flopping 1-2 option menu to showing all
+        # 325 raw options. Drop only the phantom entries instead, same as
+        # auto_fill's valid_opts computation -- keep whichever real values
+        # the constraint did correctly narrow to. Falls back to fully
+        # unconstrained only if EVERY value was phantom.
+        if constrained_item_values is not None:
+            real_item_values = {o.item_value for o in attr.options}
+            narrowed = set(constrained_item_values) & real_item_values
+            constrained_item_values = sorted(narrowed) if narrowed else None
+
         # Use _presentable (not _valid) so codes like "NA" (North America) appear
         # in the numbered list even though _valid("NA")=False prevents auto-fill.
+        _already_selected = set(already_selected) if already_selected else None
         effective_opts = [
             o for o in attr.options
             if _presentable(o.item_value)
             and (constrained_item_values is None or o.item_value in constrained_item_values)
+            and (_already_selected is None or o.item_value not in _already_selected)
         ]
         ctx_prefix = f"{context_sentence}\n\n" if context_sentence else ""
+        _label = self.disambiguated_label(attr, attrs) if attrs else attr.display_label
         if effective_opts:
             if len(effective_opts) > _MAX_ENUMERATED_OPTIONS:
                 # An unconstrained master list (confirmed live: the product
@@ -4742,18 +12378,71 @@ class CpqEngine:
                 # phrases, and this prompt must stay countable as one block.
                 examples = ", ".join(f"*{o.display_name}*" for o in effective_opts[:3])
                 return (
-                    f"{ctx_prefix}**{attr.display_label}** has "
+                    f"{ctx_prefix}**{_label}** has "
                     f"{len(effective_opts)} available options — too many to "
                     f"list here. Please provide the exact name "
                     f"(e.g. {examples}), or ask *\"what are the options for "
-                    f"{attr.display_label}\"* to see the full list."
+                    f"{_label}\"* to see the full list."
                 )
             numbered = "\n".join(
                 f"{i + 1}. {opt.display_name}"
                 for i, opt in enumerate(effective_opts)
             )
-            return f"{ctx_prefix}**{attr.display_label}** — choose one:\n\n{numbered}"
-        return f"{ctx_prefix}**{attr.display_label}**\n\nPlease provide a value."
+            # An optional multi-select reaching this prompt at all is, by
+            # construction, a grid selector (resolve_array_grid_links) —
+            # every OTHER optional multi-select is auto-filled empty
+            # without ever being asked (auto_fill's own optional-tier
+            # branch). ask_api.py already recognizes "skip"/"none"/"no...
+            # needed" as a valid decline for exactly this case (confirmed
+            # live: mountingTypeArray_viSoln correctly resolves to an
+            # empty selection), but the prompt never told the user that —
+            # confirmed live: nobody would think to type "skip" without
+            # being told it's an option.
+            skip_hint = (
+                "\n\n*(Optional — say \"skip\" or \"none needed\" if you "
+                "don't need any.)*"
+                if attr.select_type == "multi" and not attr.required else ""
+            )
+            # Raven review, PR #277 (medium): the comment above ("the only
+            # multi-selects that reach this far") is true for the common
+            # optional-and-auto-filled-empty case, but isn't a structural
+            # guarantee — a REQUIRED multi-select with no picks yet, or any
+            # future caller shape, could reach here without being a real
+            # grid selector. Check the actual structural signal
+            # (resolve_array_grid_links, the same one auto_fill/
+            # grid_selector_vns already key off) instead of inferring it
+            # from select_type alone, so an ordinary multi-select always
+            # keeps the plain "choose one:" text. `attrs` is None for a
+            # handful of older callers that never passed the full catalog —
+            # those fall back to the plain text too, never guessing.
+            _is_grid_selector = (
+                attr.select_type == "multi" and attrs is not None
+                and attr.variable_name in self.resolve_array_grid_links(attrs)
+            )
+            if _is_grid_selector:
+                # Grid selectors let the customer fill several rows: one at
+                # a time across turns (apply_answer), or several at once in
+                # one reply (apply_multi_answer already scans a reply for
+                # every option named). "choose one" undersold that —
+                # confirmed live: a customer picking exactly one narrowed
+                # option (of 5-6 legal ones) was never invited to add more,
+                # even though every other still-valid option remained
+                # perfectly legal.
+                already_note = (
+                    f" You've already added {len(_already_selected)} — "
+                    if _already_selected else " "
+                )
+                return (
+                    f"{ctx_prefix}**{_label}** —{already_note}choose one or "
+                    f"more of what's left "
+                    f"(you can name several at once):\n\n{numbered}{skip_hint}"
+                )
+            return f"{ctx_prefix}**{_label}** — choose one:\n\n{numbered}{skip_hint}"
+        constraint_desc = self.describe_free_text_constraint(attr, validation_rules)
+        constraint_hint = (
+            f"\n\n*Must only contain {constraint_desc}.*" if constraint_desc else ""
+        )
+        return f"{ctx_prefix}**{_label}**\n\nPlease provide a value.{constraint_hint}"
 
     def apply_answer(
         self,
@@ -4771,6 +12460,15 @@ class CpqEngine:
         Returns (item_value, display_name) or None if no match found.
         """
         ua = user_answer.strip().lower()
+        # docs/CPQ_AMBIGUOUS_CLARIFY_DISCARDS_RESOLVED_EVIDENCE_PLAN_2026_08_
+        # 21.md -- live-confirmed: "2Yrs" (no space, abbreviated unit) fails
+        # every tier below against a real "2 Year" option, since "2yrs"
+        # tokenizes as one alphanumeric run sharing zero words with "2"+
+        # "year". Narrow, scoped normalization -- only a digit directly
+        # followed by "yr"/"yrs" -- not a general NLP rewrite; deliberately
+        # excludes a bare "y" abbreviation (too collision-prone against
+        # real catalog codes like a "Y"/"N" yes/no option).
+        ua = re.sub(r"(\d+)\s*yrs?\b", r"\1 year", ua)
         allowed = set(constrained_item_values) if constrained_item_values is not None else None
         options = (
             [o for o in attr.options if o.item_value in allowed]
@@ -4784,6 +12482,23 @@ class CpqEngine:
             idx = int(ua) - 1
             if 0 <= idx < len(presentable) and _valid(presentable[idx].item_value):
                 return presentable[idx].item_value, presentable[idx].display_name
+
+        # Known catalog duplicates -- two menu options share the same
+        # display_name (a real BigMachines authoring duplicate, see
+        # _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE) so a plain-text
+        # reply like "5 year" can coincidentally exact-match one
+        # duplicate's item_value ("5 YEAR") while the OTHER duplicate is
+        # the one governing rules actually key off ("5 YEARS"). Checked
+        # ahead of both the item_value and display-name exact-match
+        # tiers below so the coincidental item_value hit can't win first.
+        canonical_value = _DUPLICATE_DISPLAY_NAME_CANONICAL_ITEM_VALUE.get(
+            attr.variable_name)
+        if canonical_value is not None:
+            for opt in options:
+                if opt.item_value == canonical_value and (
+                    opt.item_value.lower() == ua or opt.display_name.lower() == ua
+                ):
+                    return opt.item_value, opt.display_name
 
         # Exact item_value match
         for opt in options:
@@ -4822,6 +12537,43 @@ class CpqEngine:
             if re.search(r"\b" + re.escape(dn_lower) + r"\b", ua):
                 if _valid(opt.item_value):
                     return opt.item_value, opt.display_name
+
+        # Unit/pluralization-tolerant match — "2 Yrs" or "2 Years" against
+        # a catalog option displayed as "2 Year" (confirmed live: neither
+        # form ever matched, so the value was silently dropped and the
+        # session kept reporting the old one as still current). See
+        # _option_matches_with_unit_normalization for the generic
+        # token-comparison this relies on — no per-unit synonym table.
+        for opt in sorted(options, key=lambda o: len(o.display_name), reverse=True):
+            if _option_matches_with_unit_normalization(opt.display_name, ua):
+                if _valid(opt.item_value):
+                    return opt.item_value, opt.display_name
+
+        # Country alias fallback — a direct reply naming a country by a
+        # DIFFERENT alias than the option's own item_value/display_name
+        # (e.g. "USA" replying to an attr whose real option is
+        # item_value="US", display_name="United States") previously fell
+        # through every check above to a hard miss with no logging at all
+        # (confirmed live 2026-08-14: Ultimate Destination Country accepted
+        # "US" via the exact item_value check above but rejected "USA").
+        # Uses _country_alias_group -- the same 249-real-country,
+        # bidirectional alias table auto_fill's hint-priority path uses
+        # (Priority 4 above) -- so a fix to the underlying data closes the
+        # gap in both places at once. Narrow and safe — only fires when
+        # `ua` (the whole trimmed reply) exactly equals a known alias,
+        # never a substring/fuzzy guess.
+        alias_group = _country_alias_group(ua)
+        if alias_group:
+            for opt in options:
+                if (opt.item_value.lower() in alias_group
+                        or opt.display_name.lower() in alias_group):
+                    if _valid(opt.item_value):
+                        logger.info(
+                            "cpq_apply_answer_alias_match attr=%s reply=%r "
+                            "resolved_to=%r",
+                            attr.variable_name, user_answer, opt.item_value,
+                        )
+                        return opt.item_value, opt.display_name
 
         # Free-text field
         if not attr.options and allowed is None and _valid(user_answer):
@@ -4887,6 +12639,414 @@ class CpqEngine:
     # and quantity "0" are legitimate API codes, not empty selections.
     _CONFIRMED_SOURCES: frozenset[str] = frozenset({"user", "hint", "cascade"})
 
+    def build_standalone_payload(
+        self,
+        reader: Any,
+        workspace_id: int,
+        product_hint: str,
+        filled: dict[str, str],
+        filled_multi: dict[str, list[str]] | None = None,
+        hints: dict[str, str] | None = None,
+        country: str | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """Assemble a correct BOM payload OUTSIDE a live conversational
+        turn, with the SAME defaulting and ordering guarantees a live turn
+        gets — the structural fix for docs/APX_Next_RootCause_And_Fix_
+        Report Issue 1 ("no path sets a rule-driven attr when a payload is
+        assembled directly") and Issue 2 (payload key ordering).
+
+        A live conversational turn (ask_api.py's per-turn handler) already
+        calls evaluate_rules_loop (hide -> recommend -> constrain -> auto-
+        fill until stable) before build_payload — that loop is what
+        actually populates rule-driven attrs like a recommendation-rule
+        target. A payload assembled directly by a script has historically
+        skipped straight to something payload-shaped without ever running
+        it, silently missing every attr only that loop can fill. This
+        method runs the identical loop (empty `hints={}` is a valid,
+        supported input — hints normally come from conversational text via
+        extract_flag_hints/extract_catalog_hints, but evaluate_rules_loop
+        itself has no dependency on conversation state) then calls
+        build_payload with `rules` populated for dependency-aware ordering,
+        so both issues are fixed by one call for any standalone caller.
+
+        Returns (payload, unresolved). `unresolved` is
+        find_unresolvable_context_attrs' output: every attr still missing
+        that NO rule could ever fill (the genuine customerType-class gap —
+        never guessed, always surfaced instead of silently omitted). An
+        empty `unresolved` list does not guarantee the payload is complete
+        against every catalog requirement — only that nothing MORE could
+        have been resolved automatically without guessing.
+
+        Catalog-agnostic: attrs/rules/scripts are all loaded fresh from
+        `reader`/`workspace_id` via the same generic loaders every other
+        catalog-facing method here uses — no attribute or rule name is
+        hardcoded, and this works identically for any ingested BM export.
+        """
+        attrs, resolved_product_name = self.load_product_config(
+            reader, workspace_id, product_hint)
+        catalog_prefix = attrs[0].catalog_prefix if attrs else ""
+        hiding_rules = self.load_hiding_rules(workspace_id, catalog_prefix)
+        rec_rules, con_rules = self.load_recommendation_and_constraint_rules(
+            workspace_id, catalog_prefix)
+        bml_eval = self.build_bml_evaluator(workspace_id, catalog_prefix)
+
+        working_filled = dict(filled)
+        working_multi = dict(filled_multi or {})
+        visible_attrs, working_filled, _display_filled, _constrained_opts = self.evaluate_rules_loop(
+            attrs, hints or {}, working_filled, hiding_rules, rec_rules, con_rules,
+            bml_eval=bml_eval, filled_multi=working_multi, country=country,
+        )
+
+        payload = self.build_payload(
+            working_filled, None, working_multi, visible_attrs,
+            rules=[*hiding_rules, *rec_rules, *con_rules],
+        )
+        unresolved = self.find_unresolvable_context_attrs(
+            visible_attrs, working_filled, workspace_id, catalog_prefix,
+            rec_rules, con_rules,
+        )
+        return payload, unresolved
+
+    # docs/CPQ_ConfigData_Payload_Mandatory_Fix_Scope_2026_08_19.md -- for
+    # `build_payload`'s config_data scoping specifically (NOT beautify/
+    # summary, which keep the literal source=="user" check). Live-
+    # confirmed gap: Ultimate Destination Country, Wireless Carrier,
+    # Frequency Band Msl, and "Is provisioning required in cloud?" are all
+    # genuine, pure-user-input Mandatory fields with no catalog default,
+    # yet were missing from config_data because their real filled_source
+    # is "hint" (extracted directly from a compound opening sentence, e.g.
+    # "configure APX NEXT for USA") or "cascade"/"cascade-dependent" (re-
+    # derived as a side effect of a Hardware Version/Product change) --
+    # never the literal string "user" the old bare fallback required.
+    # `_SUMMARY_ACTIVE_SOURCES` (below) already treats these as genuine
+    # per-turn decisions for the summary's own purpose -- this is the same
+    # set, MINUS "rule": a fired-rule value (e.g. Package Type resolving
+    # via the ICE-Kit RecommendationRule) is exactly the "cosmetic auto-
+    # fill"/"blind-picked default" scope_required_and_edited's own
+    # docstring says config_data must keep excluding, even though a fired
+    # rule condition is legitimately "active" for the summary's different
+    # purpose. Deliberately NOT the same as Tier C (AttrSequence-Required,
+    # designed for beautify's Mandatory-section split) -- Tier C would
+    # promote genuinely never-edited catalog defaults (Software Release,
+    # Solution Type, Duration, Battery Type, ...) into config_data, which
+    # is exactly the "blind-picked default" class this payload must
+    # exclude; config_data only wants structurally-forced or genuinely
+    # decided values, not everything AttrSequence flags Required.
+    _CONFIG_DATA_ACTIVE_SOURCES: frozenset[str] = frozenset({
+        "user", "hint", "cascade", "cascade-dependent", "country_derived", "product_anchor",
+    })
+
+    # 2026-08-19 (docs/CPQ_Beautify_Mandatory_Section_Miscategorization_
+    # 2026_08_19.md): every one of these 10 variable names is confirmed,
+    # live, against the real APX NEXT UI to appear ONLY under "Recommended
+    # Configuration" -- never under "Mandatory User Input" -- even though
+    # AttrSequence flags most of them optionOrReqFlag == "R" ("must end up
+    # with a value" is not the same claim as "the customer is asked").
+    # Excluded from `mandatory_tier_c_vns` for exactly that reason. As with
+    # ask_api._NEVER_ASK_RECOMMENDED_ONLY_VNS (the conversational-ask-flow
+    # counterpart of this same distinction), there is no
+    # BmConfigLayoutAttrAssoc row to derive this from in this catalog
+    # (zero rows exist) -- membership is individually verified, not
+    # generically derived.
+    _RECOMMENDED_CONFIG_ONLY_VNS: frozenset[str] = frozenset({
+        "systemEnhancementFeatureType_astro",  # Feature Type
+        "serviceTypeAdditionalDMSCoverage_astro",  # Service Type
+        "dmsDuration_astro", "dMSDurationYears_astro",  # DMS Duration
+        "antennasType_astro",  # Antenna Type
+        "beltClipType_astro",  # Carry Type
+        "advancedSystemKeyHardwareKey_astro",  # System Key
+        "deviceManagementTraining_astro",  # Device Management Training
+        "trainTheTrainerTraining_astro",  # Train the Trainer Training
+        "packingPackageType_astro",  # Package Type
+        "documentationTestResultsRatedAudioPrintoutLabel_astro",  # Test Results/Rated Audio Printout Label
+    })
+
+    def mandatory_tier_c_vns(
+        self, filled: dict[str, str] | None, workspace_id: int | None,
+        catalog_prefix: str = "", cache: dict[tuple[int, str], tuple] | None = None,
+    ) -> frozenset[str]:
+        """Tier C for `_is_mandatory_input_attr` (beautify/summary ONLY --
+        NOT config_data, see docs/CPQ_ConfigData_Payload_Mandatory_Fix_
+        Scope_2026_08_19.md for why): attribute names the real ingested
+        AttrSequence Data Table flags optionOrReqFlag == "R" for the
+        active (cpq_model, base_model) -- catching defaulted-but-editable
+        Mandatory fields (Configuration Type, Software Bundles, Software
+        Release, Solution Type, Duration, Application Services Bundle
+        Duration, Wireless Carrier, Battery Type, Include a Spare,
+        Country) that Tier A/B miss entirely because their filled_source
+        is "rule"/"default", never "user" (docs/CPQ_Beautify_Mandatory_
+        Section_Miscategorization_2026_08_19.md).
+
+        "R" alone over-includes: many R-flagged attrs are auto-resolved by
+        a Whitelist/Defaultinattr row (Shylaja Shetty's "Auto-Resolved by
+        Data Tables" category) rather than ever being shown to the
+        customer as editable. Excludes any R-flagged attr `resolve_
+        whitelist_values` confirms has real constraint-shaped (Whitelist/
+        Defaultinattr, pooled into the same table) coverage for this
+        (cpq_model, base_model) -- same "genuinely unresolved, not merely
+        silent" discipline `_suppress_ungoverned_attrs` already applies
+        elsewhere. Also excludes `_RECOMMENDED_CONFIG_ONLY_VNS` (confirmed
+        Recommended-Configuration-only attrs).
+
+        Returns an empty frozenset (never None) when `filled`/
+        `workspace_id`/base model/CPQModel candidates are unavailable --
+        Tier C is purely additive, so "no coverage" must mean "adds
+        nothing," not "unknown."
+        """
+        if not filled or workspace_id is None:
+            return frozenset()
+        base_model = filled.get("modelSelectionbaseModel_astro", "")
+        if not base_model:
+            return frozenset()
+        product = filled.get("productSelectionProduct_all", "")
+        cands = _cpq_model_candidates(
+            product, workspace_id, catalog_prefix, cache, base_model=base_model,
+        )
+        if not cands:
+            return frozenset()
+        required_names: set[str] = set()
+        for cm in cands:
+            names = dt_governed_required_attr_names_for_base_model(
+                cm, base_model, workspace_id, catalog_prefix, cache,
+            )
+            if names:
+                required_names |= names
+        if not required_names:
+            return frozenset()
+        result: set[str] = set()
+        for vn in required_names:
+            if vn in self._RECOMMENDED_CONFIG_ONLY_VNS:
+                continue
+            if any(
+                dt_resolve_whitelist_values(
+                    cm, base_model, vn, filled, workspace_id, catalog_prefix, cache,
+                ) is not None
+                for cm in cands
+            ):
+                continue
+            result.add(vn)
+        return frozenset(result)
+
+    def _data_table_resolved_anchor_vns(
+        self, filled: dict[str, str] | None, attrs: list["ConfigAttr"] | None,
+        workspace_id: int | None, catalog_prefix: str = "",
+        cache: dict[tuple[int, str], tuple] | None = None, country: str = "",
+    ) -> frozenset[str]:
+        """`config_data`-only exclusion set for Tier A's "basemodel"/
+        "selectmodel" fragment match (docs/CPQ_ConfigData_Payload_
+        Mandatory_Fix_Scope_2026_08_19.md). The inverse of
+        `mandatory_tier_c_vns` -- an EXCLUDE set, not an include set.
+
+        Live-confirmed: modelSelectionbaseModel_astro looks like a real
+        menu-type attribute at the catalog level (menu_type=1), and Tier A
+        treats any "basemodel"/"selectmodel"-fragment match as an
+        unconditional structural anchor -- but it is not a real UI
+        submission (missing from the actual APX NEXT screenshot AND from
+        a real target config_data payload). Its value is 100% derived
+        from Country + Hardware Version + Product via the ingested
+        NewCountryRegMapping (region-rule-shaped) Data Table --
+        `resolve_region_allow_value`'s own docstring names this exact
+        attribute as its worked example. Reuses the identical (product,
+        region, country) -> CPQModel-candidate -> region-rule resolution
+        pattern already live elsewhere in this file (see the
+        `_bm_region_allow_value` block above, used for a different
+        purpose -- pre-filling Base Model before it's asked).
+
+        For each attribute in `attrs` whose name fragment-matches
+        "basemodel"/"selectmodel", checks whether ANY resolved CPQModel
+        candidate's region-rule row deterministically resolves it -- if
+        so, it is not a genuine anchor decision and is added to the
+        exclude set. Returns `frozenset()` (never `None`) when `filled`/
+        `attrs`/`workspace_id`/product/region are unavailable -- purely
+        subtractive, so "no coverage" must mean "no exclusions," never a
+        guess.
+        """
+        if not filled or not attrs or workspace_id is None:
+            return frozenset()
+        product = filled.get("productSelectionProduct_all", "")
+        if not product:
+            return frozenset()
+        resolved_country = filled.get("ultimateDestinationCountry") or country or ""
+        region = filled.get("modelSelectionRegion_astro") or (
+            _COUNTRY_TO_REGION.get(resolved_country.strip().lower(), "") if resolved_country else ""
+        )
+        if not region:
+            return frozenset()
+        cands = _cpq_model_candidates(product, workspace_id, catalog_prefix, cache)
+        if not cands:
+            return frozenset()
+        result: set[str] = set()
+        for attr in attrs:
+            vn_flat = attr.variable_name.lower().replace("_", "")
+            if "basemodel" not in vn_flat and "selectmodel" not in vn_flat:
+                continue
+            for cm in cands:
+                if dt_resolve_region_allow_value(
+                    attr.variable_name, cm, region, workspace_id, catalog_prefix, cache,
+                    country=resolved_country,
+                ):
+                    result.add(attr.variable_name)
+                    break
+        return frozenset(result)
+
+    def _is_mandatory_input_attr(
+        self, vn: str, attr: "ConfigAttr | None", source: str | None,
+        active_sources: frozenset[str] | None = None,
+        required_vns: frozenset[str] | None = None,
+        exclude_anchor_vns: frozenset[str] | None = None,
+        gate_attrseq_confirmed_to_active_source: bool = False,
+        rule_forced_active_vns: frozenset[str] | None = None,
+        data_table_forced_vns: frozenset[str] | None = None,
+    ) -> bool:
+        """Tier A/B/C scoping key (docs/CPQ_GOVERNED_BLINDPICK_AND_CONFIGDATA_
+        BEAUTIFY_FIX_PLAN_2026_08_14.md Fix 2, extended for beautify's
+        Mandatory/System split, further extended 2026-08-19 with Tier C —
+        docs/CPQ_Beautify_Mandatory_Section_Miscategorization_2026_08_19.md)
+        — True for structurally-required decision anchors (Hardware
+        Version, exact productSelectionProduct_all match, "basemodel"/
+        "selectmodel"-named attrs), the small named set of attrs
+        individually live-verified Required via the real per-base-model
+        Attrsequence Data Table (`_ATTRSEQ_CONFIRMED_REQUIRED_VNS`),
+        attributes the customer directly answered (source=="user"), and
+        (Tier C, opt-in via `required_vns`) AttrSequence-Required attrs
+        genuinely unresolved by any Whitelist/Defaultinattr row. Shared by
+        `build_payload` (scopes `config_data` to this set — Tier C is
+        NEVER passed there, see docs/CPQ_ConfigData_Payload_Mandatory_
+        Fix_Scope_2026_08_19.md), `beautify_rows`/`beautify_text` (splits
+        their output into a "Mandatory User Input" section vs. "System-
+        Configured / Recommended"), and the conversational summary
+        (`_filled_summary_triples`) — one scoping key, three consumers, so
+        none can silently drift apart on what counts as "genuinely
+        required" within their own intended scope.
+
+        Deliberately does NOT read `ConfigAttr.required` (sourced from
+        bm_config_attr.required). Raven review on PR #220 caught that
+        this exact field is already documented elsewhere in this file
+        (`_BLIND_FILL_RISK_ACCEPTED_VNS`'s comment block, 2026-08-19) as
+        "confirmed live to be 0/unreliable for essentially every
+        attribute in this catalog" — a flat, catalog-wide column, not the
+        real per-base-model requiredness. An earlier version of this fix
+        keyed off `attr.required` directly and would have silently no-
+        opped for exactly the attrs it was meant to fix (e.g.
+        baselineReleaseSW_astro / "Software Release", confirmed 448/449
+        Attrsequence rows Required despite bm_config_attr.required==0).
+
+        `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` only covers the subset of attrs
+        someone has actually live-verified against the real Attrsequence
+        table so far (see that set's docstring) -- a hand-verified,
+        stopgap allowlist. `required_vns` (Tier C) is the same idea
+        GENERALIZED via a live per-(cpq_model, base_model) AttrSequence
+        query instead of a hand-maintained set, so it automatically
+        covers the fields `_ATTRSEQ_CONFIRMED_REQUIRED_VNS` explicitly
+        says are "NOT yet covered" (Configuration Type, Solution Type,
+        Duration, Battery Type, Include a Spare, per-item Application
+        Services checkboxes) without requiring one-by-one manual
+        verification -- see `mandatory_tier_c_vns`. Both checks are kept:
+        the named set is cheap and needs no DB round-trip; Tier C is the
+        generic superset for everything else, and (unlike the named set)
+        is deliberately never passed to `build_payload`.
+
+        `attr` may be `None` (no ConfigAttr resolved for this key) — such a
+        key can never be a structural anchor, so only the `source=="user"`
+        fallback (or Tier C, which needs no `attr`) can include it.
+
+        `active_sources` — optional (default `None`, preserving every
+        existing caller's literal `source == "user"` check byte-for-byte).
+        `build_payload` passes `_CONFIG_DATA_ACTIVE_SOURCES` here (see the
+        docstring above it) so a genuine decision tagged "hint"/"cascade"/
+        "cascade-dependent"/"country_derived"/"product_anchor" also
+        qualifies for `config_data` specifically, without changing
+        beautify's/the summary's own behavior at all.
+
+        `required_vns` — optional (default `None`, so no existing caller's
+        behavior changes unless it opts in with `mandatory_tier_c_vns`'s
+        result). Beautify and the summary pass this; `build_payload` never
+        does.
+
+        `exclude_anchor_vns` — optional (default `None`, preserving Tier
+        A's "basemodel"/"selectmodel" fragment match unconditionally for
+        every existing caller byte-for-byte). `build_payload` passes
+        `_data_table_resolved_anchor_vns`'s result here so a
+        `config_data`-only exception — an anchor-named attribute that is
+        actually 100% data-table-resolved (e.g. modelSelectionbaseModel_
+        astro via NewCountryRegMapping) rather than a genuine customer
+        decision — is excluded from `config_data` specifically, without
+        changing beautify's/the summary's own Tier A behavior at all
+        (docs/CPQ_ConfigData_Payload_Mandatory_Fix_Scope_2026_08_19.md).
+
+        `gate_attrseq_confirmed_to_active_source` — optional (default
+        `False`, preserving `_ATTRSEQ_CONFIRMED_REQUIRED_VNS`'s
+        unconditional Tier A inclusion for beautify/the summary
+        byte-for-byte). PR #220's named set has no per-consumer gate the
+        way `exclude_anchor_vns`/`required_vns` do -- membership alone
+        (e.g. baselineReleaseSW_astro, applicationServicesSelection_astro)
+        was leaking genuinely catalog-defaulted (never customer-decided)
+        values into `config_data`, contradicting `scope_required_and_
+        edited`'s own contract ("blind-picked defaults" excluded).
+        `build_payload` passes `True` here so a named-set member only
+        counts toward Tier A for `config_data` when it's ALSO actively
+        sourced (`is_active_source`, i.e. `_CONFIG_DATA_ACTIVE_SOURCES`)
+        -- beautify's/the summary's own calls (default `False`) are
+        completely unaffected; these attrs still land in beautify's
+        Mandatory section and the summary regardless of source, matching
+        PR #220's original intent for those two consumers.
+
+        `rule_forced_active_vns` — optional (default `None`, no-op for
+        every existing caller). A `source=="rule"` value isn't always a
+        "blind-picked default" `gate_attrseq_confirmed_to_active_source`
+        was built to exclude — confirmed live (workspace 93,
+        wirelessCarrier_astro forced to "LTE CAPABILITY NO SERVICE" by the
+        real rule "Force Set Wireless Carrier... when ATAK is enabled")
+        a RecommendationRule can deterministically force a value as the
+        direct, causal consequence of a decision the CUSTOMER already
+        made (ATAK enabled) -- no less genuine than a "cascade" copy.
+        `build_payload` passes `_rule_forced_from_active_decision_vns`'s
+        result here: variable_names whose single declarative-condition
+        RecommendationRule was triggered by an attr that itself is
+        actively sourced. When `vn` is a member, it counts as actively
+        sourced here too, on top of (never instead of) the plain
+        `active_sources` check -- catalog-agnostic, no attribute or rule
+        name hardcoded.
+
+        `data_table_forced_vns` — optional (default `None`, no-op for
+        every existing caller). Same spirit as `rule_forced_active_vns`
+        but for a different resolution path: a `_ATTRSEQ_CONFIRMED_
+        REQUIRED_VNS` member whose value the real ingested Whitelist/
+        Defaultinattr Data Table confirms as ANY genuine legal option —
+        deliberately NOT requiring it be the only one (see
+        `_data_table_forced_vns`'s own docstring: live data proved an
+        "exactly one" version too strict — wirelessCarrier_astro
+        genuinely has 2 legal values, "ATT/FIRSTNET" and "VERIZON", for
+        base model H55TGT9PW8AN + Country=US). A
+        catalog-PROVEN answer is not a blind-picked default —
+        `build_payload` passes `_data_table_forced_vns`'s result here so
+        it counts as actively sourced too, same as `rule_forced_active_vns`.
+        """
+        vn_flat = vn.lower().replace("_", "")
+        _excluded_anchors = exclude_anchor_vns or frozenset()
+        is_active_source = (
+            source in active_sources if active_sources is not None
+            else source == "user"
+        ) or (rule_forced_active_vns is not None and vn in rule_forced_active_vns) or (
+            data_table_forced_vns is not None and vn in data_table_forced_vns
+        )
+        attrseq_confirmed = vn in _ATTRSEQ_CONFIRMED_REQUIRED_VNS
+        if gate_attrseq_confirmed_to_active_source:
+            attrseq_confirmed = attrseq_confirmed and is_active_source
+        tier_a = attr is not None and (
+            vn == "productSelectionProduct_all"
+            or self._is_hardware_version_attr(attr)
+            or ("basemodel" in vn_flat and vn not in _excluded_anchors)
+            or ("selectmodel" in vn_flat and vn not in _excluded_anchors)
+            or attrseq_confirmed
+        )
+        tier_b = (
+            any(dk in vn_flat for dk in _DECISION_REQUIRED_KEYS)
+            and is_active_source
+        )
+        tier_c = required_vns is not None and vn in required_vns
+        return tier_a or tier_b or tier_c or is_active_source
+
     def build_payload(
         self,
         filled: dict[str, str],
@@ -4894,8 +13054,56 @@ class CpqEngine:
         filled_multi: dict[str, list[str]] | None = None,
         attrs: list["ConfigAttr"] | None = None,
         hidden_vns: set[str] | None = None,
-    ) -> dict[str, dict[str, Any]]:
+        rules: list[Any] | None = None,
+        display_order: dict[str, int] | None = None,
+        product_quantity: int | None = None,
+        scope_required_and_edited: bool = False,
+        workspace_id: int | None = None,
+        catalog_prefix: str = "",
+    ) -> dict[str, Any]:
         """Return the final CPQ BOM API payload as ``{"configData": {...}}``.
+
+        workspace_id / catalog_prefix — optional (default `None`/`""`,
+        no-op for every existing caller). Only consulted when
+        `scope_required_and_edited` is True, to compute
+        `_data_table_resolved_anchor_vns` (docs/CPQ_ConfigData_Payload_
+        Mandatory_Fix_Scope_2026_08_19.md) — excludes an anchor-named
+        attribute (e.g. modelSelectionbaseModel_astro) from `config_data`
+        when it is genuinely resolved by the ingested NewCountryRegMapping
+        Data Table rather than a real customer decision. Never affects
+        beautify's/the summary's own Tier A behavior.
+
+        scope_required_and_edited — opt-in (default False, preserving every
+        existing caller's behavior byte-for-byte). When True, restricts
+        config_data to only `_is_mandatory_input_attr`'s Tier A/B set —
+        structurally-required decision anchors plus attributes the
+        customer directly answered. Everything else (cosmetic auto-fills,
+        blind-picked defaults) is excluded from config_data, though it
+        still exists in `filled`/`filled_multi` for beautify/summary
+        purposes elsewhere. Deliberately NOT wired into the real-submission
+        call path — only the JSON-preview response should ever pass True;
+        a real BOM submission must stay unscoped/full.
+
+        product_quantity — the session-level order quantity, added as a
+        top-level ``"quantity"`` key SIBLING to ``configData`` (never
+        inside it — that dict is a mirror of real catalog variable_names
+        only, never a synthetic key). Live-verified gap, 2026-08-13: the
+        overall order quantity reached the human-readable text summary
+        but never the actual submitted JSON payload at all. Strictly
+        opt-in — omitted entirely (not even a null key) when not
+        supplied, so this can never change the payload shape for any
+        existing caller that doesn't pass it.
+
+        display_order — optional {variable_name: rank} from
+        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+        PLAN.md §2). When supplied, applied as a FINAL filter+resort after
+        every other rule below — restricts the payload to exactly the
+        attrs present in the map (the catalog's real native-UI visible
+        set) and orders them by rank, winning over the dependency-topo-
+        sort/order_number tie-break described for `rules` below (every
+        attr that survives this filter is, by construction, a real layout
+        member with a real rank). `None` (the default) keeps today's
+        behavior — every other exclusion/ordering rule below unchanged.
 
         Root key is ``configData`` per the actual integration contract —
         previously ``configAttributes``, an internal assumption never
@@ -4956,6 +13164,30 @@ class CpqEngine:
         wrapped as ``{"value": v}``) for existing callers that don't pass
         it — the per-type behavior above only applies when a ConfigAttr for
         that variable_name is actually available.
+
+        rules — optional combined iterable of HidingRule/ConstraintRule/
+        RecommendationRule (any mix; each only needs condition_attr_id,
+        target_attr_id, and optionally conditions). When supplied, the
+        final key order is a dependency-aware topological sort — an attr
+        gated by another (e.g. Product's allowed values restricted by
+        Hardware Version, per a real declarative constraint rule) is
+        placed AFTER the attr that gates it, never before. bm_config_attr's
+        own order_number (ConfigAttr.order, used below when rules is
+        omitted) reflects catalog UI/display layout only — confirmed live
+        it can directly contradict a rule-proven dependency (a target
+        ranked far ahead of its own gating condition) — so it is used here
+        only as the tie-break between attrs with no dependency relation to
+        each other, not as the primary signal. Only DECLARATIVE conditions
+        (conditions/condition_attr_id) contribute edges; script-backed
+        rules (script/condition_script set, condition_attr_id==0) have no
+        single extractable condition attr and fall back to the
+        order_number tie-break for that edge, same as an attr with no
+        rule-derived ordering constraint at all — never guessed. A cycle
+        (rule data conflict) never drops or crashes on a key: anything left
+        after the topological pass is appended, sorted by order_number,
+        same fallback as no-`rules`-supplied behavior. Catalog-agnostic —
+        no attribute or rule name is hardcoded; works for any ingested BM
+        export.
         """
         sources = filled_source or {}
         attr_by_vn = {a.variable_name: a for a in (attrs or [])}
@@ -5030,6 +13262,25 @@ class CpqEngine:
                 value,
             )
 
+        # Only computed when actually needed -- avoids the resolver cost
+        # for every caller that doesn't opt into scope_required_and_edited.
+        _exclude_anchor_vns = (
+            self._data_table_resolved_anchor_vns(filled, attrs, workspace_id, catalog_prefix)
+            if scope_required_and_edited else frozenset()
+        )
+        _rule_forced_active_vns = (
+            self._rule_forced_from_active_decision_vns(
+                rules, attrs, sources, self._CONFIG_DATA_ACTIVE_SOURCES,
+            )
+            if scope_required_and_edited else frozenset()
+        )
+        _data_table_forced_vns = (
+            self._data_table_forced_vns(
+                filled, workspace_id, catalog_prefix, filled_multi=filled_multi,
+            )
+            if scope_required_and_edited else frozenset()
+        )
+
         for k, v in filled.items():
             if k in hidden:
                 continue
@@ -5041,7 +13292,15 @@ class CpqEngine:
                 # not ALSO ship as a separate flat top-level key.
                 continue
             attr = attr_by_vn.get(k)
-            if attr is not None and attr.hide_in_trans:
+            if scope_required_and_edited and not self._is_mandatory_input_attr(
+                k, attr, sources.get(k), active_sources=self._CONFIG_DATA_ACTIVE_SOURCES,
+                exclude_anchor_vns=_exclude_anchor_vns,
+                gate_attrseq_confirmed_to_active_source=True,
+                rule_forced_active_vns=_rule_forced_active_vns,
+                data_table_forced_vns=_data_table_forced_vns,
+            ):
+                continue
+            if attr is not None and self._attr_hidden_from_submission(attr):
                 continue
             if attr is not None and attr.is_array_control:
                 # Bare int = row count when unambiguous (see derivation
@@ -5051,7 +13310,7 @@ class CpqEngine:
                 if array_control_count is not None:
                     out[k] = array_control_count
                 continue
-            if attr is not None and attr.set_type == "2" and not attr.auto_lock:
+            if attr is not None and self._attr_is_transient_set_type(attr):
                 # Transient UI/action-layer attr (see ConfigAttr.set_type) —
                 # confirmed live: the real CPQ API rejects every one of
                 # these with "has an invalid payload" (APX catalog's own
@@ -5139,6 +13398,14 @@ class CpqEngine:
             if k in hidden or not vals or self._is_noise_var(k):
                 continue
             attr = attr_by_vn.get(k)
+            if scope_required_and_edited and not self._is_mandatory_input_attr(
+                k, attr, sources.get(k), active_sources=self._CONFIG_DATA_ACTIVE_SOURCES,
+                exclude_anchor_vns=_exclude_anchor_vns,
+                gate_attrseq_confirmed_to_active_source=True,
+                rule_forced_active_vns=_rule_forced_active_vns,
+                data_table_forced_vns=_data_table_forced_vns,
+            ):
+                continue
             if attr is not None and attr.hide_in_trans:
                 continue
             if (attr is not None and attr.array_set_id is not None
@@ -5172,25 +13439,50 @@ class CpqEngine:
                 driver = drivers_by_set_id.get(set_id)
                 if driver is None or not driver.array_set_wrapper_key:
                     continue
-                # Dummy/placeholder members (confirmed real example:
-                # MountingQuantityDummyArrayAttribute_viSoln — hidden=1,
-                # boolean, untouched default) are excluded from the row;
-                # both real members (selector + quantity) are hidden=0.
-                member_attrs = sorted(
+                all_members = sorted(
                     (a for a in (attrs or [])
-                     if a.array_set_id == set_id and a.array_set_role == "member"
-                     and not a.hidden and a.variable_name in member_vals),
+                     if a.array_set_id == set_id and a.array_set_role == "member"),
                     key=lambda a: a.array_col_order,
                 )
-                if not member_attrs:
+                # 2026-08-25 (SVX Mounting Type array-set payload RCA, live-
+                # confirmed against a real reference payload): three shape
+                # errors in the original version of this block --
+                # (A) `_index` was a sequential "i-th thing the customer
+                #     selected" counter, but the real contract's `_index` is
+                #     the selected option's own fixed position within the
+                #     selector's catalog option order (the native UI's
+                #     fixed per-option row grid -- picking option #3 first
+                #     must still emit `_index: 2`, not `_index: 0`).
+                # (B) the selector's own value/displayValue was written
+                #     into the row; the real payload never repeats it --
+                #     `_index` alone already identifies which option.
+                # (C) hidden members (e.g. MountingQuantityDummyArrayAttribute_
+                #     viSoln) were unconditionally excluded from every row;
+                #     the real payload includes a hidden member that was
+                #     never independently answered as a structural `true`
+                #     marker on every populated row. A hidden member that
+                #     DOES carry real per-row values (an ordinary hidden qty
+                #     column) is unaffected -- it's still written normally.
+                selector = next((a for a in all_members if a.options), None)
+                if selector is None or selector.variable_name not in member_vals:
                     continue
-                max_len = max(len(member_vals[a.variable_name]) for a in member_attrs)
+                selected_values = member_vals[selector.variable_name]
+                catalog_positions = {
+                    o.item_value: i for i, o in enumerate(selector.options)
+                }
+                other_members = [
+                    a for a in all_members
+                    if a is not selector and a.variable_name in member_vals
+                ]
+                hidden_flag_members = [
+                    a for a in all_members
+                    if a.hidden and a is not selector and a.variable_name not in member_vals
+                ]
                 # Quantity fallback: a qty-type member (no options) that has
                 # no filled_multi entry of its own — the real conversation
                 # flow instead filled a per-option NAMED attr for it (see
                 # array_set_qty_source above). Sourced per-row from the
                 # selector's own selected value at that index.
-                selector = next((a for a in member_attrs if a.options), None)
                 qty_fallback_members = [
                     a for a in (attrs or [])
                     if a.array_set_id == set_id and a.array_set_role == "member"
@@ -5199,13 +13491,16 @@ class CpqEngine:
                 ]
                 item_map = grid_links.get(selector.variable_name, {}) if selector else {}
                 rows: list[dict[str, Any]] = []
-                for idx in range(max_len):
-                    row: dict[str, Any] = {"_index": idx}
-                    for a in member_attrs:
+                for i, sel_val in enumerate(selected_values):
+                    position = catalog_positions.get(sel_val)
+                    if position is None:
+                        continue  # unrecognized value -- never guess a row for it
+                    row: dict[str, Any] = {"_index": position}
+                    for a in other_members:
                         vlist = member_vals[a.variable_name]
-                        if idx >= len(vlist):
+                        if i >= len(vlist):
                             continue
-                        val = vlist[idx]
+                        val = vlist[i]
                         if a.options:
                             row[a.variable_name] = {
                                 "value": val, "displayValue": _display_for(a, val),
@@ -5214,17 +13509,16 @@ class CpqEngine:
                             row[a.variable_name] = int(val)
                         else:
                             row[a.variable_name] = val
-                    if selector and qty_fallback_members:
-                        sel_vlist = member_vals[selector.variable_name]
-                        sel_val = sel_vlist[idx] if idx < len(sel_vlist) else None
-                        if sel_val:
-                            real_qty_vn = item_map.get(sel_val.strip().lower())
-                            if real_qty_vn and real_qty_vn in filled:
-                                raw = filled[real_qty_vn]
-                                for qty_member in qty_fallback_members:
-                                    row[qty_member.variable_name] = (
-                                        int(raw) if re.fullmatch(r"-?\d+", raw) else raw
-                                    )
+                    for a in hidden_flag_members:
+                        row[a.variable_name] = True
+                    if qty_fallback_members and sel_val:
+                        real_qty_vn = item_map.get(sel_val.strip().lower())
+                        if real_qty_vn and real_qty_vn in filled:
+                            raw = filled[real_qty_vn]
+                            for qty_member in qty_fallback_members:
+                                row[qty_member.variable_name] = (
+                                    int(raw) if re.fullmatch(r"-?\d+", raw) else raw
+                                )
                     rows.append(row)
                 out[driver.array_set_wrapper_key] = {"items": rows}
                 # The driver's own value ships as a SIBLING bare int (row
@@ -5233,18 +13527,350 @@ class CpqEngine:
                 # is_array_control heuristic above (single control + single
                 # multi-select) whenever a real array-set link exists.
                 out[driver.variable_name] = len(rows)
-        # Present in the same order the XML/graph itself defines
-        # (bm_config_attr.order_number, loaded into ConfigAttr.order) rather
-        # than insertion order from auto_fill's hint/default/rule/fallback
-        # passes — the two are unrelated, and callers cross-checking the
-        # payload against the raw catalog expect the catalog's own order.
-        # Keys with no matching ConfigAttr (e.g. hidddenRecordSeparator_allFamilly)
-        # keep their original relative position, sorted after every real attr.
-        ordered = sorted(
-            out.items(),
-            key=lambda kv: (attr_by_vn[kv[0]].order if kv[0] in attr_by_vn else 10**9),
-        )
-        return {"configData": dict(ordered)}
+        if rules:
+            ordered_keys = self._dependency_ordered_keys(list(out.keys()), attr_by_vn, rules)
+        else:
+            # Present in the same order the XML/graph itself defines
+            # (bm_config_attr.order_number, loaded into ConfigAttr.order)
+            # rather than insertion order from auto_fill's hint/default/
+            # rule/fallback passes — the two are unrelated, and callers
+            # cross-checking the payload against the raw catalog expect the
+            # catalog's own order. Keys with no matching ConfigAttr (e.g.
+            # hidddenRecordSeparator_allFamilly) keep their original
+            # relative position, sorted after every real attr. See
+            # _dependency_ordered_keys' docstring for why order_number
+            # alone is not a reliable proxy for true submission sequence —
+            # this branch only runs when the caller didn't supply `rules`.
+            ordered_keys = sorted(
+                out.keys(),
+                key=lambda k: (attr_by_vn[k].order if k in attr_by_vn else 10**9),
+            )
+        if display_order is not None:
+            # Live-confirmed gap (2026-08-25, SVX Mounting Type array-set
+            # payload): this used to be a hard filter -- `k in display_order`
+            # dropped any key ENTIRELY, not just left it unranked. A synthetic
+            # key this engine itself invents (e.g. an array-set driver's
+            # `array_set_wrapper_key`, "_setmountingTypeArrayset_viSoln") can
+            # never appear in a native layout export by construction, so it
+            # was always silently erased from the real submission payload
+            # once a catalog had a layout file at all -- confirmed live: a
+            # customer's actual Mounting Type answer vanished from
+            # `configData` entirely, even though `out` correctly held it just
+            # one line earlier. Stable-sort instead: known keys rank by the
+            # layout's own order, unknown keys keep their relative
+            # `ordered_keys` position and sort after every known key -- same
+            # "never lose a key" contract `_dependency_ordered_keys` already
+            # guarantees for its own leftover/cycle case.
+            _original_position = {k: i for i, k in enumerate(ordered_keys)}
+            ordered_keys = sorted(
+                ordered_keys,
+                key=lambda k: (display_order.get(k, len(display_order)), _original_position[k]),
+            )
+        result: dict[str, Any] = {"configData": {k: out[k] for k in ordered_keys}}
+        if product_quantity is not None:
+            result["quantity"] = product_quantity
+        return result
+
+    @staticmethod
+    def _rule_condition_edges(
+        attrs: list["ConfigAttr"],
+        rules: list[Any],
+    ) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[int, str]]:
+        """Shared, UNFILTERED rule-condition -> target edge extraction.
+
+        Returns (predecessors, successors, id_to_vn):
+          predecessors[target_vn] = set of condition_vn that gate it
+          successors[condition_vn] = set of target_vn it gates
+          id_to_vn = BM-native id -> variable_name (ConfigAttr.source_id
+            preferred, falls back to entity_id — same dual-id convention
+            _attr_index already uses)
+
+        Edges come from every rule with a real DECLARATIVE condition
+        (`conditions`, or a nonzero `condition_attr_id`) — one edge per
+        distinct attr_id referenced. Unlike a payload-key-ordering
+        consumer (_dependency_ordered_keys), this does NOT restrict edges
+        to any subset of attrs/keys: a rule's condition attribute may be
+        currently hidden or unfilled (and so absent from a given turn's
+        output) while still being a real, structural gate that rule-
+        specificity ranking (_attribute_depth_ranks) needs to see.
+        """
+        attr_by_vn = {a.variable_name: a for a in attrs}
+        id_to_vn: dict[int, str] = {}
+        for vn, a in attr_by_vn.items():
+            id_to_vn.setdefault(a.entity_id, vn)
+        for vn, a in attr_by_vn.items():
+            if a.source_id is not None:
+                id_to_vn[a.source_id] = vn
+
+        predecessors: dict[str, set[str]] = {}
+
+        def _add_edge(cond_id: int, target_id: int) -> None:
+            cond_vn = id_to_vn.get(cond_id)
+            target_vn = id_to_vn.get(target_id)
+            if cond_vn and target_vn and cond_vn != target_vn:
+                predecessors.setdefault(target_vn, set()).add(cond_vn)
+
+        for r in rules:
+            target_id = getattr(r, "target_attr_id", None)
+            if not target_id:
+                continue
+            conditions = getattr(r, "conditions", None)
+            if conditions:
+                for cond_id, *_rest in conditions:
+                    _add_edge(cond_id, target_id)
+            else:
+                cond_id = getattr(r, "condition_attr_id", 0)
+                if cond_id:
+                    _add_edge(cond_id, target_id)
+
+        successors: dict[str, set[str]] = {}
+        for target_vn, conds in predecessors.items():
+            for c in conds:
+                successors.setdefault(c, set()).add(target_vn)
+
+        return predecessors, successors, id_to_vn
+
+    @staticmethod
+    def _attribute_depth_ranks(
+        attrs: list["ConfigAttr"],
+        rules: list[Any],
+    ) -> dict[str, int]:
+        """Longest-path-from-root depth per variable_name in the rule
+        condition-gating graph (see _rule_condition_edges) — a generic,
+        catalog-agnostic stand-in for "how broad vs. specific is this
+        attribute" (docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_
+        2026_08_04.md): depth 0 = nothing gates this attribute (coarsest
+        anchor); each attribute's depth = 1 + the max depth of whatever
+        gates it (e.g. the confirmed Hardware Version -> Product
+        Selection constraint means Product Selection's depth is Hardware
+        Version's depth + 1).
+
+        Cycle-safe: a genuine cycle (or anything transitively downstream
+        of one) never reaches zero remaining in-degree during the
+        Kahn's-algorithm peel below. Those nodes get max(all resolved
+        depths) + 1 rather than depth 0 — an unverifiable/cyclic
+        dependency must never be treated as "most trusted," which depth
+        0 would imply.
+        """
+        predecessors, successors, _id_to_vn = CpqEngine._rule_condition_edges(attrs, rules)
+        all_vns = {a.variable_name for a in attrs}
+
+        remaining = {vn: len(predecessors.get(vn, ())) for vn in all_vns}
+        depth: dict[str, int] = {}
+        ready = [vn for vn, n in remaining.items() if n == 0]
+        for vn in ready:
+            depth[vn] = 0
+        visited: set[str] = set(ready)
+
+        while ready:
+            vn = ready.pop(0)
+            for succ in successors.get(vn, ()):
+                if succ not in all_vns:
+                    continue
+                depth[succ] = max(depth.get(succ, 0), depth[vn] + 1)
+                remaining[succ] -= 1
+                if remaining[succ] == 0 and succ not in visited:
+                    visited.add(succ)
+                    ready.append(succ)
+
+        resolved_depths = list(depth.values())
+        fallback_depth = (max(resolved_depths) + 1) if resolved_depths else 0
+        for vn in all_vns:
+            if vn not in depth:
+                depth[vn] = fallback_depth
+        return depth
+
+    def rank_rules_by_specificity(
+        self,
+        attrs: list["ConfigAttr"],
+        hiding_rules: list["HidingRule"],
+        rec_rules: list["RecommendationRule"],
+        con_rules: list["ConstraintRule"],
+        display_order: dict[str, int] | None = None,
+    ) -> tuple[list["HidingRule"], list["RecommendationRule"], list["ConstraintRule"]]:
+        """Stable-sort hiding/recommendation rules coarsest-condition-first,
+        most-specific-condition-last, so the existing "last rule wins"
+        semantics in apply_hiding_rules/apply_recommendation_rules resolve
+        same-target conflicts via provable specificity instead of
+        whatever order fetch_rules()/fetch_value_rules() happened to
+        return (neither has an ORDER BY — confirmed in rdb.py). See
+        docs/CPQ_RULE_SPECIFICITY_EXECUTION_ORDER_PLAN_2026_08_04.md.
+
+        display_order — docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_PLAN.md §2b:
+        the catalog's FULL layout document order (`_load_layout_full_
+        order` — includes layout-hidden attrs like a derived Base Model,
+        unlike `load_layout_display_order`'s visible-only map, since a
+        rule's condition attribute is very often itself hidden). When
+        supplied, tier 2 below (a real declarative condition) ranks by the
+        MAX layout position among the condition's attribute(s) instead of
+        _attribute_depth_ranks' graph depth — confirmed live to matter:
+        `hWVersion_astro` sits at a shallow depth in the dependency graph
+        but gates real downstream decisions, while depth alone doesn't
+        reflect the real native UI's own notion of "how far into the
+        configuration flow" a condition sits. A condition attribute absent
+        from the layout (shouldn't normally happen — every real condition
+        attribute is a real catalog attribute — but the layout file may
+        simply not mention it) ranks at position -1 within tier 2, i.e.
+        least specific among real declarative conditions, never treated as
+        equal-or-better than a measured position (this codebase's
+        "unknown never outranks known" convention). `None` (the default)
+        keeps today's depth-based ranking completely unchanged.
+
+        con_rules is returned UNCHANGED — apply_constraint_rules' allowed-
+        value intersection (_intersect) is commutative, so reordering it
+        can never change its result; doing so would only reorder log
+        lines/BML prefetch scheduling for zero correctness benefit.
+
+        Three specificity TIERS, least to most specific (a rule's own
+        `condition_script` — a separate gating script — is structural
+        metadata we can see without parsing script CONTENT; the graph
+        depth from _attribute_depth_ranks only ever comes from real
+        declarative conditions, since that's the only thing it can
+        extract edges from):
+
+          0. No gating condition at all — no `conditions`, no
+             `condition_attr_id`, no `condition_script` (whether or not
+             it has a value-only `script`, e.g. a hiding/recommendation
+             rule that just always returns one fixed outcome/value with
+             no separate condition). Least specific — sorts first.
+          1. Gated by a `condition_script` but no declarative condition
+             info at all — a real, live example: workspace 39004's
+             "Default to Latest Release if not NA/fed customer" is
+             condition_script-gated with condition_attr_id=0/no
+             conditions, competing against "Set default to Baseline
+             Release" (tier 0, a bare value script, no condition_script)
+             on the same target. We can't measure exactly how deep the
+             condition_script's own logic sits, but its mere presence
+             proves the rule is MORE narrowly scoped than an
+             unconditional tier-0 rule, so it ranks after tier 0 and
+             wins ties against it — without ever parsing what the
+             script actually checks.
+          2. A real declarative condition (`conditions`/
+             `condition_attr_id`) — ranked by the MAX depth
+             (_attribute_depth_ranks) among the attribute(s) it
+             references. Most specific, provably ordered within this
+             tier; always sorts after tiers 0 and 1.
+
+        Within tiers 0/1 (where exact specificity isn't measurable),
+        ties are broken by the rule's own target's ConfigAttr.order —
+        never by "last unknown wins," matching apply_hiding_rules'/
+        apply_recommendation_rules' own "unknown -> don't act/don't
+        guess" convention for script outcomes elsewhere in this file.
+
+        attrs MUST be the full, pre-loop catalog as passed into
+        evaluate_rules_loop — never a loop-local `attrs` already shrunk
+        by apply_hiding_rules, which would wrongly zero out predecessors
+        for hidden attributes.
+        """
+        id_to_vn: dict[int, str] = {}
+        for a in attrs:
+            id_to_vn.setdefault(a.entity_id, a.variable_name)
+        for a in attrs:
+            if a.source_id is not None:
+                id_to_vn[a.source_id] = a.variable_name
+        order_by_vn = {a.variable_name: a.order for a in attrs}
+
+        depth_by_vn = self._attribute_depth_ranks(attrs, [*hiding_rules, *rec_rules])
+
+        def _rule_rank(rule: Any) -> tuple[int, int, int]:
+            cond_ids: list[int] = []
+            conditions = getattr(rule, "conditions", None)
+            if conditions:
+                cond_ids = [cid for cid, *_rest in conditions]
+            else:
+                cid = getattr(rule, "condition_attr_id", 0)
+                if cid:
+                    cond_ids = [cid]
+            cond_vns = [
+                id_to_vn[cid] for cid in cond_ids
+                if cid in id_to_vn and id_to_vn[cid] in depth_by_vn
+            ]
+            if cond_vns:
+                if display_order is not None:
+                    return (2, max(display_order.get(vn, -1) for vn in cond_vns), 0)
+                return (2, max(depth_by_vn[vn] for vn in cond_vns), 0)
+
+            target_id = getattr(rule, "target_attr_id", None)
+            target_vn = id_to_vn.get(target_id) if target_id else None
+            fallback_order = order_by_vn.get(target_vn, 10**9) if target_vn else 10**9
+            if getattr(rule, "condition_script", None):
+                return (1, 0, fallback_order)
+            return (0, 0, fallback_order)
+
+        sorted_hiding = sorted(hiding_rules, key=_rule_rank)
+        sorted_rec = sorted(rec_rules, key=_rule_rank)
+        return sorted_hiding, sorted_rec, con_rules
+
+    @staticmethod
+    def _dependency_ordered_keys(
+        keys: list[str],
+        attr_by_vn: dict[str, "ConfigAttr"],
+        rules: list[Any],
+    ) -> list[str]:
+        """Topological sort of `keys` by rule-proven attribute dependency.
+
+        Builds a "must come before" edge condition_vn -> target_vn for
+        every rule with a real DECLARATIVE condition (conditions, or a
+        nonzero condition_attr_id) whose condition and target are both
+        present in `keys`. Kahn's algorithm, with ConfigAttr.order
+        (bm_config_attr.order_number) as the tie-break for which
+        zero-remaining-dependency key is emitted next, so output stays
+        deterministic and close to the catalog's own display order
+        whenever no dependency constrains it either way.
+
+        Rule ids reference attributes by their BM-native id — matches
+        ConfigAttr.source_id first (falls back to entity_id), the same
+        dual-id convention _attr_index already uses. Edge extraction
+        itself is shared with _attribute_depth_ranks via
+        _rule_condition_edges; this method applies its own `keys`
+        restriction on top since only-what's-being-emitted is a payload-
+        key-ordering-specific constraint.
+        """
+        attrs = list(attr_by_vn.values())
+        predecessors_all, _successors_all, _id_to_vn = CpqEngine._rule_condition_edges(
+            attrs, rules)
+
+        key_set = set(keys)
+        predecessors: dict[str, set[str]] = {
+            target_vn: {c for c in conds if c in key_set}
+            for target_vn, conds in predecessors_all.items()
+            if target_vn in key_set
+        }
+
+        successors: dict[str, set[str]] = {}
+        for target_vn, conds in predecessors.items():
+            for c in conds:
+                successors.setdefault(c, set()).add(target_vn)
+
+        def _order_key(vn: str) -> int:
+            a = attr_by_vn.get(vn)
+            return a.order if a is not None else 10**9
+
+        remaining = {vn: len(predecessors.get(vn, ())) for vn in keys}
+        ready = sorted((vn for vn, n in remaining.items() if n == 0), key=_order_key)
+        result: list[str] = []
+        visited: set[str] = set()
+        while ready:
+            vn = ready.pop(0)
+            if vn in visited:
+                continue
+            visited.add(vn)
+            result.append(vn)
+            newly_ready = []
+            for succ in successors.get(vn, ()):
+                remaining[succ] -= 1
+                if remaining[succ] == 0 and succ not in visited:
+                    newly_ready.append(succ)
+            if newly_ready:
+                ready.extend(newly_ready)
+                ready.sort(key=_order_key)
+        # A cycle in rule data (never expected, but rule authoring can be
+        # messy) leaves some keys with remaining > 0 forever — append them
+        # by order_number rather than drop or crash, same "never lose a
+        # key" contract the no-rules branch already has.
+        leftover = sorted((vn for vn in keys if vn not in visited), key=_order_key)
+        result.extend(leftover)
+        return result
 
     # ── Summary renderer ──────────────────────────────────────────────────────
 
@@ -5262,6 +13888,30 @@ class CpqEngine:
             return True
         head = variable_name.split("_", 1)[0]
         return len(head) >= 2 and head.isalpha() and head.isupper()
+
+    @staticmethod
+    def _attr_hidden_from_submission(attr: "ConfigAttr") -> bool:
+        """True for hide_in_trans=1 attrs — excluded from every real BOM
+        submission (the API rejects these with "cannot be modified" when
+        included; see ConfigAttr.hide_in_trans). Single source of truth
+        for this exclusion — `build_payload`'s own per-key loop and any
+        other caller needing the same answer (e.g. the pre-quote QA
+        "list the attributes" answer, `_build_catalog_attribute_listing_
+        text` in ask_api.py) both call this instead of re-deriving it,
+        so the two can never drift apart.
+        """
+        return attr.hide_in_trans
+
+    @staticmethod
+    def _attr_is_transient_set_type(attr: "ConfigAttr") -> bool:
+        """True for a genuinely transient set_type=="2" UI/action-layer
+        attr — excluded from every real BOM submission UNLESS auto_lock=1
+        (build_payload's own documented exception; see ConfigAttr.set_type
+        / ConfigAttr.auto_lock). Single source of truth for this
+        exclusion, shared the same way as `_attr_hidden_from_submission`
+        above.
+        """
+        return attr.set_type == "2" and not attr.auto_lock
 
     # Displayed values that carry no information on their own — a line like
     # "Opt-Out? → false" or "Ruggedized Housing → Yes" restates a toggle, it
@@ -5296,6 +13946,7 @@ class CpqEngine:
     def _is_summary_excluded(
         self, variable_name: str, display_label: str, value: str,
         attr: "ConfigAttr | None", source: str | None = None,
+        is_mandatory: bool = False,
     ) -> bool:
         """True when a filled attr should not get a summary line.
 
@@ -5311,12 +13962,41 @@ class CpqEngine:
         several carry labels without the word. Duration-shaped values
         ("1 Year", "3 Years") are excluded as well — subscription terms,
         not configuration choices.
+
+        `is_mandatory` — optional (default `False`, preserving today's
+        behavior byte-for-byte). 2026-08-19 fix (docs/CPQ_Beautify_
+        Mandatory_Section_Miscategorization_2026_08_19.md): the boolean-
+        value/select_type exclusion above was unconditionally dropping
+        genuine Mandatory User Input fields with a literal Yes/No answer
+        (e.g. isProvisioningRequiredInCloudEnv_astro) from BOTH the
+        summary and beautify's full-detail dump, since this check has no
+        caller-type gate the way the later `rule_governed_ids`-scoped
+        narrowing does. When the caller has independently confirmed this
+        attribute IS Mandatory User Input (`_is_mandatory_input_attr`),
+        skip the boolean check — a genuine Yes/No decision is exactly the
+        kind of "substantive selection" this exclusion exists to keep,
+        not drop. Non-mandatory boolean-valued attrs are unaffected.
         """
-        if value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
-            return True
+        if not is_mandatory:
+            if value.strip().lower() in self._BOOLEAN_DISPLAY_VALUES:
+                return True
+            if attr is not None and attr.select_type == "boolean":
+                return True
         if self._YEAR_VALUE_RE.search(value):
             return True
-        if attr is not None and attr.select_type == "boolean":
+        # Issue 5 items 1/2 (docs/config_consistency_issues_2026-07-30.md):
+        # build_payload() already excludes hide_in_trans==1 attrs (the
+        # source system's own "don't submit this at transaction time"
+        # marker) and set_type=="2" (transient UI/action-layer, non-auto-
+        # lock) attrs from the submitted BOM — but the conversational
+        # summary never applied the same two checks, so a sales rep could
+        # see a line in "Associated Options" for a field that will never
+        # actually appear in what gets submitted. Same checks, same attr
+        # object already available here — mirrors build_payload exactly,
+        # no separate exclusion set needed for these two.
+        if attr is not None and attr.hide_in_trans:
+            return True
+        if attr is not None and attr.set_type == "2" and not attr.auto_lock:
             return True
         if attr is not None and attr.hidden and source != "user":
             # hidden=1 in the raw XML means BigMachines' own UI renders this
@@ -5357,12 +14037,35 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        display_order: dict[str, int] | None = None,
+        required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, str, str]]:
         """Filtered (variable_name, display_label, value) triples worth
         summarising — same filtering as filled_summary_pairs, but keeps
         variable_name so callers (render_filled_summary's category
         grouping) can pattern-match on it. See filled_summary_pairs for the
         filtering rules this applies.
+
+        display_order — optional {variable_name: rank} from
+        `load_layout_display_order` (docs/CPQ_LAYOUT_TXT_VISIBILITY_ORDER_
+        PLAN.md §2). When supplied, restricts to exactly the attrs present
+        in the map and sorts by rank instead of `display_filled`'s
+        fill-order — the same catalog layout the real native UI shows,
+        instead of an incidental artifact of resolution order. `None`
+        (the default) keeps today's behavior unchanged.
+
+        required_vns — optional (default `None`); `mandatory_tier_c_vns`'s
+        result, forwarded into `_is_mandatory_input_attr` for the
+        `rule_governed_ids is not None` (summary-only) branch below and
+        into `_is_summary_excluded`'s `is_mandatory` gate. 2026-08-19
+        (docs/CPQ_Beautify_Mandatory_Section_Miscategorization_2026_08_19.
+        md): the summary's item list now equals EXACTLY the Mandatory
+        User Input set (`_is_mandatory_input_attr`, Tier A/B/C) instead of
+        its own separately-maintained "rule-governed and actively-sourced"
+        narrowing — one shared signal with beautify, so the two can never
+        silently drift apart on what counts as Mandatory. `rule_governed_
+        ids is None` (beautify's own call shape) is completely unaffected
+        by this — that branch never runs.
         """
         if not display_filled:
             return []
@@ -5384,7 +14087,12 @@ class CpqEngine:
             and not self._is_noise_var(var)
             and not self._is_summary_excluded(
                 var, label_map.get(var, var), label, by_vn.get(var),
-                source=(sources or {}).get(var))
+                source=(sources or {}).get(var),
+                is_mandatory=self._is_mandatory_input_attr(
+                    var, by_vn.get(var), (sources or {}).get(var),
+                    required_vns=required_vns,
+                ),
+            )
             # "(none)" is the engine's own literal placeholder for an
             # unfilled multi/array-typed field (e.g. Promotion, Solution
             # Set) — confirmed live: it survives every other filter since
@@ -5395,34 +14103,16 @@ class CpqEngine:
         if rule_governed_ids is not None:
             items = [
                 (var, label) for var, label in items
-                if (attr := by_vn.get(var)) and attr.entity_id in rule_governed_ids
-                # rule_governed_ids alone is STATIC — "targeted by some rule
-                # somewhere in the catalog," regardless of whether that
-                # rule's condition actually held THIS turn. As more real
-                # rules got correctly wired up this session, that static set
-                # grew, silently widening "Associated Options" past the
-                # intended "key attributes actually decided" scope. Narrow
-                # further to filled_source, the one per-turn signal that
-                # tracks whether a rule genuinely fired (source="rule"/
-                # "country_derived") or the user genuinely chose something
-                # (source="user"/"hint"/"cascade"/"cascade-dependent") —
-                # excluding bland "default"/"optional"/"auto" fills that
-                # were never actually reasoned about this turn.
-                and (sources is None or sources.get(var) in self._SUMMARY_ACTIVE_SOURCES)
+                if self._is_mandatory_input_attr(
+                    var, by_vn.get(var), (sources or {}).get(var),
+                    required_vns=required_vns,
+                )
             ]
-            # Curated business-relevance filter — Associated Options only
-            # (the catch-all fallback category); Product Name/Service Plan/
-            # Quantity & Duration are already narrow by category definition
-            # and stay as-is. Gated the same as the narrowing above — only
-            # for callers that opted into the narrowed "sales rep talking
-            # points" scope (rule_governed_ids supplied); beautify_rows'/
-            # beautify_text's full-detail dump (rule_governed_ids=None)
-            # must keep showing every filled attr, unaffected.
-            items = [
-                (var, label) for var, label in items
-                if self._summary_category(var) != _SUMMARY_FALLBACK_CATEGORY
-                or any(frag in var.lower().replace("_", "") for frag in _ASSOCIATED_OPTIONS_KEY_FRAGMENTS)
-            ]
+        if display_order is not None:
+            items = sorted(
+                (item for item in items if item[0] in display_order),
+                key=lambda item: display_order[item[0]],
+            )
         return [(var, label_map.get(var, var), label) for var, label in items]
 
     def filled_summary_pairs(
@@ -5431,6 +14121,8 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        display_order: dict[str, int] | None = None,
+        required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, str]]:
         """Filtered (display_label, value) pairs worth summarising.
 
@@ -5441,15 +14133,20 @@ class CpqEngine:
         (`_is_summary_excluded`: boolean values, secondary attrs, warranty
         attrs, product/product-line attrs, year-duration values).
 
-        rule_governed_ids — when supplied (see `rule_governed_ids()`), only
-        attrs a hiding, recommendation, or constraint rule actually
-        reasoned about survive (Phase K/§3g). The rest are silently
-        omitted — no count of remaining auto-configured fields.
+        rule_governed_ids — when supplied (i.e. not `None`), the summary's
+        item list is narrowed to exactly `_is_mandatory_input_attr`'s
+        Mandatory User Input set (Tier A/B/C, see `_filled_summary_
+        triples`) — the rest are silently omitted.
+
+        required_vns — forwarded to `_filled_summary_triples`; see its own
+        docstring (Tier C, `mandatory_tier_c_vns`'s result).
         """
         return [
             (label, value)
             for _var, label, value in self._filled_summary_triples(
-                display_filled, attrs, rule_governed_ids, sources)
+                display_filled, attrs, rule_governed_ids, sources, display_order,
+                required_vns=required_vns,
+            )
         ]
 
     @staticmethod
@@ -5465,11 +14162,71 @@ class CpqEngine:
                 return category
         return _SUMMARY_FALLBACK_CATEGORY
 
+    _BEAUTIFY_MANDATORY_SECTION = "Mandatory User Input"
+    _BEAUTIFY_SYSTEM_SECTION = "System-Configured / Recommended"
+
+    def _beautify_sectioned_rows(
+        self,
+        product_name: str,
+        display_filled: dict[str, str],
+        attrs: list["ConfigAttr"] | None,
+        filled_source: dict[str, str] | None,
+        required_vns: frozenset[str] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """Shared (section, label, value) rows for beautify_text/beautify_rows.
+
+        When `filled_source` is supplied, splits the output into two
+        sections using the SAME `_is_mandatory_input_attr` signal
+        `build_payload`'s `scope_required_and_edited` uses to scope
+        `config_data` — one scoping key, three consumers (docs/CPQ_
+        GOVERNED_BLINDPICK_AND_CONFIGDATA_BEAUTIFY_FIX_PLAN_2026_08_14.md,
+        extended 2026-08-19 with Tier C — docs/CPQ_Beautify_Mandatory_
+        Section_Miscategorization_2026_08_19.md). This matches native
+        Oracle CPQ's own "Mandatory User Input" box vs. everything else,
+        instead of one flat, undifferentiated list.
+
+        `filled_source=None` (the default, for existing callers that don't
+        pass it) preserves the original single-section behavior exactly —
+        every row lands in the Mandatory section so the flat "Product +
+        every substantive field" list callers already depend on is
+        byte-for-byte unchanged; only callers that opt in by passing
+        `filled_source` get the two-section split.
+
+        `required_vns` — optional (default `None`); `mandatory_tier_c_vns`'s
+        result, forwarded into `_is_mandatory_input_attr` (Tier C) for the
+        split above. Also passed to `_filled_summary_triples` so the
+        underlying row set's `_is_summary_excluded` boolean-value gate
+        (via `is_mandatory`) sees the same Mandatory classification.
+        """
+        triples = self._filled_summary_triples(
+            display_filled, attrs, sources=filled_source, required_vns=required_vns,
+        )
+        attr_by_vn = {a.variable_name: a for a in attrs} if attrs else {}
+        rows: list[tuple[str, str, str]] = [
+            (self._BEAUTIFY_MANDATORY_SECTION, "Product", product_name),
+        ]
+        for var, label, value in triples:
+            if filled_source is None:
+                section = self._BEAUTIFY_MANDATORY_SECTION
+            else:
+                attr = attr_by_vn.get(var)
+                section = (
+                    self._BEAUTIFY_MANDATORY_SECTION
+                    if self._is_mandatory_input_attr(
+                        var, attr, filled_source.get(var), required_vns=required_vns,
+                    )
+                    else self._BEAUTIFY_SYSTEM_SECTION
+                )
+            rows.append((section, label, value))
+        return rows
+
     def beautify_text(
         self,
         product_name: str,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        filled_source: dict[str, str] | None = None,
+        required_vns: frozenset[str] | None = None,
     ) -> str:
         """Human-readable ``Label : Value`` block for the Beautify button.
 
@@ -5479,24 +14236,72 @@ class CpqEngine:
         Used as-is by clients that display plain text (e.g. Streamlit's
         st.code). Clients that render a real table use
         beautify_rows()'s structured pairs instead of parsing this string.
+
+        filled_source — optional (default None, preserving the original
+        flat single-list output exactly). When supplied, renders TWO
+        headed sections — "Mandatory User Input" then "System-Configured
+        / Recommended" — using `_is_mandatory_input_attr`'s Tier A/B/C
+        signal, matching native Oracle CPQ's own visual grouping instead
+        of one undifferentiated list.
+
+        required_vns — optional (default `None`); forwarded to
+        `_beautify_sectioned_rows` for Tier C (see its own docstring and
+        `mandatory_tier_c_vns`).
         """
-        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        width = max(len(label) for label, _ in pairs)
-        return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+        rows = self._beautify_sectioned_rows(
+            product_name, display_filled, attrs, filled_source, required_vns=required_vns,
+        )
+        if filled_source is None:
+            pairs = [(label, value) for _section, label, value in rows]
+            width = max(len(label) for label, _ in pairs)
+            return "\n".join(f"{label.ljust(width)} : {value}" for label, value in pairs)
+        width = max(len(label) for _section, label, _value in rows)
+        lines: list[str] = []
+        for section in (self._BEAUTIFY_MANDATORY_SECTION, self._BEAUTIFY_SYSTEM_SECTION):
+            section_rows = [(label, value) for sec, label, value in rows if sec == section]
+            if not section_rows:
+                continue
+            lines.append(f"**{section}:**")
+            lines.extend(f"{label.ljust(width)} : {value}" for label, value in section_rows)
+            lines.append("")
+        return "\n".join(lines).rstrip("\n")
 
     def beautify_rows(
         self,
         product_name: str,
         display_filled: dict[str, str],
         attrs: list["ConfigAttr"] | None = None,
+        filled_source: dict[str, str] | None = None,
+        required_vns: frozenset[str] | None = None,
     ) -> list[dict[str, str]]:
-        """Structured [{label, value}, ...] pairs for clients that render a
-        real tabular UI (e.g. the Next.js Beautify panel) instead of plain
-        text — same data and filtering as beautify_text(), just not
-        flattened into a display string. No LLM call.
+        """Structured [{label, value, section}, ...] pairs for clients that
+        render a real tabular UI (e.g. the Next.js Beautify panel) instead
+        of plain text — same data and filtering as beautify_text(), just
+        not flattened into a display string. No LLM call.
+
+        filled_source — optional (default None). When supplied, each row
+        carries a `"section"` key — "Mandatory User Input" or "System-
+        Configured / Recommended" — via `_is_mandatory_input_attr`'s Tier
+        A/B/C signal, the SAME one `build_payload`'s `scope_required_and_
+        edited` uses to scope `config_data` (Tier C excepted there — see
+        docs/CPQ_ConfigData_Payload_Mandatory_Fix_Scope_2026_08_19.md), so
+        the views can never silently drift apart on what counts as
+        "genuinely required" within their own intended scope.
+        When `filled_source` is omitted, rows carry no `"section"` key at
+        all — output shape and row set are byte-for-byte identical to
+        before this parameter existed (same convention `beautify_text`
+        already uses for its own `filled_source is None` case).
+
+        required_vns — optional (default `None`); forwarded to
+        `_beautify_sectioned_rows` for Tier C (see its own docstring and
+        `mandatory_tier_c_vns`).
         """
-        pairs = [("Product", product_name)] + self.filled_summary_pairs(display_filled, attrs)
-        return [{"label": label, "value": value} for label, value in pairs]
+        rows = self._beautify_sectioned_rows(
+            product_name, display_filled, attrs, filled_source, required_vns=required_vns,
+        )
+        if filled_source is None:
+            return [{"label": label, "value": value} for _section, label, value in rows]
+        return [{"section": section, "label": label, "value": value} for section, label, value in rows]
 
     def render_filled_summary(
         self,
@@ -5504,18 +14309,42 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        product_quantity: int | None = None,
+        required_vns: frozenset[str] | None = None,
     ) -> str:
         """Deterministic, categorized summary of what has been auto-filled.
 
         Groups `filled_summary_pairs()` (which owns ALL the filtering) under
-        4 scannable headed sections — Product Name, Service Plan, Quantity
-        & Duration, Associated Options — instead of one flat bullet list,
+        scannable headed sections — Product Name, Service Plan, Quantity &
+        Duration, plus either Mandatory User Input (narrowed scope,
+        rule_governed_ids supplied) or Associated Options (full-detail-dump
+        scope, rule_governed_ids=None) — instead of one flat bullet list,
         classified purely by variable_name fragment (`_summary_category`,
         generic across any ingested catalog, never a per-catalog literal).
         Used directly as the fallback whenever the LLM-narrated paragraph
         (ask_api `_cpq_summary_text`) is unavailable or fails.
+
+        Live-confirmed gap (2026-08-19): in the narrowed scope, every item
+        `categorized_summary_groups` buckets outside the first 3 categories
+        is now, by construction, part of `_is_mandatory_input_attr`'s Tier
+        A/B/C set (PR #222) — the OLD catch-all's "one vague, intention-
+        ally-partial line" treatment (still used for the full-detail-dump
+        scope's genuine, potentially 20-50+ item Associated Options
+        catch-all) is wrong for that guaranteed-mandatory, always-small
+        set, so Mandatory User Input is rendered as full bullets instead,
+        just like every other real category.
+
+        product_quantity — forwarded to `categorized_summary_groups` so
+        this deterministic fallback shows the same Product Quantity fact,
+        in the same position, as the LLM-narrated path.
+
+        required_vns — optional (default `None`); forwarded to
+        `categorized_summary_groups`/`_filled_summary_triples` for Tier C
+        (see `mandatory_tier_c_vns`).
         """
-        groups = self.categorized_summary_groups(display_filled, attrs, rule_governed_ids, sources)
+        groups = self.categorized_summary_groups(
+            display_filled, attrs, rule_governed_ids, sources,
+            product_quantity=product_quantity, required_vns=required_vns)
         if not groups:
             return ""
         heading = "**Configured so far:**" if rule_governed_ids is None else "**Key decisions:**"
@@ -5523,6 +14352,10 @@ class CpqEngine:
         for category, group in groups:
             lines.append(f"\n**{category}:**")
             if category == _SUMMARY_FALLBACK_CATEGORY:
+                # Only the full-detail-dump scope (rule_governed_ids=None)
+                # can still reach this — the narrowed scope renames this
+                # bucket to Mandatory User Input (see
+                # `categorized_summary_groups`) before it ever gets here.
                 # This category is a catch-all for everything not
                 # classified into the other 3 (confirmed live: 20-50+
                 # items on a real quote) — a bullet per item is no longer
@@ -5533,6 +14366,13 @@ class CpqEngine:
                 # reachable (see this method's own docstring constraint).
                 lines.append("; ".join(f"{label}: {value}" for label, value in group) + ".")
             else:
+                # Mandatory User Input (like every other category) always
+                # gets a full bullet per fact — live-confirmed gap,
+                # 2026-08-19: the old catch-all's "one vague, intention-
+                # ally-partial line" treatment silently narrated or
+                # dropped genuinely mandatory fields (Software Release,
+                # Ultimate Destination Country, ...) instead of listing
+                # them.
                 lines.extend(f"- **{label}** → {value}" for label, value in group)
         return "\n".join(lines)
 
@@ -5542,23 +14382,77 @@ class CpqEngine:
         attrs: list["ConfigAttr"] | None = None,
         rule_governed_ids: set[int] | None = None,
         sources: dict[str, str] | None = None,
+        display_order: dict[str, int] | None = None,
+        product_quantity: int | None = None,
+        required_vns: frozenset[str] | None = None,
     ) -> list[tuple[str, list[tuple[str, str]]]]:
         """(category, [(label, value), ...]) groups, non-empty categories
         only, in the fixed display order (Product Name, Service Plan,
-        Quantity & Duration, Associated Options — see
-        _SUMMARY_CATEGORY_KEYS). Same filtering and classification
+        Quantity & Duration, then Mandatory User Input — narrowed scope,
+        rule_governed_ids supplied — or Associated Options — full-detail-
+        dump scope, rule_governed_ids=None — see _SUMMARY_CATEGORY_KEYS /
+        _SUMMARY_MANDATORY_CATEGORY). Same filtering and classification
         `render_filled_summary` uses for its bullet output; exposed
         separately so callers that build their own presentation (e.g.
         ask_api's LLM-narrated summary) can group the same facts the same
         way instead of inventing their own grouping.
+
+        In the narrowed scope, `_filled_summary_triples` already restricts
+        its whole item list to exactly `_is_mandatory_input_attr`'s Tier
+        A/B/C set (PR #222) — an item that doesn't match Product Name/
+        Service Plan/Quantity & Duration's fragments is renamed from the
+        old catch-all name to Mandatory User Input here (live-confirmed
+        gap, 2026-08-19: it used to keep the old "Associated Options" name
+        and get narrated as one vague, intentionally-partial line instead
+        of being reliably, fully listed). The full-detail-dump scope is
+        NOT narrowed to mandatory-only and keeps the original catch-all
+        name/semantics unchanged.
+
+        display_order — see `_filled_summary_triples`; restricts to and
+        orders WITHIN each of the fixed categories above by layout rank
+        when supplied. Does not replace the 4-category grouping itself.
+
+        product_quantity — the session-level order quantity (a virtual
+        fact, not a real catalog attribute, so it can never come out of
+        `_filled_summary_triples`). Injected here as the FIRST fact under
+        Product Name, labeled "Product Quantity" — previously appended as
+        a hardcoded suffix after every category regardless of catalog
+        shape, which always put it last (live-verified gap, 2026-08-13).
+        Only injected when there's an actual configuration to attach it
+        to (`triples` non-empty) — never synthesizes a Product Name
+        section out of nothing when no product has been selected yet.
+
+        required_vns — optional (default `None`); forwarded to
+        `_filled_summary_triples` for Tier C (see `mandatory_tier_c_vns`).
         """
-        triples = self._filled_summary_triples(display_filled, attrs, rule_governed_ids, sources)
+        triples = self._filled_summary_triples(
+            display_filled, attrs, rule_governed_ids, sources, display_order,
+            required_vns=required_vns,
+        )
         if not triples:
             return []
         by_category: dict[str, list[tuple[str, str]]] = {}
         for var, label, value in triples:
-            by_category.setdefault(self._summary_category(var), []).append((label, value))
-        section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [_SUMMARY_FALLBACK_CATEGORY]
+            category = self._summary_category(var)
+            # Narrowed scope (rule_governed_ids supplied): `triples` above
+            # is already exactly the Mandatory User Input set (Tier A/B/C,
+            # PR #222) -- an item landing in the old catch-all here is
+            # mandatory by construction, so it's renamed rather than
+            # re-classified. Full-detail-dump scope (rule_governed_ids=
+            # None) is NOT narrowed to mandatory-only and keeps the
+            # original catch-all name/semantics unchanged.
+            if category == _SUMMARY_FALLBACK_CATEGORY and rule_governed_ids is not None:
+                category = _SUMMARY_MANDATORY_CATEGORY
+            by_category.setdefault(category, []).append((label, value))
+        if product_quantity is not None:
+            by_category.setdefault("Product Name", [])
+            by_category["Product Name"] = [
+                ("Product Quantity", str(product_quantity)),
+                *by_category["Product Name"],
+            ]
+        section_order = [c for c, _ in _SUMMARY_CATEGORY_KEYS] + [
+            _SUMMARY_MANDATORY_CATEGORY, _SUMMARY_FALLBACK_CATEGORY,
+        ]
         return [
             (category, by_category[category])
             for category in section_order

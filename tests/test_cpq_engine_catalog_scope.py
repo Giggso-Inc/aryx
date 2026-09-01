@@ -99,3 +99,37 @@ def test_menu_items_unfiltered_when_catalog_not_resolved(fake_rdb):
 
     assert len(attrs) == 1
     assert [o.item_value for o in attrs[0].options] == ["VideoRSM-100"]
+
+
+class _FakeReaderWithBatch(_FakeReader):
+    """docs/CPQ_LOAD_PRODUCT_CONFIG_NEIGHBORS_N_PLUS_1_PERFORMANCE_PLAN_
+    2026_08_10.md -- a reader that implements neighbors_batch() must have
+    it preferred over the per-entity neighbors() loop.
+    """
+
+    def __init__(self, attr_type: str, neighbor_menu_items: list[dict]):
+        super().__init__(attr_type, neighbor_menu_items)
+        self.neighbors_batch_calls: list[list[int]] = []
+        self.neighbors_calls: list[int] = []
+
+    def neighbors(self, entity_id):
+        self.neighbors_calls.append(entity_id)
+        return super().neighbors(entity_id)
+
+    def neighbors_batch(self, entity_ids):
+        self.neighbors_batch_calls.append(list(entity_ids))
+        return {eid: self._neighbor_menu_items for eid in entity_ids}
+
+
+def test_neighbors_batch_preferred_over_per_entity_loop(fake_rdb):
+    reader = _FakeReaderWithBatch(
+        attr_type="SvxBmConfigAttr",
+        neighbor_menu_items=[{"id": 101, "type": "SvxBmMenuItem"}],
+    )
+    engine = CpqEngine()
+    attrs, _ = engine.load_product_config(reader, workspace_id=1, product_hint="SVX")
+
+    assert reader.neighbors_batch_calls == [[1]]
+    assert reader.neighbors_calls == []
+    assert len(attrs) == 1
+    assert [o.item_value for o in attrs[0].options] == ["VideoRSM-100"]

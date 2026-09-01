@@ -9,6 +9,7 @@ from aryx import explore
 from aryx.config import get_settings
 from aryx.graph import GraphReader
 from aryx.ports import ports
+from aryx.raven_log import new_span_id, new_trace_id, raven_log
 from aryx.store.entity_store import EntityStore
 
 
@@ -38,6 +39,16 @@ def graph_router() -> APIRouter:
 
     @router.get("/health")
     def health() -> dict[str, str]:
+        # Sample raven-log instrumentation (HTTP path + P4 info).
+        raven_log(
+            level="INFO",
+            criticality="P4",
+            message="health check ok",
+            error_code="",
+            trace_id=new_trace_id(),
+            span_id=new_span_id(),
+            context={"path": "/health"},
+        )
         return {"status": "ok"}
 
     @router.get("/entities")

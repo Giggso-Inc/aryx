@@ -313,13 +313,15 @@ def _infer_schema_fk_links(store: EntityStore, broker: Broker) -> list[dict[str,
 
 
 def _relate_isolated(store: EntityStore, broker: Broker) -> int:
-    """Connect isolated entity types via one LLM call per type, not per entity.
+    """Connect isolated entity types via a few LLM calls per type, not per entity.
 
     Runs after _relate, schema_fk, and link_by_attribute. Operates type-aware:
-    makes ONE LLM inference call per isolated type (using a sample entity), then
-    if related=true creates one edge per isolated entity of that type to the
-    confirmed anchor entity. This is O(isolated_types) not O(isolated_entities),
-    keeping the cost bounded even for large XML files with thousands of entities.
+    tries up to relate_isolated_max_anchors LLM inference calls per isolated
+    type — one per candidate anchor type, stopping at the first confirmed
+    relationship — then if related=true creates one edge per isolated entity
+    of that type to the confirmed anchor entity. This is O(isolated_types ×
+    max_anchors), not O(isolated_entities), keeping the cost bounded even for
+    large XML files with thousands of entities.
 
     For the small-file CSV case (a handful of unreferenced supplier rows), the
     cost is trivially low. For large XML files with 20+ types, at most ~20 LLM
@@ -369,32 +371,73 @@ def _relate_isolated(store: EntityStore, broker: Broker) -> int:
                 break
         return out
 
-    def _pick_anchor(iso_type: str) -> tuple[int, str, dict] | None:
-        """Return one anchor entity from any type other than iso_type."""
-        for t, anchor in anchors.items():
-            if t != iso_type:
-                return anchor
-        return None
+    def _anchor_candidates(iso_type: str) -> list[tuple[int, str, dict]]:
+        """Return up to relate_isolated_max_anchors anchor entities from
+        OTHER types, to try in turn. Previously only the first non-matching
+        type in dict order was ever tried — a genuine relationship to a
+        DIFFERENT type was permanently missed whenever that one pairing
+        came back unrelated (a real incident: a poorly-keyed 300K-row sheet
+        stayed isolated across an entire dataset because its one fixed
+        anchor happened to be a poor match, even after the LLM call itself
+        started working correctly)."""
+        candidates = [anchor for t, anchor in anchors.items() if t != iso_type]
+        return candidates[:cfg.relate_isolated_max_anchors]
 
-    def _infer_type(iso_type: str, sample_entity: tuple[int, str, dict]) -> tuple[str, int, str | None, float]:
-        """One LLM call for a sample entity of iso_type vs an anchor."""
-        anchor = _pick_anchor(iso_type)
-        if not anchor:
-            return iso_type, -1, None, 0.0
-        _, iso_type_, iso_attrs = sample_entity
-        a_id, a_type, a_attrs = anchor
-        name, conf = infer_relationship(
-            _trim(iso_attrs, iso_type_), _trim(a_attrs, a_type), broker,
-        )
-        return iso_type, a_id, name, conf
+    def _sample_entities(iso_type: str) -> list[tuple[int, str, dict]]:
+        """Return up to relate_isolated_max_samples_per_type isolated
+        entities of this type, to try in turn. Previously only the FIRST
+        isolated entity of a type was ever tried — for a type whose members
+        vary a lot (a real incident: a document extractor's short,
+        list-style mentions of one type, e.g. one member being "Region 1"
+        and another "untapped industry verticals" — very different in
+        substance despite sharing a type), the single sampled member easily
+        missed a real relationship that a DIFFERENT member of the same type
+        would have shown against the very same anchor.
+        """
+        return isolated_by_type[iso_type][:cfg.relate_isolated_max_samples_per_type]
+
+    def _infer_type(iso_type: str) -> tuple[str, int, str | None, float]:
+        """Try each sample entity of this isolated type in turn, and for
+        each, each candidate anchor, stopping at the first confirmed
+        relationship. Bounded by relate_isolated_max_samples_per_type x
+        relate_isolated_max_anchors, not by how many entities are isolated.
+
+        One candidate's call raising (e.g. the model returning empty or
+        malformed JSON — observed in production) must not abort every
+        remaining candidate for this type: that would silently collapse the
+        multi-anchor retry back into the original single-shot behavior
+        whenever the FIRST candidate happened to error rather than cleanly
+        answer "unrelated". Each candidate is tried independently; the type
+        is only given up on after every sample-entity x anchor combination
+        has either errored or come back unrelated.
+        """
+        anchor_candidates = _anchor_candidates(iso_type)
+        last_result: tuple[str, int, str | None, float] = (iso_type, -1, None, 0.0)
+        for sample_entity in _sample_entities(iso_type):
+            _, iso_type_, iso_attrs = sample_entity
+            left = _trim(iso_attrs, iso_type_)
+            for a_id, a_type, a_attrs in anchor_candidates:
+                try:
+                    name, conf = infer_relationship(left, _trim(a_attrs, a_type), broker)
+                except Exception as exc:  # noqa: BLE001 — try the next candidate, don't abort the type
+                    logger.warning(
+                        "_relate_isolated type=%s anchor_type=%s inference failed, "
+                        "trying next candidate: %s", iso_type, a_type, exc,
+                    )
+                    last_result = (iso_type, -1, None, 0.0)
+                    continue
+                if name:
+                    return iso_type, a_id, name, conf
+                last_result = (iso_type, a_id, name, conf)
+        return last_result
 
     # ONE LLM call per isolated type (not per entity).
     rels: list[Relationship] = []
     pool = ThreadPoolExecutor(max_workers=cfg.relate_workers)
     try:
         futures = {
-            pool.submit(_infer_type, iso_type, entities[0]): iso_type
-            for iso_type, entities in isolated_by_type.items()
+            pool.submit(_infer_type, iso_type): iso_type
+            for iso_type in isolated_by_type
         }
         # This IS the safety net (runs regardless of the best-effort _relate()
         # stage), so it must be at least as resilient as _relate() itself: one

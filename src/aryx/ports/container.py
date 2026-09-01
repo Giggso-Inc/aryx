@@ -15,6 +15,7 @@ from typing import cast
 
 from aryx.config import get_settings
 from aryx.edition import Edition, current_edition
+from aryx.graph.pool import get_graph_reader, get_graph_store
 from aryx.naming import ws_graph
 from aryx.ports.config import adapter_config, resolve
 from aryx.ports.protocols import GraphReaderPort, GraphStorePort
@@ -34,23 +35,34 @@ class Container:
         return resolve(port)
 
     def graph_reader(self, workspace_id: int = 1) -> GraphReaderPort:
-        """Return the read-side graph adapter for one workspace."""
+        """Return the read-side graph adapter for one workspace.
+
+        docs/FALKORDB_QUERY_EXHAUSTION_2026_08_14.md (F1) -- shared/cached
+        per (graph_url, graph name) via graph.pool, instead of constructing
+        a brand-new FalkorDB client on every single call. Oracle's adapter
+        already pools at the DSN layer (store/oracle_pool.py), so it's
+        untouched here -- this only applies to the FalkorDB path.
+        """
         settings = get_settings()
         if settings.effective_graph_backend() == "oci_graph":
             from aryx.graph.oracle_graph_reader import OracleGraphReader
             return cast(GraphReaderPort, OracleGraphReader(settings.oci_adb_dsn, workspace_id))
         cls = self._cls("graph_reader")
-        adapter = cls(settings.graph_url, ws_graph(workspace_id))
+        adapter = get_graph_reader(cls, settings.graph_url, ws_graph(workspace_id))
         return cast(GraphReaderPort, adapter)
 
     def graph_store(self, workspace_id: int = 1) -> GraphStorePort:
-        """Return the write-side graph adapter for one workspace."""
+        """Return the write-side graph adapter for one workspace.
+
+        Shared/cached the same way as graph_reader() above -- see its
+        docstring for why.
+        """
         settings = get_settings()
         if settings.effective_graph_backend() == "oci_graph":
             from aryx.graph.oracle_graph_store import OracleGraphStore
             return cast(GraphStorePort, OracleGraphStore(settings.oci_adb_dsn, workspace_id))
         cls = self._cls("graph_store")
-        adapter = cls(settings.graph_url, ws_graph(workspace_id))
+        adapter = get_graph_store(cls, settings.graph_url, ws_graph(workspace_id))
         return cast(GraphStorePort, adapter)
 
     def describe(self) -> dict[str, object]:

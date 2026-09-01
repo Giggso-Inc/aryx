@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aryx System Guide — SSO → Onboarding → Ingest → Graph → Ask / CPQ</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel2: #18212c;
+    --border: #243041;
+    --text: #e7eef7;
+    --muted: #93a4b8;
+    --accent: #5b9dff;
+    --accent2: #3dd6c6;
+    --warn: #f0b429;
+    --danger: #ff6b7a;
+    --ok: #3ecf8e;
+    --code: #0e141c;
+    --sidebar-w: 300px;
+    --font: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background: radial-gradient(1200px 600px at 10% -10%, #1a2740 0%, transparent 55%),
+                radial-gradient(900px 500px at 100% 0%, #10241f 0%, transparent 40%),
+                var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .layout { display: flex; min-height: 100vh; }
+  nav.sidebar {
+    position: sticky; top: 0; height: 100vh; width: var(--sidebar-w);
+    overflow-y: auto; background: rgba(12,16,22,.94);
+    border-right: 1px solid var(--border);
+    padding: 1rem 0.85rem 2rem;
+    backdrop-filter: blur(8px);
+    flex-shrink: 0;
+    z-index: 20;
+  }
+  nav.sidebar .brand {
+    font-weight: 700; letter-spacing: .02em; font-size: 1.05rem;
+    padding: .4rem .5rem .9rem; border-bottom: 1px solid var(--border);
+    margin-bottom: .75rem;
+  }
+  nav.sidebar .brand span { color: var(--accent2); }
+  nav.sidebar .search {
+    width: 100%; margin: 0 0 .75rem; padding: .55rem .65rem;
+    border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font: inherit;
+  }
+  nav.sidebar .group { margin: .85rem 0 .25rem; font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    padding: 0 .5rem; }
+  nav.sidebar a.nav {
+    display: block; padding: .32rem .55rem; border-radius: 7px;
+    color: var(--muted); font-size: .86rem; margin: 1px 0;
+  }
+  nav.sidebar a.nav:hover, nav.sidebar a.nav.active {
+    background: var(--panel2); color: var(--text); text-decoration: none;
+  }
+  nav.sidebar a.nav.sub { padding-left: 1.1rem; font-size: .8rem; opacity: .92; }
+  main { flex: 1; max-width: 1120px; padding: 1.5rem 2rem 4rem; }
+  header.hero {
+    border: 1px solid var(--border); border-radius: 16px;
+    background: linear-gradient(145deg, #152033, #101820 60%, #0f1c1a);
+    padding: 1.5rem 1.75rem; margin-bottom: 1.75rem;
+  }
+  header.hero h1 { margin: 0 0 .4rem; font-size: 1.75rem; }
+  header.hero p { margin: 0; color: var(--muted); max-width: 75ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+  .chip {
+    font-size: .78rem; padding: .25rem .55rem; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  }
+  .chip.ok { border-color: #1f5a40; color: var(--ok); }
+  .chip.warn { border-color: #5a4a1f; color: var(--warn); }
+  section { margin: 2.25rem 0; scroll-margin-top: 1rem; }
+  section > h2 {
+    font-size: 1.35rem; margin: 0 0 .75rem; padding-bottom: .45rem;
+    border-bottom: 1px solid var(--border);
+  }
+  section > h3 { font-size: 1.08rem; margin: 1.4rem 0 .5rem; color: #d5e4f7; }
+  section > h4, .card h4 { font-size: .98rem; margin: 1.1rem 0 .4rem; color: #b9c9dc; }
+  p { color: #d5dde8; }
+  .muted { color: var(--muted); }
+  ul, ol { color: #d5dde8; }
+  li { margin: .25rem 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: .85rem; }
+  @media (max-width: 980px) {
+    .layout { flex-direction: column; }
+    nav.sidebar { position: relative; height: auto; width: 100%; max-height: 50vh; }
+    .grid2, .grid3 { grid-template-columns: 1fr; }
+    main { padding: 1rem; }
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1rem 1.1rem;
+  }
+  .card h4 { margin: 0 0 .35rem; }
+  .card p { margin: 0; font-size: .92rem; color: var(--muted); }
+  .card p + p { margin-top: .45rem; }
+  table {
+    width: 100%; border-collapse: collapse; font-size: .88rem;
+    background: var(--panel); border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--border); margin: .6rem 0 1rem;
+  }
+  th, td {
+    text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--panel2); color: #c8d7ea; font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  code, .mono { font-family: var(--mono); font-size: .86em; }
+  pre {
+    background: var(--code); border: 1px solid var(--border);
+    border-radius: 10px; padding: .9rem 1rem; overflow-x: auto;
+    font-family: var(--mono); font-size: .8rem; line-height: 1.45;
+    color: #cfe0f5;
+  }
+  .flow {
+    background: var(--code); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1rem; overflow-x: auto;
+    font-family: var(--mono); font-size: .76rem; white-space: pre;
+    color: #b8d4c8; margin: .75rem 0 1rem; line-height: 1.4;
+  }
+  details {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: .65rem .9rem; margin: .6rem 0;
+  }
+  details summary { cursor: pointer; font-weight: 600; color: #dce8f7; }
+  details[open] summary { margin-bottom: .5rem; }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(91,157,255,.08);
+    padding: .75rem 1rem; border-radius: 0 10px 10px 0; margin: 1rem 0;
+  }
+  .callout.warn { border-color: var(--warn); background: rgba(240,180,41,.08); }
+  .callout.ok { border-color: var(--ok); background: rgba(62,207,142,.08); }
+  .callout.danger { border-color: var(--danger); background: rgba(255,107,122,.08); }
+  .tag {
+    display: inline-block; font-size: .72rem; padding: .1rem .4rem;
+    border-radius: 4px; background: #1c2a3d; color: #9ec0ef; margin-right: .25rem;
+  }
+  .tag.py { background: #1a2e22; color: #7dcea0; }
+  .tag.ts { background: #1a2438; color: #8ab4f8; }
+  .tag.go { background: #1e2430; color: #a0b4c8; }
+  footer.page {
+    margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: .85rem;
+  }
+  .kbd {
+    font-family: var(--mono); font-size: .78em; border: 1px solid var(--border);
+    padding: .05rem .35rem; border-radius: 4px; background: var(--panel2);
+  }
+  .step-list { counter-reset: step; list-style: none; padding: 0; }
+  .step-list > li {
+    counter-increment: step; position: relative;
+    padding: .75rem 1rem .75rem 3rem; margin: .5rem 0;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .step-list > li::before {
+    content: counter(step); position: absolute; left: .75rem; top: .75rem;
+    width: 1.5rem; height: 1.5rem; border-radius: 50%;
+    background: #1c3a5c; color: var(--accent); font-size: .8rem; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pill-row { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
+  .hide-section { display: none !important; }
+  #backTop {
+    position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 30;
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 999px; padding: .5rem .85rem; font-size: .8rem; cursor: pointer;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #backTop.show { opacity: 1; pointer-events: auto; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar">
+  <div class="brand">Aryx <span>System Guide</span></div>
+  <input class="search" id="navSearch" type="search" placeholder="Filter nav…" />
+  <div class="group">Start</div>
+  <a class="nav" href="#overview">1. Overview</a>
+  <a class="nav" href="#journey">1b. Master journey</a>
+  <a class="nav" href="#topology">2. Topology &amp; deploy</a>
+  <a class="nav" href="#editions">3. Editions</a>
+  <div class="group">Identity</div>
+  <a class="nav" href="#sso">4. SSO &amp; auth</a>
+  <a class="nav sub" href="#sso-flow">SSO flow detail</a>
+  <a class="nav sub" href="#sso-web">Web auth routes</a>
+  <a class="nav" href="#onboarding">5. Company &amp; onboarding</a>
+  <a class="nav sub" href="#company-signup">Company signup APIs</a>
+  <a class="nav sub" href="#invites">Invites &amp; roles</a>
+  <a class="nav sub" href="#start-wizard">Start wizard</a>
+  <a class="nav" href="#workspaces-ui">6. Workspaces &amp; UI</a>
+  <div class="group">Data plane</div>
+  <a class="nav" href="#brief">7. Brief</a>
+  <a class="nav" href="#ingest">8. Ingest &amp; discovery</a>
+  <a class="nav sub" href="#ingest-db">DB path</a>
+  <a class="nav sub" href="#ingest-docs">Document path</a>
+  <a class="nav sub" href="#ingest-cpq-xml">CPQ XML catalogs</a>
+  <a class="nav" href="#er">9. Entity resolution</a>
+  <a class="nav" href="#graph">10. Knowledge graph</a>
+  <a class="nav" href="#ontology">11. Ontology &amp; rules</a>
+  <div class="group">Intelligence</div>
+  <a class="nav" href="#ask">12. Ask module</a>
+  <a class="nav sub" href="#ask-router">Top-level router</a>
+  <a class="nav sub" href="#ask-standard">Standard graph Ask</a>
+  <a class="nav sub" href="#ask-session">Session contract</a>
+  <a class="nav sub" href="#ask-ui">Ask UI components</a>
+  <a class="nav" href="#cpq">13. CPQ guided quote</a>
+  <a class="nav sub" href="#cpq-steps">8 conversation steps</a>
+  <a class="nav sub" href="#cpq-hw">Hardware-before-product</a>
+  <a class="nav sub" href="#cpq-country">Country + history mine</a>
+  <a class="nav sub" href="#cpq-modules">CPQ modules</a>
+  <a class="nav sub" href="#cpq-replacement">Replacement clause</a>
+  <a class="nav" href="#intent">14. Intent &amp; guards</a>
+  <a class="nav" href="#mcp">15. MCP &amp; actions</a>
+  <div class="group">Platform</div>
+  <a class="nav" href="#api">16. API maps</a>
+  <a class="nav" href="#modules">17. Module inventory</a>
+  <a class="nav" href="#config">18. Config &amp; env</a>
+  <a class="nav" href="#ops">19. Ops, Raven, tests</a>
+  <a class="nav" href="#flows">20. Demo / golden flows</a>
+  <a class="nav" href="#plug-in">21. Plug-in checklist</a>
+  <a class="nav" href="#glossary">22. Glossary</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>Aryx end-to-end system guide</h1>
+  <p>
+    Single navigable reference for demos, onboarding, and feature plug-ins.
+    Covers <strong>SSO → company signup → workspaces → brief → ingest → ER →
+    graph → ontology → Ask → CPQ quote → BOM</strong>, plus MCP tools, APIs,
+    modules, and config knobs. Source of truth is still the repo; this page is
+    the map.
+  </p>
+  <p style="margin-top:.85rem">
+    <strong>Interactive mind map (HTMX drill-down):</strong>
+    <a href="ARYX_EXPLORE.html">Open ARYX_EXPLORE.html</a>
+    — high-level flow → components → files → how each plugs into the graph core.
+  </p>
+  <div class="meta">
+    <span class="chip ok">Repo: aryx (Lite + Shay + web)</span>
+    <span class="chip">Updated: 2026-07-28</span>
+    <span class="chip warn">CPQ intent router · HW gate · history country mine</span>
+    <span class="chip">PM · eng · demos · sales eng</span>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="overview">
+  <h2>1. What Aryx is</h2>
+  <p>
+    <strong>Aryx</strong> is a knowledge-graph platform that ingests records from databases and
+    documents, resolves duplicates into golden entities, projects a queryable graph, and answers
+    natural-language questions with grounded citations. For CPQ / radio product catalogs it also
+    runs a <strong>guided configuration conversation</strong> that ends in a validated BOM JSON
+    payload — never free-text invented line items.
+  </p>
+  <div class="grid3">
+    <div class="card">
+      <h4>Core principle</h4>
+      <p><strong>Postgres is source of truth.</strong> FalkorDB is a rebuildable projection. Cheap deterministic stages shrink work so frontier LLMs only touch hard decisions (~1–5%).</p>
+    </div>
+    <div class="card">
+      <h4>Three surfaces</h4>
+      <p><span class="tag py">shay_backend</span> identity &amp; tenancy · <span class="tag py">aryx API</span> graph / CPQ / ingest · <span class="tag ts">apps/web</span> Next.js UI</p>
+    </div>
+    <div class="card">
+      <h4>Isolation unit</h4>
+      <p><strong>Workspace</strong> — LIST-partitioned data, own graph, ontology, survivorship policy, Ask history, CPQ catalogs.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <strong>Contract boundary:</strong> <code>apps/web</code> is replaceable. The shared contract is FastAPI JSON + MCP. Do not put product logic only in React.
+  </div>
+</section>
+
+<section id="journey">
+  <h2>1b. Master journey (persona view)</h2>
+  <div class="flow">Browser
+  │
+  ├─► Register / SSO (Google | Microsoft) ──► JWT access + refresh
+  │         │
+  │         ▼
+  │   Company (domain-based) · roles · invites · plans (optional Zoho)
+  │         │
+  │         ▼
+  │   Workspaces list ──► select / create workspace
+  │         │
+  │         ▼
+  │   /start wizard: Intro → Goals → Sources → Connect/Files → Confirm → Pipeline → Done
+  │         │
+  │         ▼
+  │   Brief (domain, aim, objectives) — grounds discovery
+  │         │
+  │         ▼
+  │   Ingest (DB | documents | REST | CPQ XML)
+  │         │  7 stages: Extract → Land → Tag → Map → Resolve → Relate → Project
+  │         ▼
+  │   HITL: ontology approve · adjudication queue · ingest questions
+  │         │
+  │         ▼
+  │   Golden entities + FalkorDB graph (ws_N)
+  │         │
+  │         ├─► Ask (graph Q&amp;A + citations)
+  │         ├─► CPQ Ask (guided quote → awaiting_approval → BOM)
+  │         ├─► Graph explorer / Data / Model / Lab
+  │         ├─► Observability (jobs, LLM tokens)
+  │         └─► MCP host (Claude etc.): list · ask · act · onboard · datasource · ingest · ontology
+  │
+  └─► Session expiry / re-auth → /session-expired → login</div>
+
+  <h3>Who does what</h3>
+  <table>
+    <thead><tr><th>Persona</th><th>Primary path</th><th>Key surfaces</th></tr></thead>
+    <tbody>
+      <tr><td>Company admin</td><td>Signup → invite users → workspaces</td><td>Shay companies, users, invites</td></tr>
+      <tr><td>Data steward</td><td>Brief → ingest → ontology approve → adjudication</td><td>Ingest, Model, HITL drawer</td></tr>
+      <tr><td>Sales / SE (CPQ)</td><td>Ask → guided config → confirm BOM</td><td>Ask composer, session_data echo</td></tr>
+      <tr><td>Analyst</td><td>Ask graph Q&amp;A · Graph explorer</td><td>Ask, Graph, Data</td></tr>
+      <tr><td>External agent</td><td>MCP tools over SSE/stdio</td><td><code>mcp/*</code> + tokens</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="topology">
+  <h2>2. Topology &amp; deploy units</h2>
+  <table>
+    <thead><tr><th>Unit</th><th>Path</th><th>Role</th><th>Default ports</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Aryx FastAPI</td>
+        <td><code>src/aryx/</code></td>
+        <td>Ingest, ER, graph, Ask, CPQ, MCP, admin, ontology</td>
+        <td><code>8088</code></td>
+      </tr>
+      <tr>
+        <td>Shay backend</td>
+        <td><code>shay_backend/</code></td>
+        <td>Auth, SSO, companies, GG workspaces, invites, channels, connectors, vault, subscriptions</td>
+        <td>compose-dependent</td>
+      </tr>
+      <tr>
+        <td>Web UI</td>
+        <td><code>apps/web/</code></td>
+        <td>Next.js App Router — HTTP-only to APIs</td>
+        <td><code>3000</code></td>
+      </tr>
+      <tr>
+        <td>Streamlit UI (ops/legacy)</td>
+        <td><code>src/aryx/ui/</code></td>
+        <td>Ops panels: ingest, graph, settings without Next.js</td>
+        <td><code>8501</code></td>
+      </tr>
+      <tr>
+        <td>Postgres 16</td>
+        <td>compose / DSN</td>
+        <td>Canonical store + Shay models + Aryx migrations</td>
+        <td><code>5432</code></td>
+      </tr>
+      <tr>
+        <td>FalkorDB</td>
+        <td>Redis protocol</td>
+        <td>Named graph projection per workspace</td>
+        <td><code>6379</code></td>
+      </tr>
+      <tr>
+        <td>Ollama / cloud LLM</td>
+        <td><code>broker/*</code></td>
+        <td>Cheap local stages; frontier for hard decisions &amp; intent</td>
+        <td>varies</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Compose entrypoints</h3>
+  <ul>
+    <li><code>docker-compose.local.yml</code> — local full stack</li>
+    <li><code>docker-compose.yml</code> / <code>docker-compose-oci.yml</code> — cloud / OCI oriented</li>
+    <li>UI: <code>http://localhost:3000</code> · OpenAPI: <code>http://localhost:8088/docs</code></li>
+  </ul>
+
+  <h3>Request path (typical product UI)</h3>
+  <div class="flow">Browser (Next.js :3000)
+   │  Authorization: Bearer &lt;Shay JWT&gt;
+   │  credentials: include (SSO cookies on auth paths)
+   ▼
+Next route handlers / BFF proxies (apps/web/app/api/*)
+   │
+   ├─► Shay REST  /api/v1/*   (identity, GG workspaces, invites…)
+   └─► Aryx REST  /ask, /ingest, /graph…  (workspace_id scoped)</div>
+</section>
+
+<section id="editions">
+  <h2>3. Editions</h2>
+  <table>
+    <thead><tr><th>Edition</th><th>Version</th><th>Focus</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Aryx Lite</strong></td><td>v1.x</td><td>This repo today — brief → ingest → resolve → Ask; bundled PG + FalkorDB + Ollama</td></tr>
+      <tr><td><strong>Aryx Enterprise</strong></td><td>v2.x</td><td>Scale, Accuracy Lab, connectors at scale, governance, ports/adapters</td></tr>
+      <tr><td><strong>Aryx-o</strong></td><td>v2.1+</td><td>Enterprise engine on hyperscaler natives (Oracle ADB / RDF / OCI GenAI first)</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">See <code>docs/EDITIONS.md</code> and <code>temp_design/ontology-v2/</code>.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="sso">
+  <h2>4. SSO &amp; authentication</h2>
+  <p>
+    Product identity lives in <strong>Shay</strong>. Aryx also has a separate
+    <strong>API-key middleware</strong> for service-to-service and MCP bearer access.
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>Shay identity <span class="tag py">shay_backend</span></h4>
+      <p>Google / Microsoft SSO, email+password, email verification, JWT access + refresh, domain companies, invitations, password reset.</p>
+      <p class="muted" style="margin-top:.5rem"><code>routes/sso.py</code> · <code>routes/auth.py</code> · <code>routes/user_auth.py</code> · <code>services/sso_service.py</code> · <code>middleware/auth_middleware.py</code></p>
+    </div>
+    <div class="card">
+      <h4>Aryx API key <span class="tag py">api/security.py</span></h4>
+      <p>Modes: <strong>off / optional / required</strong>. Fail-closed: any exception in <code>_bearer_ok</code> → reject (DEC-006). Used for server-to-server and MCP tokens.</p>
+    </div>
+  </div>
+
+  <h3 id="sso-flow">4.1 SSO flow (Google / Microsoft)</h3>
+  <div class="flow">1. SPA  POST /api/v1/sso/initiate?provider=google|microsoft
+       (credentials: 'include' — sets SSO CSRF cookie)
+       ← { authorization_url, state }
+
+2. Browser → IdP login / consent
+
+3. IdP → callback with code + state
+   Shay verifies:
+     · state matches
+     · CSRF cookie present (same host — localhost ≠ 127.0.0.1)
+     · redirect_uri allow-listed
+   → exchange code for profile (email)
+   → resolve/create user + company (domain or invite)
+   → issue JWT access + refresh
+
+4. SPA stores tokens; subsequent calls:
+     Authorization: Bearer &lt;access&gt;</div>
+
+  <h3>4.2 Callback failure codes (stable for UI mapping)</h3>
+  <table>
+    <thead><tr><th>Slug / code</th><th>Meaning</th><th>Typical fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>access_denied</code> / SSO_003</td><td>User denied IdP consent</td><td>Retry login</td></tr>
+      <tr><td><code>session_expired</code> / SSO_004</td><td>Missing SSO CSRF cookie</td><td>Same host; credentials include; no localhost/127 mix</td></tr>
+      <tr><td><code>invalid_state</code> / SSO_009</td><td>Tampered/expired OAuth state</td><td>Restart initiate</td></tr>
+      <tr><td><code>invalid_redirect</code> / SSO_002</td><td>redirect_uri not allow-listed</td><td>Align IdP console + Shay env</td></tr>
+      <tr><td><code>invitation_*</code> / SSO_005–007</td><td>Invite missing, expired, email mismatch</td><td>Re-invite matching email</td></tr>
+      <tr><td><code>signup_requires_invite</code></td><td>Open signup disabled</td><td>Admin must invite</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="sso-web">4.3 Web auth routes (Next.js)</h3>
+  <table>
+    <thead><tr><th>Route</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>/login</code></td><td>Email/password + SSO buttons</td></tr>
+      <tr><td><code>/register</code></td><td>Self-registration when enabled</td></tr>
+      <tr><td><code>/sso/[provider]</code></td><td>Provider kickoff UI</td></tr>
+      <tr><td><code>/sso/callback</code></td><td>OAuth return handler</td></tr>
+      <tr><td><code>/verifyEmail/[token]</code></td><td>Email verification</td></tr>
+      <tr><td><code>/forgot-password</code> · <code>/reset-password</code></td><td>Password recovery</td></tr>
+      <tr><td><code>/session-expired</code></td><td>Friendly re-auth</td></tr>
+      <tr><td><code>/company-signup</code></td><td>Company + admin bootstrap</td></tr>
+    </tbody>
+  </table>
+  <p>Components: <code>components/auth/*</code>, <code>components/shay/AuthGuard.tsx</code>.</p>
+
+  <div class="callout warn">
+    <strong>Demo tip:</strong> SPA must use <code>credentials: 'include'</code> on initiate so the SSO cookie sticks. Keep API host consistent with redirect URIs in Google/Microsoft console.
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="onboarding">
+  <h2>5. Company, invites &amp; product onboarding</h2>
+
+  <h3>5.1 Domain-based company model</h3>
+  <ul>
+    <li>Email domain (e.g. <code>@acme.com</code>) maps to one <strong>Company</strong>.</li>
+    <li><strong>First user</strong> for a domain → <strong>admin</strong>.</li>
+    <li>Later users from same domain → default <strong>user</strong> (unless invited with a role).</li>
+    <li>See also <code>shay_backend/DOMAIN_BASED_COMPANY_SYSTEM.md</code>.</li>
+  </ul>
+
+  <h3 id="company-signup">5.2 Company signup APIs (public)</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/api/v1/public/companies</code></td><td>Create company + admin user (name, domain, contactEmail, password, planId…)</td></tr>
+      <tr><td>GET</td><td><code>/api/v1/public/fetchPlans</code></td><td>List subscription plans for onboarding UI</td></tr>
+      <tr><td>POST</td><td><code>/api/v1/public/autoLogin</code></td><td>Auto-login after successful company creation</td></tr>
+      <tr><td>—</td><td>My subscription / Zoho hosted page / webhook</td><td>Billing lifecycle (optional)</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Full payload shapes: <code>shay_backend/COMPANY_SIGNUP_ONBOARDING_API_REFERENCE.md</code>.</p>
+
+  <details>
+    <summary>Example: company create response shape</summary>
+    <pre>{
+  "success": true,
+  "data": {
+    "customerId": "…",
+    "companyName": "Acme Corporation",
+    "token": "eyJ…",
+    "tokenId": "…",
+    "planId": "…",
+    "planName": "Trial",
+    "isDefaultPlan": true
+  },
+  "message": "Company created and onboarded successfully!",
+  "code": 200
+}</pre>
+  </details>
+
+  <h3 id="invites">5.3 Roles &amp; invitation lifecycle</h3>
+  <table>
+    <thead><tr><th>Role</th><th>Capabilities</th></tr></thead>
+    <tbody>
+      <tr><td>Admin</td><td>Company settings, invites, roles, billing hooks, user admin pages</td></tr>
+      <tr><td>Manager</td><td>Invite + limited company settings</td></tr>
+      <tr><td>User</td><td>Workspace participation, Ask/ingest within grants</td></tr>
+    </tbody>
+  </table>
+  <div class="flow">Admin creates invite (email + role, default TTL ~7d)
+   │
+   ▼
+Email link / encrypted token
+   │
+   ▼
+User SSO or register → email must match invite
+   │
+   ▼
+Join company · mark invite used · land on workspaces</div>
+
+  <h3>5.4 Shay modules involved</h3>
+  <table>
+    <thead><tr><th>Route module</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>auth</code>, <code>sso</code>, <code>user_auth</code></td><td>Login, tokens, OAuth, reset</td></tr>
+      <tr><td><code>public</code></td><td>Company signup, plans, autoLogin</td></tr>
+      <tr><td><code>companies</code>, <code>users</code></td><td>Company CRUD, profile, membership</td></tr>
+      <tr><td><code>gg_workspaces</code>, <code>workspaces</code></td><td>Tenant workspaces (GG model)</td></tr>
+      <tr><td><code>gg_datasources</code>, <code>datasources</code></td><td>Connected systems / credentials</td></tr>
+      <tr><td><code>gg_channels</code>, <code>channels</code>, <code>threads</code>, <code>messages</code></td><td>Chat / channel surfaces</td></tr>
+      <tr><td><code>approvals</code>, <code>checklists</code>, <code>tasks</code></td><td>HITL tasking</td></tr>
+      <tr><td><code>odoo_connect</code>, <code>sf_connect</code>, <code>zoho_connect</code>, <code>gmail_connect</code></td><td>External app connectors</td></tr>
+      <tr><td><code>subscriptions</code>, <code>subscription_plans</code>, <code>payment_gateway</code></td><td>Billing</td></tr>
+      <tr><td><code>notifications</code>, <code>template</code>, <code>audit</code></td><td>Email templates, audit</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="start-wizard">5.5 Product onboarding UX — Start wizard</h3>
+  <p>
+    Route: <code>/workspaces/[workspaceId]/start</code> (also top-level <code>/start</code>).
+    Components under <code>apps/web/components/start/</code>.
+  </p>
+  <ol class="step-list">
+    <li><strong>Intro</strong> (<code>Intro.tsx</code>) — orient user; what Aryx will build.</li>
+    <li><strong>Goals</strong> (<code>Goals.tsx</code>) — capture aim / outcomes (feeds Brief).</li>
+    <li><strong>Sources</strong> (<code>Sources.tsx</code>) — choose DB vs files vs both.</li>
+    <li><strong>Connect / Files</strong> (<code>Connect.tsx</code>, <code>Files.tsx</code>) — credentials or uploads.</li>
+    <li><strong>Confirm</strong> (<code>Confirm.tsx</code>) — review mapping before pipeline.</li>
+    <li><strong>Pipeline / Running</strong> (<code>Pipeline.tsx</code>, <code>Running.tsx</code>) — job progress.</li>
+    <li><strong>Done</strong> (<code>Done.tsx</code>) — handoff to Ask / Graph / home.</li>
+  </ol>
+  <p>Shell: <code>StepShell.tsx</code>. Parallel path via MCP onboarding tools (workspace_* / brief_*).</p>
+</section>
+
+<section id="workspaces-ui">
+  <h2>6. Workspaces &amp; UI shells</h2>
+  <h3>6.1 Workspace as isolation boundary</h3>
+  <ul>
+    <li>Entities, relationships, landed records, ontology, jobs, Ask history, CPQ catalog projection, survivorship policy.</li>
+    <li>API: Aryx <code>/workspaces</code> (and admin workspace routes) · LIST-partitioned tables by <code>workspace_id</code>.</li>
+    <li>Delete = physical purge of partition (destructive).</li>
+    <li>Survivorship: <code>first_non_empty</code>, <code>source_priority</code>, <code>most_recent</code>, <code>most_complete</code>, <code>most_frequent</code> + per-attribute overrides + conflict audit.</li>
+  </ul>
+
+  <h3>6.2 Next.js app map (workspace-scoped)</h3>
+  <table>
+    <thead><tr><th>Area</th><th>Route under <code>/workspaces/[id]/</code></th><th>Components</th></tr></thead>
+    <tbody>
+      <tr><td>Home</td><td><code>home</code></td><td>overview stats</td></tr>
+      <tr><td>Start wizard</td><td><code>start</code></td><td><code>components/start/*</code></td></tr>
+      <tr><td>Brief</td><td><code>brief</code></td><td>domain intent capture</td></tr>
+      <tr><td>Ingest</td><td><code>ingest</code></td><td><code>components/ingest/*</code></td></tr>
+      <tr><td>Data</td><td><code>data</code></td><td><code>components/data/*</code></td></tr>
+      <tr><td>Graph</td><td><code>graph</code></td><td><code>EntityGraph.tsx</code></td></tr>
+      <tr><td>Ask / chats</td><td><code>ask</code>, <code>chats/[threadId]</code></td><td><code>components/ask/*</code></td></tr>
+      <tr><td>Ontology / Model</td><td><code>ontology</code>, <code>model</code></td><td><code>components/model/*</code></td></tr>
+      <tr><td>Observability</td><td><code>observability</code></td><td>jobs, LLM usage</td></tr>
+      <tr><td>Settings</td><td><code>settings</code></td><td>workspace + LLM</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.3 Web component packages</h3>
+  <div class="grid3">
+    <div class="card"><h4>ask/</h4><p>Composer, MessageList, Citation, FollowupChips, AskHistoryDrawer, ShareConfigDialog, WorkspacePeek…</p></div>
+    <div class="card"><h4>ingest/</h4><p>DatabaseTab, DocsTab, RestTab, DbConnectForm, useJobPoller…</p></div>
+    <div class="card"><h4>shay/</h4><p>AuthGuard, WorkspaceIndex, AdminUsers, ShayChatSurface, route bridges…</p></div>
+    <div class="card"><h4>start/</h4><p>Full onboarding step components</p></div>
+    <div class="card"><h4>hitl/</h4><p>HITLBadge, HITLDrawer — adjudication / approvals surface</p></div>
+    <div class="card"><h4>model / lab / data</h4><p>Ontology canvas, Accuracy Lab experiments, entity tables</p></div>
+  </div>
+
+  <h3>6.4 Streamlit (ops)</h3>
+  <p>Tabs: Home, Ingest, Ask, Graph, Ontology, Observability, Settings — useful for demos and ops without Next.js (<code>:8501</code>).</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="brief">
+  <h2>7. Brief — declared domain intent</h2>
+  <p>
+    The <strong>Brief</strong> answers what the knowledge model is for. Without it, discovery
+    falls back to generic NER (Person, Company, Date). With it, types become domain-specific
+    (Agent, Ticket, Device, Resolution…).
+  </p>
+  <table>
+    <thead><tr><th>Field</th><th>Question</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td>Domain</td><td>What industry are we modeling?</td><td>Radio equipment support</td></tr>
+      <tr><td>Aim</td><td>What outcome should the graph enable?</td><td>Route tickets to expert agents; find failure patterns</td></tr>
+      <tr><td>Objectives</td><td>Concrete goals meeting the aim</td><td>One per line: smart routing, pattern discovery…</td></tr>
+      <tr><td>Entities of interest</td><td>Types you care about</td><td>Ticket, Device, Agent, Firmware</td></tr>
+      <tr><td>Depth / notes</td><td>How deep to model</td><td>Include firmware versions, RMA signals</td></tr>
+    </tbody>
+  </table>
+  <p><strong>Code:</strong> <code>brief.py</code>, <code>brief_draft.py</code>, <code>api/brief_api.py</code>, MCP <code>brief_*</code> tools, UI <code>/brief</code> + start Goals step.</p>
+</section>
+
+<section id="ingest">
+  <h2>8. Ingest &amp; discovery</h2>
+  <p>Converts messy sources into landed records, proposed types, golden entities, and a graph projection.</p>
+
+  <h3>8.1 Seven pipeline stages</h3>
+  <table>
+    <thead><tr><th>#</th><th>Stage</th><th>What happens</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Extract</td><td>Stream DB connector or file reader</td><td>I/O</td></tr>
+      <tr><td>2</td><td>Land</td><td>Raw record + provenance in Postgres</td><td>PG write</td></tr>
+      <tr><td>3</td><td>Tag</td><td>Semantic field labels (email, phone, currency…)</td><td>Cheap LLM</td></tr>
+      <tr><td>4</td><td>Map</td><td>Source → entity type; HITL approval gate</td><td>Frontier</td></tr>
+      <tr><td>5</td><td>Resolve</td><td>Block → score → adjudicate → cluster → golden</td><td>Mix</td></tr>
+      <tr><td>6</td><td>Relate</td><td>FK, co-occurrence, optional LLM edges</td><td>Mix</td></tr>
+      <tr><td>7</td><td>Project</td><td>Entities + edges → FalkorDB</td><td>Graph write</td></tr>
+    </tbody>
+  </table>
+  <p>Stage checkpoints (<code>StageTracker</code> / <code>checkpoint_store</code>) allow <strong>resume</strong> from last completed stage. Crashed “running” stages treated as failed on resume.</p>
+
+  <h3 id="ingest-db">8.2 Path A — Database</h3>
+  <ol class="step-list">
+    <li><strong>Context / Brief</strong> — crisp domain sentence or context file.</li>
+    <li><strong>Connect &amp; introspect</strong> — RDBMS host/port/db/user/password → schema list.</li>
+    <li><strong>Run discovery agent</strong> — tables → proposed entity types + match keys.</li>
+    <li><strong>Review &amp; ingest</strong> — edit types, untick tables, start job; poll progress.</li>
+  </ol>
+  <p>UI: <code>DatabaseTab</code>, <code>DbConnectForm</code>, <code>DbReviewTables</code>. APIs: <code>connect_api</code>, <code>rest_ingest_api</code> / admin ingest DB, <code>jobs_api</code>.</p>
+
+  <h3 id="ingest-docs">8.3 Path B — Documents</h3>
+  <ol class="step-list">
+    <li>Provide context (text or file).</li>
+    <li>Upload files: JSON, CSV, PDF, PPTX, DOCX, images (limits: typically 50 files, ~2 MB each).</li>
+    <li><strong>Read &amp; discover</strong> — extract text, propose entity types.</li>
+    <li>Confirm types → add to graph.</li>
+  </ol>
+  <p>UI: <code>DocsTab</code>, <code>DocsUploadStep</code>, <code>DocsSummaryStep</code>. APIs: <code>file_ingest_api</code>, <code>doc_discover_api</code>.</p>
+
+  <h3>8.4 Path C — REST sources</h3>
+  <p>Preview remote JSON, then ingest pages. UI: <code>RestTab</code> / <code>RestConfigForm</code>. API: <code>/ingest/rest/preview</code>, <code>/ingest/rest/ingest</code>.</p>
+
+  <h3 id="ingest-cpq-xml">8.5 CPQ XML catalogs (BigMachines-style)</h3>
+  <p>
+    Product configuration XML (e.g. APX Next / aSTRO25) lands as attributes, options, and BML rules
+    used by the CPQ engine. After project, Ask can run guided quote against catalog entities.
+  </p>
+
+  <h3>8.6 Key pipeline modules</h3>
+  <p>
+    <code>pipeline/spine.py</code>, <code>orchestrate.py</code>, <code>stages.py</code>, <code>tag.py</code>,
+    <code>schema_agent.py</code>, <code>doc_discovery.py</code>, <code>fk_edges.py</code>,
+    <code>embed.py</code>, connectors under <code>connectors/*</code>,
+    <code>store/checkpoint_store.py</code>, HITL questions via <code>ingest_question_api</code>.
+  </p>
+
+  <h3>8.7 Connectors inventory</h3>
+  <div class="pill-row">
+    <span class="chip">postgres</span><span class="chip">sql_source</span>
+    <span class="chip">csv</span><span class="chip">json</span>
+    <span class="chip">pdf</span><span class="chip">docx</span>
+    <span class="chip">pptx</span><span class="chip">image/OCR</span>
+    <span class="chip">rest_api</span><span class="chip">markup</span>
+    <span class="chip">oci_doc</span><span class="chip">schema_inspect</span>
+  </div>
+</section>
+
+<section id="er">
+  <h2>9. Entity resolution funnel</h2>
+  <div class="flow">LANDED RECORDS
+    │
+    ▼
+ BLOCK  MultiKeyBlocker (prefix + token-set + Soundex, size cap)
+    │ candidate pairs
+    ▼
+ SCORE  cheap LLM pairwise similarity [0, 1]
+    │
+    ▼
+ ROUTE  four-band adjudication
+    │  ≥0.92      AUTO_MERGE
+    │  0.90–0.92  frontier LLM adjudicate
+    │  0.75–0.90  human review queue
+    │  &lt;0.75      REJECT
+    ▼
+ CLUSTER  transitive closure · confidence = min merge-edge (clamp 0.5–0.99)
+    │
+    ▼
+ GOLDEN RECORD  survivorship (5 strategies + per-attr overrides + conflict audit)</div>
+
+  <p><strong>Key files:</strong> <code>resolution/run.py</code>, <code>blocking.py</code>, <code>survivorship.py</code>, <code>golden.py</code>, <code>confidence.py</code>, <code>chunked.py</code>, <code>review_queue.py</code>, <code>api/adjudication_api.py</code>.</p>
+
+  <div class="callout ok">
+    Chunked ER activates above <code>ARYX_ER_CHUNK_THRESHOLD</code> (default ~100k) — 3-pass streaming; memory ≈ largest block.
+  </div>
+
+  <h3>Adjudication HITL</h3>
+  <ul>
+    <li><code>GET /adjudication?status=pending</code> — pair side-by-side</li>
+    <li><code>POST /adjudication/{id}/decide</code> — approve | reject</li>
+    <li>Decisions persist as labeled training data</li>
+  </ul>
+</section>
+
+<section id="graph">
+  <h2>10. Knowledge graph</h2>
+  <ul>
+    <li><strong>Projection:</strong> <code>project.py</code> — full rebuild or incremental dirty-set (&lt;30% dirty → incremental)</li>
+    <li><strong>Store:</strong> <code>graph/falkor_store.py</code> — named graph per workspace (<code>ws_1</code>, …)</li>
+    <li><strong>Tombstones:</strong> delete propagation via DETACH DELETE</li>
+    <li><strong>API:</strong> neighbors, paths, Cypher read, overview, health, rebuild</li>
+    <li><strong>UI:</strong> interactive explorer + entity drill-down (properties, neighbors, provenance, confidence)</li>
+  </ul>
+  <div class="callout">
+    Never treat FalkorDB as system of record. Always rebuild from Postgres when in doubt.
+  </div>
+  <p>Retrieve path for Ask: <code>graph/retrieve.py</code> (+ <code>ask/evidence.py</code>, <code>ask/grounding.py</code>).</p>
+</section>
+
+<section id="ontology">
+  <h2>11. Ontology, rules &amp; axioms</h2>
+  <div class="grid2">
+    <div class="card">
+      <h4>Ontology</h4>
+      <p>Type editor, proposed→approved HITL, OWL/Turtle/JSON-LD/RDF import-export, diagrams, versions, assist (AI attribute suggestions).</p>
+      <p class="muted">APIs: ontology_api, ontology_browse, ontology_assist_api, versions_api, relationship_type_api</p>
+    </div>
+    <div class="card">
+      <h4>Business rules &amp; axioms</h4>
+      <p><code>reasoning/engine.py</code>, rules_api, axioms_api — guards for kinetic actions and logical constraints. CPQ uses catalog BML rules separately in <code>cpq/bml.py</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="ask">
+  <h2>12. Ask module (full detail)</h2>
+  <p>
+    Entry: <code>POST /ask</code> → <code>run_ask()</code> in <code>api/ask_api.py</code>.
+    Client sends <code>question</code>, optional <code>history[]</code> (role/text),
+    <code>workspace_id</code>, and CPQ <code>session_data</code> (client-echoed state).
+  </p>
+
+  <h3 id="ask-router">12.1 Top-level routing (Prompt 3 inverted router)</h3>
+  <p>Config: <code>ARYX_CPQ_INTENT_MODE</code> = <code>shadow</code> (default) | <code>llm_first</code> | <code>deterministic_first</code>.</p>
+  <div class="flow">run_ask(req)
+  │
+  ├─ live session_data.mode == "cpq"?  ──YES──► _run_cpq_turn  (engine owns state)
+  │
+  ├─ hard_off_topic(question)?  ──YES──► standard graph Ask   (N10, no LLM)
+  │
+  ├─ mode == deterministic_first?
+  │     det is_cpq_question OR soft_quote OR legacy LLM gate
+  │        YES → CPQ · NO → standard Ask
+  │
+  ├─ classify_ask_route()  [one structured Gemini call, timeout default 10s]
+  │     routes: quote | qa | ambiguous | off_topic
+  │     mark_top_level_route_used()  // N4: skip mid-session 2nd LLM same turn
+  │
+  ├─ timeout/error escape hatch → det OR soft_quote → CPQ else standard
+  │
+  ├─ shadow: det/soft decide; log agreement at WARN on disagree
+  │
+  └─ llm_first: execute route
+        quote     → _run_cpq_turn
+        qa        → _handle_cpq_qa (read-only product context; no silent family switch)
+        ambiguous → clarifying question only
+        off_topic → standard Ask</div>
+
+  <h3 id="ask-standard">12.2 Standard Ask (graph Q&amp;A)</h3>
+  <ol>
+    <li>Extract terms / types from graph catalog</li>
+    <li><code>gather</code> entities + provenance</li>
+    <li><code>render_context</code> → LLM synthesise answer</li>
+    <li>Grounding / citations (<code>ask/grounding.py</code>, <code>ask/evidence.py</code>)</li>
+    <li>Optional scope checks</li>
+    <li>Persist history / thread stores</li>
+  </ol>
+  <p><strong>Modules:</strong> <code>graph/retrieve.py</code>, <code>ask/*</code>, <code>llm_runtime.py</code>, <code>broker/*</code>, <code>ask_history_api</code>, <code>ask_thread_api</code>, <code>ask_overview</code>.</p>
+
+  <h3 id="ask-session">12.3 Session contract</h3>
+  <ul>
+    <li>CPQ state is <strong>client-echoed</strong> via <code>session_data</code> (no mandatory server session store).</li>
+    <li><code>run_id</code> minted once; tags all <code>cpq:</code> logs via <code>logging_context</code>.</li>
+    <li>Ask <code>history</code> is separate multi-turn chat context; mined when CPQ starts after a non-CPQ turn (country residual Bug A fix).</li>
+    <li>Response may return updated <code>session_data</code> for the client to store and resend.</li>
+  </ul>
+
+  <h3>12.4 Few-shot routing examples (product)</h3>
+  <table>
+    <thead><tr><th>User utterance</th><th>Route</th></tr></thead>
+    <tbody>
+      <tr><td>Order APX Next … destination country United States … HOUSTON</td><td><code>quote</code></td></tr>
+      <tr><td>change the hardware version</td><td><code>quote</code> (live session / change intent)</td></tr>
+      <tr><td>astra in astrological sense</td><td><code>off_topic</code> / hard_off_topic</td></tr>
+      <tr><td>what are the options for product</td><td><code>qa</code> (no silent family switch)</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="ask-ui">12.5 Ask UI components</h3>
+  <table>
+    <thead><tr><th>Component</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>Composer.tsx</code></td><td>Input + send; carries session_data / history</td></tr>
+      <tr><td><code>MessageList.tsx</code></td><td>Thread rendering</td></tr>
+      <tr><td><code>Markdown.tsx</code></td><td>Answer formatting</td></tr>
+      <tr><td><code>Citation.tsx</code></td><td>Grounded source chips/links</td></tr>
+      <tr><td><code>FollowupChips.tsx</code></td><td>Suggested follow-ups</td></tr>
+      <tr><td><code>AskHistoryDrawer.tsx</code></td><td>Past Q&amp;A</td></tr>
+      <tr><td><code>ShareConfigDialog.tsx</code></td><td>Share / beautify config flags</td></tr>
+      <tr><td><code>WorkspacePeek.tsx</code></td><td>Workspace context peek</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="cpq">
+  <h2>13. CPQ guided quote (conversation engine)</h2>
+  <p>
+    Package: <code>src/aryx/cpq/</code>. Driven by <code>_run_cpq_turn</code> in <code>ask_api.py</code>.
+    Reads catalog attributes/rules from Postgres + graph; <strong>never invents item_values</strong> for BOM.
+  </p>
+
+  <h3 id="cpq-steps">13.1 Eight conceptual steps</h3>
+  <table>
+    <thead><tr><th>Step</th><th>Name</th><th>Behavior</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Anchors</td><td>Product family + destination country (latched from NL / history)</td></tr>
+      <tr><td>2</td><td>Load catalog</td><td><code>load_product_config</code> → ConfigAttr + options</td></tr>
+      <tr><td>3</td><td>Rule loop</td><td>hide → recommend → constrain → auto_fill to fixed point</td></tr>
+      <tr><td>4</td><td>Prompt</td><td>Next pending attribute (menu or type-exact if &gt;25 options)</td></tr>
+      <tr><td>5</td><td>Lock &amp; loop</td><td>Apply answer; re-enter rule loop</td></tr>
+      <tr><td>6</td><td>Review / cascade</td><td>Change requests, multi-intent, product switch snapshots</td></tr>
+      <tr><td>7</td><td>Q&amp;A pause</td><td>Graph questions mid-config; resume without losing filled</td></tr>
+      <tr><td>8</td><td>Approval → BOM</td><td>Confirm → <code>bom_gate</code> → <code>build_payload</code> JSON</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="cpq-hw">13.2 Hardware-based product order (mandatory HW)</h3>
+  <div class="callout ok">
+    On catalogs with Hardware Version (<code>hWVersion_*</code> / label “Hardware Version”):
+    <strong>Product (~325 options) is deferred until Hardware is filled.</strong>
+    Pending rank: country/region → Hardware → other attrs → Product last.
+  </div>
+  <div class="flow">Country (once, latched)
+    │
+    ▼
+Hardware Version  (mandatory always-ask; never blind fill)
+    │  constraints narrow portfolio
+    ▼
+Other config attrs (service, housing, battery, …)
+    │
+    ▼
+Product / productSelectionProduct_all  (only after HW)
+    │
+    ▼
+awaiting_approval → confirm → bom_gate → payload</div>
+
+  <h3 id="cpq-country">13.3 Country-once + history mine</h3>
+  <ul>
+    <li>Extract country from current question, <code>product_anchor_question</code>, switch trigger.</li>
+    <li><strong>History mine:</strong> last ~8 user turns when CPQ starts after standard Ask (residual Bug A).</li>
+    <li>Keep longer order utterance when user later only types a short catalog name (e.g. <code>aSTRO25_bom</code>).</li>
+    <li>Do not re-ask country if already latched.</li>
+  </ul>
+
+  <h3 id="cpq-modules">13.4 Key CPQ modules</h3>
+  <table>
+    <thead><tr><th>Module</th><th>Responsibility</th></tr></thead>
+    <tbody>
+      <tr><td><code>cpq/engine.py</code></td><td>Catalog load, rules, auto_fill, pending order (HW before product), detectors, build_payload</td></tr>
+      <tr><td><code>cpq/bml.py</code></td><td>BML script evaluation (Tier-1/2 LLM fallback caps)</td></tr>
+      <tr><td><code>cpq/state.py</code></td><td>CpqSession: filled, pending, history snapshots, guided_mode, product_snapshots…</td></tr>
+      <tr><td><code>cpq/rdb.py</code></td><td>Postgres/Oracle attr &amp; rule fetches</td></tr>
+      <tr><td><code>cpq/intent_gateway.py</code></td><td>Top-level route + mid-session intent classify</td></tr>
+      <tr><td><code>cpq/intent_schema.py</code></td><td>Structured schema / quarantine rules</td></tr>
+      <tr><td><code>cpq/session_guard.py</code></td><td>Snapshots before mutate, undo, clarify streaks</td></tr>
+      <tr><td><code>cpq/bom_gate.py</code></td><td>Constraint + provenance hard-fail before payload</td></tr>
+      <tr><td><code>cpq/summary_guard.py</code></td><td>Field-diff summary vs session; raw table fallback</td></tr>
+      <tr><td><code>cpq/telemetry.py</code></td><td>Divergence LLM vs det; warn if disagree rate high</td></tr>
+      <tr><td><code>cpq/logging_context.py</code></td><td>run_id binding for logs</td></tr>
+      <tr><td><code>cpq/replacement_clause.py</code></td><td>Wanted vs rejected extraction for replacement phrasings (forward + reversed)</td></tr>
+      <tr><td><code>cpq/validation/</code></td><td>Read-only oracle for rule-loop consistency</td></tr>
+      <tr><td><code>api/ask_api.py</code></td><td>Orchestration, cascade handlers, routing, history mine</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="cpq-replacement">13.5 Replacement phrasings (wanted only)</h3>
+  <p>
+    Change replies like “use Premium instead of Standard” and the reverse
+    “instead of Standard, prefer Premium” are split by
+    <code>extract_replacement_clause</code> before <code>apply_answer</code>.
+    Only the <strong>wanted</strong> fragment is matched; the rejected option is
+    excluded via constrained values so fuzzy match cannot re-pick it.
+    Log line: <code>cpq_replacement:</code>. Regression: N53–N57 + dialogue D07;
+    units in <code>tests/test_cpq_replacement_clause.py</code>.
+    Deep dive: <a href="ARYX_EXPLORE.html#cpq_replacement">Explorer</a> ·
+    <a href="ARYX_AGENTS_SOP.html#replacement">Agents SOP §12</a>.
+  </p>
+
+  <h3>13.6 Multi-product session</h3>
+  <p><code>product_snapshots</code> (cap ~5) on switch A→B→A; switch confirmation gates; country re-validation when needed. N3 loop-exit: affirmative answers to pending switch questions stay inside <code>_run_cpq_turn</code>.</p>
+
+  <h3>13.7 BOM invariants (non-negotiable)</h3>
+  <ul>
+    <li>Payload only from <code>build_payload</code> after rule loop + user confirm.</li>
+    <li><code>bom_gate</code> must pass (constraints + provenance).</li>
+    <li>No free-text LLM invention of <code>item_value</code>.</li>
+    <li>Display uses human labels; API codes stay internal unless user types them as refs.</li>
+  </ul>
+</section>
+
+<section id="intent">
+  <h2>14. Intent gateway, post-failure guards &amp; Raven logging</h2>
+  <h3>14.1 Gateway</h3>
+  <ul>
+    <li><code>cpq/intent_gateway.py</code> — top-level <code>classify_ask_route</code> + mid-session <code>classify_intent</code></li>
+    <li>Structured schema: candidates only; quarantine invalid variable_name / value_ref / evidence_span</li>
+    <li>Mutating intents require deterministic detector agreement (else clarify)</li>
+    <li>Pinned model: <code>ARYX_CPQ_INTENT_GEMINI_MODEL</code> (default gemini-2.5-pro)</li>
+    <li>Timeout: <code>ARYX_CPQ_INTENT_TIMEOUT_S</code> (default 10)</li>
+  </ul>
+
+  <h3>14.2 Post-failure stack</h3>
+  <table>
+    <thead><tr><th>Module</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td><code>session_guard</code></td><td>Snapshots before mutate (cap 10), undo, clarify streaks, guided mode</td></tr>
+      <tr><td><code>bom_gate</code></td><td>Constraint recheck + provenance hard-fail before payload emit</td></tr>
+      <tr><td><code>summary_guard</code></td><td>Field-diff summary vs session; raw table fallback</td></tr>
+      <tr><td><code>telemetry</code></td><td>Divergence LLM vs det; warn if disagree rate &gt;20%</td></tr>
+      <tr><td><code>raven_log</code></td><td>Optional structured app logging SDK (coverage gate in Raven)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>14.3 Harden targets (N1–N10 highlights)</h3>
+  <table>
+    <thead><tr><th>Id</th><th>Issue</th><th>Mitigation</th></tr></thead>
+    <tbody>
+      <tr><td>N1</td><td>Country re-asked</td><td>extract_hints + history mine + latch</td></tr>
+      <tr><td>N2</td><td>Options Q → false catalog confirm</td><td>qa route; no silent switch</td></tr>
+      <tr><td>N3</td><td>Catalog-switch loop</td><td>pending answer resolution inside live session</td></tr>
+      <tr><td>N4</td><td>Raw variable_names misunderstood</td><td>schema resolve as attribute refs</td></tr>
+      <tr><td>N5/N6</td><td>Multi-intent / product miss</td><td>gateway candidates + soft_quote escape</td></tr>
+      <tr><td>HW</td><td>Product before Hardware</td><td>pending order HW before productSelection</td></tr>
+    </tbody>
+  </table>
+
+  <h3>14.4 Regression gates</h3>
+  <ul>
+    <li><code>make cpq-intent-bench</code> — golden_set replay</li>
+    <li><code>make cpq-regression</code> — offline markdown suite (P## / N##)</li>
+    <li>Pre-push hook runs regression offline (~1s, no LLM)</li>
+  </ul>
+</section>
+
+<section id="mcp">
+  <h2>15. MCP tools &amp; kinetic actions</h2>
+  <p>Transport: stdio + SSE (<code>mcp/server.py</code>, <code>mcp/sse.py</code>). Wraps REST so any MCP host can drive Aryx.</p>
+
+  <h3>15.1 Tool inventory</h3>
+  <table>
+    <thead><tr><th>Group</th><th>Tools</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Read / act</td><td><code>list</code>, <code>ask</code>, <code>act</code></td><td>Browse workspaces; NL Q&amp;A; request mutations (always pending)</td></tr>
+      <tr><td>Onboard</td><td><code>workspace_list</code>, <code>workspace_create</code>, <code>workspace_select</code>, <code>brief_get</code>, <code>brief_draft</code>, <code>brief_set</code>, <code>brief_save</code></td><td>Agent-driven setup quiz</td></tr>
+      <tr><td>Datasource</td><td><code>datasource_quiz</code>, <code>datasource_add</code>, <code>datasource_list</code>, <code>datasource_test</code>, <code>datasource_delete</code></td><td>Connect systems safely</td></tr>
+      <tr><td>Ingest HITL</td><td><code>ingest_questions</code>, <code>ingest_answer</code>, <code>ingest_status</code>, <code>entities_preview</code></td><td>Unblock pipeline; preview entities</td></tr>
+      <tr><td>Ontology</td><td><code>ontology_get</code>, <code>ontology_export</code></td><td>Read/export types</td></tr>
+    </tbody>
+  </table>
+  <p>Tokens: <code>/mcp</code> / admin MCP token APIs. Notes: <code>CLAUDE_MCP_CONFIG.md</code>.</p>
+
+  <h3>15.2 Kinetic actions layer</h3>
+  <div class="flow">definition (JSON DSL)
+  → validate
+  → check_guard (rules engine)
+  → apply_effects (Postgres-first)
+  → before/after audit
+  → human approval when required
+
+MCP act: ALWAYS pending for agent-initiated mutations</div>
+  <p>Effects: <code>set_attribute</code>, <code>get_attribute</code>, <code>find_entity</code>, <code>add_relationship</code>, <code>remove_relationship</code>.</p>
+  <p>Code: <code>actions/engine.py</code>, <code>store/action_store.py</code>, <code>api/actions_api.py</code>, <code>mcp/act.py</code>.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section id="api">
+  <h2>16. API maps</h2>
+
+  <h3>16.1 Aryx FastAPI routers</h3>
+  <table>
+    <thead><tr><th>Router file</th><th>Area</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>workspace_api / admin</td><td>/workspaces, /admin/workspaces</td><td>CRUD, survivorship, brief, purge</td></tr>
+      <tr><td>connect_api</td><td>/connect · admin/connect</td><td>DB introspection</td></tr>
+      <tr><td>file_ingest_api · rest_ingest_api</td><td>/ingest</td><td>Files + REST + DB jobs</td></tr>
+      <tr><td>doc_discover_api</td><td>/discover · admin/docs</td><td>Document discovery</td></tr>
+      <tr><td>jobs_api · ingest_question_api</td><td>/jobs</td><td>Status, resume, HITL questions</td></tr>
+      <tr><td>datasource_api</td><td>datasources</td><td>Encrypted credentials</td></tr>
+      <tr><td>admin_api · data_api</td><td>/admin · /data</td><td>Entity admin, summaries</td></tr>
+      <tr><td>graph_api</td><td>/graph, /health</td><td>Graph read, rebuild, health</td></tr>
+      <tr><td>ask_api · history · thread · overview</td><td>/ask/*</td><td>NL + CPQ conversation</td></tr>
+      <tr><td>ontology_* · axioms · rules · relationship types</td><td>/ontology, /rules</td><td>Types, logic, rules</td></tr>
+      <tr><td>adjudication_api</td><td>/adjudication</td><td>HITL ER queue</td></tr>
+      <tr><td>actions_api</td><td>/actions</td><td>Kinetic layer</td></tr>
+      <tr><td>observability_api · lab_api</td><td>/observability · /lab</td><td>Metrics, experiments</td></tr>
+      <tr><td>mcp_tokens_api</td><td>/mcp</td><td>Token issue/revoke</td></tr>
+      <tr><td>brief_api</td><td>workspace brief</td><td>Domain intent</td></tr>
+      <tr><td>demo_ingest_api</td><td>/demo</td><td>Synthetic support data</td></tr>
+      <tr><td>shay_bridge_api · share_config_api</td><td>bridge / share</td><td>Integration flags</td></tr>
+      <tr><td>security · ssrf_guard</td><td>middleware</td><td>API key + SSRF protection</td></tr>
+    </tbody>
+  </table>
+
+  <h3>16.2 Shay public / auth surface (selected)</h3>
+  <table>
+    <thead><tr><th>Area</th><th>Examples</th></tr></thead>
+    <tbody>
+      <tr><td>Public onboarding</td><td><code>POST /api/v1/public/companies</code>, <code>fetchPlans</code>, <code>autoLogin</code></td></tr>
+      <tr><td>SSO</td><td><code>/api/v1/sso/initiate</code>, callback handlers</td></tr>
+      <tr><td>Auth</td><td>login, refresh, verify email, password reset</td></tr>
+      <tr><td>Tenancy</td><td>companies, users, gg_workspaces, invitations</td></tr>
+      <tr><td>Connectors</td><td>odoo, sf, zoho, gmail, datasources</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">See <code>docs/API_REFERENCE.md</code> and <code>shay_backend/API_ENDPOINTS_CONSOLIDATED.md</code>.</p>
+</section>
+
+<section id="modules">
+  <h2>17. Module inventory</h2>
+
+  <h3>17.1 <code>src/aryx/</code> packages</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4>Core platform</h4>
+      <p><code>config</code>, <code>ports</code>, <code>models</code>, <code>cli</code>, <code>edition</code>, <code>logging_setup</code>, <code>raven_log</code>, <code>workspaces</code>, <code>connections</code></p>
+    </div>
+    <div class="card">
+      <h4>Data path</h4>
+      <p><code>connectors/*</code>, <code>pipeline/*</code>, <code>resolution/*</code>, <code>store/*</code>, <code>project.py</code>, <code>discover.py</code>, <code>discoveries.py</code></p>
+    </div>
+    <div class="card">
+      <h4>Graph &amp; Ask</h4>
+      <p><code>graph/*</code>, <code>ask/*</code>, <code>api/ask_*.py</code>, <code>queries/*</code>, <code>explore.py</code></p>
+    </div>
+    <div class="card">
+      <h4>CPQ</h4>
+      <p><code>cpq/engine</code>, <code>bml</code>, <code>state</code>, <code>rdb</code>, <code>intent_*</code>, <code>session_guard</code>, <code>bom_gate</code>, <code>summary_guard</code>, <code>telemetry</code>, <code>validation/*</code></p>
+    </div>
+    <div class="card">
+      <h4>Intelligence</h4>
+      <p><code>broker/*</code>, <code>llm*.py</code>, <code>llm_runtime</code>, <code>reasoning/*</code>, <code>ontology/*</code>, <code>ontology_assist</code>, <code>brief*</code></p>
+    </div>
+    <div class="card">
+      <h4>Kinetic &amp; MCP</h4>
+      <p><code>actions/*</code>, <code>mcp/*</code> (list/ask/act + onboard + datasource + ingest + ontology)</p>
+    </div>
+    <div class="card">
+      <h4>API surface</h4>
+      <p><code>api/*.py</code> — 30+ routers registered from <code>api/main.py</code></p>
+    </div>
+    <div class="card">
+      <h4>UI &amp; ops</h4>
+      <p><code>ui/*</code> Streamlit, <code>worker/*</code>, <code>demo/*</code>, <code>oci_client</code>, <code>export_runtime</code></p>
+    </div>
+  </div>
+
+  <h3>17.2 <code>apps/web/</code></h3>
+  <p>Next.js App Router · <code>lib/*</code> client helpers · <code>components/{ask,auth,brand,data,graph,hitl,ingest,jobs,lab,model,shay,start}</code>.</p>
+
+  <h3>17.3 <code>shay_backend/</code></h3>
+  <p>FastAPI · SQLAlchemy models · Alembic migrations · services (SSO, email, vault) · 30+ route modules listed in §5.4.</p>
+
+  <h3>17.4 Tests &amp; benches</h3>
+  <ul>
+    <li><code>tests/</code> — unit/integration (ER, CPQ e2e, intent, graph, security…)</li>
+    <li><code>benchmarks/cpq_intent/</code> — golden_set + regression suite</li>
+    <li><code>benchmarks/</code> — ER / MFG benches</li>
+  </ul>
+</section>
+
+<section id="config">
+  <h2>18. Configuration knobs (selected)</h2>
+  <table>
+    <thead><tr><th>Env / setting</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>ARYX_RDB_DSN</code></td><td>Postgres DSN</td></tr>
+      <tr><td><code>ARYX_GRAPH_URL</code></td><td>FalkorDB / Redis URL</td></tr>
+      <tr><td><code>ARYX_LLM_PROVIDER</code> / models / keys</td><td>Broker routing (Ollama, Claude, OpenAI, Gemini)</td></tr>
+      <tr><td><code>ARYX_CPQ_INTENT_MODE</code></td><td><code>shadow</code> | <code>llm_first</code> | <code>deterministic_first</code></td></tr>
+      <tr><td><code>ARYX_CPQ_INTENT_GEMINI_MODEL</code></td><td>Pinned intent model</td></tr>
+      <tr><td><code>ARYX_CPQ_INTENT_TIMEOUT_S</code></td><td>Top-level route timeout (default 10)</td></tr>
+      <tr><td><code>ARYX_CPQ_LLM_FIRST_ENABLED</code></td><td>Mid-session STEP-6 gateway</td></tr>
+      <tr><td><code>ARYX_CPQ_SHADOW_INTENT_ENABLED</code></td><td>Shadow universal classifier logs</td></tr>
+      <tr><td><code>ARYX_ER_CHUNK_THRESHOLD</code></td><td>Chunked ER switch (default ~100k)</td></tr>
+      <tr><td><code>ARYX_API_KEY_MODE</code></td><td>off / optional / required</td></tr>
+      <tr><td><code>ARYX_API_URL</code> · <code>ARYX_MCP_DEFAULT_WORKSPACE</code></td><td>MCP host → API bridge</td></tr>
+      <tr><td>SSO redirect URIs + IdP secrets</td><td>Shay env (Google/Microsoft)</td></tr>
+      <tr><td>Vault / datasource encryption keys</td><td>Shay secrets</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Templates: <code>.env.example</code>, <code>.env.example.oci</code>, <code>shay_backend/env.example</code>.</p>
+</section>
+
+<section id="ops">
+  <h2>19. Ops, Raven discipline, tests</h2>
+  <h3>19.1 Raven</h3>
+  <ul>
+    <li>Manifest: <code>.raven/manifest.json</code> (stack, libraries, guards)</li>
+    <li>Pre-commit: secrets, CVE library scan, style, SQL-in-files discipline</li>
+    <li>Pre-push: <code>make cpq-regression</code></li>
+    <li>Dashboard: Raven dashboard HTML for cost/tokens/PRs</li>
+    <li>App logging: <code>raven_log</code> coverage skill for PRs</li>
+  </ul>
+
+  <h3>19.2 Useful make targets</h3>
+  <pre>make test
+make cpq-intent-bench
+make cpq-regression
+make er-bench-quick
+make lint   # pre-commit enforces style</pre>
+
+  <h3>19.3 Observability in product</h3>
+  <ul>
+    <li>Jobs &amp; stage checkpoints · resume failed runs</li>
+    <li>LLM token/latency tables</li>
+    <li>Graph entity/relationship counts</li>
+    <li>CPQ <code>run_id</code> correlation in logs</li>
+  </ul>
+
+  <h3>19.4 Architectural decisions (selected)</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Decision</th></tr></thead>
+    <tbody>
+      <tr><td>DEC-001</td><td>Postgres SoT; FalkorDB rebuildable</td></tr>
+      <tr><td>DEC-002</td><td>Streaming one-record-at-a-time</td></tr>
+      <tr><td>DEC-003</td><td>Four-band thresholds from measured sweep</td></tr>
+      <tr><td>DEC-004</td><td>Survivorship policies over first-non-empty only</td></tr>
+      <tr><td>DEC-005</td><td>Review-band pairs are non-merge (conservative)</td></tr>
+      <tr><td>DEC-006</td><td>Auth fail-closed</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="flows">
+  <h2>20. Demo &amp; golden flows (reference)</h2>
+
+  <h3>20.1 Support-ticket demo (graph Ask)</h3>
+  <div class="flow">Brief (radio support domain)
+  → seed / load demo tickets
+  → ingest pipeline
+  → Ask:
+      "Which agent should handle this firmware bug?"
+      "What's the failure pattern for RadioX-6000?"
+      "Show me escalation-prone tickets"</div>
+  <p class="muted"><code>SETUP_GUIDE.md</code>, <code>DEMO_SETUP.md</code>, <code>scripts/seed_support.py</code>.</p>
+
+  <h3>20.2 CPQ positive flows (must not regress)</h3>
+  <table>
+    <thead><tr><th>Id</th><th>Utterance pattern</th><th>Expected</th></tr></thead>
+    <tbody>
+      <tr><td>P1</td><td>Full order: product family + qty + customer + country</td><td>Complete config / summary</td></tr>
+      <tr><td>P2</td><td>change the hardware version</td><td>Constrained options re-prompt</td></tr>
+      <tr><td>P3</td><td>astra in astrological sense</td><td>Off-topic rejection</td></tr>
+    </tbody>
+  </table>
+
+  <h3>20.3 CPQ negative flows (hardened targets)</h3>
+  <table>
+    <thead><tr><th>Id</th><th>Defect</th><th>Target fix</th></tr></thead>
+    <tbody>
+      <tr><td>N1</td><td>Country re-ask</td><td>Hints + history mine + latch</td></tr>
+      <tr><td>N2</td><td>Options Q as catalog confirm</td><td>qa route</td></tr>
+      <tr><td>N3</td><td>Switch confirmation loop</td><td>Pending answer in live session</td></tr>
+      <tr><td>N4</td><td>Raw variable_names</td><td>Attribute ref resolution</td></tr>
+      <tr><td>N5–N6</td><td>Multi-intent / product miss</td><td>Gateway candidates + soft_quote</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Detail: <code>CPQ_INTENT_FLOWS.md</code>, <code>benchmarks/cpq_intent/</code>.</p>
+
+  <h3>20.4 End-to-end CPQ happy path (SE demo script)</h3>
+  <ol class="step-list">
+    <li>SSO / login → open workspace with CPQ catalog ingested.</li>
+    <li>Ask: full order sentence with country (and optional customer/qty).</li>
+    <li>System latches country; asks Hardware Version (not Product first).</li>
+    <li>User answers HW + remaining prompts; rules auto-fill safe defaults.</li>
+    <li>Optional mid-config Q&amp;A (“what are the options for …”) without killing session.</li>
+    <li>Optional change (“change hardware”) → constrained menu.</li>
+    <li>Summary → user confirms → bom_gate → BOM JSON returned.</li>
+  </ol>
+</section>
+
+<section id="plug-in">
+  <h2>21. How to plug in a feature (checklist)</h2>
+  <p>Use this when explaining extension points or scoping new work.</p>
+  <ol class="step-list">
+    <li><strong>Surface?</strong> Shay (identity/tenancy) · Aryx API · web UI · MCP · Streamlit. Prefer API+tests first.</li>
+    <li><strong>Workspace scoped?</strong> Pass/validate <code>workspace_id</code>; use partitioned stores.</li>
+    <li><strong>Auth?</strong> Shay JWT for product users; API key middleware for services/MCP.</li>
+    <li><strong>Data writes?</strong> Postgres first; call projection if entities/edges change.</li>
+    <li><strong>Discovery / Brief?</strong> If new source type, wire connector + brief fields; keep HITL map gate.</li>
+    <li><strong>Ask extension?</strong> Prefer handlers as executors; extend <code>intent_schema</code> carefully; keep escape hatch + soft_quote.</li>
+    <li><strong>CPQ extension?</strong> Never invent item_value; use options / user source; BOM only via <code>build_payload</code> + <code>bom_gate</code>; respect HW-before-product ordering.</li>
+    <li><strong>MCP?</strong> Add tool spec + dispatch; wrap REST; document in CLAUDE_MCP_CONFIG.</li>
+    <li><strong>Observability?</strong> <code>run_id</code> / raven_log / LLM call table / job stages.</li>
+    <li><strong>Tests?</strong> Unit + offline regression row (append-only P##/N## for CPQ).</li>
+    <li><strong>Manifest?</strong> New libraries → <code>.raven/manifest.json</code> approval before commit.</li>
+    <li><strong>Docs?</strong> Link from this guide or FEATURES.md; keep architecture.md if structure changes.</li>
+  </ol>
+
+  <div class="callout warn">
+    <strong>Anti-patterns:</strong> free-text BOM fields from LLM; silent product-family switch; re-asking country after history already named it; asking Product (325) before Hardware on hardware catalogs; putting auth-only logic in the React client; writing to FalkorDB without Postgres.
+  </div>
+
+  <h3>21.1 Where to plug common feature types</h3>
+  <table>
+    <thead><tr><th>Feature type</th><th>Primary touch points</th></tr></thead>
+    <tbody>
+      <tr><td>New SSO provider</td><td>Shay <code>sso_service</code> + routes + web SSO pages + IdP env</td></tr>
+      <tr><td>New invite/role</td><td>Shay companies/users + AuthGuard grants</td></tr>
+      <tr><td>New connector</td><td><code>connectors/*</code> + ingest UI tab + datasource APIs + MCP datasource tools</td></tr>
+      <tr><td>New pipeline stage</td><td><code>pipeline/stages.py</code> + checkpoint store + jobs API</td></tr>
+      <tr><td>New ER band/policy</td><td><code>resolution/*</code> + survivorship + adjudication API</td></tr>
+      <tr><td>New Ask skill / route</td><td><code>ask_api.run_ask</code> + intent gateway schema + tests</td></tr>
+      <tr><td>New CPQ catalog behavior</td><td><code>cpq/engine.py</code> pending order + BML + regression suite</td></tr>
+      <tr><td>New MCP tool</td><td><code>mcp/tools_*.py</code> + dispatch + token policy</td></tr>
+      <tr><td>New kinetic action</td><td>JSON action definition + actions_api + optional MCP act</td></tr>
+      <tr><td>New UI page</td><td><code>apps/web/app/workspaces/[id]/…</code> + components package</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="glossary">
+  <h2>22. Glossary</h2>
+  <table>
+    <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>Brief</td><td>Declared domain intent that grounds discovery</td></tr>
+      <tr><td>Golden record</td><td>Surviving entity after merge/survivorship</td></tr>
+      <tr><td>Projection</td><td>FalkorDB rebuild from Postgres</td></tr>
+      <tr><td>HITL</td><td>Human-in-the-loop approval / adjudication</td></tr>
+      <tr><td>BML</td><td>BigMachines-style rule scripts in CPQ catalogs</td></tr>
+      <tr><td>item_value</td><td>API code for BOM (never free invent)</td></tr>
+      <tr><td>display_name / display_filled</td><td>Human labels in conversation</td></tr>
+      <tr><td>session_data</td><td>Client-echoed CpqSession JSON</td></tr>
+      <tr><td>soft_quote</td><td>Heuristic that message looks like order/config</td></tr>
+      <tr><td>hard_off_topic</td><td>Astrology/weather/jokes veto before LLM</td></tr>
+      <tr><td>bom_gate</td><td>Hard-fail validator before Step-8 payload</td></tr>
+      <tr><td>run_id</td><td>Stable per quote session for log correlation</td></tr>
+      <tr><td>shadow mode</td><td>LLM classifies but deterministic path still decides</td></tr>
+      <tr><td>llm_first</td><td>Gateway route executes (with escape hatch)</td></tr>
+      <tr><td>Workspace</td><td>Tenant isolation unit (partitioned data + graph)</td></tr>
+      <tr><td>Shay</td><td>Identity / company / workspace tenancy backend</td></tr>
+      <tr><td>MCP</td><td>Model Context Protocol — tool surface for external agents</td></tr>
+      <tr><td>Kinetic / act</td><td>Governed mutations with audit + approval</td></tr>
+      <tr><td>Survivorship</td><td>Policy for which member attribute wins a merge</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer class="page">
+  Generated for demos and engineering walkthroughs · Source of truth remains the repo under
+  <code>src/aryx</code>, <code>shay_backend</code>, <code>apps/web</code> ·
+  Related: <code>docs/ARCHITECTURE.md</code>, <code>docs/USER_GUIDE.md</code>, <code>docs/FEATURES.md</code>,
+  <code>docs/API_REFERENCE.md</code>, <code>docs/INGESTION_GUIDE.md</code>,
+  <code>benchmarks/cpq_intent/</code>, <code>CPQ_INTENT_FLOWS.md</code>,
+  <code>shay_backend/COMPANY_SIGNUP_ONBOARDING_API_REFERENCE.md</code>
+</footer>
+</main>
+</div>
+
+<button id="backTop" type="button" title="Back to top">↑ Top</button>
+
+<script>
+(function () {
+  const input = document.getElementById('navSearch');
+  const links = [...document.querySelectorAll('nav.sidebar a.nav')];
+  const sections = [...document.querySelectorAll('main section[id]')];
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    links.forEach(a => {
+      const show = !q || a.textContent.toLowerCase().includes(q);
+      a.style.display = show ? '' : 'none';
+    });
+  });
+
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      const id = '#' + en.target.id;
+      links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === id));
+    });
+  }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+  sections.forEach(s => io.observe(s));
+
+  const back = document.getElementById('backTop');
+  window.addEventListener('scroll', () => {
+    back.classList.toggle('show', window.scrollY > 600);
+  }, { passive: true });
+  back.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+})();
+</script>
+</body>
+</html>

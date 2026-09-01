@@ -4,12 +4,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import psycopg
 from psycopg import sql
 from psycopg.types.json import Json
 
 from aryx.naming import ws_graph  # noqa: F401  re-exported for back-compat
-from aryx.queries import load
+from aryx.queries import load, split_statements
 from aryx.store.pool import get_pool
 
 logger = logging.getLogger(__name__)
@@ -152,19 +151,25 @@ class WorkspaceStore:
     def purge_data(self, wid: int) -> dict[str, Any]:
         """Truncate partition children + delete non-partitioned rows by wid."""
         wid = int(wid)
+        truncate_template = load("truncate_partition")
         with self._pool.connection() as conn:
             for base in _PARTITIONED:
                 child = f"{base}_ws{wid}"
-                try:
+                existing = {
+                    str(row[0])
+                    for row in conn.execute(
+                        load("select_partition_children"),
+                        {"parent": base},
+                    ).fetchall()
+                }
+                if child in existing:
                     conn.execute(
-                        sql.SQL("TRUNCATE {} CASCADE").format(sql.Identifier(child)))
-                except (psycopg.errors.UndefinedTable, psycopg.errors.InFailedSqlTransaction):
-                    pass
-            stmts = load("purge_workspace_data")
-            for stmt in stmts.split(";"):
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith("--"):
-                    conn.execute(stmt, {"wid": wid})
+                        sql.SQL(truncate_template).format(
+                            child=sql.Identifier(child),
+                        )
+                    )
+            for statement in split_statements(load("purge_workspace_data")):
+                conn.execute(statement, {"wid": wid})
             conn.execute(load("reset_workspace_context"), {"wid": wid})
         logger.info("workspace purged id=%s", wid)
         return {"status": "purged", "workspace_id": wid}

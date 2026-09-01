@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web (Next.js)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "api (FastAPI)",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["aryx.api.main:app", "--host", "0.0.0.0", "--port", "8088"],
+      "port": 8088
+    },
+    {
+      "name": "mcp (FastAPI SSE)",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["aryx.mcp.sse:app", "--host", "0.0.0.0", "--port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "ui (Streamlit)",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "src/aryx/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"],
+      "port": 8501
+    },
+    {
+      "name": "shay-api (FastAPI)",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["main:app", "--host", "0.0.0.0", "--port", "8090"],
+      "port": 8090
+    }
+  ]
+}

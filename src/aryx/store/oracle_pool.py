@@ -595,6 +595,15 @@ class OracleConnectionWrapper:
     def __init__(self, raw_conn: Any) -> None:
         self._conn = raw_conn
 
+    @property
+    def call_timeout(self) -> int:
+        """Per-call timeout in milliseconds (0 = unlimited) — proxies oracledb's connection.call_timeout."""
+        return self._conn.call_timeout
+
+    @call_timeout.setter
+    def call_timeout(self, value: int) -> None:
+        self._conn.call_timeout = value
+
     def cursor(self, name: str | None = None) -> OracleCursorWrapper:
         """Return a cursor wrapper; ``name`` is accepted but ignored (no server-side cursors)."""
         return OracleCursorWrapper(self._conn.cursor())

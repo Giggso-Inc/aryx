@@ -86,3 +86,39 @@ def test_beautify_rows_no_filled_attrs_still_shows_product_row():
     eng = CpqEngine()
     rows = eng.beautify_rows("APX NEXT", {}, [])
     assert rows == [{"label": "Product", "value": "APX NEXT"}]
+
+
+def test_beautify_rows_attrseq_confirmed_required_attr_lands_in_mandatory_section_even_when_system_filled():
+    """Live-confirmed regression (2026-08-19), corrected per Raven review
+    on PR #220: `ConfigAttr.required`/bm_config_attr.required is
+    documented elsewhere in engine.py (`_BLIND_FILL_RISK_ACCEPTED_VNS`'s
+    comment block) as unreliable for essentially every attribute in this
+    catalog, so it must NOT be the signal used here. Instead,
+    baselineReleaseSW_astro ("Software Release") — one of the four attrs
+    individually confirmed Required via the real per-base-model
+    Attrsequence Data Table (`_ATTRSEQ_CONFIRMED_REQUIRED_VNS`) — must
+    land in "Mandatory User Input" even when the engine blind-picked it
+    (source != "user"), while an ordinary unverified attr the engine also
+    blind-picked stays in "System-Configured / Recommended"."""
+    eng = CpqEngine()
+    display_filled = {
+        "baselineReleaseSW_astro": "APX NEXT 4G LTE+5G",
+        "regionAttr": "NA",
+    }
+    attrs = [
+        ConfigAttr(entity_id=1, variable_name="baselineReleaseSW_astro",
+                   display_label="Software Release", required=False,
+                   default_value="", options=[]),
+        ConfigAttr(entity_id=2, variable_name="regionAttr",
+                   display_label="Region", required=False,
+                   default_value="", options=[]),
+    ]
+    filled_source = {
+        "baselineReleaseSW_astro": "system",
+        "regionAttr": "system",
+    }
+    rows = eng.beautify_rows("APX NEXT", display_filled, attrs, filled_source)
+
+    sections = {r["label"]: r["section"] for r in rows}
+    assert sections["Software Release"] == "Mandatory User Input"
+    assert sections["Region"] == "System-Configured / Recommended"

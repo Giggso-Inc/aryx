@@ -1,0 +1,2188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aryx SOP Explorer — Flows · Agents · Logs · Files</title>
+<style>
+  :root {
+    --bg: #0a0e14; --panel: #121820; --panel2: #1a2330; --border: #2a3648;
+    --text: #e8eef7; --muted: #8fa3bb; --accent: #5b9dff; --accent2: #3dd6c6;
+    --warn: #f0b429; --ok: #3ecf8e; --danger: #ff6b7a; --cpq: #c084fc;
+    --ask: #60a5fa; --graph: #34d399; --sso: #f472b6; --ingest: #fbbf24;
+    --mcp: #fb923c; --agent: #a78bfa; --log: #22d3ee;
+    --font: Inter, system-ui, -apple-system, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: var(--font); background: var(--bg); color: var(--text); }
+  body {
+    display: grid; grid-template-rows: auto 1fr;
+    background:
+      radial-gradient(900px 500px at 5% -10%, #1a2740 0%, transparent 50%),
+      radial-gradient(700px 400px at 100% 0%, #0f2a24 0%, transparent 45%), var(--bg);
+  }
+  header.app {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: .7rem 1.2rem; border-bottom: 1px solid var(--border);
+    background: rgba(12,16,22,.94); backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 30;
+  }
+  .brand { font-weight: 700; } .brand span { color: var(--accent2); }
+  .hint { color: var(--muted); font-size: .8rem; flex: 1; min-width: 160px; }
+  #search {
+    width: min(300px, 42vw); padding: .45rem .7rem; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); font: inherit;
+  }
+  .layout { display: grid; grid-template-columns: 270px 1fr; min-height: 0; }
+  @media (max-width: 920px) { .layout { grid-template-columns: 1fr; } aside.rail { display: none; } }
+  aside.rail {
+    border-right: 1px solid var(--border); overflow-y: auto; padding: 1rem .8rem 2rem;
+    background: rgba(10,14,20,.65);
+  }
+  aside.rail .group {
+    font-size: .66rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: .85rem 0 .3rem; padding: 0 .4rem;
+  }
+  aside.rail a {
+    display: block; padding: .32rem .5rem; border-radius: 7px; color: var(--muted);
+    font-size: .84rem; text-decoration: none; margin: 1px 0; cursor: pointer;
+  }
+  aside.rail a:hover, aside.rail a.active { background: var(--panel2); color: var(--text); }
+  main.stage { overflow-y: auto; padding: 1.15rem 1.4rem 3rem; max-width: 1180px; }
+  .crumbs {
+    display: flex; flex-wrap: wrap; gap: .35rem; align-items: center;
+    margin-bottom: .85rem; font-size: .84rem; color: var(--muted);
+  }
+  .crumbs button { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+  .crumbs button:hover { text-decoration: underline; }
+  .crumbs .sep { opacity: .45; } .crumbs .here { color: var(--text); font-weight: 600; }
+  .btn {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: .38rem .7rem; font: inherit; cursor: pointer; font-size: .84rem;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: #1a3355; border-color: #2a5080; color: #cfe0ff; }
+  .hero {
+    border: 1px solid var(--border); border-radius: 16px;
+    background: linear-gradient(145deg, #152033, #101820 70%);
+    padding: 1.25rem 1.4rem; margin-bottom: 1.1rem;
+  }
+  .hero h1 { margin: 0 0 .4rem; font-size: 1.5rem; }
+  .hero .lead { margin: 0; color: var(--muted); max-width: 78ch; line-height: 1.55; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .85rem; }
+  .chip {
+    font-size: .72rem; padding: .18rem .48rem; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  }
+  .chip.k-system { color: var(--accent); border-color: #1f4a6e; }
+  .chip.k-component { color: var(--ok); border-color: #1f5a40; }
+  .chip.k-module { color: var(--cpq); border-color: #4a3a6e; }
+  .chip.k-file { color: var(--warn); border-color: #5a4a1f; }
+  .chip.k-agent { color: var(--agent); border-color: #4c3a7a; }
+  .chip.k-log { color: var(--log); border-color: #0e4a55; }
+  .chip.k-sop { color: #f9a8d4; border-color: #5a2a4a; }
+  h2.sec {
+    font-size: .98rem; margin: 1.45rem 0 .55rem; color: #c8d7ea;
+    border-bottom: 1px solid var(--border); padding-bottom: .32rem;
+  }
+  p.body { color: #d0dae8; line-height: 1.55; max-width: 80ch; }
+  ul.bul { color: #d0dae8; line-height: 1.55; padding-left: 1.2rem; }
+  ul.bul li { margin: .28rem 0; }
+  code, .mono { font-family: var(--mono); font-size: .86em; }
+  pre.block {
+    background: #0e141c; border: 1px solid var(--border); border-radius: 10px;
+    padding: .85rem 1rem; overflow-x: auto; font-family: var(--mono); font-size: .78rem;
+    color: #cfe0f5; line-height: 1.45;
+  }
+
+  /* Visual process flow */
+  .flow-board {
+    display: flex; flex-wrap: wrap; gap: .45rem; align-items: stretch;
+    margin: .6rem 0 1rem; padding: .85rem; background: #0e141c;
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .flow-step {
+    flex: 1 1 120px; min-width: 110px; max-width: 180px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: .55rem .6rem; position: relative;
+  }
+  .flow-step .n {
+    font-size: .68rem; font-weight: 700; color: var(--accent2);
+    margin-bottom: .2rem; font-family: var(--mono);
+  }
+  .flow-step .l { font-size: .82rem; font-weight: 650; margin-bottom: .2rem; }
+  .flow-step .d { font-size: .72rem; color: var(--muted); line-height: 1.35; }
+  .flow-arrow {
+    display: flex; align-items: center; color: var(--accent2); font-size: 1.1rem;
+    flex: 0 0 auto; padding: 0 .1rem; opacity: .75;
+  }
+  @media (max-width: 700px) {
+    .flow-arrow { width: 100%; justify-content: center; transform: rotate(90deg); height: 1rem; }
+    .flow-step { max-width: none; }
+  }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .7rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: .85rem .95rem; cursor: pointer; text-align: left; width: 100%;
+    color: inherit; font: inherit; transition: border-color .15s, transform .1s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .card .t { font-weight: 650; margin-bottom: .25rem; }
+  .card .b { color: var(--muted); font-size: .8rem; line-height: 1.4; }
+  .card .tag {
+    display: inline-block; margin-top: .45rem; font-size: .68rem;
+    padding: .1rem .35rem; border-radius: 4px; background: #1c2a3d; color: #9ec0ef;
+  }
+  .card.tone-agent .tag { background: #2a1f45; color: #c4b5fd; }
+  .card.tone-log .tag { background: #0c3a42; color: #67e8f9; }
+  .card.tone-cpq .tag { background: #2a1f3d; color: #d8b4fe; }
+  .card.tone-graph .tag { background: #143028; color: #6ee7b7; }
+  .card.tone-sso .tag { background: #3b1f2e; color: #f9a8d4; }
+  .card.tone-ingest .tag { background: #3b3010; color: #fcd34d; }
+  .card.tone-mcp .tag { background: #3b2810; color: #fdba74; }
+  .card.tone-ask .tag { background: #1e2a4a; color: #93c5fd; }
+
+  .plugs { display: flex; flex-wrap: wrap; gap: .45rem; margin: .4rem 0 1rem; }
+  .plug {
+    display: inline-flex; align-items: center; gap: .3rem; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 999px; padding: .32rem .65rem;
+    font-size: .8rem; color: var(--accent); cursor: pointer; font: inherit;
+  }
+  .plug:hover { border-color: var(--accent); }
+
+  .sop-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin: .5rem 0 1rem;
+  }
+  @media (max-width: 800px) { .sop-grid { grid-template-columns: 1fr; } }
+  .sop-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: .75rem .9rem;
+  }
+  .sop-box h4 { margin: 0 0 .4rem; font-size: .88rem; color: #c8d7ea; }
+  .sop-box ul { margin: 0; padding-left: 1.1rem; color: var(--muted); font-size: .84rem; }
+  .sop-box li { margin: .2rem 0; }
+
+  table.t {
+    width: 100%; border-collapse: collapse; font-size: .84rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    margin: .4rem 0 1rem;
+  }
+  table.t th, table.t td {
+    text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--border); vertical-align: top;
+  }
+  table.t th { background: var(--panel2); color: #c8d7ea; font-weight: 600; }
+  table.t tr:last-child td { border-bottom: 0; }
+  button.link {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font: inherit; font-family: var(--mono); font-size: .8rem; padding: 0; text-align: left;
+  }
+  button.link:hover { text-decoration: underline; }
+  button.link.agent-chip {
+    display: inline-block; font-family: var(--font) !important; font-size: .78rem;
+    background: #1e2a45; border: 1px solid #2a4a70; color: #9ec5ff;
+    border-radius: 999px; padding: .12rem .45rem; margin: .12rem .18rem .12rem 0;
+  }
+  button.link.agent-chip:hover { border-color: var(--accent); background: #243456; text-decoration: none; }
+  .file-ref {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: .25rem .4rem;
+    margin: .15rem 0; line-height: 1.35;
+  }
+  a.gh-open {
+    font-size: .72rem; color: var(--accent2); text-decoration: none;
+    border: 1px solid #1f4a42; border-radius: 999px; padding: .05rem .4rem;
+    white-space: nowrap;
+  }
+  a.gh-open:hover { background: rgba(61,214,198,.12); text-decoration: none; }
+  td.agent-list { line-height: 1.7; }
+  .callout {
+    border-left: 3px solid var(--accent); background: rgba(91,157,255,.08);
+    padding: .7rem .95rem; border-radius: 0 10px 10px 0; margin: .85rem 0;
+    color: #c5d5e8; font-size: .88rem; line-height: 1.5;
+  }
+  .callout.warn { border-color: var(--warn); background: rgba(240,180,41,.08); }
+  .callout.danger { border-color: var(--danger); background: rgba(255,107,122,.08); }
+  .callout.ok { border-color: var(--ok); background: rgba(62,207,142,.08); }
+  .log-row-p1 { color: var(--danger); font-weight: 600; }
+  .log-row-p2 { color: #fb923c; font-weight: 600; }
+  .log-row-p3 { color: var(--warn); }
+  .log-row-p4 { color: var(--muted); }
+  .search-hits {
+    position: absolute; right: 1.2rem; top: 3.1rem; width: min(340px, 92vw);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    max-height: 55vh; overflow-y: auto; z-index: 40; display: none;
+    box-shadow: 0 12px 40px rgba(0,0,0,.45);
+  }
+  .search-hits.open { display: block; }
+  .search-hits button {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    color: var(--text); padding: .5rem .75rem; font: inherit; cursor: pointer;
+    border-bottom: 1px solid var(--border); font-size: .84rem;
+  }
+  .search-hits button:hover { background: var(--panel2); }
+  .search-hits .m { color: var(--muted); font-size: .74rem; }
+  #panel.is-swapping { opacity: .35; transition: opacity 100ms ease; }
+  details.more {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: .55rem .85rem; margin: .45rem 0;
+  }
+  details.more summary { cursor: pointer; font-weight: 600; color: #dce8f7; }
+  details.more[open] summary { margin-bottom: .45rem; }
+</style>
+</head>
+<body>
+<header class="app">
+  <div class="brand">Aryx <span>SOP Explorer</span></div>
+  <div class="hint">SOP mind map · agents deep-dive → <a href="ARYX_AGENTS_SOP.html" style="color:var(--agent)">ARYX_AGENTS_SOP.html</a> · logs · file briefs</div>
+  <input id="search" type="search" placeholder="Search agents, logs, files…" autocomplete="off" />
+</header>
+<div class="search-hits" id="searchHits"></div>
+<div class="layout">
+  <aside class="rail" id="rail"></aside>
+  <main class="stage">
+    <div style="margin-bottom:.65rem"><button type="button" class="btn" id="btnBack" hidden>← Back</button></div>
+    <nav class="crumbs" id="crumbs"></nav>
+    <div id="panel"></div>
+  </main>
+</div>
+
+<script>
+/** SOP-grade knowledge graph. Offline single file. */
+const N = {};
+function add(n) { N[n.id] = n; return n; }
+
+function F(path, o) {
+  return { path, ...o };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ROOT — end-to-end application flow
+   ═══════════════════════════════════════════════════════════════════════════ */
+add({
+  id: "root",
+  title: "Aryx — End-to-End Application",
+  kind: "system",
+  blurb: "Identity → data plane → graph → intelligence (Ask/CPQ) → agents/MCP → ops & logs.",
+  summary: "Aryx is a knowledge-graph platform. Humans and agents (MCP) authenticate, land in a workspace, ingest sources into Postgres, resolve golden entities, project FalkorDB, then ask questions or run CPQ guided quotes. This explorer is the SOP map: every component links to tasks, flows, files, and critical logs.",
+  sop: {
+    purpose: "Give operators and engineers a single drill-down map of the full product — not a marketing overview.",
+    actors: ["Company admin", "Data steward", "Sales/SE (CPQ)", "Support analyst", "External MCP agent", "SRE/on-call"],
+    preconditions: ["Postgres + FalkorDB up", "Aryx API :8088", "Shay auth available", "Web :3000 (optional)"],
+    postconditions: ["Workspace has graph and/or CPQ catalog", "Questions answerable via Ask", "Logs correlatable by run_id / workspace_id"],
+    failure_modes: ["Auth CSRF host mismatch", "Pipeline stuck at map HITL", "CPQ orphan questions", "Silent intent drops (blocked by regression)"],
+  },
+  flowSteps: [
+    { n: "1", l: "Authenticate", d: "SSO / register → JWT" },
+    { n: "2", l: "Tenant", d: "Company + workspace" },
+    { n: "3", l: "Brief", d: "Domain intent" },
+    { n: "4", l: "Ingest", d: "7-stage pipeline" },
+    { n: "5", l: "Resolve", d: "ER → golden" },
+    { n: "6", l: "Project", d: "FalkorDB graph" },
+    { n: "7", l: "Ask / CPQ", d: "NL + guided quote" },
+    { n: "8", l: "Agents", d: "MCP tools / act" },
+    { n: "9", l: "Observe", d: "Logs + dashboard" },
+  ],
+  tasks: [
+    "Onboard company and invite users (Shay)",
+    "Create workspace and set survivorship",
+    "Write Brief; run Start wizard or MCP onboard",
+    "Ingest DB/docs/CPQ XML; approve ontology map",
+    "Review adjudication queue for mid-band pairs",
+    "Ask graph questions or run CPQ quote → BOM",
+    "Correlate issues via run_id / Observability UI",
+  ],
+  children: ["identity", "data_plane", "intelligence", "agents", "logging", "surfaces", "platform"],
+  plugs: [],
+  logs: {
+    where: [
+      "Container/process stdout (12-factor) — primary application log stream",
+      "UI Observability page — jobs, LLM tokens/latency, graph counts",
+      "CPQ lines tagged [run_id=…] for one quote lifecycle",
+      "raven_log structured records (service=aryx-api) when instrumented",
+    ],
+    critical: [
+      { p: "P1", pattern: "cpq_bom_gate / bom_gate blocked", meaning: "BOM would have been invalid", action: "Do not ship payload; re-check constraints + provenance", files: ["src/aryx/cpq/bom_gate.py", "src/aryx/api/ask_api.py", "src/aryx/cpq/engine.py"] },
+      { p: "P2", pattern: "cpq_intent_dropped", meaning: "Named change target was not handled/queued", action: "Regression exit 3; fix enqueue paths", files: ["src/aryx/cpq/intent_queue.py", "src/aryx/api/ask_api.py"] },
+      { p: "P2", pattern: "cpq_orphan_question", meaning: "UI asked a question with no pending state", action: "Check pending_* fields; clarify memory", files: ["src/aryx/cpq/session_guard.py", "src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "cpq_router_shadow agreement=False", meaning: "LLM route ≠ deterministic", action: "Monitor; consider llm_first cutover", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/intent_gateway.py"] },
+    ],
+  },
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PILLARS
+   ═══════════════════════════════════════════════════════════════════════════ */
+add({
+  id: "identity", title: "1. Identity & Tenancy", kind: "component", tone: "sso",
+  blurb: "SSO, company, roles, workspaces.",
+  summary: "Shay owns human identity. Domain-based companies, invites, JWT. Aryx API keys cover services/MCP (fail-closed).",
+  flowSteps: [
+    { n: "A", l: "Initiate SSO", d: "POST /sso/initiate + cookie" },
+    { n: "B", l: "IdP", d: "Google / Microsoft" },
+    { n: "C", l: "Callback", d: "state + CSRF check" },
+    { n: "D", l: "JWT", d: "access + refresh" },
+    { n: "E", l: "Workspace", d: "GG workspace → Aryx isolation" },
+  ],
+  tasks: ["Login/SSO", "Company signup", "Invite users", "Select workspace"],
+  children: ["sso", "onboarding", "workspace"],
+  plugs: ["web_ui", "aryx_api"],
+  logs: {
+    where: ["Shay backend logs", "Browser network for SSO_00x codes"],
+    critical: [
+      { p: "P2", pattern: "SSO_004 session_expired", meaning: "Missing CSRF cookie", action: "Same host; credentials:include", files: ["shay_backend/app/routes/sso.py", "src/aryx/api/security.py"] },
+      { p: "P2", pattern: "SSO_002 invalid_redirect", meaning: "redirect_uri not allow-listed", action: "Align IdP + env", files: ["shay_backend/app/routes/sso.py"] },
+    ],
+  },
+  files: [
+    F("shay_backend/app/routes/sso.py", {
+      brief: "SSO HTTP surface",
+      purpose: "Start OAuth and handle IdP callback; issue tokens after email/company resolution.",
+      inputs: ["provider=google|microsoft", "redirect_uri", "state", "SSO CSRF cookie"],
+      outputs: ["authorization_url", "JWT access/refresh", "stable error slugs SSO_00x"],
+      called_by: ["apps/web SSO pages", "login flow"],
+      calls: ["sso_service", "user/company stores"],
+      logs: ["SSO failures by code", "callback validation rejects"],
+      sop: "On login failure, map UI message to SSO slug before reconfiguring IdP.",
+    }),
+    F("src/aryx/api/security.py", {
+      brief: "API-key middleware",
+      purpose: "Gate Aryx HTTP with off/optional/required keys; fail closed on exception.",
+      inputs: ["Authorization header", "ARYX_API_KEY_MODE"],
+      outputs: ["401/403 or pass-through"],
+      logs: ["Auth reject paths (no stack leak)"],
+      sop: "For MCP, issue tokens via /mcp; never leave mode=off in shared environments.",
+    }),
+  ],
+});
+
+add({
+  id: "data_plane", title: "2. Data Plane", kind: "component", tone: "ingest",
+  blurb: "Brief → ingest → ER → graph.",
+  summary: "Sources become landed records, golden entities in Postgres, then a FalkorDB projection. HITL gates map and adjudication.",
+  flowSteps: [
+    { n: "1", l: "Brief", d: "Domain + aim" },
+    { n: "2", l: "Extract", d: "DB/files/REST/XML" },
+    { n: "3", l: "Land", d: "PG + provenance" },
+    { n: "4", l: "Tag/Map", d: "Cheap + frontier LLM" },
+    { n: "5", l: "Resolve", d: "Block→score→route" },
+    { n: "6", l: "Relate", d: "FK / co-occur" },
+    { n: "7", l: "Project", d: "FalkorDB ws_N" },
+  ],
+  tasks: ["Write brief", "Connect DB or upload files", "Approve discovery map", "Resume failed jobs", "Adjudicate review pairs"],
+  children: ["brief", "ingest", "er", "graph", "ontology"],
+  plugs: ["postgres", "falkordb", "llm_broker", "agents"],
+  logs: {
+    where: ["stdout logger aryx.pipeline.*", "Jobs API + Observability jobs panel", "discovery_id / job_id correlation (ingest plan)"],
+    critical: [
+      { p: "P2", pattern: "stage failed / checkpoint", meaning: "Pipeline stage crashed", action: "POST /jobs/{id}/resume from last done stage", files: ["src/aryx/pipeline/stages.py", "src/aryx/api/jobs_api.py", "src/aryx/store/checkpoint_store.py"] },
+      { p: "P3", pattern: "adjudication pending", meaning: "Human review backlog", action: "Clear HITL queue", files: ["src/aryx/api/adjudication_api.py", "src/aryx/resolution/run.py"] },
+    ],
+  },
+});
+
+add({
+  id: "intelligence", title: "3. Intelligence (Ask + CPQ)", kind: "component", tone: "ask",
+  blurb: "Natural language + guided quote.",
+  summary: "POST /ask is the single front door. Standard path answers from the graph. Quote path runs the CPQ conversation engine with client-echoed session_data and validated BOM emission.",
+  flowSteps: [
+    { n: "1", l: "POST /ask", d: "question + history + session" },
+    { n: "2", l: "Route", d: "quote | qa | off | ambig" },
+    { n: "3a", l: "Graph Ask", d: "gather → synthesise → cite" },
+    { n: "3b", l: "CPQ turn", d: "rules → pending → cascade" },
+    { n: "4", l: "Response", d: "answer + session_data + usage" },
+  ],
+  children: ["ask", "cpq"],
+  plugs: ["graph", "agents", "logging", "llm_broker"],
+});
+
+add({
+  id: "agents", title: "4. Agents & Automation", kind: "component", tone: "agent",
+  blurb: "Augmented LLM · hub-spoke · pipeline · MCP · Raven.",
+  summary: "FULL SOP: open ARYX_AGENTS_SOP.html for exhaustive detail. Runtime has no agents/ package — agent is a role. Use the Pattern → agent map below: every pattern lists which agents run under it, and every agent page lists which patterns it uses. Log tables link to implementing code files (drill or GitHub).",
+  flowSteps: [
+    { n: "P1", l: "Augmented LLM", d: "tools first → LLM" },
+    { n: "P2", l: "Hub-spoke", d: "ask_api / MCP host" },
+    { n: "P3", l: "Pipeline chain", d: "serial stages" },
+    { n: "P4", l: "Blackboard", d: "Postgres shared state" },
+    { n: "P5", l: "External hub", d: "MCP tool spokes" },
+    { n: "P6", l: "Dev hub", d: "Andie specialists" },
+  ],
+  /** MASTER MAP: pattern → agents (SOP clarity) */
+  patternMap: [
+    {
+      pattern: "Augmented LLM",
+      patternId: "pattern_augmented",
+      when: "Need language understanding without free tool-calling",
+      agents: ["ask", "agent_intent", "agent_internal"],
+      hub: "Deterministic tools pack context; LLM only writes/classifies",
+      files: ["src/aryx/graph/retrieve.py", "src/aryx/cpq/intent_gateway.py", "src/aryx/pipeline/schema_agent.py", "src/aryx/llm_runtime.py"],
+    },
+    {
+      pattern: "Hub-and-spoke",
+      patternId: "pattern_hub_spoke",
+      when: "One coordinator owns state; specialists do not call peers",
+      agents: ["ask", "cpq", "agent_mcp", "agent_intent", "agent_dev_raven"],
+      hub: "ask_api · MCP host · orchestrate · Andie",
+      files: ["src/aryx/api/ask_api.py", "src/aryx/mcp/server.py", "src/aryx/pipeline/orchestrate.py"],
+    },
+    {
+      pattern: "Sequential pipeline chain",
+      patternId: "pattern_pipeline",
+      when: "Ordered stages with checkpoints",
+      agents: ["agent_internal", "er"],
+      hub: "orchestrate.run_pipeline + StageTracker",
+      files: ["src/aryx/pipeline/orchestrate.py", "src/aryx/pipeline/stages.py", "src/aryx/pipeline/schema_agent.py"],
+    },
+    {
+      pattern: "Peer / blackboard (not A2A mesh)",
+      patternId: "pattern_peer",
+      when: "Shared durable state without agent-to-agent RPC",
+      agents: ["agent_internal", "ask", "agent_mcp"],
+      hub: "Postgres (+ FalkorDB readers); shadow dual-control",
+      files: ["src/aryx/store/pool.py", "src/aryx/cpq/intent_gateway.py", "src/aryx/project.py"],
+    },
+  ],
+  tasks: [
+    "Use Pattern → agent map: pick pattern first, then drill agent + code",
+    "On any critical log row, click Code path → file SOP → GitHub",
+    "MCP act always human-approved; never assume apply",
+    "CPQ: intent agent + engine + guards; grep [run_id=]",
+  ],
+  children: [
+    "pattern_augmented", "pattern_hub_spoke", "pattern_pipeline", "pattern_peer",
+    "agent_internal", "agent_mcp", "agent_intent", "agent_worker", "agent_dev_raven",
+  ],
+  plugs: ["ingest", "ask", "cpq", "actions", "llm_broker", "logging"],
+  logs: {
+    where: [
+      "FULL LOG SOP → Logging pillar + ARYX_AGENTS_SOP.html#logs",
+      "stdout: aryx.pipeline.* / aryx.mcp.* / aryx.cpq.*",
+      "Observability llm_recent for all agent LLM calls",
+    ],
+    critical: [
+      { p: "P2", pattern: "mcp act pending / always-pending", meaning: "External agent requested mutation", action: "Human POST /actions/.../decide", files: ["src/aryx/mcp/act.py", "src/aryx/api/actions_api.py", "src/aryx/mcp/server.py"] },
+      { p: "P2", pattern: "cpq_intent_dropped", meaning: "Multi-agent turn lost a named target", action: "Regression exit 3; fix queue", files: ["src/aryx/cpq/intent_queue.py", "src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "schema_agent fallback heuristic", meaning: "LLM map failed", action: "Review types before confirm", files: ["src/aryx/pipeline/schema_agent.py"] },
+      { p: "P3", pattern: "cpq_intent_gateway llm call failed", meaning: "Intent agent timeout", action: "Escape hatch / soft_quote", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "cpq_router_shadow agreement=False", meaning: "Dual-control disagreement", action: "Monitor cutover risk", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/intent_gateway.py"] },
+    ],
+  },
+  callout: "Pattern ≠ agent. Pattern = how work is orchestrated. Agent = who runs. Matrix above is the SOP source of truth. Deep prose: ARYX_AGENTS_SOP.html",
+  files: [
+    { path: "docs/ARYX_AGENTS_SOP.html", brief: "Exhaustive Agents SOP", purpose: "All planes, patterns, playbooks, anti-patterns." },
+    { path: "src/aryx/mcp/server.py", brief: "MCP spoke router", purpose: "Dispatch host tool calls to REST." },
+    { path: "src/aryx/graph/retrieve.py", brief: "Augmented Ask tools", purpose: "Deterministic retrieve before LLM write." },
+    { path: "src/aryx/api/ask_api.py", brief: "Product hub", purpose: "run_ask sequences all runtime spokes." },
+    { path: ".claude/skills/agent-chaining/SKILL.md", brief: "Eng multi-agent design", purpose: "When to chain; anti-patterns." },
+  ],
+});
+
+add({
+  id: "pattern_augmented", title: "Pattern: Augmented LLM", kind: "module", tone: "agent",
+  blurb: "Tools first → pack context → LLM → validate.",
+  summary: "Canonical product pattern. Deterministic tools (graph retrieve, catalog candidates, SQL) run before any completion. LLM never free-tool-calls the graph (see retrieve.py docstring). Validation: grounding, JSON schema quarantine, bom_gate.",
+  flowSteps: [
+    { n: "1", l: "Utterance", d: "user or MCP" },
+    { n: "2", l: "Det tools", d: "retrieve / candidates" },
+    { n: "3", l: "Pack", d: "evidence / bundles" },
+    { n: "4", l: "LLM", d: "menial|answer|pinned" },
+    { n: "5", l: "Validate", d: "ground / quarantine" },
+    { n: "6", l: "Effect", d: "gated handlers only" },
+  ],
+  mapsAgents: [
+    { agent: "Standard Ask answerer", agentId: "ask", role: "gather→render→LLM write→ground", files: ["src/aryx/graph/retrieve.py", "src/aryx/ask/grounding.py", "src/aryx/api/ask_api.py"] },
+    { agent: "Intent gateway", agentId: "agent_intent", role: "candidate bundles → structured LLM → quarantine", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/cpq/intent_schema.py"] },
+    { agent: "Schema discovery", agentId: "agent_internal", role: "schema+brief → LLM map JSON → heuristic fallback", files: ["src/aryx/pipeline/schema_agent.py"] },
+    { agent: "Doc discovery / tag / relate", agentId: "agent_internal", role: "pack fields → cheap/frontier complete", files: ["src/aryx/pipeline/doc_discovery.py", "src/aryx/pipeline/tag.py", "src/aryx/relationships.py"] },
+  ],
+  tasks: ["Debug Ask with tools_called + retrieve logs", "Never allow LLM-only BOM fields"],
+  children: [],
+  plugs: ["ask", "agent_intent", "llm_broker", "graph"],
+  logs: {
+    where: ["tools_called in JSON response", "llm_recent", "grounding failures"],
+    critical: [
+      { p: "P2", pattern: "grounding fail / empty gather", meaning: "No evidence for answer", action: "Check graph projection & terms", files: ["src/aryx/graph/retrieve.py", "src/aryx/ask/grounding.py"] },
+      { p: "P3", pattern: "llm_runtime chat / insert_llm_call", meaning: "Completion + token audit", action: "Observability llm_recent", files: ["src/aryx/llm_runtime.py"] },
+    ],
+  },
+  files: [
+    { path: "src/aryx/graph/retrieve.py", brief: "Retrieve-then-read", purpose: "gather/render_context; LLM does not pick tools.", inputs: ["terms", "GraphReader"], outputs: ["entities + context string"] },
+    { path: "src/aryx/ask/grounding.py", brief: "Citations", purpose: "Bind claims to evidence structure." },
+    { path: "src/aryx/llm_runtime.py", brief: "menial vs answer chat", purpose: "Logs every call to aryx_llm_call." },
+  ],
+});
+
+add({
+  id: "pattern_hub_spoke", title: "Pattern: Hub-and-spoke", kind: "module", tone: "agent",
+  blurb: "One orchestrator; spokes do not talk peer-to-peer.",
+  summary: "Hubs: (1) ask_api.run_ask / _run_cpq_turn holds session; (2) MCP host LLM plans tools; mcp/server is dumb dispatch; (3) orchestrate.run_pipeline for jobs; (4) Andie for engineering. Spokes never call sibling spokes — hub sequences.",
+  flowSteps: [
+    { n: "H", l: "Hub", d: "state + plan" },
+    { n: "S1", l: "Spoke A", d: "intent / stage" },
+    { n: "S2", l: "Spoke B", d: "engine / tool" },
+    { n: "S3", l: "Spoke C", d: "guard / project" },
+    { n: "H2", l: "Hub merge", d: "response / checkpoint" },
+  ],
+  mapsAgents: [
+    { agent: "Ask / CPQ orchestrator", agentId: "ask", role: "HUB — owns session_data, sequences spokes", files: ["src/aryx/api/ask_api.py"] },
+    { agent: "Intent gateway", agentId: "agent_intent", role: "SPOKE — classify only; returns to hub", files: ["src/aryx/cpq/intent_gateway.py"] },
+    { agent: "CPQ engine", agentId: "cpq", role: "SPOKE — rules/BOM; no peer calls", files: ["src/aryx/cpq/engine.py"] },
+    { agent: "External MCP host", agentId: "agent_mcp", role: "HUB outside Aryx — plans tool order", files: ["src/aryx/mcp/server.py", "src/aryx/mcp/tools.py"] },
+    { agent: "MCP server dispatch", agentId: "agent_mcp", role: "SPOKE layer — no planner", files: ["src/aryx/mcp/server.py", "src/aryx/mcp/act.py"] },
+    { agent: "Pipeline orchestrator", agentId: "ingest", role: "HUB — run_pipeline stages", files: ["src/aryx/pipeline/orchestrate.py"] },
+    { agent: "Andie (dev)", agentId: "agent_dev_raven", role: "HUB — routes specialists", files: [".claude/skills/andie/SKILL.md"] },
+  ],
+  children: [],
+  plugs: ["ask", "agent_mcp", "ingest", "agent_dev_raven"],
+  logs: {
+    where: ["cpq_router / cpq_intent_gateway_turn", "mcp dispatch errors", "stage checkpoints"],
+    critical: [
+      { p: "P3", pattern: "cpq_router:", meaning: "Hub routing decision", action: "Confirm ARYX_CPQ_INTENT_MODE", files: ["src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "unknown tool", meaning: "MCP spoke miss", action: "Check tool name vs tools.py", files: ["src/aryx/mcp/server.py", "src/aryx/mcp/tools.py"] },
+    ],
+  },
+  files: [
+    { path: "src/aryx/api/ask_api.py", brief: "Product hub", purpose: "Sequences intent, engine, guards; owns session_data contract." },
+    { path: "src/aryx/mcp/server.py", brief: "MCP dispatch spoke layer", purpose: "No planner — host is hub." },
+    { path: "src/aryx/pipeline/orchestrate.py", brief: "Job hub", purpose: "run_pipeline stage sequence + broker." },
+  ],
+  callout: "If two modules call each other without hub state, that is a design smell — prefer blackboard (Postgres) or hub orchestration.",
+});
+
+add({
+  id: "pattern_pipeline", title: "Pattern: Sequential pipeline chain", kind: "module", tone: "agent",
+  blurb: "Serial multi-agent stages with checkpoints.",
+  summary: "Extract→Land→Tag→Map→Resolve→Relate→Project. Shared memory = Postgres. LLM stages optional. Resume via StageTracker.",
+  flowSteps: [
+    { n: "1", l: "Extract", d: "connector" }, { n: "2", l: "Land", d: "PG" },
+    { n: "3", l: "Tag*", d: "cheap agent" }, { n: "4", l: "Map*", d: "HITL" },
+    { n: "5", l: "ER", d: "bands" }, { n: "6", l: "Relate*", d: "frontier" },
+    { n: "7", l: "Project", d: "graph" },
+  ],
+  mapsAgents: [
+    { agent: "Schema / map agent", agentId: "agent_internal", role: "Stage 4 map proposal", files: ["src/aryx/pipeline/schema_agent.py", "src/aryx/pipeline/orchestrate.py"] },
+    { agent: "Tag agent", agentId: "agent_internal", role: "Stage 3 cheap labels", files: ["src/aryx/pipeline/tag.py"] },
+    { agent: "Doc discovery agent", agentId: "agent_internal", role: "Doc path into land/map", files: ["src/aryx/pipeline/doc_discovery.py"] },
+    { agent: "ER scorer / adjudicator", agentId: "er", role: "Stage 5 bands", files: ["src/aryx/resolution/run.py", "src/aryx/api/adjudication_api.py"] },
+    { agent: "Relate agent", agentId: "agent_internal", role: "Stage 6 frontier (opt-in)", files: ["src/aryx/relationships.py", "src/aryx/pipeline/enrich.py"] },
+  ],
+  children: ["agent_internal"],
+  plugs: ["ingest", "er", "graph"],
+  logs: {
+    where: ["stage start/done/failed", "job resume"],
+    critical: [
+      { p: "P2", pattern: "stage failed / checkpoint", meaning: "Pipeline stage crashed", action: "Resume job", files: ["src/aryx/pipeline/stages.py", "src/aryx/api/jobs_api.py", "src/aryx/store/checkpoint_store.py"] },
+    ],
+  },
+  files: [
+    { path: "src/aryx/pipeline/orchestrate.py", brief: "Pipeline hub", purpose: "Chains stages; optional LLM spokes." },
+    { path: "src/aryx/pipeline/stages.py", brief: "Stage runner", purpose: "Checkpoint resume." },
+  ],
+});
+
+add({
+  id: "pattern_peer", title: "Pattern: Peer / blackboard (honest)", kind: "module", tone: "agent",
+  blurb: "No A2A mesh — Postgres blackboard + dual-control shadow.",
+  summary: "Aryx does NOT ship peer-to-peer agent negotiation. What exists: (1) modules read/write shared Postgres without direct calls; (2) FalkorDB consumers; (3) shadow mode dual judgment (LLM + det) with det authority. True P2P mesh would be a new product decision — use agent-chaining skill to design first.",
+  flowSteps: [
+    { n: "1", l: "Writer module", d: "entities/jobs" },
+    { n: "2", l: "Postgres", d: "blackboard" },
+    { n: "3", l: "Reader module", d: "Ask/UI/MCP" },
+  ],
+  mapsAgents: [
+    { agent: "All writers (ingest/ER/CPQ)", agentId: "agent_internal", role: "Write blackboard rows", files: ["src/aryx/store/pool.py", "src/aryx/pipeline/spine.py"] },
+    { agent: "Ask / MCP ask", agentId: "ask", role: "Read blackboard + graph projection", files: ["src/aryx/graph/retrieve.py", "src/aryx/api/ask_api.py"] },
+    { agent: "Intent shadow dual-control", agentId: "agent_intent", role: "Paired judgment (not peer negotiation)", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/api/ask_api.py"] },
+  ],
+  children: [],
+  plugs: ["postgres", "pattern_hub_spoke"],
+  logs: {
+    where: ["cpq_router_shadow", "projection logs"],
+    critical: [
+      { p: "P3", pattern: "cpq_router_shadow agreement=False", meaning: "LLM≠det on route", action: "Monitor; not a peer vote", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/intent_gateway.py"] },
+    ],
+  },
+  callout: "Do not document a peer mesh in customer SOP — it does not exist in runtime.",
+});
+
+add({
+  id: "agent_dev_raven", title: "Dev multi-agent (Raven/Andie)", kind: "agent", tone: "agent",
+  blurb: "Outer engineering plane — not customer API.",
+  summary: "Andie hub + specialist spokes + guard agents on hooks. Subagents have no parent memory. Parallel specialists when independent. See .claude/skills/agent-chaining and andie/SKILL.md.",
+  flowSteps: [
+    { n: "1", l: "Andie hub", d: "plan + route" },
+    { n: "2", l: "Specialists", d: "parallel/seq" },
+    { n: "3", l: "Guards", d: "pre-commit" },
+    { n: "4", l: "Synthesize", d: "PR/commit" },
+  ],
+  usesPatterns: [
+    { pattern: "Hub-and-spoke", patternId: "pattern_hub_spoke", how: "Andie is hub; specialists are spokes", files: [".claude/skills/andie/SKILL.md", ".claude/skills/agent-chaining/SKILL.md"] },
+  ],
+  children: [],
+  plugs: ["ops", "pattern_hub_spoke"],
+  files: [
+    { path: ".claude/skills/andie/SKILL.md", brief: "Andie orchestrator", purpose: "Plan-first hub for engineering work." },
+    { path: ".claude/skills/agent-chaining/SKILL.md", brief: "Chain design SOP", purpose: "Justify multi-agent; context handoff; anti-patterns." },
+  ],
+  logs: {
+    where: ["git hooks output", "Raven pre-commit report"],
+    critical: [
+      { p: "P2", pattern: "COMMIT BLOCKED", meaning: "Guard failed", action: "Fix violation; do not --no-verify casually", files: [".claude/skills/agent-chaining/SKILL.md"] },
+    ],
+  },
+});
+
+
+
+add({
+  id: "logging", title: "5. Logging & Observability (critical)", kind: "component", tone: "log",
+  blurb: "Where logs live, what they contain, how to triage.",
+  summary: "Primary stream is process stdout (timestamp level name message). CPQ adds [run_id=…] via contextvar filter. raven_log emits structured contract records (level, criticality P1–P4, service, env, principal, trace_id, context). UI Observability aggregates jobs + LLM stats + graph counts. Regression suite fails push on intent-drop (exit 3). Every critical row below links to code — click to drill.",
+  flowSteps: [
+    { n: "1", l: "Emit", d: "logger.* / raven_log" },
+    { n: "2", l: "Stdout", d: "container / docker logs" },
+    { n: "3", l: "Correlate", d: "run_id · workspace_id · job_id" },
+    { n: "4", l: "UI", d: "/observability jobs+LLM" },
+    { n: "5", l: "Gate", d: "cpq-regression pre-push" },
+  ],
+  tasks: [
+    "On CPQ bug: extract run_id from response session or logs",
+    "grep '[run_id=<id>]' across API logs",
+    "Check Observability for LLM errors and job stage status",
+    "If BOM failed: search bom_gate — click code column → bom_gate.py",
+    "If multi-change incomplete: search cpq_intent_dropped → intent_queue.py",
+    "If change applied the rejected option (Standard not Premium): grep cpq_replacement → replacement_clause.py",
+  ],
+  children: ["log_stdout", "log_raven", "log_cpq", "log_ui", "log_regression"],
+  plugs: ["cpq", "ask", "ingest", "ops"],
+  logs: {
+    where: [
+      "docker compose logs -f aryx-api  (or process stdout)",
+      "UI: /workspaces/{id}/observability",
+      "GET /admin/observability?workspace_id=",
+      "Structured raven-logger sink (if configured in deployment)",
+    ],
+    fields_stdout: ["asctime", "levelname", "name (logger)", "message", "optional [run_id=…]"],
+    fields_raven: ["level", "criticality P1-P4", "message", "service=aryx-api", "env", "principal", "project=aryx", "error_code", "trace_id", "span_id", "context{}", "sample_payload"],
+    critical: [
+      { p: "P1", pattern: "ERROR + bom_gate / blocked payload", meaning: "Invalid BOM blocked", action: "Do not override; fix config state", files: ["src/aryx/cpq/bom_gate.py", "src/aryx/api/ask_api.py", "src/aryx/cpq/engine.py"] },
+      { p: "P2", pattern: "cpq_intent_dropped", meaning: "Dropped named intent", action: "Block release; fix queue", files: ["src/aryx/cpq/intent_queue.py", "src/aryx/api/ask_api.py"] },
+      { p: "P2", pattern: "cpq_orphan_question", meaning: "Question without pending", action: "Fix pending state machine", files: ["src/aryx/cpq/session_guard.py", "src/aryx/api/ask_api.py"] },
+      { p: "P2", pattern: "stage=failed / checkpoint", meaning: "Ingest stage failed", action: "Resume or re-run from checkpoint", files: ["src/aryx/pipeline/stages.py", "src/aryx/api/jobs_api.py", "src/aryx/store/checkpoint_store.py"] },
+      { p: "P3", pattern: "LLM error in llm_recent", meaning: "Provider failure", action: "Check keys/quotas; retry", files: ["src/aryx/llm_runtime.py", "src/aryx/api/observability_api.py"] },
+      { p: "P3", pattern: "cpq_intent_gateway llm call failed", meaning: "Intent agent down", action: "Escape hatch path", files: ["src/aryx/cpq/intent_gateway.py"] },
+      { p: "P3", pattern: "cpq_replacement:", meaning: "Wanted/rejected split on change apply", action: "If wrong option locked, open replacement_clause.py", files: ["src/aryx/cpq/replacement_clause.py", "src/aryx/api/ask_api.py"] },
+      { p: "P4", pattern: "[run_id=…] on cpq lines", meaning: "Quote correlation tag", action: "Grep full lifecycle", files: ["src/aryx/cpq/logging_context.py", "src/aryx/cpq/state.py"] },
+    ],
+  },
+  callout: "SOP rule: never debug CPQ from the UI alone — always pair the transcript with [run_id=…] log lines. Click Code column to open the emitting module.",
+  files: [
+    { path: "src/aryx/logging_setup.py", brief: "Stdout format", purpose: "Root logging to stdout." },
+    { path: "src/aryx/raven_log.py", brief: "Structured raven_log", purpose: "P1–P4 audit records." },
+    { path: "src/aryx/cpq/logging_context.py", brief: "run_id filter", purpose: "Append [run_id=] to CPQ logs." },
+    { path: "src/aryx/api/observability_api.py", brief: "Dashboard aggregate", purpose: "jobs + llm + graph in one call." },
+  ],
+});
+
+add({
+  id: "surfaces", title: "6. Surfaces", kind: "component",
+  blurb: "Web, Streamlit, MCP hosts.",
+  summary: "Next.js product UI, Streamlit ops panels, MCP-connected AI hosts.",
+  children: ["web_ui", "streamlit", "agent_mcp"],
+  plugs: ["identity", "aryx_api"],
+});
+
+add({
+  id: "platform", title: "7. Platform Core", kind: "component",
+  blurb: "API, stores, LLM, ops gates.",
+  children: ["aryx_api", "postgres", "falkordb", "llm_broker", "ops"],
+  plugs: [],
+});
+
+/* ── Identity detail ────────────────────────────────────────────────────── */
+add({
+  id: "sso", title: "SSO & Auth", kind: "module", tone: "sso",
+  blurb: "OAuth + JWT + API keys.",
+  summary: "Shay SSO for humans; Aryx API keys for services. Failure codes are stable for UI mapping.",
+  flowSteps: [
+    { n: "1", l: "Initiate", d: "SPA + credentials include" },
+    { n: "2", l: "IdP consent", d: "user authenticates" },
+    { n: "3", l: "Callback", d: "code + state + cookie" },
+    { n: "4", l: "Issue JWT", d: "access + refresh" },
+  ],
+  children: [],
+  plugs: ["onboarding", "web_ui"],
+  files: [
+    F("shay_backend/app/routes/sso.py", {
+      brief: "SSO routes",
+      purpose: "OAuth start/callback.",
+      inputs: ["provider", "state"], outputs: ["tokens or SSO_* error"],
+      logs: ["callback failures by code"],
+      sop: "Document SSO_003–009 in support runbook.",
+    }),
+    F("shay_backend/app/services/sso_service.py", {
+      brief: "OAuth business logic",
+      purpose: "Exchange code, load profile, resolve company.",
+      inputs: ["auth code"], outputs: ["user + company membership"],
+    }),
+    F("src/aryx/api/security.py", {
+      brief: "API key gate",
+      purpose: "Service auth fail-closed.",
+      inputs: ["bearer token", "mode env"], outputs: ["allow/deny"],
+    }),
+  ],
+});
+
+add({
+  id: "onboarding", title: "Company & Onboarding", kind: "module", tone: "sso",
+  blurb: "Signup, invites, Start wizard.",
+  flowSteps: [
+    { n: "1", l: "Signup", d: "public/companies" },
+    { n: "2", l: "Plan", d: "trial / Zoho optional" },
+    { n: "3", l: "Invite", d: "email + role" },
+    { n: "4", l: "Start", d: "wizard → brief → ingest" },
+  ],
+  children: [],
+  plugs: ["brief", "agents"],
+  files: [
+    F("shay_backend/app/routes/public.py", {
+      brief: "Public onboarding APIs",
+      purpose: "Create company + admin; fetch plans; autoLogin.",
+      inputs: ["name, domain, contactEmail, password"],
+      outputs: ["token, planId, customerId"],
+      sop: "Welcome email is non-blocking — company create succeeds even if mail fails.",
+    }),
+    F("apps/web/components/start/", {
+      brief: "Start wizard UI",
+      purpose: "Intro→Goals→Sources→Connect→Confirm→Pipeline→Done.",
+      inputs: ["user choices"], outputs: ["brief + ingest job"],
+    }),
+    F("src/aryx/mcp/tools_onboard.py", {
+      brief: "MCP onboard tool specs",
+      purpose: "Agent-driven workspace/brief setup.",
+      inputs: ["workspace_id, brief fields"], outputs: ["tool results"],
+    }),
+  ],
+});
+
+add({
+  id: "workspace", title: "Workspace Isolation", kind: "module",
+  blurb: "LIST-partitioned tenant unit.",
+  summary: "All graph data, jobs, Ask history, CPQ catalogs scoped by workspace_id. Delete = physical partition purge.",
+  children: [],
+  plugs: ["postgres", "graph"],
+  files: [
+    F("src/aryx/api/workspace_api.py", {
+      brief: "Workspace CRUD + survivorship",
+      purpose: "Create/list/delete workspaces; set merge policy.",
+      inputs: ["name", "survivorship strategy"], outputs: ["workspace_id"],
+      sop: "Confirm workspace before destructive purge.",
+    }),
+  ],
+});
+
+/* ── Data plane detail ──────────────────────────────────────────────────── */
+add({
+  id: "brief", title: "Brief", kind: "module", tone: "ingest",
+  blurb: "Declared domain intent.",
+  summary: "Grounds discovery so types are domain-specific. Agents and UI both write brief fields.",
+  children: [],
+  plugs: ["ingest", "agent_internal"],
+  files: [
+    F("src/aryx/brief.py", {
+      brief: "Brief persistence",
+      purpose: "Store domain/aim/objectives on workspace.",
+      inputs: ["brief JSON"], outputs: ["saved brief"],
+    }),
+    F("src/aryx/brief_draft.py", {
+      brief: "AI draft brief",
+      purpose: "LLM proposes brief from sparse input.",
+      logs: ["draft success/fail via llm_runtime"],
+    }),
+    F("src/aryx/api/brief_api.py", {
+      brief: "HTTP brief API",
+      purpose: "GET/PATCH brief for workspace.",
+    }),
+  ],
+});
+
+add({
+  id: "ingest", title: "Ingest Pipeline", kind: "module", tone: "ingest",
+  blurb: "7 stages: extract→project.",
+  summary: "Streaming pipeline with checkpoints. Connectors feed records; map is HITL; resolve produces goldens; project updates graph.",
+  flowSteps: [
+    { n: "1", l: "Extract", d: "connector stream" },
+    { n: "2", l: "Land", d: "aryx_landed_record" },
+    { n: "3", l: "Tag", d: "cheap LLM labels" },
+    { n: "4", l: "Map", d: "types + HITL" },
+    { n: "5", l: "Resolve", d: "ER funnel" },
+    { n: "6", l: "Relate", d: "edges" },
+    { n: "7", l: "Project", d: "FalkorDB" },
+  ],
+  children: ["agent_internal"],
+  plugs: ["er", "graph", "logging"],
+  files: [
+    F("src/aryx/pipeline/spine.py", {
+      brief: "Streaming spine",
+      purpose: "One-record-at-a-time path for small and large sets.",
+      inputs: ["record iterator"], outputs: ["landed + downstream stages"],
+      logs: ["stage transitions", "per-batch progress"],
+    }),
+    F("src/aryx/pipeline/stages.py", {
+      brief: "Stage runner",
+      purpose: "Execute stages with checkpoint resume.",
+      inputs: ["job_id", "stage name"], outputs: ["running|done|failed"],
+      logs: ["stage start/done/failed", "resume leftover running→failed"],
+      sop: "On crash, resume — do not full restart unless data corrupt.",
+    }),
+    F("src/aryx/pipeline/orchestrate.py", {
+      brief: "Discovery orchestration",
+      purpose: "Drive auto-discovery and ingest job kickoff.",
+    }),
+    F("src/aryx/pipeline/schema_agent.py", {
+      brief: "Schema discovery agent",
+      purpose: "LLM maps tables→entity types from brief + schema; FK merge deterministic.",
+      inputs: ["introspected schema", "brief context"],
+      outputs: ["proposed types, keys, relationships"],
+      logs: ["agent proposal", "heuristic fallback"],
+      sop: "Always review proposed map before confirming ingest.",
+    }),
+    F("src/aryx/api/file_ingest_api.py", {
+      brief: "File upload ingest",
+      purpose: "Accept multi-file upload and run extraction pipeline.",
+    }),
+    F("src/aryx/api/connect_api.py", {
+      brief: "DB connect + introspect",
+      purpose: "Test connection and list tables/columns.",
+    }),
+    F("src/aryx/api/jobs_api.py", {
+      brief: "Job status / resume",
+      purpose: "Operator control plane for pipeline jobs.",
+      logs: ["job status transitions"],
+    }),
+  ],
+});
+
+add({
+  id: "er", title: "Entity Resolution", kind: "module",
+  blurb: "Block → score → route → golden.",
+  flowSteps: [
+    { n: "1", l: "Block", d: "prefix/token/soundex" },
+    { n: "2", l: "Score", d: "cheap LLM [0,1]" },
+    { n: "3", l: "Route", d: "4 bands" },
+    { n: "4", l: "Cluster", d: "transitive" },
+    { n: "5", l: "Golden", d: "survivorship" },
+  ],
+  children: [],
+  plugs: ["graph", "logging"],
+  files: [
+    F("src/aryx/resolution/run.py", {
+      brief: "ER orchestration",
+      purpose: "Drive pairwise scoring and routing.",
+      logs: ["pair scores (when enabled)", "band decisions"],
+      sop: "Review band 0.75–0.90 needs human — check adjudication API.",
+    }),
+    F("src/aryx/resolution/blocking.py", {
+      brief: "MultiKeyBlocker",
+      purpose: "Cap block size; avoid cartesian blow-ups.",
+    }),
+    F("src/aryx/resolution/survivorship.py", {
+      brief: "Survivorship strategies",
+      purpose: "first_non_empty, source_priority, most_recent, most_complete, most_frequent.",
+    }),
+    F("src/aryx/api/adjudication_api.py", {
+      brief: "HITL review queue",
+      purpose: "List pending pairs; approve/reject as labeled data.",
+    }),
+  ],
+});
+
+add({
+  id: "graph", title: "Knowledge Graph", kind: "module", tone: "graph",
+  blurb: "FalkorDB projection of Postgres.",
+  summary: "Never SoT. Rebuild anytime. Ask and CPQ both read catalog/entities through this layer + PG.",
+  flowSteps: [
+    { n: "1", l: "Dirty set", d: "watermark" },
+    { n: "2", l: "Project", d: "full or incremental" },
+    { n: "3", l: "Query", d: "Cypher / retrieve" },
+    { n: "4", l: "UI", d: "EntityGraph" },
+  ],
+  children: [],
+  plugs: ["postgres", "ask", "cpq"],
+  files: [
+    F("src/aryx/project.py", {
+      brief: "Projection orchestrator",
+      purpose: "Choose full rebuild vs incremental; write graph.",
+      logs: ["project start/end", "dirty %"],
+    }),
+    F("src/aryx/graph/falkor_store.py", {
+      brief: "FalkorDB store",
+      purpose: "Named graphs, Cypher, tombstones.",
+    }),
+    F("src/aryx/graph/retrieve.py", {
+      brief: "Ask retrieval",
+      purpose: "Gather entities + neighbors for NL context.",
+      inputs: ["terms", "workspace_id"], outputs: ["entity set for LLM"],
+    }),
+    F("src/aryx/api/graph_api.py", {
+      brief: "Graph HTTP + health",
+      purpose: "Paths, overview, health; sample raven_log on health.",
+    }),
+  ],
+});
+
+add({
+  id: "ontology", title: "Ontology", kind: "module",
+  blurb: "Types HITL + RDF I/O.",
+  children: [],
+  plugs: ["ingest", "graph"],
+  files: [
+    F("src/aryx/api/ontology_api.py", {
+      brief: "Ontology API",
+      purpose: "Propose/approve types; import/export RDF/OWL/TTL.",
+    }),
+  ],
+});
+
+/* ── Ask ────────────────────────────────────────────────────────────────── */
+add({
+  id: "ask", title: "Ask Module", kind: "module", tone: "ask",
+  blurb: "POST /ask entry — graph + CPQ router.",
+  summary: "Single conversational API. run_ask routes; standard pipeline uses graph retrieve; quote enters CPQ. History and session_data are client-visible.",
+  flowSteps: [
+    { n: "1", l: "Validate ws", d: "workspace exists" },
+    { n: "2", l: "Live CPQ?", d: "session.mode==cpq" },
+    { n: "3", l: "Off-topic?", d: "hard gate" },
+    { n: "4", l: "Route", d: "intent mode" },
+    { n: "5", l: "Execute", d: "graph or CPQ" },
+    { n: "6", l: "Return", d: "answer+usage+session" },
+  ],
+  children: ["ask_router_detail", "ask_standard"],
+  plugs: ["graph", "cpq", "logging", "web_ui"],
+  usesPatterns: [
+    { pattern: "Hub-and-spoke", patternId: "pattern_hub_spoke", how: "run_ask is the hub for all NL turns", files: ["src/aryx/api/ask_api.py"] },
+    { pattern: "Augmented LLM", patternId: "pattern_augmented", how: "Standard path: retrieve then synthesise", files: ["src/aryx/graph/retrieve.py", "src/aryx/ask/grounding.py"] },
+  ],
+  logs: {
+    where: ["aryx.api.ask_api logger", "cpq_* lines with run_id", "usage tokens in response JSON"],
+    critical: [
+      { p: "P3", pattern: "cpq_router:", meaning: "Top-level routing decision", action: "Confirm mode env ARYX_CPQ_INTENT_MODE", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/intent_gateway.py"] },
+      { p: "P3", pattern: "hard_off_topic", meaning: "Joke/weather/astrology veto", action: "Expected for N-cases", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/api/ask_api.py"] },
+      { p: "P2", pattern: "cpq_orphan_question", meaning: "Asked without pending state", action: "Fix pending_* ", files: ["src/aryx/cpq/session_guard.py", "src/aryx/api/ask_api.py"] },
+    ],
+  },
+  files: [
+    F("src/aryx/api/ask_api.py", {
+      brief: "Ask + CPQ orchestration (~6.5k lines)",
+      purpose: "run_ask, _run_cpq_turn, cascade, multi-intent queue drain, clarify memory, standard graph ask.",
+      inputs: ["AskRequest: question, history[], workspace_id, session_data"],
+      outputs: ["answer, tools_called, usage, session_data, cpq_payload?"],
+      calls: ["intent_gateway", "CpqEngine", "session_guard", "bom_gate", "graph retrieve"],
+      logs: [
+        "cpq_router / cpq_router_shadow",
+        "cpq_intent_gateway_turn",
+        "cpq_orphan_question (via enforce_conversational_invariant)",
+        "cascade notes",
+      ],
+      sop: "When debugging, capture full response.session_data + run_id and grep API logs for that run_id.",
+    }),
+    F("src/aryx/api/ask_history_api.py", {
+      brief: "History API",
+      purpose: "Persist/retrieve chat turns per workspace.",
+    }),
+    F("src/aryx/ask/grounding.py", {
+      brief: "Citation grounding",
+      purpose: "Bind answer claims to entity evidence.",
+    }),
+    F("apps/web/components/ask/Composer.tsx", {
+      brief: "Chat composer",
+      purpose: "Send question; echo session_data on every turn.",
+      sop: "UI must resend latest session_data or CPQ state resets.",
+    }),
+  ],
+});
+
+add({
+  id: "ask_router_detail", title: "Ask Router Modes", kind: "module", tone: "ask",
+  blurb: "shadow | llm_first | deterministic_first.",
+  summary: "Config ARYX_CPQ_INTENT_MODE. shadow observes LLM vs det. llm_first executes gateway. deterministic_first uses is_cpq_question + soft_quote only.",
+  children: [],
+  plugs: ["agent_intent", "cpq"],
+});
+
+add({
+  id: "ask_standard", title: "Standard Graph Ask", kind: "module", tone: "ask",
+  blurb: "NL Q&A over entities.",
+  flowSteps: [
+    { n: "1", l: "Extract terms", d: "types from graph" },
+    { n: "2", l: "Gather", d: "retrieve entities" },
+    { n: "3", l: "Render", d: "context for LLM" },
+    { n: "4", l: "Synthesise", d: "answer" },
+    { n: "5", l: "Ground", d: "citations" },
+  ],
+  children: [],
+  plugs: ["graph", "llm_broker"],
+});
+
+/* ── CPQ ────────────────────────────────────────────────────────────────── */
+add({
+  id: "cpq", title: "CPQ Guided Quote", kind: "module", tone: "cpq",
+  blurb: "Conversation → validated BOM.",
+  summary: "Plugs into Ask as _run_cpq_turn. Catalog attrs/options from Postgres (graph-backed product config). Never invents item_value. Hardware before Product. Multi-target intent queue. BOM only after bom_gate.",
+  flowSteps: [
+    { n: "1", l: "Anchors", d: "family + country" },
+    { n: "2", l: "Load catalog", d: "ConfigAttr+options" },
+    { n: "3", l: "Rule loop", d: "hide/rec/constrain" },
+    { n: "4", l: "Prompt", d: "next pending attr" },
+    { n: "5", l: "Lock", d: "apply answer" },
+    { n: "6", l: "Cascade", d: "change + queue drain" },
+    { n: "7", l: "Approve", d: "user confirm" },
+    { n: "8", l: "BOM", d: "bom_gate → payload" },
+  ],
+  children: ["cpq_engine", "cpq_intent", "cpq_guards", "cpq_state", "cpq_replacement"],
+  plugs: ["ask", "graph", "postgres", "logging", "agents"],
+  callout: "CPQ is not a separate product binary — it is a conversation mode of Ask over the same workspace graph that holds the product catalog. Replacement phrasings (forward + reversed) strip the rejected option before apply_answer — see cpq_replacement.",
+  usesPatterns: [
+    { pattern: "Hub-and-spoke", patternId: "pattern_hub_spoke", how: "ask_api hub; engine/intent/guards are spokes", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/engine.py"] },
+    { pattern: "Augmented LLM", patternId: "pattern_augmented", how: "Intent classify + optional BML LLM tiers", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/cpq/bml.py"] },
+  ],
+  logs: {
+    where: ["aryx.cpq.* and aryx.api.ask_api with [run_id=…]", "response.session_data.run_id"],
+    critical: [
+      { p: "P1", pattern: "bom_gate", meaning: "Payload blocked", action: "Fix filled/provenance; never force", files: ["src/aryx/cpq/bom_gate.py", "src/aryx/cpq/engine.py", "src/aryx/api/ask_api.py"] },
+      { p: "P2", pattern: "cpq_intent_dropped", meaning: "Multi-change lost a target", action: "Queue bug; regression must fail", files: ["src/aryx/cpq/intent_queue.py", "src/aryx/api/ask_api.py"] },
+      { p: "P2", pattern: "cpq_orphan_question", meaning: "Asked without pending", action: "State machine bug", files: ["src/aryx/cpq/session_guard.py", "src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "cpq_replacement:", meaning: "Wanted/rejected clause extracted on change apply", action: "Confirm filled holds wanted, not rejected", files: ["src/aryx/cpq/replacement_clause.py", "src/aryx/api/ask_api.py"] },
+      { p: "P3", pattern: "cpq_session_guard: undo", meaning: "User restored snapshot", action: "Expected", files: ["src/aryx/cpq/session_guard.py"] },
+    ],
+  },
+  files: [
+    F("src/aryx/cpq/engine.py", {
+      brief: "Catalog + rules + detectors + BOM",
+      purpose: "Load product config; evaluate BML/rules; order pending (HW before product); detect change/qa; build_payload.",
+      inputs: ["workspace_id", "product_name", "filled", "question"],
+      outputs: ["pending attrs", "constrained options", "BOM dict"],
+      logs: ["rule-consistency", "array-grid", "detector outcomes"],
+      sop: "Never call build_payload without bom_gate in production path.",
+    }),
+    F("src/aryx/cpq/replacement_clause.py", {
+      brief: "Wanted vs rejected extraction",
+      purpose: "Contrast-first + cue path so apply_answer never sees the rejected value.",
+      logs: ["cpq_replacement: (logged at cascade site)"],
+      sop: "Forward and reversed English forms; design (a) deterministic; (b) gateway piggyback is follow-up.",
+    }),
+    F("src/aryx/cpq/rdb.py", {
+      brief: "Catalog SQL access",
+      purpose: "Fetch attributes, options, rules from Postgres/Oracle.",
+    }),
+    F("src/aryx/cpq/bml.py", {
+      brief: "BML evaluator",
+      purpose: "Execute BigMachines scripts; tiered LLM fallback with caps.",
+      logs: ["script eval errors", "fallback tier used"],
+    }),
+  ],
+});
+
+add({
+  id: "cpq_engine", title: "CPQ Engine Core", kind: "module", tone: "cpq",
+  blurb: "engine.py + rdb + bml.",
+  children: [],
+  plugs: ["cpq"],
+  files: N.cpq.files,
+});
+
+add({
+  id: "cpq_intent", title: "Intent Gateway & Queue", kind: "module", tone: "cpq",
+  blurb: "Classify + multi-target queue + clarify memory.",
+  flowSteps: [
+    { n: "1", l: "Classify", d: "structured LLM" },
+    { n: "2", l: "Quarantine", d: "invalid vn/value" },
+    { n: "3", l: "Dispatch/clarify", d: "or fallback" },
+    { n: "4", l: "Queue", d: "extra change targets" },
+    { n: "5", l: "Drain", d: "next ask after apply" },
+  ],
+  children: [],
+  plugs: ["agent_intent", "logging"],
+  files: [
+    F("src/aryx/cpq/intent_gateway.py", {
+      brief: "LLM intent + top-level route",
+      purpose: "classify_intent / classify_ask_route with pinned model + timeout.",
+      logs: ["cpq_intent_gateway: tokens, cache_hit, dispatch/clarify", "mutating_disagreement"],
+      sop: "On timeout, expect escape hatch + soft_quote.",
+    }),
+    F("src/aryx/cpq/intent_schema.py", {
+      brief: "Schema + quarantine",
+      purpose: "Parse/validate structured intent; reject invented variable_names.",
+    }),
+    F("src/aryx/cpq/intent_queue.py", {
+      brief: "Multi-target queue + conservation",
+      purpose: "enqueue/drain pending_intent_queue; audit_intent_conservation; format drop notices.",
+      logs: ["cpq_intent_dropped ERROR"],
+      sop: "Any drop is a release blocker (regression exit 3).",
+    }),
+  ],
+});
+
+add({
+  id: "cpq_guards", title: "CPQ Guards", kind: "module", tone: "cpq",
+  blurb: "BOM, session, summary, orphan Q.",
+  children: [],
+  plugs: ["logging"],
+  files: [
+    F("src/aryx/cpq/bom_gate.py", {
+      brief: "Pre-payload hard gate",
+      purpose: "Constraint recheck + provenance before BOM emit.",
+      logs: ["block reasons"],
+      sop: "If blocked, never hand-edit item_value into payload.",
+    }),
+    F("src/aryx/cpq/session_guard.py", {
+      brief: "Snapshots, undo, orphan invariant",
+      purpose: "history stack; clarify streaks; enforce_conversational_invariant.",
+      logs: ["cpq_session_guard snapshot/undo", "cpq_orphan_question"],
+    }),
+    F("src/aryx/cpq/summary_guard.py", {
+      brief: "Summary vs curated fields",
+      purpose: "Prevent hallucinated summary rows.",
+    }),
+    F("src/aryx/cpq/telemetry.py", {
+      brief: "Divergence telemetry",
+      purpose: "Track LLM vs deterministic disagreement rates.",
+    }),
+  ],
+});
+
+add({
+  id: "cpq_replacement", title: "Replacement clause (wanted vs rejected)", kind: "module", tone: "cpq",
+  blurb: "Forward + reversed English change phrasings.",
+  summary: "When the user replaces a value (\"use Premium instead of Standard\" or the reverse \"instead of Standard, prefer Premium\"), apply_answer must never fuzzy-match the rejected option. extract_replacement_clause returns (wanted, rejected); cascade and the pending_change_no_value path pass only the wanted clause and exclude the rejected option via constrained_item_values. Design (a) deterministic patterns now; design (b) intent-gateway piggyback is the follow-up once one LLM call/turn already runs.",
+  flowSteps: [
+    { n: "1", l: "Utterance", d: "change / which-value reply" },
+    { n: "2", l: "Contrast-first?", d: "instead of / rather than / not" },
+    { n: "3", l: "Or cue path", d: "use|prefer|rather + cut" },
+    { n: "4", l: "wanted + rejected", d: "tuple" },
+    { n: "5", l: "apply_answer", d: "wanted only + exclude rejected" },
+    { n: "6", l: "filled", d: "wanted value locked" },
+  ],
+  tasks: [
+    "On wrong value applied after a replacement phrase: grep cpq_replacement and re-check extract",
+    "Add new English mirror forms only with unit + D07-style regression coverage",
+    "Do not pass full raw question into apply_answer when a cue/contrast form is present",
+  ],
+  children: [],
+  plugs: ["cpq", "ask", "logging", "log_regression"],
+  logs: {
+    where: ["aryx.api.ask_api logger — line prefix cpq_replacement:", "tests/test_cpq_replacement_clause.py", "D07 + N53–N57 in CPQ_REGRESSION_SUITE.md"],
+    critical: [
+      { p: "P2", pattern: "filled holds rejected option after replacement phrase", meaning: "Extractor/cascade regression", action: "Run test_cpq_replacement_clause + D07; fix extract patterns", files: ["src/aryx/cpq/replacement_clause.py", "src/aryx/api/ask_api.py", "tests/test_cpq_replacement_clause.py"] },
+      { p: "P3", pattern: "cpq_replacement: wanted=… rejected=…", meaning: "Clause split logged at cascade", action: "Confirm apply_hint is wanted only", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/replacement_clause.py"] },
+    ],
+  },
+  callout: "Option-level rejection uses constrained_item_values — not session.negated_vns (that set is for attributes suppressed by exclude-any phrases). Pattern ≠ agent: this is deterministic hub logic under ask_api, not a free LLM tool call.",
+  files: [
+    F("src/aryx/cpq/replacement_clause.py", {
+      brief: "Pure extractor (no FastAPI)",
+      purpose: "extract_replacement_clause(text) → (wanted, rejected). Contrast-first before leftmost cue; of-remnant belt-and-braces.",
+      inputs: ["user utterance / new_value_hint"],
+      outputs: ["wanted clause string | None", "rejected clause string | None"],
+      called_by: ["ask_api._extract_replacement_clause", "run_regression D07 offline"],
+      calls: [],
+      logs: ["(logging is at cascade call site)"],
+      sop: "Keep free of engine/FastAPI imports so offline regression can load the module.",
+    }),
+    F("src/aryx/api/ask_api.py", {
+      brief: "Cascade + pending-value wiring",
+      purpose: "_handle_cascade and pending_change_no_value call site apply wanted-only + constrain-excluding-rejected.",
+      logs: ["cpq_replacement: attr= wanted= rejected= apply_hint="],
+      sop: "Every cascade entry point benefits — not only the pending-value path.",
+    }),
+    F("tests/test_cpq_replacement_clause.py", {
+      brief: "Unit + pending integration",
+      purpose: "Forward/reversed cases; property: wanted never contains rejected; pcnv → Premium.",
+    }),
+    F("benchmarks/cpq_intent/CPQ_REGRESSION_SUITE.md", {
+      brief: "N53–N57 + D07",
+      purpose: "Documented pins and offline dialogue for reversed-cue apply.",
+    }),
+  ],
+});
+
+add({
+  id: "cpq_state", title: "CpqSession", kind: "module", tone: "cpq",
+  blurb: "Client-echoed session contract.",
+  summary: "All pending_* fields must be echoed by UI every turn. Includes filled, intent queue, clarify, collision, switch, run_id.",
+  children: [],
+  files: [
+    F("src/aryx/cpq/state.py", {
+      brief: "ConfigAttr + CpqSession",
+      purpose: "Serializable session; INTENT_QUEUE_CAP; legacy multi-intent migration.",
+      sop: "Breaking session_data shape requires UI + mobile clients to update.",
+    }),
+    F("src/aryx/cpq/logging_context.py", {
+      brief: "run_id contextvar",
+      purpose: "Filter injects [run_id=…] into log messages without changing call sites.",
+      sop: "Minted once per CpqSession in ask_api.",
+    }),
+  ],
+});
+
+/* ── Agents detail ──────────────────────────────────────────────────────── */
+add({
+  id: "agent_internal", title: "Internal LLM Agents (runtime roster)", kind: "agent", tone: "agent",
+  blurb: "Schema, doc discover, tag, enrich, relate, ER lanes.",
+  summary: "Server-side agents under job/workspace context. Not a deployable. Each is an augmented-LLM or cheap classify step in the pipeline hub. Full table in ARYX_AGENTS_SOP.html §8.",
+  flowSteps: [
+    { n: "1", l: "Trigger", d: "job / API" },
+    { n: "2", l: "Brief+schema", d: "context pack" },
+    { n: "3", l: "LLM tier", d: "cheap|frontier" },
+    { n: "4", l: "Validate", d: "JSON/heuristic" },
+    { n: "5", l: "HITL?", d: "map / review" },
+    { n: "6", l: "Write PG", d: "types/entities" },
+  ],
+  tasks: [
+    "Schema agent after introspect — steward reviews map",
+    "Doc discover → confirm types",
+    "Watch llm_recent for tag/relate cost spikes",
+    "ER review band: clear adjudication queue",
+  ],
+  usesPatterns: [
+    { pattern: "Augmented LLM", patternId: "pattern_augmented", how: "schema/doc/tag/relate: pack context → LLM → validate/HITL", files: ["src/aryx/pipeline/schema_agent.py", "src/aryx/pipeline/tag.py"] },
+    { pattern: "Sequential pipeline", patternId: "pattern_pipeline", how: "Stages under orchestrate.run_pipeline", files: ["src/aryx/pipeline/orchestrate.py", "src/aryx/pipeline/stages.py"] },
+    { pattern: "Blackboard", patternId: "pattern_peer", how: "Writes landed/entities to Postgres for later readers", files: ["src/aryx/pipeline/spine.py"] },
+  ],
+  children: [],
+  plugs: ["ingest", "llm_broker", "logging", "pattern_augmented"],
+  logs: {
+    where: ["aryx.pipeline.schema_agent", "aryx.pipeline.* stage logs", "llm_recent"],
+    critical: [
+      { p: "P3", pattern: "schema_agent fallback heuristic", meaning: "LLM map failed", action: "Review types", files: ["src/aryx/pipeline/schema_agent.py"] },
+      { p: "P2", pattern: "stage failed", meaning: "Pipeline crash", action: "Resume job", files: ["src/aryx/pipeline/stages.py", "src/aryx/api/jobs_api.py"] },
+    ],
+  },
+  files: [
+    F("src/aryx/pipeline/schema_agent.py", {
+      brief: "Schema → ontology agent",
+      purpose: "LLM maps tables→types/keys/rels from Brief; FKs merged deterministically; heuristic fallback if LLM fails.",
+      inputs: ["introspected schema", "brief/context string"],
+      outputs: ["mapping JSON", "heuristic_mapping fallback"],
+      logs: ["JSON parse fail", "fallback heuristic used", "proposal counts"],
+      sop: "Never auto-confirm in prod without steward. Bad brief → garbage types.",
+    }),
+    F("src/aryx/pipeline/doc_discovery.py", {
+      brief: "Document discovery agent",
+      purpose: "Extract text; propose entity types from uploads.",
+      inputs: ["files", "context"], outputs: ["proposed types", "discovery job"],
+      logs: ["discovery_id / job correlation"],
+      sop: "Confirm step required before graph write.",
+    }),
+    F("src/aryx/pipeline/tag.py", {
+      brief: "Field tagger agent",
+      purpose: "Cheap-tier semantic labels (email, phone, currency…).",
+      inputs: ["landed fields"], outputs: ["tags on records"],
+      logs: ["tag stage progress"],
+    }),
+    F("src/aryx/pipeline/enrich.py", {
+      brief: "Enrichment agent/worker",
+      purpose: "Optional enrichment; FK infer helpers; bounded thread pool.",
+      logs: ["enrich concurrency", "infer failures"],
+    }),
+    F("src/aryx/relationships.py", {
+      brief: "Frontier relationship agent",
+      purpose: "complete_json frontier: what link A–B if any; optional FK infer.",
+      inputs: ["entity pair dicts", "Broker"], outputs: ["relationship type/label or none"],
+      sop: "Opt-in via relate=True; cap max_pairs.",
+    }),
+    F("src/aryx/resolution/run.py", {
+      brief: "ER routing hub",
+      purpose: "Score pairs; route auto/LLM/human/reject bands.",
+      logs: ["band decisions when enabled"],
+      sop: "0.75–0.90 needs human via adjudication_api.",
+    }),
+  ],
+});
+
+add({
+  id: "agent_mcp", title: "External MCP Agents (host hub)", kind: "agent", tone: "mcp",
+  blurb: "Host LLM plans; Aryx tools are spokes.",
+  summary: "Host (Claude Desktop/Cursor/…) is the planning hub. mcp/server.py only dispatches to REST. Tools: list, ask, act, onboard*, datasource*, ingest*, ontology*. act ALWAYS pending. Playbooks in ARYX_AGENTS_SOP.html §9.",
+  flowSteps: [
+    { n: "1", l: "Host plan", d: "which tool" },
+    { n: "2", l: "Auth", d: "MCP token" },
+    { n: "3", l: "dispatch", d: "server.py" },
+    { n: "4", l: "REST", d: "FastAPI" },
+    { n: "5", l: "Result JSON", d: "back to host" },
+    { n: "6", l: "act?", d: "human decide" },
+  ],
+  tasks: [
+    "Issue token via mcp_tokens_api",
+    "Playbook A: list→workspace→brief→datasource",
+    "Playbook B: ask with session_data echo for CPQ",
+    "Playbook C: act → human approve — never assume applied",
+  ],
+  usesPatterns: [
+    { pattern: "Hub-and-spoke", patternId: "pattern_hub_spoke", how: "Host LLM is hub; each tool is a spoke via server._dispatch", files: ["src/aryx/mcp/server.py", "src/aryx/mcp/tools.py"] },
+    { pattern: "Augmented LLM", patternId: "pattern_augmented", how: "ask tool → server retrieve-then-read path", files: ["src/aryx/mcp/server.py", "src/aryx/api/ask_api.py"] },
+  ],
+  children: [],
+  plugs: ["pattern_hub_spoke", "actions", "logging", "ask"],
+  files: [
+    F("src/aryx/mcp/server.py", {
+      brief: "MCP server + _dispatch",
+      purpose: "stdio/SSE; list_tools; call_tool → REST. No planner.",
+      inputs: ["tool name", "arguments", "ARYX_API_URL"],
+      outputs: ["TextContent JSON"],
+      logs: ["unknown tool", "HTTP exceptions as {error}"],
+      sop: "ARYX_MCP_DEFAULT_WORKSPACE is multi-tenant footgun — set explicitly.",
+    }),
+    F("src/aryx/mcp/tools.py", {
+      brief: "list / ask / act schemas",
+      purpose: "Host-visible tool definitions.",
+    }),
+    F("src/aryx/mcp/act.py", {
+      brief: "act spoke",
+      purpose: "Always-pending mutation request.",
+      sop: "Agents cannot silently mutate graph.",
+    }),
+    F("src/aryx/mcp/onboard.py", {
+      brief: "Onboard dispatch",
+      purpose: "workspace_* / brief_* implementation.",
+    }),
+    F("src/aryx/mcp/tools_onboard.py", {
+      brief: "Onboard tool specs",
+      purpose: "Rich descriptions for host planners.",
+    }),
+    F("src/aryx/mcp/tools_datasource.py", {
+      brief: "Datasource tools",
+      purpose: "quiz/add/list/test/delete.",
+    }),
+    F("src/aryx/mcp/tools_ingest.py", {
+      brief: "Ingest HITL tools",
+      purpose: "questions/answer/status/preview.",
+    }),
+    F("src/aryx/mcp/tools_ontology.py", {
+      brief: "Ontology tools",
+      purpose: "get + export.",
+    }),
+    F("src/aryx/api/mcp_tokens_api.py", {
+      brief: "Token admin",
+      purpose: "Issue/revoke MCP bearer tokens.",
+    }),
+    F("CLAUDE_MCP_CONFIG.md", {
+      brief: "Host config notes",
+      purpose: "Wire Claude Desktop / Cursor to Aryx MCP.",
+    }),
+  ],
+  logs: {
+    where: ["mcp server process stderr/stdout", "API logs for REST behind tools", "actions pending table"],
+    critical: [
+      { p: "P2", pattern: "act pending execution", meaning: "Mutation requested by host", action: "Human approve/reject", files: ["src/aryx/mcp/act.py", "src/aryx/api/actions_api.py"] },
+      { p: "P3", pattern: "\"error\": in tool result", meaning: "Dispatch/HTTP failure", action: "Check ARYX_API_URL and API health", files: ["src/aryx/mcp/server.py"] },
+    ],
+  },
+});
+
+add({
+  id: "agent_intent", title: "Intent Classification Agent", kind: "agent", tone: "agent",
+  blurb: "Structured LLM + quarantine + det agreement.",
+  summary: "Specialist spoke for NL→catalog intent. Builds candidate bundles deterministically; pinned model returns JSON; quarantine strips invented codes; mutating intents need det agreement. Multi-target leftovers go to pending_intent_queue. Shadow dual-control logs disagreement.",
+  flowSteps: [
+    { n: "1", l: "Candidates", d: "det from catalog" },
+    { n: "2", l: "LLM JSON", d: "pinned model" },
+    { n: "3", l: "Quarantine", d: "schema validate" },
+    { n: "4", l: "Agree?", d: "det signals" },
+    { n: "5", l: "dispatch|clarify", d: "hub continues" },
+    { n: "6", l: "Queue rest", d: "multi-target" },
+  ],
+  usesPatterns: [
+    { pattern: "Augmented LLM", patternId: "pattern_augmented", how: "Candidates packed det; LLM only picks category/vn index", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/cpq/intent_schema.py"] },
+    { pattern: "Hub-and-spoke", patternId: "pattern_hub_spoke", how: "Spoke under ask_api hub; never owns session alone", files: ["src/aryx/api/ask_api.py", "src/aryx/cpq/intent_gateway.py"] },
+    { pattern: "Blackboard dual-control", patternId: "pattern_peer", how: "Shadow mode pairs LLM with det auditor", files: ["src/aryx/api/ask_api.py"] },
+  ],
+  children: [],
+  plugs: ["cpq_intent", "pattern_augmented", "logging"],
+  logs: {
+    where: ["aryx.cpq.intent_gateway", "[run_id=…]"],
+    critical: [
+      { p: "P2", pattern: "cpq_intent_dropped", meaning: "Target not conserved", action: "Fix queue", files: ["src/aryx/cpq/intent_queue.py"] },
+      { p: "P3", pattern: "mutating_disagreement", meaning: "LLM mutate ≠ det", action: "Clarify path", files: ["src/aryx/cpq/intent_gateway.py"] },
+      { p: "P3", pattern: "llm call failed / timed_out", meaning: "Gateway down", action: "Escape hatch", files: ["src/aryx/cpq/intent_gateway.py", "src/aryx/api/ask_api.py"] },
+    ],
+  },
+  files: [
+    F("src/aryx/cpq/intent_gateway.py", {
+      brief: "Gateway agent implementation",
+      purpose: "classify_intent + classify_ask_route; cache; soft_quote; hard_off_topic.",
+      inputs: ["question", "attrs", "session", "workspace_id"],
+      outputs: ["GatewayDecision action dispatch|clarify|fallback"],
+      logs: ["tokens, latency_ms, model, run_id", "mutating_disagreement", "cache_hit"],
+      sop: "Timeout → escape hatch; do not force LLM path.",
+    }),
+    F("src/aryx/cpq/intent_schema.py", {
+      brief: "Schema + quarantine",
+      purpose: "Parse/validate; reject bad value_ref / variable_name.",
+    }),
+    F("src/aryx/cpq/intent_queue.py", {
+      brief: "Queue + conservation agent policy",
+      purpose: "enqueue/drain; audit_intent_conservation; cpq_intent_dropped.",
+      logs: ["cpq_intent_dropped ERROR"],
+      sop: "Any drop is release-blocking (exit 3).",
+    }),
+  ],
+});
+
+add({
+  id: "agent_worker", title: "Async Workers", kind: "agent", tone: "agent",
+  blurb: "Background job / OCI workers.",
+  summary: "Long-running ingest and cloud workers. Not conversational agents — execution agents for jobs.",
+  usesPatterns: [
+    { pattern: "Sequential pipeline", patternId: "pattern_pipeline", how: "Workers execute stages / jobs produced by the pipeline hub", files: ["src/aryx/worker/fn_handler.py", "src/aryx/pipeline/stages.py"] },
+    { pattern: "Blackboard", patternId: "pattern_peer", how: "Read/write job + entity state in Postgres; no peer RPC", files: ["src/aryx/worker/oci_functions_worker.py", "src/aryx/store/pool.py"] },
+  ],
+  children: [],
+  plugs: ["ingest", "ops", "pattern_pipeline"],
+  logs: {
+    where: ["worker process stdout", "jobs API status"],
+    critical: [
+      { p: "P2", pattern: "stage failed / worker error", meaning: "Background stage crashed", action: "Resume job from checkpoint", files: ["src/aryx/worker/fn_handler.py", "src/aryx/pipeline/stages.py", "src/aryx/api/jobs_api.py"] },
+    ],
+  },
+  files: [
+    F("src/aryx/worker/fn_handler.py", {
+      brief: "Function handler",
+      purpose: "Entry for async function invocations.",
+    }),
+    F("src/aryx/worker/oci_functions_worker.py", {
+      brief: "OCI functions worker",
+      purpose: "Cloud worker path for pipeline stages.",
+    }),
+  ],
+});
+
+add({
+  id: "mcp_tools", title: "MCP Tool Catalog", kind: "module", tone: "mcp",
+  blurb: "All tool groups.",
+  children: ["agent_mcp"],
+  plugs: ["agents"],
+});
+
+add({
+  id: "actions", title: "Kinetic Actions", kind: "module",
+  blurb: "Governed mutations.",
+  flowSteps: [
+    { n: "1", l: "Define", d: "JSON DSL" },
+    { n: "2", l: "Guard", d: "rules engine" },
+    { n: "3", l: "Execute", d: "or pending" },
+    { n: "4", l: "Audit", d: "before/after" },
+  ],
+  children: [],
+  plugs: ["agent_mcp", "postgres"],
+  files: [
+    F("src/aryx/actions/engine.py", {
+      brief: "Action engine",
+      purpose: "Validate, guard, apply effects Postgres-first.",
+      logs: ["execution id", "decision"],
+    }),
+    F("src/aryx/api/actions_api.py", {
+      brief: "Actions API",
+      purpose: "CRUD, execute, human decide.",
+    }),
+  ],
+});
+
+/* ── Logging detail nodes ───────────────────────────────────────────────── */
+add({
+  id: "log_stdout", title: "Stdout Application Logs", kind: "log", tone: "log",
+  blurb: "Primary 12-factor stream.",
+  summary: "configure_logging sets root handler to stdout: '%(asctime)s %(levelname)s %(name)s %(message)s'. All module loggers (aryx.api.ask_api, aryx.cpq.engine, …) flow here. In Docker: docker compose logs -f <api service>.",
+  tasks: [
+    "Local: watch process terminal",
+    "Docker: docker compose logs -f aryx-api",
+    "Filter: grep run_id=  | grep ERROR | grep cpq_",
+  ],
+  children: [],
+  plugs: ["logging"],
+  files: [
+    F("src/aryx/logging_setup.py", {
+      brief: "Root logging config",
+      purpose: "Single-line stdout format for all services.",
+      sop: "Do not reconfigure basicConfig ad-hoc in modules.",
+    }),
+    F("src/aryx/__main__.py", {
+      brief: "API entry",
+      purpose: "Calls configure_logging at boot.",
+    }),
+  ],
+});
+
+add({
+  id: "log_raven", title: "raven_log Structured Contract", kind: "log", tone: "log",
+  blurb: "P1–P4 criticality records.",
+  summary: "aryx.raven_log.raven_log wraps raven-logger SDK. Defaults: service=aryx-api, project=aryx, principal=service:aryx-api. Use for audit-grade events (health, security, BOM block). Criticality guide: P1 outage/security, P2 user-facing data integrity, P3 degraded, P4 info.",
+  children: [],
+  plugs: ["logging", "ops"],
+  files: [
+    F("src/aryx/raven_log.py", {
+      brief: "Aryx raven_log wrapper",
+      purpose: "Emit structured records with env mapping from ARYX_ENV.",
+      inputs: ["level", "criticality", "message", "error_code", "context", "trace_id"],
+      outputs: ["dict record (and sink side-effect)"],
+      sop: "Prefer raven_log for incidents that must leave an audit trail beyond free-text stdout.",
+    }),
+  ],
+  logs: {
+    fields_raven: ["level", "criticality", "message", "service", "env", "principal", "project", "error_code", "trace_id", "span_id", "context", "sample_payload"],
+  },
+});
+
+add({
+  id: "log_cpq", title: "CPQ Log Correlation (run_id)", kind: "log", tone: "log",
+  blurb: "One id for an entire quote.",
+  summary: "CpqSession.run_id is minted once and echoed in session_data. logging_context.set_run_id binds a contextvar; RunIdLogFilter appends [run_id=…] to messages for ask_api/engine/bml/rdb. Grep that token to reconstruct anchors→rules→cascade→BOM.",
+  flowSteps: [
+    { n: "1", l: "Mint", d: "new session run_id" },
+    { n: "2", l: "Bind", d: "set_run_id(ctx)" },
+    { n: "3", l: "Emit", d: "logger.info cpq_*" },
+    { n: "4", l: "Filter", d: "append [run_id=]" },
+    { n: "5", l: "Grep", d: "full lifecycle" },
+  ],
+  children: [],
+  plugs: ["cpq", "logging"],
+  files: [
+    F("src/aryx/cpq/logging_context.py", {
+      brief: "run_id contextvar + filter",
+      purpose: "Correlate all CPQ logs for one quote without changing every call site.",
+      sop: "Support asks customer for session_data.run_id when filing CPQ bugs.",
+    }),
+  ],
+});
+
+add({
+  id: "log_ui", title: "Observability UI & API", kind: "log", tone: "log",
+  blurb: "Jobs + LLM + graph dashboard.",
+  summary: "GET /admin/observability?workspace_id= returns jobs by status, LLM totals/recent calls (model, tokens, latency, error), graph entity/relationship counts, model_config, platform describe. Web page under workspace observability.",
+  children: [],
+  plugs: ["logging", "web_ui"],
+  files: [
+    F("src/aryx/api/observability_api.py", {
+      brief: "Aggregated observability endpoint",
+      purpose: "Single call for dashboard panel.",
+      outputs: ["jobs", "llm", "llm_recent", "graph", "model_config", "platform"],
+      sop: "First stop when users report 'Ask is slow' or 'ingest stuck'.",
+    }),
+    F("apps/web/app/workspaces/[workspaceId]/observability/", {
+      brief: "Observability page",
+      purpose: "Render jobs/LLM/graph for operators.",
+    }),
+  ],
+});
+
+add({
+  id: "log_regression", title: "Regression Gates as Logs", kind: "log", tone: "log",
+  blurb: "Push-time SOP enforcement.",
+  summary: "make cpq-regression runs golden bench + markdown suite + dialogues (incl. D07 reversed-cue). Exit 0 pass; 1 case fail; 2 parse; 3 dropped intent. Pre-push prints CPQ-REG-00x class. N53–N57 pin replacement phrasings; unit depth is tests/test_cpq_replacement_clause.py.",
+  children: [],
+  plugs: ["ops", "cpq", "cpq_replacement"],
+  logs: {
+    where: ["make cpq-regression stdout", "CPQ-REG-001/002/003 lines"],
+    critical: [
+      { p: "P2", pattern: "D07 filled≠Premium", meaning: "Reversed replacement dialogue failed", action: "Check replacement_clause + run_regression D07 handler", files: ["src/aryx/cpq/replacement_clause.py", "benchmarks/cpq_intent/run_regression.py"] },
+      { p: "P3", pattern: "CPQ-REG-003 dropped intent", meaning: "Multi-target conservation failed", action: "Fix intent_queue; exit 3 blocks push", files: ["src/aryx/cpq/intent_queue.py"] },
+    ],
+  },
+  files: [
+    F("benchmarks/cpq_intent/run_regression.py", {
+      brief: "Offline regression runner",
+      purpose: "Enforce P/N/D cases and conservation invariants; D07 uses extract_replacement_clause.",
+      sop: "Never --no-verify push to skip without incident ticket.",
+    }),
+    F("benchmarks/cpq_intent/CPQ_REGRESSION_SUITE.md", {
+      brief: "Case definitions",
+      purpose: "Source of truth for positive/negative/dialogue scripts (N53–N57, D07).",
+    }),
+    F("tests/test_cpq_replacement_clause.py", {
+      brief: "Replacement unit suite",
+      purpose: "Enforces wanted-only clauses beyond the offline dialogue stub.",
+    }),
+  ],
+});
+
+/* ── Surfaces / platform ────────────────────────────────────────────────── */
+add({
+  id: "web_ui", title: "Next.js Web UI", kind: "module", tone: "sso",
+  blurb: "Product UI apps/web.",
+  children: [],
+  plugs: ["ask", "ingest", "logging"],
+  files: [
+    F("apps/web/app/workspaces/[workspaceId]/", {
+      brief: "Workspace routes",
+      purpose: "home, start, ingest, graph, ask, model, observability, settings.",
+    }),
+    F("apps/web/components/ask/", {
+      brief: "Ask UI kit",
+      purpose: "Composer must echo session_data every turn for CPQ.",
+      sop: "If CPQ 'forgets' state, inspect network payload for session_data.",
+    }),
+    F("apps/web/components/ingest/", {
+      brief: "Ingest UI",
+      purpose: "DB/Docs/REST tabs + job poller.",
+    }),
+  ],
+});
+
+add({
+  id: "streamlit", title: "Streamlit Ops UI", kind: "module",
+  blurb: ":8501 ops panels.",
+  children: [],
+  files: [F("src/aryx/ui/", { brief: "Streamlit panels", purpose: "Ops without Next.js." })],
+});
+
+add({
+  id: "aryx_api", title: "Aryx FastAPI", kind: "module",
+  blurb: "HTTP contract :8088.",
+  children: [],
+  plugs: ["postgres", "logging"],
+  files: [
+    F("src/aryx/api/main.py", {
+      brief: "App factory + routers",
+      purpose: "Register all API routers; startup migrations.",
+    }),
+  ],
+});
+
+add({
+  id: "postgres", title: "Postgres SoT", kind: "module",
+  blurb: "Canonical store.",
+  children: [],
+  plugs: ["graph", "cpq"],
+  files: [
+    F("src/aryx/store/pool.py", { brief: "Connection pool", purpose: "psycopg3 shared pool." }),
+  ],
+});
+
+add({
+  id: "falkordb", title: "FalkorDB", kind: "module", tone: "graph",
+  blurb: "Projection only.",
+  children: [],
+  plugs: ["graph"],
+});
+
+add({
+  id: "llm_broker", title: "LLM Broker", kind: "module",
+  blurb: "Local + frontier routing.",
+  children: [],
+  plugs: ["agents", "ask"],
+  files: [
+    F("src/aryx/broker/", { brief: "Broker package", purpose: "Model registry + completion." }),
+    F("src/aryx/llm_runtime.py", { brief: "Runtime helpers", purpose: "chat/complete used by agents." }),
+    F("src/aryx/config.py", { brief: "Settings", purpose: "ARYX_CPQ_INTENT_MODE, models, DSNs." }),
+  ],
+  logs: {
+    where: ["Observability llm_recent", "llm_runtime logger"],
+    critical: [{ p: "P3", pattern: "error in llm_recent", meaning: "Provider failure", action: "Check API keys/quotas", files: ["src/aryx/llm_runtime.py", "src/aryx/api/observability_api.py"] }],
+  },
+});
+
+add({
+  id: "ops", title: "Ops & Quality Gates", kind: "module",
+  blurb: "Make targets, Raven, tests.",
+  children: ["log_regression"],
+  plugs: ["logging"],
+  files: [
+    F("Makefile", { brief: "cpq-regression, test", purpose: "Operator entrypoints." }),
+    F("docs/ARYX_SYSTEM_GUIDE.html", { brief: "Linear narrative guide", purpose: "Companion to this explorer." }),
+  ],
+});
+
+/* ── File nodes ─────────────────────────────────────────────────────────── */
+function ensureFileNode(path, meta, parentId) {
+  if (!path) return;
+  const id = "file:" + path;
+  if (N[id]) {
+    // merge log hints if richer
+    if (meta && meta.fileLogs && !N[id].fileLogs) N[id].fileLogs = meta.fileLogs;
+    return;
+  }
+  const base = path.split("/").filter(Boolean).pop() || path;
+  N[id] = {
+    id,
+    title: base,
+    kind: "file",
+    path,
+    blurb: (meta && (meta.brief || meta.purpose)) || "Source file — open in IDE / GitHub",
+    summary: (meta && (meta.purpose || meta.brief)) || `Implementation file at ${path}. Use GitHub or IDE to inspect code.`,
+    parentHint: parentId || null,
+    purpose: meta && meta.purpose,
+    inputs: meta && meta.inputs,
+    outputs: meta && meta.outputs,
+    called_by: meta && meta.called_by,
+    calls: meta && meta.calls,
+    fileLogs: meta && (meta.logs || meta.fileLogs),
+    sop: meta && meta.sop,
+    children: [],
+    plugs: [],
+    files: [],
+  };
+}
+
+function ensureFiles() {
+  for (const n of Object.values(N)) {
+    for (const f of (n.files || [])) {
+      ensureFileNode(f.path, f, n.id);
+    }
+    // Log rows → file drill targets
+    for (const c of ((n.logs && n.logs.critical) || [])) {
+      for (const p of (c.files || [])) {
+        ensureFileNode(p, {
+          brief: `Emits / handles log: ${c.pattern}`,
+          purpose: `Related to log event "${c.pattern}": ${c.meaning}`,
+          fileLogs: [c.pattern],
+          sop: c.action,
+        }, n.id);
+      }
+    }
+    // Pattern map / agent map file refs
+    for (const r of (n.patternMap || [])) {
+      for (const p of (r.files || [])) ensureFileNode(p, { brief: `Implements ${r.pattern}` }, n.id);
+    }
+    for (const r of (n.mapsAgents || [])) {
+      for (const p of (r.files || [])) ensureFileNode(p, { brief: `${r.agent} on this pattern` }, n.id);
+    }
+    for (const r of (n.usesPatterns || [])) {
+      for (const p of (r.files || [])) ensureFileNode(p, { brief: `Pattern usage: ${r.pattern}` }, n.id);
+    }
+  }
+}
+ensureFiles();
+
+/* ── Render ─────────────────────────────────────────────────────────────── */
+let stack = ["root"];
+const $ = (id) => document.getElementById(id);
+const panel = () => $("panel");
+const cur = () => stack[stack.length - 1] || "root";
+const node = (id) => N[id] || {
+  id, title: id, kind: "module", blurb: "Undocumented",
+  summary: "No SOP entry yet — add to ARYX_EXPLORE.html NODES.",
+  children: [], plugs: [], files: [],
+};
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function flowBoard(steps) {
+  if (!steps || !steps.length) return "";
+  const parts = [];
+  steps.forEach((s, i) => {
+    if (i) parts.push(`<div class="flow-arrow" aria-hidden="true">→</div>`);
+    parts.push(`<div class="flow-step"><div class="n">STEP ${esc(s.n)}</div><div class="l">${esc(s.l)}</div><div class="d">${esc(s.d || "")}</div></div>`);
+  });
+  return `<h2 class="sec">Process flow</h2><div class="flow-board">${parts.join("")}</div>`;
+}
+
+function sopBlock(s) {
+  if (!s) return "";
+  return `<h2 class="sec">SOP card</h2><div class="sop-grid">
+    <div class="sop-box"><h4>Purpose</h4><ul><li>${esc(s.purpose || "—")}</li></ul></div>
+    <div class="sop-box"><h4>Actors</h4><ul>${(s.actors||[]).map(a=>`<li>${esc(a)}</li>`).join("") || "<li>—</li>"}</ul></div>
+    <div class="sop-box"><h4>Preconditions</h4><ul>${(s.preconditions||[]).map(a=>`<li>${esc(a)}</li>`).join("") || "<li>—</li>"}</ul></div>
+    <div class="sop-box"><h4>Postconditions</h4><ul>${(s.postconditions||[]).map(a=>`<li>${esc(a)}</li>`).join("") || "<li>—</li>"}</ul></div>
+    <div class="sop-box" style="grid-column:1/-1"><h4>Failure modes</h4><ul>${(s.failure_modes||[]).map(a=>`<li>${esc(a)}</li>`).join("") || "<li>—</li>"}</ul></div>
+  </div>`;
+}
+
+function tasksBlock(tasks) {
+  if (!tasks || !tasks.length) return "";
+  return `<h2 class="sec">Tasks performed here</h2><ul class="bul">${tasks.map(t=>`<li>${esc(t)}</li>`).join("")}</ul>`;
+}
+
+function githubUrl(path) {
+  if (!path || path.endsWith("/")) return null;
+  // docs stay local; skills + src open on GitHub when possible
+  if (path.startsWith("docs/")) return null;
+  const clean = path.replace(/^\.\//, "");
+  // monorepo paths under aryx/ on GitHub for product code
+  if (clean.startsWith("src/") || clean.startsWith("apps/") || clean.startsWith("benchmarks/") || clean.startsWith(".claude/") || clean.startsWith("Makefile") || clean.startsWith("CLAUDE")) {
+    return "https://github.com/Giggso-Inc/aryx/blob/dev-rv/" + clean;
+  }
+  // sibling tree (Shay) — best-effort link if mirrored; else null (drill still works)
+  if (clean.startsWith("shay_backend/")) {
+    return "https://github.com/Giggso-Inc/aryx/blob/dev-rv/" + clean;
+  }
+  return "https://github.com/Giggso-Inc/aryx/blob/dev-rv/" + clean;
+}
+
+/** Path → drill button + optional GitHub open (no source paste). */
+function fileLinks(paths) {
+  if (!paths || !paths.length) return "<span style='color:var(--muted)'>—</span>";
+  return paths.map(p => {
+    const gh = githubUrl(p);
+    const short = p.replace(/^src\/aryx\//, "…/").replace(/^\.claude\/skills\//, "skills/");
+    const drill = `<button type="button" class="link" data-drill="file:${esc(p)}" title="Drill to file SOP: ${esc(p)}">${esc(short)}</button>`;
+    const open = gh
+      ? ` <a class="gh-open" href="${esc(gh)}" target="_blank" rel="noopener" title="Open ${esc(p)} on GitHub">↗ GitHub</a>`
+      : "";
+    return `<div class="file-ref">${drill}${open}</div>`;
+  }).join("");
+}
+
+function agentLinks(ids) {
+  if (!ids || !ids.length) return "—";
+  return ids.map(id => {
+    const n = N[id];
+    const label = n ? n.title : id;
+    return `<button type="button" class="link agent-chip" data-drill="${esc(id)}" style="font-family:var(--font)">${esc(label)}</button>`;
+  }).join(" ");
+}
+
+/** Pattern ↔ agent mapping table (SOP clarity). */
+function patternMapBlock(n) {
+  const rows = n.patternMap;
+  if (!rows || !rows.length) return "";
+  let html = `<h2 class="sec">Pattern → agent map</h2>
+    <div class="callout ok" style="margin-top:0"><strong>How to read:</strong> Pattern = <em>orchestration style</em>. Agent = <em>who runs</em>.
+    Click a <strong>pattern</strong> for agents-on-that-pattern. Click an <strong>agent</strong> for patterns-that-agent-uses. Click a <strong>code path</strong> (or ↗ GitHub) to open the implementing file — no source is copied here.</div>
+    <table class="t"><thead><tr>
+      <th style="width:18%">Pattern</th>
+      <th style="width:32%">Agents that use it</th>
+      <th style="width:22%">Hub / coordinator</th>
+      <th style="width:28%">Key code → drill / GitHub</th>
+    </tr></thead><tbody>`;
+  for (const r of rows) {
+    html += `<tr>
+      <td><button type="button" class="link" data-drill="${esc(r.patternId)}" style="font-family:var(--font);font-weight:650">${esc(r.pattern)}</button>
+        <div style="color:var(--muted);font-size:.75rem;margin-top:.2rem">${esc(r.when || "")}</div></td>
+      <td class="agent-list">${agentLinks(r.agents || [])}</td>
+      <td style="font-size:.82rem">${esc(r.hub || "—")}</td>
+      <td>${fileLinks(r.files || [])}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+
+  // Reverse matrix: agent → patterns (computed from patternMap for SOP clarity)
+  const reverse = {};
+  for (const r of rows) {
+    for (const aid of (r.agents || [])) {
+      if (!reverse[aid]) reverse[aid] = [];
+      reverse[aid].push(r);
+    }
+  }
+  const agentIds = Object.keys(reverse);
+  if (agentIds.length) {
+    html += `<h2 class="sec">Agent → pattern map (reverse)</h2>
+      <p class="body" style="margin-top:0">Same mapping flipped: pick an agent to see which patterns it participates in.</p>
+      <table class="t"><thead><tr>
+        <th>Agent</th><th>Patterns it uses</th><th>Key code → drill / GitHub</th>
+      </tr></thead><tbody>`;
+    for (const aid of agentIds) {
+      const pats = reverse[aid];
+      const n = N[aid];
+      const label = n ? n.title : aid;
+      const codeSet = [];
+      for (const p of pats) for (const f of (p.files || [])) if (!codeSet.includes(f)) codeSet.push(f);
+      // Prefer agent-owned files when present
+      const agentFiles = (n && n.files || []).map(f => f.path).slice(0, 4);
+      const files = agentFiles.length ? agentFiles : codeSet.slice(0, 4);
+      html += `<tr>
+        <td><button type="button" class="link" data-drill="${esc(aid)}" style="font-family:var(--font);font-weight:650">${esc(label)}</button>
+          <div style="color:var(--muted);font-size:.72rem;margin-top:.15rem"><code>${esc(aid)}</code></div></td>
+        <td>${pats.map(p =>
+          `<button type="button" class="link agent-chip" data-drill="${esc(p.patternId)}" style="font-family:var(--font)">${esc(p.pattern)}</button>`
+        ).join(" ")}</td>
+        <td>${fileLinks(files)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  return html;
+}
+
+/** On a pattern node: which agents implement it. */
+function mapsAgentsBlock(n) {
+  const rows = n.mapsAgents;
+  if (!rows || !rows.length) return "";
+  let html = `<h2 class="sec">Agents on this pattern</h2>
+    <div class="callout" style="margin-top:0"><strong>${esc(n.title)}</strong> is used by the agents below.
+    Click an agent to open its page (includes reverse pattern list). Click code to open the file.</div>
+    <table class="t"><thead><tr><th>Agent</th><th>Role in this pattern</th><th>Code → drill / GitHub</th></tr></thead><tbody>`;
+  for (const r of rows) {
+    html += `<tr>
+      <td><button type="button" class="link" data-drill="${esc(r.agentId)}" style="font-family:var(--font);font-weight:650">${esc(r.agent)}</button>
+        <div style="color:var(--muted);font-size:.72rem"><code>${esc(r.agentId)}</code></div></td>
+      <td>${esc(r.role)}</td>
+      <td>${fileLinks(r.files || [])}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+/** On an agent node: which patterns it uses. */
+function usesPatternsBlock(n) {
+  const rows = n.usesPatterns;
+  if (!rows || !rows.length) return "";
+  let html = `<h2 class="sec">Patterns this agent uses</h2>
+    <div class="callout" style="margin-top:0">This agent (<strong>${esc(n.title)}</strong>) participates in the patterns below.
+    Click a pattern to see every agent on that pattern.</div>
+    <table class="t"><thead><tr><th>Pattern</th><th>How this agent uses it</th><th>Code → drill / GitHub</th></tr></thead><tbody>`;
+  for (const r of rows) {
+    html += `<tr>
+      <td><button type="button" class="link" data-drill="${esc(r.patternId)}" style="font-family:var(--font);font-weight:650">${esc(r.pattern)}</button>
+        <div style="color:var(--muted);font-size:.72rem"><code>${esc(r.patternId)}</code></div></td>
+      <td>${esc(r.how)}</td>
+      <td>${fileLinks(r.files || [])}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+function logsBlock(logs) {
+  if (!logs) return "";
+  let html = `<h2 class="sec">Logging (critical for ops)</h2>`;
+  if (logs.where && logs.where.length) {
+    html += `<div class="sop-box" style="margin-bottom:.6rem"><h4>Where to look</h4><ul>${logs.where.map(w=>`<li>${esc(w)}</li>`).join("")}</ul></div>`;
+  }
+  if (logs.fields_stdout) {
+    html += `<p class="body"><strong>Stdout fields:</strong> <code>${esc(logs.fields_stdout.join(" · "))}</code></p>`;
+  }
+  if (logs.fields_raven) {
+    html += `<p class="body"><strong>raven_log fields:</strong> <code>${esc(logs.fields_raven.join(" · "))}</code></p>`;
+  }
+  if (logs.critical && logs.critical.length) {
+    html += `<table class="t"><thead><tr><th>Sev</th><th>Pattern / event</th><th>Meaning</th><th>SOP action</th><th>Code → drill / GitHub</th></tr></thead><tbody>`;
+    for (const c of logs.critical) {
+      const cls = "log-row-" + String(c.p || "p4").toLowerCase();
+      const files = c.files || [];
+      html += `<tr>
+        <td class="${cls}">${esc(c.p)}</td>
+        <td><code>${esc(c.pattern)}</code></td>
+        <td>${esc(c.meaning)}</td>
+        <td>${esc(c.action)}</td>
+        <td>${fileLinks(files)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>
+      <p class="body" style="font-size:.82rem;color:var(--muted)">
+        <strong>Code column:</strong> path opens the in-explorer file SOP (purpose / I/O / what to watch).
+        <strong>↗ GitHub</strong> opens the same path in the repo so you can read the implementation — no source is pasted into this doc.
+      </p>`;
+  }
+  return html;
+}
+
+function plugsBlock(n) {
+  if (!n.plugs || !n.plugs.length) return "";
+  return `<h2 class="sec">How it plugs into Aryx</h2>
+    <p class="body" style="margin-top:0">Click a dependency to jump.</p>
+    <div class="plugs">${n.plugs.map(p =>
+      `<button type="button" class="plug" data-drill="${esc(p)}">↔ ${esc((N[p]&&N[p].title)||p)}</button>`
+    ).join("")}</div>`;
+}
+
+function childrenBlock(n) {
+  if (!n.children || !n.children.length) return "";
+  return `<h2 class="sec">Drill down</h2><div class="grid">${n.children.map(cid => {
+    const c = node(cid);
+    const tone = c.tone ? ` tone-${c.tone}` : (c.kind === "agent" ? " tone-agent" : c.kind === "log" ? " tone-log" : "");
+    return `<button type="button" class="card${tone}" data-drill="${esc(cid)}">
+      <div class="t">${esc(c.title)}</div>
+      <div class="b">${esc(c.blurb || "")}</div>
+      <span class="tag">${esc(c.kind)}</span>
+    </button>`;
+  }).join("")}</div>`;
+}
+
+function filesBlock(n) {
+  if (!n.files || !n.files.length) return "";
+  const rows = n.files.map(f => {
+    const fid = "file:" + f.path;
+    return `<tr>
+      <td><button type="button" class="link" data-drill="${esc(fid)}">${esc(f.path)}</button></td>
+      <td>${esc(f.brief || f.purpose || "")}</td>
+      <td style="color:var(--muted);font-size:.8rem">${esc((f.logs && f.logs[0]) || f.sop || "—")}</td>
+    </tr>`;
+  }).join("");
+  return `<h2 class="sec">Files & resources</h2>
+    <p class="body" style="margin-top:0">Click a path for full SOP brief (purpose, I/O, logs).</p>
+    <table class="t"><thead><tr><th>Path</th><th>Brief</th><th>Log / SOP note</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function fileDeep(n) {
+  const parent = n.parentHint ? node(n.parentHint) : null;
+  const list = (arr, empty="—") => arr && arr.length
+    ? `<ul class="bul">${arr.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="body">${empty}</p>`;
+  const gh = githubUrl(n.path);
+  return `
+    <h2 class="sec">File SOP brief</h2>
+    <div class="sop-grid">
+      <div class="sop-box"><h4>Path</h4><ul><li class="mono">${esc(n.path)}</li></ul>
+        ${gh ? `<p style="margin:.5rem 0 0"><a href="${esc(gh)}" target="_blank" rel="noopener">Open on GitHub ↗</a></p>` : ""}
+        <p style="margin:.35rem 0 0;font-size:.8rem;color:var(--muted)">IDE: <code>Cmd+P</code> → paste path</p>
+      </div>
+      <div class="sop-box"><h4>Owned under</h4><ul><li>${parent ? `<button type="button" class="link" data-drill="${esc(parent.id)}" style="font-family:var(--font)">${esc(parent.title)}</button>` : "—"}</li></ul></div>
+      <div class="sop-box" style="grid-column:1/-1"><h4>Purpose</h4><ul><li>${esc(n.purpose || n.summary || n.blurb)}</li></ul></div>
+      <div class="sop-box"><h4>Inputs</h4>${list(n.inputs)}</div>
+      <div class="sop-box"><h4>Outputs</h4>${list(n.outputs)}</div>
+      <div class="sop-box"><h4>Called by</h4>${list(n.called_by)}</div>
+      <div class="sop-box"><h4>Calls</h4>${list(n.calls)}</div>
+      <div class="sop-box" style="grid-column:1/-1"><h4>Log lines / events to watch</h4>${list(n.fileLogs, "No dedicated log list — use parent component logging.")}</div>
+    </div>
+    ${n.sop ? `<div class="callout warn"><strong>SOP:</strong> ${esc(n.sop)}</div>` : ""}
+    <div class="callout">Map only — no source pasted. Use <strong>Open on GitHub</strong> or your IDE path to inspect code.</div>
+  `;
+}
+
+function render(id) {
+  const n = node(id);
+  const chips = [
+    `<span class="chip k-${esc(n.kind)}">${esc(n.kind)}</span>`,
+    `<span class="chip">id: ${esc(n.id)}</span>`,
+  ];
+  if (n.tone) chips.push(`<span class="chip">${esc(n.tone)}</span>`);
+  if (n.kind === "file") chips.push(`<span class="chip k-file">file</span>`);
+
+  return `
+    <article class="hero">
+      <h1>${esc(n.title)}</h1>
+      ${n.path ? `<p class="mono" style="color:var(--muted);margin:0 0 .4rem">📦 ${esc(n.path)}</p>` : ""}
+      <p class="lead">${esc(n.summary || n.blurb || "")}</p>
+      <div class="meta">${chips.join("")}</div>
+    </article>
+    ${n.callout ? `<div class="callout">${esc(n.callout)}</div>` : ""}
+    ${sopBlock(n.sop)}
+    ${flowBoard(n.flowSteps)}
+    ${patternMapBlock(n)}
+    ${mapsAgentsBlock(n)}
+    ${usesPatternsBlock(n)}
+    ${tasksBlock(n.tasks)}
+    ${logsBlock(n.logs)}
+    ${plugsBlock(n)}
+    ${childrenBlock(n)}
+    ${filesBlock(n)}
+    ${n.kind === "file" ? fileDeep(n) : ""}
+  `;
+}
+
+function bind() {
+  panel().querySelectorAll("[data-drill]").forEach(el => {
+    el.addEventListener("click", () => drill(el.dataset.drill, true));
+  });
+}
+
+function crumbs() {
+  const el = $("crumbs");
+  el.innerHTML = stack.map((id, i) => {
+    const n = node(id);
+    if (i === stack.length - 1) return `<span class="here">${esc(n.title)}</span>`;
+    return `${i ? `<span class="sep">›</span>` : ""}<button type="button" data-jump="${i}">${esc(n.title)}</button>`;
+  }).join("");
+  el.querySelectorAll("[data-jump]").forEach(b => {
+    b.addEventListener("click", () => {
+      stack = stack.slice(0, +b.dataset.jump + 1);
+      drill(cur(), false);
+    });
+  });
+  $("btnBack").hidden = stack.length <= 1;
+}
+
+function railActive(id) {
+  document.querySelectorAll("aside.rail a").forEach(a => a.classList.toggle("active", a.dataset.drill === id));
+}
+
+function drill(id, push) {
+  if (!N[id] && !String(id).startsWith("file:")) {
+    console.warn("unknown", id);
+    return;
+  }
+  if (push && cur() !== id) stack.push(id);
+  const el = panel();
+  el.classList.add("is-swapping");
+  setTimeout(() => {
+    el.innerHTML = render(id);
+    el.classList.remove("is-swapping");
+    bind();
+  }, 70);
+  crumbs();
+  railActive(id);
+  try { location.hash = id; } catch (_) {}
+  $("searchHits").classList.remove("open");
+}
+
+function buildRail() {
+  const groups = [
+    { name: "Start", ids: ["root"] },
+    { name: "Identity", ids: ["identity", "sso", "onboarding", "workspace"] },
+    { name: "Data plane", ids: ["data_plane", "brief", "ingest", "er", "graph"] },
+    { name: "Intelligence", ids: ["intelligence", "ask", "cpq", "cpq_intent", "cpq_guards", "cpq_replacement"] },
+    { name: "Agents", ids: ["agents", "pattern_augmented", "pattern_hub_spoke", "pattern_pipeline", "pattern_peer", "agent_internal", "agent_mcp", "agent_intent", "agent_dev_raven", "actions"] },
+    { name: "Logs (critical)", ids: ["logging", "log_stdout", "log_raven", "log_cpq", "log_ui", "log_regression"] },
+    { name: "Platform", ids: ["web_ui", "aryx_api", "postgres", "llm_broker", "ops"] },
+  ];
+  $("rail").innerHTML = groups.map(g => `
+    <div class="group">${esc(g.name)}</div>
+    ${g.ids.map(id => `<a data-drill="${esc(id)}">${esc(node(id).title)}</a>`).join("")}
+  `).join("");
+  $("rail").querySelectorAll("[data-drill]").forEach(a => {
+    a.addEventListener("click", e => {
+      e.preventDefault();
+      stack = ["root"];
+      if (a.dataset.drill !== "root") stack.push(a.dataset.drill);
+      drill(a.dataset.drill, false);
+    });
+  });
+}
+
+/* search */
+const searchInput = $("search");
+const searchHits = $("searchHits");
+searchInput.addEventListener("input", () => {
+  const q = searchInput.value.trim().toLowerCase();
+  if (!q) { searchHits.classList.remove("open"); return; }
+  const hits = Object.values(N).filter(n => {
+    const blob = [
+      n.id, n.title, n.blurb, n.summary, n.path, n.purpose, n.sop,
+      ...(n.tasks || []),
+      ...(n.files || []).flatMap(f => [f.path, f.brief, f.purpose, f.sop]),
+      ...(n.logs && n.logs.critical || []).map(c => c.pattern + c.meaning),
+    ].join(" ").toLowerCase();
+    return blob.includes(q);
+  }).slice(0, 25);
+  searchHits.innerHTML = hits.length
+    ? hits.map(n => `<button type="button" data-drill="${esc(n.id)}">${esc(n.title)}<div class="m">${esc(n.kind)} · ${esc(n.blurb || n.path || "")}</div></button>`).join("")
+    : `<button type="button"><span class="m">No matches</span></button>`;
+  searchHits.classList.add("open");
+  searchHits.querySelectorAll("[data-drill]").forEach(b => {
+    b.addEventListener("click", () => {
+      const n = node(b.dataset.drill);
+      stack = ["root"];
+      if (n.parentHint) stack.push(n.parentHint);
+      if (b.dataset.drill !== "root") stack.push(b.dataset.drill);
+      // uniq consecutive
+      stack = stack.filter((x, i, a) => i === 0 || x !== a[i - 1]);
+      drill(b.dataset.drill, false);
+    });
+  });
+});
+document.addEventListener("click", e => {
+  if (!searchHits.contains(e.target) && e.target !== searchInput) searchHits.classList.remove("open");
+});
+$("btnBack").addEventListener("click", () => {
+  if (stack.length > 1) { stack.pop(); drill(cur(), false); }
+});
+window.addEventListener("hashchange", () => {
+  const id = location.hash.replace(/^#/, "") || "root";
+  if (id !== cur() && N[id]) {
+    stack = ["root"];
+    if (id !== "root") stack.push(id);
+    drill(id, false);
+  }
+});
+
+buildRail();
+const boot = location.hash.replace(/^#/, "") || "root";
+if (boot !== "root" && N[boot]) { stack = ["root", boot]; drill(boot, false); }
+else drill("root", false);
+</script>
+</body>
+</html>

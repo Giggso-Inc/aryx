@@ -308,6 +308,7 @@ class AryxAskThreadStore:
                 cur.execute(load("ask_thread_insert_message"), insert_params)
                 message_row = cur.fetchone()
             request_claimed = message_row is not None
+            newly_inserted = bool(message_row[2]) if message_row is not None else False
             if message_row is None:
                 cur.execute(
                     load("ask_thread_select_request_message"),
@@ -322,7 +323,23 @@ class AryxAskThreadStore:
             # live), so this needs its own count per backend.
             touch_thread_params = (thread_id,) * 3 if oracle else (thread_id, thread_id)
             cur.execute(load("ask_thread_touch_thread"), touch_thread_params)
-            cur.execute(load("ask_thread_touch_channel"), (channel_id, channel_id, channel_id))
+            # 2026-08-28 perf fix: touch_channel is now an O(1) increment, not
+            # a full aggregate rescan (docs/CPQ_ASK_THREADS_MESSAGE_
+            # CONCURRENCY_DELAY... report) -- it must only fire for a
+            # genuinely NEW gg_messages row (xmax=0, aliased "inserted" by
+            # ask_thread_insert_message.sql/ask_thread_select_request_
+            # message.sql). The old full-rescan version was safe to call
+            # unconditionally because it recomputed the true count from
+            # scratch every time; a naive +1 on every call (including a
+            # request-id replay that hit the ON CONFLICT DO UPDATE branch,
+            # or the "already claimed" SELECT fallback) would double-count.
+            # NOTE: no queries/oracle/ask_thread_touch_channel.sql override
+            # exists yet on either source branch -- this increment query is
+            # Postgres-only syntax (%s::uuid) and was already unverified
+            # against Oracle before this merge; flagged for the Oracle
+            # verification pass, not introduced by combining the branches.
+            if newly_inserted:
+                cur.execute(load("ask_thread_touch_channel"), (channel_id,))
         existing_question = str(message_row[3])
         if not request_claimed and existing_question != question:
             raise ValueError("Ask request id is already used for a different question")
@@ -355,6 +372,7 @@ class AryxAskThreadStore:
             "json_response": result.get("json_response"),
             "json_button_flag": result.get("json_button_flag", False),
             "beautify": result.get("beautify", ""),
+            "beautify_rows": result.get("beautify_rows"),
             "beautify_button_flag": result.get("beautify_button_flag", False),
             "api_share_button_flag": result.get("api_share_button_flag", False),
             "error": result.get("error"),
@@ -384,6 +402,7 @@ class AryxAskThreadStore:
                 row = cur.fetchone()
             if row is None:
                 raise ValueError("Unable to persist the Aryx Ask response")
+            newly_inserted = bool(row[2])
             request_status = (
                 REQUEST_STATUS_FAILED if result.get("error") else REQUEST_STATUS_COMPLETED
             )
@@ -396,7 +415,12 @@ class AryxAskThreadStore:
             # Postgres's UPDATE...FROM.
             touch_thread_params = (thread_id,) * 3 if oracle else (thread_id, thread_id)
             cur.execute(load("ask_thread_touch_thread"), touch_thread_params)
-            cur.execute(load("ask_thread_touch_channel"), (channel_id, channel_id, channel_id))
+            # See ensure_thread_and_user_message's identical guard -- a
+            # retry that hits the ON CONFLICT DO UPDATE branch (refreshing
+            # an existing failed/stale response in place) must not
+            # increment message_count a second time for the same message.
+            if newly_inserted:
+                cur.execute(load("ask_thread_touch_channel"), (channel_id,))
         return {
             "assistant_message_id": str(row[0]),
             "sequence_number": int(row[1]),
@@ -522,9 +546,12 @@ class AryxAskThreadStore:
                 "json_response": metadata.get("json_response"),
                 "json_button_flag": metadata.get("json_button_flag", False),
                 "beautify": metadata.get("beautify", ""),
+                "beautify_rows": metadata.get("beautify_rows"),
                 "beautify_button_flag": metadata.get("beautify_button_flag", False),
                 "api_share_button_flag": metadata.get("api_share_button_flag", False),
                 "session_data": metadata.get("session_data") or {},
+                "cpq_payload": metadata.get("cpq_payload"),
+                "error": metadata.get("error"),
             })
         return messages
 

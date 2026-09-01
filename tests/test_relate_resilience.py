@@ -128,6 +128,174 @@ def test_relate_isolated_skips_a_stuck_type_instead_of_hanging(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_relate_isolated_tries_a_second_anchor_when_the_first_is_unrelated(monkeypatch):
+    """Real incident: a poorly-keyed type stayed isolated across an entire
+    dataset because _relate_isolated only ever tried ONE fixed anchor (the
+    first other type in sample order) and gave up the instant that single
+    pairing came back unrelated — even when a different type genuinely was
+    related. It must now try more than one candidate before giving up."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(3, "Surplus", {"fsc": "84"})]
+    store.list_entities_typed_sample.return_value = [
+        (3, "Surplus", {"fsc": "84"}),
+        (1, "Unrelated", {"x": "1"}),
+        (2, "Material", {"matl_group": "84"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        if right.get("_ontology_type") == "Material":
+            return "is_material_of", 0.9
+        return None, 0.0
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert calls == ["Unrelated", "Material"]  # tried the first, then kept going
+    assert count == 1
+    store.save_relationships.assert_called_once()
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_tries_next_anchor_when_one_candidate_errors(monkeypatch):
+    """Real incident: gemini-pro-latest occasionally returns empty/truncated
+    content, raising inside infer_relationship() for that one candidate. That
+    must not abort every remaining candidate for the type — it collapses the
+    multi-anchor retry back to the original single-shot behavior whenever
+    the FIRST candidate happens to error rather than cleanly answer
+    "unrelated"."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(3, "Surplus", {"fsc": "84"})]
+    store.list_entities_typed_sample.return_value = [
+        (3, "Surplus", {"fsc": "84"}),
+        (1, "Broken", {"x": "1"}),
+        (2, "Material", {"matl_group": "84"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        if right.get("_ontology_type") == "Broken":
+            raise ValueError("no JSON block found: line 1 column 1 (char 0)")
+        return "is_material_of", 0.9
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert calls == ["Broken", "Material"]  # errored candidate skipped, not fatal
+    assert count == 1
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_respects_max_anchors_cap(monkeypatch):
+    """The retry must be bounded, not exhaustive over every other type."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "2")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [(9, "Surplus", {"fsc": "84"})]
+    store.list_entities_typed_sample.return_value = [
+        (9, "Surplus", {"fsc": "84"}),
+        (1, "TypeA", {}), (2, "TypeB", {}), (3, "TypeC", {}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(right.get("_ontology_type"))
+        return None, 0.0  # never relates — forces exhausting the candidate list
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert len(calls) == 2  # capped at ARYX_RELATE_ISOLATED_MAX_ANCHORS, not 3
+    assert count == 0
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_tries_a_second_sample_entity_when_the_first_is_unrelated(monkeypatch):
+    """Real incident: a 97-type PDF batch left MarketSegment 100% isolated
+    even with multi-anchor retry, because only the FIRST isolated
+    MarketSegment entity ("Region 1") was ever tried against anchors — a
+    completely different member of the same type ("untapped industry
+    verticals") would have shown a real relationship to a different
+    anchor. It must now try more than one member of the isolated type
+    before giving up on that type entirely."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE", "3")
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "5")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [
+        (1, "MarketSegment", {"name": "Region 1"}),
+        (2, "MarketSegment", {"name": "untapped industry verticals"}),
+    ]
+    store.list_entities_typed_sample.return_value = [
+        (1, "MarketSegment", {"name": "Region 1"}),
+        (10, "Territory", {"name": "West"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(left.get("name"))
+        if left.get("name") == "untapped industry verticals":
+            return "expands_into", 0.85
+        return None, 0.0
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert calls == ["Region 1", "untapped industry verticals"]
+    assert count == 2  # BOTH isolated MarketSegment entities linked to the anchor
+    store.save_relationships.assert_called_once()
+    get_settings.cache_clear()
+
+
+def test_relate_isolated_respects_max_samples_per_type_cap(monkeypatch):
+    """The retry must be bounded, not exhaustive over every isolated entity
+    of a type — consistent with how max_anchors is already bounded."""
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE", "2")
+    monkeypatch.setenv("ARYX_RELATE_ISOLATED_MAX_ANCHORS", "1")
+    from aryx.config import get_settings
+    get_settings.cache_clear()
+
+    store = MagicMock()
+    store.list_isolated_entities.return_value = [
+        (i, "MarketSegment", {"name": f"Region {i}"}) for i in range(1, 6)
+    ]
+    store.list_entities_typed_sample.return_value = [
+        (1, "MarketSegment", {"name": "Region 1"}),
+        (10, "Territory", {"name": "West"}),
+    ]
+
+    calls = []
+
+    def fake_infer(left, right, broker):
+        calls.append(left.get("name"))
+        return None, 0.0  # never relates — forces exhausting the sample list
+
+    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+        count = _relate_isolated(store, broker=MagicMock())
+
+    assert len(calls) == 2  # capped at ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE, not 5
+    assert count == 0
+    get_settings.cache_clear()
+
+
 def test_relate_isolated_is_noop_when_nothing_is_isolated():
     store = MagicMock()
     store.list_isolated_entities.return_value = []
@@ -175,6 +343,47 @@ def test_relate_isolated_runs_even_when_relate_flag_is_false():
 
     mock_relate.assert_not_called()  # best-effort stage correctly skipped
     mock_relate_isolated.assert_called_once()  # safety net still runs
+
+
+def test_relate_isolated_skipped_when_skip_graph_true():
+    """Real incident: a 96-mention-type PDF batch called run_pipeline() once
+    per type with skip_graph=True for all but the last — but _relate_isolated
+    was unconditional, so it re-scanned every isolated entity in the whole
+    workspace and made fresh LLM calls on every one of the 95 intermediate
+    calls, even though none of that state is ever projected until the final
+    plan (which re-scans everything anyway). skip_graph=True must now skip
+    it too, unlike the relate=False case above which must NOT skip it."""
+    mock_runner = MagicMock()
+    mock_runner.skip.return_value = False
+    mock_cfg = MagicMock()
+    mock_cfg.rdb_dsn = "postgresql://x"
+    mock_cfg.graph_url = "redis://x"
+    mock_cfg.rules_db_warn_threshold = 20
+    mock_cfg.max_relate_pairs = 5
+
+    with patch("aryx.pipeline.orchestrate.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.orchestrate._relate_isolated", return_value=0) as mock_relate_isolated, \
+         patch("aryx.pipeline.orchestrate.discover", return_value=1), \
+         patch("aryx.pipeline.orchestrate.resolve_run", return_value=5), \
+         patch("aryx.pipeline.orchestrate.detect_and_link_dimensions", return_value=0), \
+         patch("aryx.pipeline.orchestrate.project_graph", return_value={}), \
+         patch("aryx.pipeline.orchestrate.StageRunner", return_value=mock_runner), \
+         patch("aryx.pipeline.orchestrate.StageTracker"), \
+         patch("aryx.pipeline.orchestrate.PostgresStore"), \
+         patch("aryx.pipeline.orchestrate.EntityStore"), \
+         patch("aryx.pipeline.orchestrate.FalkorStore"), \
+         patch("aryx.pipeline.orchestrate.OntologyStore"), \
+         patch("aryx.pipeline.orchestrate._build_type_ancestors", return_value={}), \
+         patch("aryx.workspaces.ws_graph", return_value="ws_1"):
+        from aryx.pipeline.orchestrate import run_pipeline
+        run_pipeline(
+            connector=MagicMock(), dsn="postgresql://x",
+            system="sys", dataset="ds", ontology_type="T",
+            match_keys=["name"], graph_url="redis://x",
+            broker=MagicMock(), relate=False, skip_graph=True,
+        )
+
+    mock_relate_isolated.assert_not_called()
 
 
 def test_done_progress_reports_real_entity_count_not_always_zero():

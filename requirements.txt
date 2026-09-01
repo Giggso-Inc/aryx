@@ -51,3 +51,6 @@ defusedxml~=0.7
 openpyxl~=3.1
 # Required by starlette/fastapi's TestClient (tests only) — not imported by app code.
 httpx~=0.27
+# Raven application logging SDK — structured raven-log contract (stdout JSON).
+# Install extras if shipping to Kafka/S3: pip install "raven-logger[kafka,s3]"
+raven-logger~=1.0

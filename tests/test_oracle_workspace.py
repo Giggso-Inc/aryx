@@ -631,15 +631,32 @@ class TestPurgeData(unittest.TestCase):
     """purge_data() clears workspace data and replaces %(wid)s params."""
 
     def test_replaces_named_param_in_purge_sql(self) -> None:
+        # purge_data() passes %(wid)s SQL straight to cur.execute() (see
+        # test_wid_param_bound_as_dict below) -- translation to Oracle's
+        # :wid bind style happens one layer down, inside
+        # OracleCursorWrapper.execute() via _translate_sql(), not at this
+        # call site. _make_pool_cursor()'s bare MagicMock cursor doesn't run
+        # that layer, so this exercises _translate_sql() directly instead.
+        from aryx.store.oracle_pool import _translate_sql
+
         pool, cur = _make_pool_cursor()
         store = _make_store(pool)
         with patch("aryx.store.oracle_workspace.load", side_effect=_mock_load):
             store.purge_data(3)
         executed_sqls = [str(c[0][0]) for c in cur.execute.call_args_list]
-        self.assertFalse(
-            any("%(wid)s" in sql for sql in executed_sqls),
-            "%(wid)s was not replaced before execute() — oracle param style broken",
-        )
+        named_param_sqls = [sql for sql in executed_sqls if "%(wid)s" in sql]
+        self.assertTrue(named_param_sqls, "expected purge_data() to use %(wid)s-style SQL")
+
+        fake_cursor = MagicMock()
+        fake_cursor._out_vars = []
+        fake_cursor._conflict_ignore = False
+        for sql in named_param_sqls:
+            translated = _translate_sql(sql, fake_cursor)
+            self.assertNotIn(
+                "%(wid)s", translated,
+                "%(wid)s was not replaced by _translate_sql() — oracle param style broken",
+            )
+            self.assertIn(":wid", translated)
 
     def test_wid_param_bound_as_dict(self) -> None:
         pool, cur = _make_pool_cursor()
