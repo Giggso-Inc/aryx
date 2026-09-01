@@ -26,13 +26,13 @@ logger = logging.getLogger(__name__)
 def _run(args: argparse.Namespace) -> None:
     """Build a Postgres source connector and run the full pipeline."""
     settings = get_settings()
-    apply_migrations(settings.rdb_dsn)
+    apply_migrations(settings.effective_dsn())
     connector = PostgresConnector(
-        dsn=settings.rdb_dsn, table=args.table,
+        dsn=settings.effective_dsn(), table=args.table,
         key_column=args.key_column, batch_size=settings.batch_size,
     )
     summary = run_pipeline(
-        connector=connector, dsn=settings.rdb_dsn, system=args.system,
+        connector=connector, dsn=settings.effective_dsn(), system=args.system,
         dataset=args.table, ontology_type=args.type,
         match_keys=[k.strip() for k in args.match_keys.split(",") if k.strip()],
         graph_url=settings.graph_url, broker=default_broker(),
@@ -47,10 +47,10 @@ def _docs(args: argparse.Namespace) -> None:
     from aryx.store.chunk_store import ChunkStore
 
     settings = get_settings()
-    apply_migrations(settings.rdb_dsn)
+    apply_migrations(settings.effective_dsn())
     broker = default_broker()
 
-    chunk_store = ChunkStore(settings.rdb_dsn)
+    chunk_store = ChunkStore(settings.effective_dsn())
     chunk_store.check_embed_compat(
         model_id=broker.embed_model_id or "",
         dim=settings.embed_dim,
@@ -68,7 +68,7 @@ def _docs(args: argparse.Namespace) -> None:
         run_pii=not args.no_pii,
     )
     summary = run_pipeline(
-        connector=connector, dsn=settings.rdb_dsn, system=args.system,
+        connector=connector, dsn=settings.effective_dsn(), system=args.system,
         dataset="documents", ontology_type=args.type,
         match_keys=[k.strip() for k in args.match_keys.split(",") if k.strip()],
         graph_url=settings.graph_url, broker=broker,

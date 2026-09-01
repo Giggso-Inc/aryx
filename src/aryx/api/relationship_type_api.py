@@ -35,7 +35,7 @@ def relationship_type_router() -> APIRouter:
     @router.get("")
     def list_relationship_types(workspace_id: int = 1) -> list[dict[str, Any]]:
         """List declared relationship types for a workspace."""
-        return RelationshipTypeStore(get_settings().rdb_dsn).list(workspace_id)
+        return RelationshipTypeStore(get_settings().effective_dsn()).list(workspace_id)
 
     @router.post("")
     def upsert_relationship_type(
@@ -43,7 +43,7 @@ def relationship_type_router() -> APIRouter:
     ) -> dict[str, Any]:
         """Idempotent declare; safe to call from the canvas on every edge."""
         try:
-            return RelationshipTypeStore(get_settings().rdb_dsn).upsert(
+            return RelationshipTypeStore(get_settings().effective_dsn()).upsert(
                 req.workspace_id, req.name, req.source_type,
                 req.target_type, req.description)
         except Exception as exc:
@@ -52,7 +52,7 @@ def relationship_type_router() -> APIRouter:
     @router.delete("/{rel_id}")
     def delete_relationship_type(rel_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Hard-delete a declared relationship type."""
-        RelationshipTypeStore(get_settings().rdb_dsn).delete(rel_id, workspace_id)
+        RelationshipTypeStore(get_settings().effective_dsn()).delete(rel_id, workspace_id)
         return {"status": "deleted", "id": rel_id}
 
     return router

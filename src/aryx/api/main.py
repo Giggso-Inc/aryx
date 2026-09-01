@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from contextlib import asynccontextmanager
 
@@ -55,46 +56,157 @@ if not _aryx_logger.handlers:
     _aryx_logger.propagate = False
 logger = logging.getLogger(__name__)
 
+# uvicorn's own access log ("INFO:     127.0.0.1:xxxxx - "GET /health ..."")
+# has NO timestamp in its default formatter — every incident triage this
+# session needed to correlate an access-log line against a timestamped app
+# log line (health-check JSON, cpq_* lines) with no time on the access line
+# itself, making it impossible to tell how long a request actually sat
+# in-flight from the access log alone. uvicorn.access is a distinct logger
+# with its own handler/formatter installed at uvicorn startup — reconfigure
+# it here (module import time, so this always runs before the first request)
+# rather than depending on a --log-config file being passed to the uvicorn
+# CLI invocation in docker-compose.yml's `command:` line.
+_access_logger = logging.getLogger("uvicorn.access")
+for _h in _access_logger.handlers:
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+
+
+class _RequestTimingMiddleware:
+    """ASGI middleware: log a timestamped start/end line for every HTTP
+    request, so a stuck request shows a "started, never finished" line
+    instead of silence between whatever the request handler itself logs.
+    Confirmed need (2026-08-14 incident): a POST /api/ask/threads/message
+    took 15 min and a GET /api/graph took 5 min then 502'd, with nothing in
+    aryx.cpq.engine/ask_api logs to show WHERE either request was stuck —
+    only the access log line printed, and only after the fact, with no
+    timestamp on it at all (see uvicorn.access fix above)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "?")
+        path = scope.get("path", "?")
+        query = scope.get("query_string", b"").decode("utf-8", "ignore")
+        req_id = f"{time.monotonic_ns():x}"
+        started = time.monotonic()
+        logger.info(
+            "request_start id=%s %s %s%s", req_id, method, path,
+            f"?{query}" if query else "",
+        )
+        status_holder = {"code": None}
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                status_holder["code"] = message.get("status")
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        except Exception:
+            elapsed = time.monotonic() - started
+            logger.exception(
+                "request_error id=%s %s %s elapsed_s=%.3f",
+                req_id, method, path, elapsed,
+            )
+            raise
+        else:
+            elapsed = time.monotonic() - started
+            logger.info(
+                "request_end id=%s %s %s status=%s elapsed_s=%.3f",
+                req_id, method, path, status_holder["code"], elapsed,
+            )
+
+
+def _authenticate_mcp(request):
+    """Return the bearer principal, or ``None`` on missing/invalid auth."""
+    from aryx.mcp.http_auth import authenticate_authorization_header
+
+    return authenticate_authorization_header(
+        request.headers.get("authorization") or ""
+    )
+
 
 def _bearer_ok(request) -> bool:
-    """Verify Authorization: Bearer <token>. Allow-all if no tokens issued."""
-    auth = (request.headers.get("authorization") or "").strip()
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    if not token:
-        return os.environ.get("ARYX_MCP_AUTH_OPTIONAL", "1") == "1"
-    try:
-        from aryx.config import get_settings
-        from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().effective_dsn())
-        tokens = store.list_()
-        if not any(not t.get("revoked_at") for t in tokens):
-            return True
-        return store.verify(token)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("mcp auth check failed — failing closed: %s", exc)
-        return False
+    """Compatibility wrapper returning whether MCP authentication succeeded."""
+    return _authenticate_mcp(request) is not None
 
 
 def _mount_mcp(app: FastAPI) -> None:
     """Mount the MCP SSE transport at /mcp with bearer-token auth."""
     try:
         from mcp.server.sse import SseServerTransport
+        from starlette.requests import Request
         from starlette.routing import Mount, Route
 
+        from aryx.asgi_utils import RawAsgiEndpoint
+        from aryx.mcp.auth import bind_principal, reset_principal
         from aryx.mcp.server import server
 
+        # Absolute path -- Route (see RawAsgiEndpoint) does exact-path
+        # matching and never touches scope["root_path"], so this is not
+        # relative to anything; it must equal the Mount path below exactly.
         sse = SseServerTransport("/mcp/messages/")
 
-        async def handle_sse(request):
-            if not _bearer_ok(request):
-                raise HTTPException(401, "missing or invalid bearer token")
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send,
-            ) as streams:
-                await server.run(streams[0], streams[1],
-                                 server.create_initialization_options())
+        async def handle_sse(scope, receive, send) -> None:
+            """Raw ASGI GET handler for /mcp -- must reach Starlette as an
+            already-ASGI callable (via RawAsgiEndpoint), not a plain
+            function/method endpoint. A plain function/method registered
+            through Route(endpoint=...) gets wrapped by Starlette's
+            request_response(), which awaits the endpoint expecting a
+            Response object back and then calls
+            `await response(scope, receive, send)`. This handler sends its
+            response directly through the raw ASGI `send` (via
+            `sse.connect_sse`) and never returns one, so that wrapper
+            always ends up calling `None(scope, receive, send)` --
+            live-confirmed 2026-08-31 crashing every /mcp SSE session at
+            teardown with `TypeError: 'NoneType' object is not callable`.
 
-        app.router.routes.append(Route("/mcp", endpoint=handle_sse))
+            Wrapping in RawAsgiEndpoint (a callable class instance, not a
+            function) makes Route's own endpoint-type check
+            (`inspect.isfunction(endpoint) or inspect.ismethod(endpoint)`)
+            treat it as already-ASGI and skip that wrapping entirely --
+            confirmed by reading Route.__init__ directly. Deliberately
+            NOT using Mount here: Mount rewrites scope["root_path"] to
+            include the mount path for every request routed through it,
+            which would double the "/mcp" prefix SseServerTransport
+            builds its client-facing endpoint URL from (root_path + the
+            endpoint string passed to SseServerTransport above) -- hit
+            live as "/mcp/mcp/messages/" (streamlit-sales-ui-live-
+            310826.log, 2026-08-31) in an earlier version of this fix.
+            Route's exact-path matching never touches root_path, so the
+            original absolute "/mcp/messages/" endpoint string is correct
+            again with this approach.
+            """
+            request = Request(scope, receive=receive, send=send)
+            principal = _authenticate_mcp(request)
+            if principal is None:
+                raise HTTPException(401, "missing or invalid bearer token")
+            principal_token = bind_principal(principal)
+            try:
+                async with sse.connect_sse(scope, receive, send) as streams:
+                    await server.run(
+                        streams[0],
+                        streams[1],
+                        server.create_initialization_options(),
+                    )
+            finally:
+                reset_principal(principal_token)
+
+        app.router.routes.append(
+            # methods=["GET"] required explicitly -- Route only defaults
+            # this to ["GET"] for plain function/method endpoints
+            # (Route.__init__'s inspect.isfunction/ismethod branch);
+            # RawAsgiEndpoint is a class instance, so without this,
+            # methods stays None and every HTTP method matches (Route.
+            # matches()'s `if self.methods and ...` is falsy for None) --
+            # caught in review of PR #289.
+            Route("/mcp", endpoint=RawAsgiEndpoint(handle_sse), methods=["GET"]),
+        )
         app.router.routes.append(Mount("/mcp/messages/",
                                        app=sse.handle_post_message))
         logger.info("MCP mounted at /mcp")
@@ -119,7 +231,7 @@ async def _lifespan(app: FastAPI):
     from aryx.config import get_settings
     from aryx.store.migrate import apply_migrations
     from aryx.api.file_ingest_api import shutdown_executor
-    apply_migrations(get_settings().rdb_dsn)
+    apply_migrations(get_settings().effective_dsn())
     _task = asyncio.ensure_future(_stale_job_sweep())
     try:
         yield
@@ -139,6 +251,7 @@ def create_app() -> FastAPI:
     from aryx.api.security import ApiKeyMiddleware
     app = FastAPI(title="Aryx API", version="1.0", lifespan=_lifespan)
     app.add_middleware(ApiKeyMiddleware)
+    app.add_middleware(_RequestTimingMiddleware)
     app.include_router(graph_router())
     app.include_router(admin_router())
     app.include_router(ask_router())

@@ -20,7 +20,7 @@ def _act(a: dict) -> Any:
     from aryx.actions.engine import validate_params
     from aryx.config import get_settings
     from aryx.store.action_store import ActionStore
-    store = ActionStore(get_settings().rdb_dsn, _ws(a))
+    store = ActionStore(get_settings().effective_dsn(), _ws(a))
     action = store.by_name(a["action"])
     if action is None:
         return {"error": f"action '{a['action']}' not found"}

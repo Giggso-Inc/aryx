@@ -107,7 +107,7 @@ from aryx.reasoning.edge_axioms import apply_edge_axiom as _apply_edge_axiom
 def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
     """Apply every enabled rule against the workspace; return per-rule fire counts."""
     settings = get_settings()
-    rules_store = RuleStore(settings.rdb_dsn)
+    rules_store = RuleStore(settings.effective_dsn())
     try:
         rules = [r for r in rules_store.list_(workspace_id) if r["enabled"]]
     finally:
@@ -125,11 +125,11 @@ def evaluate_workspace(workspace_id: int) -> dict[str, Any]:
     estore = None
     bumps = None
     try:
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         graph = FalkorStore(settings.graph_url, ws_graph(workspace_id))
         per_rule: dict[str, int] = {}
         total = 0
-        bumps = RuleStore(settings.rdb_dsn)
+        bumps = RuleStore(settings.effective_dsn())
         for rule in rules:
             when = rule.get("when") or {}
             then = rule.get("then") or {}

@@ -1,6 +1,7 @@
 """Aryx MCP server — stdio + SSE. Wraps REST so any MCP host can drive it."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from aryx.mcp.auth import current_principal
 from aryx.mcp.tools import tool_specs
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,8 @@ def _post(path: str, body: dict) -> Any:
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return tool_specs()
+    principal = current_principal()
+    return [spec for spec in tool_specs() if principal.allows(spec.name)]
 
 
 def _enrich_workspace(ws: dict) -> dict:
@@ -107,6 +110,57 @@ def _axiom_summary(workspace_id: int) -> tuple[int, dict]:
 
 def _dispatch(name: str, a: dict) -> Any:
     """Route a tool call: list, ask, or act (request-only)."""
+    principal = current_principal()
+    if not principal.allows(name):
+        return {
+            "ok": False,
+            "error": "tool_not_allowed",
+            "message": f"MCP token is not authorized for tool {name!r}",
+        }
+    if name.startswith("sales_chat_"):
+        from sales_streamlit.mcp_service import SalesChatService
+
+        service = SalesChatService(principal)
+        try:
+            if name == "sales_chat_start":
+                return service.start(a.get("actor_id"))
+            if name == "sales_chat_list_threads":
+                return service.list_threads(
+                    a.get("actor_id"),
+                    int(a.get("limit") or 50),
+                )
+            if name == "sales_chat_get_messages":
+                return service.get_messages(
+                    a.get("actor_id"),
+                    a.get("thread_id"),
+                    int(a.get("limit") or 100),
+                )
+            if name == "sales_chat_send":
+                return service.send(
+                    actor_id=a.get("actor_id"),
+                    thread_id=a.get("thread_id"),
+                    request_id=a.get("request_id"),
+                    message=a.get("message"),
+                )
+            if name == "sales_chat_confirm":
+                return service.confirm(
+                    actor_id=a.get("actor_id"),
+                    thread_id=a.get("thread_id"),
+                    message_id=a.get("message_id"),
+                    request_id=a.get("request_id"),
+                )
+            if name == "sales_chat_resolve_route":
+                return service.resolve_route(
+                    actor_id=a.get("actor_id"),
+                    thread_id=a.get("thread_id"),
+                )
+            if name == "sales_chat_bootstrap":
+                return service.bootstrap(
+                    a.get("actor_id"),
+                    a.get("thread_id"),
+                )
+        finally:
+            service.close()
     if name == "list":
         workspaces = _get("/admin/workspaces?workspace_id=1") or []
         return [_enrich_workspace(ws) for ws in workspaces]
@@ -131,15 +185,49 @@ def _dispatch(name: str, a: dict) -> Any:
     if name.startswith("ontology_"):
         from aryx.mcp.ontology import dispatch as _ont
         return _ont(name, a)
-    return {"error": f"unknown tool: {name}"}
+    return {"ok": False, "error": "unknown_tool", "message": f"unknown tool: {name}"}
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     try:
-        result = _dispatch(name, arguments or {})
+        # _dispatch is fully synchronous and can run for several seconds
+        # on CPQ-heavy tools (e.g. sales_chat_send -> run_ask ->
+        # load_product_config, live-timed at 6.5s in production) --
+        # calling it inline here would block this process's single
+        # asyncio event loop for that whole duration, freezing every
+        # other concurrent user's SSE/REST/MCP traffic. asyncio.to_thread
+        # (not loop.run_in_executor) is required specifically because it
+        # propagates the current contextvars.Context into the worker
+        # thread via copy_context() -- current_principal() (a ContextVar
+        # bound in handle_sse before dispatch reaches here) would
+        # otherwise silently break inside the offloaded call.
+        # Thread-safety confirmed: CpqEngine has no instance state at
+        # all; engine.py's module-level rule/layout caches are plain
+        # dicts with no lock, but CPython's GIL makes individual
+        # get/set operations atomic, and every cache key's value is
+        # deterministically derived from that key alone -- the only
+        # possible race is benign redundant recomputation on a
+        # simultaneous cache miss, never corrupted or incorrect data.
+        result = await asyncio.to_thread(_dispatch, name, arguments or {})
+    except (ValueError, PermissionError) as exc:
+        result = {
+            "ok": False,
+            "error": "invalid_request",
+            "message": str(exc)[:500],
+            "tool": name,
+        }
     except Exception as exc:  # noqa: BLE001
-        result = {"error": str(exc), "tool": name}
+        logger.warning("mcp tool failed name=%s error=%s", name, exc)
+        if name.startswith("sales_chat_"):
+            result = {
+                "ok": False,
+                "error": "tool_failed",
+                "message": "Aryx could not complete this request.",
+                "tool": name,
+            }
+        else:
+            result = {"error": str(exc), "tool": name}
     return [types.TextContent(type="text",
             text=json.dumps(result, indent=2, default=str))]
 

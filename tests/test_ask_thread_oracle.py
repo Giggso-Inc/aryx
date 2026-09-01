@@ -122,7 +122,10 @@ class TestInsertMessageOracleFreshInsert(unittest.TestCase):
             result = _insert_message_oracle(cur, _params())
         finally:
             mod.load = orig_load
-        self.assertEqual(result, ("m1", 3, False, "hello"))
+        # inserted=True on the genuine-insert branch -- callers gate
+        # ask_thread_touch_channel on this to avoid double-counting a retry
+        # that hits the update branch instead.
+        self.assertEqual(result, ("m1", 3, True, "hello"))
         # Confirm the insert actually ran (last call).
         self.assertEqual(cur.calls[-1][0], "ask_thread_insert_message_oracle")
 

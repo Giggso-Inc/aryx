@@ -39,21 +39,31 @@ class GraphReader:
         """
         parsed = urlparse(url)
         self._db = FalkorDB(host=parsed.hostname or "localhost",
-                            port=parsed.port or 6379)
+                            port=parsed.port or 6379,
+                            username=parsed.username or None,
+                            password=parsed.password or None)
         self._graph = self._db.select_graph(graph)
 
+    @property
+    def graph_name(self) -> str:
+        """The workspace-scoped graph key this reader selects — cache-key-safe."""
+        return self._graph.name
+
     def _query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """Execute a Cypher query and log the input and output at INFO level."""
-        start = time.monotonic()
-        result = self._graph.query(cypher, params or {}).result_set
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        # Cap result preview to first 5 rows to keep logs readable.
-        preview = result[:5]
-        logger.info(
-            "cypher  query=%r  params=%r  rows=%d  ms=%d  preview=%r",
-            cypher, params or {}, len(result), elapsed_ms, preview,
-        )
-        return result
+        """Execute a Cypher query and return its result rows.
+
+        `timeout_ms` (`ARYX_GRAPH_QUERY_TIMEOUT`, PR #121): caps how long
+        FalkorDB will run any single query before aborting it — without this,
+        a pathological query on a large workspace can hang the whole request
+        indefinitely instead of failing fast.
+
+        No per-query INFO-level logging here (2026-07-28): it flooded
+        container logs on every graph read, drowning out other INFO-level
+        diagnostics — see the earlier removal commit for the live-verified
+        rationale.
+        """
+        timeout_ms = get_settings().graph_query_timeout or None
+        return self._graph.query(cypher, params or {}, timeout=timeout_ms).result_set
 
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return a single entity's id/type/name/attributes, or None if absent."""
@@ -398,12 +408,31 @@ class GraphReader:
                     connected_ids.add(eid)
                     connected_ids.add(bid)
 
-        # Step 6 — add truly isolated entities (zero edges in FalkorDB, not just
-        # in the subgraph view) for debugging visibility.
+        # Step 6 — add truly isolated entities (zero edges in FalkorDB, not
+        # just in the subgraph view) for debugging visibility.
+        #
+        # docs/graph_isolated_scan_gate — this used to compute "has zero
+        # edges in either direction" live, per request
+        # (`MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-()`)
+        # — a structural check no index can accelerate. Confirmed live: that
+        # query alone took ~16.5s on a 344,961-entity workspace, ~3.3x over
+        # FalkorDB's default 5000ms timeout, causing GET /graph to 500 even
+        # after the REL.name index fix — and it kept recurring on any
+        # workspace that grew past the size a 5-30s query budget could cover,
+        # regardless of where a size-gate threshold was set.
+        #
+        # Fixed at the source instead of gated: FalkorStore.mark_isolated_
+        # entities() now stamps every Entity's `isolated` boolean once, at
+        # projection time (project_graph / project_incremental — an ingest
+        # job that already takes minutes easily absorbs one more full-graph
+        # pass), with an index on that property (ensure_indexes()). This
+        # query is now a cheap indexed lookup regardless of graph size, so
+        # Step 6 no longer needs to skip itself, or the isolated nodes it
+        # surfaces, on any workspace.
         remaining = capped - len(entity_map)
         if remaining > 0:
             iso_rows = self._query(
-                "MATCH (e:Entity) WHERE NOT (e)-[:REL]-() AND NOT (e)<-[:REL]-() "
+                "MATCH (e:Entity {isolated: true}) "
                 f"RETURN e.id, e.type, e.name, properties(e) LIMIT {remaining}"
             )
             for row in iso_rows:

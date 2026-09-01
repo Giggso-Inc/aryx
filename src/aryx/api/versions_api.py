@@ -30,7 +30,7 @@ def versions_router() -> APIRouter:
     @router.post("")
     def snapshot(req: SnapshotRequest) -> dict[str, Any]:
         """Create a new version snapshot of current types + rules."""
-        dsn = get_settings().rdb_dsn
+        dsn = get_settings().effective_dsn()
         rules = RuleStore(dsn)
         vs = VersionStore(dsn)
         try:
@@ -46,7 +46,7 @@ def versions_router() -> APIRouter:
     def list_versions(workspace_id: int = 1,
                       limit: int = 25) -> list[dict[str, Any]]:
         """Recent version snapshots, newest first."""
-        vs = VersionStore(get_settings().rdb_dsn)
+        vs = VersionStore(get_settings().effective_dsn())
         try:
             return vs.list_(workspace_id, limit)
         finally:
@@ -56,7 +56,7 @@ def versions_router() -> APIRouter:
     def changes(workspace_id: int = 1,
                 limit: int = 50) -> list[dict[str, Any]]:
         """Recent ontology change-log rows."""
-        vs = VersionStore(get_settings().rdb_dsn)
+        vs = VersionStore(get_settings().effective_dsn())
         try:
             return vs.changes(workspace_id, limit)
         finally:

@@ -468,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
     gt.raw_xml_counts = _raw_xml_counts(data, tags)
 
     settings = get_settings()
-    report = validate_workspace(args.workspace_id, gt, settings.rdb_dsn, settings.graph_url)
+    report = validate_workspace(args.workspace_id, gt, settings.effective_dsn(), settings.graph_url)
     print(report.render())
     return 0 if report.passed else 1
 

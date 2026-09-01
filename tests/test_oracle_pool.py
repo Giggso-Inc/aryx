@@ -222,9 +222,17 @@ class TestTranslateSql(unittest.TestCase):
         self.assertNotIn("ON CONFLICT", result)
         self.assertTrue(cur._conflict_ignore)
 
-    def test_on_conflict_do_update_stripped(self) -> None:
-        # ON CONFLICT DO UPDATE SET … spans multiple lines; the full clause
-        # including the SET body must be removed so Oracle gets a plain INSERT.
+    def test_on_conflict_do_update_raises(self) -> None:
+        # ON CONFLICT DO UPDATE has no safe generic Oracle translation --
+        # stripping it identically to DO NOTHING would silently reduce a
+        # real upsert to insert-or-ignore, discarding the intended update
+        # on every conflict with no error (found by post-merge review: a
+        # systemic trap for the next such query added without an explicit
+        # Oracle MERGE override). Every real caller in this codebase either
+        # has its own queries/oracle/<name>.sql MERGE override (so this
+        # generic path never actually runs for them), or -- like
+        # upsert_bml_tier2_cache.sql -- guarantees no conflict can occur
+        # before calling, with a plain-INSERT override of its own.
         cur = _make_cursor()
         sql = (
             "INSERT INTO aryx_ontology_type (workspace_id, name, attributes, status, source) "
@@ -234,12 +242,8 @@ class TestTranslateSql(unittest.TestCase):
             "    status = EXCLUDED.status, "
             "    source = EXCLUDED.source"
         )
-        result = _translate_sql(sql, cur)
-        self.assertNotIn("ON CONFLICT", result)
-        self.assertNotIn("DO UPDATE", result)
-        self.assertNotIn("EXCLUDED", result)
-        self.assertTrue(cur._conflict_ignore)
-        self.assertIn("VALUES (:1, :2, :3, :4, :5)", result)
+        with self.assertRaises(ValueError):
+            _translate_sql(sql, cur)
 
     def test_no_conflict_flag_when_no_conflict_clause(self) -> None:
         cur = _make_cursor()

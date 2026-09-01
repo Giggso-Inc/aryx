@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from aryx.config import get_settings
@@ -44,9 +46,33 @@ class OracleGraphReader:
         self._pool = get_oracle_pool(dsn)
         self._workspace_id = workspace_id
 
+    @property
+    def graph_name(self) -> str:
+        """Cache-key-safe identifier for this reader's scope.
+
+        Mirrors GraphReader.graph_name (FalkorDB) so callers like
+        aryx.graph.retrieve.all_types() can key a cache off either reader
+        without branching on backend.
+        """
+        return f"oracle::{self._workspace_id}"
+
+    @contextmanager
+    def _connection(self) -> Iterator[Any]:
+        """Acquire a pooled connection with the graph query timeout applied.
+
+        Mirrors GraphReader._query()'s ARYX_GRAPH_QUERY_TIMEOUT guard for
+        FalkorDB — without it, a pathological graph query can hang a request
+        indefinitely on Oracle the same way an unbounded Cypher query could
+        on FalkorDB before that fix. Reuses the same setting/default (30s)
+        since both readers serve the same graph endpoints uniformly.
+        """
+        with self._pool.connection() as conn:
+            conn.call_timeout = get_settings().graph_query_timeout
+            yield conn
+
     def get_entity(self, entity_id: int) -> dict[str, Any] | None:
         """Return {id, type, name, attributes} for one entity, or None if not in this workspace."""
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT entity_id, type, name, attributes FROM aryx_graph_vertex "
@@ -58,7 +84,7 @@ class OracleGraphReader:
 
     def distinct_types(self) -> list[str]:
         """Every distinct entity type in this workspace — deterministic, no sampling."""
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT DISTINCT type FROM aryx_graph_vertex "
@@ -74,7 +100,7 @@ class OracleGraphReader:
         and observed attribute keys per type (sampled from the JSON column).
         """
         types = self.distinct_types()
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT DISTINCT name FROM aryx_graph_edge "
@@ -127,7 +153,7 @@ class OracleGraphReader:
         where = " AND ".join(clauses)
         capped = max(1, min(int(limit), get_settings().graph_query_limit))
         skip = max(0, int(offset))
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"SELECT entity_id, type, name, attributes FROM aryx_graph_vertex "
@@ -140,7 +166,7 @@ class OracleGraphReader:
 
     def neighbors(self, entity_id: int) -> list[dict[str, Any]]:
         """Return one-hop related entities in both directions with relationship name and direction."""
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -183,7 +209,7 @@ class OracleGraphReader:
         params: dict[str, Any] = {"ws": self._workspace_id, "ws2": self._workspace_id}
         params.update({f"o{i}": v for i, v in enumerate(ids)})
         params.update({f"i{i}": v for i, v in enumerate(ids)})
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
@@ -213,7 +239,7 @@ class OracleGraphReader:
 
     def all_relationships(self) -> list[dict[str, Any]]:
         """Return every relationship edge in this workspace as {source, target, name}."""
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT src_id, tgt_id, name FROM aryx_graph_edge "
@@ -225,7 +251,7 @@ class OracleGraphReader:
 
     def provenance(self, entity_id: int) -> list[dict[str, Any]]:
         """Return the source records an entity was projected from."""
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -251,7 +277,7 @@ class OracleGraphReader:
         rels: list[dict[str, Any]] = []
 
         # 1. Distinct relationship types in this workspace
-        with self._pool.connection() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT DISTINCT name FROM aryx_graph_edge WHERE workspace_id = :1",
@@ -263,7 +289,7 @@ class OracleGraphReader:
         if rel_types:
             per_type = max(1, capped // len(rel_types))
             for rtype in rel_types:
-                with self._pool.connection() as conn:
+                with self._connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
                             f"""
@@ -291,7 +317,7 @@ class OracleGraphReader:
         # 3. Fill remaining slots with isolated entities
         remaining = capped - len(entity_map)
         if remaining > 0:
-            with self._pool.connection() as conn:
+            with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         f"SELECT entity_id, type, name, attributes FROM aryx_graph_vertex "
@@ -319,9 +345,9 @@ class OracleGraphReader:
               FROM GRAPH_TABLE (
                 aryx_knowledge_graph
                 MATCH SHORTEST (
-                  (a IS aryx_graph_vertex WHERE a.entity_id = :src)
+                  (a IS aryx_graph_vertex WHERE a.entity_id = :src AND a.workspace_id = :ws)
                   -[r IS aryx_graph_edge]->{{1,{hops}}}  # nosec S608 — hops is a validated int
-                  (b IS aryx_graph_vertex WHERE b.entity_id = :dst)
+                  (b IS aryx_graph_vertex WHERE b.entity_id = :dst AND b.workspace_id = :ws2)
                 )
                 ONE ROW PER STEP (a, r, b)
                 COLUMNS (
@@ -331,10 +357,19 @@ class OracleGraphReader:
                 )
               )
         """
+        # Scoping both path endpoints to this workspace is sufficient, not
+        # just defense-in-depth: every edge/vertex is written with a single
+        # workspace_id at ingest time (see e.g. neighbors_batch's WHERE
+        # e.workspace_id = :ws), so no edge ever crosses a workspace
+        # boundary -- a path that starts inside this workspace can never
+        # traverse into another one.
         try:
-            with self._pool.connection() as conn:
+            with self._connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(sql, {"src": src, "dst": dst})
+                    cur.execute(sql, {
+                        "src": src, "dst": dst,
+                        "ws": self._workspace_id, "ws2": self._workspace_id,
+                    })
                     step_rows = cur.fetchall()
             if not step_rows:
                 return []

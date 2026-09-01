@@ -56,6 +56,11 @@ def _mounting_type_attrs(dummy_hidden=True):
 
 
 def test_array_set_member_groups_into_indexed_rows_not_flat_items():
+    """2026-08-25 (live-confirmed against a real reference payload): the
+    selector's own value/displayValue must NOT appear in the row --
+    `_index` alone identifies which option was selected. A hidden member
+    never independently answered (MountingQuantityDummyArrayAttribute_
+    viSoln here) appears as a structural `True` marker on every row."""
     attrs = _mounting_type_attrs()
     out = _payload(attrs, filled_multi={
         "mountingTypeArray_viSoln": ["Shirt Magnetic Mount", "Jacket Magnetic Mount"],
@@ -68,13 +73,37 @@ def test_array_set_member_groups_into_indexed_rows_not_flat_items():
     assert wrapper["items"] == [
         {
             "_index": 0,
-            "mountingTypeArray_viSoln": {"value": "Shirt Magnetic Mount", "displayValue": "Display Shirt Magnetic Mount"},
             "mountingTypeArrayqty_viSoln": 10,
+            "MountingQuantityDummyArrayAttribute_viSoln": True,
         },
         {
             "_index": 1,
-            "mountingTypeArray_viSoln": {"value": "Jacket Magnetic Mount", "displayValue": "Display Jacket Magnetic Mount"},
             "mountingTypeArrayqty_viSoln": 10,
+            "MountingQuantityDummyArrayAttribute_viSoln": True,
+        },
+    ]
+
+
+def test_array_set_index_is_the_options_catalog_position_not_selection_order():
+    """Live-confirmed incident (2026-08-25, SVX Mounting Type array-set
+    payload): `_index` must be the selected option's own fixed position
+    within the selector's catalog option order (matching the native UI's
+    fixed per-option row grid) -- NOT a sequential "i-th thing the
+    customer picked" counter. Picking the SECOND catalog option first
+    must still emit _index=1, not _index=0."""
+    attrs = _mounting_type_attrs()
+    out = _payload(attrs, filled_multi={
+        # Customer picked "Jacket Magnetic Mount" (catalog position 1)
+        # FIRST, with nothing at position 0.
+        "mountingTypeArray_viSoln": ["Jacket Magnetic Mount"],
+        "mountingTypeArrayqty_viSoln": ["5"],
+    })
+    wrapper = out["_setmountingTypeArrayset_viSoln"]
+    assert wrapper["items"] == [
+        {
+            "_index": 1,
+            "mountingTypeArrayqty_viSoln": 5,
+            "MountingQuantityDummyArrayAttribute_viSoln": True,
         },
     ]
 
@@ -107,7 +136,31 @@ def test_array_set_driver_ships_as_sibling_row_count_not_nested_or_duplicated():
         )
 
 
-def test_array_set_dummy_placeholder_member_excluded_from_rows():
+def test_array_set_hidden_dummy_member_defaults_to_true_when_never_answered():
+    """2026-08-25 (live-confirmed against a real reference payload):
+    MountingQuantityDummyArrayAttribute_viSoln (hidden=1) is never
+    independently answered by the real conversation flow, yet the real
+    reference payload includes it as `True` on every populated row -- a
+    structural "this row is real" marker, not a customer decision. It
+    must still never leak as its own flat top-level key."""
+    attrs = _mounting_type_attrs(dummy_hidden=True)
+    out = _payload(attrs, filled_multi={
+        "mountingTypeArray_viSoln": ["Shirt Magnetic Mount"],
+        "mountingTypeArrayqty_viSoln": ["10"],
+    })
+
+    wrapper = out["_setmountingTypeArrayset_viSoln"]
+    assert len(wrapper["items"]) == 1
+    assert wrapper["items"][0]["MountingQuantityDummyArrayAttribute_viSoln"] is True
+    assert "MountingQuantityDummyArrayAttribute_viSoln" not in out, (
+        "dummy member must not leak as its own flat top-level key either"
+    )
+
+
+def test_array_set_hidden_member_with_a_real_value_is_not_overridden():
+    """A hidden array-set member that DOES carry real per-row values
+    (unlike the never-answered dummy above) must be written normally,
+    not force-defaulted to True."""
     attrs = _mounting_type_attrs(dummy_hidden=True)
     out = _payload(attrs, filled_multi={
         "mountingTypeArray_viSoln": ["Shirt Magnetic Mount"],
@@ -115,14 +168,8 @@ def test_array_set_dummy_placeholder_member_excluded_from_rows():
         "MountingQuantityDummyArrayAttribute_viSoln": ["false"],
     })
 
-    wrapper = out["_setmountingTypeArrayset_viSoln"]
-    assert len(wrapper["items"]) == 1
-    assert "MountingQuantityDummyArrayAttribute_viSoln" not in wrapper["items"][0], (
-        "hidden=1 dummy/placeholder member must never appear in a row"
-    )
-    assert "MountingQuantityDummyArrayAttribute_viSoln" not in out, (
-        "dummy member must not leak as its own flat top-level key either"
-    )
+    row = out["_setmountingTypeArrayset_viSoln"]["items"][0]
+    assert row["MountingQuantityDummyArrayAttribute_viSoln"] == "false"
 
 
 def test_array_set_with_no_selections_emits_nothing():

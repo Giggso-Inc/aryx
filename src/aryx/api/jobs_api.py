@@ -10,7 +10,7 @@ from aryx.store.job_store import JobStore
 
 
 def _store() -> JobStore:
-    return JobStore(get_settings().rdb_dsn)
+    return JobStore(get_settings().effective_dsn())
 
 
 def jobs_router() -> APIRouter:
@@ -46,12 +46,18 @@ def jobs_router() -> APIRouter:
 
     @router.post("/jobs/{job_id}/cancel")
     def cancel_job(job_id: str) -> dict[str, Any]:
-        """Mark a job cancelled so the UI frees up.
+        """Mark a job cancelled so the UI frees up, AND actually stop it.
 
-        Note: a background ingest thread blocked on an LLM call can't be
-        force-killed; this stops the row from showing as running and lets
-        the user retry. Any later progress write from a still-alive thread
-        is ignored because the row is terminal.
+        The running worker thread polls this row via `should_stop()`
+        (see file_ingest_api._make_should_stop) at every pipeline stage
+        boundary and inside the dimension-linking loop specifically — the
+        stage previously observed running for 20+ minutes after a
+        "cancel" that only ever updated this row. A thread genuinely
+        blocked inside a single synchronous LLM call still can't be
+        force-killed mid-call (that limitation is real and unchanged) —
+        but it stops at the next check afterward instead of running the
+        rest of the pipeline to completion. Any later progress write from
+        a still-stopping thread is ignored because this row is terminal.
         """
         jobs = _store()
         try:
@@ -80,7 +86,7 @@ def jobs_router() -> APIRouter:
         if job is None or not job.get("run_id"):
             raise HTTPException(status_code=404,
                                 detail="job not found or has no run yet")
-        tracker = StageTracker(get_settings().rdb_dsn)
+        tracker = StageTracker(get_settings().effective_dsn())
         stages = tracker.rows(int(job["run_id"]))
         return {"job_id": job_id, "run_id": job["run_id"],
                 "resumable": any(s["status"] != "done" for s in stages),

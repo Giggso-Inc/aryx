@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,7 +27,8 @@ from aryx.connectors.csv_source import CsvConnector
 from aryx.connectors.doc_router import DocumentRouterConnector
 from aryx.connectors.json_source import JsonConnector
 from aryx.pipeline.doc_discovery import _detect_fk_links, _stem_type, _xlsx_to_csvs, _xml_to_csvs
-from aryx.pipeline.orchestrate import run_pipeline
+from aryx.pipeline.dynamic_fk import detect_dynamic_fk_links
+from aryx.pipeline.orchestrate import PipelineCancelled, run_pipeline
 from aryx.store.chunk_store import ChunkStore
 from aryx.store.datasource_store import DatasourceStore
 from aryx.store.job_store import JobStore
@@ -110,6 +112,36 @@ def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
     return chunks or [data]
 
 
+def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0):
+    """Cheap, throttled cancellation check for a running job's worker thread.
+
+    POST /admin/jobs/{job_id}/cancel only ever updated the job-store row
+    (see jobs_api.py) -- nothing in the pipeline ever read it back, so a
+    "cancelled" job kept running to completion regardless, consuming a
+    worker-pool slot the whole time (confirmed live: 20+ minutes of entity
+    creation after cancellation). This closure is polled from inside the
+    pipeline's hottest loops (dimension_link.py) and at each stage boundary
+    (orchestrate.py) -- real DB reads are throttled to at most once per
+    `min_interval_s` regardless of how often the caller checks, so callers
+    can poll every iteration without hammering Postgres.
+    """
+    state = {"last_check": 0.0, "cancelled": False}
+
+    def should_stop() -> bool:
+        if state["cancelled"]:
+            return True
+        now = time.monotonic()
+        if now - state["last_check"] < min_interval_s:
+            return False
+        state["last_check"] = now
+        row = jobs.get(job_id)
+        if row is not None and row.get("status") == "cancelled":
+            state["cancelled"] = True
+        return state["cancelled"]
+
+    return should_stop
+
+
 def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                match_keys: list[str], fk_links: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
@@ -117,13 +149,13 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
-    datasource_store = DatasourceStore(settings.rdb_dsn)
+    datasource_store = DatasourceStore(settings.effective_dsn())
     try:
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         # Register each uploaded file as a datasource so the workspace card shows
         # an accurate file count regardless of whether files were ingested via the
         # file upload page or through the Shay datasource flow.
-        ds_store = DatasourceStore(settings.rdb_dsn)
+        ds_store = DatasourceStore(settings.effective_dsn())
         for _, fname in items:
             kind = "docs" if Path(fname).suffix.lower() in _DOC_EXTS else "csv"
             try:
@@ -131,6 +163,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             except Exception as ds_exc:
                 logger.warning("datasource ensure failed for %s: %s", fname, ds_exc)
         on_prog = lambda s, p, d: jobs.update_stage(job_id, s, p, d)
+        should_stop = _make_should_stop(jobs, job_id)
         broker = _local_broker()
         data_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DATA_EXTS]
         doc_files = [(d, n) for d, n in items if Path(n).suffix.lower() in _DOC_EXTS]
@@ -158,6 +191,60 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     len(csv_auto_fk), csv_auto_fk,
                 )
 
+        # Pre-compute FK links for ALL xlsx workbooks in this batch TOGETHER,
+        # not per-workbook. Detecting FK links inside the per-file loop below
+        # (as used to happen here) means each workbook's sheets are only ever
+        # compared against sheets of the SAME workbook — a relationship
+        # between EBS LSN List.xlsx and DLA DS SCRAP FY25.xlsx, say, could
+        # never be found regardless of column names or upload order, because
+        # the two workbooks are never in the same _detect_fk_links() call.
+        # Expanding every xlsx file's sheets into one pool first — exactly
+        # mirroring the csv_data_files pattern above — fixes that structurally.
+        xlsx_data_files = [(d, n) for d, n in data_files if Path(n).suffix.lower() == ".xlsx"]
+        xlsx_all_plans: list[dict] = []  # one dict per worksheet, across ALL xlsx files
+        xlsx_plans_by_file: dict[str, list[dict]] = {}
+        if xlsx_data_files:
+            for xlsx_d, xlsx_n in xlsx_data_files:
+                orig_stem = Path(xlsx_n).stem
+                xlsx_csvs = _xlsx_to_csvs(xlsx_d, orig_stem)
+                if not xlsx_csvs:
+                    logger.info("xlsx upload %r produced no ingestible sheets "
+                               "(all hidden/empty)", xlsx_n)
+                    xlsx_plans_by_file[xlsx_n] = []
+                    continue
+                file_plans = []
+                prefix = orig_stem + "__"
+                for csv_data, csv_name in xlsx_csvs:
+                    csv_stem = Path(csv_name).stem
+                    sheet_slug = csv_stem[len(prefix):] if csv_stem.startswith(prefix) else csv_stem
+                    derived_type = _stem_type(sheet_slug) or ontology_type
+                    plan = {
+                        "data": csv_data, "filename": csv_name,
+                        "ontology_type": derived_type,
+                        "match_keys": match_keys or ["name"],
+                    }
+                    file_plans.append(plan)
+                    xlsx_all_plans.append(plan)
+                xlsx_plans_by_file[xlsx_n] = file_plans
+            xlsx_auto_fk = _detect_fk_links(xlsx_all_plans, log_id=job_id)
+            if xlsx_auto_fk:
+                logger.info(
+                    "XLSX multi-workbook: auto-detected %d column-name fk-link spec(s): %s",
+                    len(xlsx_auto_fk), xlsx_auto_fk,
+                )
+            already_linked = {(lk["source_type"], lk["target_type"]) for lk in xlsx_auto_fk}
+            xlsx_dynamic_fk = detect_dynamic_fk_links(
+                xlsx_all_plans, broker, already_linked=already_linked, log_id=job_id,
+            )
+            if xlsx_dynamic_fk:
+                xlsx_auto_fk.extend(xlsx_dynamic_fk)
+                logger.info(
+                    "XLSX multi-workbook: dynamic (value+LLM) fk-link spec(s): %d: %s",
+                    len(xlsx_dynamic_fk), xlsx_dynamic_fk,
+                )
+        else:
+            xlsx_auto_fk = []
+
         for data, name in data_files:
             suffix = Path(name).suffix.lower()
             if suffix == ".json":
@@ -166,11 +253,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
                 run_pipeline(
                     connector=JsonConnector(tmp, system="json"),
-                    dsn=settings.rdb_dsn,
+                    dsn=settings.effective_dsn(),
                     system="json", dataset=Path(name).stem,
                     ontology_type=ontology_type, match_keys=match_keys,
                     graph_url=settings.graph_url, broker=broker,
-                    on_progress=on_prog,
+                    on_progress=on_prog, should_stop=should_stop,
                     fk_links=fk_links, workspace_id=workspace_id,
                     relate=True,
                 )
@@ -212,11 +299,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
-                        dsn=settings.rdb_dsn,
+                        dsn=settings.effective_dsn(),
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=on_prog,
+                        on_progress=on_prog, should_stop=should_stop,
                         fk_links=auto_fk if is_last else [],
                         workspace_id=workspace_id,
                         relate=is_last,
@@ -240,61 +327,41 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 )
                 continue
             elif suffix == ".xlsx":
-                # Expand the workbook into one connector per visible, non-empty
-                # worksheet. Each CSV gets its own ontology_type derived from
-                # the sheet's own title (not the workbook filename) so cross-
-                # sheet pairs are generated for relate/fk_link exactly like the
-                # XML multi-type path above.
-                orig_stem = Path(name).stem
-                xlsx_csvs = _xlsx_to_csvs(data, orig_stem)
-                if not xlsx_csvs:
-                    logger.info("xlsx upload %r produced no ingestible sheets "
-                               "(all hidden/empty)", name)
+                # Sheets + FK links (column-name AND dynamic value+LLM) were
+                # already computed ONCE across ALL xlsx files in this batch,
+                # above — see xlsx_all_plans/xlsx_auto_fk. is_last is computed
+                # against that GLOBAL sheet list, not this file's own sheets,
+                # so relate/graph-projection only fire once for the whole
+                # batch (mirrors the XML path's is_last/skip_graph pattern).
+                file_plans = xlsx_plans_by_file.get(name, [])
+                if not file_plans:
                     continue
-                xlsx_plans = []
-                for csv_data, csv_name in xlsx_csvs:
-                    csv_stem = Path(csv_name).stem
-                    # csv_name == "{orig_stem}__{sheet_slug}.csv" — strip the
-                    # workbook prefix to recover the sheet-derived slug alone,
-                    # so the ontology type reflects the sheet, not the file.
-                    prefix = orig_stem + "__"
-                    sheet_slug = csv_stem[len(prefix):] if csv_stem.startswith(prefix) else csv_stem
-                    derived_type = _stem_type(sheet_slug) or ontology_type
-                    xlsx_plans.append((csv_data, csv_name, derived_type))
-                # Auto-detect FK links now that all sheet types are known.
-                fk_plan_dicts = [
-                    {"data": d, "filename": n, "ontology_type": t, "match_keys": match_keys or ["name"]}
-                    for d, n, t in xlsx_plans
-                ]
-                auto_fk = _detect_fk_links(fk_plan_dicts)
-                if auto_fk:
-                    logger.info("XLSX auto-detected %d fk-link spec(s): %s", len(auto_fk), auto_fk)
-                for idx, (csv_data, csv_name, derived_type) in enumerate(xlsx_plans):
-                    is_last = (idx == len(xlsx_plans) - 1)
+                global_last_plan = xlsx_all_plans[-1] if xlsx_all_plans else None
+                for plan in file_plans:
+                    csv_data, csv_name, derived_type = plan["data"], plan["filename"], plan["ontology_type"]
+                    is_last = plan is global_last_plan
                     jobs.update_stage(job_id, "Ingest", 20, f"Processing {csv_name}")
-                    # relate/skip_graph mirror ingest_confirmed() semantics —
-                    # see the identical comment on the XML path above.
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
-                        dsn=settings.rdb_dsn,
+                        dsn=settings.effective_dsn(),
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=on_prog,
-                        fk_links=auto_fk if is_last else [],
+                        on_progress=on_prog, should_stop=should_stop,
+                        fk_links=xlsx_auto_fk if is_last else [],
                         workspace_id=workspace_id,
                         relate=is_last,
                         skip_graph=not is_last,
                     )
                 asset_rows = [
                     xlsx_asset_record(
-                        filename=csv_name,
-                        dataset=Path(csv_name).stem,
-                        ontology_type=derived_type,
-                        content_bytes=csv_data,
+                        filename=plan["filename"],
+                        dataset=Path(plan["filename"]).stem,
+                        ontology_type=plan["ontology_type"],
+                        content_bytes=plan["data"],
                     )
-                    for csv_data, csv_name, derived_type in xlsx_plans
+                    for plan in file_plans
                 ]
                 upsert_xlsx_catalog_entry(
                     datasource_store,
@@ -327,11 +394,11 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     )
                     run_pipeline(
                         connector=CsvConnector(chunk_data, system="csv", dataset=dataset),
-                        dsn=settings.rdb_dsn,
+                        dsn=settings.effective_dsn(),
                         system="csv", dataset=dataset,
                         ontology_type=eff_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
-                        on_progress=on_prog,
+                        on_progress=on_prog, should_stop=should_stop,
                         fk_links=eff_fk if is_last_chunk else [],
                         workspace_id=workspace_id,
                         relate=eff_relate and is_last_chunk,
@@ -347,22 +414,28 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
             tmp_paths.extend(doc_paths)
-            chunk_store = ChunkStore(settings.rdb_dsn)
+            chunk_store = ChunkStore(settings.effective_dsn())
             connector = DocumentRouterConnector(
                 paths=doc_paths, system="document", broker=broker,
                 chunk_store=chunk_store, chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
             )
             run_pipeline(
-                connector=connector, dsn=settings.rdb_dsn,
+                connector=connector, dsn=settings.effective_dsn(),
                 system="document", dataset="upload",
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
-                on_progress=on_prog,
+                on_progress=on_prog, should_stop=should_stop,
                 fk_links=fk_links, workspace_id=workspace_id,
                 relate=True,
             )
         jobs.finish(job_id, run_id=None, status="complete")
+    except PipelineCancelled:
+        # The job row is already "cancelled" (that's what should_stop() just
+        # read to get here) -- leave it alone, don't overwrite it with
+        # "failed". This is the actual fix: the worker thread now really
+        # stops instead of running the rest of the pipeline to completion.
+        logger.info("file ingest cancelled job=%s", job_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("file ingest failed job=%s: %s", job_id, exc)
         if jobs is not None:
@@ -402,7 +475,7 @@ def file_ingest_router() -> APIRouter:
             items.append((data, f.filename or f"upload{suffix}"))
         settings = get_settings()
         job_id = uuid.uuid4().hex
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         try:
             jobs.create(job_id, "upload", f"{len(items)} file(s)", workspace_id)
         finally:

@@ -27,7 +27,7 @@ class DecideRequest(BaseModel):
 
 def _store(workspace_id: int) -> AdjudicationStore:
     """Build a workspace-scoped adjudication store."""
-    return AdjudicationStore(get_settings().rdb_dsn, workspace_id)
+    return AdjudicationStore(get_settings().effective_dsn(), workspace_id)
 
 
 def adjudication_router() -> APIRouter:

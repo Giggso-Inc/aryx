@@ -1,0 +1,369 @@
+"""Durable option / product candidate scope for CPQ reply matching.
+
+PROMPT 7 — when the engine shows a candidate list (family disambiguation,
+constrained product options, attr options, "did you mean" suggestions),
+the next reply must be resolved against THAT list first. Losing scope is
+the same family of bug as gateway clarify-amnesia.
+
+Scope is stored flat on CpqSession (pending_scope_*) for session_data echo.
+This module stays free of FastAPI / graph imports so offline regression
+can load it.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
+
+ScopeKind = Literal[
+    "family_disambiguation",
+    "product_options",
+    "attr_options",
+    "product_suggestions",
+    "",
+]
+
+# Fuzzy accept threshold for in-scope recovery (slightly looser than
+# product-mention confirm 0.82 — short typo replies need room).
+_SCOPE_FUZZY_ACCEPT = 0.72
+_SCOPE_FUZZY_SUGGEST = 0.55
+_SCOPE_FUZZY_TOP_N = 3
+_SCOPE_MISS_LOOP_EXIT = 2
+
+# Below this, a single "miss"-tier suggestion is coincidental character
+# overlap, not a real near-miss -- confirmed live (2026-08-08): resending
+# an entire unrelated sentence ("Give me quote of APXNEXT with 10 qty for
+# US") as the reply to a pending Product question scored just over
+# _SCOPE_FUZZY_SUGGEST (0.55) against "APX NEXT (International)" purely
+# because both strings happen to share "APX NEXT" — nowhere near a genuine
+# typo/abbreviation match. Framing that as a confident "did you mean X?"
+# misrepresents the actual signal. Sits above the bare suggest floor but
+# below the real accept threshold, the same "wide middle band is noise"
+# shape as _PRODUCT_FUZZY_SUGGEST_THRESHOLD in engine.py.
+_DID_YOU_MEAN_CONFIDENT_FLOOR = 0.65
+
+_SCOPE_KINDS = frozenset({
+    "family_disambiguation",
+    "product_options",
+    "attr_options",
+    "product_suggestions",
+})
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _score(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+@dataclass(frozen=True)
+class ScopeResolve:
+    """Result of resolving a reply against pending_scope.candidates."""
+
+    matched: str | None
+    suggestions: list[str]
+    tier: str  # exact | partial | fuzzy | miss | empty
+    # Top candidate's match strength when tier == "miss" (0.0 otherwise /
+    # not meaningful for exact|partial|fuzzy, which already resolved).
+    # Lets a caller distinguish a near-miss suggestion from coincidental
+    # character overlap on a long, unrelated reply.
+    score: float = 0.0
+
+
+def clear_pending_scope(session: Any) -> None:
+    """Clear all pending_scope_* fields on a CpqSession-like object."""
+    session.pending_scope_kind = ""
+    session.pending_scope_candidates = []
+    session.pending_scope_origin_question = ""
+    session.pending_scope_asked_turn = 0
+    session.pending_scope_misses = 0
+    session.pending_scope_attr_vn = ""
+
+
+def set_pending_scope(
+    session: Any,
+    *,
+    kind: str,
+    candidates: list[str],
+    origin_question: str = "",
+    attr_vn: str = "",
+    asked_turn: int | None = None,
+) -> None:
+    """Remember the list we just showed the user.
+
+    Dedupes candidates (order-preserving). No-op when candidates empty
+    (never store an empty "scope" that would block real matching).
+    """
+    clean: list[str] = []
+    seen: set[str] = set()
+    for c in candidates or []:
+        s = (c or "").strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(s)
+    if not clean:
+        return
+    kind_s = kind if kind in _SCOPE_KINDS else "attr_options"
+    session.pending_scope_kind = kind_s
+    session.pending_scope_candidates = clean
+    session.pending_scope_origin_question = (origin_question or "")[:500]
+    session.pending_scope_asked_turn = (
+        int(asked_turn) if asked_turn is not None
+        else int(getattr(session, "turn", 0) or 0)
+    )
+    session.pending_scope_misses = 0
+    session.pending_scope_attr_vn = (attr_vn or "").strip()
+    logger.info(
+        "cpq_scope_set kind=%s n=%d attr=%r turn=%s",
+        kind_s, len(clean), session.pending_scope_attr_vn,
+        session.pending_scope_asked_turn,
+    )
+
+
+def candidates_from_attr_options(
+    options: list[Any],
+    constrained_item_values: list[str] | None = None,
+) -> list[str]:
+    """Build display-name strings for scope from MenuOption-like objects.
+
+    Display name ONLY, never the raw internal item_value (2026-08-13
+    live-confirmed bug): this list is both what a reply is matched
+    against AND what gets echoed back verbatim to the customer in a
+    numbered re-ask (`_scoped_reask_response`'s "same list as before"
+    fallback) whenever it collapses to the full candidate set.
+    Previously also appending item_value whenever it differed from
+    display_name (e.g. item_value "APX NEXT MULTI" for the real
+    "APX NEXT All Band" option) meant internal catalog codes -- never
+    meant to be customer-facing -- leaked into that visible re-ask as
+    if they were separate, legitimate product choices, inflating a
+    real 7-option list into an 11-entry one. `resolve_against_scope`'s
+    own partial/fuzzy tiers already recover a customer typing an
+    internal-code-shaped reply against the display name alone, so
+    matching flexibility isn't lost by dropping item_value here.
+    """
+    allowed = set(constrained_item_values) if constrained_item_values is not None else None
+    out: list[str] = []
+    for o in options or []:
+        iv = getattr(o, "item_value", "") or ""
+        dn = getattr(o, "display_name", "") or iv
+        if allowed is not None and iv not in allowed:
+            continue
+        if dn.strip():
+            out.append(dn.strip())
+    return out
+
+
+def resolve_against_scope(
+    reply: str,
+    candidates: list[str],
+    *,
+    fuzzy_accept: float = _SCOPE_FUZZY_ACCEPT,
+    fuzzy_suggest: float = _SCOPE_FUZZY_SUGGEST,
+    top_n: int = _SCOPE_FUZZY_TOP_N,
+) -> ScopeResolve:
+    """Ladder: exact → partial/substring → fuzzy → miss (+ suggestions).
+
+    Partial-word preserves live "Federal" → "… (Federal)" behavior.
+    Fuzzy recovers pet names / typos ("r7ex", "Asr") *within* candidates.
+    """
+    r = (reply or "").strip()
+    if not candidates:
+        return ScopeResolve(None, [], "empty")
+    if not r:
+        return ScopeResolve(None, list(candidates[:top_n]), "miss")
+
+    r_lower = r.lower().strip(" .,:;!?\"'")
+    r_norm = _norm(r)
+
+    # (i) Exact — full string or digit index
+    if r.isdigit():
+        idx = int(r) - 1
+        if 0 <= idx < len(candidates):
+            return ScopeResolve(candidates[idx], [], "exact")
+    for c in candidates:
+        if c.lower().strip() == r_lower:
+            return ScopeResolve(c, [], "exact")
+        if _norm(c) == r_norm and r_norm:
+            return ScopeResolve(c, [], "exact")
+
+    # (ii) Partial / substring (Federal-in-scope)
+    partial_hits: list[str] = []
+    for c in candidates:
+        c_lower = c.lower()
+        c_norm = _norm(c)
+        if len(r_lower) >= 2 and (
+            r_lower in c_lower
+            or (len(c_lower) >= 2 and c_lower in r_lower)
+            or (r_norm and len(r_norm) >= 2 and r_norm in c_norm)
+            or (c_norm and len(c_norm) >= 2 and c_norm in r_norm)
+        ):
+            # Word-ish: avoid tiny 1-char noise
+            partial_hits.append(c)
+    if len(partial_hits) == 1:
+        return ScopeResolve(partial_hits[0], [], "partial")
+    if len(partial_hits) > 1:
+        # Prefer longest candidate (more specific) when multiple contain reply
+        best = max(partial_hits, key=lambda s: len(_norm(s)))
+        # If several share same length specificity, still ambiguous → suggest
+        tops = sorted(partial_hits, key=lambda s: len(_norm(s)), reverse=True)
+        if len(_norm(tops[0])) > len(_norm(tops[1])) if len(tops) > 1 else True:
+            # unique longest wins for partial
+            longest = tops[0]
+            if sum(1 for t in tops if len(_norm(t)) == len(_norm(longest))) == 1:
+                return ScopeResolve(longest, [], "partial")
+        # Ambiguous, but every one of these is a genuine substring hit
+        # (not coincidental fuzzy overlap) -- score=1.0 keeps "did you
+        # mean" phrasing meaningful when this collapses to a single item.
+        return ScopeResolve(None, tops[:top_n], "miss", 1.0)
+
+    # (iii) Fuzzy edit-distance / ratio against each candidate
+    scored: list[tuple[str, float]] = []
+    for c in candidates:
+        c_norm = _norm(c)
+        if not c_norm:
+            continue
+        # Bidirectional ratio + prefix bonus for short replies
+        s = max(_score(r_norm, c_norm), _score(r_lower, c.lower()))
+        if r_norm and c_norm.startswith(r_norm):
+            s = max(s, 0.85)
+        if r_norm and r_norm in c_norm and len(r_norm) >= 3:
+            s = max(s, 0.80)
+        # Sliding short window over long names
+        if len(r_norm) >= 3 and len(c_norm) > len(r_norm):
+            window = len(r_norm)
+            for i in range(0, len(c_norm) - window + 1):
+                s = max(s, _score(r_norm, c_norm[i:i + window]))
+        scored.append((c, s))
+    scored.sort(key=lambda t: t[1], reverse=True)
+    if scored and scored[0][1] >= fuzzy_accept:
+        # Unique clear winner
+        if len(scored) == 1 or scored[0][1] - scored[1][1] >= 0.05:
+            return ScopeResolve(scored[0][0], [], "fuzzy")
+        # Near-ties → suggestions (top score already cleared fuzzy_accept)
+        top = [c for c, sc in scored if sc >= fuzzy_suggest][:top_n]
+        return ScopeResolve(None, top or [scored[0][0]], "miss", scored[0][1])
+
+    suggestions = [c for c, sc in scored if sc >= fuzzy_suggest][:top_n]
+    if not suggestions and scored:
+        suggestions = [scored[0][0]]
+    return ScopeResolve(None, suggestions, "miss", scored[0][1] if scored else 0.0)
+
+
+def format_did_you_mean(
+    reply: str,
+    suggestions: list[str],
+    *,
+    numbered: bool = False,
+    scope_label: str = "",
+    confident_single: bool = False,
+) -> str:
+    """Scoped re-ask — never mentions the full catalog.
+
+    confident_single — only meaningful when exactly one suggestion is
+    passed. True keeps the "did you mean **X**?" phrasing (a genuine
+    near-miss: a real substring hit, or a fuzzy score close to the accept
+    threshold). False renders the same single suggestion as a plain
+    numbered pick instead — confirmed live (2026-08-08): resending an
+    entire unrelated sentence as a reply scored just over the bare
+    fuzzy-suggest floor against one real option purely by coincidental
+    character overlap, and phrasing that as a confident guess overstated
+    the actual match quality. The caller (_scoped_reask_response) decides
+    this from the underlying ScopeResolve.score/tier, not this function.
+
+    Live-confirmed wording bug (2026-08-13): quoting the reply verbatim
+    ("I didn't get **{reply}**...") reads fine for a short, typo'd
+    product-name attempt, but produces garbled, confusing phrasing for a
+    full sentence -- "I didn't get **I wanted to set the product** for
+    Product" sounds like a broken double-negative, not a clarification
+    request. A short reply (<=5 words) is still quoted, since that's the
+    genuinely useful case (showing the customer exactly what didn't
+    match); a longer one is replaced with generic "that reply" wording.
+    """
+    reply_stripped = (reply or "").strip()
+    reply_s = (
+        reply_stripped if reply_stripped and len(reply_stripped.split()) <= 5
+        else "that reply"
+    )
+    label_bit = f" for **{scope_label}**" if scope_label else ""
+    if numbered or len(suggestions) > 3:
+        lines = "\n".join(f"{i + 1}. **{s}**" for i, s in enumerate(suggestions))
+        return (
+            f"I didn't get **{reply_s}**{label_bit}. "
+            f"Please pick one of these (same list as before):\n\n{lines}"
+        )
+    if not suggestions:
+        return (
+            f"I didn't get **{reply_s}**{label_bit}. "
+            f"Please reply with one of the options I listed."
+        )
+    if len(suggestions) == 1:
+        if confident_single:
+            return (
+                f"I didn't get **{reply_s}**{label_bit} — did you mean "
+                f"**{suggestions[0]}**? Reply with the name, or something "
+                f"else from the same list."
+            )
+        return (
+            f"I didn't get **{reply_s}**{label_bit} as a match. "
+            f"Please pick one of these (same list as before):\n\n"
+            f"1. **{suggestions[0]}**"
+        )
+    sug = ", ".join(f"**{s}**" for s in suggestions)
+    return (
+        f"I didn't get **{reply_s}**{label_bit} — did you mean {sug}, "
+        f"or something else from the same list?"
+    )
+
+
+def log_scope_retained(
+    *,
+    run_id: str,
+    reply: str,
+    kind: str,
+    n_candidates: int,
+    suggestions: list[str],
+    misses: int,
+) -> None:
+    logger.info(
+        "cpq_scope_retained run_id=%s kind=%s n=%d misses=%d reply=%r "
+        "suggestions=%r",
+        run_id or "-", kind, n_candidates, misses, (reply or "")[:80],
+        suggestions[:5],
+    )
+
+
+def log_scope_lost(
+    *,
+    run_id: str,
+    reply: str,
+    reason: str,
+) -> None:
+    """Should be structurally impossible after PROMPT 7 — alert if seen."""
+    logger.error(
+        "cpq_scope_lost run_id=%s reason=%s reply=%r",
+        run_id or "-", reason, (reply or "")[:120],
+    )
+
+
+def scope_loop_exit_threshold() -> int:
+    return _SCOPE_MISS_LOOP_EXIT
+
+
+def is_confident_scope_suggestion(res: ScopeResolve) -> bool:
+    """True when a single "miss"-tier suggestion is a genuine near-miss
+    (real substring hit, or a fuzzy score near the accept threshold) --
+    False when it only cleared the bare suggestion floor, the shape a long,
+    unrelated reply's coincidental character overlap produces."""
+    return res.tier == "miss" and res.score >= _DID_YOU_MEAN_CONFIDENT_FLOOR

@@ -19,9 +19,9 @@ def main() -> None:
     """Configure logging, apply the landing schema, and report readiness."""
     settings = get_settings()
     configure_logging(settings.log_level)
-    apply_migrations(settings.rdb_dsn)
+    apply_migrations(settings.effective_dsn())
     # Log only the host/db portion of the DSN — never the credentials.
-    target = settings.rdb_dsn.split("@")[-1]
+    target = settings.effective_dsn().split("@")[-1]
     logger.info("aryx %s ready rdb=%s", __version__, target)
 
 

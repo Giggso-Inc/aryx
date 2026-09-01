@@ -3,7 +3,8 @@ import csv
 import io
 from unittest.mock import MagicMock, patch
 
-from aryx.pipeline.doc_discovery import _xml_to_csvs
+from aryx.pipeline import doc_discovery
+from aryx.pipeline.doc_discovery import _xml_to_csvs, ingest_confirmed
 
 
 def _rows(data: bytes) -> list[dict]:
@@ -154,3 +155,121 @@ def test_display_name_fallback_skips_underscore_no_named_key():
     attrs = {"_element_type": "Supplier", "_meta": "noise", "company": "Acme Corp"}
     assert falkor_dn(attrs) == "Acme Corp"
     assert oracle_dn(attrs) == "Acme Corp"
+
+
+# docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md -- widening the CPQ
+# rule/table caches' TTLs from 30s to 300s only stays safe against a
+# mid-session re-ingest if staleness is cleared at the point ingestion
+# actually completes, not left to the (now longer) TTL alone.
+
+class _FakeSettings:
+    rdb_dsn = "postgresql://fake"
+    graph_url = "redis://fake"
+    ingest_relate = False
+    ingest_workers = 1
+
+
+def test_ingest_confirmed_clears_cpq_rule_and_table_caches_on_completion():
+    """A minimal (nothing to actually ingest) call still reaches the very
+    end of ingest_confirmed -- all five CPQ cache-clear hooks must fire
+    there regardless, since a re-ingest into a workspace with genuinely new
+    types/files takes the exact same path to completion. 2026-08-28: the two
+    newer caches (_data_table_forced_vns / _substitute_util_get_constraint_
+    vals, added for the /ask/threads/message concurrency fix) were
+    originally missed here -- caught by review, added alongside the
+    original three siblings."""
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettings()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq.data_table_resolver._clear_tables_cache") as mock_tables, \
+         patch("aryx.cpq.engine._clear_rule_join_data_cache") as mock_rule_join, \
+         patch("aryx.cpq.engine._clear_value_rules_cache") as mock_value_rules, \
+         patch("aryx.cpq.engine._clear_data_table_forced_vns_cache") as mock_forced_vns, \
+         patch("aryx.cpq.engine._clear_substitute_util_get_constraint_vals_cache") as mock_constraint_vals, \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        ingest_confirmed(
+            data={"mentions": [], "tabular": []},
+            approved_types=[], approved_files=[], broker=MagicMock(),
+            jobs=MagicMock(), job_id="test-job", workspace_id=1,
+        )
+    mock_tables.assert_called_once()
+    mock_rule_join.assert_called_once()
+    mock_value_rules.assert_called_once()
+    mock_forced_vns.assert_called_once()
+    mock_constraint_vals.assert_called_once()
+
+
+def test_ingest_confirmed_writes_cross_process_invalidation_marker():
+    """2026-08-29 (PR #287 review, Section 12): the in-process clears
+    above only reach THIS process' cache copy -- under multiple api
+    worker processes, this write is what lets every OTHER worker notice
+    a re-ingest it didn't itself handle."""
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__.return_value = mock_cursor
+    mock_conn = MagicMock()
+    mock_conn.__enter__.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    mock_pool = MagicMock()
+    mock_pool.connection.return_value = mock_conn
+
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettings()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.store.pool.get_pool", return_value=mock_pool):
+        ingest_confirmed(
+            data={"mentions": [], "tabular": []},
+            approved_types=[], approved_files=[], broker=MagicMock(),
+            jobs=MagicMock(), job_id="marker-test-job", workspace_id=1,
+        )
+    mock_cursor.execute.assert_called_once()
+    sql, params = mock_cursor.execute.call_args[0]
+    assert "cpq_cache_invalidation_marker" in sql
+    assert "marker-test-job" in params
+
+
+def test_ingest_confirmed_marker_write_failure_never_fails_the_ingest():
+    """Separate try/except from the in-process clears -- a marker-write
+    failure (e.g. the migration hasn't run, or the DB is unreachable)
+    must never surface as an ingest failure."""
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettings()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch("aryx.cpq.data_table_resolver._clear_tables_cache"), \
+         patch("aryx.cpq.engine._clear_rule_join_data_cache"), \
+         patch("aryx.cpq.engine._clear_value_rules_cache"), \
+         patch("aryx.cpq.engine._clear_data_table_forced_vns_cache"), \
+         patch("aryx.cpq.engine._clear_substitute_util_get_constraint_vals_cache"), \
+         patch("aryx.store.pool.get_pool", side_effect=RuntimeError("db unreachable")):
+        # Must not raise despite the marker-write failure above.
+        ingest_confirmed(
+            data={"mentions": [], "tabular": []},
+            approved_types=[], approved_files=[], broker=MagicMock(),
+            jobs=MagicMock(), job_id="test-job", workspace_id=1,
+        )
+
+
+def test_ingest_confirmed_cache_invalidation_failure_never_fails_the_ingest():
+    """Best-effort per its own comment -- an import failure or a clear()
+    bug in the invalidation hook must never surface as an ingest failure."""
+    with patch.object(doc_discovery, "get_settings", return_value=_FakeSettings()), \
+         patch.object(doc_discovery, "DatasourceStore", lambda dsn: MagicMock()), \
+         patch.object(doc_discovery, "_persist_tabular_sources", lambda *a, **k: None), \
+         patch.object(doc_discovery, "_detect_fk_links", return_value=[]), \
+         patch.object(doc_discovery, "_detect_script_data_flow_links", return_value=[]), \
+         patch(
+             "aryx.cpq.data_table_resolver._clear_tables_cache",
+             side_effect=RuntimeError("cache backend unavailable"),
+         ), \
+         patch("aryx.store.pool.get_pool", return_value=MagicMock()):
+        # Must not raise despite the cache-clear failure above.
+        ingest_confirmed(
+            data={"mentions": [], "tabular": []},
+            approved_types=[], approved_files=[], broker=MagicMock(),
+            jobs=MagicMock(), job_id="test-job", workspace_id=1,
+        )

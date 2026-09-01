@@ -1,0 +1,3 @@
+DELETE FROM aryx_entity
+WHERE workspace_id = %(workspace_id)s
+  AND id = ANY(%(entity_ids)s)

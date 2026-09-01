@@ -420,4 +420,4 @@ class ShayBridgeStore:
 
 def get_shay_bridge_store() -> ShayBridgeStore:
     """Return a store bound to the configured Aryx relational DSN."""
-    return ShayBridgeStore(get_settings().rdb_dsn)
+    return ShayBridgeStore(get_settings().effective_dsn())

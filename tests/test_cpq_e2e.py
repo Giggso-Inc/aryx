@@ -229,12 +229,15 @@ class FakeCpqRdb:
                         self._int(f.get("condition_function_id"))))
         return out
 
-    def fetch_value_rules(self, workspace_id, catalog_prefix=""):
+    def fetch_value_rules(self, workspace_id, catalog_prefix="", active_only=False):
         out = []
         for i, f in self.fetch_entities_by_type(workspace_id, "bm_config_rule"):
-            if f.get("rule_type") != "11":
-                out.append((i, self._int(f.get("id"), None), f.get("name", ""),
-                            f.get("rule_type", ""), self._int(f.get("condition_function_id"))))
+            if f.get("rule_type") == "11":
+                continue
+            if active_only and str(f.get("status")) != "1":
+                continue
+            out.append((i, self._int(f.get("id"), None), f.get("name", ""),
+                        f.get("rule_type", ""), self._int(f.get("condition_function_id"))))
         return out
 
     def fetch_rule_inputs(self, workspace_id, catalog_prefix=""):

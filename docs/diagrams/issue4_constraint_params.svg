@@ -1,0 +1,41 @@
+<svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow4" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  <rect width="900" height="460" fill="#ffffff"/>
+
+  <rect x="310" y="20" width="280" height="50" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="450" y="42" text-anchor="middle" font-size="13" fill="#1e1b4b">apply_constraint_rules()</text>
+  <text x="450" y="59" text-anchor="middle" font-size="12" fill="#1e1b4b">4 call sites</text>
+
+  <line x1="380" y1="70" x2="180" y2="110" stroke="#333" stroke-width="1.5" marker-end="url(#arrow4)"/>
+  <line x1="420" y1="70" x2="360" y2="110" stroke="#dc2626" stroke-width="1.8" marker-end="url(#arrow4)"/>
+  <line x1="480" y1="70" x2="560" y2="110" stroke="#dc2626" stroke-width="1.8" marker-end="url(#arrow4)"/>
+  <line x1="520" y1="70" x2="740" y2="110" stroke="#dc2626" stroke-width="1.8" marker-end="url(#arrow4)"/>
+
+  <rect x="30" y="110" width="300" height="50" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="180" y="132" text-anchor="middle" font-size="12.5" fill="#14532d">evaluate_rules_loop</text>
+  <text x="180" y="149" text-anchor="middle" font-size="11.5" fill="#14532d">&#9989; workspace_id/catalog_prefix passed</text>
+
+  <rect x="230" y="110" width="260" height="50" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+  <text x="360" y="132" text-anchor="middle" font-size="12.5" fill="#7f1d1d">check_country_availability</text>
+  <text x="360" y="149" text-anchor="middle" font-size="11.5" fill="#7f1d1d">&#10060; params missing</text>
+
+  <rect x="500" y="110" width="260" height="50" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+  <text x="630" y="132" text-anchor="middle" font-size="12.5" fill="#7f1d1d">find_rule_inconsistencies</text>
+  <text x="630" y="149" text-anchor="middle" font-size="11.5" fill="#7f1d1d">&#10060; params missing</text>
+
+  <rect x="600" y="110" width="270" height="50" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2" transform="translate(0,0)"/>
+  <text x="735" y="132" text-anchor="middle" font-size="12.5" fill="#7f1d1d">detect_attr_clear</text>
+  <text x="735" y="149" text-anchor="middle" font-size="11.5" fill="#7f1d1d">&#10060; params missing</text>
+
+  <line x1="360" y1="160" x2="450" y2="230" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arrow4)"/>
+  <line x1="630" y1="160" x2="450" y2="230" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arrow4)"/>
+  <line x1="735" y1="160" x2="470" y2="230" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arrow4)"/>
+
+  <rect x="280" y="230" width="340" height="60" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="450" y="255" text-anchor="middle" font-size="12.5" fill="#713f12">Native util.getConstraintVals() rules</text>
+  <text x="450" y="272" text-anchor="middle" font-size="12.5" fill="#713f12">fall back to Tier-2 LLM guessing</text>
+</svg>

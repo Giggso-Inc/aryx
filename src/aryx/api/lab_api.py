@@ -65,7 +65,7 @@ def lab_router() -> APIRouter:
         from aryx.config import get_settings
         from aryx.reasoning.axiom_validator import validate_workspace
         try:
-            summary = validate_workspace(workspace_id, get_settings().rdb_dsn,
+            summary = validate_workspace(workspace_id, get_settings().effective_dsn(),
                                          record=False)
         except Exception as exc:  # noqa: BLE001 — surface to the Lab UI
             logger.warning("lab reasoner failed: %s", exc)

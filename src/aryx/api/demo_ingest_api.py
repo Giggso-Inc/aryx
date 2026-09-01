@@ -40,7 +40,7 @@ class LoadDemoResponse(BaseModel):
 
 def _session() -> tuple[Any, Any]:
     """Open a SQLAlchemy session on the psycopg3 dialect; caller closes both."""
-    dsn = get_settings().rdb_dsn.replace("postgresql://",
+    dsn = get_settings().effective_dsn().replace("postgresql://",
                                          "postgresql+psycopg://")
     engine = create_engine(dsn, echo=False)
     return engine, sessionmaker(bind=engine)()

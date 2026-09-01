@@ -30,7 +30,7 @@ def axioms_router() -> APIRouter:
     @router.get("")
     def list_axioms(workspace_id: int = 1) -> dict[str, Any]:
         """Return every axiom declared in a workspace."""
-        store = AxiomStore(get_settings().rdb_dsn)
+        store = AxiomStore(get_settings().effective_dsn())
         try:
             axioms = store.list_(workspace_id)
         finally:
@@ -52,7 +52,7 @@ def axioms_router() -> APIRouter:
                 400, f"unknown kind '{kind}'; choose from {sorted(VALID_KINDS)}")
         if not isinstance(payload, dict):
             raise HTTPException(400, "payload must be an object")
-        store = AxiomStore(get_settings().rdb_dsn)
+        store = AxiomStore(get_settings().effective_dsn())
         try:
             axiom_id = store.add(workspace_id, subject, kind, payload)
         finally:
@@ -64,7 +64,7 @@ def axioms_router() -> APIRouter:
     @router.delete("/{axiom_id}")
     def delete_axiom(axiom_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Remove an axiom from a workspace (no-op when absent)."""
-        store = AxiomStore(get_settings().rdb_dsn)
+        store = AxiomStore(get_settings().effective_dsn())
         try:
             store.delete(axiom_id, workspace_id)
         finally:
@@ -76,7 +76,7 @@ def axioms_router() -> APIRouter:
     def validate(workspace_id: int = 1) -> dict[str, Any]:
         """Run the axiom-validation pass; record + return a summary."""
         from aryx.reasoning.axiom_validator import validate_workspace
-        return validate_workspace(workspace_id, get_settings().rdb_dsn)
+        return validate_workspace(workspace_id, get_settings().effective_dsn())
 
     return router
 
@@ -91,7 +91,7 @@ def shapes_router() -> APIRouter:
         if not export_runtime.is_enabled():
             raise HTTPException(403, "ontology export is disabled "
                                 "— enable it in Settings")
-        store = AxiomStore(get_settings().rdb_dsn)
+        store = AxiomStore(get_settings().effective_dsn())
         try:
             axioms = store.list_(workspace_id)
         finally:

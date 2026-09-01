@@ -1,0 +1,355 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "g01",
+      "question": "change hardware version to H45",
+      "expected_intent": "change_request",
+      "expected_variable_name": "hWVersion_astro",
+      "notes": ""
+    },
+    {
+      "id": "g02",
+      "question": "set the country to United States",
+      "expected_intent": "change_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g03",
+      "question": "change the service type",
+      "expected_intent": "change_target_without_value",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g04",
+      "question": "update product selection",
+      "expected_intent": "change_target_without_value",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g05",
+      "question": "change hardware to H45 and country to US",
+      "expected_intent": "change_requests_multi",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g06",
+      "question": "set service type to Comprehensive and solution type to RadioCentral",
+      "expected_intent": "change_requests_multi",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g07",
+      "question": "remove Jacket Magnetic Mount",
+      "expected_intent": "multi_select_removal",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g08",
+      "question": "deselect the Shirt Magnetic Mount",
+      "expected_intent": "multi_select_removal",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g09",
+      "question": "clear the multikey field",
+      "expected_intent": "attr_clear",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g10",
+      "question": "unset spare battery",
+      "expected_intent": "attr_clear",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g11",
+      "question": "add the spare battery option",
+      "expected_intent": "attr_activation",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g12",
+      "question": "include multikey please",
+      "expected_intent": "attr_activation",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g13",
+      "question": "change both mounting quantities to 67",
+      "expected_intent": "bulk_quantity_change",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g14",
+      "question": "set all quantities to 10",
+      "expected_intent": "bulk_quantity_change",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g15",
+      "question": "confirm",
+      "expected_intent": "approval",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g16",
+      "question": "yes approve the configuration",
+      "expected_intent": "approval",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g17",
+      "question": "what are the options for hardware version?",
+      "expected_intent": "attr_query",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g18",
+      "question": "which service types are available?",
+      "expected_intent": "attr_query",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g19",
+      "question": "how does the service plan work?",
+      "expected_intent": "qa_question",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g20",
+      "question": "what is included in comprehensive?",
+      "expected_intent": "qa_question",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g21",
+      "question": "configure APX Next for a US customer",
+      "expected_intent": "product_mention",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g22",
+      "question": "I want SVX Video RSM",
+      "expected_intent": "product_mention",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g23",
+      "question": "show me the json",
+      "expected_intent": "response_mode_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g24",
+      "question": "show all pending questions",
+      "expected_intent": "response_mode_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g25",
+      "question": "undo",
+      "expected_intent": "undo",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g26",
+      "question": "go back",
+      "expected_intent": "undo",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g27",
+      "question": "revert last change",
+      "expected_intent": "undo",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g28",
+      "question": "maybe something about the thing",
+      "expected_intent": "ambiguous",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g29",
+      "question": "fix it",
+      "expected_intent": "ambiguous",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g30",
+      "question": "what's the weather in Chicago?",
+      "expected_intent": "out_of_scope",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g31",
+      "question": "tell me a joke",
+      "expected_intent": "out_of_scope",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g32",
+      "question": "change region to NA",
+      "expected_intent": "change_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g33",
+      "question": "switch hardware version",
+      "expected_intent": "change_target_without_value",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g34",
+      "question": "please change the solution type to RadioCentral with CPS",
+      "expected_intent": "change_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g35",
+      "question": "remove Locking Molle Mount from the grid",
+      "expected_intent": "multi_select_removal",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g36",
+      "question": "clear product selection help text",
+      "expected_intent": "attr_clear",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g37",
+      "question": "activate surveillance kit",
+      "expected_intent": "attr_activation",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g38",
+      "question": "update both qty fields to 25",
+      "expected_intent": "bulk_quantity_change",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g39",
+      "question": "I confirm this quote",
+      "expected_intent": "approval",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g40",
+      "question": "list values for ultimate destination country",
+      "expected_intent": "attr_query",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g41",
+      "question": "why is spare battery recommended?",
+      "expected_intent": "qa_question",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g42",
+      "question": "quote CommandCentral Aware 2024",
+      "expected_intent": "product_mention",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g43",
+      "question": "give me the JSON payload",
+      "expected_intent": "response_mode_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g44",
+      "question": "roll back",
+      "expected_intent": "undo",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g45",
+      "question": "hmm not sure",
+      "expected_intent": "ambiguous",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g46",
+      "question": "who won the world cup?",
+      "expected_intent": "out_of_scope",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g47",
+      "question": "change band class type to B",
+      "expected_intent": "change_request",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g48",
+      "question": "change order type",
+      "expected_intent": "change_target_without_value",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g49",
+      "question": "set hardware to H1 and multikey to MULTIKEY",
+      "expected_intent": "change_requests_multi",
+      "expected_variable_name": null,
+      "notes": ""
+    },
+    {
+      "id": "g50",
+      "question": "deselect all mounts",
+      "expected_intent": "multi_select_removal",
+      "expected_variable_name": null,
+      "notes": ""
+    }
+  ]
+}

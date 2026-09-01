@@ -49,7 +49,7 @@ def _kinds(reader: GraphReader) -> list[str]:
 def _relationships(workspace_id: int) -> list[str]:
     """List declared relationship types from the W2 endpoint store."""
     try:
-        rels = RelationshipTypeStore(get_settings().rdb_dsn).list(workspace_id)
+        rels = RelationshipTypeStore(get_settings().effective_dsn()).list(workspace_id)
     except Exception as exc:  # noqa: BLE001
         logger.debug("overview rels skipped: %s", exc)
         return []
@@ -65,7 +65,7 @@ def _relationships(workspace_id: int) -> list[str]:
 def _aim(workspace_id: int) -> list[str]:
     """Pull the aim line from the workspace brief, if set."""
     try:
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             for w in store.list_all():
                 if int(w.get("id", 0)) == int(workspace_id):

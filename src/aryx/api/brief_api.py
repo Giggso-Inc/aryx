@@ -42,7 +42,7 @@ def _run_draft(job_id: str, workspace_id: int,
     settings = get_settings()
     jobs = None
     try:
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         jobs.update_stage(job_id, "Drafting", 50, "Calling language model…")
         brief = draft_from_text(_local_broker(), seed, doc_text)
         _BRIEFS[(workspace_id, job_id)] = brief
@@ -69,7 +69,7 @@ def brief_router() -> APIRouter:
         """Start a background brief-draft job; returns job_id immediately."""
         job_id = uuid.uuid4().hex
         settings = get_settings()
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         try:
             jobs.create(job_id, "brief", "drafting brief", workspace_id)
         finally:

@@ -36,7 +36,7 @@ def ontology_assist_router() -> APIRouter:
     @router.post("/suggest-attrs")
     def suggest_attrs_endpoint(req: SuggestAttrsRequest) -> dict[str, Any]:
         """Return AI-proposed attribute names for an entity type."""
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             workspaces = store.list_all()
         finally:

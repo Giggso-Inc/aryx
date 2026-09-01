@@ -78,6 +78,34 @@ independent `hide → recommend → constrain → auto-fill` oracle to a fixed p
 and compares it with the production engine. Exit codes are `0` for a clean run,
 `1` for rule/state mismatches, and `2` for setup or catalog-loading failures.
 
+### Run the CPQ regression suite
+
+The intent classifier and its guardrails are gated by a 50-positive +
+50-negative scenario suite in
+[`benchmarks/cpq_intent/CPQ_REGRESSION_SUITE.md`](benchmarks/cpq_intent/CPQ_REGRESSION_SUITE.md).
+It runs automatically on every `git push` (pre-push hook) and inside
+`make test`; run it by hand with:
+
+```bash
+make cpq-regression
+```
+
+This is offline (no LLM, no DB — finishes in ~1s) and checks: case counts,
+intent labels against the `IntentCategory` schema, the quote / off-topic /
+undo / guided detectors, and the gateway quarantine + session-snapshot
+invariants. Exit `0` = pass, `1` = regression, and a failing run blocks the
+push (bypass in emergencies with `git push --no-verify`).
+
+Full LLM scoring of every case (needs Gemini credentials):
+
+```bash
+PYTHONPATH=src python3 benchmarks/cpq_intent/run_regression.py --live
+```
+
+To add scenarios, append rows to the suite's markdown tables using the next
+free `P##`/`N##` id — never renumber existing ids. Details:
+[`benchmarks/cpq_intent/README.md`](benchmarks/cpq_intent/README.md).
+
 ## Documentation
 
 | Guide | What it covers |

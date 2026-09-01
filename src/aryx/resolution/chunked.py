@@ -18,16 +18,24 @@ import logging
 from collections.abc import Iterable, Iterator
 from typing import Protocol
 
+from aryx.config import get_settings
 from aryx.models import EntityMember, ResolutionRecord, ResolvedEntity
 from aryx.resolution.blocking import _keys_for
 from aryx.resolution.classical import score_pair
 from aryx.resolution.cluster import UnionFind
-from aryx.resolution.run import _materialize, _threshold
+from aryx.resolution.run import _materialize, _partition_pair_scores
 from aryx.resolution.survivorship import SurvivorshipPolicy
 
 logger = logging.getLogger(__name__)
 
 MAX_BLOCK = 5000
+
+# Batch size for the cluster pass's record load. Loading once per CLUSTER
+# instead of once per BATCH is catastrophic when most clusters are
+# singletons (e.g. a table whose blocking keys are too low-cardinality to
+# produce any match edges — every record ends up in its own cluster):
+# hundreds of thousands of individual round-trips instead of a handful.
+CLUSTER_LOAD_BATCH = 5000
 
 
 class ChunkBackend(Protocol):
@@ -41,7 +49,7 @@ class ChunkBackend(Protocol):
     def add_edges(self, run_id: int,
                   edges: list[tuple[int, int, float]]) -> None: ...
     def mark_done(self, run_id: int, key: str) -> None: ...
-    def edges(self, run_id: int) -> list[tuple[int, int, float]]: ...
+    def edges(self, run_id: int) -> Iterator[tuple[int, int, float]]: ...
 
 
 def _key_pass(run_id: int, records: Iterable[ResolutionRecord],
@@ -62,7 +70,7 @@ def _key_pass(run_id: int, records: Iterable[ResolutionRecord],
 
 def _score_pass(run_id: int, backend: ChunkBackend) -> None:
     """Pass 2: score each not-yet-done block; auto-merge edges persist."""
-    auto = _threshold("ARYX_ER_AUTO_MERGE", 0.92)
+    auto = get_settings().er_auto_merge
     for key in backend.todo_blocks(run_id):
         ids = backend.block_record_ids(run_id, key)
         if len(ids) > MAX_BLOCK:
@@ -87,20 +95,71 @@ def _cluster_pass(
     run_id: int, backend: ChunkBackend, all_ids: list[int],
     ontology_type: str, policy: SurvivorshipPolicy | None,
 ) -> Iterator[tuple[ResolvedEntity, list[EntityMember]]]:
-    """Pass 3: connected components over edges; stream entities out."""
+    """Pass 3: connected components over edges; stream entities out.
+
+    Records are loaded in bounded batches ONCE up front (not once per
+    cluster) — a real incident: for a table whose blocking keys were too
+    low-cardinality to produce any match edges, nearly every one of 308,104
+    records became its own singleton cluster, and a per-cluster load_records
+    call turned that into 308,104 individual DB round-trips instead of ~62
+    batched ones, silently stalling the job for what would have been hours.
+
+    Edges are consumed from a streaming cursor (backend.edges), not a single
+    fetchall() — a second real incident: a 308,104-record run whose columns
+    were mostly low-cardinality (beyond just its key fields) produced
+    14,374,847 match edges from scoring, 46x the record count. Materializing
+    that many edges as one in-memory list, plus this method's own same-size
+    pair_scores dict, was enough memory pressure to crash the container mid-
+    run — silently, with no logged error, orphaning the job. er_max_edges_
+    per_run bounds pair_scores itself: once hit, remaining edges are not
+    consumed (logged clearly, never silent) — those pairs simply don't merge,
+    a safe degradation (under-clustering, not data loss) rather than an
+    unbounded allocation.
+    """
+    settings = get_settings()
+    max_edges = settings.er_max_edges_per_run
     union = UnionFind()
     for rid in all_ids:
         union.add(rid)
     pair_scores: dict[tuple[int, int], float] = {}
+    edge_count = 0
+    capped = False
     for left, right, score in backend.edges(run_id):
+        if edge_count >= max_edges:
+            capped = True
+            break
         union.add(left)
         union.add(right)
         union.union(left, right)
         pair_scores[(left, right)] = score
-    for member_ids in union.groups().values():
-        records_in = backend.load_records(member_ids)
-        by_id = {r.record_id: r for r in records_in}
-        entity = _materialize(member_ids, by_id, pair_scores,
+        edge_count += 1
+    if capped:
+        logger.warning(
+            "run=%s edge count exceeded er_max_edges_per_run=%d — remaining "
+            "edges not consumed; some genuine duplicates may not merge "
+            "(safe degradation, not data loss). Override "
+            "ARYX_ER_MAX_EDGES_PER_RUN if this run's match volume is expected.",
+            run_id, max_edges,
+        )
+    else:
+        logger.info("run=%s cluster pass consumed edges=%d", run_id, edge_count)
+
+    by_id: dict[int, ResolutionRecord] = {}
+    for start in range(0, len(all_ids), CLUSTER_LOAD_BATCH):
+        batch_ids = all_ids[start:start + CLUSTER_LOAD_BATCH]
+        for record in backend.load_records(batch_ids):
+            by_id[record.record_id] = record
+
+    # Partition pair_scores by cluster root ONCE — a third real incident
+    # (found during verification, not yet hit in production): _materialize
+    # -> cluster_edges() scans its ENTIRE pair_scores argument for every
+    # cluster. Passing the same run-wide dict (up to er_max_edges_per_run
+    # entries) to every one of ~106,000 clusters made total cost scale as
+    # clusters x edges instead of just edges — for this run, over a
+    # trillion dict-item checks. See _partition_pair_scores (run.py).
+    pair_scores_by_root = _partition_pair_scores(union, pair_scores)
+    for root, member_ids in union.groups().items():
+        entity = _materialize(member_ids, by_id, pair_scores_by_root.get(root, {}),
                               ontology_type, policy)
         yield entity, [EntityMember(landed_record_id=m) for m in member_ids]
 

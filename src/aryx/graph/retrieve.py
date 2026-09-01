@@ -12,6 +12,7 @@ drift apart.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from aryx.ask.evidence import RetrievedEntity
@@ -19,10 +20,32 @@ from aryx.graph.reader import GraphReader
 
 __all__ = ["RetrievedEntity", "all_types", "gather", "render_context", "retrieve"]
 
+# Module-level TTL cache for all_types() — one entry per graph name.
+# all_types() runs on nearly every /ask call (fast attribute-options path is
+# the only one that skips it), but entity types only change on ingestion, not
+# per question, so a short TTL collapses repeated calls to 0 queries.
+_types_cache: dict[str, tuple[float, list[str]]] = {}
+_TYPES_TTL: float = 30.0
+
 
 def all_types(reader: GraphReader) -> list[str]:
-    """Distinct ontology types present — helps the parser pick search terms."""
-    return sorted({e["type"] for e in reader.find_entities(limit=500)})
+    """Distinct ontology types present — helps the parser pick search terms.
+
+    Uses reader.distinct_types() (a single `RETURN DISTINCT e.type` query)
+    rather than find_entities(limit=500), which ran a 500-row MATCH scan
+    returning the full properties() map per row just to read off `type` —
+    500x more data transfer than this needs.
+    """
+    cache_key = reader.graph_name
+    now = time.monotonic()
+    cached = _types_cache.get(cache_key)
+    if cached is not None:
+        ts, types = cached
+        if now - ts < _TYPES_TTL:
+            return types
+    types = sorted(reader.distinct_types())
+    _types_cache[cache_key] = (now, types)
+    return types
 
 
 def _lookup(reader: GraphReader, term: str) -> list[dict]:
@@ -69,11 +92,21 @@ def _lookup(reader: GraphReader, term: str) -> list[dict]:
 def gather(reader: GraphReader, terms: list[str]) -> tuple[list[RetrievedEntity], list[str]]:
     """Look up terms, expand one hop, gather provenance — as structured records.
 
+    docs/FALKORDB_QUERY_EXHAUSTION_2026_08_14.md — neighbors() used to run
+    once per matched entity (confirmed live: 50-100+ Cypher calls for one
+    /ask). Now batched via neighbors_batch(): one round trip for every
+    entity this call matched, logged as a single get_neighbors_batch(...)
+    entry instead of one get_neighbors(eid) line per entity — the log stays
+    literal (this module's own docstring above: "the UI can show exactly
+    what was queried"), it just reflects the real, smaller number of round
+    trips. provenance() has no batch form yet, so it's still one call per
+    entity.
+
     Returns the deduplicated entities and the exact graph calls made.
     """
     calls: list[str] = []
     seen: set[int] = set()
-    out: list[RetrievedEntity] = []
+    hits: list[dict] = []
 
     for term in terms[:5]:
         digits = "".join(ch for ch in term if ch.isdigit())
@@ -86,12 +119,21 @@ def gather(reader: GraphReader, terms: list[str]) -> tuple[list[RetrievedEntity]
             if eid in seen:
                 continue
             seen.add(eid)
-            calls.append(f"get_neighbors({eid})")
-            neighbors = reader.neighbors(eid)
-            calls.append(f"get_provenance({eid})")
-            sources = reader.provenance(eid)
-            out.append(RetrievedEntity(id=eid, type=ent["type"], name=ent["name"],
-                                       neighbors=neighbors, sources=sources))
+            hits.append(ent)
+
+    eids = [h["id"] for h in hits]
+    neighbor_map: dict[int, list[dict]] = {}
+    if eids:
+        calls.append(f"get_neighbors_batch({eids})")
+        neighbor_map = reader.neighbors_batch(eids)
+
+    out: list[RetrievedEntity] = []
+    for ent in hits:
+        eid = ent["id"]
+        calls.append(f"get_provenance({eid})")
+        sources = reader.provenance(eid)
+        out.append(RetrievedEntity(id=eid, type=ent["type"], name=ent["name"],
+                                   neighbors=neighbor_map.get(eid, []), sources=sources))
     return out, calls
 
 
@@ -115,6 +157,21 @@ def render_context(
     })
     # Values that carry no information.
     _TRIVIAL_VALS = frozenset({"0", "1", "", "null", "none", "unknown"})
+    # Neighbor entity TYPES that are internal BML rule constructs (hiding/
+    # recommendation/constraint/validation rules — BigMachines' own
+    # BmConfigRule, ingested per-catalog with a type prefix e.g.
+    # "ApxNextConfigBmConfigRule") — never customer-facing facts, but
+    # confirmed live to leak straight into an answer verbatim ("Hide Model
+    # selection frequency band attribute", "Associated Recommendation
+    # Rule") because this neighbor listing had no type filter at all, only
+    # _SKIP_ATTR_KEYS for an entity's OWN attributes. Suffix match (not
+    # exact), same catalog-prefix-agnostic convention used elsewhere in
+    # this codebase (e.g. CpqEngine._attr_index).
+    _INTERNAL_NEIGHBOR_TYPE_SUFFIXES = ("bmconfigrule",)
+
+    def _is_internal_rule_neighbor(neighbor_type: str) -> bool:
+        t = (neighbor_type or "").lower()
+        return any(t.endswith(suffix) for suffix in _INTERNAL_NEIGHBOR_TYPE_SUFFIXES)
 
     blocks: list[str] = []
     total = 0
@@ -133,11 +190,14 @@ def render_context(
                 if len(attr_lines) >= 12:
                     break
             lines.extend(attr_lines)
-        for n in ent.neighbors[:max_neighbors]:
+        _visible_neighbors = [
+            n for n in ent.neighbors if not _is_internal_rule_neighbor(n.get("type", ""))
+        ]
+        for n in _visible_neighbors[:max_neighbors]:
             arrow = "->" if n["direction"] == "out" else "<-"
             lines.append(f"  {arrow} {n['relationship']} {n['name']} [{n['type']}]")
-        if len(ent.neighbors) > max_neighbors:
-            lines.append(f"  ... ({len(ent.neighbors) - max_neighbors} more relationships truncated)")
+        if len(_visible_neighbors) > max_neighbors:
+            lines.append(f"  ... ({len(_visible_neighbors) - max_neighbors} more relationships truncated)")
         if ent.sources:
             capped = ent.sources[:max_sources]
             srcs = ", ".join(f"{p['system']}.{p['dataset']}" for p in capped)

@@ -158,10 +158,15 @@ def test_run_files_xlsx_branch_ingests_one_sheet_per_dataset(two_sheet_xlsx_byte
     mock_cfg = MagicMock()
     mock_cfg.rdb_dsn = "postgresql://x"
     mock_cfg.graph_url = "redis://x"
+    # These tests exercise the column-name FK passes only; the dynamic
+    # (value-overlap + LLM judge) stage is covered separately in
+    # test_dynamic_fk.py and the cross-workbook regression tests below.
+    mock_cfg.fk_dynamic_detection_enabled = False
     mock_jobs = MagicMock()
     mock_datasource_store = MagicMock()
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=mock_jobs), \
          patch.object(m, "DatasourceStore", return_value=mock_datasource_store), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -200,8 +205,13 @@ def test_run_files_xlsx_branch_auto_detects_cross_sheet_fk(monkeypatch):
     mock_cfg = MagicMock()
     mock_cfg.rdb_dsn = "postgresql://x"
     mock_cfg.graph_url = "redis://x"
+    # These tests exercise the column-name FK passes only; the dynamic
+    # (value-overlap + LLM judge) stage is covered separately in
+    # test_dynamic_fk.py and the cross-workbook regression tests below.
+    mock_cfg.fk_dynamic_detection_enabled = False
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=MagicMock()), \
          patch.object(m, "DatasourceStore", return_value=MagicMock()), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -237,8 +247,13 @@ def test_run_files_xlsx_skips_hidden_sheet_end_to_end(monkeypatch):
     mock_cfg = MagicMock()
     mock_cfg.rdb_dsn = "postgresql://x"
     mock_cfg.graph_url = "redis://x"
+    # These tests exercise the column-name FK passes only; the dynamic
+    # (value-overlap + LLM judge) stage is covered separately in
+    # test_dynamic_fk.py and the cross-workbook regression tests below.
+    mock_cfg.fk_dynamic_detection_enabled = False
 
     with patch.object(m, "get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
          patch.object(m, "JobStore", return_value=MagicMock()), \
          patch.object(m, "DatasourceStore", return_value=MagicMock()), \
          patch.object(m, "_local_broker", return_value=MagicMock()), \
@@ -254,3 +269,106 @@ def test_run_files_xlsx_skips_hidden_sheet_end_to_end(monkeypatch):
     assert mock_run_pipeline.call_args.kwargs["dataset"] == "PartlyHidden__Visible"
     mock_upsert.assert_called_once()
     assert len(mock_upsert.call_args.kwargs["assets"]) == 1
+
+
+# ── Cross-workbook FK detection (regression: isolated-nodes root cause) ─────
+#
+# Before the fix, xlsx FK detection ran once PER workbook — sheets from
+# workbook A were never compared against sheets from workbook B at all,
+# regardless of column names or upload order. These tests upload TWO
+# separate .xlsx files in one batch and assert a relationship between a
+# sheet in file 1 and a sheet in file 2 is actually found — impossible
+# under the old per-file-scoped detection.
+
+def test_run_files_detects_fk_link_across_two_separate_workbooks(monkeypatch):
+    """Regression test for the confirmed root cause of isolated knowledge-graph
+    nodes: Material.xlsx (a lookup workbook) and Transactions.xlsx (a separate
+    workbook) share a customer_id-style column. Column-name FK detection must
+    see both workbooks together, not just each workbook's own sheets."""
+    import aryx.api.file_ingest_api as m
+
+    material_wb = _workbook_bytes({
+        "Materials": [["id", "description"], [1, "Widget"], [2, "Gadget"]],
+    })
+    transactions_wb = _workbook_bytes({
+        "Records": [["material_id", "qty"], [1, 10], [2, 20]],
+    })
+    mock_cfg = MagicMock()
+    mock_cfg.rdb_dsn = "postgresql://x"
+    mock_cfg.graph_url = "redis://x"
+    mock_cfg.fk_dynamic_detection_enabled = False  # isolate the column-name-pass fix
+
+    with patch.object(m, "get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch.object(m, "JobStore", return_value=MagicMock()), \
+         patch.object(m, "DatasourceStore", return_value=MagicMock()), \
+         patch.object(m, "_local_broker", return_value=MagicMock()), \
+         patch.object(m, "run_pipeline") as mock_run_pipeline, \
+         patch.object(m, "upsert_xlsx_catalog_entry"):
+        m._run_files(
+            items=[(material_wb, "Material.xlsx"), (transactions_wb, "Transactions.xlsx")],
+            ontology_type="Entity", match_keys=["name"], fk_links=[],
+            job_id="job-cross-wb", workspace_id=1,
+        )
+
+    # 2 sheets total across both workbooks -> 2 run_pipeline calls.
+    assert mock_run_pipeline.call_count == 2
+    datasets = {call.kwargs["dataset"] for call in mock_run_pipeline.call_args_list}
+    assert datasets == {"Material__Materials", "Transactions__Records"}
+
+    # The globally-last plan (across BOTH workbooks) must carry the
+    # auto-detected cross-workbook FK link and be the one that relates/projects.
+    last_call = mock_run_pipeline.call_args_list[-1]
+    assert last_call.kwargs["fk_links"], (
+        "expected a column-name FK link detected ACROSS Material.xlsx and "
+        "Transactions.xlsx — this is exactly the relationship the old "
+        "per-workbook-scoped detection could never find"
+    )
+    assert last_call.kwargs["relate"] is True
+    first_call = mock_run_pipeline.call_args_list[0]
+    assert first_call.kwargs["relate"] is False
+    assert first_call.kwargs["skip_graph"] is True
+
+
+def test_run_files_dynamic_stage_also_spans_multiple_workbooks(monkeypatch):
+    """Same two-workbook setup, but with differently-NAMED columns that no
+    column-name pass can match (Sheet1.code vs Sheet1.material_ref) — only
+    the dynamic value-overlap + LLM judge stage can find this, and it must
+    also run across the whole batch, not per workbook."""
+    import aryx.api.file_ingest_api as m
+
+    material_wb = _workbook_bytes({
+        "Materials": [["code", "description"], ["M1", "Widget"], ["M2", "Gadget"]],
+    })
+    transactions_wb = _workbook_bytes({
+        "Records": [["material_ref", "qty"], ["M1", 10], ["M2", 20]],
+    })
+    mock_cfg = MagicMock()
+    mock_cfg.rdb_dsn = "postgresql://x"
+    mock_cfg.graph_url = "redis://x"
+    mock_cfg.fk_dynamic_detection_enabled = True
+    mock_cfg.fk_value_sample_size = 200
+    mock_cfg.fk_value_overlap_threshold = 0.05
+    mock_cfg.fk_dynamic_judge_workers = 4
+    mock_cfg.fk_fanout_scan_rows = 20000
+    mock_cfg.fk_max_estimated_fanout = 5000
+
+    with patch.object(m, "get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.get_settings", return_value=mock_cfg), \
+         patch("aryx.pipeline.dynamic_fk.complete_json",
+               return_value={"linked": True, "reason": "shared material code across workbooks"}), \
+         patch.object(m, "JobStore", return_value=MagicMock()), \
+         patch.object(m, "DatasourceStore", return_value=MagicMock()), \
+         patch.object(m, "_local_broker", return_value=MagicMock()), \
+         patch.object(m, "run_pipeline") as mock_run_pipeline, \
+         patch.object(m, "upsert_xlsx_catalog_entry"):
+        m._run_files(
+            items=[(material_wb, "Material.xlsx"), (transactions_wb, "Transactions.xlsx")],
+            ontology_type="Entity", match_keys=["name"], fk_links=[],
+            job_id="job-cross-wb-dynamic", workspace_id=1,
+        )
+
+    last_call = mock_run_pipeline.call_args_list[-1]
+    fk_links = last_call.kwargs["fk_links"]
+    assert fk_links, "expected the dynamic (value+LLM) stage to find the cross-workbook relationship"
+    assert any(lk["reason"] == "shared material code across workbooks" for lk in fk_links)

@@ -151,6 +151,27 @@ def _materialize(member_ids: list[int], by_id: dict[int, ResolutionRecord],
     )
 
 
+def _partition_pair_scores(
+    union: UnionFind, pair_scores: dict[tuple[int, int], float],
+) -> dict[int, dict[tuple[int, int], float]]:
+    """Bucket pair_scores by cluster root ONCE, before materializing clusters.
+
+    cluster_edges() (confidence.py) scans its whole pair_scores argument for
+    every call. Passing the SAME full, run-wide pair_scores dict to every
+    cluster's _materialize() call makes total cost O(clusters x edges)
+    instead of O(edges) — a real incident: for a run with ~106,000 clusters
+    and 14.3 million pair scores, that is over a trillion dict-item checks.
+    Bucketing once (union.find() is O(1) amortized with path compression,
+    already applied by earlier union() calls) and handing each cluster only
+    its OWN small subset restores the correct O(edges + clusters) cost.
+    """
+    by_root: dict[int, dict[tuple[int, int], float]] = {}
+    for (left, right), score in pair_scores.items():
+        root = union.find(left)
+        by_root.setdefault(root, {})[(left, right)] = score
+    return by_root
+
+
 def _resolve_exact(
     records: list[ResolutionRecord],
     union: UnionFind,
@@ -235,10 +256,12 @@ def resolve(
 
     if exact_ids:
         total_merged = _resolve_exact(records, union, pair_scores, run_id)
+        pair_scores_by_root = _partition_pair_scores(union, pair_scores)
         results = [
-            (_materialize(member_ids, by_id, pair_scores, ontology_type, policy),
+            (_materialize(member_ids, by_id, pair_scores_by_root.get(root, {}),
+                         ontology_type, policy),
              [EntityMember(landed_record_id=mid) for mid in member_ids])
-            for member_ids in union.groups().values()
+            for root, member_ids in union.groups().items()
         ]
         logger.info(
             "resolved run_id=%s mode=exact_ids records=%d entities=%d merged=%d",
@@ -299,10 +322,12 @@ def resolve(
         ):
             on_block_progress(block_idx + 1, total_blocks)
 
+    pair_scores_by_root = _partition_pair_scores(union, pair_scores)
     results = [
-        (_materialize(member_ids, by_id, pair_scores, ontology_type, policy),
+        (_materialize(member_ids, by_id, pair_scores_by_root.get(root, {}),
+                     ontology_type, policy),
          [EntityMember(landed_record_id=mid) for mid in member_ids])
-        for member_ids in union.groups().values()
+        for root, member_ids in union.groups().items()
     ]
     logger.info(
         "resolved run_id=%s records=%d entities=%d merged=%d adjudicated=%d "

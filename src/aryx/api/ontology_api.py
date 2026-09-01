@@ -41,7 +41,7 @@ class OntologyImportRequest(BaseModel):
 def _load_bundle(workspace_id: int, include_provenance: bool) -> GraphBundle:
     """Read a workspace's graph from Postgres into a GraphBundle."""
     settings = get_settings()
-    store = EntityStore(settings.rdb_dsn, workspace_id)
+    store = EntityStore(settings.effective_dsn(), workspace_id)
     try:
         provenance = list(store.list_members_provenance()) if include_provenance else []
         bundle = GraphBundle(
@@ -51,10 +51,10 @@ def _load_bundle(workspace_id: int, include_provenance: bool) -> GraphBundle:
         )
     finally:
         store.close()
-    onto = OntologyStore(settings.rdb_dsn, workspace_id)
+    onto = OntologyStore(settings.effective_dsn(), workspace_id)
     try: bundle.types = onto.list_types()
     finally: onto.close()
-    axiom_store = AxiomStore(settings.rdb_dsn)
+    axiom_store = AxiomStore(settings.effective_dsn())
     try: bundle.axioms = axiom_store.list_(workspace_id)
     finally: axiom_store.close()
     return bundle
@@ -70,7 +70,8 @@ def ontology_router() -> APIRouter:
         return export_runtime.status()
 
     @router.post("/config")
-    def set_config(req: OntologyConfigRequest) -> dict:
+    def set_config(req: OntologyConfigRequest,
+                   _: str | None = Depends(write_api_key)) -> dict:
         """Update the interchange config (enable, formats, base URI)."""
         export_runtime.set_config(
             enabled=req.enabled, formats=req.formats,
@@ -89,20 +90,22 @@ def ontology_router() -> APIRouter:
         return _ob.list_browse(workspace_id)
 
     @router.post("/types/{name}/approve")
-    def approve_type(name: str, workspace_id: int = 1) -> dict:
+    def approve_type(name: str, workspace_id: int = 1,
+                      _: str | None = Depends(write_api_key)) -> dict:
         """Approve a proposed type."""
         return _ob.approve(name, workspace_id)
 
     @router.post("/types/{name}/parent")
     def set_parent(name: str, body: dict,
-                    workspace_id: int = 1) -> dict:
+                    workspace_id: int = 1,
+                    _: str | None = Depends(write_api_key)) -> dict:
         """Set or clear parent_type (body.parent str|null)."""
         parent = body.get("parent")
         return _ob.set_parent(name, str(parent) if parent else None,
                                 workspace_id)
 
     @router.post("/types")
-    def add_type(body: dict) -> dict:
+    def add_type(body: dict, _: str | None = Depends(write_api_key)) -> dict:
         """Create a new ontology type manually in one workspace."""
         return _ob.add_type(str(body.get("name", "")).strip(),
                             body.get("attributes") or {},
@@ -115,7 +118,7 @@ def ontology_router() -> APIRouter:
         """Remove a type and cascade: delete all its entity instances from
         Postgres and remove their nodes from FalkorDB, then drop the type."""
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             deleted_ids = estore.delete_entities_by_type(name)
         finally:
@@ -132,6 +135,22 @@ def ontology_router() -> APIRouter:
             raise HTTPException(403, "ontology export is disabled — enable it in Settings")
         if format not in export_runtime.enabled_formats():
             raise HTTPException(403, f"format '{format}' is not enabled in Settings")
+        cap = get_settings().ontology_export_max_entities
+        if cap > 0:
+            settings = get_settings()
+            _estore = EntityStore(settings.effective_dsn(), workspace_id)
+            try:
+                entity_count = _estore.count_entities()
+            finally:
+                _estore.close()
+            if entity_count > cap:
+                raise HTTPException(
+                    413,
+                    f"workspace {workspace_id} has {entity_count:,} entities — "
+                    f"synchronous export is capped at {cap:,} to prevent proxy "
+                    f"timeouts (502). Raise ARYX_ONTOLOGY_EXPORT_MAX_ENTITIES or "
+                    f"use the async export endpoint.",
+                )
         cfg = export_runtime.status()
         try:
             bundle = _load_bundle(workspace_id, bool(cfg["include_provenance"]))
@@ -150,7 +169,8 @@ def ontology_router() -> APIRouter:
         )
 
     @router.post("/import")
-    def import_ontology(req: OntologyImportRequest) -> dict:
+    def import_ontology(req: OntologyImportRequest,
+                         _: str | None = Depends(write_api_key)) -> dict:
         """Parse RDF/OWL into proposed types via the ontology_browse helper."""
         if not export_runtime.is_enabled():
             raise HTTPException(403, "ontology import disabled — enable in Settings")

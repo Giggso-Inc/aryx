@@ -45,6 +45,46 @@ def test_detect_label_collision_none_when_label_is_unique():
     assert eng.detect_label_collision("what are the options for Battery", attrs) is None
 
 
+def test_detect_label_collision_does_not_fire_for_two_different_unambiguous_labels():
+    """docs/config_consistency_issues_2026-07-30.md issue 3 — live bug: "what
+    are the Frequency Bands and Wireless Carrier available?" wrongly
+    treated as ONE 3-way collision, pulling in wirelessCarrier_astro
+    (label "Wireless Carrier", zero shared tokens with "Frequency Bands")
+    alongside the two genuinely-colliding Frequency Bands attrs. A
+    compound question naming 2+ DIFFERENT, individually-unambiguous
+    attributes is not a label collision at all — each label here maps to
+    exactly one variable_name."""
+    eng = CpqEngine()
+    attrs = [
+        _attr(1, "modelSelectionFrequencyBands_astro", "Frequency Bands"),
+        _attr(2, "modelSelectionFrequencyBandMsl_astro", "Frequency Band"),
+        _attr(3, "wirelessCarrier_astro", "Wireless Carrier"),
+    ]
+    result = eng.detect_label_collision(
+        "what are the Frequency Bands and Wireless Carrier available?", attrs,
+    )
+    assert result is None
+
+
+def test_detect_label_collision_still_fires_within_a_compound_question():
+    """A genuine shared-label collision must still be caught even when it
+    co-occurs with an unrelated, unambiguous attribute in the same
+    compound question."""
+    eng = CpqEngine()
+    attrs = [
+        _attr(1, "mountType_viSoln", "Mounting Type"),
+        _attr(2, "mountingTypeArray_viSoln", "Mounting Type"),
+        _attr(3, "battery_astro", "Battery"),
+    ]
+    result = eng.detect_label_collision(
+        "what are the Mounting Type and Battery options?", attrs,
+    )
+    assert result is not None
+    assert {a.variable_name for a in result} == {
+        "mountType_viSoln", "mountingTypeArray_viSoln",
+    }
+
+
 def test_detect_label_collision_none_when_variable_name_itself_matches():
     # A variable_name mention is already unambiguous — must defer to
     # detect_attr_query's own vn_matches tier, not flag a false collision.

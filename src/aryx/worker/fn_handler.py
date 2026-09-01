@@ -46,7 +46,7 @@ def _dispatch(
 
     tmp_path: Path | None = None
     _run: dict[str, Any] = dict(
-        dsn=settings.rdb_dsn,
+        dsn=settings.effective_dsn(),
         ontology_type=ontology_type,
         match_keys=match_keys,
         graph_url=settings.graph_url,
@@ -76,7 +76,7 @@ def _dispatch(
             tmp.write(file_bytes)
             tmp.close()
             tmp_path = Path(tmp.name)
-            chunk_store = ChunkStore(settings.rdb_dsn)
+            chunk_store = ChunkStore(settings.effective_dsn())
             connector = DocumentRouterConnector(
                 paths=[tmp_path],
                 system="document",
@@ -127,7 +127,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> Any:
     # All connectivity from env vars set in OCI Console — never from payload
     settings = get_settings()
     broker   = oci_broker() if settings.effective_llm_cheap_backend() == "oci" else default_broker()
-    jobs     = JobStore(settings.rdb_dsn)
+    jobs     = JobStore(settings.effective_dsn())
 
     logger.info("aryx-ingest-fn: received job_id=%s filename=%s workspace_id=%s",
                 job_id, filename, workspace_id)

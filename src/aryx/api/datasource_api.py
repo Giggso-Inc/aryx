@@ -51,12 +51,12 @@ def datasource_router() -> APIRouter:
     @router.get("")
     def list_datasources(workspace_id: int = 1) -> list[dict[str, Any]]:
         """List datasources for a workspace (mask only, no ciphertext)."""
-        return DatasourceStore(get_settings().rdb_dsn).list(workspace_id)
+        return DatasourceStore(get_settings().effective_dsn()).list(workspace_id)
 
     @router.post("")
     def add_datasource(req: DatasourceAddRequest) -> dict[str, Any]:
         """Encrypt secret + store. Returns row WITHOUT ciphertext."""
-        store = DatasourceStore(get_settings().rdb_dsn)
+        store = DatasourceStore(get_settings().effective_dsn())
         try:
             return store.add(req.workspace_id, req.name, req.kind,
                              req.config, req.secret)
@@ -66,7 +66,7 @@ def datasource_router() -> APIRouter:
     @router.post("/{datasource_id}/test")
     def test_datasource(datasource_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Decrypt → open → ping. Always-pending failure is never silent."""
-        store = DatasourceStore(get_settings().rdb_dsn)
+        store = DatasourceStore(get_settings().effective_dsn())
         row = store.get(datasource_id, workspace_id)
         if not row:
             raise HTTPException(404, "datasource not found")
@@ -79,7 +79,7 @@ def datasource_router() -> APIRouter:
     @router.delete("/{datasource_id}")
     def delete_datasource(datasource_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Hard-delete a datasource and cascade its audit trail."""
-        DatasourceStore(get_settings().rdb_dsn).delete(datasource_id, workspace_id)
+        DatasourceStore(get_settings().effective_dsn()).delete(datasource_id, workspace_id)
         return {"status": "deleted", "datasource_id": datasource_id}
 
     return router
