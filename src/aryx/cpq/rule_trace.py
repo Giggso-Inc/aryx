@@ -114,7 +114,7 @@ def _trace_dir() -> Path | None:
 
 def _store() -> RuleTraceStore:
     from aryx.config import get_settings
-    return RuleTraceStore(get_settings().rdb_dsn)
+    return RuleTraceStore(get_settings().effective_dsn())
 
 
 def _get_or_open(run_id: str, workspace_id: int, catalog_prefix: str) -> _OpenTrace | None:

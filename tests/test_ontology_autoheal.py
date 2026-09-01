@@ -264,8 +264,9 @@ class TestListBrowseAutoHeal:
 
         assert result["types"] == []
         assert result["entity_count"] == 1
-        # Warning must be emitted — the exception is non-fatal but logged
-        assert mock_log.warning.called
+        # The exception is non-fatal but logged (at error level -- an
+        # auto-heal failure is a real error, not just a warning).
+        assert mock_log.error.called
 
     def test_autoheal_does_not_fire_when_types_already_present(self):
         """If type_rows is non-empty, auto-heal must not run seed_types."""

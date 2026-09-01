@@ -68,7 +68,7 @@ def _build_url(req: ConnectRequest) -> str:
 def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
                workspace_id: int = 1) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
+    jobs = JobStore(settings.effective_dsn())
     broker = _local_broker()
     try:
         total = len(tables)
@@ -78,7 +78,7 @@ def _run_multi(url: str, tables: list[dict], edges: list[dict], job_id: str,
             keys = t.get("match_keys") or ["id"]
             run_pipeline(
                 connector=SqlConnector(url, t["table"], keys[0], system="rdb"),
-                dsn=settings.rdb_dsn, system="rdb", dataset=t["table"],
+                dsn=settings.effective_dsn(), system="rdb", dataset=t["table"],
                 ontology_type=t["ontology_type"], match_keys=keys,
                 graph_url=settings.graph_url, broker=broker,
                 workspace_id=workspace_id,
@@ -121,7 +121,7 @@ def connect_router() -> APIRouter:
             raise HTTPException(404, "unknown connection")
         settings = get_settings()
         job_id = uuid.uuid4().hex
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         try:
             jobs.create(job_id, "rdb", f"{len(req.tables)} table(s)", req.workspace_id)
         finally:

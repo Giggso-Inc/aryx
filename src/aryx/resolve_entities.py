@@ -83,7 +83,7 @@ def resolve_run(
 
     review = None
     try:
-        adj_store = AdjudicationStore(settings.rdb_dsn, workspace_id)
+        adj_store = AdjudicationStore(settings.effective_dsn(), workspace_id)
         review = StoreReviewSink(adj_store, run_id)
     except Exception as exc:  # noqa: BLE001 — queue unavailable, funnel still runs
         logger.warning("resolve_run run_id=%s review sink unavailable, "
@@ -92,7 +92,7 @@ def resolve_run(
     policy = SurvivorshipPolicy(default_strategy=_DEFAULT_SURVIVORSHIP_STRATEGY)
     ws_store = None
     try:
-        ws_store = make_workspace_store(settings.rdb_dsn)
+        ws_store = make_workspace_store(settings.effective_dsn())
         raw = ws_store.get_survivorship(workspace_id)
         if raw:
             policy = SurvivorshipPolicy.from_json(raw)
@@ -158,6 +158,9 @@ def resolve_run(
             "using chunked (streaming, Postgres-resumable) resolver",
             run_id, len(records), settings.er_chunk_threshold,
         )
+        # PgChunkBackend is Postgres-only (uses ON CONFLICT DO NOTHING with
+        # no Oracle override) -- deliberately settings.rdb_dsn, not
+        # effective_dsn(), since this subsystem never runs on Oracle either way.
         backend = PgChunkBackend(settings.rdb_dsn, workspace_id, key_attrs)
         all_record_ids = [r.record_id for r in records]
         results = list(resolve_chunked(

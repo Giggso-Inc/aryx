@@ -5958,7 +5958,7 @@ class CpqEngine:
         # cost 14 round-trips, and so an already-answered rule resolves normally
         # instead of being skipped forever.
         try:
-            ingest_store = IngestQuestionStore(get_settings().rdb_dsn)
+            ingest_store = IngestQuestionStore(get_settings().effective_dsn())
             existing_questions = {
                 q["job_id"]: q for q in ingest_store.list(workspace_id, status="")
             }

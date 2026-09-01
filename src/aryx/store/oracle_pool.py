@@ -569,6 +569,11 @@ class OracleCursorWrapper:
         return self._cur.rowcount
 
     @property
+    def description(self) -> Any:
+        """Passthrough -- oracledb's FetchInfo items expose .name like psycopg's Column."""
+        return self._cur.description
+
+    @property
     def itersize(self) -> int:
         return self._cur.arraysize
 

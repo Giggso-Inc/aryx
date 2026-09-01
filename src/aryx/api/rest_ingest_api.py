@@ -89,7 +89,7 @@ def _run_rest(url: str, headers: dict, record_path: str, page_param: str,
     settings = get_settings()
     jobs = None
     try:
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         jobs.update_stage(job_id, "Fetch", 10, f"Fetching from {url}")
         connector = RestApiConnector(
             url=url, headers=headers, record_path=record_path,
@@ -97,7 +97,7 @@ def _run_rest(url: str, headers: dict, record_path: str, page_param: str,
             max_pages=max_pages,
         )
         run_pipeline(
-            connector=connector, dsn=settings.rdb_dsn,
+            connector=connector, dsn=settings.effective_dsn(),
             system="rest", dataset=url,
             ontology_type=ontology_type, match_keys=match_keys,
             graph_url=settings.graph_url, broker=_local_broker(),
@@ -153,7 +153,7 @@ def rest_ingest_router() -> APIRouter:
         keys = req.match_keys or ["id"]
         settings = get_settings()
         job_id = uuid.uuid4().hex
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         try:
             jobs.create(job_id, "rest", req.url, req.workspace_id)
         finally:

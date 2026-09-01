@@ -95,14 +95,14 @@ class IngestDbRequest(BaseModel):
 
 def _run_db(req: IngestDbRequest, job_id: str) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
+    jobs = JobStore(settings.effective_dsn())
     try:
         connector = PostgresConnector(
-            dsn=settings.rdb_dsn, table=req.table,
+            dsn=settings.effective_dsn(), table=req.table,
             key_column=req.key_column, batch_size=settings.batch_size,
         )
         summary = run_pipeline(
-            connector=connector, dsn=settings.rdb_dsn,
+            connector=connector, dsn=settings.effective_dsn(),
             system=req.system, dataset=req.table,
             ontology_type=req.ontology_type,
             match_keys=[k.strip() for k in req.match_keys.split(",") if k.strip()],
@@ -127,7 +127,7 @@ def admin_router() -> APIRouter:
     def get_entity(entity_id: int, workspace_id: int = 1) -> dict[str, Any]:
         """Fetch full entity record (including attributes) from Postgres."""
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             row = estore.get_entity(entity_id)
         finally:
@@ -141,12 +141,12 @@ def admin_router() -> APIRouter:
                       _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Create a new entity in Postgres and project it into FalkorDB."""
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, req.workspace_id)
+        estore = EntityStore(settings.effective_dsn(), req.workspace_id)
         try:
             entity_id = estore.create_entity(req.ontology_type, req.attributes)
         finally:
             estore.close()
-        type_ancestors = _build_type_ancestors(settings.rdb_dsn, req.workspace_id)
+        type_ancestors = _build_type_ancestors(settings.effective_dsn(), req.workspace_id)
         labels = type_ancestors.get(req.ontology_type, [])
         FalkorStore(settings.graph_url, ws_graph(req.workspace_id)).add_entity(
             entity_id, req.ontology_type, req.attributes, labels=labels,
@@ -160,7 +160,7 @@ def admin_router() -> APIRouter:
                       _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Replace an entity's attributes in Postgres and resync the FalkorDB node."""
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             result = estore.update_entity(entity_id, req.attributes)
         finally:
@@ -168,7 +168,7 @@ def admin_router() -> APIRouter:
         if result is None:
             raise HTTPException(404, f"entity {entity_id} not found in workspace {workspace_id}")
         ontology_type, attrs = result
-        type_ancestors = _build_type_ancestors(settings.rdb_dsn, workspace_id)
+        type_ancestors = _build_type_ancestors(settings.effective_dsn(), workspace_id)
         labels = type_ancestors.get(ontology_type, [])
         FalkorStore(settings.graph_url, ws_graph(workspace_id)).add_entity(
             entity_id, ontology_type, attrs, labels=labels,
@@ -180,7 +180,7 @@ def admin_router() -> APIRouter:
                       _: str | None = Depends(write_api_key)) -> dict[str, Any]:
         """Delete an entity from Postgres and remove the node from FalkorDB."""
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             found = estore.delete_entity(entity_id)
         finally:
@@ -193,7 +193,7 @@ def admin_router() -> APIRouter:
     @router.post("/ingest/db")
     def ingest_db(req: IngestDbRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
         settings = get_settings()
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         job_id = uuid.uuid4().hex
         try:
             jobs.archive_old(30)
@@ -212,9 +212,9 @@ def admin_router() -> APIRouter:
         project stage, or to resync after manual DB edits.
         """
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
-            type_ancestors = _build_type_ancestors(settings.rdb_dsn, workspace_id)
+            type_ancestors = _build_type_ancestors(settings.effective_dsn(), workspace_id)
             counts = project_graph(
                 estore,
                 FalkorStore(settings.graph_url, ws_graph(workspace_id)),
@@ -228,8 +228,13 @@ def admin_router() -> APIRouter:
 
     @router.get("/runs")
     def list_runs() -> list[dict[str, Any]]:
+        # get_pool() (not a raw psycopg.connect()) so this also works on the
+        # Oracle backend -- found by post-merge review: a hardcoded psycopg
+        # connection can never reach Oracle regardless of which DSN it's
+        # given. The query itself has no Postgres-only syntax, so no
+        # translation/Oracle override is needed, just a backend-aware pool.
         settings = get_settings()
-        with psycopg.connect(settings.rdb_dsn) as conn:
+        with get_pool(settings.effective_dsn()).connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT run_id, source_system, source_dataset, status, "

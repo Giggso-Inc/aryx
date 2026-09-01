@@ -41,7 +41,7 @@ class OntologyImportRequest(BaseModel):
 def _load_bundle(workspace_id: int, include_provenance: bool) -> GraphBundle:
     """Read a workspace's graph from Postgres into a GraphBundle."""
     settings = get_settings()
-    store = EntityStore(settings.rdb_dsn, workspace_id)
+    store = EntityStore(settings.effective_dsn(), workspace_id)
     try:
         provenance = list(store.list_members_provenance()) if include_provenance else []
         bundle = GraphBundle(
@@ -51,10 +51,10 @@ def _load_bundle(workspace_id: int, include_provenance: bool) -> GraphBundle:
         )
     finally:
         store.close()
-    onto = OntologyStore(settings.rdb_dsn, workspace_id)
+    onto = OntologyStore(settings.effective_dsn(), workspace_id)
     try: bundle.types = onto.list_types()
     finally: onto.close()
-    axiom_store = AxiomStore(settings.rdb_dsn)
+    axiom_store = AxiomStore(settings.effective_dsn())
     try: bundle.axioms = axiom_store.list_(workspace_id)
     finally: axiom_store.close()
     return bundle
@@ -115,7 +115,7 @@ def ontology_router() -> APIRouter:
         """Remove a type and cascade: delete all its entity instances from
         Postgres and remove their nodes from FalkorDB, then drop the type."""
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             deleted_ids = estore.delete_entities_by_type(name)
         finally:
@@ -135,7 +135,7 @@ def ontology_router() -> APIRouter:
         cap = get_settings().ontology_export_max_entities
         if cap > 0:
             settings = get_settings()
-            _estore = EntityStore(settings.rdb_dsn, workspace_id)
+            _estore = EntityStore(settings.effective_dsn(), workspace_id)
             try:
                 entity_count = _estore.count_entities()
             finally:

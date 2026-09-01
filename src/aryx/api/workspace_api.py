@@ -53,7 +53,7 @@ def workspace_router() -> APIRouter:
 
     @router.get("")
     def list_workspaces() -> list[dict[str, Any]]:
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             return store.list_all()
         finally:
@@ -61,7 +61,7 @@ def workspace_router() -> APIRouter:
 
     @router.post("")
     def create_workspace(req: WorkspaceRequest) -> dict[str, Any]:
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             return store.create(req.name, req.description, req.context)
         except Exception as exc:  # noqa: BLE001 — duplicate name, etc.
@@ -71,7 +71,7 @@ def workspace_router() -> APIRouter:
 
     @router.put("/{workspace_id}")
     def update_workspace(workspace_id: int, req: WorkspaceUpdateRequest) -> dict[str, Any]:
-        store = WorkspaceStore(get_settings().rdb_dsn)
+        store = WorkspaceStore(get_settings().effective_dsn())
         try:
             return store.update_metadata(
                 workspace_id,
@@ -87,7 +87,7 @@ def workspace_router() -> APIRouter:
 
     @router.patch("/{workspace_id}/context")
     def set_context(workspace_id: int, req: ContextRequest) -> dict[str, Any]:
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             return store.set_context(workspace_id, req.context)
         finally:
@@ -96,7 +96,7 @@ def workspace_router() -> APIRouter:
     @router.get("/{workspace_id}/survivorship")
     def get_survivorship(workspace_id: int) -> dict[str, Any]:
         """Return the workspace survivorship policy (G3)."""
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             return {"workspace_id": workspace_id,
                     "survivorship": store.get_survivorship(workspace_id)}
@@ -107,7 +107,7 @@ def workspace_router() -> APIRouter:
     def set_survivorship(workspace_id: int,
                          policy: dict[str, Any]) -> dict[str, Any]:
         """Replace the workspace survivorship policy (G3, skill hook)."""
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             return store.set_survivorship(workspace_id, policy)
         finally:
@@ -115,7 +115,7 @@ def workspace_router() -> APIRouter:
 
     @router.patch("/{workspace_id}/brief")
     def set_brief(workspace_id: int, req: BriefRequest) -> dict[str, Any]:
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             return store.set_brief(workspace_id, req.model_dump())
         finally:
@@ -124,7 +124,7 @@ def workspace_router() -> APIRouter:
     @router.post("/nuke")
     def nuke_system() -> dict[str, Any]:
         """Factory reset: truncate all data, drop non-Default workspaces."""
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             result = store.nuke()
         finally:
@@ -140,7 +140,7 @@ def workspace_router() -> APIRouter:
     @router.post("/{workspace_id}/purge")
     def purge_workspace(workspace_id: int) -> dict[str, Any]:
         """Delete all data in a workspace but keep the workspace itself."""
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             result = store.purge_data(workspace_id)
         finally:
@@ -161,7 +161,7 @@ def workspace_router() -> APIRouter:
         detected pair and reprojects the graph.
         """
         settings = get_settings()
-        estore = EntityStore(settings.rdb_dsn, workspace_id)
+        estore = EntityStore(settings.effective_dsn(), workspace_id)
         try:
             # Sample one entity payload per type to build attribute schemas.
             type_sample: dict[str, dict] = {}
@@ -173,7 +173,7 @@ def workspace_router() -> APIRouter:
                 return {"links_created": 0, "detail": "fewer than 2 entity types"}
 
             # Build schemas including match_keys from the ontology store.
-            onto = OntologyStore(settings.rdb_dsn, workspace_id)
+            onto = OntologyStore(settings.effective_dsn(), workspace_id)
             try:
                 mk_map = {t.name: list(t.attributes) for t in onto.list_types()}
             finally:
@@ -212,7 +212,7 @@ def workspace_router() -> APIRouter:
 
             # Reproject the graph with the new edges.
             if total > 0:
-                ancestors = _build_type_ancestors(settings.rdb_dsn, workspace_id)
+                ancestors = _build_type_ancestors(settings.effective_dsn(), workspace_id)
                 project_graph(
                     estore,
                     FalkorStore(settings.graph_url, ws_graph(workspace_id)),
@@ -226,7 +226,7 @@ def workspace_router() -> APIRouter:
 
     @router.delete("/{workspace_id}")
     def delete_workspace(workspace_id: int) -> dict[str, Any]:
-        store = make_workspace_store(get_settings().rdb_dsn)
+        store = make_workspace_store(get_settings().effective_dsn())
         try:
             store.delete(workspace_id)
         except ValueError as exc:

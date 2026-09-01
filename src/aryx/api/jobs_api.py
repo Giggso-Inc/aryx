@@ -10,7 +10,7 @@ from aryx.store.job_store import JobStore
 
 
 def _store() -> JobStore:
-    return JobStore(get_settings().rdb_dsn)
+    return JobStore(get_settings().effective_dsn())
 
 
 def jobs_router() -> APIRouter:
@@ -86,7 +86,7 @@ def jobs_router() -> APIRouter:
         if job is None or not job.get("run_id"):
             raise HTTPException(status_code=404,
                                 detail="job not found or has no run yet")
-        tracker = StageTracker(get_settings().rdb_dsn)
+        tracker = StageTracker(get_settings().effective_dsn())
         stages = tracker.rows(int(job["run_id"]))
         return {"job_id": job_id, "run_id": job["run_id"],
                 "resumable": any(s["status"] != "done" for s in stages),

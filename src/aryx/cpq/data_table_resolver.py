@@ -110,7 +110,7 @@ def _fetch_invalidation_marker_from_db() -> float | None:
         # Explicit short acquisition timeout -- this is a background poll
         # check, not a real request the customer is waiting on. psycopg_
         # pool's own default connection() timeout is 30s.
-        with get_pool(get_settings().rdb_dsn).connection(timeout=1.0) as conn, conn.cursor() as cur:
+        with get_pool(get_settings().effective_dsn()).connection(timeout=1.0) as conn, conn.cursor() as cur:
             cur.execute("SELECT invalidated_at FROM cpq_cache_invalidation_marker WHERE id = 1")
             row = cur.fetchone()
         if row is None or row[0] is None:

@@ -58,7 +58,7 @@ def observability_router() -> APIRouter:
 
     @router.get("/observability")
     def observability(workspace_id: int = 1) -> dict[str, Any]:
-        with get_pool(get_settings().rdb_dsn).connection() as conn:
+        with get_pool(get_settings().effective_dsn()).connection() as conn:
             return {
                 "jobs": _job_summary(conn, workspace_id),
                 "llm": _llm_stats(conn, workspace_id),

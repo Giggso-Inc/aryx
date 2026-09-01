@@ -20,7 +20,7 @@ def ask_history_router() -> APIRouter:
     def list_history(workspace_id: int = 1,
                      limit: int = 50) -> list[dict[str, Any]]:
         """Return the most recent N Q/A turns for a workspace."""
-        store = AskHistoryStore(get_settings().rdb_dsn)
+        store = AskHistoryStore(get_settings().effective_dsn())
         try:
             return store.recent(workspace_id, limit)
         finally:

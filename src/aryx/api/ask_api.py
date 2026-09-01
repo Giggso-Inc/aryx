@@ -100,7 +100,7 @@ install_run_id_logging(__name__)
 
 def _validate_workspace(workspace_id: int) -> None:
     """Raise 422 if workspace_id does not exist — prevents cross-workspace log pollution."""
-    with get_pool(get_settings().rdb_dsn).connection() as conn:
+    with get_pool(get_settings().effective_dsn()).connection() as conn:
         with conn.cursor() as cur:
             cur.execute(load("select_workspace_by_id"), (workspace_id,))
             if cur.fetchone() is None:
@@ -461,7 +461,7 @@ def _enrich_with_attributes(
     if not entities:
         return entities
     try:
-        with get_pool(get_settings().rdb_dsn).connection() as conn:
+        with get_pool(get_settings().effective_dsn()).connection() as conn:
             with conn.cursor() as cur:
                 for ent in entities:
                     cur.execute(load("select_entity_by_id"), (ent.id, workspace_id))
@@ -501,7 +501,7 @@ def _current_turn_usage_dict(default_model: str = "cpq-engine") -> dict[str, Any
 
 def _persist_cpq_history(workspace_id: int, question: str, answer: str) -> None:
     try:
-        hstore = AskHistoryStore(get_settings().rdb_dsn)
+        hstore = AskHistoryStore(get_settings().effective_dsn())
         try:
             usage = _current_turn_usage_dict()
             hstore.append(workspace_id, question, answer, [], [], usage)
@@ -12715,7 +12715,7 @@ def _standard_ask_pipeline(req: AskRequest, reader: Any) -> dict[str, Any]:
         "answer_model": cfg["answer_model"],
     }
     try:
-        hstore = AskHistoryStore(get_settings().rdb_dsn)
+        hstore = AskHistoryStore(get_settings().effective_dsn())
         try:
             hstore.append(req.workspace_id, req.question,
                           answer or "", calls, [], usage)

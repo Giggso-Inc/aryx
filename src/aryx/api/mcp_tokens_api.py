@@ -71,7 +71,7 @@ def mcp_tokens_router() -> APIRouter:
     @router.get("")
     def list_tokens() -> list[dict[str, Any]]:
         """Return all tokens (metadata only, no raw token)."""
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         try:
             return store.list_()
         finally:
@@ -89,7 +89,7 @@ def mcp_tokens_router() -> APIRouter:
                 501,
                 "Sales CPQ tokens require PostgreSQL-backed Shay threads.",
             )
-        store = McpTokenStore(settings.rdb_dsn)
+        store = McpTokenStore(settings.effective_dsn())
         try:
             return store.issue(
                 req.label or "unnamed",
@@ -110,7 +110,7 @@ def mcp_tokens_router() -> APIRouter:
         no new raw token is issued, so the client's configured key never
         changes. Omit allowed_tools (empty list) to grant full
         current+future sales_cpq scope."""
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         try:
             row = store.rescope(token_id, set(req.allowed_tools))
             if not row:
@@ -126,7 +126,7 @@ def mcp_tokens_router() -> APIRouter:
     @router.delete("/{token_id}")
     def revoke_token(token_id: int) -> dict[str, Any]:
         """Revoke a token by id."""
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         try:
             row = store.revoke(token_id)
             if not row:

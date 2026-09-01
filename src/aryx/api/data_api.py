@@ -67,23 +67,23 @@ class RelateRequest(BaseModel):
 
 
 def _store(workspace_id: int) -> EntityStore:
-    return EntityStore(get_settings().rdb_dsn, workspace_id)
+    return EntityStore(get_settings().effective_dsn(), workspace_id)
 
 
 def _datasource_store() -> DatasourceStore:
-    return DatasourceStore(get_settings().rdb_dsn)
+    return DatasourceStore(get_settings().effective_dsn())
 
 
 def _job_store() -> JobStore:
-    return JobStore(get_settings().rdb_dsn)
+    return JobStore(get_settings().effective_dsn())
 
 
 def _source_purge_store(workspace_id: int) -> SourcePurgeStore:
-    return SourcePurgeStore(get_settings().rdb_dsn, workspace_id)
+    return SourcePurgeStore(get_settings().effective_dsn(), workspace_id)
 
 
 def _metrics_store(workspace_id: int) -> SourceMetricsStore:
-    return SourceMetricsStore(get_settings().rdb_dsn, workspace_id)
+    return SourceMetricsStore(get_settings().effective_dsn(), workspace_id)
 
 
 def data_router() -> APIRouter:
@@ -757,7 +757,7 @@ def _rebuild_graph_projection(
         graph = ports().graph_store(workspace_id)
         if isinstance(store, EntityStore):
             projection_store = ProjectionStore(
-                get_settings().rdb_dsn,
+                get_settings().effective_dsn(),
                 workspace_id,
             )
             project_auto(

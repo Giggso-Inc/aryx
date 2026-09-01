@@ -60,7 +60,7 @@ class PostgresCpqRdb:
 
     def _connection(self):
         from aryx.store.pool import get_pool
-        return get_pool(get_settings().rdb_dsn).connection()
+        return get_pool(get_settings().effective_dsn()).connection()
 
     def fetch_entity_attributes(
         self, entity_ids: list[int], workspace_id: int,

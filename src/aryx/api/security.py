@@ -112,7 +112,7 @@ def _verify_key(key: str) -> bool:
     try:
         from aryx.config import get_settings
         from aryx.store.mcp_token_store import McpTokenStore
-        store = McpTokenStore(get_settings().rdb_dsn)
+        store = McpTokenStore(get_settings().effective_dsn())
         try:
             return store.verify(key)
         finally:

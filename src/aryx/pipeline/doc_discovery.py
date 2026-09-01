@@ -622,7 +622,7 @@ def read_files(doc_paths: list[Path], tabular: list[tuple[bytes, str]],
     if doc_paths:
         connector = DocumentRouterConnector(
             paths=doc_paths, system="document", broker=broker,
-            chunk_store=ChunkStore(settings.rdb_dsn), chunk_size=settings.chunk_size,
+            chunk_store=ChunkStore(settings.effective_dsn()), chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
             context=context, on_progress=on_progress)
         mentions = list(connector.extract())
@@ -1109,7 +1109,7 @@ def _update_confirm_state(discovery_id: str, state: dict) -> None:
     """Persist confirm_state to DB after each plan (crash-safe resume support)."""
     from aryx.store.discovery_store import DiscoveryStore  # noqa: PLC0415 — lazy to avoid circular
     settings = get_settings()
-    store = DiscoveryStore(settings.rdb_dsn)
+    store = DiscoveryStore(settings.effective_dsn())
     try:
         store.update_confirm_state(discovery_id, state)
     finally:
@@ -1128,7 +1128,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     it left off.
     """
     settings = get_settings()
-    datasource_store = DatasourceStore(settings.rdb_dsn)
+    datasource_store = DatasourceStore(settings.effective_dsn())
     total = max(len(approved_types) + len(approved_files), 1)
     step = 0
 
@@ -1168,7 +1168,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                             job_id, _otype, stage, pct, detail)
 
             # TODO: pass job_id=job_id once run_pipeline supports it
-            run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.rdb_dsn,
+            run_pipeline(connector=RecordsConnector(recs, label=otype), dsn=settings.effective_dsn(),
                          system="document", dataset=otype, ontology_type=otype,
                          match_keys=["name"], graph_url=settings.graph_url, broker=broker,
                          workspace_id=workspace_id, relate=is_last, skip_graph=not is_last,
@@ -1188,7 +1188,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         logger.info("confirm job=%s resume: skipping %d completed plan(s): %s",
                     job_id, len(all_valid_plans) - len(valid_plans),
                     [p["filename"] for p in all_valid_plans if p["filename"] in completed_plans])
-    _persist_tabular_sources(valid_plans, workspace_id, settings.rdb_dsn)
+    _persist_tabular_sources(valid_plans, workspace_id, settings.effective_dsn())
 
     def _report_fk_stage(pct: int, detail: str) -> None:
         # A transient job-store failure while reporting progress must never
@@ -1232,7 +1232,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
     if valid_plans:
         _report_fk_stage(3, "Detecting workspace-level foreign keys…")
         try:
-            onto = OntologyStore(settings.rdb_dsn, workspace_id)
+            onto = OntologyStore(settings.effective_dsn(), workspace_id)
             try:
                 known_types = [t.name for t in onto.list_types()]
             finally:
@@ -1314,7 +1314,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
             # corrupt each other.  Only the final serial plan projects to FalkorDB;
             # it calls estore.list_entities() which covers ALL workspace entities.
             # TODO: pass job_id=job_id once run_pipeline supports it
-            run_pipeline(connector=conn, dsn=settings.rdb_dsn,
+            run_pipeline(connector=conn, dsn=settings.effective_dsn(),
                          system=Path(fname).suffix.lstrip("."), dataset=Path(fname).stem,
                          ontology_type=otype, match_keys=plan["match_keys"],
                          graph_url=settings.graph_url, broker=broker, workspace_id=workspace_id,
@@ -1390,7 +1390,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
                 ground_truth_from_tabular, validate_workspace,
             )
             gt = ground_truth_from_tabular(valid_plans)
-            report = validate_workspace(workspace_id, gt, settings.rdb_dsn,
+            report = validate_workspace(workspace_id, gt, settings.effective_dsn(),
                                         settings.graph_url)
             logger.info("confirm job=%s validation passed=%s %s",
                         job_id, report.passed, report.summary_line())
@@ -1455,7 +1455,7 @@ def ingest_confirmed(data: dict[str, Any], approved_types: list[str],
         # pool must not delay this best-effort write for psycopg_pool's
         # own 30s default; the in-process clears above already ran and
         # protect this worker regardless of whether this write succeeds.
-        with get_pool(settings.rdb_dsn).connection(timeout=2.0) as conn, conn.cursor() as cur:
+        with get_pool(settings.effective_dsn()).connection(timeout=2.0) as conn, conn.cursor() as cur:
             cur.execute(
                 "UPDATE cpq_cache_invalidation_marker "
                 "SET invalidated_at = NOW(), last_job_id = %s WHERE id = 1",

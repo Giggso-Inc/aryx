@@ -22,7 +22,7 @@ def _reader(workspace_id: int = 1) -> GraphReader:
 
 def _overview_payload(workspace_id: int) -> dict[str, Any]:
     """Build the brief-driven graph overview from the relational truth."""
-    store = EntityStore(get_settings().rdb_dsn, workspace_id)
+    store = EntityStore(get_settings().effective_dsn(), workspace_id)
     try:
         entities, relationships, brief = store.overview_inputs()
         return explore.domain_overview_view(

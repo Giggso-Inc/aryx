@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def approve(name: str, workspace_id: int = 1) -> dict[str, Any]:
     """Approve a proposed ontology type via the HITL gate."""
-    store = OntologyStore(get_settings().rdb_dsn, workspace_id)
+    store = OntologyStore(get_settings().effective_dsn(), workspace_id)
     try:
         store.approve_type(name)
     finally:
@@ -38,7 +38,7 @@ def add_type(name: str, attributes: Any, status: str = "approved",
         attrs = [str(x) for x in attributes]
     else:
         attrs = []
-    store = OntologyStore(get_settings().rdb_dsn, workspace_id)
+    store = OntologyStore(get_settings().effective_dsn(), workspace_id)
     try:
         store.seed_types([OntologyType(name=name, attributes=attrs,
                                        status=status, source=source)])
@@ -64,14 +64,14 @@ def import_doc(content: str, fmt_hint: str, filename: str,
     if not types:
         return {"imported": 0, "types": [], "format": fmt,
                 "message": "no owl:Class / rdfs:Class declarations found"}
-    onto = OntologyStore(get_settings().rdb_dsn, workspace_id)
+    onto = OntologyStore(get_settings().effective_dsn(), workspace_id)
     try:
         onto.seed_types(types)
         for child, parent in hierarchy.items():
             onto.set_parent(child, parent)
     finally:
         onto.close()
-    axiom_store = AxiomStore(get_settings().rdb_dsn)
+    axiom_store = AxiomStore(get_settings().effective_dsn())
     persisted = 0
     try:
         for ax in axioms:
@@ -90,7 +90,7 @@ def import_doc(content: str, fmt_hint: str, filename: str,
 def set_parent(name: str, parent: str | None,
                 workspace_id: int = 1) -> dict[str, Any]:
     """Set or clear the parent_type for a type (rdfs:subClassOf)."""
-    store = OntologyStore(get_settings().rdb_dsn, workspace_id)
+    store = OntologyStore(get_settings().effective_dsn(), workspace_id)
     try:
         store.set_parent(name, parent)
     finally:
@@ -101,7 +101,7 @@ def set_parent(name: str, parent: str | None,
 def delete_type(name: str, workspace_id: int = 1) -> dict[str, Any]:
     """Remove a type from one workspace. Schema-level only — entity
     instances of this type are not deleted (callers handle separately)."""
-    store = OntologyStore(get_settings().rdb_dsn, workspace_id)
+    store = OntologyStore(get_settings().effective_dsn(), workspace_id)
     try:
         store.delete_type(name)
     finally:
@@ -118,7 +118,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
     as approved. Idempotent — uses ON CONFLICT DO NOTHING.
     """
     settings = get_settings()
-    onto = OntologyStore(settings.rdb_dsn, workspace_id)
+    onto = OntologyStore(settings.effective_dsn(), workspace_id)
     try:
         type_objs = onto.list_types()
         type_rows = [t.__dict__ if hasattr(t, "__dict__") else dict(t)
@@ -130,7 +130,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
                 row["ancestors"] = []
     finally:
         onto.close()
-    store = EntityStore(settings.rdb_dsn, workspace_id)
+    store = EntityStore(settings.effective_dsn(), workspace_id)
     try:
         ents = list(store.list_entities())
         rels = list(store.list_relationships())
@@ -153,7 +153,7 @@ def list_browse(workspace_id: int) -> dict[str, Any]:
     if not type_rows and per_type:
         logger.info("ontology_browse: no types found for ws=%s but %d entity types exist — auto-seeding",
                   workspace_id, len(per_type))
-        heal_onto = OntologyStore(settings.rdb_dsn, workspace_id)
+        heal_onto = OntologyStore(settings.effective_dsn(), workspace_id)
         try:
             heal_onto.seed_types([
                 OntologyType(name=name, attributes=[], status="approved", source="entity-store")

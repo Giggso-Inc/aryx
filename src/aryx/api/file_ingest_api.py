@@ -149,13 +149,13 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
     settings = get_settings()
     jobs: JobStore | None = None
     tmp_paths: list[Path] = []
-    datasource_store = DatasourceStore(settings.rdb_dsn)
+    datasource_store = DatasourceStore(settings.effective_dsn())
     try:
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         # Register each uploaded file as a datasource so the workspace card shows
         # an accurate file count regardless of whether files were ingested via the
         # file upload page or through the Shay datasource flow.
-        ds_store = DatasourceStore(settings.rdb_dsn)
+        ds_store = DatasourceStore(settings.effective_dsn())
         for _, fname in items:
             kind = "docs" if Path(fname).suffix.lower() in _DOC_EXTS else "csv"
             try:
@@ -253,7 +253,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                 jobs.update_stage(job_id, "Ingest", 20, f"Processing {name}")
                 run_pipeline(
                     connector=JsonConnector(tmp, system="json"),
-                    dsn=settings.rdb_dsn,
+                    dsn=settings.effective_dsn(),
                     system="json", dataset=Path(name).stem,
                     ontology_type=ontology_type, match_keys=match_keys,
                     graph_url=settings.graph_url, broker=broker,
@@ -299,7 +299,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
-                        dsn=settings.rdb_dsn,
+                        dsn=settings.effective_dsn(),
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
@@ -344,7 +344,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     run_pipeline(
                         connector=CsvConnector(csv_data, system="csv",
                                                dataset=Path(csv_name).stem),
-                        dsn=settings.rdb_dsn,
+                        dsn=settings.effective_dsn(),
                         system="csv", dataset=Path(csv_name).stem,
                         ontology_type=derived_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
@@ -394,7 +394,7 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
                     )
                     run_pipeline(
                         connector=CsvConnector(chunk_data, system="csv", dataset=dataset),
-                        dsn=settings.rdb_dsn,
+                        dsn=settings.effective_dsn(),
                         system="csv", dataset=dataset,
                         ontology_type=eff_type, match_keys=match_keys,
                         graph_url=settings.graph_url, broker=broker,
@@ -414,14 +414,14 @@ def _run_files(items: list[tuple[bytes, str]], ontology_type: str,
             jobs.update_stage(job_id, "Documents", 50, f"Chunking {len(doc_files)} doc(s)")
             doc_paths = [_save_tmp(d, Path(n).suffix) for d, n in doc_files]
             tmp_paths.extend(doc_paths)
-            chunk_store = ChunkStore(settings.rdb_dsn)
+            chunk_store = ChunkStore(settings.effective_dsn())
             connector = DocumentRouterConnector(
                 paths=doc_paths, system="document", broker=broker,
                 chunk_store=chunk_store, chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap, expected_embed_dim=settings.embed_dim,
             )
             run_pipeline(
-                connector=connector, dsn=settings.rdb_dsn,
+                connector=connector, dsn=settings.effective_dsn(),
                 system="document", dataset="upload",
                 ontology_type=ontology_type, match_keys=match_keys,
                 graph_url=settings.graph_url, broker=broker,
@@ -475,7 +475,7 @@ def file_ingest_router() -> APIRouter:
             items.append((data, f.filename or f"upload{suffix}"))
         settings = get_settings()
         job_id = uuid.uuid4().hex
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         try:
             jobs.create(job_id, "upload", f"{len(items)} file(s)", workspace_id)
         finally:

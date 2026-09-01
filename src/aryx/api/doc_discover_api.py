@@ -86,7 +86,7 @@ def _build_read_progress(jobs: JobStore, did: str, workspace_id: int):
 def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
               workspace_id: int = 1) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
+    jobs = JobStore(settings.effective_dsn())
     try:
         jobs.update_stage(did, "Reading", 30, f"Reading {len(items)} file(s)…")
         logger.info("doc read start did=%s files=%d context=%r", did, len(items), context)
@@ -111,7 +111,7 @@ def _read_job(items: list[tuple[bytes, str]], context: str, did: str,
 
 def _reset_discovery_status(discovery_id: str) -> None:
     """Reset a discovery back to partial after a confirm job fails."""
-    store = DiscoveryStore(get_settings().rdb_dsn)
+    store = DiscoveryStore(get_settings().effective_dsn())
     try:
         store.set_status(discovery_id, "partial")
     except Exception:  # noqa: BLE001
@@ -123,7 +123,7 @@ def _reset_discovery_status(discovery_id: str) -> None:
 def _confirm_job(did: str, types: list[str], files: list[str], job_id: str,
                  workspace_id: int = 1, restart: bool = False) -> None:
     settings = get_settings()
-    jobs = JobStore(settings.rdb_dsn)
+    jobs = JobStore(settings.effective_dsn())
     try:
         data = discoveries.get(did, workspace_id)
         if not data:
@@ -163,7 +163,7 @@ def doc_discover_router() -> APIRouter:
                 raise HTTPException(400, f"{f.filename}: exceeds 50 MB limit")
             items.append((data, f.filename or "upload"))
         did = uuid.uuid4().hex
-        jobs = JobStore(settings.rdb_dsn)
+        jobs = JobStore(settings.effective_dsn())
         try:
             jobs.create(did, "discovery", f"{len(items)} file(s)", workspace_id)
         finally:
@@ -180,7 +180,7 @@ def doc_discover_router() -> APIRouter:
     @router.get("/history")
     def history(workspace_id: int = 1) -> list[dict[str, Any]]:
         settings = get_settings()
-        store = DiscoveryStore(settings.rdb_dsn)
+        store = DiscoveryStore(settings.effective_dsn())
         try:
             return store.list_recent(workspace_id)
         finally:
@@ -198,12 +198,12 @@ def doc_discover_router() -> APIRouter:
                             req.discovery_id)
             raise HTTPException(404, "unknown discovery or workspace mismatch")
         job_id = uuid.uuid4().hex
-        jobs = JobStore(get_settings().rdb_dsn)
+        jobs = JobStore(get_settings().effective_dsn())
         try:
             jobs.create(job_id, "documents", "confirmed entities", req.workspace_id)
         finally:
             jobs.close()
-        disc_store = DiscoveryStore(get_settings().rdb_dsn)
+        disc_store = DiscoveryStore(get_settings().effective_dsn())
         try:
             disc_store.set_status(req.discovery_id, "confirming")
         finally:

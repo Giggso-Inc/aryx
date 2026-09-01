@@ -37,7 +37,7 @@ class DecideRequest(BaseModel):
 
 def _store(workspace_id: int) -> ActionStore:
     """Build a workspace-scoped action store."""
-    return ActionStore(get_settings().rdb_dsn, workspace_id)
+    return ActionStore(get_settings().effective_dsn(), workspace_id)
 
 
 def _apply(store: ActionStore, execution_id: int, entity_id: int,
