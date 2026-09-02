@@ -173,6 +173,7 @@ class ShayBridgeStore:
             # MERGE's CLOB-typing rules entirely.
             import oracledb  # noqa: PLC0415
 
+            lost_insert_race = False
             with self._pool.connection() as conn, conn.cursor() as cur:
                 try:
                     cur.execute(
@@ -191,6 +192,7 @@ class ShayBridgeStore:
                 except oracledb.IntegrityError as exc:
                     if "ORA-00001" not in str(exc):
                         raise
+                    lost_insert_race = True
                     logger.info(
                         "ensure_workspace_mapping: concurrent insert race for "
                         "shay_workspace_id=%s, reusing existing row",
@@ -199,9 +201,12 @@ class ShayBridgeStore:
             created_row = self.get_workspace_mapping(shay_workspace_id)
             if created_row:
                 # get_workspace_mapping() found no row for this id at function
-                # entry (line 67 above), so this MERGE always took the "WHEN
-                # NOT MATCHED THEN INSERT" branch -- a genuine new row.
-                created_row["created"] = True
+                # entry (line 67 above). If the INSERT above succeeded, this
+                # request genuinely created the row. If it hit ORA-00001
+                # instead, a concurrent request won the race and created it
+                # first -- report created=False so the caller doesn't believe
+                # it was the one that created this mapping.
+                created_row["created"] = not lost_insert_race
                 return created_row
             raise RuntimeError(
                 f"bridge MERGE for {shay_workspace_id!r} left no row behind"
