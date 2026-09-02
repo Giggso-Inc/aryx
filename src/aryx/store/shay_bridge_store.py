@@ -153,39 +153,49 @@ class ShayBridgeStore:
         if get_settings().effective_db_backend() == "oci":
             # Oracle has no ON CONFLICT ... DO UPDATE; _translate_sql() raises
             # loudly on that construct rather than silently degrading (post-merge
-            # review fix), so this caller needs an explicit MERGE instead of the
-            # Postgres upsert below. Same COALESCE-on-conflict semantics: an
-            # existing row's company_id is only overwritten when the new value
-            # is non-null.
+            # review fix), so this caller needs an Oracle-specific path instead
+            # of the Postgres upsert below.
+            #
+            # An earlier version of this fix used an Oracle MERGE, which hit a
+            # second Oracle quirk: MERGE's force=True CLOB coercion (needed to
+            # avoid ORA-03146 when a bind is genuinely CLOB-bound in one branch)
+            # coerces EVERY non-excluded string bind to CLOB, including
+            # company_id here -- but company_id targets a plain CHAR/UUID
+            # column, not CLOB, so Oracle raised ORA-00932 ("... is of data
+            # type CHAR, which is incompatible with expected data type CLOB")
+            # while reconciling the MATCHED/NOT MATCHED branches internally.
+            #
+            # This function already confirmed (via get_workspace_mapping() at
+            # the top) that no row exists yet for this shay_workspace_id, so a
+            # MERGE's conflict-handling is unnecessary here -- a plain INSERT
+            # with a duplicate-key fallback (the same pattern already used a
+            # few lines up for the aryx_workspace race) is simpler and avoids
+            # MERGE's CLOB-typing rules entirely.
+            import oracledb  # noqa: PLC0415
+
             with self._pool.connection() as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    MERGE INTO aryx_shay_workspace_map dst
-                    USING (SELECT 1 AS dual_row FROM dual) src
-                    ON (dst.shay_workspace_id = %(shay_workspace_id)s)
-                    WHEN MATCHED THEN UPDATE SET
-                        company_id = COALESCE(%(company_id)s, dst.company_id),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHEN NOT MATCHED THEN INSERT (
-                        shay_workspace_id, aryx_workspace_id, company_id, sync_state
-                    ) VALUES (
-                        %(shay_workspace_id)s, %(aryx_workspace_id)s,
-                        %(company_id)s, %(sync_state)s
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO aryx_shay_workspace_map (
+                            shay_workspace_id, aryx_workspace_id, company_id, sync_state
+                        ) VALUES (%s, %s, %s, %s)
+                        """,
+                        (
+                            shay_workspace_id,
+                            int(aryx_workspace["id"]),
+                            company_id,
+                            Json({"workspace_name": name}),
+                        ),
                     )
-                    """,
-                    {
-                        # named params (not a positional tuple) so oracle_pool's
-                        # ON-clause CLOB-exclusion regex can find %(shay_workspace_id)s
-                        # literally inside ON(...) and keep it VARCHAR2 -- the
-                        # positional-tuple path ignores that exclusion entirely
-                        # and would otherwise CLOB-coerce it, raising ORA-22848
-                        # ("cannot use CLOB type as comparison key").
-                        "shay_workspace_id": shay_workspace_id,
-                        "aryx_workspace_id": int(aryx_workspace["id"]),
-                        "company_id": company_id,
-                        "sync_state": Json({"workspace_name": name}),
-                    },
-                )
+                except oracledb.IntegrityError as exc:
+                    if "ORA-00001" not in str(exc):
+                        raise
+                    logger.info(
+                        "ensure_workspace_mapping: concurrent insert race for "
+                        "shay_workspace_id=%s, reusing existing row",
+                        shay_workspace_id,
+                    )
             created_row = self.get_workspace_mapping(shay_workspace_id)
             if created_row:
                 # get_workspace_mapping() found no row for this id at function
