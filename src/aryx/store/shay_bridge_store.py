@@ -66,6 +66,36 @@ class ShayBridgeStore:
     ) -> dict[str, Any]:
         existing = self.get_workspace_mapping(shay_workspace_id)
         if existing:
+            if get_settings().effective_db_backend() == "oci":
+                # Postgres's `sync_state || %s::jsonb` is a jsonb shallow-merge
+                # (right side wins on key conflicts). _translate_sql() only
+                # strips the ::jsonb cast, leaving `||` as Oracle's STRING
+                # CONCAT operator -- silently doubling sync_state as text on
+                # every repeat call instead of merging it. JSON_MERGEPATCH
+                # reproduces the same "patch wins" semantics on Oracle.
+                with self._pool.connection() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE aryx_shay_workspace_map
+                        SET company_id = COALESCE(%(company_id)s, company_id),
+                            sync_state = JSON_MERGEPATCH(sync_state, %(patch)s),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE shay_workspace_id = %(shay_workspace_id)s
+                        """,
+                        {
+                            "company_id": company_id,
+                            "patch": Json({"workspace_name": name}),
+                            "shay_workspace_id": shay_workspace_id,
+                        },
+                    )
+                updated = self.get_workspace_mapping(shay_workspace_id)
+                if not updated:
+                    raise RuntimeError(
+                        f"bridge UPDATE for {shay_workspace_id!r} left no row behind"
+                    )
+                updated["created"] = False
+                return updated
+
             with self._pool.connection() as conn, conn.cursor() as cur:
                 cur.execute(
                     """
@@ -120,6 +150,53 @@ class ShayBridgeStore:
         finally:
             workspace_store.close()
 
+        if get_settings().effective_db_backend() == "oci":
+            # Oracle has no ON CONFLICT ... DO UPDATE; _translate_sql() raises
+            # loudly on that construct rather than silently degrading (post-merge
+            # review fix), so this caller needs an explicit MERGE instead of the
+            # Postgres upsert below. Same COALESCE-on-conflict semantics: an
+            # existing row's company_id is only overwritten when the new value
+            # is non-null.
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    MERGE INTO aryx_shay_workspace_map dst
+                    USING (SELECT 1 AS dual_row FROM dual) src
+                    ON (dst.shay_workspace_id = %(shay_workspace_id)s)
+                    WHEN MATCHED THEN UPDATE SET
+                        company_id = COALESCE(%(company_id)s, dst.company_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHEN NOT MATCHED THEN INSERT (
+                        shay_workspace_id, aryx_workspace_id, company_id, sync_state
+                    ) VALUES (
+                        %(shay_workspace_id)s, %(aryx_workspace_id)s,
+                        %(company_id)s, %(sync_state)s
+                    )
+                    """,
+                    {
+                        # named params (not a positional tuple) so oracle_pool's
+                        # ON-clause CLOB-exclusion regex can find %(shay_workspace_id)s
+                        # literally inside ON(...) and keep it VARCHAR2 -- the
+                        # positional-tuple path ignores that exclusion entirely
+                        # and would otherwise CLOB-coerce it, raising ORA-22848
+                        # ("cannot use CLOB type as comparison key").
+                        "shay_workspace_id": shay_workspace_id,
+                        "aryx_workspace_id": int(aryx_workspace["id"]),
+                        "company_id": company_id,
+                        "sync_state": Json({"workspace_name": name}),
+                    },
+                )
+            created_row = self.get_workspace_mapping(shay_workspace_id)
+            if created_row:
+                # get_workspace_mapping() found no row for this id at function
+                # entry (line 67 above), so this MERGE always took the "WHEN
+                # NOT MATCHED THEN INSERT" branch -- a genuine new row.
+                created_row["created"] = True
+                return created_row
+            raise RuntimeError(
+                f"bridge MERGE for {shay_workspace_id!r} left no row behind"
+            )
+
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
@@ -142,9 +219,8 @@ class ShayBridgeStore:
             row = cur.fetchone()
 
         if row is None:
-            # ON CONFLICT: ORA-00001 was swallowed (Oracle has no DO UPDATE, conflict
-            # is silently ignored), leaving RETURNING out-vars unexecuted → fetchone()
-            # returns None.  The row already exists — SELECT it.
+            # Should not happen on Postgres (RETURNING always yields a row on
+            # both INSERT and DO UPDATE) -- defensive fallback only.
             existing = self.get_workspace_mapping(shay_workspace_id)
             if existing:
                 existing["created"] = False
@@ -169,6 +245,58 @@ class ShayBridgeStore:
         ask_session_key: str | None = None,
     ) -> dict[str, Any]:
         ask_session_key = ask_session_key or shay_thread_id
+
+        if get_settings().effective_db_backend() == "oci":
+            # Same class of bug as ensure_workspace_mapping() above: Oracle has
+            # no ON CONFLICT ... DO UPDATE, so this needs an explicit MERGE.
+            # Unlike that method, this upsert is a plain full-field overwrite
+            # (no COALESCE/JSON-merge semantics), so the MERGE is simpler.
+            with self._pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM aryx_shay_chat_map WHERE shay_thread_id = %(shay_thread_id)s",
+                    {"shay_thread_id": shay_thread_id},
+                )
+                pre_existing = cur.fetchone() is not None
+                cur.execute(
+                    """
+                    MERGE INTO aryx_shay_chat_map dst
+                    USING (SELECT 1 AS dual_row FROM dual) src
+                    ON (dst.shay_thread_id = %(shay_thread_id)s)
+                    WHEN MATCHED THEN UPDATE SET
+                        aryx_workspace_id = %(aryx_workspace_id)s,
+                        shay_workspace_id = %(shay_workspace_id)s,
+                        ask_session_key = %(ask_session_key)s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHEN NOT MATCHED THEN INSERT (
+                        shay_thread_id, aryx_workspace_id, shay_workspace_id, ask_session_key
+                    ) VALUES (
+                        %(shay_thread_id)s, %(aryx_workspace_id)s,
+                        %(shay_workspace_id)s, %(ask_session_key)s
+                    )
+                    """,
+                    {
+                        "shay_thread_id": shay_thread_id,
+                        "aryx_workspace_id": int(aryx_workspace_id),
+                        "shay_workspace_id": shay_workspace_id,
+                        "ask_session_key": ask_session_key,
+                    },
+                )
+                cur.execute(
+                    "SELECT shay_thread_id, aryx_workspace_id, shay_workspace_id, ask_session_key"
+                    " FROM aryx_shay_chat_map WHERE shay_thread_id = %(shay_thread_id)s",
+                    {"shay_thread_id": shay_thread_id},
+                )
+                row = cur.fetchone()
+            if row is None:
+                raise RuntimeError(f"chat map MERGE for {shay_thread_id!r} left no row behind")
+            return {
+                "shay_thread_id": row[0],
+                "aryx_workspace_id": row[1],
+                "shay_workspace_id": row[2],
+                "ask_session_key": row[3],
+                "created": not pre_existing,
+            }
+
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
@@ -187,7 +315,8 @@ class ShayBridgeStore:
             )
             row = cur.fetchone()
         if row is None:
-            # ON CONFLICT ORA-00001 was swallowed → SELECT existing row.
+            # Should not happen on Postgres (RETURNING always yields a row on
+            # both INSERT and DO UPDATE) -- defensive fallback only.
             with self._pool.connection() as conn, conn.cursor() as cur:
                 cur.execute(
                     "SELECT shay_thread_id::text, aryx_workspace_id, shay_workspace_id::text, ask_session_key"
