@@ -224,15 +224,24 @@ def oci_genai_json(
     Command R 08-2024 and later require the Chat API, not the older
     GenerateText endpoint. JSON mode is enforced via the user prompt instruction.
     """
+    # Cap string-field verbosity on the FIRST attempt, not just the retry
+    # below -- verbose reasoning text (e.g. FK-judging "reason" fields
+    # describing why two columns don't align) routinely overflowed
+    # max_tokens=4096 even before the retry got a chance to run, wasting a
+    # full round-trip on a failure that a brevity instruction up front avoids
+    # for most cases.
+    brevity_hint = " Keep every string value under 60 words."
     if schema and schema.get("properties"):
         required = schema.get("required", list(schema["properties"].keys()))
         fields_str = ", ".join(f'"{f}"' for f in required)
         json_instruction = (
             f"\n\nRespond with valid JSON only using exactly these fields: {fields_str}."
-            " Do not wrap in markdown code fences."
+            f"{brevity_hint} Do not wrap in markdown code fences."
         )
     else:
-        json_instruction = "\n\nRespond with valid JSON only. Do not wrap in markdown code fences."
+        json_instruction = (
+            f"\n\nRespond with valid JSON only.{brevity_hint} Do not wrap in markdown code fences."
+        )
     generated, in_tok, out_tok = _oci_chat_raw(
         spec, system, user + json_instruction, max_tokens=4096
     )
