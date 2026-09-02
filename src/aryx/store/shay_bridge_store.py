@@ -73,12 +73,27 @@ class ShayBridgeStore:
                 # CONCAT operator -- silently doubling sync_state as text on
                 # every repeat call instead of merging it. JSON_MERGEPATCH
                 # reproduces the same "patch wins" semantics on Oracle.
+                #
+                # sync_state is a plain CLOB/VARCHAR2 column here (unlike
+                # Postgres's jsonb, Oracle enforces no JSON validity on
+                # write), so rows touched by the bug above before this fix
+                # existed can already hold garbage like the same object
+                # concatenated as text N times over. JSON_MERGEPATCH()
+                # against a non-JSON target returns NULL (not an error),
+                # which then fails NOT NULL with ORA-01407 -- found via a
+                # real pre-existing workspace when regression-testing this
+                # exact fix. The `CASE WHEN sync_state IS JSON` guard
+                # self-heals any such row on its next touch instead of
+                # requiring a one-off data-repair migration.
                 with self._pool.connection() as conn, conn.cursor() as cur:
                     cur.execute(
                         """
                         UPDATE aryx_shay_workspace_map
                         SET company_id = COALESCE(%(company_id)s, company_id),
-                            sync_state = JSON_MERGEPATCH(sync_state, %(patch)s),
+                            sync_state = JSON_MERGEPATCH(
+                                CASE WHEN sync_state IS JSON THEN sync_state ELSE TO_CLOB('{}') END,
+                                %(patch)s
+                            ),
                             updated_at = CURRENT_TIMESTAMP
                         WHERE shay_workspace_id = %(shay_workspace_id)s
                         """,
