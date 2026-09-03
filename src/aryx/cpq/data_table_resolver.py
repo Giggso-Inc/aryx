@@ -18,249 +18,31 @@ resolver functions below operate on them.
 """
 from __future__ import annotations
 
-from typing import Any
-
+from aryx.cpq.data_table_governance import (
+    attr_ever_governed_for_cpq_model,
+    attribute_applies,
+    governed_attr_names_for_base_model,
+    governed_required_attr_names_for_base_model,
+)
 from aryx.cpq.data_table_loader import (
     _clear_tables_cache,
     _load_all_tables,
     _TABLES_CACHE_TTL_SECONDS,
 )
-from aryx.cpq.data_table_shapes import (
-    _attr_op_val_triples,
-    _attr_val_col_pairs,
-    _normalize_label,
-)
-from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq.data_table_shapes import _attr_op_val_triples, _normalize_label
+from aryx.cpq.data_table_whitelist import _row_conditions_match, resolve_whitelist_values
 
 # _load_all_tables, _clear_tables_cache, and the module-level table cache
-# moved to cpq/data_table_loader.py (Raven Style Compliance Plan, Phase 2a,
-# 2026-09-03) -- re-imported above so every existing caller of this module
-# (doc_discovery.py's deferred import, this file's own resolver functions
-# below, and the test suite's direct attribute access/patching) keeps
-# working unchanged. `get_cpq_rdb` is NOT re-exported for that purpose --
-# tests that fake the RDB for a call path going through _load_all_tables
-# must patch `aryx.cpq.data_table_loader.get_cpq_rdb` now, since that's the
-# module whose own namespace _load_all_tables's internal call resolves
-# against.
-
-
-def _row_conditions_match(
-    row: dict[str, Any], filled: dict[str, str], condition_pairs: list[tuple[str, str]],
-) -> bool:
-    """True if every populated condition attr/val pair on this row (attr2/
-    val2 onward -- attr1/val1 is the target attribute/value, not a
-    condition) is satisfied by the currently-filled attribute values --
-    mirrors the AND-filter semantics of util.getConstraintVals's own
-    filterCriteria matching (docs proof §4)."""
-    for attr_col, val_col in condition_pairs[1:]:  # skip attr1/val1 (the target)
-        condition_attr = str(row.get(attr_col) or "").strip()
-        if not condition_attr:
-            continue
-        condition_val = row.get(val_col)
-        if filled.get(condition_attr) != condition_val:
-            return False
-    return True
-
-
-def resolve_whitelist_values(
-    cpq_model: str, base_model: str, attr_var_name: str, filled: dict[str, str],
-    workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple[int, str], tuple] | None = None,
-) -> list[str] | None:
-    """Legal values for `attr_var_name` given `cpq_model`/`base_model`, from
-    every ingested constraint-shaped Data Table in this workspace (any
-    ingested entity type whose rows match the CPQModel/BaseModel/attrN/valN
-    signature, regardless of its ontology_type name or how many attrN/valN
-    pairs it has).
-
-    Returns:
-      None -- no ingested constraint table has any row at all for this
-        (cpq_model, base_model, attr_var_name) combination; genuinely
-        unknown, not zero options.
-      [] (empty list) -- rows exist for this attribute here, but none of
-        their condition columns match the current `filled` values; a real,
-        confirmed "no legal value under this context" answer.
-      [v1, v2, ...] -- the real, catalog-sourced legal values, merged across
-        every constraint-shaped table ingested into this workspace.
-    """
-    constraint_rows, _, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
-    any_row_matched = False
-    legal: set[str] = set()
-
-    for row in constraint_rows:
-        keys = set(row.keys())
-        condition_pairs = _attr_val_col_pairs(keys)
-        if not condition_pairs:
-            continue
-        if row.get("CPQModel") != cpq_model:
-            continue
-        if row.get("BaseModel") not in (base_model, "ALL"):
-            continue
-        if row.get("attr1") != attr_var_name:
-            continue
-        any_row_matched = True
-        if _row_conditions_match(row, filled, condition_pairs):
-            legal.add(row["val1"])
-
-    if not any_row_matched:
-        return None
-    return sorted(legal)
-
-
-def governed_attr_names_for_base_model(
-    cpq_model: str, base_model: str, workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple[int, str], tuple] | None = None,
-) -> set[str] | None:
-    """Every AttrName any ingested sequence-shaped Data Table lists for
-    this exact (cpq_model, base_model) pair -- the set-valued sibling of
-    `attribute_applies()`, computed ONCE per (cpq_model, base_model)
-    instead of once per (cpq_model, base_model, attr_var_name).
-
-    Confirmed live (2026-08-08): engine.CpqEngine._suppress_ungoverned_
-    attrs previously called `attribute_applies()` once per candidate
-    attribute (392 in one real catalog) times once per real CPQModel
-    candidate for the base model, each call independently re-filtering
-    the SAME up-to-47K-row sequence table from scratch. Once base model
-    resolution started actually working (a separate fix), this became a
-    genuine O(attrs x candidates x rows) cost on every evaluation pass --
-    this precomputes the filtered scope once; callers do an O(1) set
-    membership check per attribute instead.
-
-    Returns None when no sequence table has ANY row at all for this
-    (cpq_model, base_model) -- distinct from a confirmed empty set.
-    """
-    _, sequence_rows, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
-    scoped = [
-        row for row in sequence_rows
-        if row.get("CPQModel") == cpq_model
-        and row.get("BaseModel") in (base_model, "ALL")
-    ]
-    if not scoped:
-        return None
-    return {row.get("AttrName") for row in scoped if row.get("AttrName")}
-
-
-def governed_required_attr_names_for_base_model(
-    cpq_model: str, base_model: str, workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple[int, str], tuple] | None = None,
-) -> set[str] | None:
-    """The Required-only sibling of `governed_attr_names_for_base_model` --
-    every AttrName an ingested sequence-shaped Data Table (AttrSequence)
-    lists for this exact (cpq_model, base_model) pair with
-    optionOrReqFlag == "R" (docs/CPQ_Beautify_Mandatory_Section_
-    Miscategorization_2026_08_19.md).
-
-    "R" alone means "must end up with SOME value" -- it does NOT mean
-    "genuinely asked to the customer as Mandatory User Input". Many R-
-    flagged attrs are auto-resolved by a Whitelist/Defaultinattr row
-    (both pooled into the same constraint-shaped `_load_all_tables`
-    bucket) rather than ever being a live decision -- callers using this
-    for a "Mandatory User Input" classification MUST additionally check
-    `resolve_whitelist_values(...) is None` per candidate attribute (i.e.
-    no constraint-shaped row resolves it) before treating it as a genuine
-    customer-facing Mandatory field. This function only answers the R/O
-    question; it does not attempt the second, data-table-coverage check.
-
-    Returns None under the same "no sequence coverage at all for this
-    (cpq_model, base_model)" condition `governed_attr_names_for_base_model`
-    uses -- distinct from a confirmed empty set.
-    """
-    _, sequence_rows, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
-    scoped = [
-        row for row in sequence_rows
-        if row.get("CPQModel") == cpq_model
-        and row.get("BaseModel") in (base_model, "ALL")
-    ]
-    if not scoped:
-        return None
-    return {
-        row.get("AttrName") for row in scoped
-        if row.get("AttrName") and row.get("optionOrReqFlag") == "R"
-    }
-
-
-def attr_ever_governed_for_cpq_model(
-    cpq_model: str, attr_var_name: str,
-    workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple[int, str], tuple] | None = None,
-) -> bool:
-    """True if ANY sequence-shaped Data Table row for this CPQModel -- at
-    ANY base model, not just the one currently active -- ever mentions
-    `attr_var_name`. Distinguishes two very different reasons an attribute
-    can be absent from `governed_attr_names_for_base_model`'s per-base-model
-    set:
-
-    1. The catalog tracks this attribute's applicability via sequence rows
-       for OTHER base models of this same CPQModel, just not this one --
-       a confident "not part of THIS base model" (e.g. wirelessCarrier_
-       astro vs carrierSelectionMultiSelect_astro's mutual exclusivity).
-    2. The catalog never tracks this attribute via sequence rows for this
-       CPQModel at ANY base model at all -- confirmed live (2026-08-09):
-       carrierSelectionMultiSelect_astro has real sequence coverage for
-       exactly one (CPQModel, BaseModel) pair in the whole ingested
-       catalog; every OTHER CPQModel candidate has none, so per-base-model
-       absence there is silence, not a confident exclusion.
-
-    Callers should suppress (drop from view) only case 1 -- case 2 has no
-    real signal either way and should fall through to "ask the user" with
-    the attribute's own real catalog-defined options, matching this
-    codebase's never-guess/never-silently-drop convention (docs/CPQ_
-    CARRIER_WIRELESS_FREQBAND_DATA_GAP_PROOF_2026_08_07.md §9's own
-    "structurally valid but internally contradictory quote is worse than
-    an honest ask" reasoning, extended from constraint-fill to visibility).
-
-    Confirmed live (2026-08-09): the first version of this function did a
-    fresh `any(... for row in sequence_rows)` scan (up to 46,865 rows) on
-    EVERY call -- called once per non-governed attr, per candidate
-    CPQModel, per evaluate_rules_loop pass -- reproducing the exact
-    O(attrs x candidates x rows) cost `governed_attr_names_for_base_model`
-    was already built to eliminate for the per-base-model case. With
-    `_invalidate_inconsistent_paired_values` unable to converge for one
-    real base model (H55TGT9RW8AN, `inconsistent` stuck at 2), this
-    repeated across many passes and drove per-pass cost to 80-325s.
-    Precomputes the full per-CPQModel AttrName set ONCE (memoized in
-    `cache`, the same per-turn dict every other Data Table lookup here
-    already shares), then does an O(1) set-membership check per call --
-    same fix shape as `governed_attr_names_for_base_model` itself.
-    """
-    key = ("_ever_governed_attrs", workspace_id, catalog_prefix, cpq_model)
-    if cache is not None and key in cache:
-        ever_governed_attrs = cache[key]
-    else:
-        _, sequence_rows, _, _, _ = _load_all_tables(workspace_id, catalog_prefix, cache)
-        ever_governed_attrs = {
-            row.get("AttrName") for row in sequence_rows
-            if row.get("CPQModel") == cpq_model and row.get("AttrName")
-        }
-        if cache is not None:
-            cache[key] = ever_governed_attrs
-    return attr_var_name in ever_governed_attrs
-
-
-def attribute_applies(
-    cpq_model: str, base_model: str, attr_var_name: str,
-    workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple[int, str], tuple] | None = None,
-) -> bool | None:
-    """Whether `attr_var_name` is governed by this base model at all, per
-    every ingested sequence-shaped Data Table in this workspace. Resolves
-    the sibling question (e.g. wirelessCarrier_astro vs
-    carrierSelectionMultiSelect_astro) with real, catalog-wide data instead
-    of one live-session snapshot.
-
-    Returns None when no sequence table has any data at all for this
-    (cpq_model, base_model) -- distinct from a confirmed False. A thin
-    per-attribute wrapper over `governed_attr_names_for_base_model` --
-    callers checking MANY attributes for the same (cpq_model, base_model)
-    should call that directly instead, once, rather than this in a loop
-    (see its own docstring for the live-measured cost of doing otherwise).
-    """
-    scoped_names = governed_attr_names_for_base_model(
-        cpq_model, base_model, workspace_id, catalog_prefix, cache,
-    )
-    if scoped_names is None:
-        return None
-    return attr_var_name in scoped_names
+# moved to cpq/data_table_loader.py; the governance functions moved to
+# cpq/data_table_governance.py; resolve_whitelist_values/_row_conditions_
+# match moved to cpq/data_table_whitelist.py (Raven Style Compliance Plan,
+# Phase 2a, 2026-09-03) -- all re-imported above so every existing caller
+# (doc_discovery.py's deferred import, engine.py's dt_*-aliased top-level
+# imports, and the test suite's direct attribute access/patching) keeps
+# working unchanged. `get_cpq_rdb` is NOT re-exported -- tests that fake
+# the RDB for a call path going through _load_all_tables must patch
+# `aryx.cpq.data_table_loader.get_cpq_rdb` now, since that's the module
+# whose own namespace _load_all_tables's internal call resolves against.
 
 
 def resolve_region_allow_value(
