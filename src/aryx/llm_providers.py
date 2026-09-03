@@ -222,7 +222,26 @@ def oci_genai_json(
     """Call OCI GenAI Chat API (Cohere Command R / R+) for structured JSON output.
 
     Command R 08-2024 and later require the Chat API, not the older
-    GenerateText endpoint. JSON mode is enforced via the user prompt instruction.
+    GenerateText endpoint. JSON mode is enforced via the user prompt
+    instruction, including an upfront brevity cap on string fields to avoid
+    verbose reasoning text overflowing `max_tokens` before the retry below
+    even runs.
+
+    Args:
+        spec: Model spec identifying which OCI GenAI model to call.
+        system: System prompt.
+        user: User prompt; the JSON-mode and brevity instructions are
+            appended to this before sending.
+        schema: Optional JSON schema whose `properties`/`required` fields
+            are used to name the exact fields the model must return.
+
+    Returns:
+        A 3-tuple of (parsed JSON dict, prompt tokens used, completion
+        tokens used) — the latter two summed across the retry if one ran.
+
+    Raises:
+        RuntimeError: If the model's output still isn't valid JSON after
+            the brevity-constrained retry.
     """
     # Cap string-field verbosity on the FIRST attempt, not just the retry
     # below -- verbose reasoning text (e.g. FK-judging "reason" fields

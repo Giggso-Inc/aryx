@@ -64,6 +64,33 @@ class ShayBridgeStore:
         description: str = "",
         company_id: str | None = None,
     ) -> dict[str, Any]:
+        """Create or update the bridge row linking a Shay workspace to Aryx.
+
+        Idempotent: safe to call on every Shay workspace touch. Creates a
+        new Aryx workspace (via `make_workspace_store`) and bridge row on
+        first call for a given `shay_workspace_id`; on subsequent calls,
+        updates `company_id` (only when a non-null value is given) and
+        merges `sync_state` without disturbing the existing
+        `aryx_workspace_id` link.
+
+        Args:
+            shay_workspace_id: Shay's UUID for the workspace.
+            name: Human-readable workspace name, used to derive the Aryx
+                workspace's own name and merged into `sync_state`.
+            description: Optional description for a newly created Aryx
+                workspace. Ignored when the mapping already exists.
+            company_id: Shay's company UUID for this workspace, or None to
+                leave any existing value untouched.
+
+        Returns:
+            The bridge row as a dict with `shay_workspace_id`,
+            `aryx_workspace_id`, `company_id`, `sync_state`, and `created`
+            (True only when this call created a brand-new mapping).
+
+        Raises:
+            RuntimeError: If a concurrent insert or update leaves no row
+                behind to read back (should not happen in normal operation).
+        """
         existing = self.get_workspace_mapping(shay_workspace_id)
         if existing:
             if get_settings().effective_db_backend() == "oci":
@@ -274,6 +301,28 @@ class ShayBridgeStore:
         aryx_workspace_id: int,
         ask_session_key: str | None = None,
     ) -> dict[str, Any]:
+        """Create or update the bridge row linking a Shay thread to Aryx.
+
+        Idempotent full-field upsert: on conflict, every field is
+        overwritten with the new values (no partial-merge semantics, unlike
+        `ensure_workspace_mapping`'s `sync_state` handling).
+
+        Args:
+            shay_thread_id: Shay's UUID for the chat thread.
+            shay_workspace_id: Shay's UUID for the thread's workspace.
+            aryx_workspace_id: The Aryx workspace id this thread maps to.
+            ask_session_key: Session key for the Ask conversation state;
+                defaults to `shay_thread_id` when not given.
+
+        Returns:
+            The bridge row as a dict with `shay_thread_id`,
+            `aryx_workspace_id`, `shay_workspace_id`, `ask_session_key`,
+            and `created` (True only for a genuinely new mapping).
+
+        Raises:
+            RuntimeError: If the insert/update leaves no row behind to read
+                back (should not happen in normal operation).
+        """
         ask_session_key = ask_session_key or shay_thread_id
 
         if get_settings().effective_db_backend() == "oci":

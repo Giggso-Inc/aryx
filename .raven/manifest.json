@@ -1,0 +1,34 @@
+{
+  "project": "aryx",
+  "org": "giggso",
+  "owner": "m.munir@giggso.com",
+  "user_email": "m.munir@giggso.com",
+  "hub_url": "https://gsd.giggso.com",
+  "version": "1.0.0",
+  "raven_version": "3.0.0",
+  "stack": {
+    "language": [],
+    "frontend": [],
+    "data": [],
+    "db": [],
+    "infra": [],
+    "cloud": "none",
+    "libraries": []
+  },
+  "standards": "raven-v1",
+  "guard": {
+    "enabled": true,
+    "version": "1.0"
+  },
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-09-03T08:13:04Z",
+      "changed_by": "m.munir@giggso.com",
+      "summary": "Raven project auto-initialised by session-start.py"
+    }
+  ],
+  "contribute": {
+    "signoff_mode": "hard"
+  }
+}

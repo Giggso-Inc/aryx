@@ -686,18 +686,29 @@ class OraclePool:
         Commits on clean exit, rolls back on exception — matches the
         psycopg_pool behaviour that store classes rely on.
 
-        `timeout` matches psycopg_pool.ConnectionPool.connection()'s signature
-        so callers written against that interface (e.g. best-effort
-        background writes that must not block on a busy pool) don't raise
-        TypeError when running against this Oracle pool instead. It is
-        accepted but not enforced per-call: oracledb's thin pool has no
-        per-acquire wait override, only the pool-wide `wait_timeout` set at
-        create_pool() time (30s here, see __init__). Worst case with a busy
-        pool, a caller passing a short `timeout` waits up to that 30s instead
-        -- still bounded, and every current caller of this parameter already
-        treats acquisition failure as best-effort (wrapped in try/except),
-        so a slower-than-requested wait is an acceptable trade for not
-        crashing outright.
+        Args:
+            timeout: Accepted for interface parity with
+                psycopg_pool.ConnectionPool.connection() so callers written
+                against that interface (e.g. best-effort background writes
+                that must not block on a busy pool) don't raise TypeError
+                when running against this Oracle pool instead. Not enforced
+                per-call: oracledb's thin pool has no per-acquire wait
+                override, only the pool-wide `wait_timeout` set at
+                create_pool() time (30s here, see __init__). Worst case with
+                a busy pool, a caller passing a short `timeout` waits up to
+                that 30s instead — still bounded, and every current caller
+                of this parameter already treats acquisition failure as
+                best-effort (wrapped in try/except), so a slower-than-
+                requested wait is an acceptable trade for not crashing
+                outright.
+
+        Yields:
+            An `OracleConnectionWrapper` bound to a live connection checked
+            out from the pool.
+
+        Raises:
+            RuntimeError: If the pool is exhausted (all connections busy
+                past oracledb's own wait_timeout).
         """
         del timeout  # see docstring: accepted for interface parity, not enforced
         try:
