@@ -14,9 +14,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from aryx.config import get_settings
+
+if TYPE_CHECKING:
+    import psycopg
+
+    from aryx.store.oracle_pool import OracleConnectionWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +64,7 @@ def _type_pattern(catalog_prefix: str, suffix: str) -> str:
 class PostgresCpqRdb:
     """Postgres implementation — JSONB operators over aryx_entity."""
 
-    def _connection(self):
+    def _connection(self) -> Iterator["psycopg.Connection"]:
         from aryx.store.pool import get_pool
         return get_pool(get_settings().effective_dsn()).connection()
 
@@ -571,7 +577,7 @@ class OracleCpqRdb(PostgresCpqRdb):
     on FalkorDB + Postgres; see docs/CPQ_GRAPH_FIX_PLAN.md).
     """
 
-    def _connection(self):
+    def _connection(self) -> Iterator["OracleConnectionWrapper"]:
         from aryx.store.oracle_pool import get_oracle_pool
         settings = get_settings()
         return get_oracle_pool(settings.oci_adb_dsn).connection()

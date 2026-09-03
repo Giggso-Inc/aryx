@@ -17,6 +17,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -112,7 +113,7 @@ def _chunk_csv_bytes(data: bytes, chunk_rows: int) -> list[bytes]:
     return chunks or [data]
 
 
-def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0):
+def _make_should_stop(jobs: JobStore, job_id: str, min_interval_s: float = 1.0) -> Callable[[], bool]:
     """Cheap, throttled cancellation check for a running job's worker thread.
 
     POST /admin/jobs/{job_id}/cancel only ever updated the job-store row

@@ -12073,7 +12073,12 @@ def _run_cpq_turn_inner(
     if session.model_leaf_resolved:
         skip_always_ask = skip_always_ask | _cpq_engine.product_label_noise_vns(
             attrs, hiding_rules, rec_rules, con_rules)
-    def _recompute_pending(cur_hints):
+    def _recompute_pending(
+        cur_hints,
+    ) -> tuple[
+        list[ConfigAttr], dict[str, str], dict[str, str],
+        list[ConfigAttr], dict[int, list[str]], set[int],
+    ]:
         """One evaluate_rules_loop + auto_fill + post-filter pass, over
         whatever `cur_hints` currently holds. Factored out so Amendment 17
         below can re-run the exact same pass a second time after enriching

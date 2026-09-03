@@ -13,8 +13,14 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from aryx.models import DocumentChunk
+
+if TYPE_CHECKING:
+    from presidio_analyzer import AnalyzerEngine
+    from presidio_anonymizer import AnonymizerEngine
+    from presidio_anonymizer.entities import OperatorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +52,13 @@ DEFAULT_POLICY = PiiPolicy(
 
 
 @lru_cache(maxsize=1)
-def _engines():
+def _engines() -> "tuple[AnalyzerEngine, AnonymizerEngine]":
     from presidio_analyzer import AnalyzerEngine
     from presidio_anonymizer import AnonymizerEngine
     return AnalyzerEngine(), AnonymizerEngine()
 
 
-def _operator_config(entity_type: str, policy: PiiPolicy):
+def _operator_config(entity_type: str, policy: PiiPolicy) -> "OperatorConfig":
     from presidio_anonymizer.entities import OperatorConfig
     action = policy.entity_actions.get(entity_type, policy.default_action)
     if action == PiiAction.MASK:

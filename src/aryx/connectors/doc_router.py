@@ -49,7 +49,7 @@ _OCI_DOC_EXTS = {
 }
 
 
-def _connector_for(path: Path):
+def _connector_for(path: Path) -> Connector:
     from aryx.config import get_settings
     if get_settings().effective_parse_backend() == "oci":
         if path.suffix.lower() in _OCI_DOC_EXTS:

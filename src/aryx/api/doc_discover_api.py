@@ -11,6 +11,7 @@ import threading
 import uuid
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
@@ -43,7 +44,7 @@ def _save_tmp(data: bytes, suffix: str) -> Path:
     return Path(tmp.name)
 
 
-def _build_read_progress(jobs: JobStore, did: str, workspace_id: int):
+def _build_read_progress(jobs: JobStore, did: str, workspace_id: int) -> Callable[[int, int, list], None]:
     """Build the extract_mentions() progress callback for a read job.
 
     Durability: on very large (1000+ page) documents, per_doc_timeout can

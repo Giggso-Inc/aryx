@@ -6,9 +6,14 @@ import logging
 import os
 import time
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
+
+if TYPE_CHECKING:
+    from aryx.mcp.http_auth import McpPrincipal
 
 from aryx.api.actions_api import actions_router
 from aryx.api.adjudication_api import adjudication_router
@@ -84,7 +89,7 @@ class _RequestTimingMiddleware:
     def __init__(self, app):
         self.app = app
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -100,7 +105,7 @@ class _RequestTimingMiddleware:
         )
         status_holder = {"code": None}
 
-        async def _send(message):
+        async def _send(message) -> None:
             if message["type"] == "http.response.start":
                 status_holder["code"] = message.get("status")
             await send(message)
@@ -122,7 +127,7 @@ class _RequestTimingMiddleware:
             )
 
 
-def _authenticate_mcp(request):
+def _authenticate_mcp(request) -> "McpPrincipal | None":
     """Return the bearer principal, or ``None`` on missing/invalid auth."""
     from aryx.mcp.http_auth import authenticate_authorization_header
 
@@ -227,7 +232,7 @@ async def _stale_job_sweep() -> None:
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from aryx.config import get_settings
     from aryx.store.migrate import apply_migrations
     from aryx.api.file_ingest_api import shutdown_executor
