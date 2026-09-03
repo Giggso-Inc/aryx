@@ -4,7 +4,7 @@
   "owner": "m.munir@giggso.com",
   "user_email": "m.munir@giggso.com",
   "hub_url": "https://ravenhub.giggso.com",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "raven_version": "4.4.0",
   "work_type": "full-stack-data-platform",
   "stack": {
@@ -131,7 +131,7 @@
     }
   },
   "style": {
-    "max_file_lines": 400,
+    "max_file_lines": 150,
     "max_function_lines": 60,
     "require_type_hints": true,
     "require_docstrings": false,
@@ -161,6 +161,12 @@
     "survivor-smith"
   ],
   "changelog": [
+    {
+      "version": "1.0.7",
+      "date": "2026-09-03T00:00:00Z",
+      "changed_by": "m.munir@giggso.com",
+      "summary": "style.max_file_lines tightened from 400 to 150 per explicit project decision -- docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md rewritten to match (full re-scan of all 3 codebases against the new threshold; file counts, phase groupings, and effort estimates all changed substantially since far more files exceed 150 lines than exceeded 400). enforce_at remains \"commit\"."
+    },
     {
       "version": "1.0.6",
       "date": "2026-09-03T00:00:00Z",
