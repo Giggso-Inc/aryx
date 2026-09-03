@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from aryx.cpq import data_table_resolver
+from aryx.cpq import data_table_loader, data_table_resolver
 from aryx.cpq.data_table_resolver import resolve_product_cpq_model_family
 
 
@@ -50,7 +50,7 @@ class _FakeRdb:
 
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
-    monkeypatch.setattr(data_table_resolver, "get_cpq_rdb", lambda: _FakeRdb(tables))
+    monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _FakeRdb(tables))
 
 
 # --- Real APX NEXT data, as ingested from whitelist_apxnext.csv /
@@ -219,7 +219,6 @@ def test_attr_ever_governed_for_cpq_model_reuses_cache_across_many_attrs(monkeyp
     (`fetch_entities_by_exact_type`) regardless of how many attrs are
     checked for the same (workspace, catalog_prefix, cpq_model)."""
     calls = {"n": 0}
-    real_fetch = data_table_resolver.get_cpq_rdb
 
     class _CountingRdb:
         def __init__(self, inner):
@@ -233,8 +232,8 @@ def test_attr_ever_governed_for_cpq_model_reuses_cache_across_many_attrs(monkeyp
             return self._inner.fetch_entities_by_exact_type(workspace_id, ontology_type)
 
     _patch_rdb(monkeypatch, _TABLES)
-    inner = data_table_resolver.get_cpq_rdb()
-    monkeypatch.setattr(data_table_resolver, "get_cpq_rdb", lambda: _CountingRdb(inner))
+    inner = data_table_loader.get_cpq_rdb()
+    monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _CountingRdb(inner))
 
     cache: dict = {}
     for attr in ["wirelessCarrier_astro", "carrierSelectionMultiSelect_astro", "someOtherAttr_astro"]:
@@ -658,10 +657,10 @@ def test_module_cache_survives_a_60s_gap_between_calls(monkeypatch):
             calls["n"] += 1
             return super().fetch_entities_by_exact_type(workspace_id, ontology_type)
 
-    monkeypatch.setattr(data_table_resolver, "get_cpq_rdb", lambda: _CountingRdb(_TABLES))
+    monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _CountingRdb(_TABLES))
 
     fake_now = {"t": 1_000.0}
-    monkeypatch.setattr(data_table_resolver.time, "monotonic", lambda: fake_now["t"])
+    monkeypatch.setattr(data_table_loader.time, "monotonic", lambda: fake_now["t"])
 
     data_table_resolver._load_all_tables(workspace_id=1, catalog_prefix="")
     first_scan_calls = calls["n"]

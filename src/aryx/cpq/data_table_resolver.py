@@ -12,314 +12,36 @@ whichever Data Table CSVs a user uploads through the normal ingestion UI
 sees. There is no fixed file list, no per-product data file, and nothing
 here needs updating when a new catalog's own Data Table CSV is ingested.
 
-Generalized by TABLE SHAPE, not table name or product family. Every real
-Data Table export seen so far is one of two column signatures, regardless
-of what the table is actually called or what ontology_type ingestion gave
-it (a generic PascalCase derivation of the filename, see
-aryx.pipeline.doc_discovery._stem_type -- never a literal "whitelist"/
-"attrSequence" string):
-
-  "constraint"-shaped  -- CPQModel, BaseModel, attr1/val1 [, attr2/val2 ...]
-                          (the source of hiddenConstraintMasterString_astro).
-                          Column COUNT for the attrN/valN pairs varies by
-                          export -- detected from the ingested attributes'
-                          own keys, not hardcoded.
-  "sequence"-shaped     -- CPQModel, BaseModel, AttrName, Seq[, optionOrReqFlag]
-                          (the source of hiddenMasterStringForAstroPortable_astro).
-  "hierarchy"-shaped    -- Product, cpqModelName[, productFamily, productLine,
-                          ...] (the source of the Product -> CPQModel-family
-                          mapping, e.g. CPQModelHierarchy.csv). NOTE this maps
-                          a product name to its coarse product-FAMILY code
-                          only (e.g. "APX NEXT ENHANCED" -> "APXNEXT", not
-                          "APXNEXTENHANCED") -- real per-product refinement
-                          beyond the family is BML-script-derived business
-                          logic, not present in this reference table. Used
-                          here only as a fallback for products with no
-                          constraint-row coverage in
-                          `resolve_product_cpq_models_from_rows` (the
-                          data-driven, catalog-agnostic per-product
-                          resolver), never to override it.
-  "region_rule"-shaped  -- model, value, region, ruleType, attribute[, UDCC]
-                          (e.g. NewCountryRegMapping.csv) -- per-(CPQModel,
-                          region[, country]) ALLOW/DISALLOW rows for a named
-                          attribute. Confirmed live (2026-08-10): this is a
-                          real, non-hardcoded resolution path for attributes
-                          Oracle CPQ's own script-based recommendation rules
-                          otherwise compute at runtime against a live table
-                          this repo never has ingested (e.g. Base Model's
-                          "Set Base Model" rules query `Oracle_BomItemMap`,
-                          absent from every export seen so far) -- this
-                          static table independently carries the same
-                          resolved answer. See `resolve_region_allow_value`.
-
-A new rule referencing a never-seen-before table needs zero new code here
-IF its ingested rows match one of these four shapes -- only a genuinely new
-column signature needs a new detector, added to `_SHAPE_DETECTORS` below.
+Rows are classified by TABLE SHAPE (see `cpq.data_table_shapes` for the
+four shapes and how a new one gets added) before this module's own
+resolver functions below operate on them.
 """
 from __future__ import annotations
 
-import logging
-import time
 from typing import Any
 
-from aryx.cpq.data_table_cache import (
-    _cache_write_if_marker_unchanged,
-    _invalidate_on_marker_change,
+from aryx.cpq.data_table_loader import (
+    _clear_tables_cache,
+    _load_all_tables,
+    _TABLES_CACHE_TTL_SECONDS,
+)
+from aryx.cpq.data_table_shapes import (
+    _attr_op_val_triples,
+    _attr_val_col_pairs,
+    _normalize_label,
 )
 from aryx.cpq.rdb import get_cpq_rdb
 
-logger = logging.getLogger(__name__)
-
-# Cross-process cache-invalidation primitives (_invalidate_on_marker_change,
-# _cache_write_if_marker_unchanged, and the lower-level poll/fetch helpers
-# they call) moved to cpq/data_table_cache.py (Raven Style Compliance Plan,
-# Phase 2, 2026-09-03) -- only the two this file's own _load_all_tables
-# calls are imported here. `cpq/engine.py` and
-# tests/test_cpq_invalidation_marker_2026_08_28.py now import directly from
-# data_table_cache instead of from this module.
-
-_TABLES_CACHE_LAST_SEEN_MARKER: list[float | None] = [None]
-
-# Module-level, short-TTL cache for _load_all_tables, keyed by (workspace_id,
-# catalog_prefix). Mirrors engine.py's _LAYOUT_COMPONENTS_CACHE pattern.
-# Needed because ask_api.py calls evaluate_rules_loop (and therefore
-# _load_all_tables) multiple times per single /ask HTTP request, each with
-# its own fresh per-call `cache` dict -- confirmed live against workspace 43
-# (56,357 constraint rows, 46,865 sequence rows): 6+ consecutive full-table
-# rescans (14-27s each) for the identical key within one turn. A short TTL
-# (rather than pure process-lifetime) keeps this safe against a Data Table
-# CSV being re-ingested mid-session.
-_TABLES_CACHE: dict[tuple[int, str], tuple[float, tuple]] = {}
-# docs/CPQ_TURN_LATENCY_PERFORMANCE_PLAN_2026_08_19.md -- widened from 30.0.
-# Live-measured: this cache almost never survived to the NEXT conversational
-# turn (a customer reading a question and typing a reply routinely exceeds
-# 30s), so nearly every real turn paid the full fresh-scan cost (up to 32.6s
-# observed) a second time. The staleness risk this TTL exists for -- a Data
-# Table CSV re-ingested mid-session -- is an occasional admin action, not a
-# every-30-seconds occurrence; 300s gives real cross-turn hits while still
-# bounding worst-case staleness to 5 minutes if the invalidation hook
-# (doc_discovery.ingest_confirmed) is ever bypassed.
-_TABLES_CACHE_TTL_SECONDS = 300.0
-
-
-def _clear_tables_cache() -> None:
-    """Test-isolation hook -- call from an autouse fixture to prevent this
-    process-lifetime cache from leaking fake/monkeypatched rows between
-    tests that reuse the same (workspace_id, catalog_prefix) key."""
-    _TABLES_CACHE.clear()
-
-
-# ---------------------------------------------------------------------------
-# Shape detection -- classify an ingested entity type by the KEYS its rows'
-# JSONB attributes actually have, not by its ontology_type name.
-# ---------------------------------------------------------------------------
-
-
-def _is_constraint_shaped(keys: set[str]) -> bool:
-    return (
-        "CPQModel" in keys and "BaseModel" in keys
-        and "attr1" in keys and "val1" in keys
-    )
-
-
-def _is_sequence_shaped(keys: set[str]) -> bool:
-    return (
-        "CPQModel" in keys and "BaseModel" in keys
-        and "AttrName" in keys and "Seq" in keys
-    )
-
-
-def _is_hierarchy_shaped(keys: set[str]) -> bool:
-    return "Product" in keys and "cpqModelName" in keys
-
-
-def _is_series_mapping_shaped(keys: set[str]) -> bool:
-    # e.g. Seriesmodelsmapping.csv -- maps a (region, country, ...)
-    # condition to the real CPQModel variant that actually applies,
-    # keyed by attrN/opN/valN condition triples rather than a bare
-    # attrN/valN pair (constraint-shaped tables have no opN column and
-    # no childCPQModel). Disjoint from every other shape's required keys
-    # (no CPQModel/BaseModel/Product/cpqModelName here), so detection
-    # order relative to the others doesn't matter.
-    return "childCPQModel" in keys and "attr1" in keys and "val1" in keys and "op1" in keys
-
-
-def _is_region_rule_shaped(keys: set[str]) -> bool:
-    # e.g. NewCountryRegMapping.csv -- a per-(CPQModel, region[, country])
-    # ALLOW/DISALLOW rule for a single named attribute + value. Disjoint
-    # from every other shape's required keys (no CPQModel/BaseModel/attr1/
-    # val1/AttrName/Seq/Product/cpqModelName/childCPQModel here), so
-    # detection order relative to the others doesn't matter.
-    return {"model", "value", "region", "ruleType", "attribute"} <= keys
-
-
-# Ordered so a more specific shape (sequence) is checked before a more
-# general one, in case a future table's keys could satisfy both.
-_SHAPE_DETECTORS: tuple[tuple[str, "callable"], ...] = (
-    ("sequence", _is_sequence_shaped),
-    ("series_mapping", _is_series_mapping_shaped),
-    ("region_rule", _is_region_rule_shaped),
-    ("constraint", _is_constraint_shaped),
-    ("hierarchy", _is_hierarchy_shaped),
-)
-
-
-def _detect_shape(keys: set[str]) -> str | None:
-    for shape_name, detector in _SHAPE_DETECTORS:
-        if detector(keys):
-            return shape_name
-    return None
-
-
-def _attr_val_col_pairs(keys: set[str]) -> list[tuple[str, str]]:
-    """Every attrN/valN pair actually present in a constraint-shaped row's
-    keys, in order -- N is discovered, never assumed to be a fixed count."""
-    pairs = []
-    n = 1
-    while f"attr{n}" in keys and f"val{n}" in keys:
-        pairs.append((f"attr{n}", f"val{n}"))
-        n += 1
-    return pairs
-
-
-def _attr_op_val_triples(keys: set[str]) -> list[tuple[str, str, str]]:
-    """Every attrN/opN/valN column-name triple present in a series-mapping-
-    shaped row's keys, in order -- N discovered, never a fixed count."""
-    triples = []
-    n = 1
-    while f"attr{n}" in keys and f"op{n}" in keys and f"val{n}" in keys:
-        triples.append((f"attr{n}", f"op{n}", f"val{n}"))
-        n += 1
-    return triples
-
-
-def _normalize_label(text: str) -> str:
-    """Case/whitespace/trademark-symbol-insensitive comparison key -- a real
-    catalog's own childCPQModelLabel carries a "™" a menu item's item_text
-    doesn't (confirmed live: "APX NEXT™ International (Federal)" vs "APX
-    NEXT International (Federal)")."""
-    stripped = "".join(ch for ch in text if ch not in "™®©")
-    return " ".join(stripped.split()).strip().casefold()
-
-
-def _load_all_tables(
-    workspace_id: int, catalog_prefix: str = "",
-    cache: dict[tuple[int, str], tuple] | None = None,
-) -> tuple[
-    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]],
-    list[dict[str, Any]],
-]:
-    """Query aryx_entity for every ingested entity type in this workspace,
-    classify EVERY ROW by shape individually, and return
-    (constraint_rows, sequence_rows, hierarchy_rows, series_mapping_rows,
-    region_rule_rows) -- flat lists of {column: value} dicts pooled across
-    every matching
-    ingested table, whatever it's called.
-
-    Two live-discovered bugs fixed here (confirmed against a real 453K-
-    entity workspace with 72 ingested types):
-
-    1. Fetches by EXACT ontology_type (fetch_entities_by_exact_type), not
-       the LIKE-suffix fetch_entities_by_type. Two real ingested types can
-       share a suffix -- "Whitelist" and "Advancedwhitelist" both end in
-       "whitelist" -- so the suffix match for one silently pulled in the
-       other's differently-shaped rows too, corrupting the pool.
-    2. Classifies EACH ROW's shape independently, not the whole type from
-       a single sample row. Real CSV rows can be sparse -- a row whose
-       "Product" cell was empty in the source has no "Product" key stored
-       at all -- so checking only entities[0] risks misclassifying (and
-       silently dropping) an entire otherwise-valid type whenever its
-       first-returned row (Postgres gives no ordering guarantee) happens
-       to be a sparse or differently-shaped outlier. Confirmed live: a
-       3,138-row CPQModelHierarchy-shaped type was entirely skipped this
-       way because one row lacked "Product".
-
-    catalog_prefix is accepted for interface consistency with the rest of
-    the CPQ engine's workspace-scoping convention, but doesn't affect
-    exact-type lookups here -- CSV-derived ontology_types never carry a
-    catalog_prefix the way XML-derived rule/attr types do (see
-    aryx.pipeline.doc_discovery._stem_type), so there is nothing for it to
-    filter on for Data Tables specifically.
-
-    `cache`, when passed, is a plain dict the CALLER owns (typically for the
-    lifetime of one auto_fill/evaluate_rules_loop pass) -- this function
-    reuses a prior scan for the same (workspace_id, catalog_prefix) instead
-    of re-querying, and also populates it from the module-level cache below
-    when possible. Without it (default), the module-level cache is still
-    consulted first.
-
-    Beneath the per-call `cache`, a MODULE-LEVEL short-TTL cache
-    (`_TABLES_CACHE`) also keys on (workspace_id, catalog_prefix) and
-    survives across separate top-level calls -- confirmed live against a
-    453K-entity, 72-ingested-type workspace: a single /ask HTTP request
-    calls evaluate_rules_loop (and therefore this function) roughly 8 times,
-    each with its own fresh per-call `cache` dict, so the per-call cache
-    alone still repeated the full ~15-27s scan every time within one turn.
-    The module-level cache collapses that to one scan per TTL window
-    regardless of how many separate per-call caches are in play.
-    """
-    if cache is not None:
-        key = (workspace_id, catalog_prefix)
-        if key in cache:
-            logger.info("cpq_perf: _load_all_tables CACHE HIT (call-local) ws=%s prefix=%r", workspace_id, catalog_prefix)
-            return cache[key]
-
-    _marker_at_read = _invalidate_on_marker_change(_TABLES_CACHE, _TABLES_CACHE_LAST_SEEN_MARKER)
-    _mod_key = (workspace_id, catalog_prefix)
-    _mod_hit = _TABLES_CACHE.get(_mod_key)
-    if _mod_hit is not None:
-        _mod_ts, _mod_result = _mod_hit
-        if time.monotonic() - _mod_ts < _TABLES_CACHE_TTL_SECONDS:
-            logger.info("cpq_perf: _load_all_tables CACHE HIT (module) ws=%s prefix=%r", workspace_id, catalog_prefix)
-            if cache is not None:
-                cache[_mod_key] = _mod_result
-            return _mod_result
-
-    _t0 = time.monotonic()
-    rdb = get_cpq_rdb()
-    constraint_rows: list[dict[str, Any]] = []
-    sequence_rows: list[dict[str, Any]] = []
-    hierarchy_rows: list[dict[str, Any]] = []
-    series_mapping_rows: list[dict[str, Any]] = []
-    region_rule_rows: list[dict[str, Any]] = []
-    _bucket = {
-        "constraint": constraint_rows,
-        "sequence": sequence_rows,
-        "hierarchy": hierarchy_rows,
-        "series_mapping": series_mapping_rows,
-        "region_rule": region_rule_rows,
-    }
-
-    for ontology_type in rdb.list_ontology_types(workspace_id):
-        entities = rdb.fetch_entities_by_exact_type(workspace_id, ontology_type)
-        if not entities:
-            continue
-        counts = {"constraint": 0, "sequence": 0, "hierarchy": 0, "series_mapping": 0, "region_rule": 0, None: 0}
-        for _eid, attrs in entities:
-            shape = _detect_shape(set(attrs.keys()))
-            counts[shape] += 1
-            if shape is not None:
-                _bucket[shape].append(attrs)
-        logger.debug(
-            "data_table_resolver: %s (%d rows) -- constraint=%d sequence=%d "
-            "hierarchy=%d series_mapping=%d region_rule=%d unrecognized=%d",
-            ontology_type, len(entities), counts["constraint"],
-            counts["sequence"], counts["hierarchy"], counts["series_mapping"],
-            counts["region_rule"], counts[None],
-        )
-
-    result = (constraint_rows, sequence_rows, hierarchy_rows, series_mapping_rows, region_rule_rows)
-    logger.info(
-        "cpq_perf: _load_all_tables MISS (fresh scan) took %.3fs ws=%s prefix=%r "
-        "constraint=%d sequence=%d hierarchy=%d series_mapping=%d region_rule=%d",
-        time.monotonic() - _t0, workspace_id, catalog_prefix,
-        len(constraint_rows), len(sequence_rows), len(hierarchy_rows),
-        len(series_mapping_rows), len(region_rule_rows),
-    )
-    if cache is not None:
-        cache[(workspace_id, catalog_prefix)] = result
-    _cache_write_if_marker_unchanged(_TABLES_CACHE, _mod_key, (time.monotonic(), result), _marker_at_read)
-    return result
+# _load_all_tables, _clear_tables_cache, and the module-level table cache
+# moved to cpq/data_table_loader.py (Raven Style Compliance Plan, Phase 2a,
+# 2026-09-03) -- re-imported above so every existing caller of this module
+# (doc_discovery.py's deferred import, this file's own resolver functions
+# below, and the test suite's direct attribute access/patching) keeps
+# working unchanged. `get_cpq_rdb` is NOT re-exported for that purpose --
+# tests that fake the RDB for a call path going through _load_all_tables
+# must patch `aryx.cpq.data_table_loader.get_cpq_rdb` now, since that's the
+# module whose own namespace _load_all_tables's internal call resolves
+# against.
 
 
 def _row_conditions_match(

@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import pytest
 
-from aryx.cpq import data_table_resolver
+from aryx.cpq import data_table_loader, data_table_resolver
 from aryx.cpq.engine import CpqEngine
 from aryx.cpq.state import ConfigAttr, ConstraintRule, MenuOption
 
@@ -75,7 +75,7 @@ class _FakeRdb:
 
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
-    monkeypatch.setattr(data_table_resolver, "get_cpq_rdb", lambda: _FakeRdb(tables))
+    monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _FakeRdb(tables))
 
 
 def _menu(*values: str) -> list[MenuOption]:

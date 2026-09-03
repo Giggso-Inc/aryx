@@ -51,7 +51,7 @@ Re-scanned 2026-09-03 against the revised 150-line threshold (§1.1). The origin
 | 1,520 | `src/aryx/pipeline/doc_discovery.py` | ✅ `tests/test_doc_discovery*.py` |
 | 1,413 | `src/aryx/cpq/intent_gateway.py` | ✅ `tests/test_cpq_intent_gateway.py` |
 | 1,056 | `src/aryx/config.py` | ✅ `tests/test_cpq_config_*.py` (4 files) |
-| 902 | `src/aryx/cpq/data_table_resolver.py` | ✅ `tests/test_cpq_data_table_resolver.py` — all 12 public functions covered as of this revision (see §2.1.1; 3 golden-master tests added during Phase 2 execution) |
+| 624 (was 902, then 1,036 originally) | `src/aryx/cpq/data_table_resolver.py` | ✅ `tests/test_cpq_data_table_resolver.py` — all 12 public functions covered as of this revision (see §2.1.1; 3 golden-master tests added during Phase 2 execution) |
 | 982 | `src/aryx/api/data_api.py` | ❌ none |
 | 906 | `src/aryx/source_catalog.py` | ✅ `tests/test_source_catalog*.py` |
 | 880 | `src/aryx/cpq/rdb.py` | ⚠️ `tests/test_cpq_rdb_attr_set_assoc.py` — narrow, not full-file coverage |
@@ -498,7 +498,7 @@ Approach per file, not a blanket rule (applies to both sub-tiers):
 3. Split one file at a time, run its existing tests immediately after, commit before starting the next file. Never batch multiple file-splits into one commit.
 4. A split rarely clears 150 lines in one extraction the way it often cleared 400 — expect most Tier A/B files to need 2–4 extracted modules, not one, to land every resulting file under 150. Verify the *actual* post-split line count of every resulting file, not just that the original file shrank.
 
-**2a — Tier A (the original 20 files, 400–1,000 lines):** priority order start with files that have the clearest existing internal seams (`data_table_resolver.py`'s four shape-detectors — extraction in progress, `data_table_cache.py` done, further splits still needed to clear 150; `oracle_pool.py`'s CLOB-handling helpers vs. the pool/cursor wrappers; `state.py`'s distinct state-transition groups) and defer files where the split boundary is less obvious (`config.py`, `source_catalog.py`) until later in the sub-tier.
+**2a — Tier A (the original 20 files, 400–1,000 lines):** priority order start with files that have the clearest existing internal seams. `data_table_resolver.py`'s split status as of this revision: `data_table_cache.py` (162 lines, stated exception per §2.1) and `data_table_shapes.py` (127 lines, clean) and `data_table_loader.py` (172 lines, similarly a load-bearing-docstring exception — `_load_all_tables`'s two live-discovered-bug writeups are the same category of documentation `data_table_cache.py`'s exception protects) are done; `data_table_resolver.py` itself is down to 624 lines and still needs the governance-function extraction (`resolve_whitelist_values`, `governed_attr_names_for_base_model`, etc. — proposed, not yet executed) plus likely one more split of the remaining resolver functions to actually clear 150. Then continue to `oracle_pool.py`'s CLOB-handling helpers vs. the pool/cursor wrappers, `state.py`'s distinct state-transition groups, deferring `config.py`/`source_catalog.py` until later in the sub-tier.
 
 **2b — Tier B (47 additional files, 150–400 lines, new to this revision):** priority order:
 - **Untested files first, smallest first** (of the 23 Tier B files with no matching test — §2.1): starting small keeps each golden-master-test-then-split cycle short while the corrected methodology is still being applied consistently. `models.py` (153 lines) and `action_store.py` (158 lines) are natural starting points.

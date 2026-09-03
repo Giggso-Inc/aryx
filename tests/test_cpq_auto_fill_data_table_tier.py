@@ -41,8 +41,8 @@ class _FakeRdb:
 
 
 def _patch_rdb(monkeypatch, tables: dict[str, list[dict]]) -> None:
-    from aryx.cpq import data_table_resolver
-    monkeypatch.setattr(data_table_resolver, "get_cpq_rdb", lambda: _FakeRdb(tables))
+    from aryx.cpq import data_table_loader
+    monkeypatch.setattr(data_table_loader, "get_cpq_rdb", lambda: _FakeRdb(tables))
 
 
 def _base_model_attr():

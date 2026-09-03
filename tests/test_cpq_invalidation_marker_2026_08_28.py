@@ -37,6 +37,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import aryx.cpq.data_table_cache as dtc
+import aryx.cpq.data_table_loader as dtl
 import aryx.cpq.data_table_resolver as dtr
 
 
@@ -279,15 +280,15 @@ def test_end_to_end_concurrent_invalidation_does_not_resurrect_stale_data():
 
     try:
         with patch.object(dtc, "_current_invalidation_marker", side_effect=[100.0, 200.0]), \
-             patch.object(dtr, "get_cpq_rdb", return_value=fake_rdb):
+             patch.object(dtl, "get_cpq_rdb", return_value=fake_rdb):
             dtr._load_all_tables(93, "")
-        assert key not in dtr._TABLES_CACHE, (
+        assert key not in dtl._TABLES_CACHE, (
             "a write computed under the pre-invalidation marker must not "
             "repopulate the cache after a concurrent invalidation fired mid-compute"
         )
     finally:
-        dtr._TABLES_CACHE.clear()
-        dtr._TABLES_CACHE_LAST_SEEN_MARKER[0] = None
+        dtl._TABLES_CACHE.clear()
+        dtl._TABLES_CACHE_LAST_SEEN_MARKER[0] = None
 
 
 def test_load_all_tables_recomputes_after_marker_change_despite_valid_ttl():
@@ -295,20 +296,20 @@ def test_load_all_tables_recomputes_after_marker_change_despite_valid_ttl():
     from unittest.mock import MagicMock
 
     key = (93, "")
-    dtr._TABLES_CACHE[key] = (_time.monotonic(), ("stale", "sentinel", "tuple", "here", "!"))
-    dtr._TABLES_CACHE_LAST_SEEN_MARKER[0] = 100.0
+    dtl._TABLES_CACHE[key] = (_time.monotonic(), ("stale", "sentinel", "tuple", "here", "!"))
+    dtl._TABLES_CACHE_LAST_SEEN_MARKER[0] = 100.0
 
     fake_rdb = MagicMock()
     fake_rdb.list_ontology_types.return_value = []
 
     try:
         with patch.object(dtc, "_current_invalidation_marker", return_value=200.0), \
-             patch.object(dtr, "get_cpq_rdb", return_value=fake_rdb):
+             patch.object(dtl, "get_cpq_rdb", return_value=fake_rdb):
             dtr._load_all_tables(93, "")
         assert fake_rdb.list_ontology_types.called, (
             "the real fetch must run after a marker change, even though the "
             "seeded cache entry was still well within its own TTL"
         )
     finally:
-        dtr._TABLES_CACHE.clear()
-        dtr._TABLES_CACHE_LAST_SEEN_MARKER[0] = None
+        dtl._TABLES_CACHE.clear()
+        dtl._TABLES_CACHE_LAST_SEEN_MARKER[0] = None
