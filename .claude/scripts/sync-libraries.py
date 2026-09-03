@@ -86,8 +86,13 @@ def already_approved(lib: str, manifest: dict) -> bool:
     if isinstance(existing, list):
         if lib in existing:
             return True
-    # Check org whitelist
-    for tier in manifest.get("approved_skills", {}).values():
+    # Check org whitelist. approved_skills is a flat list of approved skill
+    # names in this manifest schema, not tiers of libraries -- there's no
+    # separate library-tier whitelist field, so this only has something to
+    # check when a future manifest schema actually nests tiers under it.
+    org_whitelist = manifest.get("approved_skills", {})
+    tiers = org_whitelist.values() if isinstance(org_whitelist, dict) else []
+    for tier in tiers:
         if isinstance(tier, list) and lib in tier:
             return True
     return False
