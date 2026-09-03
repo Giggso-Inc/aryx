@@ -203,7 +203,7 @@ def test_base_model_is_never_stale_across_a_real_two_turn_cascade():
     hw_attr = attrs[0]
     by_eid = {a.entity_id: a for a in attrs}
 
-    with patch("aryx.cpq.data_table_resolver._load_all_tables", side_effect=_fake_load_all_tables):
+    with patch("aryx.cpq.data_table_product._load_all_tables", side_effect=_fake_load_all_tables):
         # Turn 1 — Hardware Version changes; mirrors _handle_cascade's own
         # dependent-stripping + _invalidate_stale_base_model call.
         dependent_eids = engine.find_cascade_dependents(hw_attr, attrs, [], [], con_rules)

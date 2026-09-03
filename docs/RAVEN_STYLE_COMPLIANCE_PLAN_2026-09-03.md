@@ -51,7 +51,7 @@ Re-scanned 2026-09-03 against the revised 150-line threshold (§1.1). The origin
 | 1,520 | `src/aryx/pipeline/doc_discovery.py` | ✅ `tests/test_doc_discovery*.py` |
 | 1,413 | `src/aryx/cpq/intent_gateway.py` | ✅ `tests/test_cpq_intent_gateway.py` |
 | 1,056 | `src/aryx/config.py` | ✅ `tests/test_cpq_config_*.py` (4 files) |
-| 624 (was 902, then 1,036 originally) | `src/aryx/cpq/data_table_resolver.py` | ✅ `tests/test_cpq_data_table_resolver.py` — all 12 public functions covered as of this revision (see §2.1.1; 3 golden-master tests added during Phase 2 execution) |
+| 71 (was 406, 624, 902, then 1,036 originally) | `src/aryx/cpq/data_table_resolver.py` | ✅ done — fully split into 10 files, see Phase 2a's own status table for the breakdown; this file is now a pure re-export hub |
 | 982 | `src/aryx/api/data_api.py` | ❌ none |
 | 906 | `src/aryx/source_catalog.py` | ✅ `tests/test_source_catalog*.py` |
 | 880 | `src/aryx/cpq/rdb.py` | ⚠️ `tests/test_cpq_rdb_attr_set_assoc.py` — narrow, not full-file coverage |
@@ -498,7 +498,28 @@ Approach per file, not a blanket rule (applies to both sub-tiers):
 3. Split one file at a time, run its existing tests immediately after, commit before starting the next file. Never batch multiple file-splits into one commit.
 4. A split rarely clears 150 lines in one extraction the way it often cleared 400 — expect most Tier A/B files to need 2–4 extracted modules, not one, to land every resulting file under 150. Verify the *actual* post-split line count of every resulting file, not just that the original file shrank.
 
-**2a — Tier A (the original 20 files, 400–1,000 lines):** priority order start with files that have the clearest existing internal seams. `data_table_resolver.py`'s split status as of this revision: `data_table_cache.py` (162 lines), `data_table_loader.py` (172 lines), and `data_table_governance.py` (166 lines) are all stated exceptions per §2.1 — each dominated by load-bearing incident-documentation docstrings (real production bugs and perf regressions, not boilerplate) that would need gutting, not trimming, to clear 150. `data_table_shapes.py` (127 lines) and `data_table_whitelist.py` (76 lines) are clean, under threshold. `data_table_resolver.py` itself is down to **406 lines** (from 1,036 originally) and still needs at least one more split of its remaining resolver functions (`resolve_region_allow_value` through `find_inconsistent_filled_pairs`) to actually clear 150. The `engine.py`-facing re-export chain (its `dt_*`-aliased top-level imports, and the ~10 test files that patch those aliases on `engine`'s own namespace) needed zero changes across all three extractions so far — only functions/state actually *consumed inside* the moving code (`get_cpq_rdb`, `time.monotonic`, `_TABLES_CACHE*`) needed patch-target updates, not functions merely *re-exported through* it. Then continue to `oracle_pool.py`'s CLOB-handling helpers vs. the pool/cursor wrappers, `state.py`'s distinct state-transition groups, deferring `config.py`/`source_catalog.py` until later in the sub-tier.
+**2a — Tier A (the original 20 files, 400–1,000 lines):** priority order start with files that have the clearest existing internal seams.
+
+**`data_table_resolver.py` split — DONE.** 1,036 lines -> 10 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `data_table_resolver.py` | 71 | ✅ pure re-export hub, `__all__`-declared |
+| `data_table_shapes.py` | 127 | ✅ clean |
+| `data_table_whitelist.py` | 76 | ✅ clean |
+| `data_table_variant.py` | 67 | ✅ clean |
+| `data_table_stale_models.py` | 33 | ✅ clean |
+| `data_table_consistency.py` | 149 | ✅ clean (just under) |
+| `data_table_product.py` | 151 | ⚠️ stated exception, 1 line over — 3 tightly-related functions, docstring-driven, not worth fragmenting further for one line |
+| `data_table_cache.py` | 162 | ⚠️ stated exception (§2.1) |
+| `data_table_loader.py` | 172 | ⚠️ stated exception (§2.1) |
+| `data_table_governance.py` | 166 | ⚠️ stated exception (§2.1) |
+
+6 of 10 files clean under 150; 4 are stated, documented exceptions (load-bearing incident-documentation docstrings, same reasoning as `data_table_cache.py`'s original exception). The 1,036-line file that started this phase no longer exists in that form.
+
+**Key lesson, confirmed the hard way mid-split:** the `engine.py`-facing re-export chain (its `dt_*`-aliased top-level imports, and the ~10 test files that patch those aliases on `engine`'s own namespace) needed zero changes across every extraction — patching a name in the *caller's* namespace always works regardless of where the real function is defined. But **whitebox patches targeting `data_table_resolver.<name>` directly break the moment the calling code itself moves out of `data_table_resolver.py`** — `tests/test_cpq_stale_base_model_cascade_2026_08_20.py` patched `aryx.cpq.data_table_resolver._load_all_tables` and silently stopped intercepting anything once the functions that call `_load_all_tables` (`resolve_product_cpq_models_from_rows`, `resolve_region_allow_value`) moved to `data_table_product.py` — the test still passed collection and only failed on a business-logic assertion, not an import error, so this needs an actual test run to catch, not just a compile check. Retargeted to `aryx.cpq.data_table_product._load_all_tables`; a project-wide `grep -rl "_load_all_tables" tests/` (4 files total) confirmed no other test has the same landmine. **Any future split of a function that internally calls another moved function must re-check every direct-module-path patch, not just re-exports.**
+
+Next in this sub-tier: `oracle_pool.py`'s CLOB-handling helpers vs. the pool/cursor wrappers, `state.py`'s distinct state-transition groups, deferring `config.py`/`source_catalog.py` until later.
 
 **2b — Tier B (47 additional files, 150–400 lines, new to this revision):** priority order:
 - **Untested files first, smallest first** (of the 23 Tier B files with no matching test — §2.1): starting small keeps each golden-master-test-then-split cycle short while the corrected methodology is still being applied consistently. `models.py` (153 lines) and `action_store.py` (158 lines) are natural starting points.
