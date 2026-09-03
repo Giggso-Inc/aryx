@@ -1,0 +1,395 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Aryx on Oracle ADB</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #FAFBFC;
+    --surface: #FFFFFF;
+    --line: #E3E7EB;
+    --line-strong: #C9D1D9;
+    --ink: #1A2430;
+    --ink-soft: #5B6B7C;
+    --accent: #0F7A70;
+    --accent-soft: #E6F3F1;
+    --oracle: #B45309;
+    --oracle-soft: #FBEEE0;
+    --shadow: 215 30% 25%;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: clamp(20px, 4vw, 56px);
+  }
+
+  .page {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────── */
+  header {
+    padding-bottom: 28px;
+    margin-bottom: 32px;
+    border-bottom: 3px solid var(--ink);
+  }
+  header h1 {
+    margin: 0 0 8px;
+    font-size: clamp(1.9rem, 3vw, 2.4rem);
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    font-weight: 700;
+  }
+  header p {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 1.05rem;
+    max-width: 66ch;
+  }
+
+  /* ── Section rhythm ───────────────────────────────────────────── */
+  section { margin-bottom: 44px; }
+  .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  h2 {
+    font-size: 1.35rem;
+    margin: 0 0 6px;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+  .lede {
+    color: var(--ink-soft);
+    max-width: 70ch;
+    margin: 0 0 22px;
+    font-size: 1rem;
+  }
+
+  /* ── Diagram card ─────────────────────────────────────────────── */
+  .diagram-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: clamp(16px, 3vw, 36px);
+    box-shadow: 0 1px 2px hsl(var(--shadow) / 0.04), 0 10px 28px hsl(var(--shadow) / 0.06);
+  }
+  .diagram-scroll { overflow-x: auto; }
+  .diagram-scroll pre.mermaid { margin: 0; min-width: 860px; }
+  .diagram-scroll .edgeLabel,
+  .diagram-scroll .edgeLabel p {
+    background-color: var(--surface) !important;
+    color: var(--ink) !important;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    margin-top: 22px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+    color: var(--ink-soft);
+  }
+  .legend .item { display: flex; align-items: center; gap: 9px; }
+  .swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; }
+  .legend .arrow-key { display: flex; align-items: center; gap: 9px; }
+  .arrow-line { width: 26px; height: 0; border-top: 2.5px solid var(--ink-soft); }
+  .arrow-line.dashed { border-top-style: dashed; }
+
+  /* ── Component reference table ───────────────────────────────── */
+  .bom-wrap {
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: clamp(14px, 2.5vw, 28px);
+  }
+  .bom { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  .bom th {
+    text-align: left;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    font-weight: 600;
+    padding: 0 16px 12px 0;
+    border-bottom: 2px solid var(--ink);
+    white-space: nowrap;
+  }
+  .bom td {
+    padding: 14px 16px 14px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .bom tr:last-child td { border-bottom: none; }
+  .bom td.comp { font-weight: 700; white-space: nowrap; }
+  .bom td.note { color: var(--ink-soft); max-width: 32ch; }
+  .bom code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.86em;
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tag.oracle { background: var(--oracle-soft); color: var(--oracle); }
+  .tag.oci { background: var(--accent-soft); color: var(--accent); }
+  .tag.internal { background: var(--bg); color: var(--ink-soft); border: 1px solid var(--line-strong); }
+
+  /* ── Flow list ────────────────────────────────────────────────── */
+  .flow-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: flow;
+    display: grid;
+    gap: 16px;
+  }
+  .flow-list li {
+    counter-increment: flow;
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 16px;
+    align-items: baseline;
+  }
+  .flow-list li::before {
+    content: counter(flow);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--surface);
+    background: var(--accent);
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .flow-list p { margin: 0; font-size: 0.98rem; line-height: 1.55; }
+  .flow-list code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.87em;
+    background: var(--surface);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+
+  footer {
+    padding-top: 24px;
+    margin-top: 12px;
+    border-top: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  footer b { color: var(--ink); }
+</style>
+
+<div class="page">
+  <header>
+    <h1>Aryx on Oracle ADB</h1>
+    <p>One shared Oracle Autonomous Database sits behind every service in the stack. This is how the pieces connect to it, and to each other, in the OCI deployment.</p>
+  </header>
+
+  <section>
+    <p class="eyebrow">Overview</p>
+    <h2>Where Oracle sits in the stack</h2>
+    <p class="lede">Four services run in Docker; all four reach the same database. Nothing talks to Oracle except through <code style="font-family:'IBM Plex Mono',monospace;background:var(--surface);border:1px solid var(--line);padding:2px 6px;border-radius:4px;">api</code>, <code style="font-family:'IBM Plex Mono',monospace;background:var(--surface);border:1px solid var(--line);padding:2px 6px;border-radius:4px;">shay-api</code>, or <code style="font-family:'IBM Plex Mono',monospace;background:var(--surface);border:1px solid var(--line);padding:2px 6px;border-radius:4px;">mcp</code> — the browser and <code style="font-family:'IBM Plex Mono',monospace;background:var(--surface);border:1px solid var(--line);padding:2px 6px;border-radius:4px;">web</code> never do.</p>
+
+    <div class="diagram-card">
+      <div class="diagram-scroll">
+<pre class="mermaid">
+%%{init: {'theme':'base', 'themeVariables': {
+  'lineColor': '#1A2430',
+  'edgeLabelBackground': '#FFFFFF',
+  'textColor': '#1A2430',
+  'primaryTextColor': '#1A2430',
+  'tertiaryTextColor': '#1A2430'
+}, 'flowchart': {'nodeSpacing': 55, 'rankSpacing': 75, 'curve': 'linear'}}}%%
+flowchart TB
+    Browser(["Browser"])
+
+    subgraph APPS[" "]
+        direction LR
+        WEB["web\nNext.js"]
+        SHAY["shay-api\nFastAPI"]
+        API["api\nFastAPI"]
+        MCP["mcp\nMCP tools"]
+    end
+
+    subgraph DB["Oracle Autonomous Database 23ai"]
+        direction LR
+        SHAYDATA[("Shay data\nthreads · users · workspaces")]
+        ARYXDATA[("Aryx data\nentities · ontology · CPQ")]
+        GRAPH[("Property graph\nSQL/PGQ")]
+    end
+
+    subgraph CLOUD["OCI cloud services"]
+        direction LR
+        GENAI["GenAI\nCohere models"]
+        DOCU["Document\nUnderstanding"]
+        FN["Functions\nasync ingest"]
+    end
+
+    Browser --> WEB
+    WEB --> API
+    WEB --> SHAY
+    SHAY ==>|"9 endpoints:\nworkspace bridge, chat ask,\ndocs, job status"| API
+
+    API --> ARYXDATA
+    API --> GRAPH
+    SHAY --> SHAYDATA
+    MCP -->|"auth + actions"| ARYXDATA
+    MCP -.->|"tool calls"| API
+
+    API --> GENAI
+    API --> DOCU
+    API -.-> FN
+    FN --> ARYXDATA
+
+    classDef client fill:#FAFBFC,stroke:#5B6B7C,stroke-width:1.5px,color:#1A2430,font-family:'IBM Plex Sans',font-size:15px,font-weight:600,rx:10,ry:10;
+    classDef svc fill:#FFFFFF,stroke:#1A2430,stroke-width:2px,color:#1A2430,font-family:'IBM Plex Sans',font-size:15px,font-weight:600,rx:10,ry:10;
+    classDef db fill:#FBEEE0,stroke:#B45309,stroke-width:2px,color:#8A3D06,font-family:'IBM Plex Sans',font-size:15px,font-weight:600,rx:10,ry:10;
+    classDef oci fill:#E6F3F1,stroke:#0F7A70,stroke-width:2px,color:#0B5951,font-family:'IBM Plex Sans',font-size:15px,font-weight:600,rx:10,ry:10;
+    class Browser client;
+    class WEB,API,SHAY,MCP svc;
+    class ARYXDATA,SHAYDATA,GRAPH db;
+    class GENAI,DOCU,FN oci;
+    style APPS fill:none,stroke:none;
+    style DB fill:none,stroke:#E3E7EB,stroke-width:1.5px,stroke-dasharray:0;
+    style CLOUD fill:none,stroke:#E3E7EB,stroke-width:1.5px,stroke-dasharray:0;
+    linkStyle default stroke:#1A2430,stroke-width:1.8px;
+</pre>
+      </div>
+      <div class="legend">
+        <span class="item"><span class="swatch" style="background:#FFFFFF;border:2px solid var(--ink)"></span>Application service</span>
+        <span class="item"><span class="swatch" style="background:var(--oracle-soft);border:2px solid var(--oracle)"></span>Oracle ADB (data)</span>
+        <span class="item"><span class="swatch" style="background:var(--accent-soft);border:2px solid var(--accent)"></span>OCI managed service</span>
+        <span class="arrow-key"><span class="arrow-line"></span>data / auth</span>
+        <span class="arrow-key"><span class="arrow-line dashed"></span>dispatch / call</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Component reference</p>
+    <h2>How each service reaches Oracle</h2>
+    <p class="lede">Same physical database, three different connection methods — the sync thin client, the async thin client, and PGX's own graph load.</p>
+
+    <div class="bom-wrap">
+      <table class="bom">
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Reaches</th>
+            <th>Method</th>
+            <th>What it's for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="comp">api</td>
+            <td><span class="tag oracle">Aryx data</span></td>
+            <td><code>oracledb</code> thin, sync</td>
+            <td class="note">Entities, ontology, ask threads, CPQ, jobs — all core reads/writes.</td>
+          </tr>
+          <tr>
+            <td class="comp">api</td>
+            <td><span class="tag oracle">Property graph</span></td>
+            <td><code>oracledb</code> thin, sync</td>
+            <td class="note">Direct SQL/PGQ reads — same pool as the data above, no intermediary.</td>
+          </tr>
+          <tr>
+            <td class="comp">shay-api</td>
+            <td><span class="tag oracle">Shay data</span></td>
+            <td><code>oracledb</code> thin, <em>async</em></td>
+            <td class="note">Its own tables, created via SQLAlchemy on first boot.</td>
+          </tr>
+          <tr>
+            <td class="comp">shay-api</td>
+            <td><span class="tag internal">api</span></td>
+            <td>HTTPS + shared key</td>
+            <td class="note">9 endpoints: workspace bridge (ensure/update/delete/mapping), chat ask, doc read/summary/confirm, job status.</td>
+          </tr>
+          <tr>
+            <td class="comp">mcp</td>
+            <td><span class="tag oracle">Aryx data</span></td>
+            <td><code>oracledb</code> thin, sync</td>
+            <td class="note">Only for bearer-token auth and direct action execution — most tool calls go through <code>api</code> instead.</td>
+          </tr>
+          <tr>
+            <td class="comp">web</td>
+            <td><span class="tag internal">api · shay-api</span></td>
+            <td>HTTPS + shared key</td>
+            <td class="note">Never touches Oracle directly.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Request path</p>
+    <h2>A chat message, end to end</h2>
+    <p class="lede">What happens between a browser message and Oracle answering it.</p>
+
+    <ol class="flow-list">
+      <li><p>Browser posts a message; <code>web</code>'s server-side route checks the session, then forwards to <code>api</code> with a shared API key attached.</p></li>
+      <li><p><code>api</code> verifies that key against Oracle-backed settings before the route runs.</p></li>
+      <li><p>The Shay bridge store upserts the thread's mapping row in Oracle — an explicit <code>MERGE</code>, in place of the Postgres syntax the code was first written against.</p></li>
+      <li><p>The CPQ engine reads which fields are mandatory live from Oracle's ingested catalog table, plus a layout file for display order.</p></li>
+      <li><p>Each model call routes through OCI GenAI, then usage gets logged back to Oracle.</p></li>
+      <li><p>The reply streams back through <code>api → web → browser</code>, the same key-checked path in reverse.</p></li>
+    </ol>
+  </section>
+
+  <section>
+    <p class="eyebrow">Not shown</p>
+    <h2>Configured, but not wired up</h2>
+    <p class="lede">Two pieces exist in the compose file and settings but have no actual call site in the codebase, so they're left off the diagram above rather than drawn as working connections.</p>
+    <ul style="margin:0; padding-left:20px; color:var(--ink-soft); font-size:0.95rem; line-height:1.7;">
+      <li><code>pgx-server</code> — <code>PGX_SERVER_URL</code> is declared but never read anywhere in the code, and the container itself only starts with an explicit <code>--profile pgx</code> flag.</li>
+      <li>Object Storage buckets — namespace and bucket names are configured, but no <code>ObjectStorageClient</code>, upload, or download call exists in the pipeline.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>Aryx — Oracle OCI deployment overview</span>
+    <span>Source: <b>docker-compose-oci.yml</b> · <b>oracle_pool.py</b> · <b>shay_bridge_api.py</b></span>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>

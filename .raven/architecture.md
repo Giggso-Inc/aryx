@@ -1,5 +1,5 @@
-## Version: 1.4
-## Last Updated: 2026-07-21
+## Version: 1.5
+## Last Updated: 2026-09-03
 ## Project: Aryx
 
 ### System Overview
@@ -7,10 +7,20 @@ Aryx ingests records from many heterogeneous sources, lands them in a relational
 store with full provenance, semantically tags their fields, then reasons over
 them to build a knowledge graph: it maps source schemas to a canonical ontology,
 resolves duplicate records across systems into single entities, infers
-relationships, and projects the result into FalkorDB. The relational database is
-the permanent source of truth; the graph is a rebuildable projection. Expensive
-frontier-LLM reasoning is rationed by a funnel of cheap, deterministic and local
-stages so the model only touches the hard ~1–5% of decisions.
+relationships, and projects the result into FalkorDB (or Oracle's SQL/PGQ
+property graph in OCI mode). The relational database is the permanent source of
+truth; the graph is a rebuildable projection. Expensive frontier-LLM reasoning
+is rationed by a funnel of cheap, deterministic and local stages so the model
+only touches the hard ~1–5% of decisions.
+
+Two additional subsystems sit alongside the ingestion/graph core, merged in
+from the `dev-rv-msi` feature branch (2026-08/09): a **CPQ configuration
+engine** that turns a natural-language sales conversation into a rule-checked,
+never-guessed quote, and a **Shay bridge** connecting a separate sales-assistant
+service (its own FastAPI backend + Next.js UI) to Aryx's ingested catalog data.
+See `docs/diagrams/cpq-engine-technical-flow.html` and
+`docs/aryx_oracle_adb_architecture.html` for detailed, code-verified flow
+diagrams of both.
 
 ### Components
 - **Connectors** (`connectors/`) — pluggable source readers behind a `Connector`
@@ -54,7 +64,48 @@ stages so the model only touches the hard ~1–5% of decisions.
   `file_ingest_api.py` keyed on `effective_worker_backend()`.
 - **Queries** (`queries/`) — SQL-file loader keeping SQL out of Python (DB-Guard).
   Oracle overrides in `queries/oracle/` (e.g. `adjudication_stats.sql` replaces
-  `COUNT(*) FILTER` with `COUNT(CASE WHEN ...)`).
+  `COUNT(*) FILTER` with `COUNT(CASE WHEN ...)`). Not every caller uses this
+  loader — a few stores (`shay_bridge_store.py`) build SQL inline and must
+  branch on `effective_db_backend() == "oci"` themselves for anything Oracle
+  has no equivalent syntax for (Postgres `ON CONFLICT ... DO UPDATE` has no
+  Oracle counterpart; `oracle_pool.py`'s `_translate_sql()` raises loudly on
+  it rather than silently degrading).
+- **CPQ engine** (`cpq/`) — turns a conversational sales request into a
+  rule-checked quote. `intent_gateway.py` is an LLM-first router
+  (`dispatch`/`clarify`/`fallback`) that resolves a value only against
+  candidate lists built in our own code, never free text from the model.
+  `engine.py` holds the per-session state machine and three attribute tiers:
+  user-answered, rule/default-filled, and catalog-mandatory
+  (`mandatory_tier_c_vns()`, reading the ingested `AttrSequence` Data Table's
+  `optionOrReqFlag == "R"` live — not hardcoded per catalog).
+  `data_table_resolver.py` detects Data Table CSVs by column shape, not
+  filename (sequence/hierarchy/region-rule/series-mapping shaped).
+  `layout_source.py` reads a separate, purely cosmetic `.txt` layout export
+  (`config_layouts/*.txt`, dir from `ARYX_CPQ_LAYOUT_DIR`) for beautify/summary
+  display order only. `ask_api.py`'s turn loop refuses to ever present a
+  quote with an unresolved mandatory field, even at the turn cap. See
+  `docs/diagrams/cpq-engine-technical-flow.html` for the full flow.
+- **Shay bridge** (`api/shay_bridge_api.py`, `store/shay_bridge_store.py`) —
+  connects Shay (a separate sales-assistant FastAPI service + Next.js UI,
+  `shay_backend/`, its own schema in the same Oracle ADB in OCI mode) to
+  Aryx. Shay never touches Aryx's schema directly — every one of its 9+
+  outbound calls (workspace bridge ensure/update/delete/mapping, chat ask,
+  doc read/summary/confirm, job status) goes through this API surface.
+  Workspace/chat bridge rows use an Oracle `MERGE`/plain-`INSERT` upsert
+  (not `ON CONFLICT`), and `sync_state` merges via `JSON_MERGEPATCH` with a
+  `CASE WHEN ... IS JSON` guard that self-heals any row corrupted by an
+  earlier version of this code that used Postgres's `||` jsonb-merge
+  operator (Oracle treats `||` as string concatenation).
+- **MCP** (`mcp/`) — tool server for Claude Desktop / Cursor / Continue over
+  SSE (`aryx.mcp.sse:app`, port 8765). Most tool calls proxy to `api` over
+  HTTP (`ARYX_API_URL`); only bearer-token authentication (`McpTokenStore`)
+  and direct action execution (`ActionStore`) connect to the database
+  directly.
+- **Web** (`apps/web/`, Next.js/TypeScript) — the only user-facing UI in the
+  OCI deployment. Never talks to Oracle or to `api`/`shay-api` from the
+  browser directly; a server-side route handler
+  (`app/api/[...path]/route.ts`, `_aryxProxy.ts`) proxies same-origin and
+  injects the shared `x-aryx-api-key`, so the browser never holds it.
 - **Config / logging** (`config.py`, `logging_setup.py`) — 12-factor settings from
   `ARYX_`-prefixed env vars; credentials never logged. Scalability caps:
   `ARYX_MAX_BLOCK_SIZE` (5000), `ARYX_GRAPH_QUERY_LIMIT` (500),
@@ -85,15 +136,24 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
   IAM instance principal auth)
 - Compute: containerized 12-factor `worker`; production orchestrator (ECS/EKS/OCI)
   decided at rollout — not yet fixed
-- Database: PostgreSQL 16 (source of truth) OR Oracle ADB 23ai (`ARYX_DB_BACKEND=oci`; 27 Oracle migrations, oracledb wrapper pool, dialect-aware query loader)
+- Database: PostgreSQL 16 (source of truth) OR Oracle ADB 23ai (`ARYX_DB_BACKEND=oci`; 42 Oracle migrations, oracledb wrapper pool, dialect-aware query loader). One Oracle ADB instance holds both the Aryx schema and Shay's own schema (created via SQLAlchemy on first boot, no Alembic on Oracle).
 - Graph: FalkorDB (rebuildable projection) OR Oracle Property Graph (`ARYX_GRAPH_BACKEND=oci_graph`; backing relational tables + `CREATE PROPERTY GRAPH` + SQL/PGQ)
 - Worker: ThreadPoolExecutor (local) OR OCI Functions (`ARYX_WORKER_BACKEND=oci_functions`, per-doc detached invoke) OR OCI Data Flow (`oci_dataflow`, batch Spark)
-- Local dev: `docker-compose` — `postgres` (host port 55432), `falkordb` (6379),
-  `worker` (built from `Dockerfile`); worker waits on a healthy Postgres
+- Local dev: `docker-compose.yml` — `postgres` (host port 55432), `falkordb`
+  (6379), `worker` (built from `Dockerfile`); worker waits on a healthy Postgres
+- OCI deployment: `docker-compose-oci.yml` — `api` (FastAPI, :8088), `shay-api`
+  (Shay's own FastAPI, :8090), `mcp` (SSE tool server, :8765), `web` (Next.js,
+  :3000), `pgx-server` (Oracle PGX, optional — `--profile pgx`, and note:
+  `PGX_SERVER_URL` is declared in this compose file but not currently read by
+  any application code — `api`'s graph reads go directly to Oracle's SQL/PGQ,
+  not through pgx-server). See `docs/aryx_oracle_adb_architecture.html` for
+  the full service-to-database connectivity map.
 
 ### Tech Stack
-- Language: Python 3.13 (SQL in `.sql` files; YAML for infra)
-- Frontend: none (batch/worker service)
+- Language: Python 3.13 (SQL in `.sql` files; YAML for infra); TypeScript
+  (Next.js 15, `apps/web/`) for the OCI deployment's web UI
+- Frontend: `apps/web/` (Next.js/TypeScript) in OCI mode; none in the plain
+  batch/worker local deployment
 - Data / models: pydantic 2.x, pydantic-settings, psycopg 3 (binary), anthropic,
   falkordb; local embeddings via Ollama
 - Infra: Docker, Docker Compose; AWS (boto3)
@@ -118,3 +178,6 @@ Sources (Postgres, + Drive/Salesforce/Odoo planned)
 | Oracle pool wrapper (oracle_pool.py) translates psycopg3 → oracledb | All 19 store classes work unchanged; translation (param style, RETURNING, Json unwrap) happens in wrapper — no store edits needed | 2026-06-22 |
 | Oracle Property Graph uses relational backing tables | Vertex/edge/source/provenance stored as plain Oracle tables; `CREATE PROPERTY GRAPH` maps them for SQL/PGQ traversals — rebuildable same as FalkorDB path | 2026-06-22 |
 | OCI Functions worker uses `invoke_type="detached"` | Fire-and-forget (HTTP 202) — function runs async; ingest API returns immediately; job progress written from inside the function via DSN in payload | 2026-06-22 |
+| Postgres `ON CONFLICT ... DO UPDATE` gets an explicit Oracle branch, never a generic translation | `_translate_sql()` raises loudly instead of silently degrading to insert-or-ignore — a prior silent-degrade caused real, hard-to-detect data corruption (`sync_state` doubled as text on every repeat call) before this was caught | 2026-09-03 |
+| CPQ mandatory-field detection reads the ingested catalog live, not a hardcoded rule | `mandatory_tier_c_vns()` keys off the real `AttrSequence` Data Table's `optionOrReqFlag`, so two environments with different catalog ingests will legitimately ask different questions for the same product — this is correct behavior, not a routing bug | 2026-09-03 |
+| Shay never queries Aryx's Oracle schema directly | Every Shay→Aryx interaction goes through `api`'s `/admin/shay/*` surface, authenticated by a shared `x-aryx-api-key`; keeps the schema boundary and the auth boundary at the same place | 2026-09-03 |

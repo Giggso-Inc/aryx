@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aryx · Technical Flow — Oracle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;500;600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --navy-50:#F2F5FB; --navy-100:#E4EAF4; --navy-200:#C2CFE3;
+    --navy-300:#94A8CB; --navy-500:#3A578C; --navy-700:#1A2F55;
+    --navy-800:#0F1F3D; --navy-900:#0A1530;
+    --steel-400:#5F8AD2; --steel-500:#4068A8; --steel-600:#2D4B8A;
+    --canvas:#F8F9FC; --ink:#0F1726; --subtle:#5A6478;
+    --emerald:#10B981; --amber:#F59E0B; --rose:#E11D48;
+    --oracle-500:#B45309; --oracle-600:#8A3D06;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: var(--canvas); color: var(--ink); padding: 56px 24px; }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+  header { text-align: center; padding-bottom: 32px; border-bottom: 1px solid var(--navy-100); }
+  .brand { display: inline-flex; align-items: center; gap: 12px; }
+  .brand img { width: 38px; height: 38px; }
+  .brand .name { font-weight: 600; letter-spacing: 0.32em; color: var(--navy-900); font-size: 15px; }
+  h1 { font-family: 'Fraunces', Georgia, serif; font-size: 2.3rem; color: var(--navy-900); margin-top: 18px; letter-spacing: -0.01em; }
+  .sub { color: var(--subtle); font-size: 15px; margin-top: 8px; max-width: 760px; margin-left: auto; margin-right: auto; line-height: 1.55; }
+
+  .stack { margin-top: 48px; display: flex; flex-direction: column; gap: 18px; }
+  .layer { background: white; border: 1px solid var(--navy-100); border-radius: 18px; padding: 22px 24px; box-shadow: 0 1px 2px rgba(10,21,48,0.04), 0 6px 18px rgba(10,21,48,0.05); }
+  .layer-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px dashed var(--navy-100); }
+  .layer-num { width: 28px; height: 28px; border-radius: 8px; background: var(--navy-800); color: white; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; }
+  .layer-title { font-family: 'Fraunces', serif; font-size: 1.2rem; color: var(--navy-900); }
+  .layer-hint { color: var(--subtle); font-size: 12px; margin-left: auto; font-family: 'JetBrains Mono', monospace; text-align: right; }
+
+  .row { display: grid; gap: 14px; }
+  .row.cols-4 { grid-template-columns: repeat(4, 1fr); }
+  .row.cols-5 { grid-template-columns: repeat(5, 1fr); }
+  .row.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .row.cols-6 { grid-template-columns: repeat(6, 1fr); }
+  .row.cols-2 { grid-template-columns: repeat(2, 1fr); }
+
+  .box { background: var(--canvas); border: 1px solid var(--navy-100); border-radius: 12px; padding: 14px 14px 12px; text-align: center; }
+  .box .ico { font-size: 22px; }
+  .box .label { font-weight: 700; color: var(--navy-900); font-size: 13px; margin-top: 6px; }
+  .box .desc { font-size: 11px; color: var(--subtle); margin-top: 4px; line-height: 1.4; }
+  .box .port { margin-top: 6px; display: inline-block; padding: 2px 8px; background: var(--navy-50); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--steel-600); }
+  .box.accent { background: white; border-color: var(--steel-500); box-shadow: 0 0 0 3px rgba(64,104,168,0.08); }
+  .box.green { background: #ECFDF5; border-color: #6EE7B7; }
+  .box.amber { background: #FFFBEB; border-color: #FCD34D; }
+  .box.oracle { background: #FBEEE0; border-color: var(--oracle-500); }
+  .box.oracle .label { color: var(--oracle-600); }
+
+  /* Pipeline bar */
+  .pipeline { display: flex; gap: 1px; }
+  .pl-cell { flex: 1; padding: 12px 8px; background: var(--canvas); border: 1px solid var(--navy-100); border-radius: 10px; text-align: center; min-width: 90px; }
+  .pl-cell .ico { font-size: 18px; }
+  .pl-cell .t { font-size: 11px; font-weight: 700; color: var(--navy-900); margin-top: 3px; }
+  .pl-cell .eg { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--steel-600); margin-top: 3px; }
+  .pl-arr { display: flex; align-items: center; color: var(--navy-300); font-size: 16px; padding: 0 2px; }
+
+  /* Cross-cutting band */
+  .band { margin-top: 14px; padding: 14px 18px; background: linear-gradient(135deg, var(--navy-50) 0%, white 100%); border: 1px dashed var(--steel-400); border-radius: 12px; display: flex; gap: 14px; align-items: center; }
+  .band .glyph { font-size: 26px; }
+  .band strong { color: var(--navy-900); font-size: 13px; }
+  .band p { color: var(--subtle); font-size: 12px; margin-top: 2px; line-height: 1.5; }
+  .band code { font-family: 'JetBrains Mono', monospace; background: white; padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--steel-600); border: 1px solid var(--navy-100); }
+  .band.warn { background: linear-gradient(135deg,#FFFBEB 0%,white 100%); border-color: #FCD34D; }
+  .band.oracle { background: linear-gradient(135deg,#FBEEE0 0%,white 100%); border-color: var(--oracle-500); }
+
+  /* Ask-flow detail */
+  .ask-flow { margin-top: 12px; padding: 14px; background: white; border: 1px solid var(--navy-100); border-radius: 12px; }
+  .ask-flow .row-h { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--navy-700); margin-bottom: 8px; }
+  .ask-pipe { display: flex; gap: 4px; align-items: stretch; }
+  .ask-step { flex: 1; padding: 10px 8px; background: var(--canvas); border-radius: 8px; text-align: center; border: 1px solid var(--navy-100); min-width: 100px; }
+  .ask-step.always { background: #FEF3C7; border-color: #FCD34D; }
+  .ask-step.oracle { background: #FBEEE0; border-color: var(--oracle-500); }
+  .ask-step .t { font-size: 11px; font-weight: 700; color: var(--navy-900); }
+  .ask-step .d { font-size: 10px; color: var(--subtle); margin-top: 2px; line-height: 1.3; }
+  .ask-arr { display: flex; align-items: center; color: var(--navy-300); font-size: 14px; padding: 0 1px; }
+
+  .stats { margin-top: 36px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .stat { background: white; border: 1px solid var(--navy-100); border-radius: 14px; padding: 18px 20px; }
+  .stat .n { font-family: 'Fraunces', serif; font-size: 1.8rem; color: var(--navy-900); }
+  .stat .l { color: var(--subtle); font-size: 12px; margin-top: 2px; }
+
+  /* Not-wired-up callout */
+  .gap-note { margin-top: 14px; padding: 16px; background: var(--canvas); border: 1px solid var(--navy-100); border-radius: 12px; }
+  .gap-note .row-h { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--navy-700); margin-bottom: 8px; }
+  .gap-note ul { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .gap-note li { font-size: 12px; color: var(--subtle); line-height: 1.5; padding-left: 16px; position: relative; }
+  .gap-note li::before { content: "—"; position: absolute; left: 0; color: var(--navy-300); }
+  .gap-note code { font-family: 'JetBrains Mono', monospace; background: white; padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--steel-600); border: 1px solid var(--navy-100); }
+
+  footer { margin-top: 48px; padding-top: 22px; border-top: 1px solid var(--navy-100); text-align: center; color: var(--subtle); font-size: 12px; }
+  footer a { color: var(--steel-500); text-decoration: none; margin: 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <img src="aryx-logo.png" alt="Aryx" />
+      <span class="name">A R Y X</span>
+    </div>
+    <h1>Technical flow · Oracle deployment</h1>
+    <p class="sub">
+      Same four layers as the local stack, running on <code style="font-family:'JetBrains Mono',monospace">docker-compose-oci.yml</code>.
+      Oracle Autonomous Database 23ai replaces Postgres and FalkorDB both — one instance,
+      two schemas, one property graph. Every connection below is traced to an actual call
+      site in the current code, not just a declared config value.
+    </p>
+  </header>
+
+  <div class="stack">
+
+    <!-- Layer 1 — UI -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">1</span>
+        <span class="layer-title">UI · what users see</span>
+        <span class="layer-hint">Next.js 15 · Claude Desktop / Cursor / Continue</span>
+      </div>
+      <div class="row cols-3">
+        <div class="box accent">
+          <div class="ico">💬</div>
+          <div class="label">Ask</div>
+          <div class="desc">CPQ-guided chat · one question at a time · won't guess a mandatory field</div>
+          <div class="port">/ :3000</div>
+        </div>
+        <div class="box accent">
+          <div class="ico">🧭</div>
+          <div class="label">Shay workspaces</div>
+          <div class="desc">Workspace + thread UI, backed by shay-api's own schema</div>
+          <div class="port">/shay/* :3000</div>
+        </div>
+        <div class="box">
+          <div class="ico">🤖</div>
+          <div class="label">Claude Desktop · MCP</div>
+          <div class="desc">Tool calls over SSE, bridged to the same API</div>
+          <div class="port">:8765/sse</div>
+        </div>
+      </div>
+      <div class="band">
+        <div class="glyph">🔁</div>
+        <div>
+          <strong>Same-origin /api proxy, key-injected</strong>
+          <p>
+            The browser only ever talks to <code>:3000</code>. Next.js's server-side route handler
+            forwards to <code>ARYX_API_URL_INTERNAL</code> (<code>api:8000</code>) or
+            <code>SHAY_API_URL_INTERNAL</code> (<code>shay-api:8000</code>), attaching
+            <code>x-aryx-api-key</code> itself — the browser never sees or holds that key.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 2 — API -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">2</span>
+        <span class="layer-title">API · the contract</span>
+        <span class="layer-hint">api :8000 (8088) · shay-api :8000 (8090) · mcp :8765</span>
+      </div>
+      <div class="row cols-4">
+        <div class="box"><div class="label">/admin/shay/*</div><div class="desc">Workspace bridge, chat ask, doc read/summary/confirm, job status</div></div>
+        <div class="box"><div class="label">/ask/threads/*</div><div class="desc">CPQ-guided chat, per-thread mandatory-field tracking</div></div>
+        <div class="box"><div class="label">/admin/workspaces</div><div class="desc">CRUD · brief · survivorship</div></div>
+        <div class="box"><div class="label">/ontology · /graph · /data</div><div class="desc">Types, relationships, entity graph reads</div></div>
+      </div>
+
+      <div class="band oracle">
+        <div class="glyph">🔗</div>
+        <div>
+          <strong>shay-api → api: 9 confirmed endpoints, not a stray line</strong>
+          <p>
+            <code>_ensure_aryx_workspace_bridge</code>, update/delete/mapping,
+            <code>chats/ask</code>, <code>docs/read</code>, <code>docs/summary</code>,
+            <code>docs/confirm</code>, <code>jobs/&#123;id&#125;</code> — every one of Shay's own
+            routes calls back into <code>api</code> for anything Aryx-owned. Shay never
+            touches Aryx's Oracle schema directly.
+          </p>
+        </div>
+      </div>
+
+      <div class="ask-flow">
+        <div class="row-h">Shay chat message — end to end</div>
+        <div class="ask-pipe">
+          <div class="ask-step"><div class="t">Key check</div><div class="d"><code style="font-size:9px">security.py</code> verifies x-aryx-api-key against Oracle-backed settings</div></div>
+          <div class="ask-arr">›</div>
+          <div class="ask-step oracle"><div class="t">Bridge upsert</div><div class="d">ShayBridgeStore MERGE / INSERT into Oracle — not the Postgres ON CONFLICT this code was first written against</div></div>
+          <div class="ask-arr">›</div>
+          <div class="ask-step always"><div class="t">Mandatory check</div><div class="d">CPQ engine reads which fields are required live from Oracle's ingested AttrSequence table</div></div>
+          <div class="ask-arr">›</div>
+          <div class="ask-step"><div class="t">Model call</div><div class="d">Routes to OCI GenAI · usage logged back to Oracle</div></div>
+          <div class="ask-arr">›</div>
+          <div class="ask-step"><div class="t">Reply</div><div class="d">Streams back through api → web → browser</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 3 — Pipeline -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">3</span>
+        <span class="layer-title">Pipeline · how data becomes a graph</span>
+        <span class="layer-hint">streaming · checkpointed · resumable · Oracle-backed FK judging</span>
+      </div>
+      <div class="pipeline">
+        <div class="pl-cell"><div class="ico">📡</div><div class="t">Connect</div><div class="eg">source auth</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">📥</div><div class="t">Extract</div><div class="eg">stream rows</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">📦</div><div class="t">Land</div><div class="eg">aryx_entity (Oracle)</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">🔍</div><div class="t">FK Detection</div><div class="eg">LLM judge · dynamic_fk.py</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">🧩</div><div class="t">Resolve</div><div class="eg">block→score→cluster</div></div>
+        <div class="pl-arr">›</div>
+        <div class="pl-cell"><div class="ico">🗺</div><div class="t">Project</div><div class="eg">SQL/PGQ graph</div></div>
+      </div>
+      <div class="band warn">
+        <div class="glyph">✂️</div>
+        <div>
+          <strong>FK judge brevity fix</strong>
+          <p>
+            <code>cohere.command-a-03-2025</code> writes verbose reasoning for content-rich
+            columns, overflowing <code>max_tokens=4096</code> before the retry even ran.
+            The prompt now caps string values at 60 words on the <em>first</em> attempt —
+            confirmed 5/5 on the exact table/column pattern that used to fail.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layer 4 — Storage -->
+    <div class="layer">
+      <div class="layer-head">
+        <span class="layer-num">4</span>
+        <span class="layer-title">Storage · one database, two schemas</span>
+        <span class="layer-hint">Oracle ADB 23ai · TLS, no wallet · thin client</span>
+      </div>
+      <div class="row cols-4">
+        <div class="box oracle">
+          <div class="ico">🗄</div>
+          <div class="label">Oracle ADB 23ai</div>
+          <div class="desc">ARYX_APP schema + Shay's own schema, same instance</div>
+          <div class="port">tcps · 1522</div>
+        </div>
+        <div class="box oracle">
+          <div class="ico">📈</div>
+          <div class="label">SQL/PGQ property graph</div>
+          <div class="desc">Lives inside the ADB — api reads it directly, no separate graph store</div>
+        </div>
+        <div class="box">
+          <div class="ico">🧠</div>
+          <div class="label">OCI GenAI</div>
+          <div class="desc">Cohere Command A · Embed v3</div>
+        </div>
+        <div class="box">
+          <div class="ico">📄</div>
+          <div class="label">Document Understanding</div>
+          <div class="desc">OCI's managed document AI, for parsing</div>
+        </div>
+      </div>
+
+      <div class="row cols-3" style="margin-top:14px;">
+        <div class="box">
+          <div class="ico">⚙️</div>
+          <div class="label">api → Oracle</div>
+          <div class="desc">oracledb thin, sync pool (min 2 / max 10)</div>
+        </div>
+        <div class="box">
+          <div class="ico">⚙️</div>
+          <div class="label">shay-api → Oracle</div>
+          <div class="desc">oracledb thin, <em>async</em> via SQLAlchemy</div>
+        </div>
+        <div class="box">
+          <div class="ico">⚙️</div>
+          <div class="label">mcp → Oracle</div>
+          <div class="desc">Direct, but only for token auth + action execution</div>
+        </div>
+      </div>
+
+      <div class="gap-note">
+        <div class="row-h">Configured, not wired up</div>
+        <ul>
+          <li><code>pgx-server</code> — <code>PGX_SERVER_URL</code> is declared in compose but never read anywhere in the code; the container itself only starts with an explicit <code>--profile pgx</code> flag.</li>
+          <li>Object Storage buckets — namespace and bucket names are configured, but no upload/download call exists anywhere in the ingestion pipeline.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n">1</div><div class="l">Oracle ADB instance, shared by every service</div></div>
+    <div class="stat"><div class="n">9</div><div class="l">shay-api → api endpoints</div></div>
+    <div class="stat"><div class="n">3</div><div class="l">connection modes: sync, async, auth-only</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">config gaps found: pgx-server, Object Storage</div></div>
+  </div>
+
+  <footer>
+    <div>
+      <a href="technical-flow.html">Local (Postgres) technical flow</a>
+      ·
+      <a href="business-view.html">Business view</a>
+      ·
+      <a href="../aryx_oracle_adb_architecture.html">Oracle ADB architecture</a>
+      ·
+      <a href="cpq-engine-technical-flow.html">CPQ engine technical flow</a>
+    </div>
+    <div style="margin-top:10px;">Aryx — Oracle OCI technical flow</div>
+  </footer>
+</div>
+</body>
+</html>
