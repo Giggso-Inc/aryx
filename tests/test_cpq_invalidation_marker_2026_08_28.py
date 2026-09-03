@@ -36,23 +36,24 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import aryx.cpq.data_table_cache as dtc
 import aryx.cpq.data_table_resolver as dtr
 
 
 def setup_function(_fn):
-    dtr._clear_invalidation_marker_poll_cache()
+    dtc._clear_invalidation_marker_poll_cache()
 
 
 def teardown_function(_fn):
-    dtr._clear_invalidation_marker_poll_cache()
+    dtc._clear_invalidation_marker_poll_cache()
 
 
 # ── _current_invalidation_marker: poll-interval throttling ────────────────
 
 def test_marker_is_polled_once_then_cached_within_the_interval():
-    with patch.object(dtr, "_fetch_invalidation_marker_from_db", return_value=100.0) as mock_fetch:
-        first = dtr._current_invalidation_marker()
-        second = dtr._current_invalidation_marker()
+    with patch.object(dtc, "_fetch_invalidation_marker_from_db", return_value=100.0) as mock_fetch:
+        first = dtc._current_invalidation_marker()
+        second = dtc._current_invalidation_marker()
     assert first == second == 100.0
     assert mock_fetch.call_count == 1, (
         "a second call within the poll interval must reuse the cached "
@@ -61,13 +62,13 @@ def test_marker_is_polled_once_then_cached_within_the_interval():
 
 
 def test_marker_is_refetched_after_the_poll_interval_elapses():
-    with patch.object(dtr, "_fetch_invalidation_marker_from_db", side_effect=[100.0, 200.0]) as mock_fetch:
-        dtr._current_invalidation_marker()
-        checked_at, marker_ts = dtr._INVALIDATION_MARKER_POLL_CACHE
-        dtr._INVALIDATION_MARKER_POLL_CACHE = (
-            checked_at - dtr._INVALIDATION_MARKER_POLL_SECONDS - 1.0, marker_ts,
+    with patch.object(dtc, "_fetch_invalidation_marker_from_db", side_effect=[100.0, 200.0]) as mock_fetch:
+        dtc._current_invalidation_marker()
+        checked_at, marker_ts = dtc._INVALIDATION_MARKER_POLL_CACHE
+        dtc._INVALIDATION_MARKER_POLL_CACHE = (
+            checked_at - dtc._INVALIDATION_MARKER_POLL_SECONDS - 1.0, marker_ts,
         )
-        second = dtr._current_invalidation_marker()
+        second = dtc._current_invalidation_marker()
     assert second == 200.0
     assert mock_fetch.call_count == 2
 
@@ -75,20 +76,20 @@ def test_marker_is_refetched_after_the_poll_interval_elapses():
 # ── Fail-open behavior ──────────────────────────────────────────────────
 
 def test_fetch_failure_returns_none_and_does_not_raise():
-    with patch.object(dtr, "_fetch_invalidation_marker_from_db", return_value=None):
-        result = dtr._current_invalidation_marker()
+    with patch.object(dtc, "_fetch_invalidation_marker_from_db", return_value=None):
+        result = dtc._current_invalidation_marker()
     assert result is None
 
 
 def test_fetch_failure_schedules_a_shorter_retry_than_a_healthy_poll():
-    with patch.object(dtr, "_fetch_invalidation_marker_from_db", return_value=None):
-        dtr._current_invalidation_marker()
-    checked_at, marker_ts = dtr._INVALIDATION_MARKER_POLL_CACHE
+    with patch.object(dtc, "_fetch_invalidation_marker_from_db", return_value=None):
+        dtc._current_invalidation_marker()
+    checked_at, marker_ts = dtc._INVALIDATION_MARKER_POLL_CACHE
     assert marker_ts is None
     import time
-    remaining = dtr._INVALIDATION_MARKER_POLL_SECONDS - (time.monotonic() - checked_at)
-    assert remaining <= dtr._INVALIDATION_MARKER_FAIL_RETRY_SECONDS + 0.5, (
-        f"expected the next retry to be due within ~{dtr._INVALIDATION_MARKER_FAIL_RETRY_SECONDS}s, "
+    remaining = dtc._INVALIDATION_MARKER_POLL_SECONDS - (time.monotonic() - checked_at)
+    assert remaining <= dtc._INVALIDATION_MARKER_FAIL_RETRY_SECONDS + 0.5, (
+        f"expected the next retry to be due within ~{dtc._INVALIDATION_MARKER_FAIL_RETRY_SECONDS}s, "
         f"but {remaining:.2f}s remain on the poll interval"
     )
 
@@ -144,7 +145,7 @@ def test_fetch_rejects_a_non_numeric_result_instead_of_returning_it():
             return _FakeConnCM()
 
     with patch("aryx.store.pool.get_pool", return_value=_FakePool()):
-        result = dtr._fetch_invalidation_marker_from_db()
+        result = dtc._fetch_invalidation_marker_from_db()
     assert result is None, (
         "a non-numeric 'successful' fetch result must be treated as "
         f"unavailable (None), not passed through -- got {result!r}"
@@ -158,8 +159,8 @@ def test_invalidate_on_marker_change_never_raises_on_a_bad_comparison():
     the real cache read it only gates."""
     cache = {"k": "v"}
     holder: list = ["not-a-number"]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=object()):
-        dtr._invalidate_on_marker_change(cache, holder)  # must not raise
+    with patch.object(dtc, "_current_invalidation_marker", return_value=object()):
+        dtc._invalidate_on_marker_change(cache, holder)  # must not raise
     assert cache == {"k": "v"}
 
 
@@ -168,8 +169,8 @@ def test_invalidate_on_marker_change_never_raises_on_a_bad_comparison():
 def test_first_observation_initializes_without_clearing():
     cache = {"k": "v"}
     holder: list[float | None] = [None]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=100.0):
-        dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=100.0):
+        dtc._invalidate_on_marker_change(cache, holder)
     assert cache == {"k": "v"}, "the very first observation must not clear -- nothing to compare against yet"
     assert holder[0] == 100.0
 
@@ -177,16 +178,16 @@ def test_first_observation_initializes_without_clearing():
 def test_unchanged_marker_does_not_clear():
     cache = {"k": "v"}
     holder: list[float | None] = [100.0]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=100.0):
-        dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=100.0):
+        dtc._invalidate_on_marker_change(cache, holder)
     assert cache == {"k": "v"}
 
 
 def test_newer_marker_clears_the_whole_cache():
     cache = {"k": "v", "k2": "v2"}
     holder: list[float | None] = [100.0]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=200.0):
-        dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=200.0):
+        dtc._invalidate_on_marker_change(cache, holder)
     assert cache == {}
     assert holder[0] == 200.0
 
@@ -194,8 +195,8 @@ def test_newer_marker_clears_the_whole_cache():
 def test_older_or_equal_marker_does_not_clear():
     cache = {"k": "v"}
     holder: list[float | None] = [200.0]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=150.0):
-        dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=150.0):
+        dtc._invalidate_on_marker_change(cache, holder)
     assert cache == {"k": "v"}
     assert holder[0] == 200.0
 
@@ -203,8 +204,8 @@ def test_older_or_equal_marker_does_not_clear():
 def test_none_marker_is_a_complete_noop():
     cache = {"k": "v"}
     holder: list[float | None] = [100.0]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=None):
-        dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=None):
+        dtc._invalidate_on_marker_change(cache, holder)
     assert cache == {"k": "v"}
     assert holder[0] == 100.0
 
@@ -226,8 +227,8 @@ def test_none_marker_is_a_complete_noop():
 
 def test_write_proceeds_when_marker_is_unchanged_since_the_read():
     cache: dict = {}
-    with patch.object(dtr, "_current_invalidation_marker", return_value=100.0):
-        dtr._cache_write_if_marker_unchanged(cache, "k", "fresh-value", 100.0)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=100.0):
+        dtc._cache_write_if_marker_unchanged(cache, "k", "fresh-value", 100.0)
     assert cache == {"k": "fresh-value"}
 
 
@@ -237,15 +238,15 @@ def test_write_is_skipped_when_marker_advanced_during_the_compute():
     another thread already cleared the cache for a real reason. Writing
     anyway would resurrect a stale value under a fresh timestamp."""
     cache: dict = {}
-    with patch.object(dtr, "_current_invalidation_marker", return_value=200.0):
-        dtr._cache_write_if_marker_unchanged(cache, "k", "stale-value", 100.0)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=200.0):
+        dtc._cache_write_if_marker_unchanged(cache, "k", "stale-value", 100.0)
     assert cache == {}, "a write racing a concurrent invalidation must not repopulate the cache"
 
 
 def test_write_is_skipped_when_marker_became_unavailable_mid_compute():
     cache: dict = {}
-    with patch.object(dtr, "_current_invalidation_marker", return_value=None):
-        dtr._cache_write_if_marker_unchanged(cache, "k", "stale-value", 100.0)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=None):
+        dtc._cache_write_if_marker_unchanged(cache, "k", "stale-value", 100.0)
     assert cache == {}
 
 
@@ -254,11 +255,11 @@ def test_invalidate_on_marker_change_returns_the_observed_marker():
     invalidation via _cache_write_if_marker_unchanged."""
     cache: dict = {}
     holder: list[float | None] = [None]
-    with patch.object(dtr, "_current_invalidation_marker", return_value=100.0):
-        first = dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=100.0):
+        first = dtc._invalidate_on_marker_change(cache, holder)
     assert first == 100.0
-    with patch.object(dtr, "_current_invalidation_marker", return_value=200.0):
-        second = dtr._invalidate_on_marker_change(cache, holder)
+    with patch.object(dtc, "_current_invalidation_marker", return_value=200.0):
+        second = dtc._invalidate_on_marker_change(cache, holder)
     assert second == 200.0
 
 
@@ -277,7 +278,7 @@ def test_end_to_end_concurrent_invalidation_does_not_resurrect_stale_data():
     fake_rdb.list_ontology_types.return_value = []
 
     try:
-        with patch.object(dtr, "_current_invalidation_marker", side_effect=[100.0, 200.0]), \
+        with patch.object(dtc, "_current_invalidation_marker", side_effect=[100.0, 200.0]), \
              patch.object(dtr, "get_cpq_rdb", return_value=fake_rdb):
             dtr._load_all_tables(93, "")
         assert key not in dtr._TABLES_CACHE, (
@@ -301,7 +302,7 @@ def test_load_all_tables_recomputes_after_marker_change_despite_valid_ttl():
     fake_rdb.list_ontology_types.return_value = []
 
     try:
-        with patch.object(dtr, "_current_invalidation_marker", return_value=200.0), \
+        with patch.object(dtc, "_current_invalidation_marker", return_value=200.0), \
              patch.object(dtr, "get_cpq_rdb", return_value=fake_rdb):
             dtr._load_all_tables(93, "")
         assert fake_rdb.list_ontology_types.called, (

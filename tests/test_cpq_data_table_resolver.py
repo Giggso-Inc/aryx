@@ -682,3 +682,116 @@ def test_module_cache_still_expires_eventually():
     assert data_table_resolver._TABLES_CACHE_TTL_SECONDS > 30.0, (
         "TTL should have been widened from the original 30s"
     )
+
+
+# --- Golden-master characterization tests (Raven Style Compliance Plan,
+# Phase 2, §6 item 1) -- added 2026-09-03 for the 3 public functions this
+# file's original test suite never exercised, pinning today's actual
+# behavior before any split touches them.
+
+def test_governed_required_attr_names_for_base_model_returns_only_R_flagged(monkeypatch):
+    from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model
+
+    _patch_rdb(monkeypatch, _TABLES)
+    required = governed_required_attr_names_for_base_model(
+        cpq_model="APXNEXTENHANCED", base_model="H55TGT9PW8BN", workspace_id=1,
+    )
+    assert required == {"carrierSelectionMultiSelect_astro"}
+
+
+def test_governed_required_attr_names_for_base_model_none_when_no_sequence_coverage(monkeypatch):
+    from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model
+
+    _patch_rdb(monkeypatch, _TABLES)
+    result = governed_required_attr_names_for_base_model(
+        cpq_model="NOSUCHMODEL", base_model="NOSUCHBASE", workspace_id=1,
+    )
+    assert result is None
+
+
+def test_governed_required_attr_names_for_base_model_accepts_ALL_base_model(monkeypatch):
+    from aryx.cpq.data_table_resolver import governed_required_attr_names_for_base_model
+
+    rows = [
+        {"CPQModel": "TESTMODEL", "BaseModel": "ALL",
+         "AttrName": "someAttr_astro", "Seq": "1", "optionOrReqFlag": "R"},
+        {"CPQModel": "TESTMODEL", "BaseModel": "ALL",
+         "AttrName": "optionalAttr_astro", "Seq": "2", "optionOrReqFlag": "O"},
+    ]
+    _patch_rdb(monkeypatch, {"AttrSequenceTest": rows})
+    required = governed_required_attr_names_for_base_model(
+        cpq_model="TESTMODEL", base_model="ANYBASEMODEL", workspace_id=1,
+    )
+    assert required == {"someAttr_astro"}
+
+
+_REGION_RULE_ROWS = [
+    {"model": "APXNEXTSINGLE", "value": "H45TGT9PW8AN", "region": "NA",
+     "ruleType": "ALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    {"model": "APXNEXTSINGLE", "value": "H45TGT9PW8XN", "region": "EMEA",
+     "ruleType": "ALLOW", "attribute": "modelSelectionbaseModel_astro"},
+    {"model": "APXNEXTSINGLE", "value": "H45TGT9CA01", "region": "NA",
+     "ruleType": "ALLOW", "attribute": "modelSelectionbaseModel_astro", "UDCC": "CA"},
+]
+
+
+def test_resolve_region_allow_value_returns_the_single_region_match(monkeypatch):
+    from aryx.cpq.data_table_resolver import resolve_region_allow_value
+
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": _REGION_RULE_ROWS})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="EMEA", workspace_id=1,
+    )
+    assert value == "H45TGT9PW8XN"
+
+
+def test_resolve_region_allow_value_country_override_wins_over_region_default(monkeypatch):
+    from aryx.cpq.data_table_resolver import resolve_region_allow_value
+
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": _REGION_RULE_ROWS})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="APXNEXTSINGLE",
+        region="NA", workspace_id=1, country="CA",
+    )
+    assert value == "H45TGT9CA01"
+
+
+def test_resolve_region_allow_value_none_on_no_match(monkeypatch):
+    from aryx.cpq.data_table_resolver import resolve_region_allow_value
+
+    _patch_rdb(monkeypatch, {"NewCountryRegMapping": _REGION_RULE_ROWS})
+    value = resolve_region_allow_value(
+        attr_var_name="modelSelectionbaseModel_astro", cpq_model="NOSUCHMODEL",
+        region="NA", workspace_id=1,
+    )
+    assert value is None
+
+
+_PRODUCT_CONSTRAINT_ROWS = [
+    {"CPQModel": "APXNEXTSINGLE", "BaseModel": "ALL",
+     "attr1": "productSelectionProduct_all", "val1": "APX NEXT SINGLE BAND"},
+    {"CPQModel": "APXNEXTXNSINGLE", "BaseModel": "ALL",
+     "attr1": "productSelectionProduct_all", "val1": "APX NEXT XN SINGLE BAND"},
+]
+
+
+def test_resolve_product_cpq_models_from_rows_distinguishes_similarly_named_products(monkeypatch):
+    from aryx.cpq.data_table_resolver import resolve_product_cpq_models_from_rows
+
+    _patch_rdb(monkeypatch, {"WhitelistTest": _PRODUCT_CONSTRAINT_ROWS})
+    assert resolve_product_cpq_models_from_rows(
+        "APX NEXT SINGLE BAND", workspace_id=1,
+    ) == ("APXNEXTSINGLE",)
+    assert resolve_product_cpq_models_from_rows(
+        "APX NEXT XN SINGLE BAND", workspace_id=1,
+    ) == ("APXNEXTXNSINGLE",)
+
+
+def test_resolve_product_cpq_models_from_rows_empty_tuple_when_unmatched(monkeypatch):
+    from aryx.cpq.data_table_resolver import resolve_product_cpq_models_from_rows
+
+    _patch_rdb(monkeypatch, {"WhitelistTest": _PRODUCT_CONSTRAINT_ROWS})
+    assert resolve_product_cpq_models_from_rows(
+        "NO SUCH PRODUCT", workspace_id=1,
+    ) == ()

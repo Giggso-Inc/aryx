@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from aryx.config import get_settings
@@ -42,11 +43,11 @@ from aryx.cpq.data_table_resolver import (
     find_inconsistent_filled_pairs_detailed as dt_find_inconsistent_filled_pairs_detailed,
 )
 from aryx.cpq.data_table_resolver import attr_ever_governed_for_cpq_model as dt_attr_ever_governed_for_cpq_model
-from aryx.cpq.data_table_resolver import _invalidate_on_marker_change
-from aryx.cpq.data_table_resolver import _cache_write_if_marker_unchanged
+from aryx.cpq.data_table_cache import _invalidate_on_marker_change
+from aryx.cpq.data_table_cache import _cache_write_if_marker_unchanged
 from aryx.cpq.layout_source import LayoutFileSource, LocalDirLayoutFileSource
 from aryx.cpq.logging_context import install_run_id_logging
-from aryx.cpq.rdb import get_cpq_rdb
+from aryx.cpq.rdb import PostgresCpqRdb, get_cpq_rdb
 from aryx.cpq import rule_trace
 from aryx.resolution.classical import string_score
 from aryx.cpq.state import (
@@ -4467,7 +4468,15 @@ class CpqEngine:
 
     # ── Rule loaders (dialect-agnostic via cpq.rdb) ──────────────────────────
 
-    def _load_rule_join_data(self, workspace_id: int, catalog_prefix: str = ""):
+    def _load_rule_join_data(
+        self, workspace_id: int, catalog_prefix: str = ""
+    ) -> tuple[
+        PostgresCpqRdb,
+        dict[int, list[tuple[int, str, str]]],
+        dict[int, list[tuple[int, int, str, int, int, str]]],
+        dict[int, list[int]],
+        dict[int, int],
+    ]:
         """Shared fetch for the rule loaders.
 
         BmConfigRuleInput/Action rows reference their rule by the BM-native
@@ -11537,7 +11546,7 @@ class CpqEngine:
         attrs: list[ConfigAttr],
         filled: dict[str, str],
         filled_multi: dict[str, list[str]] | None = None,
-    ):
+    ) -> Iterator[tuple[ConfigAttr, str]]:
         """Generator yielding every (attr, new_value_hint) match — shared by
         `detect_change_request` (first match only) and
         `detect_change_requests_multi` (up to `_MAX_MULTI_CHANGE_REQUESTS`).
