@@ -15,15 +15,28 @@ Mutating intents require agreement with existing detect_* functions.
 Results cached by (normalized_question, session_state_hash).
 
 Does NOT touch auto_fill, the rule loop, or BOM payload synthesis.
+
+As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), candidate
+building (`cpq.intent_gateway_candidates`), deterministic-agreement checks
+(`cpq.intent_gateway_agreement`), and the classification cache (`cpq.
+intent_gateway_cache`) live in their own modules and are re-imported here.
+`_pinned_chat`, `_llm_classify_once`, `classify_intent`, and
+`classify_ask_route` all stay together in this hub: every one of them
+either calls `_pinned_chat` directly or is `_pinned_chat` itself, and
+`test_cpq_intent_gateway.py`/`test_cpq_ask_route_fewshots.py` patch
+`aryx.cpq.intent_gateway._pinned_chat`/`.get_settings` directly — moving
+any of these apart would require every caller to access `_pinned_chat` via
+a full module-attribute reference (`intent_gateway._pinned_chat(...)`
+instead of a bound `from...import`) to keep the patch intercepting it,
+a departure from this codebase's normal import style not worth making for
+a coupling this central.
 """
 from __future__ import annotations
 
 import concurrent.futures
 import contextvars
-import hashlib
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -32,6 +45,28 @@ from typing import Any, Literal
 from aryx.broker import Broker, ModelSpec, Registry, TokenGovernor
 from aryx.config import get_settings
 from aryx.cpq.engine import CpqEngine
+from aryx.cpq.intent_gateway_agreement import (
+    MUTATING_CATEGORIES,
+    _deterministic_mutating_signals,
+    _mutating_agrees,
+)
+from aryx.cpq.intent_gateway_cache import (
+    _cache_key,
+    _CACHE,
+    _store_cache,
+    clear_gateway_cache,
+    session_state_hash,
+)
+from aryx.cpq.intent_gateway_candidates import (
+    AttrCandidateBundle,
+    ValueCandidate,
+    _ATTR_CAP,
+    _VALUE_CAP,
+    _format_candidates_for_prompt,
+    _rank_value_candidates_by_relevance,
+    build_candidate_bundles,
+    resolve_value_from_ref,
+)
 from aryx.cpq.intent_schema import (
     GATEWAY_INTENT_JSON_SCHEMA,
     Confidence,
@@ -41,7 +76,7 @@ from aryx.cpq.intent_schema import (
     validate_gateway_quarantine,
 )
 from aryx.cpq.logging_context import get_run_id
-from aryx.cpq.state import ConfigAttr, CpqSession, MenuOption
+from aryx.cpq.state import ConfigAttr, CpqSession
 from aryx.cpq.telemetry import (
     DivergenceRecord,
     deterministic_category_summary,
@@ -52,40 +87,26 @@ from aryx.llm import complete_text
 
 logger = logging.getLogger(__name__)
 
-# Mutating intents — LLM + deterministic detectors must agree.
-MUTATING_CATEGORIES = frozenset({
-    IntentCategory.CHANGE_REQUEST,
-    IntentCategory.CHANGE_TARGET_WITHOUT_VALUE,
-    IntentCategory.CHANGE_REQUESTS_MULTI,
-    IntentCategory.MULTI_SELECT_REMOVAL,
-    IntentCategory.ATTR_CLEAR,
-    IntentCategory.ATTR_ACTIVATION,
-    IntentCategory.BULK_QUANTITY_CHANGE,
-    # ISSUE-002 fix (docs/CPQ_E2E_ISSUES_001_002_003_004_FIX_PLAN_2026_08_17.md),
-    # revised per PR #205 review (High finding #2): DECLINE has no
-    # `variable_name` at all (a pure session-state transition, not a
-    # catalog attribute target), so `_mutating_agrees` special-cases it to
-    # check the real boolean regex detector `detect_decline` instead of
-    # the variable_name-matching logic every other member of this set
-    # uses. APPROVAL is deliberately NOT in this set: the LLM was already
-    # correctly classifying genuine approvals before this fix (that was
-    # never the bug) — requiring `detect_approval()`'s hand-written regex
-    # to also positively agree would reject any approval phrasing the LLM
-    # correctly recognizes but the regex doesn't happen to cover, trading
-    # the decline-misdispatch bug for a new false-negative-on-approval
-    # bug. Instead, `_mutating_agrees` applies a DECLINE-only veto to
-    # APPROVAL below (real conflict signal in one direction only), not a
-    # requirement for positive agreement in the other.
-    IntentCategory.DECLINE,
-})
-
-_VALUE_CAP = 40
-_ATTR_CAP = 60
-_WORD_RE = re.compile(r"[a-z0-9]+")
-
-# Module-level cache: key → (GatewayIntentResult, pt, ct, model_id)
-_CACHE: dict[str, tuple[GatewayIntentResult, int, int, str]] = {}
-_CACHE_MAX = 256
+__all__ = [
+    "GATEWAY_INTENT_JSON_SCHEMA",
+    "MUTATING_CATEGORIES",
+    "AskRoute",
+    "AskRouteDecision",
+    "AttrCandidateBundle",
+    "GatewayDecision",
+    "ValueCandidate",
+    "build_candidate_bundles",
+    "clear_gateway_cache",
+    "classify_ask_route",
+    "classify_intent",
+    "hard_off_topic",
+    "map_route_to_det_expectation",
+    "mark_top_level_route_used",
+    "resolve_value_from_ref",
+    "session_state_hash",
+    "soft_quote_heuristic",
+    "top_level_route_used",
+]
 
 # N4: when top-level classify_ask_route already ran this turn, skip the
 # mid-session STEP-6 gateway so the turn pays one LLM classification call.
@@ -127,23 +148,6 @@ def hard_off_topic(question: str) -> bool:
     return bool(_OFF_TOPIC_HARD.search(question or ""))
 
 
-@dataclass(frozen=True)
-class ValueCandidate:
-    """One selectable value the LLM may reference by index only."""
-
-    index: int
-    item_value: str
-    display_name: str
-
-
-@dataclass
-class AttrCandidateBundle:
-    """Attribute + ordered value candidates for the prompt/validator."""
-
-    attr: ConfigAttr
-    values: list[ValueCandidate]
-
-
 @dataclass
 class GatewayDecision:
     """Outcome of one gateway classify call for the turn orchestrator."""
@@ -159,186 +163,6 @@ class GatewayDecision:
     model_id: str = ""
     cache_hit: bool = False
     reason: str = ""
-
-
-def _normalize_question(question: str) -> str:
-    return " ".join(question.lower().split())
-
-
-def session_state_hash(session: CpqSession) -> str:
-    """Stable fingerprint of the config state the candidates depend on."""
-    payload = {
-        "product": session.product_name,
-        "filled": sorted(session.filled.items()),
-        "filled_multi": sorted(
-            (k, tuple(v)) for k, v in session.filled_multi.items()
-        ),
-        "pending": list(session.pending_variables[:20]),
-        "pending_change_no_value": session.pending_change_no_value_vn,
-        "pending_change_collision": list(session.pending_change_collision_vns),
-        "pending_clarify": list(session.pending_clarify_vns),
-        "status": session.status,
-    }
-    raw = json.dumps(payload, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def _cache_key(question: str, session: CpqSession, model_id: str = "") -> str:
-    # N9: isolate cache by model + worker pid so multi-worker / model
-    # flips never reuse a stale classification from another process identity.
-    mid = model_id or get_settings().cpq_intent_gemini_model
-    return (
-        f"{mid}|pid={os.getpid()}|"
-        f"{_normalize_question(question)}|{session_state_hash(session)}"
-    )
-
-
-def _rank_value_candidates_by_relevance(
-    options: list[MenuOption], q_words: set[str], question_lower: str,
-) -> list[MenuOption]:
-    """Order `options` so values relevant to the customer's message survive
-    `_VALUE_CAP`'s truncation, instead of raw catalog/database storage
-    order. docs/CPQ_VALUE_CANDIDATE_TRUNCATION_PLAN_2026_08_21.md.
-
-    Live-confirmed bug this closes: a 328-option real catalog attribute
-    (Product) truncated to the first 40 in storage order, silently
-    excluding a customer-named, exact-match value sitting at index 323-325
-    -- the gateway then correctly (from its own truncated view) reported
-    the value "not a valid option," degrading to a false disambiguation
-    or a discarded-value re-ask.
-
-    Exact matches (case-insensitive, display_name or item_value appearing
-    verbatim in the message) always sort first, regardless of score -- the
-    single most common trigger of the bug this closes is a customer
-    echoing back an option the system itself just displayed, and that
-    case gets a guarantee, not just better odds.
-
-    Remaining options are ranked by rarity-weighted word overlap (mirrors
-    `ask_api._resolve_target_description`'s scoring -- reused rather than
-    a raw overlap count because this codebase already hit and fixed the
-    identical failure mode for that scorer: a raw count ties a distinctive
-    word to a generic word shared by dozens of labels/options. This
-    catalog's own Product list has the same shape -- "APX"/"NEXT" appear
-    in dozens of its 328 entries).
-
-    A value with genuinely zero overlap and no exact match is NOT a case
-    this function tries to fix -- correctly falling through to a
-    clarifying question when no lexical evidence exists is the intended
-    behavior, not a gap.
-    """
-    exact: list[MenuOption] = []
-    rest: list[MenuOption] = []
-    for o in options:
-        display_l = o.display_name.strip().lower()
-        value_l = (o.item_value or "").strip().lower()
-        # Boundary-aware match, not a bare substring check -- a naive `in`
-        # test false-positives on short display names/item_values (e.g.
-        # item_value "A" is a substring of "band"), confirmed live while
-        # testing this function: every single-letter/short option in a
-        # fixture spuriously matched an unrelated message. `\b` alone isn't
-        # enough either -- many real display names end in punctuation
-        # ("APX NEXT XE (4G LTE+5G)"), and `\b` fails to match at a
-        # non-word/non-word boundary (e.g. ")" followed by end-of-string).
-        # Lookaround on alphanumeric adjacency handles both cases.
-        if (
-            (display_l and re.search(
-                rf"(?<![a-z0-9]){re.escape(display_l)}(?![a-z0-9])", question_lower))
-            or (value_l and re.search(
-                rf"(?<![a-z0-9]){re.escape(value_l)}(?![a-z0-9])", question_lower))
-        ):
-            exact.append(o)
-        else:
-            rest.append(o)
-
-    vocabs = [set(_WORD_RE.findall(o.display_name.lower())) for o in rest]
-    doc_freq: dict[str, int] = {}
-    for vocab in vocabs:
-        for w in vocab:
-            doc_freq[w] = doc_freq.get(w, 0) + 1
-    scored = []
-    for o, vocab in zip(rest, vocabs):
-        overlap = q_words & vocab
-        score = sum(1.0 / doc_freq[w] for w in overlap) if overlap else 0.0
-        scored.append((score, o))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return exact + [o for _score, o in scored]
-
-
-def build_candidate_bundles(
-    attrs: list[ConfigAttr],
-    session: CpqSession,
-    question: str,
-) -> list[AttrCandidateBundle]:
-    """Build attr/value candidates from product config + session state.
-
-    Prefers attributes that are filled, pending, or word-overlap the
-    question so the prompt stays bounded on large catalogs.
-    """
-    q_words = set(_WORD_RE.findall(question.lower()))
-    question_lower = question.lower()
-    scored: list[tuple[float, ConfigAttr]] = []
-    for a in attrs:
-        score = 0.0
-        if a.variable_name in session.filled or a.variable_name in session.filled_multi:
-            score += 5.0
-        if session.pending_variables and a.variable_name == session.pending_variables[0]:
-            score += 8.0
-        if a.variable_name in session.last_qa_variables:
-            score += 8.0
-        if a.variable_name in session.pending_change_collision_vns:
-            score += 7.0
-        if a.variable_name == session.pending_change_no_value_vn:
-            score += 7.0
-        if a.variable_name in session.pending_clarify_vns:
-            score += 7.0
-        vocab = set(_WORD_RE.findall(a.display_label.lower()))
-        vocab |= set(_WORD_RE.findall(a.variable_name.lower().replace("_", " ")))
-        ranked_opts_for_vocab = _rank_value_candidates_by_relevance(
-            a.options, q_words, question_lower,
-        )
-        for o in ranked_opts_for_vocab[:_VALUE_CAP]:
-            vocab |= set(_WORD_RE.findall(o.display_name.lower()))
-        score += len(q_words & vocab)
-        if score > 0 or a.required:
-            scored.append((score, a))
-    scored.sort(key=lambda p: p[0], reverse=True)
-    chosen = [a for _s, a in scored[:_ATTR_CAP]]
-    if not chosen:
-        chosen = attrs[: min(20, len(attrs))]
-
-    bundles: list[AttrCandidateBundle] = []
-    for a in chosen:
-        values: list[ValueCandidate] = []
-        ranked_opts = _rank_value_candidates_by_relevance(a.options, q_words, question_lower)
-        for i, o in enumerate(ranked_opts[:_VALUE_CAP]):
-            values.append(ValueCandidate(
-                index=i, item_value=o.item_value, display_name=o.display_name,
-            ))
-        bundles.append(AttrCandidateBundle(attr=a, values=values))
-    return bundles
-
-
-def _format_candidates_for_prompt(bundles: list[AttrCandidateBundle],
-                                  session: CpqSession) -> str:
-    lines: list[str] = []
-    for b in bundles:
-        a = b.attr
-        current = (
-            session.filled_multi.get(a.variable_name)
-            or session.filled.get(a.variable_name)
-        )
-        if b.values:
-            val_lines = "; ".join(
-                f"[{v.index}] {v.display_name}" for v in b.values
-            )
-        else:
-            val_lines = "(free-text / no menu — value_ref must be null)"
-        lines.append(
-            f"- variable_name={a.variable_name!r} label={a.display_label!r} "
-            f"type={a.select_type} current={current!r}\n"
-            f"  VALUE CANDIDATES: {val_lines}"
-        )
-    return "\n".join(lines)
 
 
 def _pinned_chat(
@@ -522,206 +346,6 @@ def _llm_classify_once(
     if raw is None:
         return None, pt, ct
     return parse_gateway_intent(raw), pt, ct
-
-
-def _deterministic_mutating_signals(
-    engine: Any,
-    question: str,
-    attrs: list[ConfigAttr],
-    session: CpqSession,
-    hiding_rules: list | None = None,
-    rec_rules: list | None = None,
-    con_rules: list | None = None,
-    bml_eval: Any = None,
-    workspace_id: int = 1,
-    catalog_prefix: str = "",
-) -> dict[str, set[str]]:
-    """Map mutating category → set of variable_names detectors found.
-
-    docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md Phase 2b
-    follow-up: ATTR_CLEAR / ATTR_ACTIVATION need rec_rules / hiding_rules
-    / bml_eval to probe for real — previously left permanently empty
-    ("so disagreement forces clarify rather than a half-blind
-    agreement"), which meant `_mutating_agrees` returned False almost
-    unconditionally for these two categories no matter what the LLM
-    said, so `_gw.action` essentially never reached "dispatch" for
-    them. Cost/impact confirmed cheap before wiring this: no new LLM
-    call (the classification call already happened by this point
-    regardless), only runs on a genuine cache miss (a cache hit returns
-    before this function is ever called at all), and only during
-    review-stage turns (this whole gateway's one call site is gated on
-    `session.status in ("awaiting_approval", "post_approval")`).
-    `hiding_rules`/`rec_rules`/`bml_eval` are optional (default `None`)
-    so any other caller that doesn't have them yet keeps working
-    unchanged — activation/clear probing is simply skipped (empty sets,
-    same as before) when they're not supplied, never guessed.
-    """
-    out: dict[str, set[str]] = {c.value: set() for c in MUTATING_CATEGORIES}
-
-    def _safe(label: str, fn: Any) -> None:
-        try:
-            fn()
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "cpq_intent_gateway: deterministic probe %s failed",
-                label, exc_info=True,
-            )
-
-    def _probe_change() -> None:
-        cr = engine.detect_change_request(
-            question, attrs, session.filled, session.filled_multi,
-        )
-        if cr:
-            out[IntentCategory.CHANGE_REQUEST.value].add(cr[0].variable_name)
-        multi = engine.detect_change_requests_multi(
-            question, attrs, session.filled, session.filled_multi,
-        )
-        for attr, _hint in multi or []:
-            out[IntentCategory.CHANGE_REQUESTS_MULTI.value].add(attr.variable_name)
-            out[IntentCategory.CHANGE_REQUEST.value].add(attr.variable_name)
-        no_val = engine.detect_change_target_without_value(
-            question, attrs, session.filled,
-        )
-        if no_val:
-            out[IntentCategory.CHANGE_TARGET_WITHOUT_VALUE.value].add(
-                no_val.variable_name,
-            )
-
-    def _probe_removal() -> None:
-        removal = engine.detect_multi_select_removal(
-            question, attrs, session.filled_multi,
-        )
-        if removal:
-            out[IntentCategory.MULTI_SELECT_REMOVAL.value].add(
-                removal[0].variable_name,
-            )
-
-    def _probe_bulk() -> None:
-        bulk = engine.detect_bulk_quantity_change(
-            question, attrs, session.filled_multi,
-        )
-        if bulk:
-            # bulk[0] is the selector variable_name string
-            out[IntentCategory.BULK_QUANTITY_CHANGE.value].add(bulk[0])
-
-    def _probe_activation() -> None:
-        if hiding_rules is None:
-            return
-        activation = engine.detect_attr_activation(
-            question, attrs, session.filled, session.filled_multi,
-            hiding_rules, workspace_id, catalog_prefix, bml_eval=bml_eval,
-        )
-        if activation:
-            out[IntentCategory.ATTR_ACTIVATION.value].add(activation.variable_name)
-
-    def _probe_clear() -> None:
-        if rec_rules is None or con_rules is None:
-            return
-        cleared = engine.detect_attr_clear(
-            question, attrs, session.filled, rec_rules, con_rules, bml_eval=bml_eval,
-            workspace_id=workspace_id, catalog_prefix=catalog_prefix,
-        )
-        if cleared:
-            out[IntentCategory.ATTR_CLEAR.value].add(cleared.variable_name)
-
-    _safe("change", _probe_change)
-    _safe("removal", _probe_removal)
-    _safe("bulk", _probe_bulk)
-    _safe("activation", _probe_activation)
-    _safe("clear", _probe_clear)
-    return out
-
-
-def _mutating_agrees(
-    result: GatewayIntentResult,
-    det_signals: dict[str, set[str]],
-    last_qa_variables: list[str] | None = None,
-    question: str = "",
-    engine: Any = None,
-) -> bool:
-    """True when deterministic detectors agree on category + variable_name.
-
-    Also accepts corroboration from conversational recency: a bare-value
-    reply ("make it ATT/FirstNet") names no attribute at all, so
-    deterministic text-matching detectors can find nothing (or the wrong
-    sibling attribute that happens to share the same option value) even
-    when the LLM confidently and correctly names the attribute the
-    customer was just asking about. docs/CPQ_COMPOUND_CHANGE_AND_QUESTION_
-    CLARIFY_ISSUE.md §8 — live-confirmed: "Wireless Carrier" and "Carrier
-    Selection" both genuinely accept the same value, so det_signals alone
-    can never disambiguate; last_qa_variables is the only signal that can.
-    A list, not a single value (docs/config_consistency_issues_2026-07-30.md
-    Issue 12) — a compound options query can put more than one attribute
-    into conversational recency at once.
-
-    `question`/`engine` (ISSUE-002 fix, both default to a safe no-op value
-    so every pre-existing call site that doesn't pass them keeps working
-    unchanged — same "None keeps existing behavior unchanged" convention
-    used everywhere else in this file): APPROVAL and DECLINE are pure
-    session-state transitions with NO `variable_name` at all, so the
-    variable_name-matching logic below (`if not result.variable_name:
-    return False`) would always reject them if they fell through to it —
-    naively adding them to MUTATING_CATEGORIES without this special case
-    would silently break approval entirely. Checked FIRST, before any of
-    the existing variable_name-based logic, which stays completely
-    unchanged for every other category.
-    """
-    if result.intent_category == IntentCategory.DECLINE:
-        return bool(engine is not None and engine.detect_decline(question))
-    if result.intent_category not in MUTATING_CATEGORIES:
-        return True
-    cat = result.intent_category.value
-    det_vns = det_signals.get(cat, set())
-    # CHANGE_REQUEST family: also accept multi-change detector hits
-    if result.intent_category == IntentCategory.CHANGE_REQUEST:
-        det_vns = det_vns | det_signals.get(
-            IntentCategory.CHANGE_REQUESTS_MULTI.value, set(),
-        )
-    if not result.variable_name:
-        return False
-    # docs/CPQ_REGEX_VS_LLM_ANCHOR_GUARDRAIL_AUDIT_2026_08_12.md review
-    # finding (HIGH): the last_qa_variables shortcut below only makes sense
-    # for value-bearing categories, where an independently-stated value
-    # PLUS the just-discussed variable corroborate each other (neither
-    # signal alone would be trustworthy, but together they are). Activation
-    # and clear carry no value at all — the very thing that's unverified is
-    # "is this really an activation/clear request," and conversational
-    # recency says nothing about that question. Letting the shortcut apply
-    # here would mean any ambiguous reply about a recently-discussed
-    # attribute could silently activate or clear it with no real detector
-    # confirmation at all. These two categories must always go through
-    # their real deterministic detector.
-    if result.intent_category in (
-        IntentCategory.ATTR_ACTIVATION, IntentCategory.ATTR_CLEAR,
-    ):
-        return bool(det_vns) and result.variable_name in det_vns
-    if last_qa_variables and result.variable_name in last_qa_variables:
-        return True
-    if not det_vns:
-        # No deterministic hit at all — treat as disagreement so we clarify
-        # rather than mutate solely on LLM word.
-        return False
-    return result.variable_name in det_vns
-
-
-def resolve_value_from_ref(
-    result: GatewayIntentResult,
-    bundles: list[AttrCandidateBundle],
-) -> tuple[str | None, str | None]:
-    """Map value_ref → (display_name, item_value) via OUR candidate lists.
-
-    The model never supplies item_value text; we look it up by index.
-    """
-    if result.variable_name is None or result.value_ref is None:
-        return None, None
-    for b in bundles:
-        if b.attr.variable_name != result.variable_name:
-            continue
-        if 0 <= result.value_ref < len(b.values):
-            v = b.values[result.value_ref]
-            return v.display_name, v.item_value
-        return None, None
-    return None, None
 
 
 def classify_intent(
@@ -1025,20 +649,6 @@ def classify_intent(
         value_display=display, value_item=item,
         prompt_tokens=total_pt, completion_tokens=total_ct, model_id=model_id,
     )
-
-
-def _store_cache(
-    key: str, result: GatewayIntentResult, pt: int, ct: int, model_id: str,
-) -> None:
-    if len(_CACHE) >= _CACHE_MAX:
-        # Drop an arbitrary oldest-ish entry (insertion order on 3.7+)
-        _CACHE.pop(next(iter(_CACHE)), None)
-    _CACHE[key] = (result, pt, ct, model_id)
-
-
-def clear_gateway_cache() -> None:
-    """Test helper — wipe the process-local intent cache."""
-    _CACHE.clear()
 
 
 # ── Top-level /ask route classifier (Prompt 3) ───────────────────────────────

@@ -7763,73 +7763,83 @@
     ],
     [
       "src/aryx/cpq/bml.py",
-      1043,
+      228,
+      "_store"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      236,
+      "_store"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      498,
+      "_evaluate_llm"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      502,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      527,
+      "_evaluate_llm"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      560,
+      "_evaluate_llm_hide"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      564,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      592,
+      "_evaluate_llm_hide"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      627,
+      "_evaluate_llm_condition"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      631,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      660,
+      "_evaluate_llm_condition"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      662,
+      "_evaluate_llm_ask_worthy"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      671,
+      "<try>"
+    ],
+    [
+      "src/aryx/cpq/bml.py",
+      714,
+      "_evaluate_llm_ask_worthy"
+    ],
+    [
+      "src/aryx/cpq/bml_tier1.py",
+      95,
       "<if>"
     ],
     [
-      "src/aryx/cpq/bml.py",
-      1062,
+      "src/aryx/cpq/bml_tier1.py",
+      114,
       "_first_matching_branch"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      1962,
-      "_evaluate_llm"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      1966,
-      "<try>"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      1991,
-      "_evaluate_llm"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2024,
-      "_evaluate_llm_hide"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2028,
-      "<try>"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2056,
-      "_evaluate_llm_hide"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2091,
-      "_evaluate_llm_condition"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2095,
-      "<try>"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2124,
-      "_evaluate_llm_condition"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2126,
-      "_evaluate_llm_ask_worthy"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2135,
-      "<try>"
-    ],
-    [
-      "src/aryx/cpq/bml.py",
-      2178,
-      "_evaluate_llm_ask_worthy"
     ],
     [
       "src/aryx/cpq/engine.py",
@@ -8018,98 +8028,98 @@
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      330,
-      "<if>"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      341,
-      "_format_candidates_for_prompt"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      527,
-      "_deterministic_mutating_signals"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      570,
-      "_probe_change"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      590,
-      "_probe_removal"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      599,
-      "_probe_bulk"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      607,
-      "_probe_activation"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      617,
-      "_probe_clear"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      632,
-      "_deterministic_mutating_signals"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      635,
-      "_mutating_agrees"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      704,
-      "_mutating_agrees"
-    ],
-    [
-      "src/aryx/cpq/intent_gateway.py",
-      727,
+      351,
       "classify_intent"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      806,
+      430,
       "_classify_with_timeout"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      1023,
+      647,
       "classify_intent"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      1147,
+      757,
       "_parse_route"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      1202,
+      812,
       "_parse_route"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      1212,
+      822,
       "classify_ask_route"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      1349,
+      959,
       "<try>"
     ],
     [
       "src/aryx/cpq/intent_gateway.py",
-      1408,
+      1018,
       "classify_ask_route"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      46,
+      "_deterministic_mutating_signals"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      89,
+      "_probe_change"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      109,
+      "_probe_removal"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      118,
+      "_probe_bulk"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      126,
+      "_probe_activation"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      136,
+      "_probe_clear"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      151,
+      "_deterministic_mutating_signals"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      154,
+      "_mutating_agrees"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_agreement.py",
+      223,
+      "_mutating_agrees"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_candidates.py",
+      174,
+      "<if>"
+    ],
+    [
+      "src/aryx/cpq/intent_gateway_candidates.py",
+      185,
+      "_format_candidates_for_prompt"
     ],
     [
       "src/aryx/cpq/intent_queue.py",
@@ -8593,98 +8603,98 @@
     ],
     [
       "src/aryx/pipeline/doc_discovery.py",
-      147,
-      "_infer_type"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      159,
+      128,
       "<try>"
     ],
     [
       "src/aryx/pipeline/doc_discovery.py",
-      186,
-      "_xml_to_csvs"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      223,
-      "_extract_field"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      244,
-      "_extract_field"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      246,
-      "_elem_id"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      257,
-      "_elem_id"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      259,
-      "_is_entity"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      274,
-      "_is_entity"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      276,
-      "<try>"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      313,
-      "_check_name"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      332,
-      "_walk"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      364,
-      "_collect_tag"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      401,
-      "_collect_tag"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      414,
-      "<if>"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      462,
-      "_xml_to_csvs"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      652,
-      "<try>"
-    ],
-    [
-      "src/aryx/pipeline/doc_discovery.py",
-      668,
+      144,
       "read_files"
     ],
     [
       "src/aryx/pipeline/doc_discovery.py",
-      1290,
+      330,
       "<if>"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_types.py",
+      118,
+      "_infer_type"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_types.py",
+      130,
+      "<try>"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      21,
+      "_xml_to_csvs"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      58,
+      "_extract_field"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      79,
+      "_extract_field"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      81,
+      "_elem_id"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      92,
+      "_elem_id"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      94,
+      "_is_entity"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      109,
+      "_is_entity"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      111,
+      "<try>"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      148,
+      "_check_name"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      167,
+      "_walk"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      199,
+      "_collect_tag"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      236,
+      "_collect_tag"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      249,
+      "<if>"
+    ],
+    [
+      "src/aryx/pipeline/doc_discovery_xml.py",
+      297,
+      "_xml_to_csvs"
     ],
     [
       "src/aryx/pipeline/ingest_validation.py",
