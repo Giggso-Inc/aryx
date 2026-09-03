@@ -8848,78 +8848,88 @@
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      54,
-      "_translate_sql"
+      95,
+      "_tuple_seq_to_dict"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      142,
-      "_translate_sql"
+      120,
+      "_tuple_seq_to_dict"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      263,
+      157,
       "_hint_clob"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      293,
+      187,
       "_coerce_clob"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      337,
+      231,
       "_coerce_clob"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      340,
+      234,
       "_hint_clob_many"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      398,
+      292,
       "__init__"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      423,
+      317,
       "_json_output_handler"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      433,
+      327,
       "execute"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      443,
+      337,
       "<if>"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      475,
+      369,
       "executemany"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      510,
+      404,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      560,
+      454,
       "executemany_returning"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      638,
+      532,
       "execute"
     ],
     [
       "src/aryx/store/oracle_pool.py",
-      655,
+      549,
       "__init__"
+    ],
+    [
+      "src/aryx/store/oracle_sql_translate.py",
+      38,
+      "_translate_sql"
+    ],
+    [
+      "src/aryx/store/oracle_sql_translate.py",
+      126,
+      "_translate_sql"
     ],
     [
       "src/aryx/store/oracle_workspace.py",

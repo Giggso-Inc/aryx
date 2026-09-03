@@ -55,7 +55,7 @@ Re-scanned 2026-09-03 against the revised 150-line threshold (§1.1). The origin
 | 982 | `src/aryx/api/data_api.py` | ❌ none |
 | 906 | `src/aryx/source_catalog.py` | ✅ `tests/test_source_catalog*.py` |
 | 880 | `src/aryx/cpq/rdb.py` | ⚠️ `tests/test_cpq_rdb_attr_set_assoc.py` — narrow, not full-file coverage |
-| 763 | `src/aryx/store/oracle_pool.py` | ✅ `tests/test_oracle_pool.py` |
+| 657 (was 763) | `src/aryx/store/oracle_pool.py` | ✅ `tests/test_oracle_pool.py` — split in progress (2 of 4 files done, see Phase 2a status) |
 | 647 | `src/aryx/cpq/state.py` | ❌ none |
 | 631 | `src/aryx/store/shay_bridge_store.py` | ✅ `tests/test_shay_bridge_store.py` |
 | 589 | `src/aryx/cpq/intent_schema.py` | ✅ `tests/test_cpq_intent_schema.py` |
@@ -468,6 +468,8 @@ This is the exact command every phase's "run the existing test suite" step (§6,
 
 No phase below is complete for a given file until all six boxes are checked for that file.
 
+**6.1 A separate, unrelated gate now exists on this repo — `raven-core/decision-map-gate.py` (task T31, externally installed 2026-09-03) — and it interacts badly with this plan's own work.** It hard-blocks every commit on unresolved `raven_log()`-instrumentation findings, keyed by exact (file, line). Every file split in this plan moves code to new files and new line numbers, so the gate sees the SAME pre-existing, already-accepted code as "new" findings every single time, even though nothing about the code's actual behavior changed — confirmed live during the `oracle_pool.py` split (17 "new" findings that were the identical `_hint_clob`/`_coerce_clob`/etc. logic, just relocated). The fix each time is `python3 raven-core/decision-map-gate.py --write-baseline` (a sanctioned mechanism the gate itself provides, not a hook bypass) followed by staging `.raven/decision-map-baseline.json` alongside that commit's actual files. **Expect this after every file split in Phases 2–5, not just this once** — it is not this plan's own policy and not something this plan's execution can fix (the gate is marked "managed... do not hand-edit"), but it is a real, recurring step every phase's execution needs to budget for.
+
 ---
 
 ## 7. Phased plan
@@ -519,7 +521,16 @@ Approach per file, not a blanket rule (applies to both sub-tiers):
 
 **Key lesson, confirmed the hard way mid-split:** the `engine.py`-facing re-export chain (its `dt_*`-aliased top-level imports, and the ~10 test files that patch those aliases on `engine`'s own namespace) needed zero changes across every extraction — patching a name in the *caller's* namespace always works regardless of where the real function is defined. But **whitebox patches targeting `data_table_resolver.<name>` directly break the moment the calling code itself moves out of `data_table_resolver.py`** — `tests/test_cpq_stale_base_model_cascade_2026_08_20.py` patched `aryx.cpq.data_table_resolver._load_all_tables` and silently stopped intercepting anything once the functions that call `_load_all_tables` (`resolve_product_cpq_models_from_rows`, `resolve_region_allow_value`) moved to `data_table_product.py` — the test still passed collection and only failed on a business-logic assertion, not an import error, so this needs an actual test run to catch, not just a compile check. Retargeted to `aryx.cpq.data_table_product._load_all_tables`; a project-wide `grep -rl "_load_all_tables" tests/` (4 files total) confirmed no other test has the same landmine. **Any future split of a function that internally calls another moved function must re-check every direct-module-path patch, not just re-exports.**
 
-Next in this sub-tier: `oracle_pool.py`'s CLOB-handling helpers vs. the pool/cursor wrappers, `state.py`'s distinct state-transition groups, deferring `config.py`/`source_catalog.py` until later.
+**`oracle_pool.py` split — in progress, higher caution than `data_table_resolver.py` given this file's PR #310–#314 bug history.** Proposed as a 4-module split, explicitly confirmed with the project owner before starting (per the plan's own step-2 requirement). Status:
+
+| File | Lines | Status |
+|---|---:|---|
+| `oracle_sql_translate.py` | 126 | ✅ done, clean — `_translate_sql` and its SQL-rewriting regexes |
+| `oracle_pool.py` | 657 (was 763) | 🔶 in progress — still needs `oracle_param_coerce.py` and `oracle_clob.py` extracted, then likely one more split of `OracleCursorWrapper`/`OracleConnectionWrapper`/`OraclePool` themselves |
+
+Verified after the `oracle_sql_translate.py` extraction: 154 passed (`test_oracle_pool.py`, `test_oracle_workspace.py`, `test_shay_bridge_store.py`, `test_shay_bridge_api.py`), clean container imports, and — per §6 item 3's live-smoke-test requirement for `store/` files — a full container restart that ran every startup migration (real `CREATE TABLE`/`ALTER TABLE`/seed `INSERT` DDL/DML) through the translated SQL path with no new errors, plus `/health` and `/ask` returning correct real-Oracle-backed responses.
+
+Next in this sub-tier after `oracle_pool.py` is fully split: `state.py`'s distinct state-transition groups, deferring `config.py`/`source_catalog.py` until later.
 
 **2b — Tier B (47 additional files, 150–400 lines, new to this revision):** priority order:
 - **Untested files first, smallest first** (of the 23 Tier B files with no matching test — §2.1): starting small keeps each golden-master-test-then-split cycle short while the corrected methodology is still being applied consistently. `models.py` (153 lines) and `action_store.py` (158 lines) are natural starting points.
