@@ -53,7 +53,7 @@ def test_sync_datasource_updates_existing_mapping_and_datasource():
 
     with (
         patch("aryx.store.shay_bridge_store.get_pool", return_value=pool),
-        patch("aryx.store.shay_bridge_store.DatasourceStore", return_value=datasource_store),
+        patch("aryx.store.shay_datasource_bridge.DatasourceStore", return_value=datasource_store),
     ):
         store = ShayBridgeStore("postgresql://example")
         store.get_workspace_mapping = MagicMock(

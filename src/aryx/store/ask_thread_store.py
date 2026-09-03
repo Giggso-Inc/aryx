@@ -1,9 +1,19 @@
-"""Persistence for Aryx Ask conversations stored as Shay threads/messages."""
+"""Persistence for Aryx Ask conversations stored as Shay threads/messages.
+
+As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), the pure value
+helpers (`_as_int`/`_as_json`/`normalize_grounding_citations`/`normalize_
+thread_title`) live in `store.ask_thread_helpers`, and the Oracle retry-safe
+upsert (`_insert_message_oracle`) lives in `store.ask_thread_oracle_insert`
+-- both re-imported here for existing callers/tests. `AryxAskThreadStore`
+itself stays whole: its ~13 methods share `self._pool`, and `test_ask_
+thread_store_touch_channel_2026_08_28.py` patches `aryx.store.ask_thread_
+store.load` while exercising `ensure_thread_and_user_message`/`append_
+assistant_message` -- both of which call `load(...)` directly inside the
+class, so the class (and its `load` import) must stay here.
+"""
 
 from __future__ import annotations
 
-import json
-import re
 import uuid
 from typing import Any
 
@@ -17,167 +27,34 @@ from aryx.store.ask_thread_contract import (
     REQUEST_STATUS_IN_PROGRESS,
     message_insert_params,
 )
+from aryx.store.ask_thread_helpers import (
+    _as_int,
+    _as_json,
+    normalize_grounding_citations,
+    normalize_thread_title,
+)
+from aryx.store.ask_thread_oracle_insert import _insert_message_oracle
 from aryx.store.pool import get_pool
+
+__all__ = [
+    "ASK_CHANNEL_DESCRIPTION",
+    "ASK_CHANNEL_NAME",
+    "AryxAskThreadStore",
+    "_as_int",
+    "_as_json",
+    "_insert_message_oracle",
+    "_is_oracle_backend",
+    "get_ask_thread_store",
+    "normalize_grounding_citations",
+    "normalize_thread_title",
+]
 
 ASK_CHANNEL_NAME = "__aryx_ask__"
 ASK_CHANNEL_DESCRIPTION = "Hidden Aryx Ask conversation channel"
 
 
-def _as_int(value: Any, fallback: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _as_json(value: Any) -> Any:
-    """Parse a JSON column value that may arrive as a string or already-parsed.
-
-    Postgres JSONB columns come back as dict/list (psycopg auto-decodes).
-    Shay's gg_* tables store the same data as CLOB on Oracle (no native JSON
-    type there), so oracledb returns plain text -- this normalizes both to
-    the same Python shape the caller expects.
-    """
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            return value
-    return value
-
-
-def normalize_grounding_citations(grounding: Any) -> list[dict[str, Any]]:
-    """Return frontend citation objects from the grounding contract."""
-    if not isinstance(grounding, dict):
-        return []
-    raw_citations = grounding.get("citations")
-    if not isinstance(raw_citations, list):
-        return []
-
-    citations = []
-    for index, citation in enumerate(raw_citations):
-        if not isinstance(citation, dict):
-            continue
-        label = citation.get("label") or citation.get("entity_name")
-        if not isinstance(label, str) or not label.strip():
-            continue
-        citations.append({
-            "entity_id": _as_int(
-                citation.get("entity_id"),
-                _as_int(citation.get("marker"), index),
-            ),
-            "label": label,
-            "type": citation.get("type") or citation.get("entity_type"),
-        })
-    return citations
-
-
 def _is_oracle_backend() -> bool:
     return get_settings().effective_db_backend() == "oci"
-
-
-def _insert_message_oracle(cur: Any, params: tuple[Any, ...]) -> tuple[str, int, bool, str] | None:
-    """Oracle-native equivalent of ask_thread_insert_message.sql's retry-safe upsert.
-
-    Postgres does this in one statement (INSERT ... ON CONFLICT ... DO UPDATE
-    ... WHERE <retry-safety CASE logic> ... RETURNING id, sequence_number,
-    (xmax = 0) AS inserted, content), using `xmax = 0` to tell the caller
-    whether it inserted or updated. Oracle has no `xmax` equivalent -- this
-    expresses the same decision as explicit Python branches instead: lock the
-    thread row (serializes sequence_number assignment), check for an existing
-    row under that lock, then either insert fresh or apply the same
-    conditional-overwrite rules as a plain UPDATE.
-
-    Returns a 4-tuple matching the Postgres RETURNING shape -- (id,
-    sequence_number, inserted, content) -- if inserted or safely updated.
-    `inserted` is True only on the genuine-insert branch below -- callers
-    use it (ensure_thread_and_user_message/append_assistant_message's
-    newly_inserted) to gate ask_thread_touch_channel so a retry that hits
-    the update branch doesn't double-count message_count. Returns None if
-    an existing row must not be overwritten (caller then loads the existing
-    row via ask_thread_select_request_message, exactly like the Postgres
-    path).
-    """
-    (thread_id, message_id, content, message_type, _thread_id_again, request_id,
-     is_ai_processed, ai_provider, ai_model, ai_processing_time,
-     metadata, citations, usage) = params
-    # gg_messages.is_ai_processed is NUMBER(0/1) (SQLAlchemy's Oracle Boolean),
-    # but oracle_pool.py's _unwrap_params() converts every Python bool to
-    # 'Y'/'N' for aryx_*'s own CHAR(1) convention -- wrong for this column,
-    # so convert explicitly here instead of letting that happen.
-    is_ai_processed = 1 if is_ai_processed else 0
-
-    cur.execute(load("ask_thread_lock_thread"), (thread_id,))
-    cur.fetchone()
-
-    cur.execute(
-        load("ask_thread_select_existing_message"),
-        (thread_id, request_id, message_type),
-    )
-    existing = cur.fetchone()
-
-    if existing is None:
-        cur.execute(load("ask_thread_next_sequence"), (thread_id,))
-        next_seq = int(cur.fetchone()[0])
-        cur.execute(
-            load("ask_thread_insert_message_oracle"),
-            (message_id, content, message_type, thread_id, request_id,
-             is_ai_processed, ai_provider, ai_model, ai_processing_time,
-             next_seq, metadata, citations, usage),
-        )
-        return (message_id, next_seq, True, content)
-
-    existing_id, existing_seq, existing_content, existing_metadata_raw, existing_updated_at = existing
-
-    if message_type != "user":
-        # Assistant/system messages always overwrite -- no retry-safety gate.
-        cur.execute(
-            load("ask_thread_update_message_oracle"),
-            (content, is_ai_processed, ai_provider, ai_model, ai_processing_time,
-             metadata, citations, usage, existing_id),
-        )
-        return (str(existing_id), int(existing_seq), False, content)
-
-    # User-message retry safety: only overwrite if it's the exact same
-    # question AND the prior attempt genuinely needs retrying.
-    if existing_content != content:
-        return None
-    existing_metadata = _as_json(existing_metadata_raw) or {}
-    status = existing_metadata.get("request_status")
-    should_overwrite = False
-    if status == "failed":
-        should_overwrite = True
-    elif status is None:
-        cur.execute(load("ask_thread_has_failed_response"), (thread_id, request_id))
-        should_overwrite = cur.fetchone() is not None
-    elif status == "in_progress" and existing_updated_at is not None:
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
-        updated = existing_updated_at
-        if updated.tzinfo is None:
-            updated = updated.replace(tzinfo=timezone.utc)
-        should_overwrite = (now - updated) > timedelta(minutes=20)
-    if not should_overwrite:
-        return None
-    cur.execute(
-        load("ask_thread_update_message_oracle"),
-        (content, is_ai_processed, ai_provider, ai_model, ai_processing_time,
-         metadata, citations, usage, existing_id),
-    )
-    return (str(existing_id), int(existing_seq), False, content)
-
-
-def normalize_thread_title(question: str, max_len: int = 80) -> str:
-    """Return the deterministic first-prompt title for an Ask thread."""
-    title = re.sub(r"\s+", " ", question.strip())
-    if not title:
-        return "New chat"
-    if len(title) <= max_len:
-        return title
-    return title[: max_len - 1].rstrip() + "..."
 
 
 class AryxAskThreadStore:

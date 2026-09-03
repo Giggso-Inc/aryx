@@ -61,7 +61,8 @@ def test_genuinely_new_message_increments_message_count():
         ("thread-1",),                         # ensure_thread
         ("msg-1", 1, True, "hello"),           # insert_message -- inserted=True
     ])
-    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name):
+    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name), \
+         patch("aryx.store.ask_thread_oracle_insert.load", side_effect=lambda name: name):
         store = _make_store(pool)
         result = store.ensure_thread_and_user_message(
             workspace_id=1, shay_workspace_id="shay-ws-1",
@@ -88,7 +89,8 @@ def test_idempotent_retry_does_not_increment_message_count():
         ("thread-1",),                         # ensure_thread
         ("msg-1", 1, False, "hello"),          # insert_message -- inserted=False (retry/refresh)
     ])
-    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name):
+    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name), \
+         patch("aryx.store.ask_thread_oracle_insert.load", side_effect=lambda name: name):
         store = _make_store(pool)
         result = store.ensure_thread_and_user_message(
             workspace_id=1, shay_workspace_id="shay-ws-1",
@@ -116,7 +118,8 @@ def test_already_claimed_fallback_path_does_not_increment_message_count():
         None,                                  # insert_message -- no row returned at all
         ("msg-1", 1, False, "hello"),          # fallback select_request_message
     ])
-    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name):
+    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name), \
+         patch("aryx.store.ask_thread_oracle_insert.load", side_effect=lambda name: name):
         store = _make_store(pool)
         result = store.ensure_thread_and_user_message(
             workspace_id=1, shay_workspace_id="shay-ws-1",
@@ -136,7 +139,8 @@ def test_append_assistant_message_new_row_increments_message_count():
         ("msg-2", 2, True, "the answer"),      # insert_message -- inserted=True
         None,                                  # update_request_status (no fetchone consumed, placeholder)
     ])
-    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name):
+    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name), \
+         patch("aryx.store.ask_thread_oracle_insert.load", side_effect=lambda name: name):
         store = _make_store(pool)
         store.append_assistant_message(
             thread_id="thread-1", channel_id="channel-1", request_id="req-1",
@@ -154,7 +158,8 @@ def test_append_assistant_message_retry_does_not_increment_message_count():
         ("msg-2", 2, False, "the answer"),     # insert_message -- inserted=False (refresh)
         None,
     ])
-    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name):
+    with patch("aryx.store.ask_thread_store.load", side_effect=lambda name: name), \
+         patch("aryx.store.ask_thread_oracle_insert.load", side_effect=lambda name: name):
         store = _make_store(pool)
         store.append_assistant_message(
             thread_id="thread-1", channel_id="channel-1", request_id="req-1",

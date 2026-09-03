@@ -50,23 +50,23 @@ Re-scanned 2026-09-03 against the revised 150-line threshold (§1.1). The origin
 | 2,178 | `src/aryx/cpq/bml.py` | ✅ `tests/test_bml*.py` |
 | 1,520 | `src/aryx/pipeline/doc_discovery.py` | ✅ `tests/test_doc_discovery*.py` |
 | 1,413 | `src/aryx/cpq/intent_gateway.py` | ✅ `tests/test_cpq_intent_gateway.py` |
-| 1,056 | `src/aryx/config.py` | ✅ `tests/test_cpq_config_*.py` (4 files) |
+| 112 (was 1,056) | `src/aryx/config.py` | ✅ `tests/test_oci_backends.py` + more — split done, see Phase 2a status; `test_cpq_config_*.py` files are unrelated CPQ-attribute tests, not this file |
 | 71 (was 406, 624, 902, then 1,036 originally) | `src/aryx/cpq/data_table_resolver.py` | ✅ done — fully split into 10 files, see Phase 2a's own status table for the breakdown; this file is now a pure re-export hub |
-| 982 | `src/aryx/api/data_api.py` | ❌ none |
-| 906 | `src/aryx/source_catalog.py` | ✅ `tests/test_source_catalog*.py` |
-| 880 | `src/aryx/cpq/rdb.py` | ⚠️ `tests/test_cpq_rdb_attr_set_assoc.py` — narrow, not full-file coverage |
-| 657 (was 763) | `src/aryx/store/oracle_pool.py` | ✅ `tests/test_oracle_pool.py` — split in progress (2 of 4 files done, see Phase 2a status) |
-| 647 | `src/aryx/cpq/state.py` | ❌ none |
-| 631 | `src/aryx/store/shay_bridge_store.py` | ✅ `tests/test_shay_bridge_store.py` |
-| 589 | `src/aryx/cpq/intent_schema.py` | ✅ `tests/test_cpq_intent_schema.py` |
-| 569 | `src/aryx/store/ask_thread_store.py` | ✅ `tests/test_ask_thread_store*.py` |
-| 548 | `src/aryx/graph/falkor_store.py` | ❌ none |
-| 532 | `src/aryx/graph/reader.py` | ❌ none |
-| 532 | `src/aryx/api/file_ingest_api.py` | ❌ none |
-| 491 | `src/aryx/store/entity_store.py` | ✅ `tests/test_entity_store*.py` |
-| 480 | `src/aryx/pipeline/enrich.py` | ❌ none |
-| 477 | `src/aryx/pipeline/ingest_validation.py` | ✅ `tests/test_ingest_validation*.py` |
-| 472 | `src/aryx/pipeline/dynamic_fk.py` | ✅ `tests/test_dynamic_fk*.py` |
+| 884 (was 982) | `src/aryx/api/data_api.py` | ✅ `tests/test_data_sources_api.py` + 2 more — split done, see Phase 2a status |
+| 74 (was 906) | `src/aryx/source_catalog.py` | ✅ `tests/test_source_catalog*.py` — split done, see Phase 2a status; now a pure re-export hub |
+| 38 (was 880) | `src/aryx/cpq/rdb.py` | ⚠️ `tests/test_cpq_rdb_attr_set_assoc.py` — narrow, not full-file coverage; split done, see Phase 2a status; now a pure re-export hub |
+| 52 (was 417, 553, 657, 763) | `src/aryx/store/oracle_pool.py` | ✅ done — fully split into 6 files, see Phase 2a's own status table; this file is now a pure re-export hub |
+| 401 (was 647) | `src/aryx/cpq/state.py` | ✅ done — split into 3 files, see Phase 2a's own status table; this file now holds only `CpqSession` |
+| 43 (was 631) | `src/aryx/store/shay_bridge_store.py` | ✅ `tests/test_shay_bridge_store.py` — split done, see Phase 2a status; now a pure re-export hub |
+| 70 (was 589) | `src/aryx/cpq/intent_schema.py` | ✅ `tests/test_cpq_intent_schema.py` + 11 more — split done, see Phase 2a status; now a pure re-export hub |
+| 446 (was 569) | `src/aryx/store/ask_thread_store.py` | ✅ `tests/test_ask_thread_store*.py` — split done, see Phase 2a status |
+| 148 (was 548) | `src/aryx/graph/falkor_store.py` | ✅ `tests/test_protege_parity.py` + 3 more — split done, see Phase 2a status; now under threshold |
+| 158 (was 532) | `src/aryx/graph/reader.py` | ✅ `tests/test_graph_reader_neighbors_batch.py` + 4 more — split done, see Phase 2a status |
+| 156 (was 532) | `src/aryx/api/file_ingest_api.py` | ⚠️ `tests/test_xlsx_ingest.py`, `tests/test_datasource_store.py`, `tests/test_scalability_fixes.py` — split done, see Phase 2a status |
+| 463 (was 491) | `src/aryx/store/entity_store.py` | ✅ `tests/test_entity_store*.py` — split done, see Phase 2a status; `EntityStore` itself kept whole as a stated exception |
+| 48 (was 480) | `src/aryx/pipeline/enrich.py` | ✅ `tests/test_relate_resilience.py` — split done, see Phase 2a status; this file now holds only the re-export hub + `_build_type_ancestors` |
+| 100 (was 477) | `src/aryx/pipeline/ingest_validation.py` | ✅ `tests/test_ingest_validation*.py` — split done, see Phase 2a status; this file now holds only the re-export hub + CLI `main()` (the `print()` exception from Phase 1) |
+| 315 (was 472) | `src/aryx/pipeline/dynamic_fk.py` | ✅ `tests/test_dynamic_fk*.py` — split done (partial by design, see Phase 2a status — pure helpers extracted, config/LLM-coupled functions kept together as a stated exception) |
 
 Two files are extreme outliers — `cpq/engine.py` at **96×** the *new* limit and `api/ask_api.py` at **87×** — everything else in Tier A is within 3–15× and far more tractable. (Line counts shifted slightly from the original scan for a few files — `data_table_resolver.py` dropped to 902 from the `data_table_cache.py` extraction already done this session; `bml.py`/`intent_gateway.py`/etc. shifted ±1–3 lines from unrelated concurrent edits.)
 
@@ -526,11 +526,193 @@ Approach per file, not a blanket rule (applies to both sub-tiers):
 | File | Lines | Status |
 |---|---:|---|
 | `oracle_sql_translate.py` | 126 | ✅ done, clean — `_translate_sql` and its SQL-rewriting regexes |
-| `oracle_pool.py` | 657 (was 763) | 🔶 in progress — still needs `oracle_param_coerce.py` and `oracle_clob.py` extracted, then likely one more split of `OracleCursorWrapper`/`OracleConnectionWrapper`/`OraclePool` themselves |
+| `oracle_param_coerce.py` | 123 | ✅ done, clean — `_unwrap_params`, `_strip_sql_comments`, `_tuple_seq_to_dict`, `_read_lob`, `_restore_empty_string` |
+| `oracle_clob.py` | 152 | ⚠️ stated exception (2 lines over) — `_hint_clob`, `_coerce_clob`, `_hint_clob_many`; **had zero prior test coverage despite being exactly where PRs #310-#311's ORA-03146/ORA-22848 production bugs lived** — 16 golden-master tests written before extraction (§6 item 1), see `tests/test_oracle_pool.py`'s new `TestHintClob`/`TestCoerceClob`/`TestHintClobMany` classes |
+| `oracle_cursor.py` | 241 | ⚠️ stated exception — `OracleCursorWrapper` (execute/executemany/executemany_returning/fetch*), the single most bug-history-dense class in this file; no clean further seam without breaking the shared `_out_vars`/`_conflict_ignore` instance state these methods coordinate through |
+| `oracle_connection_pool.py` | 167 | ⚠️ stated exception (17 lines over) — `OracleConnectionWrapper`, `OraclePool`, `get_oracle_pool`, `close_all_oracle`; dominated by `connection()`'s own extensive timeout/DPY-4011 docstring |
+| `oracle_pool.py` | 52 (was 417, 553, 657, 763) | ✅ done — pure re-export hub with an explicit `__all__` |
+
+**`oracle_pool.py` split — DONE.** 763 lines -> 6 files: 3 clean under 150 (`oracle_sql_translate.py`, `oracle_param_coerce.py`, `oracle_pool.py` itself), 3 stated exceptions (`oracle_clob.py`, `oracle_cursor.py`, `oracle_connection_pool.py`) — each either dominated by load-bearing incident-documentation or genuinely cohesive shared-state logic, same reasoning as the `data_table_resolver.py` exceptions. Every extraction verified against the full targeted test suite (peaked at 192 passed, 5 pre-existing/order-flaky `test_pool.py` failures confirmed via an isolated worktree comparison — 3 different error messages across 3 runs, none reaching the moved code, a known fragile-global-stub issue in that test file, not a regression), clean container imports, and a full live container restart (42/42 migrations, real DDL/CLOB-heavy seed DML) after every single extraction, given this file's PR #310-#311 bug history.
 
 Verified after the `oracle_sql_translate.py` extraction: 154 passed (`test_oracle_pool.py`, `test_oracle_workspace.py`, `test_shay_bridge_store.py`, `test_shay_bridge_api.py`), clean container imports, and — per §6 item 3's live-smoke-test requirement for `store/` files — a full container restart that ran every startup migration (real `CREATE TABLE`/`ALTER TABLE`/seed `INSERT` DDL/DML) through the translated SQL path with no new errors, plus `/health` and `/ask` returning correct real-Oracle-backed responses.
 
-Next in this sub-tier after `oracle_pool.py` is fully split: `state.py`'s distinct state-transition groups, deferring `config.py`/`source_catalog.py` until later.
+**`state.py` split — DONE.** 647 lines -> 3 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `state_config_attr.py` | 103 | ✅ clean — `MenuOption`, `ConfigAttr` |
+| `state_rules.py` | 193 | ⚠️ stated exception — `HidingRule`, `RecommendationRule`, `ConstraintRule`, `ValidationRule`; each dataclass's docstring documents the real catalog-audit evidence (rule-name cross-checks, operator-code confirmations) behind its field semantics |
+| `state.py` | 401 (was 647) | ⚠️ stated exception — `CpqSession` alone; a single dataclass whose ~50 fields serialize flat to JSON via `to_dict()`/`from_dict()` for the API's session-echo contract. Splitting field *declarations* across files isn't real modularity (a dataclass's fields must live in one class body) and risks the flat-serialization contract 134 files depend on — kept whole as a deliberate exception, not a missed split |
+
+134 files import `from aryx.cpq.state import ...` — `state.py` stays a re-export hub with an explicit `__all__` so every one of them keeps working unchanged. No whitebox-patching risk here (dataclasses aren't typically patched, confirmed via grep). Verified: broad 9-file CPQ test sweep (143 passed, 4 pre-existing failures + 9 pre-existing errors confirmed identical via an isolated worktree baseline comparison — a `datetime.UTC` host issue and a test-order-dependent `Settings` global-state leak, neither touching `state.py`), clean container imports, live `/health` + `/ask` smoke test.
+
+**`dynamic_fk.py` split — DONE (partial by design).** 472 lines -> 2 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `dynamic_fk_sampling.py` | 176 | ⚠️ stated exception (26 over) — `_headers`, `sample_distinct_values`, `value_overlap_ratio`, `sample_value_counts`, `estimate_join_fanout`, `_truncate_counts`, `try_prefix_transforms`, `_candidate_columns`; pure, dependency-free functions, docstring-heavy (real incident writeups) |
+| `dynamic_fk.py` | 315 (was 472) | ⚠️ stated exception, deliberately NOT split further — `generate_candidate_pairs`, `_judge_one`, `judge_candidates_with_llm`, `detect_dynamic_fk_links` |
+
+**Why `dynamic_fk.py` itself wasn't split further, unlike every prior file:** `tests/test_dynamic_fk.py` whitebox-patches `aryx.pipeline.dynamic_fk.get_settings` and `aryx.pipeline.dynamic_fk.complete_json` across ~15 test cases, and 3 of the 4 remaining functions call one or both. Worse than the earlier `_load_all_tables` lesson: several tests exercise `detect_dynamic_fk_links` end-to-end, which itself calls `get_settings()` AND transitively calls `generate_candidate_pairs`/`judge_candidates_with_llm` — if those two moved to separate modules, a single end-to-end test would need correctly-targeted patches on 3 different modules simultaneously to keep working, with no reliable way to verify all ~15 sites by inspection alone the way the `data_table_product.py` `_load_all_tables` fix was. Given this file is not on the PR #310-#314 Oracle-bug list (lower stakes than `oracle_pool.py`), the judgment call here was to extract only the functions with zero patch risk (the pure sampling helpers) and leave the config/LLM-coupled functions together as a deliberate, documented exception, rather than risk a repeat of the near-miss with less certainty of catching it. Verified: full 29-test suite passes, clean container imports, live `/health` check post-rebuild.
+
+**`ingest_validation.py` split — DONE.** 477 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `ingest_validation_types.py` | 85 | ✅ clean — `FkTruth`, `DatasetTruth`, `GroundTruth`, `CheckResult`, `ValidationReport` |
+| `ingest_validation_ground_truth.py` | 90 | ✅ clean — `_parse_csv`, `ground_truth_from_tabular` |
+| `ingest_validation_checks.py` | 263 | ⚠️ stated exception — `_dataset_type_map`, `validate_workspace`, `_check_projection_parity`; `validate_workspace` is one function running 7 checks against a single shared DB cursor, not a real seam to split further without breaking the connection-scoping |
+| `ingest_validation.py` | 100 (was 477) | ✅ done — pure re-export hub with an explicit `__all__`, plus `_raw_xml_counts`/`main()` (the CLI entry point carrying Phase 1's confirmed `print()` exception) |
+
+The cleanest extraction of this sub-tier: zero whitebox test patches anywhere in `tests/test_ingest_validation.py` (confirmed via grep before starting), so no patch-retargeting risk at all — every caller (`doc_discovery.py`'s deferred import, `test_cpq_e2e.py`, the test file itself) uses direct imports/calls that work unchanged via re-export. Verified: 6/6 `test_ingest_validation.py` passed, `test_cpq_e2e.py` collects and runs cleanly (47 skipped, pre-existing — requires live external services), clean container imports, live `/health` check post-rebuild.
+
+**`enrich.py` split — DONE.** 480 lines -> 5 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `enrich.py` | 48 (was 480) | ✅ done — pure re-export hub with an explicit `__all__`, plus `_build_type_ancestors` (the one function with no relate-stage coupling, kept in place) |
+| `enrich_drain.py` | 41 | ✅ clean — `_drain_with_timeout`, the shared bounded-wait primitive used by both relate stages |
+| `enrich_relate.py` | 188 | ⚠️ stated exception (38 over) — `_relate`, the best-effort pairwise relate stage; docstrings document real incident-driven fixes (coverage-guarantee logic, round-robin budget allocation) |
+| `enrich_relate_isolated.py` | 189 | ⚠️ stated exception (39 over) — `_relate_isolated`, the safety-net stage; docstrings document two specific production incidents (a fixed-anchor miss, a single-sample miss) behind its multi-anchor/multi-sample retry logic |
+| `enrich_schema_fk.py` | 100 | ✅ clean — `_infer_schema_fk_links`, type-level FK discovery via batched LLM calls |
+
+Patch-retargeting performed in `tests/test_relate_resilience.py`: `patch("aryx.pipeline.enrich.infer_relationship", ...)` sites were retargeted per which function they actually exercise — 2 sites to `aryx.pipeline.enrich_relate.infer_relationship` (testing `_relate`), 6 sites to `aryx.pipeline.enrich_relate_isolated.infer_relationship` (testing `_relate_isolated`) — found by reading the full test file and mapping each patch site to its `def test_...` and section-header comments, avoiding the ambiguity that led to `dynamic_fk.py` being left partially split. Verified: `tests/test_relate_resilience.py` 14/14 passed after retargeting; `tests/test_scalability_fixes.py::TestOrchestratePairs` + `tests/test_admin_api.py` 5/5 passed (confirms `orchestrate.py`'s and `admin_api.py`'s own `_build_type_ancestors` patches, which target their own importing module's namespace rather than `enrich`'s, are unaffected); clean container imports across all 5 new/changed files plus `orchestrate.py`/`admin_api.py`/`workspace_api.py`; live `/health` check post-rebuild returned `{"status":"ok"}`.
+
+**`entity_store.py` split — DONE (partial by design).** 491 lines -> 2 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `entity_store_ids.py` | 55 | ✅ clean — `_fetch_entity_ids`, `_dumps`, the identity-sequence cache |
+| `entity_store.py` | 463 (was 491) | ⚠️ stated exception, deliberately NOT split further — `EntityStore` class kept whole |
+
+**Why `EntityStore` itself wasn't split further:** the class has ~25 methods all sharing `self._pool`/`self._ws`, and 5 test files (`test_entity_store_create_entity_oracle.py`, `test_entity_store_save_batch.py`, `test_entity_attribute_merge_replace_contracts.py`, `test_scalability_fixes.py`, `test_graph_query_timeout_and_export_cap.py`) whitebox-patch `aryx.store.entity_store.get_pool`/`get_settings`/`load` across dozens of call sites spread through the class's own methods. Splitting the class into mixin files would require retargeting every one of those patches to whichever new module each method landed in, with the same class of undetectable-by-inspection risk as `dynamic_fk.py`'s judgment call — and 18+ source files import `EntityStore` directly, so the class must stay importable from `entity_store.py` regardless. The only zero-risk extraction was the two module-level helper functions (`_fetch_entity_ids`, `_dumps`), which are called by bare name from within `EntityStore`'s own methods (so existing patches on `aryx.store.entity_store._fetch_entity_ids`/`_dumps` keep resolving correctly via this module's re-import). Verified: 17/17 relevant tests passed (`test_entity_store_create_entity_oracle.py`, `test_entity_store_save_batch.py`, `test_entity_attribute_merge_replace_contracts.py`, `test_scalability_fixes.py::TestOrchestratePairs`); broader `test_scalability_fixes.py` run showed 60 passed / 1 failed + 9 errors, all pre-existing (host `datetime.UTC` Python 3.10 issue and a test-order-dependent `Settings.graph_query_limit` global-state leak, neither touching `entity_store.py`); clean container imports across both new/changed files plus 12 importing modules; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist" (correct Oracle-backed rejection).
+
+**`file_ingest_api.py` split — DONE (partial by design).** 532 lines -> 3 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `file_ingest_limits.py` | 17 | ✅ clean — extension sets, size caps, `_FK_REQUIRED_KEYS` |
+| `file_ingest_api.py` | 156 (was 532) | ⚠️ stated exception (6 over) — router (`file_ingest_router`) + executor singleton (`_get_executor`/`shutdown_executor`), re-exports the worker |
+| `file_ingest_run.py` | 404 | ⚠️ stated exception, deliberately NOT split further — `_run_files` (the background ingest worker) + its 3 private helpers |
+
+**Why `_run_files` wasn't split further:** it's one function (~290 lines) handling 5 file-type branches (json/xml/xlsx/csv/doc) that all share a large pool of local state (`settings`, `jobs`, `broker`, `tmp_paths`, `datasource_store`, `on_prog`, `should_stop`) built once at the top — splitting the branches into separate functions would mean threading 7+ parameters through each, which is not a real seam, just indirection. It also carries the heaviest whitebox-patch surface of any file split this session: 3 test files (`test_xlsx_ingest.py` — 5 tests, `test_datasource_store.py` — 3 tests, `test_scalability_fixes.py` — 1 test) patch `DatasourceStore`/`JobStore`/`run_pipeline`/`_local_broker`/`get_settings`/`_save_tmp`/`ChunkStore`/`DocumentRouterConnector` — all called from inside `_run_files`'s own body. **Why the executor stayed in the hub instead of moving to its own file:** `_get_executor`'s internal `get_settings()` call is patched via `aryx.api.file_ingest_api.get_settings` in `test_scalability_fixes.py::TestThreadPoolExecutor`, and moving the ~25-line executor would only trade that risk for a few saved lines — not worth it.
+
+All patches were retargeted (mechanical, since every one used either a `patch("aryx.api.file_ingest_api.X", ...)` string or an `import aryx.api.file_ingest_api as m` alias): `test_datasource_store.py`'s 3 `_run_files` tests now patch `aryx.api.file_ingest_run.*`; `test_xlsx_ingest.py`'s 5 tests now alias `m = aryx.api.file_ingest_run`; `test_scalability_fixes.py::test_run_files_jobstore_raises_no_nameerror` now patches `aryx.api.file_ingest_run.*`. Host pytest can't collect these files at all (pre-existing `datetime.UTC`/Python 3.10 chain through `doc_discovery.py` → `source_catalog.py`, confirmed identical on an isolated worktree baseline) — verified instead inside the live container (Python 3.13, matching deployment): pip-installed pytest transiently and ran all 3 test files, 31/32 passed, the lone failure (`test_submit_future_has_done_callback`) confirmed pre-existing and unrelated (patches a `apply_migrations` attribute that has never existed on `file_ingest_api.py`, since before this session — a broken test from commit `5a22c14`). Clean container imports (`file_ingest_limits`, `file_ingest_run`, `file_ingest_api`, `api.main`); container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`reader.py` split — DONE (partial by design).** 532 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `reader_entity.py` | 58 | ✅ clean — `_entity`, `_parse_attrs`, `_INTERNAL_PROPS` |
+| `reader_queries.py` | 210 | ⚠️ stated exception (60 over) — 8 pure query functions (`_get_entity`, `_distinct_types`, `_describe_schema`, `_find_entities`, `_neighbors`, `_neighbors_batch`, `_all_relationships`, `_provenance`, `_shortest_path`), each taking the bound `_query` method as a parameter |
+| `reader_subgraph.py` | 241 | ⚠️ stated exception (91 over), deliberately NOT split further — `_build_subgraph`, the 6-step graph-canvas algorithm |
+| `reader.py` | 158 (was 532) | ⚠️ stated exception (8 over) — `GraphReader` class: `__init__`/`_query`/`graph_name` plus thin one-line delegating methods |
+
+**Why this file split cleanly (unlike `entity_store.py`/`dynamic_fk.py`):** only 2 of `GraphReader`'s 11 methods (`find_entities`, `subgraph`) call `get_settings()` directly — every other method (`get_entity`, `distinct_types`, `describe_schema`, `neighbors`, `neighbors_batch`, `all_relationships`, `provenance`, `shortest_path`) only calls `self._query(...)`, with no dependency any test patches. Those 8 were extracted as pure functions taking the bound `_query` method (and `_entity`) as a parameter — zero patch-retargeting risk, confirmed via grep (no test patches `aryx.graph.reader.<method-name>`, only public calls like `reader.neighbors_batch(...)`). The 2 `get_settings()`-calling methods (`find_entities`, `subgraph`) stay as real methods in `reader.py`, each resolving its own `capped` value from `get_settings()` before delegating the actual query/algorithm to the extracted module — so `aryx.graph.reader.get_settings` patches in `test_graph_query_timeout_and_export_cap.py`, `test_graph_isolated_scan_gate.py`, and `test_scalability_fixes.py::TestGraphReaderCap` keep intercepting them unchanged. `reader_subgraph.py`'s 6-step algorithm (~215 lines) was kept as one function since its steps share a large threaded local-state pool (`entity_map`, `rels`, `valid_ids`, `type_count`) with no clean sub-boundary. Verified: 25/25 relevant tests passed (`test_graph_reader_neighbors_batch.py`, `test_graph_isolated_scan_gate.py`, `test_graph_query_timeout_and_export_cap.py`, `test_graph_gather_batching.py`, `test_cpq_engine_catalog_scope.py`); `test_scalability_fixes.py::TestGraphReaderCap` + `test_ports_seam.py` showed 2 failures, confirmed identical on an isolated worktree baseline (pre-existing module-path resolution issue, unrelated to `reader.py`); clean container imports across all 4 files plus `graph.retrieve`, `ingest_validation_checks`, `api.graph_api`; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`falkor_store.py` split — DONE.** 548 lines -> 4 files, ALL under threshold:
+
+| File | Lines | Status |
+|---|---:|---|
+| `falkor_store.py` | 148 (was 548) | ✅ clean — `FalkorStore(class)`: `__init__`/`run_read_only`/`clear`/`ensure_indexes`, re-exports the sanitize helpers |
+| `falkor_sanitize.py` | 171 (21 over) | ⚠️ stated exception — `_sanitize_ident`, `_lift_props`, `_safe_labels`, `_display_name`, all pure functions |
+| `falkor_write_entities.py` | 129 | ✅ clean — mixin: `add_entity`, `add_entities_batch`, `remove_entity`, `remove_entities_by_type` |
+| `falkor_write_relationships.py` | 175 (25 over) | ⚠️ stated exception — mixin: `add_provenance[_batch]`, `neighbor_ids`, `add_relationship[s_batch]`, `mark_isolated_entities` (long incident-documentation docstring) |
+
+**Why this split went further than `entity_store.py`/`reader.py`:** unlike those, **zero tests patch any individual `FalkorStore` method or `get_settings` on this module** — confirmed via grep before starting. The only patches touching this file are on the whole `FalkorStore` class itself (from *other* modules — `admin_api.py`, `orchestrate.py`, `engine.py` — patching `their own` imported name, unaffected either way) or on `FalkorDB` in `__init__` (which stays in `falkor_store.py`). That meant the write methods could be moved into two mixin classes (`_FalkorEntityWriteMixin`, `_FalkorRelationshipMixin`) with zero patch-retargeting risk — `FalkorStore(_FalkorEntityWriteMixin, _FalkorRelationshipMixin)` still has every method, still lives at the exact `aryx.graph.falkor_store:FalkorStore` path `ports/config.py`'s adapter lookup depends on (verified: `importlib.import_module` + `getattr` resolves regardless of which module a class attribute is defined in). The pure sanitization helpers (no `self`, already directly imported by `test_protege_parity.py`/`test_doc_discovery.py`) moved just as cleanly. Also dropped a genuinely-unused import (`_GENERIC_NAMES`/`_NAME_KEYS` from `aryx.display_name`, confirmed via grep never referenced in the original file). Verified: 46/46 relevant tests passed (`test_protege_parity.py`, `test_falkor_isolated_marking.py`, `test_graph_projection_performance.py`, `test_graph_api.py`); `test_ports_seam.py` + `test_admin_api.py` showed the same 2 pre-existing failures as `reader.py`'s verification (confirmed identical, unrelated module-path issue), 6 passed; host can't collect `test_doc_discovery.py`'s 3 `_display_name` tests (pre-existing `datetime.UTC` chain, same as `file_ingest_api.py`'s verification); clean container imports across all 4 files plus `admin_api`, `orchestrate`, `engine`, `ports.config`, with an explicit check that `FalkorStore` still carries `add_entity`/`mark_isolated_entities`; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`ask_thread_store.py` split — DONE (partial by design).** 569 lines -> 3 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `ask_thread_helpers.py` | 72 | ✅ clean — `_as_int`, `_as_json`, `normalize_grounding_citations`, `normalize_thread_title` |
+| `ask_thread_oracle_insert.py` | 102 | ✅ clean — `_insert_message_oracle`, the Oracle retry-safe upsert |
+| `ask_thread_store.py` | 446 (was 569) | ⚠️ stated exception, deliberately NOT split further — `AryxAskThreadStore` class (~13 methods sharing `self._pool`) |
+
+**Why `AryxAskThreadStore` wasn't split further:** `test_ask_thread_store_touch_channel_2026_08_28.py` patches `aryx.store.ask_thread_store.load` while exercising `ensure_thread_and_user_message`/`append_assistant_message` — both call `load(...)` directly for several queries that stay in the class, so the class (and the `load` import those methods use) must stay in `ask_thread_store.py`.
+
+**Patch-retargeting performed:** `_insert_message_oracle`'s move required retargeting two things: (1) `tests/test_ask_thread_oracle.py`'s 5 `import aryx.store.ask_thread_store as mod` (used for direct `mod.load = ...` monkeypatching, not `unittest.mock.patch`) → `import aryx.store.ask_thread_oracle_insert as mod`, plus its top-level `from aryx.store.ask_thread_store import _as_json, _insert_message_oracle` → split into the two correct new import lines; (2) `test_ask_thread_store_touch_channel_2026_08_28.py`'s 5 `patch("aryx.store.ask_thread_store.load", ...)` blocks — since `ensure_thread_and_user_message`/`append_assistant_message` call `_insert_message_oracle` (now in a different module) — each now ALSO patches `aryx.store.ask_thread_oracle_insert.load` alongside the original, so both the class's own `load` calls and `_insert_message_oracle`'s internal `load` calls stay intercepted.
+
+**New finding, out of scope for this plan (flagged, not fixed):** while verifying this file, `test_ask_thread_store_touch_channel_2026_08_28.py`'s 5 tests were found to be **pre-existing broken** in this specific environment — confirmed by restoring the exact unmodified HEAD version of both the source and test file and re-running: identical 5 failures (`StopIteration` from the mock cursor's `fetchone` side-effect list running out) occur with zero changes from this session. Root cause: this environment's `get_settings().effective_db_backend()` resolves to `"oci"` (untracked local settings, present in the main checkout but absent from a `git worktree`, which is why 3 earlier worktree-based "confirmed pre-existing" baseline comparisons in this plan for *other* files remain valid — that class of bug is environment-independent, this one specifically isn't) — the test's mock only provides enough `fetchone()` results for the Postgres code path, not Oracle's extra `_insert_message_oracle` round-trips. This is a genuine, pre-existing test/production mismatch unrelated to line-count compliance and outside Phase 2a's scope; recommend a follow-up ticket. Verified everything else: 15/15 `test_ask_thread_oracle.py` passed (patch retargeting confirmed correct), 12/12 `test_ask_thread_sql_contracts.py` + the `normalize_grounding_citations` direct-import test passed; clean container imports; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`intent_schema.py` split — DONE.** 589 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `intent_schema.py` | 70 (was 589) | ✅ clean — pure re-export hub, explicit `__all__` |
+| `intent_schema_enums.py` | 94 | ✅ clean — `IntentCategory`, `Confidence` (shared by both contracts below) |
+| `intent_schema_result.py` | 170 (20 over) | ⚠️ stated exception — `ChangeTarget`, `IntentResult`, `INTENT_RESULT_JSON_SCHEMA`, `parse_intent_result`; dataclass+schema+parser form one contract, kept together |
+| `intent_schema_gateway.py` | 320 (170 over) | ⚠️ stated exception, deliberately NOT split further — `GatewayIntentResult`, `GATEWAY_INTENT_JSON_SCHEMA` (a long, LLM-facing JSON-Schema dict with extensive per-field prompt-engineering descriptions — genuinely load-bearing content, not filler), `parse_gateway_intent`, `_is_signed_digit_quantity_text`, `validate_gateway_quarantine` |
+
+Cleanest split of this sub-tier: this file is pure schema/dataclass/validation logic with **zero** test-file whitebox patches anywhere (confirmed via grep before starting — every one of 12 test files + `intent_gateway.py`/`ask_api.py` use direct-name imports only), so the split was purely mechanical with no patch-retargeting risk at all. `intent_schema_gateway.py` stayed large because splitting the JSON-Schema dict from the dataclass/parser/validator it describes 1:1 would fragment one contract across files for no real benefit — the size is genuinely the schema's own prompt-engineering content (per-field LLM instructions), not padding. Verified: 331/334 relevant tests passed across all 12 dependent test files; the 3 failures (`test_universal_flag_on_dispatches_multi_select_removal_during_configuring`, `test_universal_flag_on_still_skipped_for_awaiting_approval_status`, `test_pending_answer_lock_clears_stale_multiselect_dependent`) confirmed identical on an isolated worktree baseline (pre-existing engine-dispatch behavior, unrelated to the schema split — this environment's outbound network is unreachable, so the baseline run additionally logged real LLM-provider retry/timeout warnings before failing the same way); clean container imports across all 4 files plus `intent_gateway.py`/`ask_api.py`; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`shay_bridge_store.py` split — DONE.** 631 lines -> 5 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `shay_bridge_store.py` | 43 (was 631) | ✅ clean — pure re-export hub, `ShayBridgeStore(_ShayWorkspaceBridgeMixin, _ShayChatBridgeMixin, _ShayDatasourceBridgeMixin)`, `__init__`/`close` |
+| `shay_bridge_helpers.py` | 11 | ✅ clean — `_aryx_workspace_name` |
+| `shay_datasource_bridge.py` | 113 | ✅ clean — mixin: `sync_datasource` |
+| `shay_chat_bridge.py` | 257 | ⚠️ stated exception — mixin: `ensure_chat_mapping`, `append_chat_turn`, `list_chat_turns`, `list_workspace_threads`, `conversation_history` |
+| `shay_workspace_bridge.py` | 288 | ⚠️ stated exception — mixin: `get_workspace_mapping`, `ensure_workspace_mapping` (one large function with 3 backend-specific branches — Oracle-existing/Postgres-existing/create-new, each itself branching on backend again) |
+
+Same zero-risk basis as `falkor_store.py`: only ONE test file exercises `ShayBridgeStore`, and it never patches an individual method by name — only `get_pool` (for `__init__`, stays in the hub) and `DatasourceStore` (for `sync_datasource`, retargeted to `aryx.store.shay_datasource_bridge.DatasourceStore` since that call now resolves via the new module). `conversation_history`'s test overrides `store.list_chat_turns` as a plain instance-attribute MagicMock, which works regardless of which module defines the real method. Verified: 2/2 `test_shay_bridge_store.py` passed; clean container imports across all 5 files, with an explicit check that `ShayBridgeStore` still carries all 8 original methods; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`rdb.py` split — DONE (partial by design).** 880 lines -> 4 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `rdb.py` | 38 (was 880) | ✅ clean — pure re-export hub, `get_cpq_rdb()` |
+| `rdb_helpers.py` | 44 | ✅ clean — `_as_int`, `_as_attrs`, `_type_pattern` |
+| `rdb_postgres.py` | 527 | ⚠️ stated exception, deliberately NOT split further — `PostgresCpqRdb` (14 methods, one hand-written SQL query per method) |
+| `rdb_oracle.py` | 322 | ⚠️ stated exception, deliberately NOT split further — `OracleCpqRdb(PostgresCpqRdb)`, overriding 11 of those 14 methods with the Oracle `JSON_VALUE`/bind-style dialect |
+
+**Why the two dialect classes weren't split further:** zero test patches touch this module (confirmed via grep — both test files import `PostgresCpqRdb` directly and call real methods), so splitting was possible without risk, but `OracleCpqRdb` overrides most of `PostgresCpqRdb`'s methods 1:1 — any further split of the Postgres class into method-group mixins would need a matching, parallel split of the Oracle overrides to preserve the override relationship, doubling the work for a purely cosmetic reduction of two already-cohesive, single-purpose dialect accessor classes (this mirrors the `entity_store.py`/`reader.py` precedent: a store class's size here is genuinely one query implementation per method, not padding). Verified: 6/6 `test_cpq_rdb_attr_set_assoc.py` + `test_cpq_value_rules_active_only.py` passed, plus a broader 20/20 sanity sweep (`test_cpq_config_attr_status_filtering.py`, `test_cpq_invalidation_marker_2026_08_28.py`, both exercising `get_cpq_rdb()`/`PostgresCpqRdb` through `engine.py`/`data_table_loader.py`); clean container imports across all 4 files plus `engine.py`/`rule_export.py`/`data_table_loader.py`, with an explicit check that `OracleCpqRdb` is still a `PostgresCpqRdb` subclass; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`source_catalog.py` split — DONE.** 906 lines -> 5 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `source_catalog.py` | 74 (was 906) | ✅ clean — pure re-export hub, explicit `__all__` |
+| `source_catalog_meta.py` | 154 (4 over) | ⚠️ stated exception — pure meta-extraction helpers (`_xml_meta`, `_xlsx_meta`, `_generic_meta`, `_asset_rows`, `_active_assets`, `_legacy_groups`, `_preview_rows`, `_preview_payload_rows`, `_csv_bytes_from_payload_rows`, `source_actions`, `_display_kind`) |
+| `source_catalog_upsert.py` | 336 | ⚠️ stated exception — config builders + upsert/find helpers for XML/XLSX/generic entries |
+| `source_catalog_detail.py` | 301 | ⚠️ stated exception — read-side catalog/detail builders (`build_source_catalog[_from_counts]`, `build_source_detail[_from_counts]`, `_build_meta_source_detail`) |
+| `source_catalog_delete_download.py` | 188 | ⚠️ stated exception — soft-delete + download-payload helpers |
+
+Zero test/source patches anywhere on this module (confirmed via grep — every importer across `doc_discovery.py`, `file_ingest_run.py`, `data_api.py`, and the test file uses direct-name imports), so the split was purely mechanical. **Caught one self-introduced bug during the split** (not present in the original file): while extracting `find_legacy_xml_row` into `source_catalog_upsert.py`, an initial pass by mistake replaced its `bool(_asset_rows(meta))` condition with `bool(row is not None)` (always true) — caught immediately during the pre-test review pass by re-reading the extracted file against the original line-by-line, fixed before running any test, and confirmed correct in the final diff. Host pytest can't collect `test_source_catalog.py` (pre-existing `datetime.UTC`/Python 3.10 chain, same as several prior files this session) — verified inside the live container instead (Python 3.13): pip-installed pytest transiently and ran the full file, 10/10 passed. Clean container imports across all 5 files plus `doc_discovery.py`/`file_ingest_run.py`/`data_api.py`; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`data_api.py` split — DONE (minimal, by necessity).** 982 lines -> 2 files:
+
+| File | Lines | Status |
+|---|---:|---|
+| `data_api_pure.py` | 123 | ✅ clean — `_LegacyMetricReader`, `_catalog_item`, `_is_generic_source_key`, `_parse_generic_source_key`, `_provenance_counts`, `_csv_response_bytes`, `_asset_matches` |
+| `data_api.py` | 884 (was 982) | ⚠️ stated exception, deliberately NOT split further — the router + every remaining helper |
+
+**Why this file barely moved:** this has the densest whitebox-patch surface of any file in Phase 2a — `test_data_sources_api.py`, `test_xlsx_data_sources_api.py`, and `test_source_pagination_api.py` collectively patch 8 distinct module-level names (`_store`, `DatasourceStore`, `get_settings`, `JobStore`, `_source_purge_store`, `ports`, `_metric_reader`, `datetime`) across roughly 50 call sites, and nearly every remaining function in the file calls at least one of them, directly or transitively (e.g. `_find_datasource_by_prefix` → `_datasource_store()` → `DatasourceStore`+`get_settings`; `_parse_job_time`/`_recent_ingested_generic_keys` → the patched `datetime`). Only the handful of functions with a fully traced zero-dependency path on any of those 8 names were extracted. This mirrors the `file_ingest_run.py`/`ask_data_thread_store.py` risk class but denser — moving anything else would mean retargeting patches across 3 test files with materially higher odds of an undetected miss than this plan's risk tolerance allows for marginal line-count gain on an 884-line file that would still be a stated exception either way.
+
+**Verification note:** 6 of 27 tests across the 3 files failed (`test_download_xml_source_returns_xml_bytes`, `test_delete_generated_asset_purges_asset_dataset`, `test_download_xlsx_source_returns_workbook_bytes`, `test_download_xlsx_sheet_asset_returns_csv_bytes`, `test_delete_xlsx_source_purges_the_whole_workbook_row`, `test_delete_xlsx_sheet_asset_removes_only_that_asset_from_the_list`) — confirmed **pre-existing** by building a separate Docker image from the exact unmodified HEAD source and running the identical, untouched test files against it: same 6 failures, same error (`_FakeDatasourceStore.get()` in the test fixtures takes 1 positional arg, but `_find_datasource_by_prefix` calls it with 2 — a genuine, pre-existing test/production signature mismatch unrelated to this session's work). Host pytest can't collect these files at all (pre-existing `datetime.UTC` chain) — verified inside the container instead. Clean container imports for both files; container restarted, 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+**`config.py` split — DONE.** 1,056 lines -> 13 files, ALL under threshold but one:
+
+| File | Lines | Status |
+|---|---:|---|
+| `config.py` | 112 (was 1,056) | ✅ clean — `Settings` class (composes all 12 mixins) with `model_config`, the 7 `effective_*`/`_resolve` backend-resolution methods, `get_settings()` |
+| `config_core.py` | 36 | ✅ clean — DSN/graph-url/batching (9 fields) |
+| `config_graph.py` | 61 | ✅ clean — graph-projection settings (5 fields) |
+| `config_relate.py` | 100 | ✅ clean — relate-stage settings (9 fields) |
+| `config_dimension.py` | 104 | ✅ clean — co-occurrence + dimension-hub settings (8 fields) |
+| `config_ingest.py` | 119 | ✅ clean — extraction/tabular-ingest settings (10 fields) |
+| `config_fk_detection.py` | 140 | ✅ clean — dynamic FK detection settings (11 fields) |
+| `config_resolution.py` | 119 | ✅ clean — entity-resolution + embedding settings (10 fields) |
+| `config_llm.py` | 83 | ✅ clean — LLM provider settings (9 fields) |
+| `config_cpq_intent.py` | 167 (17 over) | ⚠️ stated exception — CPQ LLM-first intent classifier settings (8 fields, each with an unusually long incident-history description) |
+| `config_documents.py` | 50 | ✅ clean — document-processing settings (4 fields) |
+| `config_ontology.py` | 37 | ✅ clean — ontology-interchange settings (4 fields) |
+| `config_oci.py` | 114 | ✅ clean — OCI backend-toggle + per-service settings (21 fields) |
+
+**The most structurally novel split in this plan:** `Settings` is a single `pydantic_settings.BaseSettings` class with ~90 fields — unlike every other file split this session, its fields can't be moved into free functions or a re-export hub, since pydantic needs them declared on a class. Verified empirically *before* writing any split code that pydantic v2 correctly merges fields from multiple `BaseSettings` base classes into the final subclass's `model_fields`, respecting the final class's own `model_config` (`env_prefix`/`extra`) — confirmed with a throwaway 3-mixin composition. Applied that pattern here: 12 themed `BaseSettings` mixins (grouped by the file's own `# ── Section ──` comment banners), composed into one `Settings(Mixin1, Mixin2, ..., Mixin12)` in the hub — the mixins carry no `model_config` of their own since only the final class is ever instantiated. Verified field-for-field: a script asserted the exact 109-name field set (`Settings.model_fields.keys()`) before vs. after the split — zero missing, zero extra — then instantiated `Settings()` for real (reading the actual `.env`), confirmed `get_settings()`'s `lru_cache` singleton behavior unchanged, and confirmed `effective_db_backend()`/`effective_dsn()` resolve identically. Zero test patches on individual `Settings` fields (only on `get_settings`, the factory function, or full `Settings(...)` instantiations with keyword args — both unaffected regardless of which mixin declares a given field). Verified: 64/72 tests passed across `test_oci_backends.py`, `test_exact_id_resolution.py`, `test_observability_workspace.py`, `test_scalability_fixes.py::TestConfigNewFields`; the 8 failures confirmed identical on an isolated worktree baseline (7 are a pre-existing `oci` SDK version mismatch — `oci.config` lacks `validate_config` in the installed version, unrelated to this file; 1 is a pre-existing test/code default-value mismatch on `graph_query_limit`, already 2000 in the original file against a test asserting 500); clean container imports across all 13 files plus `api.main`, with an explicit field-count + `effective_db_backend()` check inside the container; container restarted (this file is imported by nearly every module in the app, making the restart+migrations+smoke-test the strongest end-to-end confirmation of this whole plan), 42/42 migrations applied, `/health` → `{"status":"ok"}`/200, `/ask` → 422 "workspace 1 does not exist".
+
+Phase 2a's originally-deferred files (`config.py`, `source_catalog.py`) are now both done. Next: move to the next Tier A file per priority order.
 
 **2b — Tier B (47 additional files, 150–400 lines, new to this revision):** priority order:
 - **Untested files first, smallest first** (of the 23 Tier B files with no matching test — §2.1): starting small keeps each golden-master-test-then-split cycle short while the corrected methodology is still being applied consistently. `models.py` (153 lines) and `action_store.py` (158 lines) are natural starting points.

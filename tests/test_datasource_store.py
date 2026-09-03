@@ -244,7 +244,7 @@ def test_ensure_oracle_dup_code_also_recovered():
 
 def test_run_files_registers_datasource_for_each_file():
     """ensure() is called once per item with the correct workspace, name, and kind."""
-    from aryx.api.file_ingest_api import _run_files
+    from aryx.api.file_ingest_run import _run_files
 
     mock_ds_store = MagicMock()
     mock_ds_class = MagicMock(return_value=mock_ds_store)
@@ -262,14 +262,14 @@ def test_run_files_registers_datasource_for_each_file():
     pdf_item = (b"%PDF-1.4 fake", "report.pdf")
 
     with (
-        patch("aryx.api.file_ingest_api.DatasourceStore", mock_ds_class),
-        patch("aryx.api.file_ingest_api.JobStore", mock_job_class),
-        patch("aryx.api.file_ingest_api.run_pipeline"),
-        patch("aryx.api.file_ingest_api._local_broker", return_value=MagicMock()),
-        patch("aryx.api.file_ingest_api.get_settings", return_value=settings),
-        patch("aryx.api.file_ingest_api._save_tmp", return_value=MagicMock(spec=Path)),
-        patch("aryx.api.file_ingest_api.ChunkStore"),
-        patch("aryx.api.file_ingest_api.DocumentRouterConnector"),
+        patch("aryx.api.file_ingest_run.DatasourceStore", mock_ds_class),
+        patch("aryx.api.file_ingest_run.JobStore", mock_job_class),
+        patch("aryx.api.file_ingest_run.run_pipeline"),
+        patch("aryx.api.file_ingest_run._local_broker", return_value=MagicMock()),
+        patch("aryx.api.file_ingest_run.get_settings", return_value=settings),
+        patch("aryx.api.file_ingest_run._save_tmp", return_value=MagicMock(spec=Path)),
+        patch("aryx.api.file_ingest_run.ChunkStore"),
+        patch("aryx.api.file_ingest_run.DocumentRouterConnector"),
     ):
         _run_files([csv_item, pdf_item], "Entity", ["name"], [], "job-xyz", workspace_id=99)
 
@@ -280,7 +280,7 @@ def test_run_files_registers_datasource_for_each_file():
 
 def test_run_files_datasource_failure_does_not_abort_ingest():
     """A failing ensure() logs a warning but does not stop the ingest job."""
-    from aryx.api.file_ingest_api import _run_files
+    from aryx.api.file_ingest_run import _run_files
 
     mock_ds_store = MagicMock()
     mock_ds_store.ensure.side_effect = Exception("DB connection lost")
@@ -296,11 +296,11 @@ def test_run_files_datasource_failure_does_not_abort_ingest():
     settings.graph_url = "bolt://localhost"
 
     with (
-        patch("aryx.api.file_ingest_api.DatasourceStore", mock_ds_class),
-        patch("aryx.api.file_ingest_api.JobStore", mock_job_class),
-        patch("aryx.api.file_ingest_api.run_pipeline"),
-        patch("aryx.api.file_ingest_api._local_broker", return_value=MagicMock()),
-        patch("aryx.api.file_ingest_api.get_settings", return_value=settings),
+        patch("aryx.api.file_ingest_run.DatasourceStore", mock_ds_class),
+        patch("aryx.api.file_ingest_run.JobStore", mock_job_class),
+        patch("aryx.api.file_ingest_run.run_pipeline"),
+        patch("aryx.api.file_ingest_run._local_broker", return_value=MagicMock()),
+        patch("aryx.api.file_ingest_run.get_settings", return_value=settings),
     ):
         # Must not raise even though ensure() always throws
         _run_files([(b"id\n1\n", "data.csv")], "Entity", ["name"], [], "job-1", workspace_id=1)
@@ -313,7 +313,7 @@ def test_run_files_datasource_failure_does_not_abort_ingest():
 
 def test_run_files_fname_truncated_to_255_chars():
     """Filenames longer than 255 chars are silently truncated before ensure()."""
-    from aryx.api.file_ingest_api import _run_files
+    from aryx.api.file_ingest_run import _run_files
 
     mock_ds_store = MagicMock()
     mock_ds_class = MagicMock(return_value=mock_ds_store)
@@ -327,11 +327,11 @@ def test_run_files_fname_truncated_to_255_chars():
     long_name = "a" * 300 + ".csv"
 
     with (
-        patch("aryx.api.file_ingest_api.DatasourceStore", mock_ds_class),
-        patch("aryx.api.file_ingest_api.JobStore", return_value=MagicMock()),
-        patch("aryx.api.file_ingest_api.run_pipeline"),
-        patch("aryx.api.file_ingest_api._local_broker", return_value=MagicMock()),
-        patch("aryx.api.file_ingest_api.get_settings", return_value=settings),
+        patch("aryx.api.file_ingest_run.DatasourceStore", mock_ds_class),
+        patch("aryx.api.file_ingest_run.JobStore", return_value=MagicMock()),
+        patch("aryx.api.file_ingest_run.run_pipeline"),
+        patch("aryx.api.file_ingest_run._local_broker", return_value=MagicMock()),
+        patch("aryx.api.file_ingest_run.get_settings", return_value=settings),
     ):
         _run_files([(b"id\n1\n", long_name)], "Entity", ["name"], [], "job-1", workspace_id=1)
 

@@ -3,6 +3,19 @@
 Reads the relational source of truth (EntityStore) so every row carries its
 golden-record attributes and the source records it traces back to. Pure shaping
 lives in aryx.explore; this module is the thin HTTP wire.
+
+As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), the pure
+helpers with no dependency on `get_settings`/`DatasourceStore`/`JobStore`/
+`_source_purge_store`/`ports`/`datetime` (confirmed via grep against every
+whitebox patch in `test_data_sources_api.py`, `test_xlsx_data_sources_api.py`,
+`test_source_pagination_api.py`) live in `api.data_api_pure` and are
+re-imported here. Everything else stays in this module: the router's nested
+route closures and every remaining helper function are tightly coupled to
+those patched module-level names (8 distinct patch targets across ~50 call
+sites in the 3 test files) -- moving any of them would require retargeting
+every one of those patches with high risk of an undetected miss, the same
+class of risk documented for `file_ingest_run.py` and `ask_thread_store.py`
+in this plan, but denser here than in any other file this session.
 """
 from __future__ import annotations
 
@@ -17,6 +30,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from aryx import explore
+from aryx.api.data_api_pure import (
+    _LegacyMetricReader,
+    _asset_matches,
+    _catalog_item,
+    _csv_response_bytes,
+    _is_generic_source_key,
+    _parse_generic_source_key,
+    _provenance_counts,
+)
 from aryx.config import get_settings
 from aryx.source_catalog import (
     build_source_catalog_from_counts,
@@ -368,59 +390,6 @@ def data_router() -> APIRouter:
     return router
 
 
-class _LegacyMetricReader:
-    """Compatibility reader used by lightweight unit-test stores only."""
-
-    def __init__(self, store: object) -> None:
-        self._store = store
-
-    def source_record_counts(self) -> Counter[tuple[str, str]]:
-        return _provenance_counts(list(self._store.list_members_provenance()))  # type: ignore[attr-defined]
-
-    def source_entity_type_counts(
-        self, _source_map: list[tuple[str, str, str]],
-    ) -> dict[str, list[tuple[str, int]]]:
-        return {}
-
-    def source_edge_counts(
-        self, source_map: list[tuple[str, str, str]],
-    ) -> dict[str, int]:
-        if not hasattr(self._store, "list_relationships"):
-            return {}
-        provenance = self._store.list_members_provenance()  # type: ignore[attr-defined]
-        entity_sources = {
-            (entity_id, system, dataset)
-            for entity_id, system, dataset, _record_id in provenance
-        }
-        source_entities: dict[str, set[int]] = {}
-        for source_key, system, dataset in source_map:
-            source_entities.setdefault(source_key, set()).update(
-                entity_id
-                for entity_id, linked_system, linked_dataset in entity_sources
-                if linked_system == system and linked_dataset == dataset
-            )
-        relationships = list(self._store.list_relationships())  # type: ignore[attr-defined]
-        return {
-            source_key: len({
-                (source_id, target_id, name)
-                for source_id, target_id, name in relationships
-                if source_id in entity_ids or target_id in entity_ids
-            })
-            for source_key, entity_ids in source_entities.items()
-        }
-
-    def workspace_summary(self) -> dict:
-        return explore.summarize(  # type: ignore[attr-defined]
-            self._store.list_entities(), self._store.list_members_provenance(),
-        )
-
-    def source_records_page(
-        self, system: str, dataset: str, *, limit: int, offset: int,
-    ) -> tuple[int, list[dict]]:
-        rows = self._store.list_source_payloads(system, dataset, limit=None)  # type: ignore[attr-defined]
-        return len(rows), rows[offset:offset + limit]
-
-
 def _metric_reader(store: EntityStore, workspace_id: int) -> SourceMetricsStore | _LegacyMetricReader:
     """Use database aggregates in production and compatibility shaping in unit fakes."""
     if isinstance(store, EntityStore):
@@ -442,13 +411,6 @@ def _catalog_snapshot(
         datasources = datasource_store.list(workspace_id)
     catalog = build_source_catalog_from_counts(datasources, counts)
     return reader, datasources, counts, catalog
-
-
-def _catalog_item(catalog: list[dict], source_key: str) -> dict:
-    item = next((row for row in catalog if row.get("source_key") == source_key), None)
-    if item is None:
-        raise HTTPException(404, "source not found")
-    return item
 
 
 def _universal_source_detail(
@@ -512,28 +474,6 @@ def _find_xlsx_datasource(source_key: str, workspace_id: int) -> dict:
     return _find_datasource_by_prefix(source_key, workspace_id, "xlsx:")
 
 
-def _is_generic_source_key(source_key: str) -> bool:
-    return ":" in source_key and not source_key.startswith(("xml:", "xlsx:", "legacy-xml:", "ds:"))
-
-
-def _parse_generic_source_key(source_key: str) -> tuple[str, str]:
-    if not _is_generic_source_key(source_key):
-        raise HTTPException(404, "source not found")
-    source_system, source_dataset = source_key.split(":", 1)
-    if not source_system or not source_dataset:
-        raise HTTPException(404, "source not found")
-    return source_system, source_dataset
-
-
-def _provenance_counts(
-    provenance: list[tuple[int, str, str, str]] | tuple[tuple[int, str, str, str], ...],
-) -> Counter[tuple[str, str]]:
-    counts: Counter[tuple[str, str]] = Counter()
-    for _entity_id, system, dataset, _record_id in provenance:
-        counts[(system, dataset)] += 1
-    return counts
-
-
 def _dataset_payloads(
     store: EntityStore,
     datasets: list[str],
@@ -546,27 +486,6 @@ def _dataset_payloads(
             continue
         payloads[dataset] = store.list_source_payloads("csv", dataset, limit=limit)
     return payloads
-
-
-def _csv_response_bytes(payload_rows: list[dict]) -> bytes:
-    import csv
-    import io
-
-    headers: list[str] = []
-    for row in payload_rows:
-        for key in row.keys():
-            text_key = str(key)
-            if text_key not in headers:
-                headers.append(text_key)
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=headers)
-    writer.writeheader()
-    for row in payload_rows:
-        writer.writerow({
-            header: "" if row.get(header) is None else str(row.get(header))
-            for header in headers
-        })
-    return buffer.getvalue().encode("utf-8")
 
 
 _DETAIL_FILENAME_RE = re.compile(r"([A-Za-z0-9_. -]+\.(?:csv|json))", re.IGNORECASE)
@@ -913,10 +832,6 @@ def _purge_source_from_workspace(source_key: str, workspace_id: int) -> dict:
         }
     finally:
         entity_store.close()
-
-
-def _asset_matches(asset: dict, asset_key: str) -> bool:
-    return (asset.get("asset_key") or asset.get("filename")) == asset_key
 
 
 def _purge_asset_from_workspace(source_key: str, asset_key: str, workspace_id: int) -> dict:

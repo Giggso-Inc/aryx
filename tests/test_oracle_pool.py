@@ -134,6 +134,9 @@ _stub_oracledb()
 
 from aryx.store.oracle_pool import (  # noqa: E402
     OracleCursorWrapper,
+    _coerce_clob,
+    _hint_clob,
+    _hint_clob_many,
     _read_lob,
     _restore_empty_string,
     _translate_sql,
@@ -1012,6 +1015,128 @@ class TestJsonOutputTypeHandler(unittest.TestCase):
         # JSON scalar values (rare for our columns, but handler must not crash)
         conv = self._outconverter()
         self.assertEqual(conv(42), 42)
+
+
+# ── CLOB-handling golden-master tests (Raven Style Compliance Plan, Phase 2a,
+# §6 item 1) -- added 2026-09-03, before extracting _hint_clob/_coerce_clob/
+# _hint_clob_many into their own module. These 3 functions had zero prior
+# test coverage despite being exactly where this project's ORA-03146/
+# ORA-22848 production bugs (PRs #310-#311) lived -- a real gap, not a
+# mechanical formality.
+
+class _FakeOracledb:
+    DB_TYPE_CLOB = "DB_TYPE_CLOB"
+
+
+class TestHintClob(unittest.TestCase):
+    def test_none_params_is_a_noop(self) -> None:
+        cursor = MagicMock()
+        _hint_clob(cursor, None, _FakeOracledb())
+        cursor.setinputsizes.assert_not_called()
+
+    def test_named_params_hints_only_oversized_strings(self) -> None:
+        cursor = MagicMock()
+        params = {"short": "a", "long": "x" * 32768}
+        _hint_clob(cursor, params, _FakeOracledb())
+        cursor.setinputsizes.assert_called_once_with(long="DB_TYPE_CLOB")
+
+    def test_named_params_no_hint_when_all_short(self) -> None:
+        cursor = MagicMock()
+        params = {"a": "short", "b": "also short"}
+        _hint_clob(cursor, params, _FakeOracledb())
+        cursor.setinputsizes.assert_not_called()
+
+    def test_positional_params_hints_by_index(self) -> None:
+        cursor = MagicMock()
+        params = ["short", "x" * 32768, 42]
+        _hint_clob(cursor, params, _FakeOracledb())
+        cursor.setinputsizes.assert_called_once_with(None, "DB_TYPE_CLOB", None)
+
+    def test_positional_params_no_hint_when_none_oversized(self) -> None:
+        cursor = MagicMock()
+        params = ["short", "also short"]
+        _hint_clob(cursor, params, _FakeOracledb())
+        cursor.setinputsizes.assert_not_called()
+
+
+class TestCoerceClob(unittest.TestCase):
+    def _cursor_with_var(self) -> MagicMock:
+        cursor = MagicMock()
+        cvar = MagicMock()
+        cursor.var.return_value = cvar
+        return cursor, cvar
+
+    def test_none_params_passthrough(self) -> None:
+        cursor, _ = self._cursor_with_var()
+        self.assertIsNone(_coerce_clob(None, cursor, _FakeOracledb()))
+
+    def test_dict_default_only_coerces_oversized_strings(self) -> None:
+        cursor, cvar = self._cursor_with_var()
+        params = {"short": "a", "long": "x" * 32768}
+        out = _coerce_clob(params, cursor, _FakeOracledb())
+        self.assertEqual(out["short"], "a")
+        self.assertIs(out["long"], cvar)
+        cvar.setvalue.assert_called_once_with(0, "x" * 32768)
+
+    def test_dict_force_coerces_all_strings_regardless_of_length(self) -> None:
+        cursor, cvar = self._cursor_with_var()
+        params = {"short": "a", "num": 5}
+        out = _coerce_clob(params, cursor, _FakeOracledb(), force=True)
+        self.assertIs(out["short"], cvar)
+        self.assertEqual(out["num"], 5)
+
+    def test_dict_exclude_keys_never_coerced_even_when_forced(self) -> None:
+        cursor, _ = self._cursor_with_var()
+        params = {"on_key": "short", "other": "short"}
+        out = _coerce_clob(
+            params, cursor, _FakeOracledb(), force=True, exclude=frozenset({"on_key"}),
+        )
+        self.assertEqual(out["on_key"], "short")
+        self.assertNotEqual(out["other"], "short")  # coerced to the cvar mock
+
+    def test_list_params_default_only_coerces_oversized(self) -> None:
+        cursor, cvar = self._cursor_with_var()
+        out = _coerce_clob(["short", "x" * 32768], cursor, _FakeOracledb())
+        self.assertEqual(out[0], "short")
+        self.assertIs(out[1], cvar)
+        self.assertIsInstance(out, list)
+
+    def test_tuple_params_returns_a_tuple(self) -> None:
+        cursor, _ = self._cursor_with_var()
+        out = _coerce_clob(("a", "b"), cursor, _FakeOracledb(), force=True)
+        self.assertIsInstance(out, tuple)
+
+
+class TestHintClobMany(unittest.TestCase):
+    def test_empty_seq_is_a_noop(self) -> None:
+        cursor = MagicMock()
+        _hint_clob_many(cursor, [], _FakeOracledb())
+        cursor.setinputsizes.assert_not_called()
+
+    def test_dict_rows_default_hints_only_columns_with_an_oversized_value(self) -> None:
+        cursor = MagicMock()
+        seq = [{"a": "short", "b": "short"}, {"a": "x" * 32768, "b": "short"}]
+        _hint_clob_many(cursor, seq, _FakeOracledb())
+        cursor.setinputsizes.assert_called_once_with(a="DB_TYPE_CLOB")
+
+    def test_dict_rows_force_merge_hints_every_string_column_except_excluded(self) -> None:
+        cursor = MagicMock()
+        seq = [{"a": "short", "b": "short", "on_key": "short"}]
+        _hint_clob_many(cursor, seq, _FakeOracledb(), force_merge=True, on_excl=frozenset({"on_key"}))
+        called_kwargs = cursor.setinputsizes.call_args.kwargs
+        self.assertEqual(set(called_kwargs), {"a", "b"})
+
+    def test_positional_rows_hints_by_column_index_across_all_rows(self) -> None:
+        cursor = MagicMock()
+        seq = [("short", "short"), ("x" * 32768, "short")]
+        _hint_clob_many(cursor, seq, _FakeOracledb())
+        cursor.setinputsizes.assert_called_once_with("DB_TYPE_CLOB", None)
+
+    def test_positional_rows_no_hint_when_none_oversized(self) -> None:
+        cursor = MagicMock()
+        seq = [("short", "short"), ("also", "short")]
+        _hint_clob_many(cursor, seq, _FakeOracledb())
+        cursor.setinputsizes.assert_not_called()
 
 
 if __name__ == "__main__":

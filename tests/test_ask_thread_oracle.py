@@ -45,7 +45,8 @@ def _stub_psycopg() -> None:
 
 _stub_psycopg()
 
-from aryx.store.ask_thread_store import _as_json, _insert_message_oracle  # noqa: E402
+from aryx.store.ask_thread_helpers import _as_json
+from aryx.store.ask_thread_oracle_insert import _insert_message_oracle  # noqa: E402
 
 
 class TestAsJson(unittest.TestCase):
@@ -115,7 +116,7 @@ class TestInsertMessageOracleFreshInsert(unittest.TestCase):
             "ask_thread_select_existing_message": [None],
             "ask_thread_next_sequence": [(3,)],
         })
-        import aryx.store.ask_thread_store as mod
+        import aryx.store.ask_thread_oracle_insert as mod
         orig_load = mod.load
         mod.load = lambda name: name
         try:
@@ -138,7 +139,7 @@ class TestInsertMessageOracleSystemMessage(unittest.TestCase):
                 ("existing-id", 5, "old answer", "{}", datetime.now(timezone.utc)),
             ],
         })
-        import aryx.store.ask_thread_store as mod
+        import aryx.store.ask_thread_oracle_insert as mod
         orig_load = mod.load
         mod.load = lambda name: name
         try:
@@ -156,7 +157,7 @@ class TestInsertMessageOracleUserRetrySafety(unittest.TestCase):
             "ask_thread_select_existing_message": [existing_row],
             "ask_thread_has_failed_response": [None],
         })
-        import aryx.store.ask_thread_store as mod
+        import aryx.store.ask_thread_oracle_insert as mod
         orig_load = mod.load
         mod.load = lambda name: name
         try:
@@ -193,7 +194,7 @@ class TestInsertMessageOracleUserRetrySafety(unittest.TestCase):
             ],
             "ask_thread_has_failed_response": [("found",)],
         })
-        import aryx.store.ask_thread_store as mod
+        import aryx.store.ask_thread_oracle_insert as mod
         orig_load = mod.load
         mod.load = lambda name: name
         try:
@@ -210,7 +211,7 @@ class TestInsertMessageOracleUserRetrySafety(unittest.TestCase):
             ],
             "ask_thread_has_failed_response": [None],
         })
-        import aryx.store.ask_thread_store as mod
+        import aryx.store.ask_thread_oracle_insert as mod
         orig_load = mod.load
         mod.load = lambda name: name
         try:

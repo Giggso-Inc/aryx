@@ -73,7 +73,7 @@ def test_relate_completes_and_skips_a_stuck_pair_instead_of_hanging(monkeypatch)
         time.sleep(5)  # simulates the real-world stall observed in testing
         return "SHOULD_NOT_ARRIVE", 0.9
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=stuck_infer_relationship):
+    with patch("aryx.pipeline.enrich_relate.infer_relationship", side_effect=stuck_infer_relationship):
         start = time.monotonic()
         count = _relate(store, broker=MagicMock(), max_pairs=5)
         elapsed = time.monotonic() - start
@@ -94,7 +94,7 @@ def test_relate_still_finds_relationships_when_llm_is_healthy(monkeypatch):
     ]
     store = _fake_store(entities)
 
-    with patch("aryx.pipeline.enrich.infer_relationship", return_value=("HAS_ORDER", 0.95)):
+    with patch("aryx.pipeline.enrich_relate.infer_relationship", return_value=("HAS_ORDER", 0.95)):
         count = _relate(store, broker=MagicMock(), max_pairs=5)
 
     assert count == 1
@@ -118,7 +118,7 @@ def test_relate_isolated_skips_a_stuck_type_instead_of_hanging(monkeypatch):
         (3, "Invoice", {"num": "INV-1"}),
     ]
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=lambda *a: (_ for _ in ()).throw(TimeoutError)):
+    with patch("aryx.pipeline.enrich_relate_isolated.infer_relationship", side_effect=lambda *a: (_ for _ in ()).throw(TimeoutError)):
         start = time.monotonic()
         count = _relate_isolated(store, broker=MagicMock())
         elapsed = time.monotonic() - start
@@ -154,7 +154,7 @@ def test_relate_isolated_tries_a_second_anchor_when_the_first_is_unrelated(monke
             return "is_material_of", 0.9
         return None, 0.0
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+    with patch("aryx.pipeline.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock())
 
     assert calls == ["Unrelated", "Material"]  # tried the first, then kept going
@@ -190,7 +190,7 @@ def test_relate_isolated_tries_next_anchor_when_one_candidate_errors(monkeypatch
             raise ValueError("no JSON block found: line 1 column 1 (char 0)")
         return "is_material_of", 0.9
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+    with patch("aryx.pipeline.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock())
 
     assert calls == ["Broken", "Material"]  # errored candidate skipped, not fatal
@@ -217,7 +217,7 @@ def test_relate_isolated_respects_max_anchors_cap(monkeypatch):
         calls.append(right.get("_ontology_type"))
         return None, 0.0  # never relates — forces exhausting the candidate list
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+    with patch("aryx.pipeline.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock())
 
     assert len(calls) == 2  # capped at ARYX_RELATE_ISOLATED_MAX_ANCHORS, not 3
@@ -256,7 +256,7 @@ def test_relate_isolated_tries_a_second_sample_entity_when_the_first_is_unrelate
             return "expands_into", 0.85
         return None, 0.0
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+    with patch("aryx.pipeline.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock())
 
     assert calls == ["Region 1", "untapped industry verticals"]
@@ -288,7 +288,7 @@ def test_relate_isolated_respects_max_samples_per_type_cap(monkeypatch):
         calls.append(left.get("name"))
         return None, 0.0  # never relates — forces exhausting the sample list
 
-    with patch("aryx.pipeline.enrich.infer_relationship", side_effect=fake_infer):
+    with patch("aryx.pipeline.enrich_relate_isolated.infer_relationship", side_effect=fake_infer):
         count = _relate_isolated(store, broker=MagicMock())
 
     assert len(calls) == 2  # capped at ARYX_RELATE_ISOLATED_MAX_SAMPLES_PER_TYPE, not 5

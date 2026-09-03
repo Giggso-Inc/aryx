@@ -860,11 +860,11 @@ class TestThreadPoolExecutor:
 
     def test_run_files_jobstore_raises_no_nameerror(self):
         """B4 fix: JobStore() raising must not cause NameError in except/finally."""
-        with patch("aryx.api.file_ingest_api.get_settings") as mock_cfg, \
-             patch("aryx.api.file_ingest_api.JobStore",
+        with patch("aryx.api.file_ingest_run.get_settings") as mock_cfg, \
+             patch("aryx.api.file_ingest_run.JobStore",
                    side_effect=RuntimeError("DB down")):
             mock_cfg.return_value.rdb_dsn = "postgresql://x"
-            from aryx.api.file_ingest_api import _run_files
+            from aryx.api.file_ingest_run import _run_files
             # Pre-fix: NameError from jobs.finish/jobs.close in except/finally.
             # Post-fix: logs warning and returns cleanly.
             _run_files([], "Company", [], [], "test-job-id", 1)

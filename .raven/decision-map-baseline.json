@@ -7243,57 +7243,57 @@
     ],
     [
       "src/aryx/api/data_api.py",
-      89,
+      111,
       "data_router"
     ],
     [
       "src/aryx/api/data_api.py",
-      105,
+      127,
       "entities"
     ],
     [
       "src/aryx/api/data_api.py",
-      109,
+      131,
       "<try>"
     ],
     [
       "src/aryx/api/data_api.py",
-      118,
+      140,
       "graph"
     ],
     [
       "src/aryx/api/data_api.py",
-      121,
+      143,
       "<try>"
     ],
     [
       "src/aryx/api/data_api.py",
-      286,
+      308,
       "delete_source"
     ],
     [
       "src/aryx/api/data_api.py",
-      322,
+      344,
       "delete_asset"
     ],
     [
       "src/aryx/api/data_api.py",
-      332,
+      354,
       "delete_source_with_path"
     ],
     [
       "src/aryx/api/data_api.py",
-      368,
+      390,
       "data_router"
     ],
     [
-      "src/aryx/api/data_api.py",
-      412,
+      "src/aryx/api/data_api_pure.py",
+      63,
       "workspace_summary"
     ],
     [
-      "src/aryx/api/data_api.py",
-      413,
+      "src/aryx/api/data_api_pure.py",
+      64,
       "workspace_summary"
     ],
     [
@@ -7388,7 +7388,27 @@
     ],
     [
       "src/aryx/api/file_ingest_api.py",
-      207,
+      75,
+      "file_ingest_router"
+    ],
+    [
+      "src/aryx/api/file_ingest_api.py",
+      79,
+      "ingest_file"
+    ],
+    [
+      "src/aryx/api/file_ingest_api.py",
+      149,
+      "ingest_file"
+    ],
+    [
+      "src/aryx/api/file_ingest_api.py",
+      156,
+      "file_ingest_router"
+    ],
+    [
+      "src/aryx/api/file_ingest_run.py",
+      163,
       "<if>"
     ],
     [
@@ -8102,14 +8122,44 @@
       "audit_intent_conservation"
     ],
     [
-      "src/aryx/cpq/intent_schema.py",
-      514,
+      "src/aryx/cpq/intent_schema_gateway.py",
+      174,
+      "parse_gateway_intent"
+    ],
+    [
+      "src/aryx/cpq/intent_schema_gateway.py",
+      215,
+      "parse_gateway_intent"
+    ],
+    [
+      "src/aryx/cpq/intent_schema_gateway.py",
+      245,
       "validate_gateway_quarantine"
     ],
     [
-      "src/aryx/cpq/intent_schema.py",
-      589,
+      "src/aryx/cpq/intent_schema_gateway.py",
+      259,
+      "_ambiguous"
+    ],
+    [
+      "src/aryx/cpq/intent_schema_gateway.py",
+      264,
+      "_ambiguous"
+    ],
+    [
+      "src/aryx/cpq/intent_schema_gateway.py",
+      320,
       "validate_gateway_quarantine"
+    ],
+    [
+      "src/aryx/cpq/intent_schema_result.py",
+      121,
+      "parse_intent_result"
+    ],
+    [
+      "src/aryx/cpq/intent_schema_result.py",
+      161,
+      "parse_intent_result"
     ],
     [
       "src/aryx/cpq/rule_trace.py",
@@ -8155,6 +8205,31 @@
       "src/aryx/export_runtime.py",
       33,
       "status"
+    ],
+    [
+      "src/aryx/graph/falkor_store.py",
+      127,
+      "ensure_indexes"
+    ],
+    [
+      "src/aryx/graph/falkor_store.py",
+      148,
+      "ensure_indexes"
+    ],
+    [
+      "src/aryx/graph/falkor_write_entities.py",
+      20,
+      "add_entity"
+    ],
+    [
+      "src/aryx/graph/falkor_write_entities.py",
+      64,
+      "add_entities_batch"
+    ],
+    [
+      "src/aryx/graph/falkor_write_entities.py",
+      116,
+      "add_entities_batch"
     ],
     [
       "src/aryx/llm.py",
@@ -8613,12 +8688,12 @@
     ],
     [
       "src/aryx/pipeline/ingest_validation.py",
-      432,
+      55,
       "_raw_xml_counts"
     ],
     [
       "src/aryx/pipeline/ingest_validation.py",
-      447,
+      70,
       "_raw_xml_counts"
     ],
     [
@@ -8697,24 +8772,24 @@
       "resolve_run"
     ],
     [
-      "src/aryx/source_catalog.py",
-      692,
+      "src/aryx/source_catalog_delete_download.py",
+      129,
+      "xml_download_payload"
+    ],
+    [
+      "src/aryx/source_catalog_delete_download.py",
+      188,
+      "xml_download_payload"
+    ],
+    [
+      "src/aryx/source_catalog_detail.py",
+      263,
       "<if>"
     ],
     [
-      "src/aryx/source_catalog.py",
-      730,
+      "src/aryx/source_catalog_detail.py",
+      301,
       "build_source_detail_from_counts"
-    ],
-    [
-      "src/aryx/source_catalog.py",
-      837,
-      "xml_download_payload"
-    ],
-    [
-      "src/aryx/source_catalog.py",
-      896,
-      "xml_download_payload"
     ],
     [
       "src/aryx/source_metrics.py",
@@ -8728,22 +8803,22 @@
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      307,
+      184,
       "<if>"
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      348,
+      225,
       "ensure_thread_and_user_message"
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      400,
+      277,
       "<if>"
     ],
     [
       "src/aryx/store/ask_thread_store.py",
-      426,
+      303,
       "append_assistant_message"
     ],
     [
@@ -8778,27 +8853,27 @@
     ],
     [
       "src/aryx/store/entity_store.py",
-      431,
+      403,
       "<if>"
     ],
     [
       "src/aryx/store/entity_store.py",
-      453,
+      425,
       "create_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      469,
+      441,
       "update_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      479,
+      451,
       "delete_entity"
     ],
     [
       "src/aryx/store/entity_store.py",
-      488,
+      460,
       "delete_entities_by_type"
     ],
     [
@@ -8837,6 +8912,51 @@
       "apply_migrations"
     ],
     [
+      "src/aryx/store/oracle_connection_pool.py",
+      46,
+      "execute"
+    ],
+    [
+      "src/aryx/store/oracle_connection_pool.py",
+      61,
+      "__init__"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      29,
+      "__init__"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      54,
+      "_json_output_handler"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      64,
+      "execute"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      74,
+      "<if>"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      106,
+      "executemany"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      141,
+      "executemany_returning"
+    ],
+    [
+      "src/aryx/store/oracle_cursor.py",
+      191,
+      "executemany_returning"
+    ],
+    [
       "src/aryx/store/oracle_migrate.py",
       45,
       "apply_oracle_migrations"
@@ -8847,79 +8967,14 @@
       "<try>"
     ],
     [
-      "src/aryx/store/oracle_pool.py",
-      95,
+      "src/aryx/store/oracle_param_coerce.py",
+      72,
       "_tuple_seq_to_dict"
     ],
     [
-      "src/aryx/store/oracle_pool.py",
-      120,
+      "src/aryx/store/oracle_param_coerce.py",
+      97,
       "_tuple_seq_to_dict"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      157,
-      "_hint_clob"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      187,
-      "_coerce_clob"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      231,
-      "_coerce_clob"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      234,
-      "_hint_clob_many"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      292,
-      "__init__"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      317,
-      "_json_output_handler"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      327,
-      "execute"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      337,
-      "<if>"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      369,
-      "executemany"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      404,
-      "executemany_returning"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      454,
-      "executemany_returning"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      532,
-      "execute"
-    ],
-    [
-      "src/aryx/store/oracle_pool.py",
-      549,
-      "__init__"
     ],
     [
       "src/aryx/store/oracle_sql_translate.py",
@@ -8952,18 +9007,18 @@
       "delete"
     ],
     [
-      "src/aryx/store/shay_bridge_store.py",
-      59,
+      "src/aryx/store/shay_workspace_bridge.py",
+      53,
       "ensure_workspace_mapping"
     ],
     [
-      "src/aryx/store/shay_bridge_store.py",
-      168,
+      "src/aryx/store/shay_workspace_bridge.py",
+      162,
       "<try>"
     ],
     [
-      "src/aryx/store/shay_bridge_store.py",
-      288,
+      "src/aryx/store/shay_workspace_bridge.py",
+      282,
       "ensure_workspace_mapping"
     ],
     [

@@ -1,289 +1,43 @@
-"""CPQ session state — serialisable so the UI can echo it back each turn."""
+"""CPQ session state — serialisable so the UI can echo it back each turn.
+
+As of the Raven Style Compliance Plan's Phase 2a (2026-09-03), the 4 rule
+dataclasses live in `cpq.state_rules` and MenuOption/ConfigAttr live in
+`cpq.state_config_attr` — re-exported below so every existing `from
+aryx.cpq.state import X` caller (134 files) keeps working unchanged.
+`CpqSession` stays here: it is a single dataclass whose fields serialize
+flat to JSON via `to_dict()`/`from_dict()` for the API's session-echo
+contract — splitting its field *declarations* across files would not
+create real modularity (a dataclass's fields must live in one class body),
+only move code around while risking that flat-serialization contract, so
+it is kept whole here as a deliberate exception, not a missed split.
+"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from aryx.cpq.state_config_attr import ConfigAttr, MenuOption
+from aryx.cpq.state_rules import (
+    ConstraintRule,
+    HidingRule,
+    RecommendationRule,
+    ValidationRule,
+)
+
+__all__ = [
+    "ConfigAttr",
+    "ConstraintRule",
+    "CpqSession",
+    "HidingRule",
+    "INTENT_QUEUE_CAP",
+    "MenuOption",
+    "RecommendationRule",
+    "ValidationRule",
+]
+
 # Max variable_names held in CpqSession.pending_intent_queue. Overflow is
 # reported to the user (never silently dropped).
 INTENT_QUEUE_CAP = 10
-
-
-@dataclass
-class HidingRule:
-    """One hiding rule from the graph (rule_type=11).
-
-    Declarative form: condition_attr_id/condition_value/hide describe a
-    simple equality check (from BmConfigRuleInput.value1).
-
-    Script form (BML): ``script`` holds the raw BML body from the referenced
-    BmFunction — confirmed live that ~62% of real hiding rules in this
-    catalog are script-backed (their hide/show logic depends on more than
-    one variable, e.g. "hide unless region=NA OR country=KY OR
-    customerType=FEDERAL"), not the single condition_attr/condition_value
-    pair the declarative form can express. At apply time the evaluator
-    derives a bool from the current filled variables (see
-    BmlEvaluator.should_hide); condition_attr_id/condition_value are unused
-    when script is set (the script embeds its own conditions).
-
-    condition_attr_id  — entity_id of the BmConfigAttr whose value is checked (declarative only).
-    condition_value    — the value that triggers this rule (declarative only).
-    condition_operator — the raw BM-native operator code for the
-        condition_attr_id/condition_value pair above ("4" = "=", the
-        default/majority code — see conditions' docstring below for the
-        full mapping). Only meaningful when conditions is None/empty.
-    target_attr_id     — entity_id of the BmConfigAttr to hide/show.
-    hide               — True = hide the target when condition is met; False = show (declarative only).
-    rule_name          — human-readable rule name for reporting.
-    conditions         — ALL of this rule's real bm_config_rule_input rows, as
-        [(attr_id, value, operator), ...] — same attr_id repeated means OR
-        (any of those values matches for that attribute); different
-        attr_ids are ANDed together. None/empty falls back to the single
-        condition_attr_id/condition_value/condition_operator triple
-        (backward compatible with rules that only ever had one input).
-        Confirmed live: 445/688 rules in a real catalog carry 2+ input
-        rows that the old single-pair shape silently collapsed to just
-        the last one — see docs/CPQ_APX_NEXT_RULE_CATALOG.md "Gap
-        Deep-Dive & Impact Analysis".
-
-        operator is the raw BM-native comparison-operator code, confirmed
-        (docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md) via
-        cross-referencing 31 independently-authored rule names against
-        their raw operator1 values: "4"="=" (74.5% of real rows, the
-        previously-assumed default), "3"="<>" (18%, confirmed 31/31),
-        "1"="<", "2"="<=", "5"=">" (all high-confidence, low-volume).
-        "7"="intersects"/"8"="disjoint from" (Phase 2, confirmed via
-        104/110 real rows targeting a select_type=="multi" attribute plus
-        4 independently-authored rule-name cross-checks with zero
-        contradictions — see bml._operator_hit's docstring for the
-        confirmed rule examples). For "7"/"8" the attribute's current
-        value is itself allowed to be a "~"-joined set (a multi-select
-        attr's current selections), checked via set intersection rather
-        than scalar equality. Before the Phase 1 fix, every operator was
-        silently treated as "=" — e.g. a real rule named "...For Non
-        Federal" with operator "3" (<>) against "FEDERAL" was being
-        evaluated as customerType=="FEDERAL" instead of
-        customerType<>"FEDERAL", inverting its intent.
-    """
-    rule_name: str
-    condition_attr_id: int
-    condition_value: str
-    target_attr_id: int
-    hide: bool = True
-    script: str | None = None
-    conditions: list[tuple[int, str, str]] | None = None
-    condition_operator: str = "4"
-
-
-@dataclass
-class RecommendationRule:
-    """One declarative recommendation rule (rule_type=10, condition_type=1).
-
-    When condition_attr equals condition_value, the engine auto-selects
-    recommended_value for target_attr (if target is not already filled).
-
-    Script form (BML): ``script`` holds the raw BML body from the referenced
-    BmFunction. At apply time the evaluator derives the recommended value
-    from the current filled variables (Tier-1 if/else `returnVal="X"` idiom,
-    same evaluator ConstraintRule uses); condition fields are unused (the
-    script embeds its own conditions on variable names). Gated identically
-    to ConstraintRule's script form: an unknown/unresolvable script outcome
-    never fills anything (D2 "never guess").
-
-    condition_script — distinct from ``script`` above. This rule's own
-    condition_function_id is a BML boolean script (not the single
-    condition_attr_id/condition_value pair) while the ACTION is declarative
-    (recommended_value is a plain value, not derived from a script). At
-    apply time the evaluator runs this through the same boolean Tier-1/
-    Tier-2 machinery apply_hiding_rules already uses via
-    BmlEvaluator.hide_for_script (True = rule fires, unknown = never guess,
-    doesn't fire). Mutually exclusive with ``script`` in practice — a rule
-    with both a script condition AND a script action is handled by
-    ``script`` alone (see CpqEngine._load_value_rules).
-
-    conditions — see HidingRule.conditions; same AND-of-OR-groups semantics
-    and same operator mapping for declarative multi-input rules.
-    """
-    rule_name: str
-    condition_attr_id: int
-    condition_value: str
-    target_attr_id: int
-    recommended_value: str = ""  # item_value to auto-select on the target attr
-    script: str | None = None
-    conditions: list[tuple[int, str, str]] | None = None
-    condition_script: str | None = None
-    condition_operator: str = "4"
-
-
-@dataclass
-class ConstraintRule:
-    """One constraint rule (rule_type=5).
-
-    Declarative form: when condition_attr equals condition_value, only
-    allowed_values remain valid item_values for target_attr. Multiple
-    ConstraintRules for the same target are intersected (AND semantics).
-
-    Script form (BML): ``script`` holds the raw BML body from the referenced
-    BmFunction. At apply time the evaluator derives allowed_values from the
-    current filled variables; condition fields are unused (the script embeds
-    its own conditions on variable names).
-
-    condition_script — see RecommendationRule.condition_script: the rule's
-    own condition is a BML boolean script while allowed_values is a plain
-    declarative list. Evaluated via BmlEvaluator.hide_for_script the same way.
-    """
-    rule_name: str
-    condition_attr_id: int
-    condition_value: str
-    target_attr_id: int
-    allowed_values: list[str]  # item_values that remain valid when condition fires
-    script: str | None = None  # raw BML — evaluated dynamically when set
-    conditions: list[tuple[int, str, str]] | None = None  # see HidingRule.conditions
-    condition_script: str | None = None
-    condition_operator: str = "4"
-
-
-@dataclass
-class ValidationRule:
-    """A warning-message rule with no value action at all (Amendment 12,
-    docs/CPQ_UNIFIED_INTENT_CLASSIFIER_PLAN.md) — a genuinely distinct
-    fourth rule shape from Hiding/Recommendation/Constraint, never modeled
-    before this. Its BmConfigRuleAction has function_id=-1 (not
-    script-backed) AND an empty value1 — it neither hides, sets, nor
-    restricts anything; its only content is a human-readable `message`
-    attached to `target_attr_id`, to be shown when its condition
-    (`condition_script` OR `conditions`) evaluates True.
-
-    Confirmed live: CommandCentral Aware's "Constrain video devices" rule
-    (target OfVideoStreamingDevices_3_swSoln) checks
-    `fmod(value, 25) <> 0` and attaches "Please enter a qty in multiple of
-    25. Eg. 25...50...75..125.." — a real, catalog-authored validation
-    message that existed in the source data but was silently dropped by
-    every existing rule loader (Hiding requires rule_type=11 exclusively;
-    Recommendation/Constraint's declarative-action branch requires a
-    non-empty value1 to bucket by set_type — this rule's action has
-    neither), because none of them model "condition true -> show this
-    message, no value change" at all.
-
-    docs/CPQ_CONDITIONAL_REQUIRED_RULE_PLAN_2026_08_05.md — the same
-    message-only shape also occurs with a purely DECLARATIVE condition
-    (no condition_function_id at all), e.g. "Restrict Number Of Seats
-    between 1 and 12" -> message "Number Of Seats must be between 1 and
-    12", gated on numberOfSeats_astro < 1 OR > 12 (operators "1"/"5",
-    confirmed docs/CPQ_DECLARATIVE_CONDITION_OPERATOR_PLAN_2026_08_05.md).
-    Confirmed via a 4-catalog audit: 138/150 real "set_type=-1, no value1"
-    action rows carry a genuine, non-boilerplate message — this was
-    explicitly anticipated but deferred in the loader (see
-    _load_value_rules's own historical comment) pending exactly this
-    confirmation. condition_attr_id/condition_value/condition_operator/
-    conditions mirror HidingRule's identically-named fields; exactly one
-    of condition_script / conditions is set per instance, same convention
-    as HidingRule/ConstraintRule/RecommendationRule.
-
-    Same D2 "never guess" discipline as every other rule here: an
-    unknown/unresolvable condition (script OR declarative) never fires.
-    """
-    rule_name: str
-    target_attr_id: int
-    message: str
-    condition_script: str | None = None
-    condition_attr_id: int = 0
-    condition_value: str = ""
-    condition_operator: str = "4"
-    conditions: list[tuple[int, str, str]] | None = None
-
-
-@dataclass
-class MenuOption:
-    """One selectable value for a configuration attribute."""
-
-    item_value: str    # API backend code sent to CPQ BOM API (e.g. "US")
-    display_name: str  # Friendly label shown to the sales rep (e.g. "United States")
-    order: int = 999
-
-
-@dataclass
-class ConfigAttr:
-    """One configuration attribute extracted from the knowledge graph."""
-
-    entity_id: int
-    variable_name: str   # CPQ backend key (e.g. "hWVersion_astro")
-    display_label: str   # Human label shown in conversation
-    required: bool
-    default_value: str
-    options: list[MenuOption]  # empty → free-text input
-    order: int = 999
-    tier: str = "independent"  # "independent" | "dependent"
-    # Source-native id (e.g. BigMachines attribute id from the ingested XML).
-    # Rule inputs/actions reference attributes by THIS id, not by the aryx
-    # entity_id — rule joins must resolve through both.
-    source_id: int | None = None
-    # "single" (dropdown/radio, one value) | "multi" (checkbox, allowed set
-    # from rules) | "boolean" (fixed Yes/No, no menu options at all).
-    # Derived from BM attribute metadata — see classify_select_type() in
-    # engine.py (CPQ_CASCADE_CONVERSATION_PLAN.md §4).
-    select_type: str = "single"
-    # Source-derived catalog prefix (see engine._catalog_prefix), e.g.
-    # "ApxNextConfig" or "Sl3500EConfig" — "" when unresolved. Lets rule
-    # loaders scope to the same ingested catalog this attr came from, so a
-    # workspace holding more than one product's XML export never lets one
-    # catalog's rules act on another's attributes.
-    catalog_prefix: str = ""
-    # Raw BM set_type code from the source XML ("1" transaction-line,
-    # "2" transient UI/action-layer, "3" other). set_type=2 attrs must be
-    # EXCLUDED from the BOM API payload — confirmed live: the real CPQ API
-    # rejected every set_type=2 attr sent ("has an invalid payload") while
-    # accepting identically-shaped set_type=1 menus, and the APX catalog's
-    # own set_type=2 population (_price_book_var_name, mergePackage,
-    # update, clearPackageJson, ...) shows the layer is transient fields,
-    # not transaction attributes. Distinct from select_type (UI shape).
-    set_type: str = ""
-    # True for BM attrs flagged hidden=1 in the source XML — never shown to
-    # the customer or added to `pending`, but still eligible for its own
-    # default_value (BML scripts elsewhere may reference it) instead of
-    # being dropped from the graph entirely.
-    hidden: bool = False
-    # True for BM attrs flagged hide_in_trans=1 — the source system's own
-    # "don't submit this at transaction/order time" marker (confirmed live
-    # against the real CPQ API: productInformationText_astro and
-    # productSelectionHelptext_astro both carry this flag and both got
-    # "cannot be modified" from the real API when included in a submission
-    # payload). Distinct from `hidden` (never shown in the UI) — a field can
-    # be visible/computed for display but still excluded from the BOM
-    # submission itself; see CpqEngine.build_payload.
-    hide_in_trans: bool = False
-    # True for BM attrs flagged is_array_control_attr=1 — the source
-    # system's own marker that this attr drives a native-UI grid editor
-    # (e.g. a mounting-type quantity table), not a plain scalar/menu
-    # question. Its real target quantity attrs are typically hidden=1 and
-    # sized/populated by a rec/constraint rule conditioned on this control
-    # (see docs/CPQ_SVX_LAYOUT_FLOW_AND_QUANTITY_GRID_PLAN.md §5 Change B).
-    is_array_control: bool = False
-    # True for BM attrs flagged auto_lock=1 — confirmed live (docs/
-    # CPQ_SESSION_2_OPEN_ISSUES.md, auto_lock double-wrap finding) this
-    # overrides the set_type=="2" exclusion in build_payload: a set_type=="2"
-    # attr with auto_lock=1 (e.g. archeType_viSoln, modelSelectionSelectModel_
-    # viSoln) is a real, includable value that ships double-wrapped
-    # ({"value": {"value":..,"displayValue":..}}), not dropped like the
-    # genuinely transient set_type=="2"/auto_lock=0 attrs.
-    auto_lock: bool = False
-    # BigMachines composite "array set" membership (docs/
-    # CPQ_ARRAY_SET_PAYLOAD_PLAN.md) — a driver/control attr (already
-    # flagged is_array_control above) plus ordered member columns (e.g.
-    # Mounting Type's selector + its own per-row quantity), grouped by a
-    # shared bm_config_attr_set id and serialized as one _index-keyed row
-    # per selection rather than flat per-column lists. None/"" = not part
-    # of any array-set.
-    array_set_id: int | None = None
-    array_set_role: str = ""              # "driver" | "member" | ""
-    array_col_order: int = 999            # member ordinal within the set's row
-    # DRIVER attrs only — the set's own variable_name (from the
-    # bm_config_attr_set driver row, a distinct, never-ConfigAttr-ingested
-    # entity) precomputed into the real wire-format top-level key, e.g.
-    # "_setmountingTypeArrayset_viSoln". Members leave this "" — the
-    # wrapper key is looked up via the driver, never reconstructed by
-    # build_payload from a template.
-    array_set_wrapper_key: str = ""
 
 
 @dataclass
