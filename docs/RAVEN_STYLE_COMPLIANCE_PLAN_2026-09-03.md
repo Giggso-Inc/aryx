@@ -1160,6 +1160,88 @@ Verified: `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restar
 
 **Phase 3's entire Tier A (all 13 files) is now complete.** Next: Tier B's 30 files (150–400 lines).
 
+### Phase 3 Tier B progress (started 2026-09-04)
+
+Adapted pace, same reasoning as the Python-side Tier B pass (§2b): `tsc --noEmit` after every file split (cheap), but `npm run build` + container rebuild/restart + route smoke test only at periodic checkpoints (~every 5 files) rather than after each one, since these are lower-traffic files than Tier A's core hubs.
+
+**1. `components/data/XmlSourceDetail.tsx`** — 396 → 105 lines, 5 files, all clean: `xml-source-detail/shared.tsx` (71, `StatusPill`/`ActionButton`/`IconOnlyAction`), `AssetPreviewModal.tsx` (88), `SourceHeader.tsx` (71), `PipelineDiagram.tsx` (35), `AssetsTable.tsx` (109). Fully presentational, all local UI state (search query, selected asset, preview rows) — safe to split freely, no stated exception needed.
+
+**2. `components/shay/AdminUsersPage.tsx`** — 371 → 335 lines. ⚠️ stated exception — real user/invitation deletion (`deleteUser`, `deleteInvitation`) with zero test coverage, same risk category as Tier A's CRUD hubs. Only extracted `admin-users/company-draft.ts` (37 lines, `CompanyProfileDraft` type + `readSetting`/`buildCompanyDraft`, pure). Incidental cleanup: this file duplicated `AdminTab`/`TableTab` type declarations that already existed in `admin-users/types.ts` (created during the Tier A `AdminUsersPageView.tsx` split) — now imports them instead of redeclaring; updated the two other importers of `CompanyProfileDraft` (`AdminUsersPageView.tsx`, `admin-users/CompanyProfileSection.tsx`) to the new location.
+
+**3. `components/jobs/JobsBadge.tsx`** — 326 → 83 lines, 5 files in `jobs-badge/`, all clean: `types.ts` (7), `EventLog.tsx` (53), `JobCard.tsx` (133, includes `StatusIcon`), `JobsPanel.tsx` (63). Low risk — `cancelJob` is reversible (frees a stuck workspace, doesn't delete data), so split freely unlike the destructive-action hubs.
+
+**4. `lib/shay-types.ts`** — 320 → 7 lines, 7 files in `shay-types/` (`session.ts` 30, `company.ts` 17, `user.ts` 55, `workspace.ts` 53, `app.ts` 63, `datasource.ts` 40, `bridge.ts` 58), all clean. Pure type declarations, zero runtime risk, mirrors the same domain split already used for `lib/shay-api/`.
+
+**Checkpoint after 4 files:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 72ms`), 7 routes (`/`, `/login`, `/workspaces`, `/settings`, `/admin/users`, `/admin/users?tab=subscription`, `/data`) all → 200.
+
+**5. `app/company-signup/page.tsx`** — 315 → 167 lines (stated exception, 17 over — form state/handlers, low risk since account creation isn't destructive), 4 files: `Field.tsx` (37), `SignupForm.tsx` (101, composes the two below), `BasicInfoFields.tsx` (92), `PasswordFields.tsx` (90).
+
+**6. `app/register/page.tsx`** — 296 → 152 lines (stated exception, 2 over — trivial), 6 files: `Field.tsx` (32), `RegisterFallback.tsx` (11), `RegisterForm.tsx` (141), `RegisterFooter.tsx` (34, SSO + sign-in link), `useInviteLoader.ts` (41, extracted invite-decrypt effect as its own hook).
+
+**7. `app/brief/page.tsx`** — 291 → 153 lines (stated exception, 3 over — trivial), 4 files: `shared.tsx` (52, `FieldGroup`/`Readiness`), `DraftSeedCard.tsx` (45), `BriefFieldsForm.tsx` (101), `BriefSummary.tsx` (28).
+
+**8. `components/model/LightweightTab.tsx`** — 278 → 136 lines, 4 files in `lightweight-tab/`, all clean: `AddTypeRow.tsx` (26), `PendingReviewTable.tsx` (55), `ApprovedTypesTable.tsx` (59), `RelationshipsTable.tsx` (39). Incidental cleanup: the original imported `AISuggestButton` but never used it anywhere in the file (confirmed via grep against the pre-split file) — dropped as dead code.
+
+**9. `components/model/Canvas.tsx`** — 274 → 195 lines (stated exception, 45 over), 2 files: `canvas/ontology-to-graph.ts` (47, pure `ontologyToGraph`), `canvas/EmptyState.tsx` (35). Hub keeps `onConnect`/`onEdgeClick`/`relayout` — real-time relationship create/delete tightly coupled to the react-flow node/edge state, same reasoning as `EntityGraph.tsx`'s interactive-state exception in Tier A.
+
+**Checkpoint after files 5–9:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 71ms`), 8 routes (`/`, `/login`, `/register`, `/company-signup`, `/brief`, `/model`, `/data`, `/workspaces`) all → 200.
+
+**10. `components/shay/WorkspaceOverviewPage.tsx`** — 262 → 110 lines, 4 files in `workspace-overview/`, all clean: `shared.tsx` (45, `Metric`/`ActionCard`), `CommandCenter.tsx` (63), `DataSourcesPanel.tsx` (37), `ChatSessionsPanel.tsx` (50). Fully read-only display (only navigation + creating a new chat via router push) — safe to split freely.
+
+**11. `components/model/Inspector.tsx`** — 261 → 179 lines (stated exception, 29 over — real `deleteType` destructive action + tab state), 2 files in `inspector/`: `views.tsx` (59, `AxiomsView`/`RulesView`/`Empty`), `DeleteFooter.tsx` (55, presentational, delete call stays in hub).
+
+**12. `components/model/RulesTab.tsx`** — 255 → 144 lines, 2 files in `rules-tab/`, both clean: `RulesList.tsx` (83), `AddRuleForm.tsx` (119). Hub keeps `load`/`saveRule`/`toggle`/`del`/`evaluate` handlers.
+
+**13. `components/data/GraphLens.tsx`** — 252 → 60 lines, 2 files in `graph-lens/`, both clean: `layout.ts` (114, pure `buildGraphLayout`/`edgePath` — dagre-based type-map layout), `GraphSvg.tsx` (90, pure SVG rendering). Read-only visualization — no destructive actions, safe to split freely.
+
+**Checkpoint after files 10–13:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 70ms`), 5 routes (`/`, `/model`, `/data`, `/workspaces`, `/workspaces/1`) all → 200.
+
+**14. `components/shay/ShayChatSurface.tsx`** — 250 → 186 lines (stated exception, 36 over — `send()`'s streaming-reveal + timeout logic, same reasoning as `app/page.tsx`'s Ask page), 2 files in `shay-chat-surface/`: `helpers.ts` (40, pure `uid`/`toCitations`/`toUsage`), `SessionSidebar.tsx` (43, presentational).
+
+**15. `components/ingest/DocsTab.tsx`** — 230 → 176 lines (stated exception, 26 over — a resumable, localStorage-persisted job state machine with zero test coverage, same risk category as the Tier A CRUD hubs), 2 files in `docs-tab/`: `session-storage.ts` (48, pure localStorage read/write/clear), `ProgressCard.tsx` (33, presentational, reused for both the reading and confirming phases — fixed a `stage` prop type to accept `string | null` to match `useJobPoller`'s actual return type).
+
+**16. `app/reset-password/page.tsx`** — 225 → 161 lines (stated exception, 11 over — trivial), 2 files: `Fallback.tsx` (11), `ResetForm.tsx` (101).
+
+**Checkpoint after files 14–16:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 74ms`), 4 routes (`/`, `/reset-password`, `/ingest`, `/workspaces/1/chats/abc`) all → 200.
+
+**17. `components/start/Running.tsx`** — 205 → 155 lines (stated exception, 5 over — trivial), 2 files in `running/`, both clean: `stage-index.ts` (25, pure), `QuestionCard.tsx` (27).
+
+**18. `components/ask/MessageList.tsx`** — 203 → 92 lines, 2 files in `message-list/`, both clean: `CpqActions.tsx` (103), `UsageMeta.tsx` (14). Presentational, no destructive actions.
+
+**19. `components/model/SurvivorEditor.tsx`** — 199 → 140 lines, 2 files in `survivor-editor/`, both clean: `SourcePriorityEditor.tsx` (65), `AttributeOverridesList.tsx` (55). Workspace-scoped policy update, not a deletion — safe to split freely.
+
+**Checkpoint after files 17–19:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 70ms`), 4 routes (`/`, `/start`, `/model`, `/workspaces/1/chats/abc`) all → 200.
+
+**20. `app/home/page.tsx`** — 193 → 76 lines, 4 files, all clean: `StatCard.tsx` (8), `Hero.tsx` (44), `StepsGrid.tsx` (73), `BriefCallout.tsx` (25). Read-only dashboard — safe to split freely.
+
+**21. `components/hitl/HITLDrawer.tsx`** — 190 → 106 lines, 2 files in `hitl-drawer/`, both clean: `QuestionCard.tsx` (69), `states.tsx` (21, `Empty`/`Loading`).
+
+**Checkpoint after files 20–21:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 72ms`), 3 routes (`/`, `/home`, `/ingest`) all → 200.
+
+**22. `app/login/page.tsx`** — 188 → 85 lines, 3 files, all clean: `HeroPanel.tsx` (33, includes `Feature`), `LoginForm.tsx` (108), `AuthPageFallback.tsx` (14).
+
+**23. `components/ask/ShareConfigDialog.tsx`** — 177 → 135 lines, 1 file: `share-config-dialog/ConfigForm.tsx` (98). Hub keeps state/handlers + modal chrome.
+
+**Checkpoint after files 22–23:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 74ms`), 3 routes (`/`, `/login`, `/workspaces/1/chats/abc`) all → 200.
+
+**24. `components/shay/WorkspaceIndexCard.tsx`** — 172 → 113 lines, 1 file: `workspace-index-card/shared.tsx` (61, `ActionIcon`/`MetricTile`/`formatMetric`).
+
+**25. `components/start/Files.tsx`** — 167 → 106 lines, 2 files in `files-step/`, both clean: `DropZone.tsx` (58), `FileList.tsx` (49).
+
+**Checkpoint after files 24–25:** `tsc --noEmit` clean, `npm run build` exit 0, container rebuilt/restarted cleanly (`✓ Ready in 72ms`), 3 routes (`/`, `/workspaces`, `/start`) all → 200.
+
+**26. `components/ask/AskHistoryDrawer.tsx`** — 160 → 107 lines, 1 file: `ask-history-drawer/ThreadList.tsx` (55, includes `relativeTimeLabel`).
+
+**27. `app/api/_aryxProxy.ts`** — 156 → 142 lines. Security-critical bearer/workspace auth-proxy helper — minimized risk by extracting only the pure, side-effect-free pieces (`cacheKeyForAuthorization`/`cacheKeyForWorkspaceAuthorization`/`isBearerAuthorizationHeader`) into `aryx-proxy/auth-cache-keys.ts` (18 lines); the actual bearer/workspace-access validation logic (`requireShayBearerAuth`/`requireShayWorkspaceAccess`) stayed untouched in place, not moved or refactored.
+
+**28. `app/model/page.tsx`** — 154 → 64 lines, 2 files, both clean: `tab-config.tsx` (55, `Tab` type + `TABS`), `TabBar.tsx` (54, tab bar + lifecycle summary).
+
+**29. `components/model/PublishTab.tsx`** — 152 → 139 lines, 1 file: `publish-tab/constants.ts` (13, `TOOL_HINTS`/`EXT_MAP`).
+
+**Final checkpoint — Phase 3 Tier B complete (all 30 files):** `tsc --noEmit` clean, `npm run build` exit 0 (including the `/api/[...path]` route that exercises `_aryxProxy.ts`), container rebuilt/restarted cleanly (`✓ Ready in 68ms`), a broad 17-route smoke test (`/`, `/login`, `/register`, `/company-signup`, `/workspaces`, `/settings`, `/admin/users`, `/data`, `/graph`, `/home`, `/ingest`, `/model`, `/observability`, `/brief`, `/start`, `/workspaces/1/chats/abc`, `/reset-password`) all → 200.
+
+**Phase 3 is now fully complete — all 43 files (13 Tier A + 30 Tier B) split, verified, and documented.**
+
 ### Phase 4 — The two mega-files (`cpq/engine.py`, `api/ask_api.py`) — separate initiative, not part of this cleanup pass
 
 This phase is **design work, not refactor-and-go**:

@@ -1,6 +1,9 @@
-import { createHash } from "node:crypto";
-
 import { NextRequest, NextResponse } from "next/server";
+import {
+  cacheKeyForAuthorization,
+  cacheKeyForWorkspaceAuthorization,
+  isBearerAuthorizationHeader,
+} from "./aryx-proxy/auth-cache-keys";
 
 const SHAY_PROFILE_PATH = "/api/v1/user-auth/profile";
 const SHAY_AUTH_CACHE_TTL_MS = 30_000;
@@ -29,23 +32,6 @@ export function requireInternalApiKey(): string | NextResponse {
     );
   }
   return internalApiKey;
-}
-
-function cacheKeyForAuthorization(authorization: string) {
-  return createHash("sha256").update(authorization).digest("hex");
-}
-
-function cacheKeyForWorkspaceAuthorization(
-  authorization: string,
-  shayWorkspaceId: string,
-) {
-  return createHash("sha256")
-    .update(`${authorization}:${shayWorkspaceId}`)
-    .digest("hex");
-}
-
-function isBearerAuthorizationHeader(value: string | null): value is string {
-  return !!value && /^Bearer\s+\S+$/i.test(value.trim());
 }
 
 export async function requireShayBearerAuth(

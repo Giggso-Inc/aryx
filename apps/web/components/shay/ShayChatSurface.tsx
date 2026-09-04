@@ -2,53 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Bot, Clock3, ExternalLink } from "lucide-react";
+import { Bot, ExternalLink } from "lucide-react";
 import { Composer } from "@/components/ask/Composer";
 import { MessageList } from "@/components/ask/MessageList";
 import { shayApi } from "@/lib/shay-api";
 import { streamReveal } from "@/lib/stream";
 import { workspaceSectionHref } from "@/lib/workspace-route";
 import { formatWorkspaceName } from "@/lib/workspace-name";
-import type { ChatTurn, Citation, Usage } from "@/lib/types";
-
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-function toCitations(items: Array<{
-  entity_id?: number;
-  entity_name?: string;
-  entity_type?: string;
-  marker?: number;
-}>): Citation[] {
-  return items.map((item, index) => ({
-    entity_id: item.entity_id ?? index,
-    label: item.entity_name ?? `Source ${index + 1}`,
-    type: item.entity_type,
-  }));
-}
-
-function toUsage(value: unknown): Usage | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const usage = value as Record<string, unknown>;
-  const promptTokens = usage.prompt_tokens;
-  const completionTokens = usage.completion_tokens;
-  const latencyMs = usage.latency_ms;
-  if (
-    typeof promptTokens !== "number"
-    || typeof completionTokens !== "number"
-    || typeof latencyMs !== "number"
-  ) {
-    return undefined;
-  }
-  return {
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
-    latency_ms: latencyMs,
-    menial_model: typeof usage.menial_model === "string" ? usage.menial_model : undefined,
-    answer_model: typeof usage.answer_model === "string" ? usage.answer_model : undefined,
-  };
-}
+import type { ChatTurn } from "@/lib/types";
+import { SessionSidebar } from "./shay-chat-surface/SessionSidebar";
+import { toCitations, toUsage, uid } from "./shay-chat-surface/helpers";
 
 export function ShayChatSurface({
   workspaceId,
@@ -217,34 +180,7 @@ export function ShayChatSurface({
           </div>
         ) : null}
       </div>
-      <aside className="space-y-4">
-        <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-          <h3 className="text-sm font-semibold text-navy-900">Merged behavior</h3>
-          <ul className="mt-3 space-y-3 text-sm text-subtle">
-            <li>Each thread is mapped to one Aryx Ask session key and workspace bridge.</li>
-            <li>Citations and grounding come from the Aryx Ask pipeline and stay visible here.</li>
-            <li>Conversation history is persisted in Aryx bridge tables for replay and audit.</li>
-          </ul>
-        </div>
-        <div className="rounded-[1.5rem] border border-navy-100 bg-white p-5 shadow-soft">
-          <div className="flex items-center gap-2 text-sm font-semibold text-navy-900">
-            <Clock3 size={14} />
-            Session details
-          </div>
-          <dl className="mt-3 space-y-2 text-sm">
-            <div className="flex items-start justify-between gap-3">
-              <dt className="text-subtle">Workspace</dt>
-              <dd className="text-right font-medium text-navy-900">
-                {workspaceName ? formatWorkspaceName(workspaceName) : workspaceId}
-              </dd>
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <dt className="text-subtle">Thread</dt>
-              <dd className="text-right font-medium text-navy-900">{threadId}</dd>
-            </div>
-          </dl>
-        </div>
-      </aside>
+      <SessionSidebar workspaceId={workspaceId} workspaceName={workspaceName} threadId={threadId} />
     </div>
   );
 }

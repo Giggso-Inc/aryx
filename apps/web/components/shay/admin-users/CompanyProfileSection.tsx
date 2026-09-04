@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Building2, Globe, Mail, Sparkles } from "lucide-react";
 import type { ShayCompany } from "@/lib/shay-types";
-import type { CompanyProfileDraft } from "../AdminUsersPage";
+import type { CompanyProfileDraft } from "./company-draft";
 
 export function CompanyProfileSection({
   company,

@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { X, CheckCircle2, GitBranch, Trash2 } from "lucide-react";
+import { X, CheckCircle2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import type { Axiom, OntologyType, Rule, SurvivorshipPolicy } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { AttrsEditor } from "./AttrsEditor";
 import { SurvivorEditor } from "./SurvivorEditor";
+import { DeleteFooter } from "./inspector/DeleteFooter";
+import { AxiomsView, RulesView } from "./inspector/views";
 
 interface InspectorProps {
   type: OntologyType | null;
@@ -161,101 +163,17 @@ export function Inspector({
             {tab === "rules" && <RulesView rules={typeRules} />}
           </div>
 
-          <footer className="border-t border-navy-100 bg-navy-50/40 px-5 py-3">
-            {confirmDelete === type.name ? (
-              <div className="space-y-2">
-                <p className="text-[11px] text-rose-700">
-                  About to delete the type. Records of this type stay in the
-                  graph but are no longer schema-registered.
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={deleteThis}
-                    disabled={busy}
-                    className="focus-ring inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-                  >
-                    <Trash2 size={12} /> Delete {type.name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDelete("")}
-                    className="focus-ring rounded-lg border border-navy-100 bg-white px-3 py-1.5 text-[12px] font-medium text-navy-700 hover:bg-navy-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(type.name)}
-                className="focus-ring inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-600 hover:bg-rose-50"
-              >
-                <Trash2 size={12} /> Delete this type
-              </button>
-            )}
-          </footer>
-
+          <DeleteFooter
+            typeName={type.name}
+            confirming={confirmDelete === type.name}
+            busy={busy}
+            onConfirm={() => setConfirmDelete(type.name)}
+            onDelete={deleteThis}
+            onCancel={() => setConfirmDelete("")}
+          />
         </motion.aside>
       )}
     </AnimatePresence>
   );
 }
 
-function AxiomsView({ axioms }: { axioms: Axiom[] }) {
-  if (!axioms.length)
-    return <Empty label="No axioms on this type yet." />;
-  return (
-    <ul className="space-y-2">
-      {axioms.map((a) => (
-        <li
-          key={a.id}
-          className="rounded-lg border border-navy-100 bg-navy-50/40 px-3 py-2 text-[12px]"
-        >
-          <div className="text-[10px] uppercase tracking-wider text-subtle">
-            {a.kind}
-          </div>
-          <div className="font-mono text-navy-700">
-            {JSON.stringify(a.payload)}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function RulesView({ rules }: { rules: Rule[] }) {
-  if (!rules.length)
-    return <Empty label="No inference rules yet." />;
-  return (
-    <ul className="space-y-2">
-      {rules.map((r) => (
-        <li
-          key={r.name}
-          className="rounded-lg border border-navy-100 bg-navy-50/40 px-3 py-2 text-[12px]"
-        >
-          <div className="flex items-center justify-between">
-            <span className="font-semibold text-navy-800">{r.name}</span>
-            <GitBranch
-              size={11}
-              className={r.enabled ? "text-emerald-500" : "text-subtle"}
-            />
-          </div>
-          <div className="mt-1 font-mono text-[11px] text-navy-600">
-            when <b>{r.attribute}</b> {r.operator} {r.value} →{" "}
-            <b>{r.action}</b> {r.label || r.target_name || ""}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Empty({ label }: { label: string }) {
-  return (
-    <div className="rounded-lg border border-dashed border-navy-200 px-4 py-6 text-center text-[12px] italic text-subtle">
-      {label}
-    </div>
-  );
-}

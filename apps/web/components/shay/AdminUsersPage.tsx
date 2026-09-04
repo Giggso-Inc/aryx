@@ -5,49 +5,13 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AuthGuard } from "./AuthGuard";
 import { ShayPageShell } from "./ShayPageShell";
 import { AdminUsersPageView } from "./AdminUsersPageView";
+import { buildCompanyDraft, type CompanyProfileDraft } from "./admin-users/company-draft";
+import type { AdminTab, TableTab } from "./admin-users/types";
 import { shayApi } from "@/lib/shay-api";
 import { useShayAuth } from "@/lib/shay-auth";
 import type { ShayCompany, ShayInvitation, ShayUser } from "@/lib/shay-types";
 
-type AdminTab = "users" | "subscription" | "company-profile";
-type TableTab = "users" | "invitations";
 type TabFeedback = Partial<Record<AdminTab, string | null>>;
-
-export interface CompanyProfileDraft {
-  name: string;
-  website: string;
-  emailAddress: string;
-  description: string;
-}
-
-function readSetting(settings: Record<string, unknown> | null | undefined, ...keys: string[]) {
-  if (!settings) return "";
-  for (const key of keys) {
-    const value = settings[key];
-    if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-  }
-  return "";
-}
-
-function buildCompanyDraft(company: ShayCompany): CompanyProfileDraft {
-  return {
-    name: company.name,
-    website:
-      readSetting(company.settings, "website", "companyWebsite", "company_website") ||
-      company.domain ||
-      "",
-    emailAddress: readSetting(
-      company.settings,
-      "companyEmailAddress",
-      "company_email_address",
-      "contactEmail",
-      "contact_email",
-    ),
-    description: company.description ?? readSetting(company.settings, "description"),
-  };
-}
 
 export function AdminUsersPage() {
   const { session, profile } = useShayAuth();

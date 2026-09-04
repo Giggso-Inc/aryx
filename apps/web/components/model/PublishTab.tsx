@@ -3,20 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertCircle, Download, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
-
-const TOOL_HINTS: Record<string, string> = {
-  turtle: "Protégé, GraphDB, Apache Jena, Stardog",
-  "json-ld": "Web apps, Google Rich Results, JSON-LD playground",
-  xml: "Protégé, legacy RDF stores, OWL API tools",
-  "n-triples": "Bulk loaders, line-by-line streaming, dump/diff",
-};
-
-const EXT_MAP: Record<string, string> = {
-  turtle: "ttl",
-  "json-ld": "jsonld",
-  xml: "rdf",
-  "n-triples": "nt",
-};
+import { EXT_MAP, TOOL_HINTS } from "./publish-tab/constants";
 
 export function PublishTab({ workspaceId }: { workspaceId: number }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);

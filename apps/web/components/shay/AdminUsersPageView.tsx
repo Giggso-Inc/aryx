@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/cn";
-import type { CompanyProfileDraft } from "./AdminUsersPage";
+import type { CompanyProfileDraft } from "./admin-users/company-draft";
 import type { ShayCompany, ShayInvitation, ShayUser } from "@/lib/shay-types";
 import { InviteUserModal } from "./admin-users/InviteUserModal";
 import { CompanyProfileSection } from "./admin-users/CompanyProfileSection";
