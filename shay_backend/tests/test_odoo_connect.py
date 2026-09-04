@@ -68,7 +68,7 @@ def test_verify_url_returns_401_when_no_token_in_store():
     # Ensure no token stored for this sid
     _sid_token_store.pop(_VALID_SID, None)
 
-    with patch("app.routes.odoo_connect.verify_state", return_value=_STATE_DATA):
+    with patch("app.routes.odoo_connect.verify.verify_state", return_value=_STATE_DATA):
         resp = client.post(
             "/api/v1/odoo/connect/verify-url",
             json={"state": "valid-state", "odoo_url": "https://mycompany.odoo.com"},
@@ -106,8 +106,8 @@ def test_verify_url_forwards_bearer_token_to_orchestrator():
     http_cm.__aexit__ = AsyncMock(return_value=None)
     http_cm.post = mock_post
 
-    with patch("app.routes.odoo_connect.verify_state", return_value=_STATE_DATA), \
-         patch("app.routes.odoo_connect.httpx.AsyncClient", return_value=http_cm):
+    with patch("app.routes.odoo_connect.verify.verify_state", return_value=_STATE_DATA), \
+         patch("app.routes.odoo_connect.verify.httpx.AsyncClient", return_value=http_cm):
         resp = client.post(
             "/api/v1/odoo/connect/verify-url",
             json={"state": "valid-state", "odoo_url": "https://mycompany.odoo.com"},
@@ -125,7 +125,7 @@ def test_verify_url_returns_400_on_invalid_state():
     """Tampered or expired state must return 400 invalid_state."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
 
-    with patch("app.routes.odoo_connect.verify_state", side_effect=ValueError("bad")):
+    with patch("app.routes.odoo_connect.verify.verify_state", side_effect=ValueError("bad")):
         resp = client.post(
             "/api/v1/odoo/connect/verify-url",
             json={"state": "tampered", "odoo_url": "https://mycompany.odoo.com"},
@@ -164,8 +164,8 @@ def test_verify_url_passes_csrf_cookie_to_verify_state():
     http_cm.__aexit__ = AsyncMock(return_value=None)
     http_cm.post = mock_post
 
-    with patch("app.routes.odoo_connect.verify_state", side_effect=capture_verify_state), \
-         patch("app.routes.odoo_connect.httpx.AsyncClient", return_value=http_cm):
+    with patch("app.routes.odoo_connect.verify.verify_state", side_effect=capture_verify_state), \
+         patch("app.routes.odoo_connect.verify.httpx.AsyncClient", return_value=http_cm):
         client.post(
             "/api/v1/odoo/connect/verify-url",
             json={"state": "valid-state", "odoo_url": "https://mycompany.odoo.com"},
@@ -183,7 +183,7 @@ def test_verify_url_csrf_mismatch_returns_400():
 
     _sid_token_store[_VALID_SID] = (_BEARER_TOKEN, time.monotonic())
 
-    with patch("app.routes.odoo_connect.verify_state", side_effect=ValueError("csrf mismatch")):
+    with patch("app.routes.odoo_connect.verify.verify_state", side_effect=ValueError("csrf mismatch")):
         resp = client.post(
             "/api/v1/odoo/connect/verify-url",
             json={"state": "valid-state", "odoo_url": "https://mycompany.odoo.com"},
@@ -205,7 +205,7 @@ def test_complete_redirects_with_session_token_missing_when_no_token():
 
     _sid_token_store.pop(_VALID_SID, None)
 
-    with patch("app.routes.odoo_connect.verify_state", return_value=_STATE_DATA):
+    with patch("app.routes.odoo_connect.complete.verify_state", return_value=_STATE_DATA):
         resp = client.post(
             "/api/v1/odoo/connect/complete",
             data={

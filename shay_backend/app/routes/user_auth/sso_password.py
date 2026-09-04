@@ -1,0 +1,157 @@
+"""
+Password-setup routes for SSO-only users: request_set_password, confirm_set_password.
+
+Split out of the original monolithic app/routes/user_auth.py (see
+docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5).
+"""
+
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.core.config import settings
+from app.core.auth import get_password_hash
+from app.core.encryption_utils import decrypt
+from app.services.email_service import email_service
+
+from app.models.user import User
+
+from app.schemas.sso import (
+    SetPasswordRequestBody,
+    SetPasswordRequestResponse,
+    SetPasswordConfirmRequest,
+    SetPasswordConfirmResponse,
+)
+
+router = APIRouter()
+
+
+@router.post("/set-password/request", response_model=SetPasswordRequestResponse)
+async def request_set_password(
+    body: SetPasswordRequestBody,
+    db: AsyncSession = Depends(get_db),
+) -> SetPasswordRequestResponse:
+    """
+    For SSO-only users who want to add a password.
+    Always returns the same response to avoid email enumeration.
+    """
+    from app.models.email_verification_token import EmailVerificationToken
+
+    result = await db.execute(
+        select(User).where(User.email_id == body.email_id)
+    )
+    user = result.scalar_one_or_none()
+
+    # Never reveal whether the email exists or whether the account is SSO-only.
+    if user and user.password_hash is None:
+        token = EmailVerificationToken.create_token(
+            email=user.email_id,
+            company_id=str(user.company_id),
+            user_id=str(user.id),
+            token_type="set_password",
+            expires_in_hours=24,
+        )
+        db.add(token)
+        await db.commit()
+        set_password_link = (
+            f"{settings.FRONTEND_URL}/set-password"
+            f"?token={token.token}&user_id={user.id}"
+        )
+        email_service.send_password_reset_email(
+            user.email_id,
+            {
+                "email": user.email_id,
+                "user_name": user.name or "User",
+                "reset_url": set_password_link,
+                "expires_at": "24 hours",
+                "platform_name": settings.PLATFORM_NAME,
+            },
+            settings.FRONTEND_URL,
+        )  # reuse the existing password-reset email template flow.
+
+    return SetPasswordRequestResponse(
+        message="If this email exists, a password setup link has been sent."
+    )
+
+
+@router.post("/set-password/confirm", response_model=SetPasswordConfirmResponse)
+async def confirm_set_password(
+    body: SetPasswordConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SetPasswordConfirmResponse:
+    """
+    Confirm and set a password for an SSO-only user using the emailed token.
+    """
+    from app.models.email_verification_token import EmailVerificationToken
+
+    normalized_token = "".join(body.token.split())
+
+    result = await db.execute(
+        select(EmailVerificationToken).where(
+            EmailVerificationToken.token == normalized_token
+        )
+    )
+    token_record = result.scalar_one_or_none()
+    if not token_record:
+        raise HTTPException(400, detail={
+            "error_code": "SET_PWD_001",
+            "message": "Invalid or expired token",
+        })
+    if not token_record.is_valid:
+        raise HTTPException(400, detail={
+            "error_code": "SET_PWD_002",
+            "message": "This link has expired or already been used",
+        })
+    if token_record.token_type != "set_password":
+        raise HTTPException(400, detail={
+            "error_code": "SET_PWD_001",
+            "message": "Invalid token type",
+        })
+    if str(token_record.user_id) != body.user_id:
+        raise HTTPException(400, detail={
+            "error_code": "SET_PWD_001",
+            "message": "Token does not match user",
+        })
+
+    result = await db.execute(
+        select(User).where(User.id == token_record.user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, detail={"message": "User not found"})
+
+    new_password_to_use = body.new_password
+    confirm_password_to_use = body.confirm_password
+    if body.encrypted:
+        try:
+            new_password_to_use = decrypt(body.new_password)
+            confirm_password_to_use = decrypt(body.confirm_password)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid encrypted password format",
+            )
+    if new_password_to_use != confirm_password_to_use:
+        raise HTTPException(400, detail={
+            "error_code": "SET_PWD_003",
+            "message": "Passwords do not match",
+        })
+    if len(new_password_to_use) < 8 or not any(c.isupper() for c in new_password_to_use) or not any(c.islower() for c in new_password_to_use) or not any(c.isdigit() for c in new_password_to_use) or not any(c in '!@#$%^&*()_+-=[]{}|;:,.<>?' for c in new_password_to_use):
+        raise HTTPException(400, detail={
+            "error_code": "SET_PWD_004",
+            "message": "Password must include uppercase, lowercase, digit, and special character",
+        })
+
+    user.password_hash = get_password_hash(new_password_to_use)
+    token_record.mark_as_used()  # keep oauth_provider unchanged so both auth modes remain available.
+    await db.commit()
+
+    return SetPasswordConfirmResponse(
+        message=(
+            "Password set successfully. "
+            f"You can now log in with your password or continue with "
+            f"{(user.oauth_provider or 'SSO').title()}."
+        ),
+        success=True,
+    )

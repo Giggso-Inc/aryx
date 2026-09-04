@@ -23,7 +23,19 @@ def _scalar(value):
 
 
 def _make_client(mock_db, current_user):
-    with patch("app.routes.users.get_current_user_required", new=AsyncMock(return_value=current_user)):
+    # NOTE (Raven style-compliance split, see
+    # docs/RAVEN_STYLE_COMPLIANCE_PLAN_2026-09-03.md, Phase 5a item 2):
+    # app/routes/users.py is now a package (app/routes/users/*.py), each
+    # submodule importing get_current_user_required itself. Patching
+    # app.routes.users.get_current_user_required no longer affects any
+    # submodule's own bound reference (the CRITICAL GOTCHA from the
+    # compliance plan), so this generic client patches list_users's copy.
+    # None of the tests using this helper hit a real route (they target
+    # /users/me, /users/, /users/{id} -- paths that do not exist in this
+    # router both before and after the split; see the module docstring of
+    # tests/test_users_characterization.py for the full explanation), so
+    # which submodule owns the patched name has no behavioral effect here.
+    with patch("app.routes.users.list_users.get_current_user_required", new=AsyncMock(return_value=current_user)):
         app = FastAPI()
         app.include_router(router, prefix="/users")
         app.dependency_overrides[get_db] = lambda: mock_db
@@ -135,7 +147,7 @@ class TestUpdateUser:
         admin_user.can_access_company = MagicMock(return_value=True)
         mock_db.execute = AsyncMock()
 
-        with patch("app.routes.users.get_current_user_required", new=AsyncMock(return_value=admin_user)):
+        with patch("app.routes.users.detail.get_current_user_required", new=AsyncMock(return_value=admin_user)):
             resp = client.put(
                 f"/users/company/{admin_user.company_id}/users/{admin_user.id}",
                 json={"role": "user"},
